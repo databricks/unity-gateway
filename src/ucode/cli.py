@@ -44,6 +44,7 @@ from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.databricks import (
+    SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     apply_pat_environment,
     build_shared_base_urls,
     discover_claude_models,
@@ -1279,6 +1280,7 @@ def skills_add(
     opens a picker of the workspace's schemas to scope (``--mcp``) or skills to download.
     """
     try:
+        install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
         requested_skills = (
             None if skills is None else {s.strip() for s in skills.split(",") if s.strip()}
         )
@@ -1389,6 +1391,7 @@ def skills_remove(
     you authored is left alone.
     """
     try:
+        install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
         requested_skills = (
             None if skills is None else {s.strip() for s in skills.split(",") if s.strip()}
         )
@@ -3267,6 +3270,7 @@ def configure_skills(
     no ``--location``).
     """
     try:
+        install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
         # `--skill` absent -> None (whole schemas via --location); present (even
         # empty) -> the explicit FQN set, so `--skill ""` downloads nothing.
         selected_skills = (
