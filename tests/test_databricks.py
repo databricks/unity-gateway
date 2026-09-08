@@ -227,7 +227,9 @@ class TestWorkspaceOrgId:
         monkeypatch.setattr(
             db_mod.urllib_request,
             "urlopen",
-            lambda request, timeout=None: _FakeResponseWithHeaders({"ok": True}, headers),
+            lambda request, timeout=None, **_kwargs: _FakeResponseWithHeaders(
+                {"ok": True}, headers
+            ),
         )
 
     def test_captures_org_id_header_from_get(self, monkeypatch):
@@ -4624,7 +4626,7 @@ class TestProbeUnityGatewayCapabilities:
             ]
         )
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, **_kwargs):
             outcome = next(outcomes)
             if isinstance(outcome, Exception):
                 raise outcome
@@ -4675,7 +4677,7 @@ class TestProbeUnityGatewayCapabilities:
     def test_persistent_499_after_retries_is_transient_error(self, monkeypatch):
         calls: list[object] = []
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, **_kwargs):
             calls.append(request)
             raise TestHttpGetJsonRetries._http_error(499, "Unknown")
 
@@ -4814,7 +4816,7 @@ class TestHttpGetJsonRetries:
         calls = []
         sleeps = []
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, **_kwargs):
             calls.append(request)
             outcome = next(outcomes)
             if isinstance(outcome, Exception):
@@ -4838,7 +4840,7 @@ class TestHttpGetJsonRetries:
         outcomes = iter([URLError("connection reset"), _FakeResponse({"ok": True})])
         sleeps = []
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, **_kwargs):
             outcome = next(outcomes)
             if isinstance(outcome, Exception):
                 raise outcome
@@ -4861,7 +4863,7 @@ class TestHttpGetJsonRetries:
         outcomes = iter([self._http_error(code, "Unknown"), _FakeResponse({"ok": True})])
         sleeps = []
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, **_kwargs):
             outcome = next(outcomes)
             if isinstance(outcome, Exception):
                 raise outcome
@@ -4893,7 +4895,7 @@ class TestHttpGetJsonRetries:
         calls = []
         sleeps = []
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, **_kwargs):
             calls.append(request)
             raise self._http_error(code, "Nope")
 
@@ -4911,7 +4913,7 @@ class TestHttpGetJsonRetries:
         calls = []
         sleeps = []
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, **_kwargs):
             calls.append(request)
             raise self._http_error(429, "Too Many Requests")
 
@@ -4929,7 +4931,7 @@ class TestHttpGetJsonRetries:
     def test_does_not_retry_other_http_error(self, monkeypatch):
         calls = []
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, **_kwargs):
             calls.append(request)
             raise self._http_error(500, "Internal Server Error")
 
@@ -4949,7 +4951,7 @@ class TestHttpGetJsonRetries:
     def test_bytes_retries_429_and_returns_undecoded_body(self, monkeypatch):
         outcomes = iter([self._http_error(429, "Too Many Requests"), _FakeResponse(b"\x89PNG\x00")])
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, **_kwargs):
             outcome = next(outcomes)
             if isinstance(outcome, Exception):
                 raise outcome
@@ -4969,7 +4971,7 @@ class TestHttpUgHeaders:
         monkeypatch.setenv("UG_HEADERS", "x-databricks-traffic-id: testenv://liteswap/abc")
         requests = []
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, **_kwargs):
             requests.append(request)
             return _FakeResponse({})
 
@@ -4987,7 +4989,7 @@ class TestHttpUgHeaders:
         monkeypatch.setenv("UG_HEADERS", "authorization: other\ncontent-type: text/plain")
         requests = []
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, **_kwargs):
             requests.append(request)
             return _FakeResponse({})
 
@@ -5001,6 +5003,42 @@ class TestHttpUgHeaders:
             "Bearer tok",
         ]
         assert requests[1].get_header("Content-type") == "application/json"
+
+
+class TestMakeSslContext:
+    @pytest.fixture(autouse=True)
+    def clear_cache(self):
+        db_mod._make_ssl_context.cache_clear()
+        yield
+        db_mod._make_ssl_context.cache_clear()
+
+    def test_context_is_cached(self, monkeypatch):
+        from unittest.mock import Mock
+
+        context = Mock()
+        create_default_context = Mock(return_value=context)
+        monkeypatch.setattr(db_mod.ssl, "create_default_context", create_default_context)
+
+        assert db_mod._make_ssl_context() is context
+        assert db_mod._make_ssl_context() is context
+        create_default_context.assert_called_once_with()
+
+    @pytest.mark.parametrize("load_error", [OSError("permission denied"), db_mod.ssl.SSLError()])
+    def test_failed_bundle_falls_back_to_next_one(self, monkeypatch, load_error):
+        from unittest.mock import Mock
+
+        monkeypatch.setenv("REQUESTS_CA_BUNDLE", "/first.pem")
+        monkeypatch.setenv("CURL_CA_BUNDLE", "/second.pem")
+        monkeypatch.setattr(db_mod.Path, "is_file", lambda self: True)
+        context = Mock()
+        context.load_verify_locations.side_effect = [load_error, None]
+        monkeypatch.setattr(db_mod.ssl, "create_default_context", Mock(return_value=context))
+
+        assert db_mod._make_ssl_context() is context
+        assert context.load_verify_locations.call_args_list == [
+            ((), {"cafile": "/first.pem"}),
+            ((), {"cafile": "/second.pem"}),
+        ]
 
 
 class TestParseDatabricksCliVersion:
@@ -5721,7 +5759,7 @@ class TestHttpGetJsonTimeout:
     escapes the best-effort MCP discovery flow and crashes the command."""
 
     def test_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
-        def raise_timeout(request, timeout=None):
+        def raise_timeout(request, timeout=None, **_kwargs):
             raise TimeoutError("The read operation timed out")
 
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_timeout)
@@ -5733,7 +5771,7 @@ class TestHttpGetJsonTimeout:
         assert "timed out" in reason
 
     def test_post_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
-        def raise_timeout(request, timeout=None):
+        def raise_timeout(request, timeout=None, **_kwargs):
             raise TimeoutError("The read operation timed out")
 
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_timeout)
@@ -5745,7 +5783,7 @@ class TestHttpGetJsonTimeout:
         assert "timed out" in reason
 
     def test_bytes_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
-        def raise_timeout(request, timeout=None):
+        def raise_timeout(request, timeout=None, **_kwargs):
             raise TimeoutError("The read operation timed out")
 
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_timeout)
@@ -6087,7 +6125,9 @@ class TestHttpDelete:
     def test_empty_body_is_success_not_a_decode_error(self, monkeypatch, metrics_recorder):
         # Without `allow_empty_body` this would fail with "response was not valid JSON".
         monkeypatch.setattr(
-            db_mod.urllib_request, "urlopen", lambda request, timeout=None: self._empty_response()
+            db_mod.urllib_request,
+            "urlopen",
+            lambda request, timeout=None, **_kwargs: self._empty_response(),
         )
         payload, reason = db_mod._http_delete(f"{WS}/api/anything", "tok")
         assert reason is None
@@ -6103,7 +6143,7 @@ class TestHttpDelete:
         monkeypatch.setattr(
             db_mod.urllib_request,
             "urlopen",
-            lambda request, timeout=None: self._empty_response("{}"),
+            lambda request, timeout=None, **_kwargs: self._empty_response("{}"),
         )
         payload, reason = db_mod._http_delete(f"{WS}/api/anything", "tok")
         assert reason is None
@@ -6112,7 +6152,7 @@ class TestHttpDelete:
     def test_uses_the_delete_verb_and_sends_no_body(self, monkeypatch):
         seen = {}
 
-        def capture(request, timeout=None):
+        def capture(request, timeout=None, **_kwargs):
             seen["method"] = request.get_method()
             seen["data"] = request.data
             return self._empty_response()
@@ -6129,7 +6169,7 @@ class TestHttpDelete:
 
         body = '{"error_code":"PERMISSION_DENIED","message":"admin required"}'
 
-        def raise_http_error(request, timeout=None):
+        def raise_http_error(request, timeout=None, **_kwargs):
             raise HTTPError(
                 url="", code=403, msg="Forbidden", hdrs=MagicMock(), fp=io.BytesIO(body.encode())
             )
@@ -6155,7 +6195,7 @@ class TestHttpPatchJson:
 
         seen = {}
 
-        def capture(request, timeout=None):
+        def capture(request, timeout=None, **_kwargs):
             seen["method"] = request.get_method()
             seen["data"] = request.data
             seen["content_type"] = request.get_header("Content-type")
@@ -6185,7 +6225,7 @@ class TestHttpPostJson:
 
         seen = {}
 
-        def capture(request, timeout=None):
+        def capture(request, timeout=None, **_kwargs):
             seen.update(request.header_items())
             response = MagicMock()
             response.__enter__ = lambda s: s
