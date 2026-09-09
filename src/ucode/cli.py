@@ -29,12 +29,9 @@ from ucode.agents import (
     install_databricks_ai_tools_for_agents,
     install_tool_binary,
     normalize_tool,
-    provider_permission_error,
     resolve_gemini_provider_model,
     resolve_launch_model,
     resolve_provider_models,
-    validate_all_tools,
-    validate_tool,
 )
 from ucode.agents import claude as claude_agent
 from ucode.agents import codex as codex_agent
@@ -77,8 +74,11 @@ from ucode.managed_config import (
     ManagedConfigResult,
     get_model_recommendation,
     load_managed_state,
+    managed_config_is_newer,
+    managed_update_time,
     refresh_managed_config,
 )
+from ucode.managed_files import suppressed_managed_writes
 from ucode.managed_resolve import (
     managed_claude_family_models,
     managed_default_model,
@@ -115,12 +115,15 @@ from ucode.skills_download import (
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
 from ucode.state import (
+    MANAGED_OVERLAY_KEY,
     STATE_PATH,
     clear_state,
+    get_applied_managed_update_time,
     get_provider_service,
     load_full_state,
     load_state,
     save_state,
+    set_applied_managed_update_time,
     set_current_workspace,
     set_provider_service,
 )
@@ -183,23 +186,13 @@ def _policy_summary_lines(managed: dict) -> list[str]:
     return lines
 
 
-def _print_managed_summary(
-    managed: dict, state: dict, tool: str | None, *, abridged: bool = False
-) -> None:
+def _print_managed_summary(managed: dict, state: dict, tool: str | None) -> None:
     """Show which of the admin's settings are in force.
 
     With ``tool`` set (launch path) the per-agent Agent/Provider/Model lines are included;
     with ``tool=None`` (e.g. ``ug configure`` under a managed config) they are skipped
     since no single agent has been chosen yet.
-
-    ``abridged`` prints only what changes launch-to-launch — the agent and model this run will use,
-    and the policy in force — with a pointer to ``ug status`` for the rest. Bare ``ucode`` runs
-    every session, so re-enumerating the workspace's full MCP/skills/tier list each time is noise;
-    the full box stays for ``status`` and ``configure``, where the reader asked to see it.
     """
-    if abridged:
-        _print_managed_summary_abridged(managed, state, tool)
-        return
     lines = [f"[bold]Workspace:[/bold] [cyan]{state.get('workspace', '?')}[/cyan]"]
     if tool is not None:
         lines.append(f"[bold]Agent:[/bold] [green]{TOOL_SPECS[tool]['display']}[/green]")
@@ -238,29 +231,8 @@ def _print_managed_summary(
     )
 
 
-def _print_managed_summary_abridged(managed: dict, state: dict, tool: str | None) -> None:
-    """One-line launch banner: which agent (and model) this managed run is launching.
-
-    Bare ``ucode`` runs every session, so the full box's MCP/skills/policy enumeration is noise
-    each time; ``ug status`` still shows all of it. See ``_print_managed_summary``'s ``abridged``
-    note. ``tool`` is always set on the launch path, but is guarded for callers that pass None."""
-    if tool is None:
-        print_note("Using managed config.")
-        return
-    agent = TOOL_SPECS[tool]["display"]
-    model = managed_default_model(managed, tool)
-    model_suffix = f" with [magenta]{model}[/magenta]" if model else ""
-    # "as the default agent" only when this really is the config's default: a budget tier can
-    # override the default and launch a different agent, and the tier note in `_launch_tool` already
-    # explains that case — so claiming "default" here would contradict it.
-    role = " as the default agent" if tool == managed.get("default_agent") else ""
-    console.print(
-        f"[dim]•[/dim] Using managed config — launching [green]{agent}[/green]{role}{model_suffix}"
-    )
-
-
 def _confirm_managed_config_applied(managed: dict, workspace: str) -> None:
-    print_success("A managed config is published for your workspace — you're all set.")
+    print_success("A managed configuration is published for your workspace; you're all set.")
     _print_managed_summary(managed, {"workspace": workspace}, tool=None)
     print_note("Run `ug` to launch with your managed settings.")
 
@@ -552,11 +524,11 @@ def configure_shared_state(
         profile = find_profile_name_for_host(workspace)
         if profile:
             state["profile"] = profile
-    with spinner("Verifying Unity AI Gateway..."):
+    with spinner("Verifying Unity Gateway..."):
         token = get_databricks_token(workspace, profile)
         model_service_probe = probe_unity_gateway_capabilities(workspace, token)
     if model_service_probe.resource_available:
-        print_success("Unity AI Gateway connected")
+        print_success("Unity Gateway connected")
     else:
         print_warning(f"Model service: {model_service_probe.detail}")
 
@@ -765,7 +737,6 @@ def configure_workspace_command(
     *,
     prompt_optional_updates: bool = True,
     use_pat: bool = False,
-    skip_validate: bool = False,
     skip_unavailable: bool = False,
     fable_enabled: bool | None = None,
     databricks_ai_tools_enabled: bool | None = None,
@@ -794,8 +765,16 @@ def configure_workspace_command(
             clear_custom_oauth=custom_oauth is None,
         )
         state = states[0]
-        state = configure_single_tool(tool, state)
-        install_databricks_ai_tools_for_agents([tool], state)
+        managed, _, _ = _fetch_managed_config(state)
+        state = configure_single_tool(tool, state, managed=managed)
+        # Record the applied watermark so a later unchanged launch doesn't re-apply and re-prompt.
+        if managed is not None:
+            state = set_applied_managed_update_time(state, managed_update_time(managed))
+            save_state(state)
+        if not is_dry_run():
+            install_databricks_ai_tools_for_agents([tool], state)
+        if managed is not None:
+            _apply_managed_mcp_and_skills(managed, [tool], state)
         spec = TOOL_SPECS[tool]
         console.print(
             Panel(
@@ -807,21 +786,6 @@ def configure_workspace_command(
                 expand=False,
             )
         )
-        if skip_validate:
-            print_note(f"Skipping {spec['display']} validation (--skip-validate).")
-            return 0
-        with spinner(f"Validating {spec['display']}..."):
-            ok, err = validate_tool(tool)
-        if ok:
-            print_success(f"{spec['display']} is working")
-        else:
-            print_err(f"{spec['display']}: {provider_permission_error(tool, state, err)}")
-            managed = bool(state.get("managed_configs", {}).get(tool))
-            restore_file(spec["config_path"], spec["backup_path"], managed)
-            available_tools = [t for t in (state.get("available_tools") or []) if t != tool]
-            state["available_tools"] = available_tools
-            save_state(state)
-            raise RuntimeError(f"{spec['display']} validation failed — config reverted.")
         return 0
 
     states = _configure_shared_workspace_states(
@@ -835,13 +799,24 @@ def configure_workspace_command(
         clear_custom_oauth=custom_oauth is None,
     )
     state = states[0]
+    managed, _, _ = _fetch_managed_config(state)
     save_state(state)
 
+    # enabled_agents is an allowlist: with no explicit --agents, configure exactly those agents
+    # (counting ones whose only models come from the managed config) rather than every available one.
+    managed_enabled = managed_enabled_tools(managed or {})
+    auto_managed = selected_tools is None and bool(managed_enabled)
+
     available_on_workspace: list[str] = []
-    tools_to_check = selected_tools or list(TOOL_SPECS)
+    if selected_tools is not None:
+        tools_to_check = selected_tools
+    elif auto_managed:
+        tools_to_check = managed_enabled
+    else:
+        tools_to_check = list(TOOL_SPECS)
     for tool_name in tools_to_check:
         with spinner(f"Checking {TOOL_SPECS[tool_name]['display']} availability..."):
-            if check_gateway_endpoint(state, tool_name):
+            if check_gateway_endpoint(state, tool_name, managed=managed):
                 available_on_workspace.append(tool_name)
 
     if not available_on_workspace:
@@ -849,7 +824,19 @@ def configure_workspace_command(
         _print_discovery_diagnostics(state)
         return 1
 
-    if selected_tools is None:
+    if auto_managed:
+        unavailable_enabled = [t for t in managed_enabled if t not in available_on_workspace]
+        if unavailable_enabled:
+            _print_discovery_diagnostics(state)
+            displays = ", ".join(TOOL_SPECS[t]["display"] for t in unavailable_enabled)
+            print_warning(f"Managed config enables agent(s) not available here: {displays}.")
+        picked = available_on_workspace
+        print_note(
+            "Configuring the agents your managed configuration enables: "
+            + ", ".join(TOOL_SPECS[t]["display"] for t in picked)
+            + "."
+        )
+    elif selected_tools is None:
         picked = prompt_for_tools([(t, TOOL_SPECS[t]["display"]) for t in available_on_workspace])
     else:
         unavailable_tools = [
@@ -880,23 +867,47 @@ def configure_workspace_command(
             prompt_optional_updates=prompt_optional_updates,
         )
 
-    # Offer the provider picker for the chosen claude/codex tools only on the
-    # interactive path (no --agents); otherwise stay on the Databricks path.
-    if offer_provider:
+    # Only offer the provider picker on the interactive, non-fully-managed path: a managed model
+    # source would override a picked provider at launch anyway.
+    if offer_provider and not auto_managed:
         for tool_name in picked:
+            if managed is not None and managed_supplies_models(managed, tool_name):
+                continue
             state = _maybe_select_provider_service(tool_name, state)
 
-    if offer_optional_setup:
-        state = configure_selected_tools(state, picked, install_ai_tools=False)
+    # When the managed config already defines MCP servers/skills, ug wires them below and skips the
+    # interactive personal-setup prompt, so install the AI tools now rather than deferring to it.
+    managed_wires_mcp_or_skills = _managed_defines_mcp_or_skills(managed)
+    if offer_optional_setup and not managed_wires_mcp_or_skills:
+        state = configure_selected_tools(state, picked, install_ai_tools=False, managed=managed)
     else:
-        state = configure_selected_tools(state, picked)
+        state = configure_selected_tools(
+            state, picked, install_ai_tools=not is_dry_run(), managed=managed
+        )
+    # `ug configure` is the explicit sync: record the applied managed configuration watermark so
+    # later launches skip re-applying (and re-prompting for the OS write) until the admin next edits,
+    # and wire the config's MCP servers/skills now instead of waiting for the first launch.
+    if managed is not None:
+        state = set_applied_managed_update_time(state, managed_update_time(managed))
+        save_state(state)
+        _apply_managed_mcp_and_skills(managed, picked, state)
 
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
+    if managed is not None:
+        enabled_names = (
+            ", ".join(TOOL_SPECS[t]["display"] for t in managed_enabled_tools(managed)) or "none"
+        )
+        update_time = managed_update_time(managed)
+        stamp = f", updated {update_time}" if update_time else ""
+        summary_lines.append(
+            f"[bold]Managed configuration:[/bold] applied{stamp}; enables {enabled_names}"
+        )
     for tool_name in picked:
         spec = TOOL_SPECS[tool_name]
         summary_lines.append(
             f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
-            f"[dim](Provider: {_provider_summary(tool_name, state)})[/dim]"
+            f"[dim](Provider: {_provider_summary(tool_name, state)})[/dim]\n"
+            f"    [dim]wrote {spec['config_path']}[/dim]"
         )
     console.print(
         Panel(
@@ -907,14 +918,7 @@ def configure_workspace_command(
         )
     )
 
-    if skip_validate:
-        print_note("Skipping agent validation (--skip-validate).")
-    else:
-        # Limit validation to just-configured tools so we don't re-validate
-        # previously-configured tools the user didn't touch this run.
-        validate_state = {**state, "available_tools": picked}
-        validate_all_tools(validate_state)
-    if offer_optional_setup and not is_dry_run():
+    if offer_optional_setup and not managed_wires_mcp_or_skills and not is_dry_run():
         _configure_optional_setup(state, picked)
     return 0
 
@@ -1130,6 +1134,24 @@ def _configure_agents_for_mcp(
             [_prompt_for_configuration(None)], tools=[], force_login=True
         )
     return scope
+
+
+def _managed_defines_mcp_or_skills(managed: dict | None) -> bool:
+    """True when the managed config names MCP servers or skills, so `ug configure` wires them and
+    skips the interactive personal-setup prompt."""
+    if not managed:
+        return False
+    return bool(managed.get("mcp_servers")) or bool((managed.get("skills") or {}).get("names"))
+
+
+def _apply_managed_mcp_and_skills(managed: dict, tools: list[str], state: dict) -> None:
+    """Wire the managed config's MCP servers and skills at configure time, mirroring the launch-path
+    apply, so they are set up without waiting for the first `ug <agent>`."""
+    if is_dry_run():
+        return
+    for tool in tools:
+        _register_managed_mcp_servers(managed, tool, state)
+    _download_managed_skills(managed, state)
 
 
 def _configure_optional_setup(state: dict, tools: list[str]) -> None:
@@ -1838,16 +1860,21 @@ def _reject_disabled_agent(managed: dict | None, tool: str) -> None:
     if enabled and tool not in enabled:
         names = ", ".join(TOOL_SPECS[name]["display"] for name in enabled)
         raise RuntimeError(
-            f"Your workspace's managed config doesn't enable {TOOL_SPECS[tool]['display']}. "
+            f"Your managed configuration doesn't enable {TOOL_SPECS[tool]['display']}. "
             f"Enabled: {names}."
         )
 
 
 def _fetch_managed_config(state: dict) -> ManagedConfigResult:
-    """The workspace's managed config for this launch, plus whether the feature is disabled.
+    """The workspace's managed config for this launch, plus whether the feature is disabled and whether the absence is definitive.
 
-    ``ManagedConfigResult(None, True)`` when the workspace has the feature disabled server-side;
-    ``ManagedConfigResult(None, False)`` when the feature is on but no config is published.
+    Returns a ManagedConfigResult with:
+    - manifest: the config or None if absent/disabled
+    - feature_disabled: True when the workspace has the feature disabled server-side
+    - definitively_absent: True when the absence is definitive (NOT_FOUND or feature disabled) vs transient failure
+
+    Always hits the control plane; the caller decides whether the fetched config is newer than what was
+    last applied.
     """
     with spinner("Loading..."):
         return refresh_managed_config(state)
@@ -1955,7 +1982,7 @@ def _register_managed_mcp_servers(managed: dict, tool: str, state: dict) -> None
 
 
 def _managed_skill_locations(managed: dict) -> list[str]:
-    """The ``<catalog>.<schema>`` skill locations the admin published, or ``[]``."""
+    """The ``<catalog>.<schema>.<skill>`` skill FQNs the admin published, or ``[]``."""
     return [
         loc
         for loc in ((managed.get("skills") or {}).get("names") or [])
@@ -2090,8 +2117,11 @@ def _launch_tool(
         # Bare `ucode` already fetched one to choose the agent; refetching would double the
         # control-plane round trip and any fallback warning it printed.
         coding_agent_config_feature_disabled = False
+        managed_config_definitively_absent = False
         if managed is None:
-            managed, coding_agent_config_feature_disabled = _fetch_managed_config(state)
+            managed, coding_agent_config_feature_disabled, managed_config_definitively_absent = (
+                _fetch_managed_config(state)
+            )
         # Checked before discovery, which can take tens of seconds, so a blocked launch fails fast.
         _reject_disabled_agent(managed, tool)
         # Discovery exists to find models and isn't needed for managed config that already names them.
@@ -2110,24 +2140,44 @@ def _launch_tool(
             skip_preflight=skip_preflight,
             **configure_kwargs,
         )
-        # An admin-published managed config wins over the developer's own settings. Layered on after
-        # `configure_shared_state`, whose returned state it overrides, and before the provider and
-        # model are settled below — the two state files are never merged on disk.
-        # Bare `ucode` already read one to choose the agent; refetching would double the round trip.
+        # Re-apply (and re-write the OS-managed files, the only step that can prompt for a password)
+        # only when the config changed since last applied here, or on `--refresh`. The launched
+        # tool's own write below is suppressed, so this apply-all owns the OS write.
+        applied_ut = get_applied_managed_update_time(existing)
+        if managed is not None and (refresh or managed_config_is_newer(managed, applied_ut)):
+            # Apply to every enabled agent, not just the launched one, so all OS-managed files carry
+            # the policy, including on an auto-configure launch that wrote files before the fetch.
+            if (
+                not refresh
+                and applied_ut is not None
+                and managed_config_is_newer(managed, applied_ut)
+            ):
+                print_note("The managed configuration was updated; re-applying it.")
+            enabled = managed_enabled_tools(managed)
+            if enabled:
+                state = configure_selected_tools(
+                    state, enabled, install_ai_tools=False, managed=managed
+                )
+            state = set_applied_managed_update_time(state, managed_update_time(managed))
+            save_state(state)
+        # Bare `ug` already fetched the recommendation to choose the agent; don't refetch it.
         if recommendation is None:
             recommendation = _fetch_budget_recommendation(state, managed)
         _note_recommended_agent(recommendation, tool)
         if managed is not None:
             state = resolve_state(managed, state, tool)
-            print_success("Applied your workspace's managed coding agent config")
             unservable = managed_unservable_models(managed, tool)
             if unservable:
                 print_warning(
-                    f"Your workspace's managed config lists no {TOOL_SPECS[tool]['display']}-servable "
+                    f"Your managed configuration lists no {TOOL_SPECS[tool]['display']}-servable "
                     f"models ({', '.join(unservable)}); using your discovered models instead."
                 )
-        elif not coding_agent_config_feature_disabled:
-            print_note("No managed coding agent config found; using your own settings")
+        elif applied_ut is not None and managed_config_definitively_absent:
+            # A config we applied here is now gone (deleted, or the feature was turned off). We do
+            # not auto-revert the OS-managed files; point the developer at the canonical revert.
+            _print_managed_config_removed_note()
+        elif applied_ut is None and not coding_agent_config_feature_disabled:
+            print_note("No managed configuration found; using your own settings")
         if managed is not None:
             managed_provider = managed_provider_service(managed, tool)
             if explicit_provider and managed_provider and managed_provider != explicit_provider:
@@ -2141,6 +2191,23 @@ def _launch_tool(
                 )
             if managed_provider:
                 provider = managed_provider
+            elif managed_supplies_models(managed, tool):
+                # The managed config names its own model source, so an explicit --provider conflicts
+                # with it and a persisted provider is cleared to let the managed source drive the
+                # picker/catalog.
+                if explicit_provider:
+                    raise RuntimeError(
+                        f"You cannot launch {TOOL_SPECS[tool]['display']} with provider "
+                        f"{explicit_provider} because your admin's managed config specifies its "
+                        f"own model source."
+                    )
+                provider = None
+                # Clear the provider for this launch so every agent honors the managed source; stash
+                # the developer's own provider in the overlay so save_state restores it afterward.
+                overlay = dict(state.get(MANAGED_OVERLAY_KEY) or {})
+                overlay.setdefault("provider_services", state.get("provider_services"))
+                state = set_provider_service(state, tool, None)
+                state[MANAGED_OVERLAY_KEY] = overlay
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
         # guard too, or routing would be persisted as on while a provider is active.
         if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and provider:
@@ -2233,18 +2300,21 @@ def _launch_tool(
             # Codex keeps an explicit --model in ctx.args and passes it to its CLI verbatim.
             if model and tool != "claude":
                 resolved_model = model
-        state = configure_tool(
-            tool,
-            state,
-            resolved_model,
-            provider=provider,
-            provider_models=provider_models,
-            relayed=relayed,
-            route_root_model=route_root_model,
-            # Claude's explicit model is launch-scoped and is passed through LaunchOptions below.
-            custom_model=None,
-            coding_agent_config_defaults=coding_agent_config_defaults,
-        )
+        # The OS-managed (sudo) write is owned by the version-gated apply-all above and by `ug
+        # configure`; a launch only refreshes the user-level config and computes launch params, so
+        # suppress the OS write here to keep an unchanged launch prompt-free.
+        with suppressed_managed_writes():
+            state = configure_tool(
+                tool,
+                state,
+                resolved_model,
+                provider=provider,
+                provider_models=provider_models,
+                relayed=relayed,
+                route_root_model=route_root_model,
+                custom_model=None,
+                coding_agent_config_defaults=coding_agent_config_defaults,
+            )
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
             tool == "claude"
@@ -2258,7 +2328,7 @@ def _launch_tool(
             forwarded_model = relayed_forward_model
         print_section(_launch_title(tool))
         if managed is not None:
-            print_kv("Config", "workspace-managed")
+            print_kv("Config", "workspace managed")
         if provider:
             print_kv("Provider", provider)
             # The tier the session will start on when it isn't Claude Code's own opus default.
@@ -2315,7 +2385,6 @@ def _launch_tool(
             model=model or (route_root_model if tool == "claude" else None),
             provider=provider,
         )
-        print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
         print_err(str(exc))
@@ -2327,8 +2396,7 @@ def _launch_tool(
 
 # Launch-only escape hatch for managed/headless launchers (e.g. omnigent) that
 # have already run `ug configure`: skip the ~5-10s per-launch auth + AI
-# Gateway re-validation. Distinct from the configure-only `--skip-validate`,
-# which skips the model smoke test.
+# Gateway re-validation.
 SkipPreflightOption = Annotated[
     bool,
     typer.Option(
@@ -2444,19 +2512,24 @@ def _launch_managed_default(
     install_databricks_cli()
     apply_pat_environment(state)
     coding_agent_config_feature_disabled = False
+    managed_config_definitively_absent = False
     if dry_run:
         managed = load_managed_state(current)
     else:
         with spinner("Loading..."):
-            managed, coding_agent_config_feature_disabled = refresh_managed_config(state)
+            managed, coding_agent_config_feature_disabled, managed_config_definitively_absent = (
+                refresh_managed_config(state)
+            )
+    applied_ut = get_applied_managed_update_time(state)
     if coding_agent_config_feature_disabled:
-        print_note(
-            "Run `ug configure` to set up your coding agents, then launch one with "
-            "`ug <agent>` (for example `ug claude`)."
+        _print_no_managed_config_guidance(
+            applied_ut, feature_disabled=True, definitively_absent=True
         )
         return
     if not managed:
-        _print_no_managed_config_guidance()
+        _print_no_managed_config_guidance(
+            applied_ut, definitively_absent=managed_config_definitively_absent
+        )
         return
     # The budget tier can move the org to a cheaper agent, so it outranks the config's
     # default_agent. Fetched here and handed to _launch_tool so it is read once per launch.
@@ -2466,10 +2539,9 @@ def _launch_managed_default(
     )
     if not isinstance(tool, str) or not tool:
         raise RuntimeError(
-            "Your workspace's managed config names no agent to launch. Ask an admin to set a "
+            "Your managed configuration names no agent to launch. Ask an admin to set a "
             "default agent, or run `ug <agent>` directly."
         )
-    _print_managed_summary(managed, state, tool, abridged=True)
     _launch_tool(
         tool,
         ctx,
@@ -2480,11 +2552,33 @@ def _launch_managed_default(
     )
 
 
-def _print_no_managed_config_guidance() -> None:
-    """Point the developer at per-user configure when no managed config is published."""
+def _print_managed_config_removed_note() -> None:
+    """A managed config ug previously applied is gone; guide to the canonical revert."""
     print_note(
-        "No managed coding agent config is published for this workspace. Run `ug configure` to "
-        "set up your coding agents, then launch one with `ug <agent>` (for example `ug claude`)."
+        "This workspace no longer has a managed configuration, but Unity Gateway managed "
+        "configurations are still applied. Run `ug revert` to remove them and use your personal "
+        "configuration."
+    )
+
+
+def _print_no_managed_config_guidance(
+    applied_ut: str | None, *, feature_disabled: bool = False, definitively_absent: bool = False
+) -> None:
+    """Guide a bare `ug` that has no managed config to launch from.
+
+    When ug previously applied one that is now gone (definitively_absent is True), point at the canonical
+    revert; otherwise point at per-user configure. A transient failure with applied_ut set does not
+    trigger the removal note since the config may still exist.
+    """
+    if applied_ut is not None and definitively_absent:
+        _print_managed_config_removed_note()
+        return
+    published = (
+        "" if feature_disabled else "No managed configuration is published for this workspace. "
+    )
+    print_note(
+        f"{published}Run `ug configure` to set up your coding agents, then launch one with "
+        "`ug <agent>` (for example `ug claude`)."
     )
 
 
@@ -2827,15 +2921,6 @@ def configure(
             help="Comma-separated custom OAuth scopes for apiKeyHelper.",
         ),
     ] = None,
-    skip_validate: Annotated[
-        bool,
-        typer.Option(
-            "--skip-validate",
-            help="Skip the post-configure validation step that sends a quick test "
-            "message through each agent. Config files are still written with the "
-            "freshly discovered models.",
-        ),
-    ] = False,
     skip_unavailable: Annotated[
         bool,
         typer.Option(
@@ -2945,8 +3030,6 @@ def configure(
         skip_kwargs: dict = {}
         if use_pat:
             skip_kwargs["use_pat"] = True
-        if skip_validate:
-            skip_kwargs["skip_validate"] = True
         # Only forward the Fable opt-in when the user passed the flag; `None`
         # (neither flag given) lets configure_shared_state inherit the prior
         # workspace setting instead of clobbering it.

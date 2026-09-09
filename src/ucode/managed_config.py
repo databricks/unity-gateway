@@ -85,11 +85,14 @@ class FetchedManagedConfig(NamedTuple):
 
 
 class ManagedConfigResult(NamedTuple):
-    """The launch-path refresh outcome: the ``manifest`` to apply (None when absent or dropped) and
-    ``feature_disabled``, True when the coding-agent-configs feature is off server-side."""
+    """The launch-path refresh outcome: the ``manifest`` to apply (None when absent or dropped),
+    ``feature_disabled`` True when the coding-agent-configs feature is off server-side, and
+    ``definitively_absent`` True when the absence is definitive (NOT_FOUND or feature disabled)
+    rather than due to a transient fetch failure."""
 
     manifest: dict | None
     feature_disabled: bool
+    definitively_absent: bool
 
 
 def _as_dict(value: object) -> dict[str, object]:
@@ -667,27 +670,27 @@ def refresh_managed_config(state: dict) -> ManagedConfigResult:
     """
     workspace = state.get("workspace")
     if not workspace:
-        return ManagedConfigResult(None, False)
+        return ManagedConfigResult(None, False, False)
     try:
         token = get_databricks_token(workspace, state.get("profile"))
     except RuntimeError as exc:
-        return ManagedConfigResult(_persisted_fallback(workspace, str(exc)), False)
+        return ManagedConfigResult(_persisted_fallback(workspace, str(exc)), False, False)
     raw, reason = get_managed_config(workspace, token)
     if reason is not None:
         if _is_feature_disabled(reason):
             save_managed_state(workspace, {})
-            return ManagedConfigResult(None, True)
+            return ManagedConfigResult(None, True, True)
         fallback = _persisted_fallback(workspace, reason, refused=_is_permission_denied(reason))
-        return ManagedConfigResult(fallback, False)
+        return ManagedConfigResult(fallback, False, False)
     if raw is None:
         # Record that this workspace has no config, rather than leaving an earlier one on disk:
         # the file doubles as the fallback above, so a removed policy would otherwise come back
         # into force after the next transient outage.
         save_managed_state(workspace, {})
-        return ManagedConfigResult(None, False)
+        return ManagedConfigResult(None, False, True)
     # Persist the raw config verbatim; hand callers the normalized manifest they expect.
     save_managed_state(workspace, raw)
-    return ManagedConfigResult(normalize_managed_config(raw), False)
+    return ManagedConfigResult(normalize_managed_config(raw), False, False)
 
 
 def _is_feature_disabled(reason: str) -> bool:
