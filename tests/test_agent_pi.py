@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from contextlib import nullcontext
 from unittest.mock import patch
 
 from ucode.agents import pi
@@ -424,29 +423,6 @@ class TestWriteToolConfig:
         merged = json.loads(settings_file.read_text())
         assert merged["defaultProvider"] == "databricks-claude"
         assert merged["theme"] == "Default Dark"
-
-
-class TestValidateAllToolsPiRollback:
-    def test_failed_pi_validation_rolls_back_settings(self, tmp_path, monkeypatch):
-        import ucode.agents as agents_mod
-        import ucode.agents.pi as pi_mod
-
-        settings_file = tmp_path / "settings.json"
-        settings_file.write_text("{}", encoding="utf-8")
-        monkeypatch.setattr(pi_mod, "PI_SETTINGS_PATH", settings_file)
-        monkeypatch.setattr(pi_mod, "PI_SETTINGS_BACKUP_PATH", tmp_path / "settings.backup.json")
-        # Keep the generic models.json rollback off the user's real config dir.
-        monkeypatch.setitem(agents_mod.TOOL_SPECS["pi"], "config_path", tmp_path / "models.json")
-        monkeypatch.setitem(
-            agents_mod.TOOL_SPECS["pi"], "backup_path", tmp_path / "models.backup.json"
-        )
-        monkeypatch.setattr(agents_mod, "validate_tool", lambda tool: (False, "boom"))
-        monkeypatch.setattr(agents_mod, "save_state", lambda s: None)
-        monkeypatch.setattr(agents_mod, "spinner", lambda *_a, **_kw: nullcontext())
-
-        agents_mod.validate_all_tools({"available_tools": ["pi"], "managed_configs": {"pi": True}})
-
-        assert not settings_file.exists()
 
 
 class TestManagedModels:

@@ -2626,20 +2626,20 @@ class TestManagedMcpServerEntry:
             f"{WS}/api/2.0/mcp/external/jira-prod",
         )
 
-    def test_mcp_service_undashes_catalog_and_schema_only(self):
-        # The manifest stores the dash form; only the first two dashes (catalog.schema) become dots,
-        # so a service name keeps its own dashes/underscores. The entry name stays the dash form.
-        assert mcp.managed_mcp_server_entry("system-ai-dbsql", "mcp-service", WS) == (
+    def test_mcp_service_uses_dotted_fqn(self):
+        # The config stores the dotted UC FQN; register under the dot-free slug (dots to dashes) and
+        # point the URL at the dotted name, matching the interactive path.
+        assert mcp.managed_mcp_server_entry("system.ai.dbsql", "mcp-service", WS) == (
             "system-ai-dbsql",
             f"{WS}/ai-gateway/mcp-services/system.ai.dbsql",
         )
-        assert mcp.managed_mcp_server_entry("system-ai-google_calendar", "mcp-service", WS) == (
+        assert mcp.managed_mcp_server_entry("system.ai.google_calendar", "mcp-service", WS) == (
             "system-ai-google_calendar",
             f"{WS}/ai-gateway/mcp-services/system.ai.google_calendar",
         )
 
     def test_mcp_service_needs_three_parts(self):
-        assert mcp.managed_mcp_server_entry("justtwo-parts", "mcp-service", WS) is None
+        assert mcp.managed_mcp_server_entry("justtwo.parts", "mcp-service", WS) is None
 
     def test_genie_space_uses_the_space_id(self):
         assert mcp.managed_mcp_server_entry("01ef9a", "genie-space", WS) == (
@@ -2682,7 +2682,7 @@ class TestApplyManagedMcpServers:
             ),
         )
         managed = self._managed(
-            {"name": "system-ai-dbsql", "type": "mcp-service"},
+            {"name": "system.ai.dbsql", "type": "mcp-service"},
             {"name": "databricks-sql", "type": "sql"},
         )
         registered = mcp.apply_managed_mcp_servers(managed, "claude", WS)
@@ -2715,7 +2715,7 @@ class TestApplyManagedMcpServers:
         monkeypatch.setattr(mcp, "apply_mcp_server_changes", lambda *a, **k: None)
         monkeypatch.setattr(mcp, "print_warning", lambda msg: warned.append(msg))
         managed = self._managed(
-            {"name": "system-ai-dbsql", "type": "mcp-service"},
+            {"name": "system.ai.dbsql", "type": "mcp-service"},
             {"name": "my-app", "type": "app"},
         )
         registered = mcp.apply_managed_mcp_servers(managed, "claude", WS)

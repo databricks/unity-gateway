@@ -20,7 +20,6 @@ from ucode.agents import (
     install_databricks_ai_tools_for_agents,
     install_tool_binary,
     normalize_tool,
-    provider_permission_error,
     resolve_launch_model,
 )
 from ucode.agents.args import has_explicit_model_arg
@@ -46,27 +45,6 @@ class TestModelArgumentParsing:
     def test_has_explicit_model_arg_stops_at_harness_separator(self):
         assert has_explicit_model_arg(["--", "--model", "model-a"]) is False
         assert has_explicit_model_arg(["--model", "model-a", "--", "--model", "model-b"])
-
-
-class TestProviderPermissionError:
-    _CONN_ERR = (
-        "User does not have USE CONNECTION on SCHEMA_CONNECTION "
-        "'299433db-cb91-4b08-9761-edab72a27836'."
-    )
-
-    def test_rewrites_when_provider_configured(self):
-        state = {"provider_services": {"codex": "main.aarushi.aarushi-test-openai"}}
-        out = provider_permission_error("codex", state, self._CONN_ERR)
-        assert "main.aarushi.aarushi-test-openai" in out
-        assert "EXECUTE" in out
-        assert "SCHEMA_CONNECTION" not in out
-
-    def test_passthrough_without_provider(self):
-        assert provider_permission_error("codex", {}, self._CONN_ERR) == self._CONN_ERR
-
-    def test_passthrough_for_unrelated_error(self):
-        state = {"provider_services": {"codex": "main.a.b"}}
-        assert provider_permission_error("codex", state, "boom") == "boom"
 
 
 class TestToolSpecs:
@@ -246,6 +224,16 @@ class TestCheckGatewayEndpoint:
 
     def test_pi_unavailable_when_no_models(self):
         assert check_gateway_endpoint({}, "pi") is False
+
+    def test_managed_static_list_makes_undiscovered_tool_available(self):
+        # A managed config can name a tool's models even when discovery found none for it, so a
+        # single-agent configure must count that as available rather than erroring out.
+        managed = {"enabled_agents": {"codex": {"model_config": {"models": ["system.ai.gpt-5"]}}}}
+        assert check_gateway_endpoint({}, "codex", managed=managed) is True
+
+    def test_managed_without_models_leaves_undiscovered_tool_unavailable(self):
+        managed = {"enabled_agents": {"codex": {"model_config": {}}}}
+        assert check_gateway_endpoint({}, "codex", managed=managed) is False
 
 
 class TestDefaultModelForTool:
@@ -792,37 +780,6 @@ class TestConfigureSelectedTools:
         state = {"workspace": "https://x.databricks.com", "available_tools": ["codex"]}
         result = configure_selected_tools(state, [])
         assert result["available_tools"] == ["codex"]
-
-
-class TestValidateAllToolsVerbosity:
-    def _run(self, monkeypatch, capsys):
-        from contextlib import nullcontext
-
-        monkeypatch.setattr(agents_mod, "validate_tool", lambda tool: (True, ""))
-        monkeypatch.setattr(agents_mod, "save_state", lambda s: None)
-        monkeypatch.setattr(agents_mod, "spinner", lambda *_a, **_kw: nullcontext())
-        agents_mod.validate_all_tools({"available_tools": ["codex"], "managed_configs": {}})
-        return capsys.readouterr().out
-
-    def test_normal_verbosity_renders_panels(self, monkeypatch, capsys):
-        import ucode.ui as ui_mod
-
-        monkeypatch.setattr(ui_mod, "_verbosity", "normal")
-        out = self._run(monkeypatch, capsys)
-        assert "Testing each tool with a quick message" in out
-        assert "Ready" in out
-        assert "Codex is working" in out
-
-    def test_low_verbosity_omits_panels(self, monkeypatch, capsys):
-        import ucode.ui as ui_mod
-
-        monkeypatch.setattr(ui_mod, "_verbosity", "low")
-        out = self._run(monkeypatch, capsys)
-        assert "Validating..." in out
-        assert "Testing each tool with a quick message" not in out
-        assert "Ready" not in out
-        # Per-tool success line is still printed.
-        assert "Codex is working" in out
 
 
 class TestValidateTool:

@@ -1093,13 +1093,12 @@ def managed_mcp_server_entry(name: str, mcp_type: str, workspace: str) -> tuple[
     if mcp_type == "external":
         return name, f"{workspace}/api/2.0/mcp/external/{name}"
     if mcp_type == "mcp-service":
-        # Stored in dash form (`system-ai-dbsql`), which is already the registered name; the URL wants
-        # the UC dotted form. Only the catalog and schema separators (first two dashes) become dots —
-        # the service name keeps its own dashes/underscores.
-        parts = name.split("-", 2)
-        if len(parts) != 3:
+        # `name` is a dotted UC FQN (`<catalog>.<schema>.<service>`), as the mcp-services API and the
+        # managed config store it. Register under the dot-free slug the interactive path uses (see
+        # _resolve_mcp_selection) and point the URL at the dotted name.
+        if name.count(".") < 2:
             return None
-        return name, build_mcp_service_url(workspace, ".".join(parts))
+        return name.replace(".", "-"), build_mcp_service_url(workspace, name)
     if mcp_type == "genie-space":
         # `name` is the Genie space id (per the proto); register under the id-based name the
         # interactive path falls back to, and point the URL at the space.
