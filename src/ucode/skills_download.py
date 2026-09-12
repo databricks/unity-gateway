@@ -574,17 +574,6 @@ def list_all_skills(
     return sorted(by_fqn.values(), key=lambda ref: ref.fqn), None
 
 
-def discover_all_skills(
-    workspace: str,
-    profile: str | None = None,
-    on_services: Callable[[list[SkillRef]], None] | None = None,
-) -> list[SkillRef]:
-    """Token + ``list_all_skills`` across the whole workspace, streaming via ``on_services``."""
-    token = get_databricks_token(workspace, profile)
-    refs, _reason = list_all_skills(workspace, token, on_services=on_services)
-    return refs
-
-
 def _skill_download_choice(ref: SkillRef, roots: list[Path]) -> questionary.Choice:
     """Picker row for one skill: value is its FQN, title flags an on-disk bundle.
 
@@ -596,15 +585,15 @@ def _skill_download_choice(ref: SkillRef, roots: list[Path]) -> questionary.Choi
 
 
 def _skills_download_background_loader(
-    workspace: str, profile: str | None, roots: list[Path]
+    workspace: str, token: str, roots: list[Path]
 ) -> Callable[[Callable[[list[questionary.Choice]], None]], None]:
-    """A picker ``background_loader`` that streams discovered skills in as choices."""
+    """A picker ``background_loader`` that streams the workspace-wide skill walk in as choices."""
 
     def loader(append: Callable[[list[questionary.Choice]], None]) -> None:
         def on_services(refs: list[SkillRef]) -> None:
             append([_skill_download_choice(ref, roots) for ref in refs])
 
-        discover_all_skills(workspace, profile, on_services=on_services)
+        list_all_skills(workspace, token, on_services=on_services)
 
     return loader
 
@@ -638,7 +627,7 @@ def configure_skills_download_picker_command(path: str | None = None) -> int:
     token = get_databricks_token(workspace, profile)
     roots = skill_dir_roots(path)
 
-    loader = _skills_download_background_loader(workspace, profile, roots)
+    loader = _skills_download_background_loader(workspace, token, roots)
     fqns = prompt_for_skill_download_choices(roots, loader)
     if fqns is None:
         return 0
