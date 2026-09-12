@@ -320,7 +320,7 @@ class TestConfigureSubset:
         # Skip binary install + post-config validation; we're testing the
         # selection plumbing, not the agent binaries themselves.
         monkeypatch.setattr(cli_mod, "install_tool_binary", lambda tool, **kwargs: True)
-        monkeypatch.setattr(cli_mod, "validate_all_tools", lambda state: None)
+        monkeypatch.setattr(cli_mod, "validate_all_tools", lambda state, *a, **k: None)
         # Answer the provider picker; "databricks" keeps the Databricks path.
         monkeypatch.setattr(cli_mod, "prompt_for_selection", lambda prompt, options: "databricks")
 
@@ -353,7 +353,7 @@ class TestConfigureSubset:
             cli_mod, "_prompt_for_configuration", lambda tool=None: (e2e_workspace, None)
         )
         monkeypatch.setattr(cli_mod, "install_tool_binary", lambda tool, **kwargs: True)
-        monkeypatch.setattr(cli_mod, "validate_all_tools", lambda state: None)
+        monkeypatch.setattr(cli_mod, "validate_all_tools", lambda state, *a, **k: None)
         # Answer the provider picker; "databricks" keeps the Databricks path.
         monkeypatch.setattr(cli_mod, "prompt_for_selection", lambda prompt, options: "databricks")
 
@@ -394,7 +394,7 @@ class TestConfigureSubset:
             "install_tool_binary",
             lambda tool, **kwargs: install_calls.append(tool) or True,
         )
-        monkeypatch.setattr(cli_mod, "validate_all_tools", lambda state: None)
+        monkeypatch.setattr(cli_mod, "validate_all_tools", lambda state, *a, **k: None)
 
         rc = cli_mod.configure_workspace_command()
         assert rc == 0

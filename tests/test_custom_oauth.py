@@ -249,6 +249,7 @@ class TestConfigureCustomOAuth:
         state = {"workspace": WS, "available_tools": ["claude"]}
         with (
             patch("ucode.cli._configure_shared_workspace_states", return_value=[state]) as shared,
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
             patch("ucode.cli.configure_single_tool", return_value=state),
             patch("ucode.cli.install_databricks_ai_tools_for_agents"),
         ):
