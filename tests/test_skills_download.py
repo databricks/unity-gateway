@@ -982,7 +982,7 @@ class TestListAllSkills:
         refs, reason = sd.list_all_skills(
             WS,
             "token",
-            on_services=streamed.append,
+            on_skills=streamed.append,
             on_progress=lambda done, total, found: progress.append((done, total, found)),
         )
 
@@ -1005,7 +1005,7 @@ class TestListAllSkills:
         monkeypatch.setattr(sd, "list_schema_skills", lambda ws, tok, c, s: ([ref("triage")], None))
         streamed = []
 
-        refs, reason = sd.list_all_skills(WS, "token", on_services=streamed.append)
+        refs, reason = sd.list_all_skills(WS, "token", on_skills=streamed.append)
 
         assert [r.fqn for r in refs] == ["main.default.triage"]
         assert streamed == [[ref("triage")]]
@@ -1041,9 +1041,9 @@ class TestSkillDownloadPicker:
         roots = skill_dir_roots(str(tmp_path))
         captured = {}
 
-        def fake_list_all(ws, tok, *, on_services=None, **kwargs):
+        def fake_list_all(ws, tok, *, on_skills=None, **kwargs):
             captured["token"] = tok
-            on_services([ref("triage"), ref("scoring", catalog="ml", schema="prod")])
+            on_skills([ref("triage"), ref("scoring", catalog="ml", schema="prod")])
             return [], None
 
         monkeypatch.setattr(sd, "list_all_skills", fake_list_all)
