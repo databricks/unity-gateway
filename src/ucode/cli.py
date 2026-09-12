@@ -108,6 +108,7 @@ from ucode.mcp import (
 )
 from ucode.skills_download import (
     configure_skills_download_command,
+    configure_skills_download_picker_command,
     download_managed_skills_on_launch,
 )
 from ucode.smart_routing import v2 as smart_routing_v2
@@ -1209,6 +1210,12 @@ def mcp_web_search_cmd() -> None:
     serve()
 
 
+def _stdin_is_interactive() -> bool:
+    import sys
+
+    return sys.stdin.isatty()
+
+
 @skill_app.command("add")
 def skills_add(
     location: Annotated[
@@ -1259,7 +1266,8 @@ def skills_add(
     ``--path``, or to user-level skill directories when omitted, keeping
     already-downloaded skills. ``--skills`` narrows a download to a subset of one
     schema's skills, by bare name (with ``--location``) or fully-qualified
-    ``<catalog>.<schema>.<name>``.
+    ``<catalog>.<schema>.<name>``. With none of ``--mcp``/``--location``/``--skills``
+    on an interactive terminal, opens a picker of the workspace's skills to download.
     """
     try:
         locations = _parse_skill_locations(location)
@@ -1309,6 +1317,9 @@ def skills_add(
                 )
             locations = list(schemas)
         if not locations:
+            if not mcp and requested_skills is None and _stdin_is_interactive():
+                configure_skills_download_picker_command(path=path)
+                return
             raise RuntimeError("--location is required for `ucode skill add`.")
         if requested_skills is not None and len(locations) != 1:
             raise RuntimeError(
