@@ -1402,7 +1402,7 @@ class TestConfigureSkillsCommand:
         mock_mcp.assert_called_once_with(["a.b", "c.d"])
 
     def test_default_mode_dispatches_download_with_path(self):
-        with patch("ucode.cli.configure_skills_download_command") as mock_download:
+        with patch("ucode.cli.configure_location_skills_download_command") as mock_download:
             result = runner.invoke(
                 app, ["configure", "skills", "--location", "a.b", "--path", "/tmp/skills"]
             )
@@ -1410,7 +1410,7 @@ class TestConfigureSkillsCommand:
         mock_download.assert_called_once_with(["a.b"], path="/tmp/skills")
 
     def test_default_mode_without_path_dispatches_download(self):
-        with patch("ucode.cli.configure_skills_download_command") as mock_download:
+        with patch("ucode.cli.configure_location_skills_download_command") as mock_download:
             result = runner.invoke(app, ["configure", "skills", "--location", "a.b"])
         assert result.exit_code == 0, result.output
         mock_download.assert_called_once_with(["a.b"], path=None)
@@ -1459,7 +1459,7 @@ class TestConfigureSkillsCommand:
     def test_path_with_mcp_exit_1(self):
         with (
             patch("ucode.cli.configure_skills_mcp_command") as mock_mcp,
-            patch("ucode.cli.configure_skills_download_command") as mock_download,
+            patch("ucode.cli.configure_location_skills_download_command") as mock_download,
         ):
             result = runner.invoke(
                 app, ["configure", "skills", "--location", "a.b", "--mcp", "--path", "/tmp/skills"]
@@ -1497,7 +1497,7 @@ class TestConfigureSkillsCommand:
     def test_path_without_location_exit_1(self):
         with (
             patch("ucode.cli.configure_skills_mcp_command") as mock_mcp,
-            patch("ucode.cli.configure_skills_download_command") as mock_download,
+            patch("ucode.cli.configure_location_skills_download_command") as mock_download,
         ):
             result = runner.invoke(app, ["configure", "skills", "--path", "/tmp/skills"])
         assert result.exit_code == 1
@@ -1523,7 +1523,7 @@ class TestSkillsAddCommand:
         mock_add.assert_called_once_with(["a.b", "c.d"], agents=None)
 
     def test_default_mode_dispatches_download(self):
-        with patch("ucode.cli.configure_skills_download_command") as mock_download:
+        with patch("ucode.cli.configure_location_skills_download_command") as mock_download:
             result = runner.invoke(app, ["skill", "add", "--location", "a.b", "--path", "/tmp/s"])
         assert result.exit_code == 0, result.output
         mock_download.assert_called_once_with(["a.b"], path="/tmp/s")
@@ -1559,7 +1559,7 @@ class TestSkillsAddCommand:
         with (
             patch("ucode.cli._stdin_is_interactive", return_value=False),
             patch("ucode.cli.add_skills_command") as mock_add,
-            patch("ucode.cli.configure_skills_download_command") as mock_download,
+            patch("ucode.cli.configure_location_skills_download_command") as mock_download,
             patch("ucode.cli.configure_skills_download_picker_command") as mock_picker,
         ):
             result = runner.invoke(app, ["skill", "add"])
@@ -1656,7 +1656,7 @@ class TestSkillsAddCommand:
         mock_add.assert_called_once_with(["a.b"], agents=None)
 
     def test_agents_is_rejected_for_download_mode(self):
-        with patch("ucode.cli.configure_skills_download_command") as mock_download:
+        with patch("ucode.cli.configure_location_skills_download_command") as mock_download:
             result = runner.invoke(app, ["skill", "add", "--location", "a.b", "--agents", "claude"])
 
         assert result.exit_code == 1
