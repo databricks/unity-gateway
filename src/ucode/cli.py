@@ -1955,7 +1955,7 @@ def _register_managed_mcp_servers(managed: dict, tool: str, state: dict) -> None
 
 
 def _managed_skill_locations(managed: dict) -> list[str]:
-    """The ``<catalog>.<schema>`` skill locations the admin published, or ``[]``."""
+    """The ``<catalog>.<schema>.<skill>`` skill FQNs the admin published, or ``[]``."""
     return [
         loc
         for loc in ((managed.get("skills") or {}).get("names") or [])

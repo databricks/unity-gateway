@@ -397,26 +397,36 @@ def download_skills(
 
 
 def download_managed_skills_on_launch(
-    workspace: str, token: str, locations: list[str], path: str | None = None
+    workspace: str, token: str, names: list[str], path: str | None = None
 ) -> list[str]:
     """Download admin-published skills to disk so the agent's ``/skills`` lists them.
 
-    Runs on the managed launch path: the config only registers the skills MCP
-    connection, so nothing else writes the bundles that ``/skills`` reads. Writes
-    only skills not already on disk -- no overwrite prompt, so the launch never
-    blocks on input and a developer's own same-named skill is never clobbered.
-    Best-effort and never raises, so it can't block the launch. Returns the bundle
-    names newly written.
+    ``names`` are 3-part skill FQNs (``<catalog>.<schema>.<skill>``), matching the config's
+    ``skills.names`` and the API's validation, so each entry downloads one named skill. Runs on the
+    managed launch path: the config only registers the skills MCP connection, so nothing else writes
+    the bundles that ``/skills`` reads. Writes only skills not already on disk -- no overwrite prompt,
+    so the launch never blocks on input and a developer's own same-named skill is never clobbered.
+    Best-effort and never raises, so it can't block the launch. Returns the bundle names newly
+    written.
     """
     roots = skill_dir_roots(path)
     written: list[str] = []
-    for location in locations:
-        if location.count(".") != 1:
+    for name in names:
+        parts = name.split(".")
+        if len(parts) != 3:
+            print_warning(
+                f"Skipping managed skill `{name}`: expected a <catalog>.<schema>.<skill> name."
+            )
             continue
-        catalog, schema = location.split(".")
+        catalog, schema, leaf = parts
+        location = f"{catalog}.{schema}"
         refs, reason = list_schema_skills(workspace, token, catalog, schema)
         if reason:
             print_warning(f"Could not list workspace skills in `{location}`: {reason}.")
+            continue
+        refs = [ref for ref in refs if ref.securable_name == leaf]
+        if not refs:
+            print_warning(f"Managed skill `{name}` was not found in `{location}`.")
             continue
         refs = _reject_bundle_name_collisions(refs, location=location)
         missing = [ref for ref in refs if not existing_skill_on_disk(roots, ref.bundle_name)]
