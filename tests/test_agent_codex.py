@@ -131,7 +131,7 @@ class TestRenderOverlay:
     def test_provider_adds_routing_header(self):
         overlay = codex.render_overlay(WS, provider="main.aarushi.aarushi-openai")
         headers = overlay["model_providers"]["ucode-databricks"]["http_headers"]
-        assert headers["databricks-model-provider-service"] == "main.aarushi.aarushi-openai"
+        assert headers["Databricks-Model-Provider-Service"] == "main.aarushi.aarushi-openai"
 
     def test_provider_omits_model(self):
         overlay = codex.render_overlay(WS, model=None, provider="main.aarushi.aarushi-openai")
@@ -140,19 +140,12 @@ class TestRenderOverlay:
     def test_no_provider_header_without_flag(self):
         overlay = codex.render_overlay(WS)
         headers = overlay["model_providers"]["ucode-databricks"]["http_headers"]
-        assert "databricks-model-provider-service" not in headers
+        assert "Databricks-Model-Provider-Service" not in headers
 
     def test_parent_adds_discovery_header(self):
         overlay = codex.render_overlay(WS, parent_schema="main.default")
         headers = overlay["model_providers"]["ucode-databricks"]["http_headers"]
-        assert headers["databricks-model-service-parent-schema"] == "main.default"
-
-    def test_provider_suppresses_discovery_header(self):
-        overlay = codex.render_overlay(
-            WS, provider="main.default.openai", parent_schema="main.default"
-        )
-        headers = overlay["model_providers"]["ucode-databricks"]["http_headers"]
-        assert "databricks-model-service-parent-schema" not in headers
+        assert headers["Databricks-Model-Service-Parent-Schema"] == "main.default"
 
 
 class TestRenderOverlayUserAgent:
@@ -236,7 +229,7 @@ class TestCodexWriteConfig:
         doc = read_toml_safe(config_path)
         assert "model" not in doc
         headers = doc["model_providers"]["ucode-databricks"]["http_headers"]
-        assert headers["databricks-model-provider-service"] == "main.aarushi.aarushi-openai"
+        assert headers["Databricks-Model-Provider-Service"] == "main.aarushi.aarushi-openai"
 
     def test_replaces_stale_routing_headers(self, tmp_path, monkeypatch):
         config_path = tmp_path / ".codex" / "ucode.config.toml"
@@ -250,14 +243,14 @@ class TestCodexWriteConfig:
         codex.write_tool_config(state, parent_schema="main.default")
 
         headers = read_toml_safe(config_path)["model_providers"]["ucode-databricks"]["http_headers"]
-        assert headers["databricks-model-service-parent-schema"] == "main.default"
-        assert "databricks-model-provider-service" not in headers
+        assert headers["Databricks-Model-Service-Parent-Schema"] == "main.default"
+        assert "Databricks-Model-Provider-Service" not in headers
 
         codex.write_tool_config(state)
 
         headers = read_toml_safe(config_path)["model_providers"]["ucode-databricks"]["http_headers"]
-        assert "databricks-model-service-parent-schema" not in headers
-        assert "databricks-model-provider-service" not in headers
+        assert "Databricks-Model-Service-Parent-Schema" not in headers
+        assert "Databricks-Model-Provider-Service" not in headers
 
     def test_legacy_replaces_stale_routing_headers(self, tmp_path, monkeypatch):
         config_dir = tmp_path / ".codex"
@@ -274,13 +267,13 @@ class TestCodexWriteConfig:
         codex.write_tool_config(state, parent_schema="main.default")
 
         headers = read_toml_safe(legacy_path)["model_providers"]["ucode-databricks"]["http_headers"]
-        assert headers["databricks-model-service-parent-schema"] == "main.default"
-        assert "databricks-model-provider-service" not in headers
+        assert headers["Databricks-Model-Service-Parent-Schema"] == "main.default"
+        assert "Databricks-Model-Provider-Service" not in headers
 
         codex.write_tool_config(state)
         headers = read_toml_safe(legacy_path)["model_providers"]["ucode-databricks"]["http_headers"]
-        assert "databricks-model-service-parent-schema" not in headers
-        assert "databricks-model-provider-service" not in headers
+        assert "Databricks-Model-Service-Parent-Schema" not in headers
+        assert "Databricks-Model-Provider-Service" not in headers
 
     def test_clears_profile_model_preferences_before_launch(self, tmp_path, monkeypatch):
         config_path = tmp_path / ".codex" / "ucode.config.toml"

@@ -44,7 +44,6 @@ from ucode.managed_files import (
     reconcile_managed_file,
     revert_managed_file,
 )
-from ucode.model_service_headers import model_service_routing_headers
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.codex_hooks import (
     remove_smart_routing_hooks,
@@ -173,7 +172,10 @@ def _provider_block(
     http_headers = {
         "User-Agent": f"ucode/{ucode_version()} codex/{agent_version('codex')}",
     }
-    http_headers.update(model_service_routing_headers(provider, parent_schema))
+    if provider:
+        http_headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
+    elif parent_schema:
+        http_headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
     return {
         "name": "Databricks AI Gateway",
         "base_url": base_url,

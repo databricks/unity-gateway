@@ -598,6 +598,15 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.kwargs["parent_schema"] == "main.default"
 
+    def test_codex_provider_and_parent_are_mutually_exclusive(self):
+        result = runner.invoke(
+            app,
+            ["codex", "--provider", "main.default.provider", "--parent", "main.default"],
+        )
+
+        assert result.exit_code == 1
+        assert "--provider and --parent cannot be used together" in result.output
+
     def test_claude_provider_and_parent_are_mutually_exclusive(self):
         result = runner.invoke(
             app,

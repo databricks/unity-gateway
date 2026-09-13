@@ -2433,7 +2433,7 @@ def codex_cmd(
         str | None,
         typer.Option(
             "--parent",
-            help="Discover model services in `<catalog>.<schema>`.",
+            help="Discover model services in `<catalog>.<schema>`. Example: main.default",
         ),
     ] = None,
     refresh: Annotated[
