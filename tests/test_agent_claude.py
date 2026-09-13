@@ -288,7 +288,7 @@ class TestRenderOverlay:
             relayed_base_url="http://127.0.0.1:9",
         )
         headers = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
-        assert "databricks-model-provider-service: c.s.mps" in headers
+        assert "Databricks-Model-Provider-Service: c.s.mps" in headers
         assert "X-Databricks-AI-Gateway-Token" not in headers
 
     def test_model_overrides_when_all_provided(self):
@@ -349,7 +349,7 @@ class TestRenderOverlay:
     def test_provider_adds_routing_header(self):
         overlay, _ = claude.render_overlay(WS, "s4", provider="main.aarushi.aarushi-claude")
         assert (
-            "databricks-model-provider-service: main.aarushi.aarushi-claude"
+            "Databricks-Model-Provider-Service: main.aarushi.aarushi-claude"
             in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
         )
 
@@ -369,25 +369,13 @@ class TestRenderOverlay:
 
     def test_no_provider_header_without_flag(self):
         overlay, _ = claude.render_overlay(WS, "s4")
-        assert "databricks-model-provider-service" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert "Databricks-Model-Provider-Service" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
     def test_parent_adds_discovery_header(self):
         overlay, _ = claude.render_overlay(WS, "s4", parent_schema="main.default")
         assert (
-            "databricks-model-service-parent-schema: main.default"
+            "Databricks-Model-Service-Parent-Schema: main.default"
             in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
-        )
-
-    def test_provider_suppresses_discovery_header(self):
-        overlay, _ = claude.render_overlay(
-            WS,
-            "s4",
-            provider="main.default.anthropic",
-            parent_schema="main.default",
-        )
-        assert (
-            "databricks-model-service-parent-schema"
-            not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
         )
 
     def test_bedrock_provider_pins_model_ids(self):
@@ -409,7 +397,7 @@ class TestRenderOverlay:
         # Bedrock ids are pinned verbatim — no `[1m]` suffix mangling.
         assert "[1m]" not in env["ANTHROPIC_DEFAULT_OPUS_MODEL"]
         assert (
-            "databricks-model-provider-service: main.bob.bedrock-svc"
+            "Databricks-Model-Provider-Service: main.bob.bedrock-svc"
             in env["ANTHROPIC_CUSTOM_HEADERS"]
         )
 
@@ -426,7 +414,7 @@ class TestRenderOverlay:
         env = overlay["env"]
         assert env["ANTHROPIC_MODEL"] == "claude-haiku-4-5"
         assert (
-            "databricks-model-provider-service: main.mcao.anthropic-mps"
+            "Databricks-Model-Provider-Service: main.mcao.anthropic-mps"
             in (env["ANTHROPIC_CUSTOM_HEADERS"])
         )
         assert "apiKeyHelper" in overlay

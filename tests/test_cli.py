@@ -591,6 +591,15 @@ class TestSubcommandRouting:
         assert mock_launch.call_args.kwargs["parent_schema"] == "main.default"
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
+    def test_claude_provider_and_parent_are_mutually_exclusive(self):
+        result = runner.invoke(
+            app,
+            ["claude", "--provider", "main.default.provider", "--parent", "main.default"],
+        )
+
+        assert result.exit_code == 1
+        assert "--provider and --parent cannot be used together" in result.output
+
     def test_claude_enable_model_discovery_is_hidden_from_help(self):
         result = runner.invoke(app, ["claude", "--help"])
 
