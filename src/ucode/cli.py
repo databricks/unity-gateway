@@ -1971,6 +1971,8 @@ def _launch_tool(
 ) -> None:
     try:
         tool = normalize_tool(tool_name)
+        if provider is not None and parent_schema is not None:
+            raise RuntimeError("--provider and --parent cannot be used together.")
         if parent_schema is not None and not is_valid_catalog_schema(parent_schema):
             raise RuntimeError("--parent must be `<catalog>.<schema>`.")
         explicit_prompt = _has_explicit_prompt(ctx)
@@ -2067,7 +2069,8 @@ def _launch_tool(
                 )
             if managed_provider:
                 provider = managed_provider
-        effective_parent_schema = None if provider else parent_schema
+        if provider and parent_schema is not None:
+            raise RuntimeError("--provider and --parent cannot be used together.")
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
         # guard too, or routing would be persisted as on while a provider is active.
         if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and provider:
@@ -2162,7 +2165,7 @@ def _launch_tool(
             # Claude's explicit model is launch-scoped and is passed through LaunchOptions below.
             custom_model=None,
             coding_agent_config_defaults=coding_agent_config_defaults,
-            parent_schema=effective_parent_schema,
+            parent_schema=parent_schema,
         )
         # Relayed = a Claude subscription: forward --model to Claude Code's own flag, like `-- --model X`.
         if tool == "claude" and provider and relayed and model and not forwarded_model:
@@ -2518,7 +2521,7 @@ def claude_cmd(
         str | None,
         typer.Option(
             "--parent",
-            help="Discover model services in `<catalog>.<schema>`.",
+            help="Discover model services in `<catalog>.<schema>`. Example: main.default",
         ),
     ] = None,
     model: Annotated[
