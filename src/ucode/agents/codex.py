@@ -17,13 +17,16 @@ from ucode.config_io import (
     ToolSpec,
     backup_existing_file,
     deep_merge_dict,
+    is_dry_run,
     read_toml_safe,
+    write_json_file,
     write_toml_file,
 )
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_token_argv
 from ucode.databricks import (
     build_auth_token_argv,
     build_tool_base_url,
+    extra_custom_headers,
     get_databricks_token,
 )
 from ucode.launcher import exec_or_spawn
@@ -57,6 +60,7 @@ CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"
 CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / f"{CODEX_PROFILE_NAME}.config.toml"
 CODEX_BACKUP_PATH = APP_DIR / "codex-ucode-config.backup.toml"
+CODEX_CATALOG_PATH = CODEX_CONFIG_DIR / "ucode-models.json"
 LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
 CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
@@ -79,9 +83,80 @@ SPEC: ToolSpec = {
 MANAGED_KEYS: list[list[str]] = [
     ["model_provider"],
     ["model"],
+    ["model_catalog_json"],
     ["model_providers", CODEX_MODEL_PROVIDER_NAME],
     ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers"],
 ]
+
+
+def _strip_provider_header(config: dict) -> None:
+    """Remove the stale Databricks-Model-Provider-Service header when moving off a provider."""
+    providers = config.get("model_providers")
+    if isinstance(providers, dict):
+        provider_block = providers.get(CODEX_MODEL_PROVIDER_NAME)
+        if isinstance(provider_block, dict):
+            headers = provider_block.get("http_headers")
+            if isinstance(headers, dict):
+                headers.pop("Databricks-Model-Provider-Service", None)
+
+
+def _fetch_gateway_codex_models(workspace: str, token: str) -> dict | None:
+    """Fetch the real Codex model catalog from the AI Gateway.
+
+    Returns the response payload `{"models": [<ModelPreset>, ...]}` on success, or None
+    if the fetch fails. This is the same shape that Codex's own remote discovery uses.
+    """
+    from ucode.databricks import _http_get_json, build_tool_base_url
+
+    base_url = build_tool_base_url("codex", workspace)
+    url = f"{base_url}/models"
+    payload, reason = _http_get_json(url, token)
+    if payload is None:
+        print_warning_err(f"Failed to fetch Codex model catalog from {url}: {reason}")
+        return None
+    if not isinstance(payload, dict) or "models" not in payload:
+        print_warning_err(
+            f"Codex model catalog from {url} has unexpected shape; expected {{'models': [...]}}"
+        )
+        return None
+    return payload
+
+
+def build_codex_catalog(workspace: str, token: str, allow_list: list[str]) -> dict | None:
+    """Build the ``model_catalog_json`` payload by fetching and filtering the real gateway catalog.
+
+    Setting ``model_catalog_json`` makes Codex's StaticModelsManager the model source in place of
+    remote discovery, so ``/model`` lists exactly these entries. Each is a full ModelPreset from
+    the gateway, preserving the real `base_instructions`, `priority`, and all other fields verbatim.
+    The gateway's ordering is preserved for the filtered entries.
+
+    Returns the catalog payload on success, an empty dict on success-but-no-matches (fall back to
+    discovery), or None on fetch failure (preserve existing catalog).
+    """
+    gateway_catalog = _fetch_gateway_codex_models(workspace, token)
+    if gateway_catalog is None:
+        # Fetch failed; preserve existing catalog to survive transient network blips.
+        return None
+
+    models = gateway_catalog.get("models")
+    if not isinstance(models, list) or not models:
+        print_warning_err("Codex model catalog is empty; falling back to discovery")
+        # Fetch succeeded but is empty; fall back to discovery and remove static catalog.
+        return {}
+
+    allow_set = set(allow_list)
+    filtered = [m for m in models if isinstance(m, dict) and m.get("slug") in allow_set]
+
+    if not filtered:
+        print_warning_err(
+            f"No allow-listed models found in gateway catalog; falling back to discovery. "
+            f"Allow-list: {allow_list}, gateway models: {[m.get('slug') for m in models if isinstance(m, dict)]}"
+        )
+        # Fetch succeeded but no allow-listed models match; fall back to discovery.
+        return {}
+
+    return {"models": filtered}
+
 
 LEGACY_MANAGED_KEYS: list[list[str]] = [
     ["profile"],
@@ -149,6 +224,7 @@ def _provider_block(
     use_pat: bool = False,
     provider: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    custom_headers: dict[str, str] | None = None,
 ) -> dict:
     if custom_oauth:
         auth_argv = build_custom_auth_token_argv(workspace, custom_oauth)
@@ -162,6 +238,11 @@ def _provider_block(
     # provider from this header on every request.
     if provider:
         http_headers["Databricks-Model-Provider-Service"] = provider
+    # Append managed headers, but don't override ucode's fixed headers.
+    for name, value in extra_custom_headers(
+        custom_headers, ("user-agent", "databricks-model-provider-service")
+    ):
+        http_headers[name] = value
     return {
         "name": "Databricks AI Gateway",
         "base_url": base_url,
@@ -185,13 +266,17 @@ def render_overlay(
     use_pat: bool = False,
     provider: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    catalog_path: str | None = None,
+    custom_headers: dict[str, str] | None = None,
 ) -> dict:
     overlay: dict = {"model_provider": CODEX_MODEL_PROVIDER_NAME}
     if model:
         overlay["model"] = model
+    if catalog_path:
+        overlay["model_catalog_json"] = catalog_path
     overlay["model_providers"] = {
         CODEX_MODEL_PROVIDER_NAME: _provider_block(
-            workspace, databricks_profile, use_pat, provider, custom_oauth
+            workspace, databricks_profile, use_pat, provider, custom_oauth, custom_headers
         ),
     }
     return overlay
@@ -204,6 +289,7 @@ def render_legacy_overlay(
     use_pat: bool = False,
     provider: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    custom_headers: dict[str, str] | None = None,
 ) -> dict:
     """Overlay for Codex CLI < 0.134.0, which only reads `~/.codex/config.toml`.
 
@@ -218,7 +304,7 @@ def render_legacy_overlay(
         "profiles": {CODEX_PROFILE_NAME: profile_block},
         "model_providers": {
             CODEX_MODEL_PROVIDER_NAME: _provider_block(
-                workspace, databricks_profile, use_pat, provider, custom_oauth
+                workspace, databricks_profile, use_pat, provider, custom_oauth, custom_headers
             ),
         },
     }
@@ -334,6 +420,7 @@ def write_tool_config(state: dict, model: str | None = None, provider: str | Non
             use_pat=bool(state.get("use_pat")),
             provider=provider,
             custom_oauth=state.get("custom_oauth"),
+            custom_headers=state.get("codex_custom_headers"),
         )
         doc = read_toml_safe(LEGACY_CODEX_CONFIG_PATH)
         deep_merge_dict(doc, overlay)
@@ -346,10 +433,17 @@ def write_tool_config(state: dict, model: str | None = None, provider: str | Non
         ):
             for key in ("model", "model_reasoning_effort"):
                 profiles[CODEX_PROFILE_NAME].pop(key, None)
+        # Drop a stale Databricks-Model-Provider-Service header when moving off a provider.
+        if not provider:
+            _strip_provider_header(doc)
         write_toml_file(LEGACY_CODEX_CONFIG_PATH, doc)
         state = mark_tool_managed(state, "codex", LEGACY_MANAGED_KEYS)
         save_state(state)
         return state
+
+    static_models = state.get("codex_static_models")
+    static_models = static_models if isinstance(static_models, list) and static_models else None
+    catalog_path = str(CODEX_CATALOG_PATH) if static_models and not provider else None
 
     _remove_legacy_ucode_profile()
     backup_existing_file(CODEX_CONFIG_PATH, CODEX_BACKUP_PATH)
@@ -360,6 +454,8 @@ def write_tool_config(state: dict, model: str | None = None, provider: str | Non
         use_pat=bool(state.get("use_pat")),
         provider=provider,
         custom_oauth=state.get("custom_oauth"),
+        catalog_path=catalog_path,
+        custom_headers=state.get("codex_custom_headers"),
     )
 
     def compose(base: dict) -> dict:
@@ -368,7 +464,32 @@ def write_tool_config(state: dict, model: str | None = None, provider: str | Non
         if chosen_model is None and not smart_routing_v2.enabled():
             for key in ("model", "model_reasoning_effort"):
                 base.pop(key, None)
+        if not catalog_path:
+            base.pop("model_catalog_json", None)
+        # Drop a stale Databricks-Model-Provider-Service header when moving off a provider.
+        if not provider:
+            _strip_provider_header(base)
         return base
+
+    if static_models and not provider:
+        token = get_databricks_token(workspace, databricks_profile)
+        catalog = build_codex_catalog(workspace, token, static_models)
+        if catalog is None:
+            # Fetch failed. On a first-run fetch failure, no catalog file exists yet, so fall back
+            # to discovery. On a later run where a catalog is already cached, preserve it to
+            # survive transient network blips.
+            if not CODEX_CATALOG_PATH.exists():
+                catalog_path = None
+        elif catalog:
+            # Fetch succeeded and has matching models; write the catalog.
+            write_json_file(CODEX_CATALOG_PATH, catalog)
+        else:
+            # Fetch succeeded but nothing matched allow-list; fall back to discovery.
+            catalog_path = None
+            if CODEX_CATALOG_PATH.exists() and not is_dry_run():
+                CODEX_CATALOG_PATH.unlink()
+    elif CODEX_CATALOG_PATH.exists() and not is_dry_run():
+        CODEX_CATALOG_PATH.unlink()
 
     doc = read_toml_safe(CODEX_CONFIG_PATH)
     compose(doc)

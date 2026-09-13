@@ -16,7 +16,7 @@ import shlex
 import shutil
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import (
     ThreadPoolExecutor,
     as_completed,
@@ -3025,6 +3025,31 @@ def build_tool_base_url(tool: str, workspace: str) -> str:
     if tool == "pi":
         raise RuntimeError("Pi has multiple base URLs — use build_pi_base_urls() instead.")
     raise RuntimeError(f"Unsupported tool '{tool}'.")
+
+
+def extra_custom_headers(
+    custom_headers: dict[str, str] | None, reserved_names: Iterable[str]
+) -> list[tuple[str, str]]:
+    """Admin custom headers to add to an outbound gateway request.
+
+    Drops any whose name collides case-insensitively with a ucode-managed header in
+    ``reserved_names`` so ucode's fixed headers always win. Also drops any header whose NAME or
+    VALUE contains newline/carriage-return or whose NAME contains ':' to prevent delimiter
+    injection attacks (Claude uses newline delimiters, Gemini uses commas, and ':' is universal).
+    Returns ``(name, value)`` pairs in the order the admin authored them; each agent formats them
+    for its own config shape.
+    """
+    if not custom_headers:
+        return []
+    reserved = {name.lower() for name in reserved_names}
+    result: list[tuple[str, str]] = []
+    for name, value in custom_headers.items():
+        if name.lower() in reserved:
+            continue
+        if "\n" in name or "\r" in name or ":" in name or "\n" in value or "\r" in value:
+            continue
+        result.append((name, value))
+    return result
 
 
 def build_opencode_base_urls(workspace: str) -> dict[str, str]:

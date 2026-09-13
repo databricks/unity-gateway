@@ -23,6 +23,7 @@ from ucode.config_io import (
 from ucode.databricks import (
     TOKEN_REFRESH_INTERVAL_SECONDS,
     build_tool_base_url,
+    extra_custom_headers,
     get_databricks_token,
 )
 from ucode.state import (
@@ -123,33 +124,58 @@ def _ensure_local_settings_selected_type() -> None:
 
 
 def render_env_overlay(
-    workspace: str, model: str, token: str, *, provider: str | None = None
+    workspace: str,
+    model: str,
+    token: str,
+    *,
+    provider: str | None = None,
+    custom_headers: dict[str, str] | None = None,
 ) -> dict[str, str]:
     # Gemini CLI parses GEMINI_CLI_CUSTOM_HEADERS as comma-separated
     # `Key:Value` pairs and spreads them after the SDK's default User-Agent,
     # so a key named `User-Agent` overrides the default. Resolved via
     # upstream issue google-gemini/gemini-cli#10088.
-    custom_headers = f"User-Agent:ucode/{ucode_version()} gemini/{agent_version('gemini')}"
+    # Append managed headers, but don't override ucode's fixed headers.
+    header_parts = [
+        f"User-Agent:ucode/{ucode_version()} gemini/{agent_version('gemini')}",
+    ]
     if provider:
         # A Model Provider Service routes by this header; the request still names
         # the service's target model in `GEMINI_MODEL` (pinned by the launch path).
-        custom_headers += f",Databricks-Model-Provider-Service:{provider}"
+        header_parts.append(f"Databricks-Model-Provider-Service:{provider}")
+    for name, value in extra_custom_headers(
+        custom_headers, ("user-agent", "databricks-model-provider-service")
+    ):
+        # Gemini uses comma as a delimiter, so skip headers with commas in name or value.
+        if "," in name or "," in value:
+            continue
+        header_parts.append(f"{name}:{value}")
+    headers_str = ",".join(header_parts)
     return {
         "GEMINI_MODEL": model,
         "GOOGLE_GEMINI_BASE_URL": build_tool_base_url("gemini", workspace),
         "GEMINI_API_KEY_AUTH_MECHANISM": "bearer",
         "GEMINI_API_KEY": token,
-        "GEMINI_CLI_CUSTOM_HEADERS": custom_headers,
+        "GEMINI_CLI_CUSTOM_HEADERS": headers_str,
         "OAUTH_TOKEN": token,
     }
 
 
 def build_runtime_env(
-    workspace: str, model: str, token: str, *, provider: str | None = None
+    workspace: str,
+    model: str,
+    token: str,
+    *,
+    provider: str | None = None,
+    custom_headers: dict[str, str] | None = None,
 ) -> dict[str, str]:
     _ensure_local_settings_selected_type()
     env = os.environ.copy()
-    env.update(render_env_overlay(workspace, model, token, provider=provider))
+    env.update(
+        render_env_overlay(
+            workspace, model, token, provider=provider, custom_headers=custom_headers
+        )
+    )
     # Newer Gemini CLI releases refuse to run in untrusted directories;
     # opt every launch into trust so `ucode gemini` works in any folder.
     env["GEMINI_CLI_TRUST_WORKSPACE"] = "true"
@@ -170,7 +196,13 @@ def write_tool_config(
         token = get_databricks_token(
             state["workspace"], state.get("profile"), force_refresh=force_refresh
         )
-    overlay = render_env_overlay(state["workspace"], model, token, provider=provider)
+    overlay = render_env_overlay(
+        state["workspace"],
+        model,
+        token,
+        provider=provider,
+        custom_headers=state.get("gemini_custom_headers"),
+    )
     existing = parse_dotenv(GEMINI_ENV_PATH)
     existing.update(overlay)
     write_dotenv(GEMINI_ENV_PATH, existing)
@@ -236,7 +268,13 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     model = _launch_model(state, provider)
     if not model:
         raise RuntimeError("No Gemini model is configured.")
-    env = build_runtime_env(state["workspace"], model, token, provider=provider)
+    env = build_runtime_env(
+        state["workspace"],
+        model,
+        token,
+        provider=provider,
+        custom_headers=state.get("gemini_custom_headers"),
+    )
 
     stop_event = threading.Event()
     refresher = threading.Thread(
@@ -277,4 +315,10 @@ def validate_env(state: dict) -> dict[str, str]:
     if not model:
         raise RuntimeError("No Gemini model is configured.")
     token = get_databricks_token(workspace, state.get("profile"))
-    return build_runtime_env(workspace, model, token, provider=provider)
+    return build_runtime_env(
+        workspace,
+        model,
+        token,
+        provider=provider,
+        custom_headers=state.get("gemini_custom_headers"),
+    )

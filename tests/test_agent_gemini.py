@@ -237,3 +237,52 @@ class TestWriteToolConfig:
         assert settings["theme"] == "dark"
         assert settings["otherKey"] == 123
         assert "security" not in settings
+
+
+class TestCustomHeaders:
+    def test_managed_custom_headers_included_in_gemini_cli_custom_headers(self):
+        custom_hdrs = {"X-My-Tag": "hello", "X-Other": "world"}
+        overlay = gemini.render_env_overlay(WS, "some-model", "token", custom_headers=custom_hdrs)
+        headers = overlay["GEMINI_CLI_CUSTOM_HEADERS"]
+        assert "X-My-Tag:hello" in headers
+        assert "X-Other:world" in headers
+
+    def test_managed_custom_headers_do_not_override_fixed_headers(self):
+        custom_hdrs = {
+            "User-Agent": "custom-agent",
+            "Databricks-Model-Provider-Service": "custom-provider",
+            "X-My-Tag": "custom-value",
+        }
+        overlay = gemini.render_env_overlay(WS, "some-model", "token", custom_headers=custom_hdrs)
+        headers = overlay["GEMINI_CLI_CUSTOM_HEADERS"]
+        # ucode's fixed headers should win
+        assert "User-Agent:ucode/" in headers
+        # But custom headers should be there
+        assert "X-My-Tag:custom-value" in headers
+
+    def test_managed_custom_headers_case_insensitive_conflict_check(self):
+        custom_hdrs = {"user-agent": "custom-agent", "X-Custom": "value"}
+        overlay = gemini.render_env_overlay(WS, "some-model", "token", custom_headers=custom_hdrs)
+        headers = overlay["GEMINI_CLI_CUSTOM_HEADERS"]
+        # Case-insensitive: user-agent should not override User-Agent
+        assert "User-Agent:ucode/" in headers
+        assert "X-Custom:value" in headers
+
+    def test_managed_header_value_with_comma_is_dropped(self):
+        # FIX 1: A managed header value containing a comma should be dropped to prevent
+        # delimiter injection. GEMINI_CLI_CUSTOM_HEADERS is comma-delimited, so a value
+        # like "ok,Evil-Header:injected" would inject a second header.
+        custom_hdrs = {"X-Trace": "ok,User-Agent: attacker", "X-Safe": "value"}
+        overlay = gemini.render_env_overlay(WS, "some-model", "token", custom_headers=custom_hdrs)
+        headers = overlay["GEMINI_CLI_CUSTOM_HEADERS"]
+        # The malicious header should be dropped entirely.
+        assert "X-Trace:" not in headers
+        # The safe header should be included.
+        assert "X-Safe:value" in headers
+
+    def test_managed_header_name_with_comma_is_dropped(self):
+        custom_hdrs = {"X-Bad,Evil": "value", "X-Good": "ok"}
+        overlay = gemini.render_env_overlay(WS, "some-model", "token", custom_headers=custom_hdrs)
+        headers = overlay["GEMINI_CLI_CUSTOM_HEADERS"]
+        assert "X-Bad" not in headers
+        assert "X-Good:ok" in headers
