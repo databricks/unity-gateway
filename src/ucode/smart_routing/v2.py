@@ -15,7 +15,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn, TextIO
 
-from ucode.codex_config import codex_config_args
+from ucode.codex_config import (
+    codex_config_args,
+    custom_catalog_models,
+)
 from ucode.config_io import APP_DIR, read_json_safe, read_toml_safe, write_json_file
 from ucode.constants import LOOPBACK_HOST
 from ucode.databricks import (
@@ -389,14 +392,18 @@ def launch_claude(
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
-            "Smart routing v2 needs a configured workspace; run `ucode configure claude` first."
+            "Smart routing needs a configured workspace; run `ucode configure claude` first."
         )
     token = get_databricks_token(workspace, state.get("profile"))
     os.environ[OAUTH_TOKEN_ENV_VAR] = token
-    os.environ[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
-    os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-    # modelPicker takes priority over model discovery.
-    catalog = _model_picker_catalog() or list_anthropic_model_catalog(workspace, token)
+    # if modelPicker is defined, then skip model discovery.
+    picker_catalog = _model_picker_catalog()
+    if picker_catalog is None:
+        os.environ[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
+        os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+        catalog = list_anthropic_model_catalog(workspace, token)
+    else:
+        catalog = picker_catalog
     if not catalog.model_ids:
         raise RuntimeError(
             catalog.error_msg or "Anthropic models endpoint returned no Claude models"
@@ -442,7 +449,7 @@ def launch_claude(
         )
 
     print_note(
-        "Smart routing v2: the first submitted prompt will select Claude Code's "
+        "Smart routing: the first submitted prompt will select Claude Code's "
         f"model; log: {CLAUDE_PTY_LOG}."
     )
     try:
@@ -497,19 +504,25 @@ def launch_codex(
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
-            "Smart routing v2 needs a configured workspace; run `ucode configure codex` first."
+            "Smart routing needs a configured workspace; run `ucode configure codex` first."
         )
     if not start_model:
         raise RuntimeError(
-            "Smart routing v2 could not determine a starting Codex model for this workspace."
+            "Smart routing could not determine a starting Codex model for this workspace."
         )
 
     profile = state.get("profile")
     os.environ[OAUTH_TOKEN_ENV_VAR] = get_databricks_token(workspace, profile)
-    available_models = _cached_routing_models(state)
+    catalog_models = custom_catalog_models()
+    available_models = catalog_models or _cached_routing_models(state)
+    if catalog_models:
+        print_note(
+            f"Smart routing: routing across {len(catalog_models)} models from the configured "
+            "Codex custom catalog (model_catalog_json); cached model services are not used."
+        )
     if not available_models:
         print_note(
-            "Smart routing model metadata is unavailable; starting Codex on gpt-5.6-luna "
+            f"Smart routing model metadata is unavailable; starting Codex on {start_model} "
             "without automatic model switching. Run `ucode configure codex` to enable routing."
         )
     overlay = render_overlay(
@@ -538,7 +551,7 @@ def launch_codex(
     try:
         if not _wait_for_app_server(app_port, timeout=APP_SERVER_READY_TIMEOUT_SECONDS):
             raise RuntimeError(
-                "Codex app-server did not become ready for smart routing v2; check workspace auth."
+                "Codex app-server did not become ready for smart routing; check workspace auth."
             )
         tui_port, stop_interposer = codex_interposer.start_interposer_thread(
             LOOPBACK_HOST,
