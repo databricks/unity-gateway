@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Iterator
@@ -1061,6 +1062,7 @@ def revert() -> int:
     # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
     # place; restoring the per-profile file above does not undo that.
     legacy_codex_stripped = revert_legacy_shared_config()
+    claude_agent.clear_custom_header_state()
     clear_state()
 
     print_heading("Revert")
@@ -2005,6 +2007,54 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     return tool == "claude" and tool_args[0].startswith("-")
 
 
+_HTTP_HEADER_NAME_PATTERN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
+_PROTECTED_CUSTOM_HEADER_NAMES = frozenset(
+    {
+        "authorization",
+        "connection",
+        "content-length",
+        "cookie",
+        "databricks-model-provider-service",
+        "databricks-model-service-parent-schema",
+        "host",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "user-agent",
+        "x-api-key",
+        "x-databricks-ai-gateway-token",
+        "x-databricks-use-coding-agent-mode",
+    }
+)
+
+
+def _parse_custom_headers(values: list[str] | None) -> dict[str, str]:
+    """Parse repeatable ``--header 'Name: value'`` options."""
+    parsed: dict[str, tuple[str, str]] = {}
+    for item in values or []:
+        name, separator, value = item.partition(":")
+        name = name.strip()
+        if not separator or _HTTP_HEADER_NAME_PATTERN.fullmatch(name) is None:
+            raise RuntimeError("--header must use the format `Name: value` with a valid name.")
+        value = value.strip()
+        if any(
+            ord(character) < 32 or ord(character) == 127 or character in "\u0085\u2028\u2029"
+            for character in value
+        ):
+            raise RuntimeError(
+                "--header values cannot contain control characters or line separators."
+            )
+        normalized_name = name.casefold()
+        if normalized_name in _PROTECTED_CUSTOM_HEADER_NAMES:
+            raise RuntimeError(f"--header cannot override protected header '{name}'.")
+        parsed[normalized_name] = (name, value)
+    return dict(parsed.values())
+
+
 def _launch_options(
     tool: str,
     tool_args: list[str],
@@ -2013,9 +2063,11 @@ def _launch_options(
     explicit_prompt: bool,
     model: str | None,
     provider: str | None,
+    custom_headers: dict[str, str] | None = None,
 ) -> LaunchOptions:
     return LaunchOptions(
         claude_launch_model=model if tool == "claude" and provider is None else None,
+        custom_headers=tuple((custom_headers or {}).items()),
         launch_smart_routing=(
             # Smart routing is enabled globally.
             smart_routing_enabled
@@ -2046,9 +2098,11 @@ def _launch_tool(
     model: str | None = None,
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    headers: list[str] | None = None,
 ) -> None:
     try:
         tool = normalize_tool(tool_name)
+        custom_headers = _parse_custom_headers(headers)
         if provider is not None and parent_schema is not None:
             raise RuntimeError("--provider and --parent cannot be used together.")
         if parent_schema is not None and not is_valid_catalog_schema(parent_schema):
@@ -2241,6 +2295,9 @@ def _launch_tool(
             # Codex keeps an explicit --model in ctx.args and passes it to its CLI verbatim.
             if model and tool != "claude":
                 resolved_model = model
+        custom_header_config = (
+            {"custom_headers": custom_headers} if tool == "claude" and custom_headers else {}
+        )
         state = configure_tool(
             tool,
             state,
@@ -2253,6 +2310,7 @@ def _launch_tool(
             custom_model=None,
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
+            **custom_header_config,
         )
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
@@ -2287,6 +2345,8 @@ def _launch_tool(
             print_kv("Model", route_root_model)
         elif resolved_model:
             print_kv("Model", resolved_model)
+        if custom_headers:
+            print_kv("Headers", ", ".join(custom_headers))
         if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and not provider:
             print_kv("Smart routing", "enabled")
             print_note(
@@ -2325,6 +2385,7 @@ def _launch_tool(
             explicit_prompt=explicit_prompt,
             model=model or (route_root_model if tool == "claude" else None),
             provider=provider,
+            custom_headers=custom_headers,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         launch_agent(tool, state, ctx.args, options=launch_options)
@@ -2362,6 +2423,15 @@ WorkspaceOption = Annotated[
         "--workspace",
         help="Databricks workspace URL to launch against; sets up and authenticates it "
         "if not already configured.",
+    ),
+]
+
+CustomHeaderOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--header",
+        help="Add an HTTP header to AI Gateway requests as `Name: value`; repeatable. "
+        "Pass before any `--` separator. Credentials and transport headers are not allowed.",
     ),
 ]
 
@@ -2522,6 +2592,7 @@ def codex_cmd(
             help="Discover model services in `<catalog>.<schema>`. Example: main.default",
         ),
     ] = None,
+    header: CustomHeaderOption = None,
     refresh: Annotated[
         bool,
         typer.Option(
@@ -2585,6 +2656,7 @@ def codex_cmd(
                 workspace_url=workspace,
                 parent_schema=parent,
                 custom_oauth=custom_oauth,
+                headers=header,
             )
 
 
@@ -2611,6 +2683,7 @@ def claude_cmd(
             help="Discover model services in `<catalog>.<schema>`. Example: main.default",
         ),
     ] = None,
+    header: CustomHeaderOption = None,
     model: Annotated[
         str | None,
         typer.Option(
@@ -2696,6 +2769,7 @@ def claude_cmd(
                 workspace_url=workspace,
                 parent_schema=parent,
                 custom_oauth=custom_oauth,
+                headers=header,
             )
 
 

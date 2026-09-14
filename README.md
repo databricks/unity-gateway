@@ -325,8 +325,10 @@ The output looks like:
 | `ug configure --profiles DEFAULT --use-pat` | Authenticate with the profile's personal access token — no browser login |
 | `ug codex --enable-smart-routing` | Enable AI Gateway routing for Codex sessions and subagents |
 | `ug codex --refresh` | Re-check Databricks, refresh models/configuration, and launch Codex |
+| `ug codex --header 'X-Development-Route: test-target'` | Add a custom header to Codex gateway requests |
 | `ug claude --enable-smart-routing` | Enable AI Gateway routing for Claude Code sessions and subagents |
 | `ug claude --refresh` | Re-check Databricks, refresh models/configuration, and launch Claude Code |
+| `ug claude --header 'X-Development-Route: test-target'` | Add a custom header to Claude Code gateway requests |
 | `ug configure --skip-validate` | Write configs without sending a test message through each agent |
 | `ug configure --agents claude,codex,pi --skip-unavailable` | Configure the requested agents that are available; skip the rest with a warning |
 | `ug configure --agents claude --mcp system.ai.slack` | Configure an agent and register its Databricks MCP server(s) in one command |
@@ -345,6 +347,10 @@ The output looks like:
 | `ug skill add --skills main.default.my-skill` | Download a named subset of skills (bare names need `--location`; fully-qualified names stand alone) |
 | `ug skill remove --mcp` | Remove skill schemas from the skills MCP connection (every agent) |
 | `ug skill remove --mcp --agents claude` | Remove skill schemas from specific agents only, keeping them on the rest |
+
+`--header` is repeatable and intended for non-secret development routing values. Codex applies
+headers only to the launched process. Claude Code requires them in managed settings, so `ug`
+removes the recorded names on the next successful Claude launch or configuration without them.
 
 Databricks AI Tools are installed only by `ug configure`, never by `ug <agent>` launches.
 Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools` with `ug configure` to
@@ -367,6 +373,7 @@ control the installation.
 | `~/.cursor/mcp.json` | Cursor Agent (MCP servers only) |
 | `~/.ucode/managed-state.json` | The managed config (published by an admin through the AI Gateway) refreshed from the workspace on launch |
 | `~/.ucode/managed-backups/` | Baseline backups for OS-managed files changed by ug |
+| `~/.ucode/claude-custom-headers.json` | Header names recorded for cleanup after a Claude Code test launch |
 
 Existing files are backed up before being overwritten. `ug revert` restores backups.
 

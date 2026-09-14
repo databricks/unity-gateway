@@ -633,6 +633,77 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.kwargs["parent_schema"] == "main.default"
 
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_headers_are_forwarded(self, tool):
+        with patch("ucode.cli._launch_tool") as mock_launch:
+            result = runner.invoke(
+                app,
+                [tool, "--header", "X-First: one", "--header", "X-Second: two:three"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_launch.call_args.kwargs["headers"] == [
+            "X-First: one",
+            "X-Second: two:three",
+        ]
+
+    def test_headers_parse_values_with_colons_and_deduplicate_case_insensitively(self):
+        assert cli_mod._parse_custom_headers(
+            [
+                "X-Test: first",
+                "x-test: second",
+                "X-Development-Route: route://development/test",
+            ]
+        ) == {
+            "x-test": "second",
+            "X-Development-Route": "route://development/test",
+        }
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            ("missing-separator", "format `Name: value`"),
+            ("bad name: value", "format `Name: value`"),
+            ("X-Test: line\nbreak", "control characters"),
+            ("X-Test: safe\u0085Authorization: injected", "line separators"),
+            ("X-Test: safe\u2028Authorization: injected", "line separators"),
+            ("X-Test: safe\u2029Authorization: injected", "line separators"),
+            ("Authorization: secret", "protected header"),
+            ("Cookie: secret", "protected header"),
+        ],
+    )
+    def test_invalid_header_is_rejected(self, value, message):
+        result = runner.invoke(app, ["codex", "--header", value])
+
+        assert result.exit_code == 1
+        assert message in result.output
+
+    def test_custom_header_reaches_agent_without_printing_its_value(self, monkeypatch):
+        monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
+        header_value = "route://development/test"
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.ensure_provider_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.resolve_launch_model", return_value=(MINIMAL_STATE, "system.ai.opus")),
+            patch("ucode.cli.configure_tool", return_value=MINIMAL_STATE) as mock_configure,
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.launch_agent") as mock_launch,
+        ):
+            result = runner.invoke(
+                app,
+                ["claude", "--header", f"X-Development-Route: {header_value}"],
+            )
+
+        assert result.exit_code == 0, result.output
+        expected = {"X-Development-Route": header_value}
+        assert mock_configure.call_args.kwargs["custom_headers"] == expected
+        assert dict(mock_launch.call_args.kwargs["options"].custom_headers) == expected
+        output = _strip_ansi(result.output)
+        assert "Headers: X-Development-Route" in output
+        assert header_value not in output
+
     def test_codex_provider_and_parent_are_mutually_exclusive(self):
         result = runner.invoke(
             app,
@@ -1887,6 +1958,7 @@ class TestRevert:
         }
         reverted_mcp: list[dict] = []
         cleared: list[bool] = []
+        cleared_header_state: list[bool] = []
 
         with (
             patch("ucode.cli.load_state", return_value=state),
@@ -1897,12 +1969,17 @@ class TestRevert:
                     reverted_mcp.append(loaded_state) or {"claude": True}
                 ),
             ),
+            patch(
+                "ucode.cli.claude_agent.clear_custom_header_state",
+                side_effect=lambda: cleared_header_state.append(True),
+            ),
             patch("ucode.cli.clear_state", side_effect=lambda: cleared.append(True)),
         ):
             result = runner.invoke(app, ["revert"])
 
         assert result.exit_code == 0, result.output
         assert reverted_mcp == [state]
+        assert cleared_header_state == [True]
         assert cleared == [True]
         assert "Claude Code MCP config: restored" in result.output
 

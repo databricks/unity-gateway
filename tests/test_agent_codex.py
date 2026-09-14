@@ -681,6 +681,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
         monkeypatch.setattr(codex, "get_databricks_token", lambda workspace, profile=None: "tok")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
         return launches
 
     def test_sets_oauth_token(self, tmp_path, monkeypatch):
@@ -857,6 +858,46 @@ class TestCodexLaunch:
         assert 'base_url = "https://example.databricks.com/ai-gateway/codex/v1"' in provider_arg
         assert "Upgrade Codex" not in capsys.readouterr().err
 
+    def test_custom_header_is_launch_only(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        value = "route://development/test"
+
+        codex.launch(
+            {"workspace": WS},
+            [],
+            options=LaunchOptions(custom_headers=(("X-Development-Route", value),)),
+        )
+
+        env_name = f"{codex.CUSTOM_HEADER_ENV_PREFIX}_{os.getpid()}_0"
+        provider_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.ucode-databricks=")
+        )
+        assert "X-Development-Route" in provider_arg
+        assert env_name in provider_arg
+        assert value not in provider_arg
+        assert os.environ[env_name] == value
+        assert "X-Development-Route" not in codex.CODEX_CONFIG_PATH.read_text(encoding="utf-8")
+        monkeypatch.delenv(env_name)
+
+    @pytest.mark.parametrize("header_table", ["http_headers", "env_http_headers"])
+    def test_custom_header_rejects_managed_header(self, tmp_path, monkeypatch, header_table):
+        self._patch(tmp_path, monkeypatch)
+        managed_path = tmp_path / "managed_config.toml"
+        managed_path.write_text(
+            f'[model_providers.ucode-databricks.{header_table}]\nX-Test = "ENTERPRISE_VALUE"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
+
+        with pytest.raises(RuntimeError, match="OS-managed Codex header"):
+            codex.launch(
+                {"workspace": WS},
+                [],
+                options=LaunchOptions(custom_headers=(("x-test", "temporary"),)),
+            )
+
+        assert "temporary" not in managed_path.read_text(encoding="utf-8")
+
     @pytest.mark.parametrize("tool_args", [[], ["exec", "hi"]])
     @pytest.mark.parametrize("stale_profile", [False, True])
     @pytest.mark.parametrize("version", ["0.129.0", "0.133.0"])
@@ -895,6 +936,19 @@ class TestCodexLaunch:
         assert f"Codex {version} is outdated" in warning
         assert "Upgrade Codex to 0.134.0 or newer" in warning
         assert "codex --version" in warning
+
+    def test_custom_header_requires_modern_codex(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.133.0")
+
+        with pytest.raises(RuntimeError, match="--header requires Codex 0.134.0 or newer"):
+            codex.launch(
+                {"workspace": WS},
+                [],
+                options=LaunchOptions(custom_headers=(("X-Test", "temporary"),)),
+            )
+
+        assert launches == []
 
     def test_requires_populated_ucode_profile(self, tmp_path, monkeypatch):
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", tmp_path / "missing.config.toml")

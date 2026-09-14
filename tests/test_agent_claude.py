@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import threading
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -19,8 +20,12 @@ WS = "https://example.databricks.com"
 
 
 @pytest.fixture(autouse=True)
-def _avoid_real_managed_settings(monkeypatch):
+def _avoid_real_managed_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+    monkeypatch.setattr(
+        claude, "CLAUDE_CUSTOM_HEADER_STATE_PATH", tmp_path / "claude-custom-headers.json"
+    )
+    monkeypatch.setattr(claude, "CLAUDE_CONFIG_LOCK_PATH", tmp_path / "claude-config.lock")
 
 
 class TestClaudeSpec:
@@ -32,6 +37,36 @@ class TestClaudeSpec:
 
     def test_display(self):
         assert claude.SPEC["display"] == "Claude Code"
+
+    def test_config_transaction_lock_serializes_writers(self):
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        second_attempted = threading.Event()
+        second_entered = threading.Event()
+
+        def first_writer():
+            with claude._claude_config_transaction_lock():
+                first_entered.set()
+                release_first.wait()
+
+        def second_writer():
+            second_attempted.set()
+            with claude._claude_config_transaction_lock():
+                second_entered.set()
+
+        first = threading.Thread(target=first_writer)
+        second = threading.Thread(target=second_writer)
+        first.start()
+        try:
+            assert first_entered.wait(timeout=2)
+            second.start()
+            assert second_attempted.wait(timeout=2)
+            assert not second_entered.wait(timeout=0.1)
+        finally:
+            release_first.set()
+            first.join(timeout=2)
+        second.join(timeout=2)
+        assert second_entered.is_set()
 
 
 class TestMinimumVersion:
@@ -376,6 +411,18 @@ class TestRenderOverlay:
             in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
         )
 
+    def test_custom_header_is_added_alongside_provider(self):
+        overlay, _ = claude.render_overlay(
+            WS,
+            "s4",
+            provider="main.default.anthropic",
+            custom_headers={"X-Development-Route": "route://development/test"},
+        )
+
+        headers = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert "Databricks-Model-Provider-Service: main.default.anthropic" in headers
+        assert "X-Development-Route: route://development/test" in headers
+
     def test_bedrock_provider_pins_model_ids(self):
         provider_models = {
             "opus": "global.anthropic.claude-opus-4-8",
@@ -472,6 +519,19 @@ class TestMergeAnthropicCustomHeaders:
 
         assert "X-User: keep" in merged
         assert "Databricks-Model-Service-Parent-Schema" not in merged
+
+    def test_removes_stale_custom_header(self):
+        existing = "X-User: keep\nX-Development-Route: route://development/test"
+        managed = "x-databricks-use-coding-agent-mode: true"
+
+        merged = claude._merge_anthropic_custom_headers(
+            existing,
+            managed,
+            claude.CLAUDE_MANAGED_CUSTOM_HEADER_NAMES | {"x-development-route"},
+        )
+
+        assert "X-User: keep" in merged
+        assert "X-Development-Route" not in merged
 
     def test_merges_existing_settings_with_ucode_managed_headers(self):
         headers_from_existing_settings = "\n".join(
@@ -695,17 +755,19 @@ class TestWriteToolConfigManagedSettings:
     def _patch(self, monkeypatch, private_writes, managed_writes, existing_by_path=None):
         existing_by_path = existing_by_path or {}
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+
         # Deep-copy the seeded existing content so the compose step can't mutate the fixture.
-        monkeypatch.setattr(
-            claude,
-            "read_json_safe",
-            lambda path: json.loads(json.dumps(existing_by_path.get(str(path), {}))),
-        )
-        monkeypatch.setattr(
-            claude,
-            "write_json_file",
-            lambda path, payload: private_writes.append((str(path), payload)),
-        )
+        def fake_read_json(path):
+            return json.loads(json.dumps(existing_by_path.get(str(path), {})))
+
+        def fake_write_json(path, payload):
+            if path == claude.CLAUDE_CUSTOM_HEADER_STATE_PATH:
+                path.write_text(json.dumps(payload), encoding="utf-8")
+            else:
+                private_writes.append((str(path), payload))
+
+        monkeypatch.setattr(claude, "read_json_safe", fake_read_json)
+        monkeypatch.setattr(claude, "write_json_file", fake_write_json)
         monkeypatch.setattr(claude, "save_state", lambda state: None)
         monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: True)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
@@ -866,6 +928,101 @@ class TestWriteToolConfigManagedSettings:
             "User-Agent: ucode/1.0 claude/2.0",  # From ucode; overwrites existing.
             "x-databricks-use-coding-agent-mode: true",  # Newly added by ucode.
         ]
+
+    def test_writes_custom_header_and_cleanup_state(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []},
+            "databricks-claude-sonnet-4",
+            custom_headers={"X-Development-Route": "route://development/test"},
+        )
+
+        private_headers = private_writes[0][1]["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        managed_headers = json.loads(managed_writes[0][1])["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert "X-Development-Route: route://development/test" in private_headers
+        assert "X-Development-Route: route://development/test" in managed_headers
+        assert json.loads(claude.CLAUDE_CUSTOM_HEADER_STATE_PATH.read_text(encoding="utf-8")) == {
+            "names": ["x-development-route"]
+        }
+
+    def test_removes_custom_header_from_previous_launch(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            "env": {"ANTHROPIC_CUSTOM_HEADERS": "X-Enterprise: keep\nX-Development-Route: old"}
+        }
+        self._patch(
+            monkeypatch,
+            private_writes,
+            managed_writes,
+            {
+                str(claude.CLAUDE_SETTINGS_PATH): existing,
+                str(FAKE_MANAGED_PATH): existing,
+            },
+        )
+        claude.CLAUDE_CUSTOM_HEADER_STATE_PATH.write_text(
+            '{"names": ["x-development-route"]}', encoding="utf-8"
+        )
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        private_headers = private_writes[0][1]["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        managed_headers = json.loads(managed_writes[0][1])["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert "X-Enterprise: keep" in private_headers
+        assert "X-Development-Route" not in private_headers
+        assert "X-Development-Route" not in managed_headers
+        assert json.loads(claude.CLAUDE_CUSTOM_HEADER_STATE_PATH.read_text(encoding="utf-8")) == {
+            "names": []
+        }
+
+    @pytest.mark.parametrize("source", ["private", "managed"])
+    def test_rejects_existing_custom_header_without_modifying_settings(self, monkeypatch, source):
+        private_writes: list = []
+        managed_writes: list = []
+        path = claude.CLAUDE_SETTINGS_PATH if source == "private" else FAKE_MANAGED_PATH
+        existing = {"env": {"ANTHROPIC_CUSTOM_HEADERS": "X-Development-Route: user-value"}}
+        self._patch(
+            monkeypatch,
+            private_writes,
+            managed_writes,
+            {str(path): existing},
+        )
+
+        with pytest.raises(RuntimeError, match="cannot override existing Claude Code header"):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": []},
+                "databricks-claude-sonnet-4",
+                custom_headers={"x-development-route": "temporary"},
+            )
+
+        assert private_writes == []
+        assert managed_writes == []
+        assert not claude.CLAUDE_CUSTOM_HEADER_STATE_PATH.exists()
+
+    def test_journals_custom_header_before_managed_write(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+
+        def fail_managed_write(*_args, **_kwargs):
+            raise RuntimeError("managed write failed")
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", fail_managed_write)
+
+        with pytest.raises(RuntimeError, match="managed write failed"):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": []},
+                "databricks-claude-sonnet-4",
+                custom_headers={"X-Development-Route": "temporary"},
+            )
+
+        assert json.loads(claude.CLAUDE_CUSTOM_HEADER_STATE_PATH.read_text(encoding="utf-8")) == {
+            "names": ["x-development-route"]
+        }
 
     def test_managed_file_applies_model_default_precedence(self, monkeypatch):
         managed_defaults = self._write_managed_model_defaults(

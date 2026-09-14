@@ -13,6 +13,7 @@ class LaunchOptions:
     # Claude's --model is consumed by ucode, so it must be passed separately for this launch.
     # Codex keeps --model in the forwarded tool arguments instead.
     claude_launch_model: str | None = None
+    custom_headers: tuple[tuple[str, str], ...] = ()
 
 
 def explicit_model_arg_value(tool_args: list[str]) -> str | None:

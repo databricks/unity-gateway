@@ -11,7 +11,8 @@ import signal
 import socket
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
@@ -21,6 +22,7 @@ from ucode.config_io import (
     ToolSpec,
     backup_existing_file,
     deep_merge_dict,
+    is_dry_run,
     read_json_safe,
     write_json_file,
 )
@@ -70,6 +72,8 @@ CLAUDE_MCP_CONFIG_PATH = Path.home() / ".claude.json"
 # The default model is stored in Claude's default user settings, not the ucode settings.
 CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
 CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
+CLAUDE_CUSTOM_HEADER_STATE_PATH = APP_DIR / "claude-custom-headers.json"
+CLAUDE_CONFIG_LOCK_PATH = APP_DIR / "claude-config.lock"
 WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
 MINIMUM_CLAUDE_VERSION = (2, 1, 248)
 MINIMUM_CLAUDE_VERSION_TEXT = "2.1.248"
@@ -259,6 +263,15 @@ def revert_managed_settings() -> str:
     )
 
 
+def clear_custom_header_state() -> None:
+    try:
+        CLAUDE_CUSTOM_HEADER_STATE_PATH.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Failed to clear custom-header state at {CLAUDE_CUSTOM_HEADER_STATE_PATH}"
+        ) from exc
+
+
 def _managed_relayed_conflicts(path: Path) -> list[str]:
     """Return managed settings that would override Claude subscription relay auth."""
     text = read_managed_file(path)
@@ -330,6 +343,7 @@ def render_overlay(
     route_root_model: str | None = None,
     custom_model: str | None = None,
     parent_schema: str | None = None,
+    custom_headers: dict[str, str] | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
 
@@ -369,12 +383,13 @@ def render_overlay(
         header_lines.append(f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}")
     elif parent_schema:
         header_lines.append(f"{MODEL_SERVICE_PARENT_SCHEMA_HEADER}: {parent_schema}")
+    header_lines.extend(f"{name}: {value}" for name, value in (custom_headers or {}).items())
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
-    custom_headers = "\n".join(header_lines)
+    rendered_custom_headers = "\n".join(header_lines)
     env: dict[str, str] = {
         "ANTHROPIC_BASE_URL": base_url,
-        "ANTHROPIC_CUSTOM_HEADERS": custom_headers,
+        "ANTHROPIC_CUSTOM_HEADERS": rendered_custom_headers,
         "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "900000",
         # 1h prompt caching needs the extended-cache-ttl beta header, which
         # Claude Code only sends when experimental betas are enabled — so we must
@@ -574,6 +589,123 @@ def disable_smart_routing(state: dict) -> bool:
     return changed
 
 
+def _custom_header_names_from_settings(settings: dict) -> set[str]:
+    env = settings.get("env")
+    value = env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(env, dict) else None
+    if not isinstance(value, str):
+        return set()
+    names: set[str] = set()
+    for line in value.splitlines():
+        name, separator, _header_value = line.partition(":")
+        if separator:
+            names.add(name.strip().casefold())
+    return names
+
+
+@contextmanager
+def _claude_config_transaction_lock() -> Iterator[None]:
+    """Serialize updates to Claude's settings and custom-header journal."""
+    if is_dry_run():
+        yield
+        return
+
+    try:
+        CLAUDE_CONFIG_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = CLAUDE_CONFIG_LOCK_PATH.open("a+b")
+    except OSError as exc:
+        raise RuntimeError(
+            f"Cannot open Claude configuration lock at {CLAUDE_CONFIG_LOCK_PATH}."
+        ) from exc
+
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    except OSError as exc:
+        lock_file.close()
+        raise RuntimeError(
+            f"Cannot acquire Claude configuration lock at {CLAUDE_CONFIG_LOCK_PATH}."
+        ) from exc
+
+    try:
+        yield
+    finally:
+        try:
+            if os.name == "nt":
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_file.close()
+
+
+def _load_custom_header_names() -> set[str]:
+    try:
+        if not CLAUDE_CUSTOM_HEADER_STATE_PATH.exists():
+            return set()
+        payload = json.loads(CLAUDE_CUSTOM_HEADER_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Cannot read custom-header state at {CLAUDE_CUSTOM_HEADER_STATE_PATH}."
+        ) from exc
+    names = payload.get("names") if isinstance(payload, dict) else None
+    if not isinstance(names, list) or any(not isinstance(name, str) for name in names):
+        raise RuntimeError(f"Custom-header state at {CLAUDE_CUSTOM_HEADER_STATE_PATH} is invalid.")
+    if not names:
+        return set()
+    return {name.casefold() for name in names}
+
+
+def _save_custom_header_names(names: set[str]) -> None:
+    if not is_dry_run():
+        write_json_file(CLAUDE_CUSTOM_HEADER_STATE_PATH, {"names": sorted(names)})
+
+
+def _reject_custom_header_collisions(
+    custom_header_names: set[str], previous_custom_header_names: set[str]
+) -> None:
+    names_to_check = custom_header_names - previous_custom_header_names
+    if not names_to_check:
+        return
+
+    settings_sources = [read_json_safe(CLAUDE_SETTINGS_PATH)]
+    managed_path = _managed_settings_path()
+    if managed_path is not None:
+        managed_text = read_managed_file(managed_path)
+        if managed_text is not None:
+            try:
+                settings_sources.append(_parse_managed_settings(managed_text))
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"Cannot safely inspect Claude Code managed settings at {managed_path}: {exc}."
+                ) from exc
+
+    conflicts = {
+        name
+        for settings in settings_sources
+        for name in _custom_header_names_from_settings(settings)
+        if name in names_to_check
+    }
+    if conflicts:
+        names = ", ".join(sorted(conflicts))
+        raise RuntimeError(
+            f"--header cannot override existing Claude Code header(s): {names}. "
+            "Remove the existing setting or use a different header name."
+        )
+
+
+@_claude_config_transaction_lock()
 def write_tool_config(
     state: dict,
     model: str | None,
@@ -584,8 +716,19 @@ def write_tool_config(
     custom_model: str | None = None,
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
+    custom_headers: dict[str, str] | None = None,
 ) -> dict:
+    previous_custom_header_names = _load_custom_header_names()
+    custom_header_names = {name.casefold() for name in (custom_headers or {})}
+    _reject_custom_header_collisions(custom_header_names, previous_custom_header_names)
+    if previous_custom_header_names or custom_header_names:
+        # Journal the union before touching either settings file. If a later write fails,
+        # the next successful configuration can still remove every possibly-injected name.
+        _save_custom_header_names(previous_custom_header_names | custom_header_names)
     backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
+    managed_custom_header_names = (
+        CLAUDE_MANAGED_CUSTOM_HEADER_NAMES | previous_custom_header_names | custom_header_names
+    )
     web_search_model = _resolve_web_search_model(state)
     # Relayed inference points at a local refresh proxy; its loopback base URL is
     # recorded in state so launch starts the proxy on the matching port.
@@ -606,6 +749,7 @@ def write_tool_config(
         route_root_model=route_root_model,
         custom_model=custom_model,
         parent_schema=parent_schema,
+        custom_headers=custom_headers,
     )
     tracing_env_vars = tracing_env(state, "claude")
     stop_hook_command = claude_tracing_stop_hook_command() if tracing_env_vars else None
@@ -674,7 +818,9 @@ def write_tool_config(
         merged = deep_merge_dict(base, overlay_for_merge)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
         merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
-            existing_custom_headers, overlay_custom_headers
+            existing_custom_headers,
+            overlay_custom_headers,
+            managed_custom_header_names,
         )
         # Drop any apiKeyHelper a prior non-relayed launch left in the file; relayed
         # must not carry one (it would outrank the subscription OAuth).
@@ -742,17 +888,23 @@ def write_tool_config(
         state.pop("relayed_proxy_port", None)
     state = mark_tool_managed(state, "claude", managed_keys)
     save_state(state)
+    if previous_custom_header_names or custom_header_names:
+        _save_custom_header_names(custom_header_names)
     return state
 
 
-def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str:
+def _merge_anthropic_custom_headers(
+    existing: object,
+    ucode_headers: str,
+    managed_header_names: Collection[str] = CLAUDE_MANAGED_CUSTOM_HEADER_NAMES,
+) -> str:
     """Preserve user headers while replacing the header names managed by ucode.
 
     Claude's ``ANTHROPIC_CUSTOM_HEADERS`` value is a newline-delimited string. To merge it, we:
 
     1. Split the existing custom headers by newline into individual header items.
     2. Split each item on ``:`` to identify its header name.
-    3. Replace headers in ``CLAUDE_MANAGED_CUSTOM_HEADER_NAMES`` with ucode's values in their
+    3. Replace headers in ``managed_header_names`` with ucode's values in their
        existing positions, while preserving all other existing headers.
     4. Append any ucode-managed headers that were not already present.
 
@@ -778,7 +930,7 @@ def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str
     for line in existing.splitlines():
         name, separator, _value = line.partition(":")
         normalized_name = name.strip().casefold()
-        if separator and normalized_name in CLAUDE_MANAGED_CUSTOM_HEADER_NAMES:
+        if separator and normalized_name in managed_header_names:
             replacement = ucode_lines_by_name.get(normalized_name)
             if replacement is not None and normalized_name not in replaced_names:
                 merged.append(replacement)
