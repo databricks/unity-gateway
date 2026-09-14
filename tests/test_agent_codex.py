@@ -723,8 +723,6 @@ class TestCodexLaunch:
         self, tmp_path, monkeypatch, tool_args
     ):
         launches = self._patch(tmp_path, monkeypatch)
-        warnings = []
-        monkeypatch.setattr(codex, "print_warning_err", warnings.append)
         monkeypatch.setattr(
             codex,
             "fetch_codex_mps_model_catalog",
@@ -749,11 +747,6 @@ class TestCodexLaunch:
             arg for arg in launches[0] if arg.startswith("model_providers.ucode-databricks=")
         )
         assert 'Databricks-Model-Provider-Service = "main.default.openai"' in provider_arg
-        assert warnings == [
-            "Codex model discovery is not enabled for this workspace; launching without an MPS "
-            "model catalog. Codex will use its own model selection, and the /model picker may "
-            "include models that are unavailable through this provider."
-        ]
 
     def test_provider_keeps_other_discovery_failures_fatal(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)

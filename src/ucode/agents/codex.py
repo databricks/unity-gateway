@@ -700,11 +700,7 @@ def launch(
         try:
             catalog = fetch_codex_mps_model_catalog(workspace, token, provider)
         except CodexMpsModelCatalogUnavailable:
-            print_warning_err(
-                "Codex model discovery is not enabled for this workspace; "
-                "launching without an MPS model catalog. Codex will use its own model selection, "
-                "and the /model picker may include models that are unavailable through this provider."
-            )
+            pass
         else:
             catalog_path = _model_catalog_path(workspace, provider)
             _write_model_catalog(catalog_path, catalog)
