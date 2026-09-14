@@ -78,6 +78,10 @@ class AnthropicModelCatalog:
     error_msg: str | None = None
 
 
+class CodexMpsModelCatalogUnavailable(RuntimeError):
+    """The workspace does not expose the Codex model-catalog route."""
+
+
 def _debug_enabled() -> bool:
     return os.environ.get("UCODE_DEBUG") == "1"
 
@@ -3042,7 +3046,10 @@ def _fetch_codex_model_catalog(
         headers=headers,
     )
     if reason:
-        raise RuntimeError(f"Could not discover Codex models for {identifier}: {reason}")
+        message = f"Could not discover Codex models for {identifier}: {reason}"
+        if "codex/v1/models is not enabled for this workspace" in reason.lower():
+            raise CodexMpsModelCatalogUnavailable(message)
+        raise RuntimeError(message)
     if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
         raise RuntimeError(f"{kind} {identifier} returned an invalid Codex model catalog.")
     if not payload["models"]:

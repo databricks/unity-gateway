@@ -39,6 +39,7 @@ from ucode.custom_oauth import (
     get_custom_client_token,
 )
 from ucode.databricks import (
+    CodexMpsModelCatalogUnavailable,
     _fetch_codex_model_catalog,
     build_auth_token_argv,
     build_tool_base_url,
@@ -717,28 +718,33 @@ def launch(
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
-    if workspace and token and provider:
-        catalog = _fetch_codex_model_catalog(
-            workspace,
-            token,
-            headers={MODEL_PROVIDER_SERVICE_HEADER: provider},
-            identifier=provider,
-            kind="Provider",
-        )
-        catalog_path = _model_catalog_path(workspace, f"provider:{provider}")
-        _write_model_catalog(catalog_path, catalog)
-        profile_doc["model_catalog_json"] = str(catalog_path)
-    elif workspace and token and parent_schema:
-        catalog = _fetch_codex_model_catalog(
-            workspace,
-            token,
-            headers={MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema},
-            identifier=parent_schema,
-            kind="Parent schema",
-        )
-        catalog_path = _model_catalog_path(workspace, f"parent:{parent_schema}")
-        _write_model_catalog(catalog_path, catalog)
-        profile_doc["model_catalog_json"] = str(catalog_path)
+    if workspace and token and (provider or parent_schema):
+        try:
+            if provider:
+                catalog = _fetch_codex_model_catalog(
+                    workspace,
+                    token,
+                    headers={MODEL_PROVIDER_SERVICE_HEADER: provider},
+                    identifier=provider,
+                    kind="Provider",
+                )
+                catalog_scope = f"provider:{provider}"
+            else:
+                assert parent_schema is not None
+                catalog = _fetch_codex_model_catalog(
+                    workspace,
+                    token,
+                    headers={MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema},
+                    identifier=parent_schema,
+                    kind="Parent schema",
+                )
+                catalog_scope = f"parent:{parent_schema}"
+        except CodexMpsModelCatalogUnavailable:
+            pass
+        else:
+            catalog_path = _model_catalog_path(workspace, catalog_scope)
+            _write_model_catalog(catalog_path, catalog)
+            profile_doc["model_catalog_json"] = str(catalog_path)
     exec_or_spawn([binary, *codex_config_args(profile_doc), *tool_args])
 
 

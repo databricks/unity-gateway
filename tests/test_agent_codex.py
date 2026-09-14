@@ -767,6 +767,53 @@ class TestCodexLaunch:
         assert fetched == ["main.first", "main.second"]
         assert catalog_args[0] != catalog_args[1]
 
+    @pytest.mark.parametrize("tool_args", [[], ["--model", "gpt-mps"]])
+    def test_provider_launches_when_discovery_is_unavailable(
+        self, tmp_path, monkeypatch, tool_args
+    ):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                codex.CodexMpsModelCatalogUnavailable(
+                    "codex/v1/models is not enabled for this workspace"
+                )
+            ),
+        )
+
+        codex.launch(
+            {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
+            tool_args,
+            options=LaunchOptions(),
+        )
+
+        assert launches
+        if tool_args:
+            assert launches[0][-len(tool_args) :] == tool_args
+        assert not any(arg.startswith("model_catalog_json=") for arg in launches[0])
+        provider_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.ucode-databricks=")
+        )
+        assert 'Databricks-Model-Provider-Service = "main.default.openai"' in provider_arg
+
+    def test_provider_keeps_other_discovery_failures_fatal(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("HTTP 403 Forbidden")),
+        )
+
+        with pytest.raises(RuntimeError, match="HTTP 403 Forbidden"):
+            codex.launch(
+                {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
+                [],
+                options=LaunchOptions(),
+            )
+
+        assert launches == []
+
     def test_provider_rejects_managed_model_catalog(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
         managed_path = tmp_path / "managed_config.toml"
