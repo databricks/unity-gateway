@@ -26,6 +26,8 @@ from ucode.config_io import (
 )
 from ucode.constants import (
     LOOPBACK_HOST,
+    MCP_CLEANUP_SCOPES,
+    MCP_USER_SCOPE,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
@@ -49,6 +51,7 @@ from ucode.managed_files import (
     reconcile_managed_file,
     revert_managed_file,
 )
+from ucode.mcp_oauth import CLAUDE_CODE_OAUTH_CLIENT_ID, MCP_OAUTH_CALLBACK_PORT
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
@@ -502,6 +505,106 @@ def _enforce_model_default_hierarchy(
     return selected_default_model
 
 
+def add_claude_mcp_server(
+    name: str,
+    server: list[str] | dict,
+    scope: str = MCP_USER_SCOPE,
+    *,
+    always_load: bool = False,
+) -> None:
+    # Three registration shapes share this helper. The plain proxy path passes an
+    # argv list (`ucode mcp-proxy ...`), registered via `claude mcp add ... -- <argv>`
+    # where `--` fences the proxy's own flags off from claude's parser. The
+    # web_search server passes a full stdio entry dict with its own env, which only
+    # `add-json` can express — so a dict routes there. Finally, `always_load` (the
+    # skills registry) needs `alwaysLoad: true`, which plain `mcp add` can't set, so
+    # build a stdio entry dict and route it to add-json too.
+    if isinstance(server, dict):
+        cmd = ["claude", "mcp", "add-json", name, json.dumps(server), "-s", scope]
+    elif always_load:
+        entry = {
+            "type": "stdio",
+            "command": server[0],
+            "args": list(server[1:]),
+            "alwaysLoad": True,
+        }
+        cmd = ["claude", "mcp", "add-json", name, json.dumps(entry), "-s", scope]
+    else:
+        cmd = ["claude", "mcp", "add", name, "-s", scope, "--", *server]
+    try:
+        subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"Failed to add MCP server '{name}' via claude CLI.") from exc
+
+
+def add_claude_http_mcp_server(
+    name: str,
+    url: str,
+    scope: str = MCP_USER_SCOPE,
+    *,
+    client_id: str = CLAUDE_CODE_OAUTH_CLIENT_ID,
+    callback_port: int = MCP_OAUTH_CALLBACK_PORT,
+) -> None:
+    """Register a Databricks MCP endpoint as a **direct HTTP** server so Claude
+    Code is the OAuth client and drives the RFC 8707 connection login itself.
+
+    Unlike the stdio proxy (which injects a plain workspace token and hides the
+    per-user connection state), a direct HTTP server lets Claude Code do MCP OAuth
+    against ``/oidc`` with the ``resource`` indicator: on a missing/expired
+    connection credential, ``/mcp`` shows "needs authentication" and Authenticate
+    runs the login (``/oidc`` -> ``/mcp-service-login``). ``client_id`` is the
+    published ``claude-code`` app (it has the loopback ``/callback`` redirect
+    registered); the callback port is arbitrary because ``/oidc`` ignores the port
+    for loopback redirects."""
+    cmd = [
+        "claude",
+        "mcp",
+        "add",
+        "--transport",
+        "http",
+        "-s",
+        scope,
+        "--client-id",
+        client_id,
+        "--callback-port",
+        str(callback_port),
+        name,
+        url,
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=30)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"Failed to add HTTP MCP server '{name}' via claude CLI.") from exc
+
+
+def remove_claude_mcp_server(name: str, scope: str) -> bool:
+    # Imported lazily: `_is_missing_mcp_server_output` is a shared CLI-output matcher
+    # in ucode.mcp (used by the codex/gemini removers too), and ucode.mcp imports
+    # this module at load time — a function-level import avoids that cycle.
+    from ucode.mcp import _is_missing_mcp_server_output
+
+    try:
+        subprocess.run(
+            ["claude", "mcp", "remove", name, "-s", scope],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return True
+    except subprocess.CalledProcessError as exc:
+        output = f"{exc.stderr or ''}\n{exc.stdout or ''}"
+        if _is_missing_mcp_server_output(output):
+            return False
+        raise RuntimeError(f"Failed to remove MCP server '{name}' via claude CLI.") from exc
+
+
 def _register_web_search_mcp(workspace: str, search_model: str, profile: str | None = None) -> bool:
     """Register (or replace) the web_search MCP server in Claude Code's user
     scope via `claude mcp add-json`. Removes any prior entry first so re-runs
@@ -510,13 +613,6 @@ def _register_web_search_mcp(workspace: str, search_model: str, profile: str | N
     Returns True if registration succeeded. Failures are non-blocking: we warn
     and return False so the rest of `ucode claude` setup can complete.
     """
-    # Imported lazily to avoid a circular import via ucode.mcp -> ucode.agents.
-    from ucode.mcp import (
-        MCP_CLEANUP_SCOPES,
-        add_claude_mcp_server,
-        remove_claude_mcp_server,
-    )
-
     for scope in MCP_CLEANUP_SCOPES:
         try:
             remove_claude_mcp_server(WEB_SEARCH_MCP_NAME, scope)
@@ -548,8 +644,6 @@ def _web_search_mcp_is_current(state: dict, entry: dict) -> bool:
 
 def _unregister_web_search_mcp() -> None:
     """Remove the web_search MCP server from all scopes. Used by revert."""
-    from ucode.mcp import MCP_CLEANUP_SCOPES, remove_claude_mcp_server
-
     for scope in MCP_CLEANUP_SCOPES:
         try:
             remove_claude_mcp_server(WEB_SEARCH_MCP_NAME, scope)

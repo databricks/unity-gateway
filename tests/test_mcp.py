@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
-import subprocess
 import threading
 from unittest.mock import MagicMock
 
 import pytest
 
 from ucode import mcp
+from ucode.agents import claude
 
 WS = "https://example.databricks.com"
 CLAUDE_STATE = {"workspace": WS, "available_tools": ["claude"]}
@@ -69,71 +68,6 @@ class TestBuildMcpProxyArgv:
         assert "--profile" not in no_profile
 
 
-class TestAddClaudeMcpServer:
-    def test_registers_stdio_proxy_command(self, monkeypatch):
-        calls: list[dict] = []
-
-        def fake_run(args, **kwargs):
-            calls.append({"args": args, "kwargs": kwargs})
-            return MagicMock(returncode=0)
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        mcp.add_claude_mcp_server("github", _proxy_argv())
-
-        args = calls[0]["args"]
-        assert args[:4] == ["claude", "mcp", "add", "github"]
-        assert args[4:6] == ["-s", "user"]
-        # `--` fences the proxy argv; everything after it is the stdio command.
-        assert args[6] == "--"
-        assert args[7:] == _proxy_argv()
-
-    def test_always_load_routes_through_add_json_stdio_entry(self, monkeypatch):
-        # The skills registry needs `alwaysLoad: true`, which plain `mcp add`
-        # can't set — so the proxy argv is wrapped in a stdio entry dict and
-        # registered via add-json instead.
-        calls: list[dict] = []
-
-        def fake_run(args, **kwargs):
-            calls.append({"args": args, "kwargs": kwargs})
-            return MagicMock(returncode=0)
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        mcp.add_claude_mcp_server("skills", _proxy_argv(), always_load=True)
-
-        args = calls[0]["args"]
-        assert args[:4] == ["claude", "mcp", "add-json", "skills"]
-        entry = json.loads(args[4])
-        assert entry == {
-            "type": "stdio",
-            "command": _proxy_argv()[0],
-            "args": _proxy_argv()[1:],
-            "alwaysLoad": True,
-        }
-        assert args[5:] == ["-s", "user"]
-
-    def test_dict_entry_routes_through_add_json(self, monkeypatch):
-        # The web_search server (agents/claude.py) registers a full stdio entry
-        # dict with its own env, which only `add-json` can express — a dict must
-        # route there rather than through the proxy `mcp add -- <argv>` path.
-        calls: list[dict] = []
-
-        def fake_run(args, **kwargs):
-            calls.append({"args": args, "kwargs": kwargs})
-            return MagicMock(returncode=0)
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        entry = {"type": "stdio", "command": "ucode", "args": ["mcp", "web-search"]}
-        mcp.add_claude_mcp_server("web_search", entry)
-
-        args = calls[0]["args"]
-        assert args[:4] == ["claude", "mcp", "add-json", "web_search"]
-        assert json.loads(args[4]) == entry
-        assert args[5:] == ["-s", "user"]
-
-
 class TestAddCodexMcpServer:
     def test_registers_stdio_proxy_command(self, monkeypatch):
         calls: list[dict] = []
@@ -173,65 +107,6 @@ class TestAddGeminiMcpServer:
         # GEMINI_CLI_HOME must point at the launcher's home so `gemini mcp add`
         # writes the same settings.json the ucode session reads from.
         assert call["kwargs"]["env"]["GEMINI_CLI_HOME"] == str(mcp.gemini.GEMINI_HOME_DIR)
-
-
-class TestRemoveClaudeMcpServer:
-    def test_returns_true_when_server_removed(self, monkeypatch):
-        calls: list[list[str]] = []
-
-        def fake_run(args, **kwargs):
-            calls.append(args)
-            return MagicMock(returncode=0)
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        assert mcp.remove_claude_mcp_server("github", "user") is True
-        assert calls == [["claude", "mcp", "remove", "github", "-s", "user"]]
-
-    def test_returns_false_when_server_missing(self, monkeypatch):
-        def fake_run(args, **kwargs):
-            raise subprocess.CalledProcessError(1, args, stderr="No MCP server named github found")
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        assert mcp.remove_claude_mcp_server("github", "user") is False
-
-    def test_returns_false_when_project_local_server_missing(self, monkeypatch):
-        def fake_run(args, **kwargs):
-            raise subprocess.CalledProcessError(
-                1,
-                args,
-                stderr="No project-local MCP server found with name: github",
-            )
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        assert mcp.remove_claude_mcp_server("github", "project") is False
-
-    def test_returns_false_when_user_scoped_server_missing(self, monkeypatch):
-        def fake_run(args, **kwargs):
-            raise subprocess.CalledProcessError(
-                1,
-                args,
-                stderr="No user-scoped MCP server found with name: github",
-            )
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        assert mcp.remove_claude_mcp_server("github", "user") is False
-
-    def test_unexpected_failure_raises(self, monkeypatch):
-        def fake_run(args, **kwargs):
-            raise subprocess.CalledProcessError(1, args, stderr="permission denied")
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        try:
-            mcp.remove_claude_mcp_server("github", "user")
-        except RuntimeError as exc:
-            assert "Failed to remove MCP server 'github'" in str(exc)
-        else:
-            raise AssertionError("expected RuntimeError")
 
 
 class TestCursorMcpClient:
@@ -300,14 +175,14 @@ class TestConfigureClientMcpServer:
         monkeypatch.setattr(
             mcp, "oauth_client_available", lambda ws, client_id: claude_code_available
         )
-        monkeypatch.setattr(mcp, "remove_claude_mcp_server", lambda name, scope: False)
+        monkeypatch.setattr(claude, "remove_claude_mcp_server", lambda name, scope: False)
         monkeypatch.setattr(
-            mcp,
+            claude,
             "add_claude_http_mcp_server",
             lambda name, url, **kw: http_calls.append((name, url)),
         )
         monkeypatch.setattr(
-            mcp,
+            claude,
             "add_claude_mcp_server",
             lambda name, argv, scope=mcp.MCP_USER_SCOPE, **kw: proxy_calls.append((name, argv)),
         )
@@ -717,8 +592,8 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch, "github")
-        monkeypatch.setattr(mcp, "remove_claude_mcp_server", lambda name, scope: False)
-        monkeypatch.setattr(mcp, "add_claude_mcp_server", lambda name, entry, scope: None)
+        monkeypatch.setattr(claude, "remove_claude_mcp_server", lambda name, scope: False)
+        monkeypatch.setattr(claude, "add_claude_mcp_server", lambda name, entry, scope: None)
         monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
 
         assert mcp.configure_mcp_command() == 0

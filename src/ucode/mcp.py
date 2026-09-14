@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import string
@@ -28,8 +27,9 @@ from questionary.prompts.common import InquirerControl
 from questionary.question import Question
 from questionary.styles import merge_styles_default
 
-from ucode.agents import copilot, cursor, gemini, opencode
+from ucode.agents import claude, copilot, cursor, gemini, opencode
 from ucode.config_io import restore_file
+from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
     PermissionDeniedError,
     apply_pat_environment,
@@ -46,7 +46,6 @@ from ucode.databricks import (
 from ucode.mcp_oauth import (
     CLAUDE_CODE_OAUTH_CLIENT_ID,
     CURSOR_OAUTH_CLIENT_ID,
-    MCP_OAUTH_CALLBACK_PORT,
     oauth_client_available,
 )
 from ucode.state import load_full_state, load_state, save_state
@@ -60,8 +59,6 @@ from ucode.ui import (
     spinner,
 )
 
-MCP_USER_SCOPE = "user"
-MCP_CLEANUP_SCOPES = ("local", "project", MCP_USER_SCOPE)
 MCP_PICKER_VISIBLE_ROWS = 10
 
 # AI Gateway MCP-services endpoints carry this path segment. These are the
@@ -142,84 +139,6 @@ UC_FUNCTIONS_SELECTION_PREFIX = "uc-functions:"
 MCP_ADD_PREFIX = "add:"
 
 
-def add_claude_mcp_server(
-    name: str,
-    server: list[str] | dict,
-    scope: str = MCP_USER_SCOPE,
-    *,
-    always_load: bool = False,
-) -> None:
-    # Three registration shapes share this helper. The plain proxy path passes an
-    # argv list (`ucode mcp-proxy ...`), registered via `claude mcp add ... -- <argv>`
-    # where `--` fences the proxy's own flags off from claude's parser. The
-    # web_search server (agents/claude.py) passes a full stdio entry dict with its
-    # own env, which only `add-json` can express — so a dict routes there. Finally,
-    # `always_load` (the skills registry) needs `alwaysLoad: true`, which plain
-    # `mcp add` can't set, so build a stdio entry dict and route it to add-json too.
-    if isinstance(server, dict):
-        cmd = ["claude", "mcp", "add-json", name, json.dumps(server), "-s", scope]
-    elif always_load:
-        entry = {
-            "type": "stdio",
-            "command": server[0],
-            "args": list(server[1:]),
-            "alwaysLoad": True,
-        }
-        cmd = ["claude", "mcp", "add-json", name, json.dumps(entry), "-s", scope]
-    else:
-        cmd = ["claude", "mcp", "add", name, "-s", scope, "--", *server]
-    try:
-        subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"Failed to add MCP server '{name}' via claude CLI.") from exc
-
-
-def add_claude_http_mcp_server(
-    name: str,
-    url: str,
-    scope: str = MCP_USER_SCOPE,
-    *,
-    client_id: str = CLAUDE_CODE_OAUTH_CLIENT_ID,
-    callback_port: int = MCP_OAUTH_CALLBACK_PORT,
-) -> None:
-    """Register a Databricks MCP endpoint as a **direct HTTP** server so Claude
-    Code is the OAuth client and drives the RFC 8707 connection login itself.
-
-    Unlike the stdio proxy (which injects a plain workspace token and hides the
-    per-user connection state), a direct HTTP server lets Claude Code do MCP OAuth
-    against ``/oidc`` with the ``resource`` indicator: on a missing/expired
-    connection credential, ``/mcp`` shows "needs authentication" and Authenticate
-    runs the login (``/oidc`` -> ``/mcp-service-login``). ``client_id`` is the
-    published ``claude-code`` app (it has the loopback ``/callback`` redirect
-    registered); the callback port is arbitrary because ``/oidc`` ignores the port
-    for loopback redirects."""
-    cmd = [
-        "claude",
-        "mcp",
-        "add",
-        "--transport",
-        "http",
-        "-s",
-        scope,
-        "--client-id",
-        client_id,
-        "--callback-port",
-        str(callback_port),
-        name,
-        url,
-    ]
-    try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=30)
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"Failed to add HTTP MCP server '{name}' via claude CLI.") from exc
-
-
 def _is_missing_mcp_server_output(output: str) -> bool:
     normalized = output.lower()
     return (
@@ -228,23 +147,6 @@ def _is_missing_mcp_server_output(output: str) -> bool:
         or "no server named" in normalized
         or ("mcp server found with name" in normalized and "no " in normalized)
     )
-
-
-def remove_claude_mcp_server(name: str, scope: str) -> bool:
-    try:
-        subprocess.run(
-            ["claude", "mcp", "remove", name, "-s", scope],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        return True
-    except subprocess.CalledProcessError as exc:
-        output = f"{exc.stderr or ''}\n{exc.stdout or ''}"
-        if _is_missing_mcp_server_output(output):
-            return False
-        raise RuntimeError(f"Failed to remove MCP server '{name}' via claude CLI.") from exc
 
 
 def add_codex_mcp_server(name: str, argv: list[str]) -> None:
@@ -378,9 +280,11 @@ def configure_client_mcp_server(
     ):
         if client == "claude":
             removed_scopes = [
-                scope for scope in MCP_CLEANUP_SCOPES if remove_claude_mcp_server(name, scope)
+                scope
+                for scope in MCP_CLEANUP_SCOPES
+                if claude.remove_claude_mcp_server(name, scope)
             ]
-            add_claude_http_mcp_server(name, url, client_id=oauth_client)
+            claude.add_claude_http_mcp_server(name, url, client_id=oauth_client)
             return removed_scopes
         if client == "cursor":
             removed = cursor.write_http_mcp_server_config(name, url, client_id=oauth_client)
@@ -394,9 +298,9 @@ def configure_client_mcp_server(
     argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
     if client == "claude":
         removed_scopes = [
-            scope for scope in MCP_CLEANUP_SCOPES if remove_claude_mcp_server(name, scope)
+            scope for scope in MCP_CLEANUP_SCOPES if claude.remove_claude_mcp_server(name, scope)
         ]
-        add_claude_mcp_server(name, argv, MCP_USER_SCOPE, always_load=always_load)
+        claude.add_claude_mcp_server(name, argv, MCP_USER_SCOPE, always_load=always_load)
         return removed_scopes
     if client == "codex":
         removed = remove_codex_mcp_server(name)
@@ -420,7 +324,9 @@ def configure_client_mcp_server(
 
 def remove_client_mcp_server(client: str, name: str) -> list[str]:
     if client == "claude":
-        return [scope for scope in MCP_CLEANUP_SCOPES if remove_claude_mcp_server(name, scope)]
+        return [
+            scope for scope in MCP_CLEANUP_SCOPES if claude.remove_claude_mcp_server(name, scope)
+        ]
     if client == "codex":
         return [MCP_USER_SCOPE] if remove_codex_mcp_server(name) else []
     if client == "gemini":
