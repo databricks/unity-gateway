@@ -57,9 +57,7 @@ class TestProbeOauthClient:
 
     def test_unexpected_success_is_inconclusive(self, monkeypatch):
         # A 2xx for a dummy code is unexpected; don't conclude "registered".
-        monkeypatch.setattr(
-            mcp_oauth.urllib.request, "urlopen", lambda req, timeout=0: object()
-        )
+        monkeypatch.setattr(mcp_oauth.urllib.request, "urlopen", lambda req, timeout=0: object())
         assert mcp_oauth._probe_oauth_client(WS, "claude-code") is None
 
 
