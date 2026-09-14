@@ -124,6 +124,7 @@ from ucode.state import (
     set_current_workspace,
     set_provider_service,
 )
+from ucode.string_utils import is_valid_catalog_schema
 from ucode.tracing import configure_tracing_command
 from ucode.ui import (
     console,
@@ -2043,10 +2044,15 @@ def _launch_tool(
     managed: dict | None = None,
     recommendation: dict | None = None,
     model: str | None = None,
+    parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
 ) -> None:
     try:
         tool = normalize_tool(tool_name)
+        if provider is not None and parent_schema is not None:
+            raise RuntimeError("--provider and --parent cannot be used together.")
+        if parent_schema is not None and not is_valid_catalog_schema(parent_schema):
+            raise RuntimeError("--parent must be `<catalog>.<schema>`.")
         explicit_prompt = _has_explicit_prompt(ctx)
         smart_routing_enabled = smart_routing_v2.enabled()
         # Launchers such as isaac put their harness arguments after `--`, so the harness's own
@@ -2141,6 +2147,8 @@ def _launch_tool(
                 )
             if managed_provider:
                 provider = managed_provider
+        if provider and parent_schema is not None:
+            raise RuntimeError("--provider and --parent cannot be used together.")
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
         # guard too, or routing would be persisted as on while a provider is active.
         if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and provider:
@@ -2244,6 +2252,7 @@ def _launch_tool(
             # Claude's explicit model is launch-scoped and is passed through LaunchOptions below.
             custom_model=None,
             coding_agent_config_defaults=coding_agent_config_defaults,
+            parent_schema=parent_schema,
         )
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
@@ -2506,6 +2515,13 @@ def codex_cmd(
             "before any `--` separator.",
         ),
     ] = None,
+    parent: Annotated[
+        str | None,
+        typer.Option(
+            "--parent",
+            help="Discover model services in `<catalog>.<schema>`. Example: main.default",
+        ),
+    ] = None,
     refresh: Annotated[
         bool,
         typer.Option(
@@ -2567,6 +2583,7 @@ def codex_cmd(
                 refresh=refresh,
                 skip_preflight=skip_preflight,
                 workspace_url=workspace,
+                parent_schema=parent,
                 custom_oauth=custom_oauth,
             )
 
@@ -2585,6 +2602,13 @@ def claude_cmd(
             help="Route through a Unity Catalog Model Provider Service "
             "(<catalog>.<schema>.<name>). Skips Databricks model pinning; pass "
             "before any `--` separator.",
+        ),
+    ] = None,
+    parent: Annotated[
+        str | None,
+        typer.Option(
+            "--parent",
+            help="Discover model services in `<catalog>.<schema>`. Example: main.default",
         ),
     ] = None,
     model: Annotated[
@@ -2658,7 +2682,7 @@ def claude_cmd(
         claude_agent.disable_smart_routing(load_state())
         print_success("Claude Code smart routing disabled; ug routing hooks removed")
         return
-    if enable_model_discovery:
+    if enable_model_discovery or (parent is not None and provider is None):
         os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
     with _smart_routing_v2_flag(enable_smart_routing_flag):
         with _disable_smart_routing_for_subcommand("claude", ctx):
@@ -2670,6 +2694,7 @@ def claude_cmd(
                 refresh=refresh,
                 skip_preflight=skip_preflight,
                 workspace_url=workspace,
+                parent_schema=parent,
                 custom_oauth=custom_oauth,
             )
 

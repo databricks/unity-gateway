@@ -144,6 +144,11 @@ class TestRenderOverlay:
         headers = overlay["model_providers"]["ucode-databricks"]["http_headers"]
         assert "Databricks-Model-Provider-Service" not in headers
 
+    def test_parent_adds_discovery_header(self):
+        overlay = codex.render_overlay(WS, parent_schema="main.default")
+        headers = overlay["model_providers"]["ucode-databricks"]["http_headers"]
+        assert headers["Databricks-Model-Service-Parent-Schema"] == "main.default"
+
 
 class TestRenderOverlayUserAgent:
     def test_user_agent_set_on_provider(self, monkeypatch):
@@ -257,6 +262,50 @@ class TestCodexWriteConfig:
         codex.write_tool_config(state)
 
         headers = read_toml_safe(config_path)["model_providers"]["ucode-databricks"]["http_headers"]
+        assert "Databricks-Model-Provider-Service" not in headers
+
+    def test_replaces_stale_routing_headers(self, tmp_path, monkeypatch):
+        config_path = tmp_path / ".codex" / "ucode.config.toml"
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+        state = {"workspace": WS, "codex_models": []}
+
+        codex.write_tool_config(state, provider="main.default.openai")
+        codex.write_tool_config(state, parent_schema="main.default")
+
+        headers = read_toml_safe(config_path)["model_providers"]["ucode-databricks"]["http_headers"]
+        assert headers["Databricks-Model-Service-Parent-Schema"] == "main.default"
+        assert "Databricks-Model-Provider-Service" not in headers
+
+        codex.write_tool_config(state)
+
+        headers = read_toml_safe(config_path)["model_providers"]["ucode-databricks"]["http_headers"]
+        assert "Databricks-Model-Service-Parent-Schema" not in headers
+        assert "Databricks-Model-Provider-Service" not in headers
+
+    def test_legacy_replaces_stale_routing_headers(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / ".codex"
+        legacy_path = config_dir / "config.toml"
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_dir / "ucode.config.toml")
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", legacy_path)
+        monkeypatch.setattr(codex, "LEGACY_CODEX_BACKUP_PATH", tmp_path / "legacy-backup.toml")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.133.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+        state = {"workspace": WS, "codex_models": []}
+
+        codex.write_tool_config(state, provider="main.default.openai")
+        codex.write_tool_config(state, parent_schema="main.default")
+
+        headers = read_toml_safe(legacy_path)["model_providers"]["ucode-databricks"]["http_headers"]
+        assert headers["Databricks-Model-Service-Parent-Schema"] == "main.default"
+        assert "Databricks-Model-Provider-Service" not in headers
+
+        codex.write_tool_config(state)
+        headers = read_toml_safe(legacy_path)["model_providers"]["ucode-databricks"]["http_headers"]
+        assert "Databricks-Model-Service-Parent-Schema" not in headers
         assert "Databricks-Model-Provider-Service" not in headers
 
     def test_clears_profile_model_preferences_before_launch(self, tmp_path, monkeypatch):
@@ -929,8 +978,8 @@ class TestCodexManagedConfig:
         ]
         managed = read_toml_safe(managed_path)
         managed_headers = managed["model_providers"]["ucode-databricks"]["http_headers"]
-        assert codex.MPS_HEADER not in local_headers
-        assert codex.MPS_HEADER not in managed_headers
+        assert codex.MODEL_PROVIDER_SERVICE_HEADER not in local_headers
+        assert codex.MODEL_PROVIDER_SERVICE_HEADER not in managed_headers
         assert managed["model_catalog_json"] == "/tmp/stale.json"
 
     def test_noninteractive_uses_local_config_when_managed_config_is_compatible(
