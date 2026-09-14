@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import errno
 import json
-import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -31,36 +29,6 @@ class TestCustomOAuthLock:
                 raise ValueError("login failed")
         with _custom_oauth_lock(tmp_path, "http://127.0.0.1:8020/other-callback"):
             assert len(list(tmp_path.glob("*.lock"))) == 1
-
-    def test_windows_waits_for_login_and_unlocks_on_failure(self, tmp_path, monkeypatch):
-        msvcrt = Mock()
-        msvcrt.locking.side_effect = [OSError(errno.EACCES, "locked"), None, None]
-        monkeypatch.setitem(sys.modules, "msvcrt", msvcrt)
-        monkeypatch.setattr("ucode.custom_oauth.sys.platform", "win32")
-        sleep = Mock()
-        monkeypatch.setattr("ucode.custom_oauth.time.sleep", sleep)
-
-        with pytest.raises(ValueError, match="login failed"):
-            with _custom_oauth_lock(tmp_path, "http://localhost:8020/callback"):
-                raise ValueError("login failed")
-
-        assert [call.args[1:] for call in msvcrt.locking.call_args_list] == [
-            (msvcrt.LK_NBLCK, 1),
-            (msvcrt.LK_NBLCK, 1),
-            (msvcrt.LK_UNLCK, 1),
-        ]
-        sleep.assert_called_once_with(0.1)
-
-    def test_windows_does_not_retry_other_lock_errors(self, tmp_path, monkeypatch):
-        msvcrt = Mock()
-        msvcrt.locking.side_effect = OSError(errno.EBADF, "bad descriptor")
-        monkeypatch.setitem(sys.modules, "msvcrt", msvcrt)
-        monkeypatch.setattr("ucode.custom_oauth.sys.platform", "win32")
-
-        with pytest.raises(OSError, match="bad descriptor"):
-            with _custom_oauth_lock(tmp_path, "http://localhost:8020/callback"):
-                pytest.fail("lock should not be acquired")
-        msvcrt.locking.assert_called_once()
 
 
 class TestCustomClientToken:

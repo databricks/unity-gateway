@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import errno
 import platform
 import shlex
 import subprocess
-import sys
-import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -98,43 +95,21 @@ def build_custom_auth_shell_command(workspace: str, config: CustomOAuthConfig) -
 
 @contextmanager
 def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
-    """Serialize helpers sharing a callback port, including cache refresh/write.
+    """Serialize helpers sharing a callback port with a POSIX file lock.
 
     Keep the lock file in place: unlinking it could let waiters lock different
     inodes. The OS releases the lock even if the helper is killed on timeout.
     """
+    import fcntl
+
     cache_dir.mkdir(parents=True, exist_ok=True)
     port = urlparse(redirect_url).port
     with (cache_dir / f"ug-oauth-{port}.lock").open("a+b") as lock_file:
-        if sys.platform == "win32":
-            import msvcrt
-
-            # Windows locks a byte range. Ensure byte zero exists and always
-            # seek back to it (opening in append mode may leave us at EOF).
-            if lock_file.seek(0, 2) == 0:
-                lock_file.write(b"\0")
-                lock_file.flush()
-            lock_file.seek(0)
-            while True:
-                try:
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-                    break
-                except OSError as exc:
-                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
-                        raise
-                    time.sleep(0.1)
-            try:
-                yield
-            finally:
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 def get_custom_client_token(
