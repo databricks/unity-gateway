@@ -70,13 +70,19 @@ does not depend on a label or a manual request.
 
 The existing e2e workflow runs seven parallel shards: gateway checks plus one for
 each of Claude, Codex, Gemini, OpenCode, Copilot, and Pi. Each agent shard installs
-its own CLI. The Claude shard also runs the existing tracing test file, whose
+its own CLI. Configure-subset checks run in the Claude shard because configuration
+invokes the Claude CLI. The Claude shard also runs the existing tracing test file, whose
 pre-existing skip remains in place. The `All agent tests` check requires every shard to pass.
 Check names describe the coverage: `Unit tests`, `Gateway API tests`,
 `Agent launch tests · Claude`, `Smoke journeys · Claude`, and
 `Full journeys · Claude · Configure` (with the other agents/groups named likewise).
 Unit tests still run as one job. Both matrices use `fail-fast: false` so one
 failure does not cancel other coverage.
+
+The small `test` and `e2e` compatibility gates retain the exact status contexts
+required by the repository's branch rules. They pass only when `Unit tests` and
+`All agent tests`, respectively, succeed; a failed or skipped dependency fails
+the gate. The descriptive jobs provide the actual coverage and diagnostics.
 
 ## Gaps and deferred scope
 

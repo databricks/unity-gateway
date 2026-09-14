@@ -33,11 +33,11 @@ jobs:
         include:
           - group: gateway
             name: Gateway API tests
-            keyword: not (TestCodexLaunch or TestClaudeLaunch or TestModelProviderLaunch or TestGeminiLaunch or TestGeminiFreshInstall or TestGeminiAuthRecovery or TestOpencodeLaunch or TestCopilotLaunch or TestPiLaunch)
+            keyword: not (TestCodexLaunch or TestClaudeLaunch or TestConfigureSubset or TestModelProviderLaunch or TestGeminiLaunch or TestGeminiFreshInstall or TestGeminiAuthRecovery or TestOpencodeLaunch or TestCopilotLaunch or TestPiLaunch)
             package: ''
           - group: claude
             name: Agent launch tests · Claude
-            keyword: TestClaudeLaunch or (TestModelProviderLaunch and not codex)
+            keyword: TestClaudeLaunch or TestConfigureSubset or (TestModelProviderLaunch and not codex)
             package: '@anthropic-ai/claude-code'
           - group: codex
             name: Agent launch tests · Codex
@@ -111,4 +111,30 @@ jobs:
       - name: Require every e2e shard to pass
         env:
           RESULT: ${{ needs.e2e-shards.result }}
+        run: test "$RESULT" = success
+
+  # Preserve the exact contexts required by the repository's branch rules.
+  # Keep these aliases until the rules and all active branches migrate together.
+  required-tests:
+    name: test
+    if: ${{ !cancelled() }}
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require unit tests to pass
+        env:
+          RESULT: ${{ needs.test.result }}
+        run: test "$RESULT" = success
+
+  required-e2e:
+    name: e2e
+    if: ${{ !cancelled() }}
+    needs: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all agent tests to pass
+        env:
+          RESULT: ${{ needs.e2e.result }}
         run: test "$RESULT" = success
