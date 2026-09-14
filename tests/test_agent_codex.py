@@ -130,6 +130,22 @@ class TestRenderOverlay:
         auth = overlay["model_providers"]["ucode-databricks"]["auth"]
         assert auth["refresh_interval_ms"] == 900_000
 
+    @pytest.mark.parametrize("render", [codex.render_overlay, codex.render_legacy_overlay])
+    @pytest.mark.parametrize("custom", [False, True])
+    def test_auth_timeout_allows_custom_browser_login_only(self, render, custom):
+        config = (
+            {
+                "client_id": "custom-client",
+                "redirect_url": "http://localhost:8020/callback",
+                "scopes": ["offline_access", "model-serving"],
+            }
+            if custom
+            else None
+        )
+        overlay = render(WS, custom_oauth=config)
+        auth = overlay["model_providers"]["ucode-databricks"]["auth"]
+        assert auth["timeout_ms"] == (180_000 if custom else 5000)
+
     def test_provider_adds_routing_header(self):
         overlay = codex.render_overlay(WS, provider="main.aarushi.aarushi-openai")
         headers = overlay["model_providers"]["ucode-databricks"]["http_headers"]
