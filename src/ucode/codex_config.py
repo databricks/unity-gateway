@@ -68,9 +68,8 @@ def custom_catalog_models() -> list[str] | None:
     return None
 
 
-def _catalog_slugs(path: Path) -> list[str]:
-    """Extract deduplicated model slugs from a Codex custom catalog JSON file."""
-    catalog = read_json_safe(path)
+def catalog_slugs(catalog: Mapping) -> list[str]:
+    """Extract deduplicated model slugs from a Codex custom catalog mapping."""
     models = catalog.get("models")
     if not isinstance(models, list):
         return []
@@ -85,6 +84,11 @@ def _catalog_slugs(path: Path) -> list[str]:
         seen.add(slug)
         slugs.append(slug)
     return slugs
+
+
+def _catalog_slugs(path: Path) -> list[str]:
+    """Extract deduplicated model slugs from a Codex custom catalog JSON file."""
+    return catalog_slugs(read_json_safe(path))
 
 
 def _toml_item(value: object) -> Item:
