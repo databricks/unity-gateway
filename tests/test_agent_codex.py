@@ -143,7 +143,7 @@ class TestRenderOverlay:
             else None
         )
         overlay = render(WS, custom_oauth=config)
-        auth = overlay["model_providers"]["ucode-databricks"]["auth"]
+        auth = overlay["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]["auth"]
         assert auth["timeout_ms"] == (180_000 if custom else 5000)
 
     def test_provider_adds_routing_header(self):
