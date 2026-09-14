@@ -39,6 +39,7 @@ from ucode.custom_oauth import (
     get_custom_client_token,
 )
 from ucode.databricks import (
+    CodexMpsModelCatalogUnavailable,
     build_auth_token_argv,
     build_tool_base_url,
     fetch_codex_mps_model_catalog,
@@ -696,10 +697,18 @@ def launch(
         )
     _set_provider_header(profile_doc, provider)
     if workspace and token and provider:
-        catalog = fetch_codex_mps_model_catalog(workspace, token, provider)
-        catalog_path = _model_catalog_path(workspace, provider)
-        _write_model_catalog(catalog_path, catalog)
-        profile_doc["model_catalog_json"] = str(catalog_path)
+        try:
+            catalog = fetch_codex_mps_model_catalog(workspace, token, provider)
+        except CodexMpsModelCatalogUnavailable:
+            print_warning_err(
+                "Codex model discovery is not enabled for this workspace; "
+                "launching without an MPS model catalog. Codex will use its own model selection, "
+                "and the /model picker may include models that are unavailable through this provider."
+            )
+        else:
+            catalog_path = _model_catalog_path(workspace, provider)
+            _write_model_catalog(catalog_path, catalog)
+            profile_doc["model_catalog_json"] = str(catalog_path)
     exec_or_spawn([binary, *codex_config_args(profile_doc), *tool_args])
 
 

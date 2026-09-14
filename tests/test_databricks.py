@@ -84,6 +84,31 @@ class TestFetchCodexMpsModelCatalog:
         with pytest.raises(RuntimeError, match="returned no Codex models"):
             db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
 
+    def test_reports_disabled_route_as_unavailable(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda *args, **kwargs: (
+                None,
+                "HTTP 404 Not Found: codex/v1/models is not enabled for this workspace",
+            ),
+        )
+
+        with pytest.raises(db_mod.CodexMpsModelCatalogUnavailable):
+            db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
+
+    def test_keeps_other_discovery_errors_fatal(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda *args, **kwargs: (None, "HTTP 403 Forbidden"),
+        )
+
+        with pytest.raises(RuntimeError, match="HTTP 403 Forbidden") as exc_info:
+            db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
+
+        assert not isinstance(exc_info.value, db_mod.CodexMpsModelCatalogUnavailable)
+
 
 class TestWorkspaceHostname:
     def test_extracts_hostname(self):
