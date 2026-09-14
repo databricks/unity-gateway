@@ -1065,3 +1065,49 @@ class TestCodexManagedConfig:
 
         with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
             codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+
+class TestWriteConfigBackup:
+    """A re-configure must not snapshot the file ucode itself generated."""
+
+    def _patch(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", tmp_path / "ucode.config.toml")
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr("ucode.config_io.APP_DIR", tmp_path)
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+
+    def test_first_configure_backs_up_user_owned_profile(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path)
+        (tmp_path / "ucode.config.toml").write_text("# user comment\n", encoding="utf-8")
+
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        assert (tmp_path / "backup.toml").read_text(encoding="utf-8") == "# user comment\n"
+
+    def test_reconfigure_does_not_back_up_generated_profile(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path)
+        state = {
+            "workspace": WS,
+            "codex_models": ["gpt-5"],
+            # load_state after a first configure: ucode already manages this file.
+            "managed_configs": {"codex": {"keys": [["model_provider"]]}},
+        }
+
+        codex.write_tool_config(state)
+
+        assert not (tmp_path / "backup.toml").exists()
+
+    def test_clear_model_preferences_does_not_back_up_generated_profile(
+        self, tmp_path, monkeypatch
+    ):
+        self._patch(monkeypatch, tmp_path)
+        (tmp_path / "ucode.config.toml").write_text('model = "system.ai.gpt-5"\n', encoding="utf-8")
+
+        changed = codex.clear_model_preferences(
+            {"workspace": WS, "managed_configs": {"codex": {"keys": []}}}
+        )
+
+        assert changed is True
+        assert "model" not in read_toml_safe(tmp_path / "ucode.config.toml")
+        assert not (tmp_path / "backup.toml").exists()
