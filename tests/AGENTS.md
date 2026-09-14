@@ -102,7 +102,7 @@ behavior a test claims to exercise.
 uv run pytest tests/test_integration_contract.py
 uv run ruff check tests/ scripts/run_integration.py
 uv run ruff format --check tests/ scripts/run_integration.py
-python3 scripts/run_integration.py --help
+python3.12 scripts/run_integration.py --help
 ```
 
 Run integration through `scripts/run_integration.py` with explicit versions.

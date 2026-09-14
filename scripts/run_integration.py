@@ -85,7 +85,7 @@ def arguments():
         "--npm-lock", type=Path, help="Replay a previous npm-lock.json with npm ci."
     )
     parser.add_argument(
-        "--index-url", default=os.environ.get("UV_INDEX_URL", "https://pypi.org/simple")
+        "--default-index", default=os.environ.get("UV_DEFAULT_INDEX", "https://pypi.org/simple")
     )
     parser.add_argument("--npm-registry", default="https://registry.npmjs.org")
     parser.add_argument("--profile", help="Explicit Databricks profile to mint the live bearer.")
@@ -197,7 +197,7 @@ def main() -> int:
     base_env["npm_config_fetch_retries"] = "1"
     base_env["npm_config_fetch_timeout"] = "30000"
     base_env["UV_CACHE_DIR"] = str(output / "cache")
-    base_env["UV_INDEX_URL"] = args.index_url
+    base_env["UV_DEFAULT_INDEX"] = args.default_index
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
 
     def redact(value: str) -> str:
@@ -295,8 +295,8 @@ def main() -> int:
                 "install",
                 "--python",
                 python,
-                "--index-url",
-                args.index_url,
+                "--default-index",
+                args.default_index,
                 "--constraint",
                 constraints,
                 package,
@@ -444,8 +444,8 @@ def main() -> int:
                 "install",
                 "--python",
                 testenv / "bin/python",
-                "--index-url",
-                args.index_url,
+                "--default-index",
+                args.default_index,
                 "pytest==9.0.3",
                 "pexpect==4.9.0",
                 "pyte==0.8.2",

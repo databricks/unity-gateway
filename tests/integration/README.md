@@ -14,7 +14,7 @@ terminal, and evidence helpers are available, but no live journeys are defined y
 Prerequisites: Python 3.12+, uv, and Node/npm.
 
 ```bash
-python3 scripts/run_integration.py \
+python3.12 scripts/run_integration.py \
   --ug-version checkout --claude-version 2.1.268 --installation-only
 ```
 
@@ -29,7 +29,7 @@ Agent versions must be exact. Select one agent by passing only its version.
 Use `--dependency PACKAGE==VERSION` to constrain a suspected dependency,
 `--constraints dependencies.txt` to replay Python dependencies, and
 `--npm-lock npm-lock.json` to replay agent dependencies. Locks must match the
-original OS and architecture. `--index-url` and `--npm-registry` select mirrors.
+original OS and architecture. `--default-index` and `--npm-registry` select mirrors.
 
 The separate pytest configuration and `--confcutdir` prevent the unit fixtures
 from leaking into integration. The default unit-test command does not collect
