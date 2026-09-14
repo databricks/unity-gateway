@@ -10,6 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from ucode import managed_files
 from ucode.agents import LaunchOptions, claude
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
@@ -205,10 +206,7 @@ class TestRenderOverlay:
         overlay, _ = claude.render_overlay(WS, "s4")
         assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in overlay["env"]
 
-    def test_gateway_model_discovery_skipped_under_provider(self, monkeypatch):
-        # A Model Provider Service routes every request to the external provider,
-        # so a discovered gateway endpoint id would reach a provider that can't
-        # resolve it — discovery must be off in that mode.
+    def test_gateway_model_discovery_not_persisted_under_provider(self, monkeypatch):
         monkeypatch.setenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", "1")
         overlay, _ = claude.render_overlay(WS, "s4", provider="main.x.claude-svc")
         assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in overlay["env"]
@@ -371,6 +369,13 @@ class TestRenderOverlay:
         overlay, _ = claude.render_overlay(WS, "s4")
         assert "Databricks-Model-Provider-Service" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
+    def test_parent_adds_discovery_header(self):
+        overlay, _ = claude.render_overlay(WS, "s4", parent_schema="main.default")
+        assert (
+            "Databricks-Model-Service-Parent-Schema: main.default"
+            in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        )
+
     def test_bedrock_provider_pins_model_ids(self):
         provider_models = {
             "opus": "global.anthropic.claude-opus-4-8",
@@ -459,6 +464,15 @@ class TestRenderOverlayUserAgent:
 
 
 class TestMergeAnthropicCustomHeaders:
+    def test_removes_stale_parent_header(self):
+        existing = "X-User: keep\nDatabricks-Model-Service-Parent-Schema: main.default"
+        managed = "x-databricks-use-coding-agent-mode: true"
+
+        merged = claude._merge_anthropic_custom_headers(existing, managed)
+
+        assert "X-User: keep" in merged
+        assert "Databricks-Model-Service-Parent-Schema" not in merged
+
     def test_merges_existing_settings_with_ucode_managed_headers(self):
         headers_from_existing_settings = "\n".join(
             [
@@ -875,6 +889,44 @@ class TestWriteToolConfigManagedSettings:
             "haiku": "system.ai.claude-haiku-5",  # Ucode default took priority.
         }
 
+    def test_managed_file_omits_workspace_defaults_for_provider(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): {
+                "env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-4-8"}
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {
+            "workspace": WS,
+            "claude_models": {
+                "opus": "system.ai.claude-opus-4-8",
+                "haiku": "system.ai.claude-haiku-4-6",
+            },
+        }
+
+        claude.write_tool_config(state, None, provider="main.default.anthropic")
+
+        env = json.loads(managed_writes[0][1])["env"]
+        assert not set(claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.values()) & env.keys()
+
+    def test_managed_file_keeps_provider_model_pins(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        state = {"workspace": WS, "claude_models": {"opus": "system.ai.claude-opus-4-8"}}
+
+        claude.write_tool_config(
+            state,
+            None,
+            provider="main.default.bedrock",
+            provider_models={"opus": "us.anthropic.claude-opus-4-6"},
+        )
+
+        env = json.loads(managed_writes[0][1])["env"]
+        assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "us.anthropic.claude-opus-4-6"
+
     def test_managed_file_removes_fable_default_when_fable_is_disabled(self, monkeypatch):
         managed_defaults = self._write_managed_model_defaults(
             monkeypatch,
@@ -960,6 +1012,59 @@ class TestWriteToolConfigManagedSettings:
             claude.write_tool_config(state, "databricks-claude-sonnet-4")
 
         assert managed_writes == []
+
+    def test_sudo_failure_uses_local_settings_when_managed_file_is_compatible(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        warnings: list[str] = []
+        verified: list[dict] = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+
+        def deny_managed_write(*args, **kwargs):
+            raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+
+        monkeypatch.setattr(
+            claude,
+            "reconcile_managed_file",
+            deny_managed_write,
+        )
+        monkeypatch.setattr(claude, "print_warning", warnings.append)
+        monkeypatch.setattr(
+            claude,
+            "mark_managed_file_verified",
+            lambda *args, **kwargs: verified.append(kwargs),
+        )
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        assert private_writes
+        assert managed_writes == []
+        assert "continuing with local settings" in warnings[0]
+        assert verified == [{"scope": "local-compatible"}]
+
+    def test_sudo_failure_remains_fatal_when_managed_file_conflicts(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): {"env": {"ANTHROPIC_BASE_URL": "https://other.example.com"}}
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+
+        def deny_managed_write(*args, **kwargs):
+            raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+
+        monkeypatch.setattr(
+            claude,
+            "reconcile_managed_file",
+            deny_managed_write,
+        )
+
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+            )
 
 
 class TestRegisterWebSearchMcp:
@@ -1067,6 +1172,22 @@ class TestRegisterWebSearchMcp:
 
 
 class TestClaudeLaunch:
+    def test_gateway_discovery_enabled_for_relayed_provider(self, monkeypatch):
+        calls: list[tuple[dict, str, list[str]]] = []
+        monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
+        monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        monkeypatch.setattr(
+            claude,
+            "_launch_relayed",
+            lambda state, binary, tool_args: calls.append((state, binary, tool_args)),
+        )
+        state = {"workspace": WS, "claude_relayed": True}
+
+        claude.launch(state, ["--debug"], options=LaunchOptions())
+
+        assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert calls == [(state, "claude", ["--debug"])]
+
     def test_relayed_launch_uses_refresh_proxy(self, monkeypatch):
         calls: list[tuple] = []
 
@@ -1231,6 +1352,27 @@ class TestClaudeLaunch:
         claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
 
         assert os.environ["OAUTH_TOKEN"] == "token"
+        assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
+
+    def test_gateway_discovery_enabled_under_provider(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.delenv(v2.ENV_VAR, raising=False)
+        monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
+        monkeypatch.delenv("OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+
+        claude.launch(
+            {
+                "workspace": WS,
+                "profile": "test",
+                "_claude_launch_provider": "main.default.anthropic",
+            },
+            ["--debug"],
+            options=LaunchOptions(),
+        )
+
         assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
 
@@ -1543,3 +1685,82 @@ class TestClaudeSmartRouting:
         assert state.get(claude.SMART_ROUTING_STATE_KEY) is None
         assert list(doc["hooks"]) == ["PreToolUse"]
         assert doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "user-policy"
+
+
+class TestEnsureSubscriptionLogin:
+    """Relayed launch's subscription-login gate."""
+
+    @staticmethod
+    def _forbid_subprocess(monkeypatch):
+        """Fail loudly if the CLI is shelled out to at all (status probe or login)."""
+
+        def _boom(*args, **kwargs):
+            raise AssertionError(f"unexpected subprocess call: {args!r}")
+
+        monkeypatch.setattr(claude.subprocess, "run", _boom)
+
+    def test_oauth_token_env_skips_login(self, monkeypatch):
+        # A pre-provisioned CLAUDE_CODE_OAUTH_TOKEN (e.g. `claude setup-token`
+        # output in CI) is the credential Claude Code uses directly, so no
+        # interactive browser login applies — and no `auth status` probe is even
+        # needed. This keeps headless/relayed runs from hanging on the browser.
+        monkeypatch.setenv(claude.CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR, "dummy-oauth-token")
+        self._forbid_subprocess(monkeypatch)
+        claude._ensure_subscription_login()  # returns without touching the CLI
+
+    def test_existing_login_skips_browser(self, monkeypatch):
+        monkeypatch.delenv(claude.CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR, raising=False)
+        monkeypatch.setattr(claude, "_has_subscription_login", lambda: True)
+
+        def _boom(cmd, **kwargs):
+            raise AssertionError(f"no auth login expected, got {cmd!r}")
+
+        monkeypatch.setattr(claude.subprocess, "run", _boom)
+        claude._ensure_subscription_login()
+
+    def test_missing_login_runs_browser_flow(self, monkeypatch):
+        monkeypatch.delenv(claude.CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR, raising=False)
+        monkeypatch.setattr(claude, "_has_subscription_login", lambda: False)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(claude.subprocess, "run", lambda cmd, **kwargs: calls.append(cmd))
+        monkeypatch.setattr(claude, "print_note", lambda *a, **kw: None)
+        monkeypatch.setattr(claude, "print_success", lambda *a, **kw: None)
+        claude._ensure_subscription_login()
+        assert calls == [[claude.SPEC["binary"], "auth", "login"]]
+
+
+class TestWriteToolConfigBackup:
+    """A re-configure must not snapshot the file ucode itself generated."""
+
+    def _patch(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "backup.json")
+        monkeypatch.setattr("ucode.config_io.APP_DIR", tmp_path)
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: None)
+
+    def test_first_configure_backs_up_user_owned_file(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path)
+        (tmp_path / "ucode-settings.json").write_text(
+            '{"permissions": {"allow": ["Read"]}}', encoding="utf-8"
+        )
+
+        claude.write_tool_config(
+            {"workspace": WS, "claude_models": {}}, "databricks-claude-sonnet-4"
+        )
+
+        backup = (tmp_path / "backup.json").read_text(encoding="utf-8")
+        assert backup == '{"permissions": {"allow": ["Read"]}}'
+
+    def test_reconfigure_does_not_back_up_generated_file(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path)
+        state = {
+            "workspace": WS,
+            "claude_models": {},
+            # load_state after a first configure: ucode already manages this file.
+            "managed_configs": {"claude": {"keys": [["env", "ANTHROPIC_BASE_URL"]]}},
+        }
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert not (tmp_path / "backup.json").exists()
