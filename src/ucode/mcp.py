@@ -1876,6 +1876,7 @@ def configure_mcp_command(
     # the picker and carry them through untouched.
     skills_servers = _skills_entries(original_mcp_servers)
     picker_servers = [s for s in original_mcp_servers if s.get("kind") != SKILLS_MCP_KIND]
+    original_by_name = _servers_by_name(picker_servers)
     if append:
         # An existing server can still be new to one of the requested agents.
         # Leave it out of the configured list so the picker offers it for that agent.
@@ -1888,14 +1889,14 @@ def configure_mcp_command(
     # `ucode setup`), so the picker never shows a server the caller couldn't re-add.
     if "apps" in excluded_sources:
         picker_servers = [s for s in picker_servers if not _is_app_mcp_server(s)]
-    original_by_name = _servers_by_name(picker_servers)
+    picker_by_name = _servers_by_name(picker_servers)
 
     # Single source (MCP services), so there's no "choose sources" step — discover the fast
     # `system.ai` list, show the picker immediately, and let the workspace-wide walk stream in
     # behind it via the background loader so the picker never blocks on it.
     discovered = _discover_selected_mcp_sources(workspace, profile, {MCP_SERVICES_SOURCE})
     services_loader = _mcp_services_background_loader(
-        workspace, profile, set(original_by_name), additive=append
+        workspace, profile, set(picker_by_name), additive=append
     )
     selections = prompt_for_mcp_server_choices(
         discovered["external"],
@@ -1925,7 +1926,7 @@ def configure_mcp_command(
         if selection.startswith(MCP_ADD_PREFIX):
             add_selections.append(selection.removeprefix(MCP_ADD_PREFIX))
             continue
-        original = original_by_name.get(selection)
+        original = picker_by_name.get(selection)
         if original and selection not in working_names:
             working_mcp_servers.append(original.copy())
             working_names.add(selection)

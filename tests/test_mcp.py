@@ -1661,6 +1661,36 @@ class TestAddMcpCommand:
         assert configured == [("claude", "system-ai-github")]
         assert saved_states[-1]["mcp_servers"][0]["clients"] == ["claude"]
 
+    def test_agents_adds_existing_server_to_named_agent(self, monkeypatch, capsys):
+        existing = {
+            "name": "system-ai-github",
+            "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
+            "auth": "proxy",
+            "clients": ["codex"],
+        }
+        saved_states: list[dict] = []
+        configured: list[tuple[str, str]] = []
+        _stub_location_base(
+            monkeypatch,
+            {"workspace": WS, "available_tools": ["claude", "codex"], "mcp_servers": [existing]},
+        )
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude", "codex"])
+        monkeypatch.setattr(
+            mcp, "list_mcp_services", lambda workspace, token, parent: (["system.ai.github"], None)
+        )
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda client, name, url, *a, **kw: configured.append((client, name)) or [],
+        )
+        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
+
+        assert mcp.add_mcp_command(location="system.ai", agents={"claude"}) == 0
+
+        assert configured == [("claude", "system-ai-github")]
+        assert saved_states[-1]["mcp_servers"] == [{**existing, "clients": ["codex", "claude"]}]
+        assert "Added" not in capsys.readouterr().out
+
     def test_agents_not_configured_raises(self, monkeypatch):
         """`--agents` naming an agent that isn't configured for MCP is a clear error
         (the CLI sets agents up first, so this guards the library entry point)."""
