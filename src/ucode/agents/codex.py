@@ -77,7 +77,8 @@ CODEX_BACKUP_PATH = APP_DIR / "codex-ucode-config.backup.toml"
 CODEX_MPS_MODEL_CATALOG_PATH = APP_DIR / "codex-mps-model-catalog.json"
 LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
-CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
+CODEX_MODEL_PROVIDER_NAME = "databricks"
+LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
 _MODEL_SERVICE_ROUTING_KEY_PATHS = [
     ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers", MODEL_PROVIDER_SERVICE_HEADER],
     [
@@ -243,7 +244,7 @@ def render_legacy_overlay(
     """Overlay for Codex CLI < 0.134.0, which only reads `~/.codex/config.toml`.
 
     The shared file uses `profile = "ucode"` to select `[profiles.ucode]`, which
-    points at the shared `[model_providers.ucode-databricks]` block.
+    points at the shared `[model_providers.databricks]` block.
     """
     profile_block: dict = {"model_provider": CODEX_MODEL_PROVIDER_NAME}
     if model:
@@ -278,7 +279,7 @@ def _has_legacy_ucode_entries(doc: dict) -> bool:
     return (
         doc.get("profile") == CODEX_PROFILE_NAME
         or (isinstance(profiles, dict) and CODEX_PROFILE_NAME in profiles)
-        or (isinstance(providers, dict) and CODEX_MODEL_PROVIDER_NAME in providers)
+        or (isinstance(providers, dict) and LEGACY_CODEX_MODEL_PROVIDER_NAME in providers)
     )
 
 
@@ -311,8 +312,8 @@ def _strip_legacy_ucode_entries(path: Path) -> bool:
         changed = True
 
     providers = doc.get("model_providers")
-    if isinstance(providers, dict) and CODEX_MODEL_PROVIDER_NAME in providers:
-        providers.pop(CODEX_MODEL_PROVIDER_NAME, None)
+    if isinstance(providers, dict) and LEGACY_CODEX_MODEL_PROVIDER_NAME in providers:
+        providers.pop(LEGACY_CODEX_MODEL_PROVIDER_NAME, None)
         if not providers:
             doc.pop("model_providers", None)
         changed = True
@@ -368,7 +369,7 @@ def write_tool_config(
 
     if _use_legacy_layout():
         # Codex < 0.134.0 only reads ~/.codex/config.toml. Write the shared
-        # config with [profiles.ucode] + shared [model_providers.ucode-databricks]
+        # config with [profiles.ucode] + shared [model_providers.databricks]
         # and skip the per-profile-file cleanup that would normally strip
         # ucode's entry from the shared file.
         backup_existing_file(LEGACY_CODEX_CONFIG_PATH, LEGACY_CODEX_BACKUP_PATH)

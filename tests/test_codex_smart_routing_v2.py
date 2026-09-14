@@ -232,12 +232,12 @@ class TestLaunchCodex:
             "codex",
             "app-server",
             "--config",
-            'model_provider="ucode-databricks"',
+            'model_provider="databricks"',
             "--config",
             'model="gpt-start"',
             "--config",
         ]
-        assert processes[0].argv[7].startswith("model_providers.ucode-databricks={")
+        assert processes[0].argv[7].startswith("model_providers.databricks={")
         assert processes[0].argv[8] == "--config"
         hook_override = processes[0].argv[9]
         assert hook_override.startswith("hooks.PreToolUse=[{")
