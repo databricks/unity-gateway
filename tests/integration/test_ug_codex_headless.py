@@ -6,6 +6,7 @@ from utils.evidence import FileTask
 pytestmark = [pytest.mark.live, pytest.mark.codex]
 
 
+@pytest.mark.smoke
 def test_ug_codex_headless_prompt_argument(live_session, workspace):
     """Scenario: configure codex and submit a headless prompt via argument.
 

@@ -60,11 +60,23 @@ optional Databricks AI Tools. Help forwarding does not claim MCP functionality.
 
 Fresh consumer dependency resolution covers the install path behind #496, rather
 than consuming `uv.lock`. Use `--dependency PACKAGE==VERSION` or replay the archived
-dependency graph to reproduce a user's combination.
+dependency graph to reproduce a user's combination. Every relevant same-repository
+PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
+Databricks Hosted configure/TUI and headless argument journeys for both agents,
+in two parallel jobs. The full suite runs all 45 cases across eight parallel jobs:
+Claude/Codex × configure, routing, headless, and other commands/lifecycle checks.
+The `All integration tests` check requires every selected integration job to pass; full coverage
+does not depend on a label or a manual request.
 
-Run all live journeys with explicit agent versions through
-`scripts/run_integration.py`. The separate integration workflow is not configured
-in this checkout; collection and package checks do not count as live passes.
+The existing e2e workflow runs seven parallel shards: gateway checks plus one for
+each of Claude, Codex, Gemini, OpenCode, Copilot, and Pi. Each agent shard installs
+its own CLI. The Claude shard also runs the existing tracing test file, whose
+pre-existing skip remains in place. The `All agent tests` check requires every shard to pass.
+Check names describe the coverage: `Unit tests`, `Gateway API tests`,
+`Agent launch tests · Claude`, `Smoke journeys · Claude`, and
+`Full journeys · Claude · Configure` (with the other agents/groups named likewise).
+Unit tests still run as one job. Both matrices use `fail-fast: false` so one
+failure does not cancel other coverage.
 
 ## Gaps and deferred scope
 

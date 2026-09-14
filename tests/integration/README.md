@@ -131,6 +131,7 @@ checks** with both agents. See the named coverage and gaps matrix in
 ```bash
 # Append one of these selections to the runner command:
 -- -m live         # default: all live user journeys
+-- -m smoke        # four Hosted configure/TUI and headless argument journeys
 -- -m tui          # ten complete interactive TUI journeys
 -- -k test_ug_codex_app_server_client_initializes  # one named journey and its variants
 # Use --installation-only before -- for package checks without credentials.
@@ -172,6 +173,129 @@ the process group is cleaned up after each command.
 Selection after `--` accepts `-k`, `-m`, `-x`, and `--maxfail`; configuration and
 report paths cannot be overridden. `--installation-only` always restricts the
 selection to installation checks, including when additional filters are used.
+
+## Run in GitHub Actions
+
+The **Integration** workflow runs on relevant pull requests and pushes to `main`.
+It runs directly on fresh GitHub Ubuntu VMs, not inside the optional Docker image.
+Local native runs use the same runner; Colima/Docker provides a separate Linux
+container option. Matching dependency versions does not make those OS environments identical.
+Its installation job needs no credentials. For same-repository PRs, the live jobs
+reuse the existing `UCODE_TEST_WORKSPACE` and `DATABRICKS_BEARER` secrets. Fork PRs
+run installation checks only because they cannot receive those secrets.
+
+The workspace check requires the secret to match
+`https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash
+is accepted). It never changes the secret or switches workspaces. There is no CI
+model-discovery or model-selection job. Real `ug configure` performs its normal
+workspace discovery inside each test; only explicit-model scenarios choose and
+record a discovered `system.ai` model as a test argument.
+Every relevant same-repository PR and push to `main` runs **Smoke journeys** and
+**Full journeys** concurrently. Smoke runs the Hosted configure/TUI and headless
+argument journey for each agent (four cases, two agent jobs). Full runs all 45
+live cases, including those smoke cases, in eight disjoint shards:
+
+| Group, per agent | Marker | Keyword filter |
+| --- | --- | --- |
+| configure | `live and tui` | `configure` |
+| routing | `live and tui` | `not configure` |
+| headless | `live and not tui` | `headless` |
+| commands | `live and not tui` | `not headless` |
+
+Each shard also selects `claude` or `codex` and installs only that CLI. The
+commands group includes lifecycle and app-server journeys. Cases remain serial
+inside each fresh VM because configure/revert can touch machine-level settings;
+parallel runners isolate those writes as well as the PTYs. Both matrices use
+`fail-fast: false` and upload uniquely named evidence even when another shard fails.
+The **All integration tests** check requires installation, workspace validation, smoke, and
+all full shards to pass. Full coverage on PRs needs no label or opt-in.
+
+Each job uses fresh consumer dependency resolution. There is no default dependency
+matrix. Manual dispatch accepts an
+optional `dependency` such as `tomlkit==0.14.0`, equivalent to the local runner's
+`--dependency` option. Jobs use Ubuntu 22.04; newer Ubuntu runner
+policies prevented Codex's bubblewrap tool from reading even the test file in the
+first run. The agent sandbox is not disabled or bypassed.
+The workflow consumes the stored bearer; it does not mint or refresh credentials.
+
+For a manual run, use **Actions → Integration → Run workflow**, select the branch,
+and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
+alias for `full`. Manual subsets are explicit: `smoke` runs just the four smoke
+cases; `tui` runs all ten TUI cases across the configure/routing shards. Installation
+checks always run. Set the ug/agent versions. From the CLI:
+
+```bash
+gh workflow run integration.yml -R databricks/unity-gateway --ref YOUR_BRANCH \
+  -f suite=full -f ug_version=checkout \
+  -f claude_version=2.1.268 -f codex_version=0.154.0
+gh run list -R databricks/unity-gateway --workflow integration.yml
+gh run watch RUN_ID -R databricks/unity-gateway --exit-status
+```
+
+GitHub enables manual dispatch once the workflow exists on the default branch.
+Before this PR merges, its pull-request event runs the workflow. Missing
+credentials or a workspace mismatch fail the workspace job. Expired or invalid
+credentials fail the actual workspace calls. Those failures do not count as live
+test passes.
+
+## Reproduce and debug a CI failure locally
+
+Use the same runner and the failing job's artifacts. A new developer machine
+needs Python 3.12+, uv, Node/npm, Databricks CLI, and its own authorized login for
+the CI workspace. Select that local profile explicitly; CI secrets are not downloaded.
+
+```bash
+gh run download RUN_ID -R databricks/unity-gateway \
+  -n integration-full-claude-configure -D .integration-runs/from-ci
+```
+
+Use `integration-full-AGENT-GROUP` for a full shard, `integration-smoke-AGENT` for
+smoke, or `integration-installation` for package failures. Older runs used
+`integration-cujs` or numbered `integration-live-*` artifacts; download the name
+shown on that run. Read `versions.json` for the
+exact agent versions, model overrides, entry point, platform and source revision.
+For an explicit-model case without a runner override, read its `model.json` for
+the exact model used. Basic boot cases require no model arguments. Use
+the archived wheel so a changed checkout cannot alter the reproduction:
+
+```bash
+python3 scripts/run_integration.py \
+  --ug-wheel .integration-runs/from-ci/wheels/EXACT_WHEEL.whl \
+  --entry-point ug \
+  --claude-version CLAUDE_VERSION_FROM_REPORT \
+  --workspace https://eng-ml-inference-team-us-east-1.cloud.databricks.com \
+  --profile YOUR_E2E_PROFILE \
+  --constraints .integration-runs/from-ci/dependencies.txt \
+  --npm-lock .integration-runs/from-ci/npm-lock.json \
+  --output .integration-runs/repro-1 \
+  -- -k test_ug_configure_claude_databricks
+```
+
+For an explicit-model failure, also pass the recorded `--claude-model` or
+`--codex-model`. For a release run without an archived wheel, use the reported `--ug-version`.
+The example replays a Claude shard; for Codex use only `--codex-version` and its
+test filter. Match the report's selected agents, `pytest_args`, and suite revision
+to replay an entire shard; a `-k` filter can reproduce one case independently.
+Match Python and Node versions from the report too. `npm-lock.json` replay must
+use the same OS/architecture as the original run; add `--platform linux/amd64`
+to both `docker build` and `docker run` on an ARM Mac to match GitHub's Ubuntu runner. Changing platforms or
+resolving a fresh npm lock is a new comparison, not an exact dependency replay.
+
+Use `-- -m tui` for the ten interactive journeys or
+`-- -k test_smart_routing_codex_first_prompt` to narrow a failure. Each rerun needs a new output directory. Inspect:
+
+- `junit.xml` for the failing case and assertion.
+- `artifacts/<case>/command-*.json` for the real argv, exit status, stdout and stderr.
+- `artifacts/<case>/first-session.json`, `provider-session.json`, `first-prompt.json`,
+  `subagent-task.json`, or `reopen.json` for rendered terminal screens, raw terminal
+  output, keyboard actions, exit status, routing logs, and actual agent-session records.
+- `install.log` for resolution/bootstrap failures.
+
+Unknown onboarding screens fail with their actual screen text. Update terminal
+selectors only after confirming the agent's intended UI changed; do not seed its
+onboarding state or relax the prompt/task assertions. Test homes are deleted after
+each case; redacted diagnostics remain. For manual interaction, configure a fresh
+home with the same installed binaries and recorded public CLI arguments.
 
 ## Colima / Docker
 

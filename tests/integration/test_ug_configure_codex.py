@@ -7,6 +7,7 @@ from utils.terminal import AgentTerminal, ConfigureTerminal
 pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.codex]
 
 
+@pytest.mark.smoke
 def test_ug_configure_codex_databricks(live_session, workspace):
     """Scenario: configure Codex with Databricks Hosted and use its TUI.
 
