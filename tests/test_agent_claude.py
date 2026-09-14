@@ -448,7 +448,7 @@ class TestRenderOverlay:
 
 class TestRenderOverlayUserAgent:
     def _ua(self, monkeypatch) -> str:
-        monkeypatch.setattr(claude, "ucode_version", lambda: "0.1.0")
+        monkeypatch.setattr(claude, "ucode_release_version", lambda: "0.1.0")
         monkeypatch.setattr(claude, "agent_version", lambda binary: "2.1.136")
         overlay, _ = claude.render_overlay(WS, "s4")
         return overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
@@ -457,7 +457,7 @@ class TestRenderOverlayUserAgent:
         assert "User-Agent: ucode/0.1.0 claude/2.1.136" in self._ua(monkeypatch)
 
     def test_user_agent_omits_local_build_metadata(self, monkeypatch):
-        monkeypatch.setattr(claude, "ucode_version", lambda: "0.1.0+172.g673cff4")
+        monkeypatch.setattr(claude, "ucode_release_version", lambda: "0.1.0")
         monkeypatch.setattr(claude, "agent_version", lambda binary: "2.1.136")
 
         overlay, _ = claude.render_overlay(WS, "s4")
@@ -863,7 +863,7 @@ class TestWriteToolConfigManagedSettings:
             }
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing_managed_settings)
-        monkeypatch.setattr(claude, "ucode_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "ucode_release_version", lambda: "1.0")
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
         state = {"workspace": WS, "codex_models": []}
 

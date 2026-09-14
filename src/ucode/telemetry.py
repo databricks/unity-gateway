@@ -25,6 +25,11 @@ def ucode_version() -> str:
         return "unknown"
 
 
+def ucode_release_version() -> str:
+    """Return the package release version without local build metadata."""
+    return ucode_version().split("+", 1)[0]
+
+
 @cache
 def agent_version(binary: str) -> str:
     """Return the agent CLI's reported version, or "unknown" on any failure.
