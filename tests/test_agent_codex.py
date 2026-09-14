@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from ucode import managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
@@ -172,6 +173,22 @@ class TestCodexWriteConfig:
         assert "model" not in doc
         assert "model_reasoning_effort" not in doc
         assert "profiles" not in doc
+
+    def test_smart_routing_preserves_configured_startup_model(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "ucode.config.toml"
+        config_path.write_text('model = "gpt-5.6-sol"\n')
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.145.0")
+        monkeypatch.setenv(codex.smart_routing_v2.ENV_VAR, "1")
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+        state = {"workspace": WS}
+
+        assert codex.default_model(state) == "gpt-5.6-sol"
+        codex.write_tool_config(state)
+
+        assert read_toml_safe(config_path)["model"] == "gpt-5.6-sol"
+        assert codex._smart_routing_config_model(state) == "gpt-5.6-sol"
 
     def test_removes_discovered_model_id(self, tmp_path, monkeypatch):
         config_path = tmp_path / ".codex" / "ucode.config.toml"
@@ -580,7 +597,7 @@ class TestCodexValidateCmd:
 
 
 class TestCodexLaunch:
-    """Normal launches layer the ucode profile as universal config overrides."""
+    """Launches use the configuration layout supported by the installed Codex."""
 
     @staticmethod
     def _patch(tmp_path, monkeypatch):
@@ -595,6 +612,7 @@ class TestCodexLaunch:
         )
         launches: list[list[str]] = []
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
         monkeypatch.setattr(codex, "get_databricks_token", lambda workspace, profile=None: "tok")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
@@ -620,8 +638,12 @@ class TestCodexLaunch:
             ["app", "--new-window"],
         ],
     )
-    def test_layers_profile_as_config_overrides(self, tmp_path, monkeypatch, tool_args):
+    @pytest.mark.parametrize("version", ["0.134.0", "unknown"])
+    def test_layers_profile_as_config_overrides(
+        self, tmp_path, monkeypatch, capsys, tool_args, version
+    ):
         launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "agent_version", lambda binary: version)
 
         codex.launch({"workspace": WS}, tool_args, options=LaunchOptions())
 
@@ -633,9 +655,50 @@ class TestCodexLaunch:
             arg for arg in launches[0] if arg.startswith("model_providers.ucode-databricks=")
         )
         assert 'base_url = "https://example.databricks.com/ai-gateway/codex/v1"' in provider_arg
+        assert "Upgrade Codex" not in capsys.readouterr().err
+
+    @pytest.mark.parametrize("tool_args", [[], ["exec", "hi"]])
+    @pytest.mark.parametrize("stale_profile", [False, True])
+    @pytest.mark.parametrize("version", ["0.129.0", "0.133.0"])
+    def test_launches_legacy_config_after_configure(
+        self, tmp_path, monkeypatch, capsys, tool_args, stale_profile, version
+    ):
+        profile_path = tmp_path / "ucode.config.toml"
+        legacy_path = tmp_path / "config.toml"
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", legacy_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "profile-backup.toml")
+        monkeypatch.setattr(codex, "LEGACY_CODEX_BACKUP_PATH", tmp_path / "legacy-backup.toml")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: version)
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args: "tok")
+        monkeypatch.delenv("OAUTH_TOKEN", raising=False)
+        launches: list[list[str]] = []
+        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
+        if stale_profile:
+            profile_path.write_text('model_provider = "stale-provider"\n', encoding="utf-8")
+
+        state = codex.write_tool_config({"workspace": WS, "profile": "test-workspace"})
+
+        assert profile_path.exists() is stale_profile
+        config = read_toml_safe(legacy_path)
+        assert config["profiles"]["ucode"]["model_provider"] == "ucode-databricks"
+        assert config["model_providers"]["ucode-databricks"]["base_url"] == (
+            f"{WS}/ai-gateway/codex/v1"
+        )
+
+        codex.launch(state, tool_args, options=LaunchOptions())
+
+        assert launches == [["codex", "--profile", "ucode", *tool_args]]
+        assert launches[0][:3] == codex.validate_cmd("codex")[:3]
+        warning = " ".join(capsys.readouterr().err.split())
+        assert f"Codex {version} is outdated" in warning
+        assert "Upgrade Codex to 0.134.0 or newer" in warning
+        assert "codex --version" in warning
 
     def test_requires_populated_ucode_profile(self, tmp_path, monkeypatch):
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", tmp_path / "missing.config.toml")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
         launches = []
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
         monkeypatch.setattr(codex, "get_databricks_token", lambda *_args: "tok")
@@ -660,7 +723,7 @@ class TestCodexManagedConfig:
         monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
         # Deterministic managed path + a mocked sudo writer that writes straight to disk, so the test
         # can read the TOML back and NO real sudo/`/etc` write ever happens.
-        monkeypatch.setattr(codex, "_managed_config_path", lambda: managed_path)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
 
         def fake_write_managed(path, text, **kwargs):
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -671,7 +734,7 @@ class TestCodexManagedConfig:
         return config_path, managed_path
 
     def test_writes_managed_config_by_default(self, tmp_path, monkeypatch):
-        _, managed_path = self._patch(tmp_path, monkeypatch)
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
         state = {"workspace": WS, "codex_models": ["gpt-5"]}
         codex.write_tool_config(state)
 
@@ -679,6 +742,7 @@ class TestCodexManagedConfig:
         assert doc["model_provider"] == "ucode-databricks"
         assert "model" not in doc
         assert "ucode-databricks" in doc["model_providers"]
+        assert read_toml_safe(config_path)["model_provider"] == "ucode-databricks"
 
     def test_managed_config_preserves_other_keys(self, tmp_path, monkeypatch):
         _, managed_path = self._patch(tmp_path, monkeypatch)
@@ -732,3 +796,48 @@ class TestCodexManagedConfig:
             codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
 
         assert managed_path.read_text(encoding="utf-8") == "[invalid"
+
+    def test_sudo_failure_uses_local_config_when_managed_config_is_compatible(
+        self, tmp_path, monkeypatch
+    ):
+        config_path, _ = self._patch(tmp_path, monkeypatch)
+        warnings: list[str] = []
+        verified: list[dict] = []
+
+        def deny_managed_write(*args, **kwargs):
+            raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+
+        monkeypatch.setattr(
+            codex,
+            "reconcile_managed_file",
+            deny_managed_write,
+        )
+        monkeypatch.setattr(codex, "print_warning_err", warnings.append)
+        monkeypatch.setattr(
+            codex,
+            "mark_managed_file_verified",
+            lambda *args, **kwargs: verified.append(kwargs),
+        )
+
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        assert config_path.exists()
+        assert "continuing with local settings" in warnings[0]
+        assert verified == [{"scope": "local-compatible"}]
+
+    def test_sudo_failure_remains_fatal_when_managed_config_conflicts(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_path.write_text('model_provider = "enterprise"\n', encoding="utf-8")
+
+        def deny_managed_write(*args, **kwargs):
+            raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+
+        monkeypatch.setattr(
+            codex,
+            "reconcile_managed_file",
+            deny_managed_write,
+        )
+
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
+            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
