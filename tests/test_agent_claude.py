@@ -456,6 +456,16 @@ class TestRenderOverlayUserAgent:
     def test_user_agent_present(self, monkeypatch):
         assert "User-Agent: ucode/0.1.0 claude/2.1.136" in self._ua(monkeypatch)
 
+    def test_user_agent_omits_local_build_metadata(self, monkeypatch):
+        monkeypatch.setattr(claude, "ucode_version", lambda: "0.1.0+172.g673cff4")
+        monkeypatch.setattr(claude, "agent_version", lambda binary: "2.1.136")
+
+        overlay, _ = claude.render_overlay(WS, "s4")
+
+        assert (
+            "User-Agent: ucode/0.1.0 claude/2.1.136" in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        )
+
     def test_existing_databricks_header_preserved(self, monkeypatch):
         assert "x-databricks-use-coding-agent-mode: true" in self._ua(monkeypatch)
 
