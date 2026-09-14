@@ -15,11 +15,20 @@ from typer.testing import CliRunner
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 from ucode.cli import app
-from ucode.custom_oauth import get_custom_client_token
+from ucode.custom_oauth import _custom_oauth_lock, get_custom_client_token
 
 WS = "https://example.databricks.com"
 TEST_SCOPES = ("offline_access", "catalog.catalogs:read")
 runner = CliRunner()
+
+
+class TestCustomOAuthLock:
+    def test_releases_lock_when_login_fails(self, tmp_path):
+        with pytest.raises(ValueError, match="login failed"):
+            with _custom_oauth_lock(tmp_path, "http://localhost:8020/callback"):
+                raise ValueError("login failed")
+        with _custom_oauth_lock(tmp_path, "http://127.0.0.1:8020/other-callback"):
+            assert len(list(tmp_path.glob("*.lock"))) == 1
 
 
 class TestCustomClientToken:

@@ -266,6 +266,7 @@ class TestBuildAgentState:
         for agent in ("claude", "codex", "pi"):
             assert "--use-pat" in result[agent]["auth_command"]
             assert "--profile DEFAULT" in result[agent]["auth_command"]
+        assert result["codex"]["auth"]["timeout_ms"] == 5000
 
     def test_custom_oauth_applies_to_claude_and_codex(self):
         result = build_agent_state(
@@ -282,6 +283,7 @@ class TestBuildAgentState:
 
         assert "--client-id custom-client" in result["claude"]["auth_command"]
         assert result["codex"]["auth"]["args"][-1] == "offline_access,model-serving"
+        assert result["codex"]["auth"]["timeout_ms"] == 180_000
 
 
 # ---------------------------------------------------------------------------
