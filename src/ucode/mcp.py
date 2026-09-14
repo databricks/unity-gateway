@@ -1738,6 +1738,9 @@ def _union_missing(
     for server in base:
         name = _server_name(server)
         if not name:
+            result.append(server.copy())
+            continue
+        if server.get("kind") == SKILLS_MCP_KIND:
             continue
         candidate = result_by_name.get(name)
         if candidate is None:

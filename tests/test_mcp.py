@@ -343,6 +343,20 @@ class TestUnionMissing:
 
         assert mcp._union_missing([server], [], ["claude"]) == [server]
 
+    def test_preserves_nameless_entry(self):
+        server = {"url": f"{WS}/api/2.0/mcp/external/legacy", "clients": ["opencode"]}
+
+        assert mcp._union_missing([server], [], ["claude"]) == [server]
+
+    def test_keeps_skill_entry_on_its_existing_agents(self):
+        server = {
+            "name": mcp.SKILLS_MCP_SERVER_NAME,
+            "kind": mcp.SKILLS_MCP_KIND,
+            "clients": ["opencode"],
+        }
+
+        assert mcp._union_missing([server], [server], ["claude"]) == [server]
+
 
 class TestMcpPicker:
     def test_prompt_uses_scrolling_checkbox_selector(self, monkeypatch):
