@@ -70,7 +70,13 @@ class TestFetchCodexMpsModelCatalog:
 
         monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
 
-        result = db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
+        result = db_mod._fetch_codex_model_catalog(
+            WS,
+            "tok",
+            headers={"Databricks-Model-Provider-Service": "main.default.openai"},
+            identifier="main.default.openai",
+            kind="Provider",
+        )
 
         assert result["models"][0]["slug"] == "gpt-mps"
         assert seen["url"] == f"{WS}/ai-gateway/codex/v1/models"
@@ -82,7 +88,52 @@ class TestFetchCodexMpsModelCatalog:
         )
 
         with pytest.raises(RuntimeError, match="returned no Codex models"):
-            db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
+            db_mod._fetch_codex_model_catalog(
+                WS,
+                "tok",
+                headers={"Databricks-Model-Provider-Service": "main.default.openai"},
+                identifier="main.default.openai",
+                kind="Provider",
+            )
+
+
+class TestFetchCodexParentModelCatalog:
+    def test_sends_parent_header(self, monkeypatch):
+        seen = {}
+
+        def fake_get(url, token, **kwargs):
+            seen.update(url=url, token=token, **kwargs)
+            return {"models": [{"slug": "gpt-parent"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        result = db_mod._fetch_codex_model_catalog(
+            WS,
+            "tok",
+            headers={"Databricks-Model-Service-Parent-Schema": "main.default"},
+            identifier="main.default",
+            kind="Parent schema",
+        )
+
+        assert result["models"][0]["slug"] == "gpt-parent"
+        assert seen["url"] == f"{WS}/ai-gateway/codex/v1/models"
+        assert seen["headers"] == {"Databricks-Model-Service-Parent-Schema": "main.default"}
+
+    def test_rejects_empty_catalog(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda *args, **kwargs: ({"models": []}, None)
+        )
+
+        with pytest.raises(
+            RuntimeError, match="Parent schema main.default returned no Codex models"
+        ):
+            db_mod._fetch_codex_model_catalog(
+                WS,
+                "tok",
+                headers={"Databricks-Model-Service-Parent-Schema": "main.default"},
+                identifier="main.default",
+                kind="Parent schema",
+            )
 
 
 class TestWorkspaceHostname:

@@ -701,8 +701,8 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "_model_catalog_path", lambda workspace, provider: catalog_path)
         monkeypatch.setattr(
             codex,
-            "fetch_codex_mps_model_catalog",
-            lambda workspace, token, provider: catalog,
+            "_fetch_codex_model_catalog",
+            lambda workspace, token, **kwargs: catalog,
         )
 
         codex.launch(
@@ -718,13 +718,62 @@ class TestCodexLaunch:
         )
         assert 'Databricks-Model-Provider-Service = "main.default.openai"' in provider_arg
 
+    def test_parent_discovery_uses_authoritative_catalog(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        catalog_path = tmp_path / "models.json"
+        catalog = {"models": [{"slug": "gpt-parent"}]}
+        monkeypatch.setattr(codex, "_model_catalog_path", lambda workspace, scope: catalog_path)
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda workspace, token, **kwargs: catalog,
+        )
+
+        codex.launch(
+            {"workspace": WS, "_codex_launch_parent_schema": "main.default"},
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert catalog_path.exists()
+        assert f'model_catalog_json="{catalog_path}"' in launches[0]
+        parent_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.ucode-databricks=")
+        )
+        assert 'Databricks-Model-Service-Parent-Schema = "main.default"' in parent_arg
+
+    def test_parent_discovery_refreshes_when_parent_changes(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "models.json")
+        fetched = []
+
+        def fetch(workspace, token, **kwargs):
+            fetched.append(kwargs["identifier"])
+            return {"models": [{"slug": kwargs["identifier"]}]}
+
+        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", fetch)
+
+        for parent_schema in ("main.first", "main.second"):
+            codex.launch(
+                {"workspace": WS, "_codex_launch_parent_schema": parent_schema},
+                [],
+                options=LaunchOptions(),
+            )
+
+        catalog_args = [
+            next(arg for arg in launch if arg.startswith("model_catalog_json="))
+            for launch in launches
+        ]
+        assert fetched == ["main.first", "main.second"]
+        assert catalog_args[0] != catalog_args[1]
+
     def test_provider_rejects_managed_model_catalog(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
         managed_path = tmp_path / "managed_config.toml"
         managed_path.write_text('model_catalog_json = "/admin/models.json"\n', encoding="utf-8")
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
 
-        with pytest.raises(RuntimeError, match="overrides MPS discovery"):
+        with pytest.raises(RuntimeError, match="overrides model discovery"):
             codex.launch(
                 {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
                 [],
@@ -766,11 +815,11 @@ class TestCodexLaunch:
             lambda workspace, client_id, redirect_url, *, scopes: "custom-token",
         )
 
-        def fetch(workspace, token, provider):
-            seen.update(workspace=workspace, token=token, provider=provider)
+        def fetch(workspace, token, **kwargs):
+            seen.update(workspace=workspace, token=token, provider=kwargs["identifier"])
             return {"models": [{"slug": "gpt-mps"}]}
 
-        monkeypatch.setattr(codex, "fetch_codex_mps_model_catalog", fetch)
+        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", fetch)
         state = {
             "workspace": WS,
             "_codex_launch_provider": "main.default.openai",
@@ -791,13 +840,13 @@ class TestCodexLaunch:
         assert os.environ["OAUTH_TOKEN"] == "custom-token"
 
     def test_catalog_paths_are_provider_scoped(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(codex, "CODEX_MPS_MODEL_CATALOG_PATH", tmp_path / "models.json")
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "models.json")
 
-        first = codex._model_catalog_path(WS, "main.default.first")
-        second = codex._model_catalog_path(WS, "main.default.second")
+        first = codex._model_catalog_path(WS, "provider:main.default.first")
+        second = codex._model_catalog_path(WS, "provider:main.default.second")
 
         assert first != second
-        assert first == codex._model_catalog_path(WS, "main.default.first")
+        assert first == codex._model_catalog_path(WS, "provider:main.default.first")
 
     def test_catalog_write_is_complete_and_atomic(self, tmp_path):
         path = tmp_path / "models.json"

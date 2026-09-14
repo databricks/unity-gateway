@@ -3027,19 +3027,26 @@ def build_tool_base_url(tool: str, workspace: str) -> str:
     raise RuntimeError(f"Unsupported tool '{tool}'.")
 
 
-def fetch_codex_mps_model_catalog(workspace: str, token: str, provider: str) -> dict:
+def _fetch_codex_model_catalog(
+    workspace: str,
+    token: str,
+    *,
+    headers: dict[str, str],
+    identifier: str,
+    kind: str,
+) -> dict:
     payload, reason = _http_get_json(
         f"{build_tool_base_url('codex', workspace)}/models",
         token,
         max_retries=2,
-        headers={"Databricks-Model-Provider-Service": provider},
+        headers=headers,
     )
     if reason:
-        raise RuntimeError(f"Could not discover Codex models for {provider}: {reason}")
+        raise RuntimeError(f"Could not discover Codex models for {identifier}: {reason}")
     if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
-        raise RuntimeError(f"Provider {provider} returned an invalid Codex model catalog.")
+        raise RuntimeError(f"{kind} {identifier} returned an invalid Codex model catalog.")
     if not payload["models"]:
-        raise RuntimeError(f"Provider {provider} returned no Codex models.")
+        raise RuntimeError(f"{kind} {identifier} returned no Codex models.")
     return payload
 
 
