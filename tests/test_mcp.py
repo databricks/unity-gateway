@@ -316,6 +316,34 @@ class TestConfigureClientMcpServer:
         assert calls == [("github", _proxy_argv())]
 
 
+class TestUnionMissing:
+    def test_adds_requested_agent_to_existing_server(self):
+        server = {
+            "name": "databricks-sql",
+            "url": f"{WS}/api/2.0/mcp/sql",
+            "auth": "proxy",
+            "clients": ["opencode", "copilot"],
+        }
+
+        result = mcp._union_missing([server], [], ["claude"])
+
+        assert result == [{**server, "clients": ["opencode", "copilot", "claude"]}]
+        assert server["clients"] == ["opencode", "copilot"]
+
+    def test_preserves_existing_agents_for_a_selected_server(self):
+        existing = {"name": "databricks-sql", "clients": ["opencode", "copilot"]}
+        selected = {"name": "databricks-sql", "clients": ["claude"]}
+
+        assert mcp._union_missing([existing], [selected], ["claude"]) == [
+            {"name": "databricks-sql", "clients": ["opencode", "copilot", "claude"]}
+        ]
+
+    def test_keeps_existing_agent_binding_once(self):
+        server = {"name": "databricks-sql", "clients": ["claude"]}
+
+        assert mcp._union_missing([server], [], ["claude"]) == [server]
+
+
 class TestMcpPicker:
     def test_prompt_uses_scrolling_checkbox_selector(self, monkeypatch):
         checkbox_calls: list[dict] = []

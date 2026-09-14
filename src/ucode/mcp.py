@@ -1724,13 +1724,43 @@ def setup_mcp_clients(
     return workspace, profile, clients
 
 
-def _union_missing(base: list[dict], selected: list[dict]) -> list[dict]:
-    """Return ``selected`` followed by every ``base`` server whose name isn't
-    already in it. Used by ``ucode mcp add`` so registering new servers never
-    removes ones that are already configured (append semantics)."""
-    have = _servers_by_name(selected)
-    extra = [s for s in base if (_server_name(s) or "") not in have]
-    return [*selected, *extra]
+def _union_missing(
+    base: list[dict], selected: list[dict], clients: list[str] | None = None
+) -> list[dict]:
+    """Return the additive server list, with ``clients`` registered on every server.
+
+    An MCP server can exist for one coding agent but not for a newly selected
+    agent. ``mcp add --agents`` must add the server to that agent instead of
+    treating the server's name as a complete registration.
+    """
+    result = [server.copy() for server in selected]
+    result_by_name = _servers_by_name(result)
+    for server in base:
+        name = _server_name(server)
+        if not name:
+            continue
+        candidate = result_by_name.get(name)
+        if candidate is None:
+            candidate = server.copy()
+            result.append(candidate)
+            result_by_name[name] = candidate
+        elif isinstance(server.get("clients"), list):
+            candidate_clients = candidate.get("clients")
+            if not isinstance(candidate_clients, list):
+                candidate_clients = []
+            existing_clients = server["clients"]
+            candidate["clients"] = existing_clients + [
+                client for client in candidate_clients if client not in existing_clients
+            ]
+        if clients is None:
+            continue
+        existing_clients = candidate.get("clients")
+        if not isinstance(existing_clients, list):
+            existing_clients = []
+        candidate["clients"] = existing_clients + [
+            client for client in clients if client not in existing_clients
+        ]
+    return result
 
 
 def add_mcp_command(
@@ -1803,7 +1833,7 @@ def configure_mcp_command(
         )
         if append:
             working_mcp_servers = _union_missing(
-                original_mcp_servers_for_location, working_mcp_servers
+                original_mcp_servers_for_location, working_mcp_servers, clients
             )
         changed = apply_mcp_server_changes(
             original_mcp_servers_for_location,
@@ -1825,6 +1855,14 @@ def configure_mcp_command(
     # the picker and carry them through untouched.
     skills_servers = _skills_entries(original_mcp_servers)
     picker_servers = [s for s in original_mcp_servers if s.get("kind") != SKILLS_MCP_KIND]
+    if append:
+        # An existing server can still be new to one of the requested agents.
+        # Leave it out of the configured list so the picker offers it for that agent.
+        picker_servers = [
+            server
+            for server in picker_servers
+            if all(client in (server.get("clients") or []) for client in clients)
+        ]
     # Drop already-registered servers from an excluded source too (e.g. a previously-added app under
     # `ucode setup`), so the picker never shows a server the caller couldn't re-add.
     if "apps" in excluded_sources:
@@ -1900,7 +1938,7 @@ def configure_mcp_command(
         working_names.add(entry_name)
 
     if append:
-        working_mcp_servers = _union_missing(original_mcp_servers, working_mcp_servers)
+        working_mcp_servers = _union_missing(original_mcp_servers, working_mcp_servers, clients)
 
     changed = apply_mcp_server_changes(
         original_mcp_servers,
