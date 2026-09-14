@@ -4024,3 +4024,28 @@ class TestForcedLoginWithExternalBearer:
         monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
 
         assert self._run(monkeypatch) == ["https://ws.cloud.databricks.com"]
+
+
+class TestStdioProtocolLaunch:
+    """`codex app-server` owns stdout, so ug's status output moves to stderr."""
+
+    def test_app_server_subcommand_owns_stdout(self):
+        assert cli_mod._child_owns_stdout("codex", ["app-server", "--listen", "stdio://"]) is True
+
+    def test_other_codex_launches_keep_stdout(self):
+        assert cli_mod._child_owns_stdout("codex", []) is False
+        assert cli_mod._child_owns_stdout("codex", ["exec", "--json", "hi"]) is False
+
+    def test_other_agents_never_own_stdout(self):
+        assert cli_mod._child_owns_stdout("claude", ["app-server"]) is False
+        assert cli_mod._child_owns_stdout("gemini", []) is False
+
+    def test_redirect_rebinds_stdout_without_touching_the_descriptor(self):
+        import sys
+
+        real_stdout = sys.stdout
+        try:
+            cli_mod.redirect_output_to_stderr()
+            assert sys.stdout is sys.stderr
+        finally:
+            sys.stdout = real_stdout

@@ -24,6 +24,19 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
 console = Console(highlight=False)
 err_console = Console(stderr=True, highlight=False)
 
+
+def redirect_output_to_stderr() -> None:
+    """Move status output to stderr because a child process now owns stdout.
+
+    ``codex app-server`` speaks its JSON-RPC protocol on stdout, so any ug line
+    printed there corrupts the stream. Rich resolves ``console.file`` to
+    ``sys.stdout`` at print time, so rebinding the module attribute sends every
+    status print to stderr while ``os.execvp`` still hands the launched agent
+    the untouched stdout file descriptor.
+    """
+    sys.stdout = sys.stderr
+
+
 # Past this many options the choice list is pinned to a fixed-height scrolling viewport (see
 # `_cap_choice_viewport`) rather than growing to fill the terminal, and the pickers append a
 # "↑/↓ scroll" note to their instruction line. The value is both the boundary and the number of

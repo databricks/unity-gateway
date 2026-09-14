@@ -54,7 +54,7 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
-from ucode.state import MANAGED_OVERLAY_KEY, mark_tool_managed, save_state
+from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_version
 from ucode.tracing import tracing_env
 from ucode.ui import print_note, print_success, print_warning
@@ -585,7 +585,11 @@ def write_tool_config(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
 ) -> dict:
-    backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
+    # Back up only a file that predates ucode's management of the tool. A
+    # re-configure would otherwise snapshot ucode's own generated file, and
+    # revert would restore that snapshot instead of deleting the file.
+    if not is_tool_managed(state, "claude"):
+        backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
     web_search_model = _resolve_web_search_model(state)
     # Relayed inference points at a local refresh proxy; its loopback base URL is
     # recorded in state so launch starts the proxy on the matching port.

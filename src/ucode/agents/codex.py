@@ -64,7 +64,7 @@ from ucode.smart_routing.codex_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_routing import codex_model_id
-from ucode.state import get_provider_service, mark_tool_managed, save_state
+from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_version
 from ucode.ui import print_warning_err
 
@@ -400,7 +400,11 @@ def write_tool_config(
         return state
 
     _remove_legacy_ucode_profile()
-    backup_existing_file(CODEX_CONFIG_PATH, CODEX_BACKUP_PATH)
+    # Back up only a file that predates ucode's management of the tool. A
+    # re-configure would otherwise snapshot ucode's own generated file, and
+    # revert would restore that snapshot instead of deleting the file.
+    if not is_tool_managed(state, "codex"):
+        backup_existing_file(CODEX_CONFIG_PATH, CODEX_BACKUP_PATH)
     overlay = render_overlay(
         workspace,
         chosen_model,
@@ -573,7 +577,10 @@ def clear_model_preferences(state: dict) -> bool:
             doc.pop(key)
             changed = True
     if changed:
-        backup_existing_file(CODEX_CONFIG_PATH, CODEX_BACKUP_PATH)
+        # Never snapshot ucode's own generated file here; revert would restore
+        # the snapshot instead of deleting the file.
+        if not is_tool_managed(state, "codex"):
+            backup_existing_file(CODEX_CONFIG_PATH, CODEX_BACKUP_PATH)
         write_toml_file(CODEX_CONFIG_PATH, doc)
     return changed
 

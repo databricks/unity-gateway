@@ -1727,3 +1727,40 @@ class TestEnsureSubscriptionLogin:
         monkeypatch.setattr(claude, "print_success", lambda *a, **kw: None)
         claude._ensure_subscription_login()
         assert calls == [[claude.SPEC["binary"], "auth", "login"]]
+
+
+class TestWriteToolConfigBackup:
+    """A re-configure must not snapshot the file ucode itself generated."""
+
+    def _patch(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "backup.json")
+        monkeypatch.setattr("ucode.config_io.APP_DIR", tmp_path)
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: None)
+
+    def test_first_configure_backs_up_user_owned_file(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path)
+        (tmp_path / "ucode-settings.json").write_text(
+            '{"permissions": {"allow": ["Read"]}}', encoding="utf-8"
+        )
+
+        claude.write_tool_config(
+            {"workspace": WS, "claude_models": {}}, "databricks-claude-sonnet-4"
+        )
+
+        backup = (tmp_path / "backup.json").read_text(encoding="utf-8")
+        assert backup == '{"permissions": {"allow": ["Read"]}}'
+
+    def test_reconfigure_does_not_back_up_generated_file(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path)
+        state = {
+            "workspace": WS,
+            "claude_models": {},
+            # load_state after a first configure: ucode already manages this file.
+            "managed_configs": {"claude": {"keys": [["env", "ANTHROPIC_BASE_URL"]]}},
+        }
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert not (tmp_path / "backup.json").exists()
