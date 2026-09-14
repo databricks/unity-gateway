@@ -220,6 +220,20 @@ class TestBuildRuntimeEnv:
         assert env["COPILOT_PROVIDER_BASE_URL"] == f"{WS}/ai-gateway/mlflow/v1"
         assert env["COPILOT_PROVIDER_BEARER_TOKEN"] == "tok"
 
+    def test_removes_conflicting_inherited_provider_settings(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: NEW_ENOUGH_VERSION)
+        monkeypatch.setenv("COPILOT_PROVIDER_API_KEY", "stale-key")
+        monkeypatch.setenv("COPILOT_MODEL", "stale-model")
+        monkeypatch.setenv("COPILOT_PROVIDER_MODEL_ID", "stale-id")
+        monkeypatch.setenv("COPILOT_PROVIDER_WIRE_MODEL", "stale-wire-model")
+
+        env = copilot.build_runtime_env(WS, "system.ai.claude-sonnet-5", "tok")
+
+        assert "COPILOT_PROVIDER_API_KEY" not in env
+        assert "COPILOT_MODEL" not in env
+        assert env["COPILOT_PROVIDER_MODEL_ID"] == "claude-sonnet-5"
+        assert env["COPILOT_PROVIDER_WIRE_MODEL"] == "system.ai.claude-sonnet-5"
+
     def test_sets_oauth_token_for_mcp(self):
         env = copilot.build_runtime_env(WS, "m", "tok")
         assert env["OAUTH_TOKEN"] == "tok"

@@ -190,6 +190,8 @@ def render_env_overlay(workspace: str, model: str, token: str) -> dict[str, str]
 
 def build_runtime_env(workspace: str, model: str, token: str) -> dict[str, str]:
     env = os.environ.copy()
+    for key in [*LEGACY_ENV_KEYS, *_MODEL_SELECTION_KEYS]:
+        env.pop(key, None)
     env.update(render_env_overlay(workspace, model, token))
     return env
 
