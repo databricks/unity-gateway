@@ -36,14 +36,31 @@ class TestProbeOauthClient:
         )
         assert mcp_oauth._probe_oauth_client(WS, "claude-code") is False
 
-    def test_network_error_is_absent(self, monkeypatch):
-        # A network failure must not claim availability — caller falls back to the proxy.
+    def test_network_error_is_inconclusive(self, monkeypatch):
+        # A network failure is inconclusive (None) — the caller falls back to the proxy.
         monkeypatch.setattr(
             mcp_oauth.urllib.request,
             "urlopen",
             lambda req, timeout=0: (_ for _ in ()).throw(OSError("down")),
         )
-        assert mcp_oauth._probe_oauth_client(WS, "claude-code") is False
+        assert mcp_oauth._probe_oauth_client(WS, "claude-code") is None
+
+    def test_transient_status_is_inconclusive(self, monkeypatch):
+        # 429/5xx (rate limit / incident), 404, redirects must NOT be read as "registered".
+        for code in (429, 500, 503, 404):
+            monkeypatch.setattr(
+                mcp_oauth.urllib.request,
+                "urlopen",
+                lambda req, timeout=0, c=code: (_ for _ in ()).throw(_http_error(c)),
+            )
+            assert mcp_oauth._probe_oauth_client(WS, "claude-code") is None
+
+    def test_unexpected_success_is_inconclusive(self, monkeypatch):
+        # A 2xx for a dummy code is unexpected; don't conclude "registered".
+        monkeypatch.setattr(
+            mcp_oauth.urllib.request, "urlopen", lambda req, timeout=0: object()
+        )
+        assert mcp_oauth._probe_oauth_client(WS, "claude-code") is None
 
 
 class TestOauthClientAvailableCache:
@@ -66,6 +83,18 @@ class TestOauthClientAvailableCache:
         assert mcp_oauth.oauth_client_available(WS, "claude-code") is False
         assert mcp_oauth.oauth_client_available(WS, "claude-code") is False
         assert len(calls) == 1
+
+    def test_inconclusive_probe_falls_back_and_is_not_cached(self, monkeypatch, tmp_path):
+        # An inconclusive probe (None) => oauth_client_available returns False (proxy),
+        # and nothing is cached, so a transient failure isn't sticky for the TTL.
+        monkeypatch.setattr(mcp_oauth, "_CACHE_PATH", tmp_path / "cache.json")
+        calls: list[int] = []
+        monkeypatch.setattr(
+            mcp_oauth, "_probe_oauth_client", lambda ws, cid: calls.append(1) or None
+        )
+        assert mcp_oauth.oauth_client_available(WS, "claude-code") is False
+        assert mcp_oauth.oauth_client_available(WS, "claude-code") is False
+        assert len(calls) == 2  # not cached -> re-probed each time
 
     def test_expired_entry_reprobes(self, monkeypatch, tmp_path):
         monkeypatch.setattr(mcp_oauth, "_CACHE_PATH", tmp_path / "cache.json")

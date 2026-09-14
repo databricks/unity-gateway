@@ -16,13 +16,12 @@ workspace has it yet, so we probe — and cache the answer per workspace.
 
 from __future__ import annotations
 
-import json
 import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlencode
 
-from ucode.config_io import APP_DIR
+from ucode.config_io import APP_DIR, read_json_safe, write_json_file
 
 # Published public OAuth client Claude Code authenticates with. Any loopback
 # callback port works — `/oidc` strips the port when matching loopback redirects
@@ -45,15 +44,19 @@ _CACHE_PATH = APP_DIR / "oauth_client_cache.json"
 _CACHE_TTL_SECONDS = 7 * 24 * 3600
 
 
-def _probe_oauth_client(workspace: str, client_id: str) -> bool:
-    """True if ``client_id`` is a registered OAuth app on the workspace's ``/oidc``.
+def _probe_oauth_client(workspace: str, client_id: str) -> bool | None:
+    """Whether ``client_id`` is a registered OAuth app on the workspace's ``/oidc``:
+    ``True`` (registered), ``False`` (not registered), or ``None`` (inconclusive).
 
     Back-channel and unauthenticated: POST a throwaway ``authorization_code`` grant
     to ``/oidc/v1/token``. An **unknown** client fails client authentication (HTTP
-    401 ``invalid_client``); a **known** client gets past that to a grant error
-    (HTTP 400 ``invalid_request`` — "Invalid authorization code"). We only read
-    which of the two it is; the dummy code always fails, harmlessly. This is the
-    only user-level check available — the authorize endpoint redirects to SSO
+    401 ``invalid_client`` -> ``False``); a **known** client gets past that to a
+    grant error (HTTP 400 ``invalid_request`` — "Invalid authorization code" ->
+    ``True``); the dummy code always fails, harmlessly. Any other outcome — a
+    transient 429/5xx, a 404/redirect, a network error, or an unexpected 2xx — is
+    **inconclusive** (``None``): we must not read "not 401" as "registered", or an
+    incident/rate-limit would flip every workspace to the direct-HTTP path. This is
+    the only user-level check available — the authorize endpoint redirects to SSO
     before validating the client, and the published-app API needs account-admin."""
     body = urlencode(
         {
@@ -74,29 +77,28 @@ def _probe_oauth_client(workspace: str, client_id: str) -> bool:
     )
     try:
         urllib.request.urlopen(request, timeout=10)  # noqa: S310 - fixed https workspace URL
-        return True  # a 2xx for a dummy code is unexpected, but means the client is valid
+        return None  # a 2xx for a dummy code is unexpected; don't conclude either way
     except urllib.error.HTTPError as exc:
-        # 401 invalid_client => not registered; any other error (400 for the bad
-        # code) => the client IS registered.
-        return exc.code != 401
+        if exc.code == 401:
+            return False  # invalid_client => the app is not registered
+        if exc.code == 400:
+            return True  # known client, rejected only on the dummy code => registered
+        return None  # 429/5xx/404/redirect/etc => inconclusive
     except OSError:
-        # Network failure: don't claim availability — the caller falls back to the
-        # stdio proxy, which is always safe.
-        return False
+        return None  # network failure => inconclusive
 
 
 def _read_cache() -> dict:
-    try:
-        return json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    return read_json_safe(_CACHE_PATH)
 
 
 def _write_cache(cache: dict) -> None:
+    # write_json_file creates APP_DIR if missing (like every other APP_DIR writer);
+    # best-effort — a write failure just means we re-probe next time.
     try:
-        _CACHE_PATH.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+        write_json_file(_CACHE_PATH, cache)
     except OSError:
-        pass  # best-effort: a write failure just means we re-probe next time
+        pass
 
 
 def oauth_client_available(workspace: str, client_id: str) -> bool:
@@ -111,6 +113,11 @@ def oauth_client_available(workspace: str, client_id: str) -> bool:
     if entry and (time.time() - entry.get("checked_at", 0)) < _CACHE_TTL_SECONDS:
         return bool(entry.get("available"))
     available = _probe_oauth_client(ws, client_id)
+    if available is None:
+        # Inconclusive probe (transient status / network error): fall back to the
+        # stdio proxy and do NOT cache, so a transient failure isn't sticky for the
+        # TTL — we re-probe on the next run.
+        return False
     cache.setdefault(ws, {})[client_id] = {
         "available": available,
         "checked_at": time.time(),
