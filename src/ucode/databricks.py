@@ -17,13 +17,6 @@ import shutil
 import subprocess
 import time
 from collections.abc import Callable
-from concurrent.futures import (
-    ThreadPoolExecutor,
-    as_completed,
-)
-from concurrent.futures import (
-    TimeoutError as FutureTimeoutError,
-)
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -2446,35 +2439,11 @@ def resolve_provider_launch_model(model: str | None, provider_models: dict[str, 
 
 _UC_LIST_PAGE_SIZE = 200
 _UC_LIST_MAX_PAGES = 50
-_UC_FUNCTION_PROBE_WORKERS = 16
 _UC_LIST_HTTP_TIMEOUT = 10
-# Most MCP services live outside `system.ai`, so this workspace-wide walk needs
-# enough time to enumerate them; a slow workspace still degrades to partial
-# results once the budget is exceeded instead of hanging indefinitely.
+# Safety valve for the workspace-wide (metastore-scope) MCP-services listing: it is a single
+# paginated call, but a pathologically large or slow listing still degrades to partial results
+# once the budget is exceeded instead of hanging indefinitely.
 _MCP_SERVICES_WALK_DEADLINE_SECONDS = 30.0
-# Skip UC catalogs whose schemas almost never carry user-callable functions
-# you'd want to expose as agent tools.
-_UC_FUNCTIONS_SKIP_CATALOGS = frozenset(
-    {"__databricks_internal", "hive_metastore", "samples", "system"}
-)
-
-
-def _drain_with_deadline(futures: dict, deadline: float, on_result) -> None:
-    """Iterate `futures` via `as_completed`, calling `on_result(value, key)` per
-    completed future, until either all are done or `deadline` passes. Per-task
-    exceptions are swallowed so one failure doesn't stop the rest."""
-    remaining = max(0.0, deadline - time.monotonic())
-    try:
-        for future in as_completed(futures, timeout=remaining):
-            try:
-                value = future.result()
-            except Exception:  # noqa: BLE001
-                continue
-            on_result(value, futures[future])
-            if time.monotonic() > deadline:
-                break
-    except FutureTimeoutError:
-        pass
 
 
 def _paginated_json_items(
@@ -2486,17 +2455,24 @@ def _paginated_json_items(
     page_size: int = _UC_LIST_PAGE_SIZE,
     max_pages: int = _UC_LIST_MAX_PAGES,
     timeout: int = 30,
+    deadline: float | None = None,
 ) -> tuple[list[dict], str | None]:
     """Walk a Databricks `next_page_token` listing and return all items.
 
     Returns (items, reason). Items are dicts; reason is None on success or a
-    short description of why the walk stopped early.
+    short description of why the walk stopped early. When ``deadline`` (a
+    ``time.monotonic()`` value) is given, pagination stops before fetching a
+    further page once it passes, returning the pages gathered so far — the first
+    page is always fetched so a bounded walk still makes forward progress.
     """
     items: list[dict] = []
     page_token: str | None = None
     seen_tokens: set[str] = set()
     last_reason: str | None = None
-    for _ in range(max_pages):
+    for page_index in range(max_pages):
+        if page_index and deadline is not None and time.monotonic() > deadline:
+            last_reason = last_reason or "deadline exceeded during listing"
+            break
         params: dict[str, str] = {"max_results": str(page_size)}
         if extra_params:
             params.update(extra_params)
@@ -2528,108 +2504,36 @@ def list_all_mcp_services(
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
 ) -> tuple[list[str], str | None]:
-    """Return sorted unique MCP-service full names across every `<catalog>.<schema>`
-    in the workspace. The mcp-services API is one-schema-per-call, so this walks
-    catalogs -> schemas -> mcp-services in parallel under a wall-clock budget,
-    returning partial results once `deadline_seconds` is exceeded.
+    """Return sorted unique MCP-service full names across the whole workspace.
 
-    `on_progress`, if given, is called as each schema's listing completes with
-    `(schemas_done, schemas_total, services_found)` so callers can render a live
-    count. `on_services`, if given, is called with each schema's newly-found service
-    names (deduped against everything emitted so far) so callers can stream results
-    into a picker as the walk progresses instead of waiting for the full result. Both
-    are invoked serially from the draining thread (not the workers).
+    The mcp-services API supports a metastore scope (``parent`` omitted) that lists every service
+    the caller can see in one paginated call. That replaces the old `catalogs -> schemas ->
+    mcp-services` walk, which couldn't enumerate a large metastore (thousands of catalogs) within
+    any usable budget and so surfaced nothing but the `system.ai` list. `deadline_seconds` bounds
+    pagination as a safety valve; a truncated listing returns whatever it gathered.
 
-    This walk is the slow, workspace-wide counterpart to `list_mcp_services`
-    (single schema)."""
+    `on_services`, if given, is called once with the discovered service names so a caller can
+    stream them into a picker; `on_progress`, if given, is called once as `(1, 1, count)` for a
+    live count. This is the workspace-wide counterpart to `list_mcp_services` (single schema)."""
     hostname = workspace_hostname(workspace)
     deadline = time.monotonic() + deadline_seconds
-
-    catalogs, catalogs_reason = _paginated_json_items(
-        f"https://{hostname}/api/2.1/unity-catalog/catalogs",
+    # Metastore scope: no `parent` query param (see the API's own error text: parent must be either
+    # '' for metastore scope or 'schemas/<catalog>.<schema>' for a single schema).
+    items, reason = _paginated_json_items(
+        f"https://{hostname}/api/2.1/unity-catalog/mcp-services",
         token,
-        items_key="catalogs",
+        items_key="mcp_services",
         timeout=_UC_LIST_HTTP_TIMEOUT,
+        deadline=deadline,
     )
-    if not catalogs:
-        return [], catalogs_reason or "no UC catalogs found"
-
-    catalog_names = [
-        c["name"]
-        for c in catalogs
-        if isinstance(c.get("name"), str)
-        and c["name"]
-        and c["name"] not in _UC_FUNCTIONS_SKIP_CATALOGS
-    ]
-    if not catalog_names:
-        return [], "no user UC catalogs found"
-    if time.monotonic() > deadline:
-        return [], "deadline exceeded while listing UC catalogs"
-
-    # Parallel per-catalog schema listing.
-    schema_refs: list[str] = []
-    schema_workers = max(1, min(_UC_FUNCTION_PROBE_WORKERS, len(catalog_names)))
-    with ThreadPoolExecutor(max_workers=schema_workers) as pool:
-        schema_futures = {
-            pool.submit(
-                _paginated_json_items,
-                f"https://{hostname}/api/2.1/unity-catalog/schemas",
-                token,
-                items_key="schemas",
-                extra_params={"catalog_name": cat},
-                timeout=_UC_LIST_HTTP_TIMEOUT,
-            ): cat
-            for cat in catalog_names
-        }
-
-        def collect_schemas(result, catalog):
-            schemas, _ = result
-            for schema in schemas:
-                schema_name = schema.get("name")
-                if (
-                    isinstance(schema_name, str)
-                    and schema_name
-                    and schema_name != "information_schema"
-                ):
-                    schema_refs.append(f"{catalog}.{schema_name}")
-
-        _drain_with_deadline(schema_futures, deadline, collect_schemas)
-        pool.shutdown(wait=False, cancel_futures=True)
-
-    if not schema_refs:
-        if time.monotonic() > deadline:
-            return [], "deadline exceeded while listing UC schemas"
-        return [], "no UC schemas found"
-
-    # Parallel per-schema mcp-services listing.
-    names: set[str] = set()
-    schemas_total = len(schema_refs)
-    schemas_done = 0
-    probe_workers = max(1, min(_UC_FUNCTION_PROBE_WORKERS, schemas_total))
-    with ThreadPoolExecutor(max_workers=probe_workers) as pool:
-        service_futures = {
-            pool.submit(list_mcp_services, workspace, token, ref): ref for ref in schema_refs
-        }
-
-        def collect_services(result, _ref):
-            nonlocal schemas_done
-            found, _ = result
-            new = [n for n in found if n not in names]
-            names.update(found)
-            schemas_done += 1
-            if on_progress is not None:
-                on_progress(schemas_done, schemas_total, len(names))
-            if on_services is not None and new:
-                on_services(sorted(new))
-
-        _drain_with_deadline(service_futures, deadline, collect_services)
-        pool.shutdown(wait=False, cancel_futures=True)
-
+    names = sorted({full for svc in items if (full := _mcp_service_full_name(svc, ""))})
+    if on_services is not None and names:
+        on_services(names)
+    if on_progress is not None:
+        on_progress(1, 1, len(names))
     if not names:
-        if time.monotonic() > deadline:
-            return [], "deadline exceeded while listing MCP services"
-        return [], "no MCP services found"
-    return sorted(names), None
+        return [], reason or "no MCP services found"
+    return names, None
 
 
 def _get_anthropic_models_json(workspace: str, token: str) -> tuple[dict | list | None, str | None]:

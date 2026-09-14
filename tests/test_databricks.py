@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from decimal import Decimal
 from urllib.parse import parse_qs
 
@@ -1100,106 +1101,162 @@ class TestListMcpServices:
 
 
 class TestListAllMcpServices:
-    """Workspace-wide walk: catalogs -> schemas -> per-schema mcp-services."""
+    """Workspace-wide listing via a single metastore-scope mcp-services call."""
 
-    def _fake_http(self, catalogs, schemas_by_catalog, services_by_schema):
-        """Route `_http_get_json` by URL to the right stubbed payload."""
+    def _metastore_http(self, services_by_page, *, capture=None):
+        """Route `_http_get_json` to metastore-scope mcp-services pages.
+
+        `services_by_page` is a list of pages; each page is a list of entries (raw dicts, or bare
+        full-name strings turned into `{"name": "mcp-services/<full>"}`). Pages after the first are
+        served on the matching `page_token`. `capture`, if given, records every requested URL.
+        """
+
+        def as_entry(item):
+            return item if isinstance(item, dict) else {"name": f"mcp-services/{item}"}
 
         def fake_get(url, token, timeout=30):
-            if "unity-catalog/catalogs" in url:
-                return {"catalogs": [{"name": c} for c in catalogs]}, None
-            if "unity-catalog/schemas" in url:
-                cat = url.split("catalog_name=")[1].split("&")[0]
-                return {"schemas": [{"name": s} for s in schemas_by_catalog.get(cat, [])]}, None
-            if "unity-catalog/mcp-services" in url:
-                # parent is url-encoded as `schemas%2F<cat>.<schema>`
-                parent = url.split("parent=")[1].split("&")[0]
-                schema_ref = parent.replace("schemas%2F", "").replace("schemas/", "")
-                return {
-                    "mcp_services": [
-                        {"name": f"mcp-services/{full}"}
-                        for full in services_by_schema.get(schema_ref, [])
-                    ]
-                }, None
-            return None, "unexpected url"
+            if capture is not None:
+                capture.append(url)
+            if "unity-catalog/mcp-services" not in url:
+                return None, "unexpected url"
+            page = 0
+            if "page_token=" in url:
+                page = int(url.split("page_token=")[1].split("&")[0])
+            body = {"mcp_services": [as_entry(i) for i in services_by_page[page]]}
+            if page + 1 < len(services_by_page):
+                body["next_page_token"] = str(page + 1)
+            return body, None
 
         return fake_get
 
-    def test_aggregates_services_across_catalogs_and_schemas(self, monkeypatch):
+    def test_lists_every_service_via_metastore_scope(self, monkeypatch):
+        urls: list[str] = []
         monkeypatch.setattr(
             db_mod,
             "_http_get_json",
-            self._fake_http(
-                catalogs=["mycat", "other"],
-                schemas_by_catalog={"mycat": ["myschema", "information_schema"], "other": ["ops"]},
-                services_by_schema={
-                    "mycat.myschema": ["mycat.myschema.weather", "mycat.myschema.news"],
-                    "other.ops": ["other.ops.pager"],
-                },
+            self._metastore_http(
+                [
+                    [
+                        "main.default.sanjay_tavily",
+                        "users.someone.my_mcp",
+                        "system.ai.github",
+                        "main.default.sanjay_tavily",  # duplicate: de-duplicated
+                    ]
+                ],
+                capture=urls,
             ),
         )
 
         names, reason = db_mod.list_all_mcp_services(WS, "token")
 
         assert reason is None
-        # information_schema is skipped; results are sorted and de-duplicated.
+        # Every catalog/schema is returned in one call, sorted and de-duplicated.
         assert names == [
-            "mycat.myschema.news",
-            "mycat.myschema.weather",
-            "other.ops.pager",
+            "main.default.sanjay_tavily",
+            "system.ai.github",
+            "users.someone.my_mcp",
         ]
+        # Metastore scope: the request carries no `parent` (that would scope it to one schema).
+        assert urls and all("parent=" not in u for u in urls)
 
-    def test_reports_progress_per_schema(self, monkeypatch):
+    def test_paginates_the_listing(self, monkeypatch):
         monkeypatch.setattr(
             db_mod,
             "_http_get_json",
-            self._fake_http(
-                catalogs=["mycat"],
-                schemas_by_catalog={"mycat": ["a", "b"]},
-                services_by_schema={"mycat.a": ["mycat.a.one"], "mycat.b": ["mycat.b.two"]},
+            self._metastore_http(
+                [["main.a.one"], ["other.b.two"]],  # two pages via next_page_token
             ),
         )
+
+        names, reason = db_mod.list_all_mcp_services(WS, "token")
+
+        assert reason is None
+        assert names == ["main.a.one", "other.b.two"]
+
+    def test_streams_results_and_reports_progress_once(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            self._metastore_http([["main.a.one", "main.a.two"]]),
+        )
+        streamed: list[str] = []
         progress: list[tuple[int, int, int]] = []
 
-        names, reason = db_mod.list_all_mcp_services(
+        names, _reason = db_mod.list_all_mcp_services(
             WS,
             "token",
+            on_services=lambda new: streamed.extend(new),
             on_progress=lambda done, total, found: progress.append((done, total, found)),
         )
 
-        assert reason is None
-        assert names == ["mycat.a.one", "mycat.b.two"]
-        # One callback per schema; the total is fixed and done/found climb.
-        assert len(progress) == 2
-        assert [p[1] for p in progress] == [2, 2]
-        assert progress[-1][0] == 2
-        assert progress[-1][2] == 2
+        assert names == ["main.a.one", "main.a.two"]
+        assert streamed == ["main.a.one", "main.a.two"]  # streamed once, in full
+        assert progress == [(1, 1, 2)]
 
-    def test_skips_internal_catalogs(self, monkeypatch):
+    def test_skips_inactive_services(self, monkeypatch):
+        # A service whose connection is not ACTIVE is excluded (see `_mcp_service_full_name`).
         monkeypatch.setattr(
             db_mod,
             "_http_get_json",
-            self._fake_http(
-                catalogs=["system", "hive_metastore", "samples", "__databricks_internal"],
-                schemas_by_catalog={},
-                services_by_schema={},
+            self._metastore_http(
+                [
+                    [
+                        {"name": "mcp-services/main.default.live"},
+                        {
+                            "name": "mcp-services/main.default.pending",
+                            "config": {"connection": {"status": "PENDING"}},
+                        },
+                    ]
+                ]
             ),
         )
 
         names, reason = db_mod.list_all_mcp_services(WS, "token")
 
-        assert names == []
-        assert reason == "no user UC catalogs found"
+        assert reason is None
+        assert names == ["main.default.live"]
 
-    def test_returns_reason_when_no_catalogs(self, monkeypatch):
+    def test_returns_reason_when_no_services(self, monkeypatch):
         monkeypatch.setattr(
-            db_mod, "_http_get_json", lambda url, token, timeout=30: ({"catalogs": []}, None)
+            db_mod, "_http_get_json", lambda url, token, timeout=30: ({"mcp_services": []}, None)
         )
 
         names, reason = db_mod.list_all_mcp_services(WS, "token")
 
         assert names == []
-        assert reason == "no UC catalogs found"
+        assert reason == "no MCP services found"
+
+    def test_surfaces_listing_failure_reason_when_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=30: (None, "HTTP 500 Server Error")
+        )
+
+        names, reason = db_mod.list_all_mcp_services(WS, "token")
+
+        assert names == []
+        assert reason == "HTTP 500 Server Error"
+
+    def test_paginated_json_items_stops_at_deadline_after_first_page(self, monkeypatch):
+        # A past deadline still fetches page 1 (forward progress) but skips further pages,
+        # returning the partial result and a reason. This bounds the metastore listing as a safety.
+        calls = {"n": 0}
+
+        def fake_get(url, token, timeout=30):
+            calls["n"] += 1
+            return {"items": [{"name": f"i{calls['n']}"}], "next_page_token": "more"}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        items, reason = db_mod._paginated_json_items(
+            "https://x/api/2.1/unity-catalog/mcp-services",
+            "token",
+            items_key="items",
+            deadline=time.monotonic() - 1,
+        )
+
+        assert calls["n"] == 1  # a further page was available but the deadline stopped it
+        assert [i["name"] for i in items] == ["i1"]
+        assert reason == "deadline exceeded during listing"
 
 
 def _foundation_models_payload(names):

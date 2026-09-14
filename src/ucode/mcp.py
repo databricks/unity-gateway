@@ -458,6 +458,56 @@ def _catalog_schema_server_name(prefix: str, catalog: str, schema: str, taken: s
     return f"{candidate}-{counter}"
 
 
+def _mcp_service_full_name_from_url(url: str) -> str | None:
+    """The UC ``<catalog>.<schema>.<id>`` of a UC MCP-service entry, recovered from its URL
+    (see :func:`build_mcp_service_url`), or ``None`` when ``url`` isn't a UC MCP-service URL.
+    Only UC MCP services use the ``/ai-gateway/mcp-services/`` route, so this doubles as the
+    "is this entry a UC MCP service?" test the leaf-rename pass relies on."""
+    marker = "/ai-gateway/mcp-services/"
+    idx = url.find(marker)
+    if idx == -1:
+        return None
+    tail = url[idx + len(marker) :].split("?", 1)[0].strip("/")
+    return tail or None
+
+
+def _apply_mcp_service_leaf_names(servers: list[dict]) -> None:
+    """Rename UC MCP-service entries in ``servers`` in place so each registers under its bare
+    service id (the leaf of ``<catalog>.<schema>.<id>``) instead of the full dashed path — e.g.
+    ``system.ai.github`` registers as ``github`` (the agent-visible ``mcp__github__`` tool prefix)
+    rather than ``system-ai-github``. The full UC name always stays in the entry's ``url`` (and is
+    rebuilt from the managed config), so only the agent-facing name changes; loading is untouched.
+
+    The leaf is used only when unambiguous across the desired set: if two services share an id
+    across schemas, or a service's leaf clashes with a non-service entry's name, the colliding
+    services keep their full dashed path so every server still registers under a distinct name."""
+    service_full: dict[int, str] = {}
+    for i, server in enumerate(servers):
+        url = server.get("url")
+        if isinstance(url, str):
+            full = _mcp_service_full_name_from_url(url)
+            if full and "." in full:
+                service_full[i] = full
+
+    # Names owned by non-service entries (skills/external/app/...); never rename a service onto one.
+    reserved = {
+        server.get("name")
+        for i, server in enumerate(servers)
+        if i not in service_full and isinstance(server.get("name"), str)
+    }
+    leaf_counts: dict[str, int] = {}
+    for full in service_full.values():
+        leaf = full.rsplit(".", 1)[-1]
+        leaf_counts[leaf] = leaf_counts.get(leaf, 0) + 1
+
+    for i, full in service_full.items():
+        leaf = full.rsplit(".", 1)[-1]
+        if leaf and leaf_counts[leaf] == 1 and leaf not in reserved:
+            servers[i]["name"] = leaf
+        else:
+            servers[i]["name"] = full.replace(".", "-")
+
+
 def _picker_style() -> questionary.Style:
     return questionary.Style(
         [
@@ -558,8 +608,11 @@ def _mcp_service_choice(name: str, known_names: set[str], additive: bool) -> que
     (and dedupes by value against what's already shown). An already-registered service is
     a removable toggle under `configure mcp` and a non-toggleable note under `mcp add`
     (additive); an unregistered one is an add-choice."""
-    registered_as = name.replace(".", "-")
-    display_title = f"MCP: {name}"
+    # Registered under the bare service id (`github`); older configs may still hold the full
+    # dashed path (`system-ai-github`), so an already-configured server is matched against either.
+    leaf = name.rsplit(".", 1)[-1]
+    registered_as = leaf if leaf in known_names else name.replace(".", "-")
+    display_title = f"MCP: {leaf}"
     if registered_as in known_names:
         if additive:
             return questionary.Choice(
@@ -909,10 +962,13 @@ def build_mcp_picker_choices(
     # at the end. The `managed:sql` selection value is still resolvable for managed configs.
 
     for name in available_mcp_service_names or []:
-        # Picker shows the dotted UC name; state/agents store the dashed form
-        # (see resolver). The shared helper is also used by the background walk that
-        # streams more services in, so up-front and streamed rows match exactly.
+        # Picker shows the bare service id; state/agents store that id too (or the full dashed
+        # path on collision — see `_apply_mcp_service_leaf_names`). Track both forms so the
+        # known-server fallback below never re-lists a service already shown here. The shared
+        # helper is also used by the background walk that streams more services in, so up-front
+        # and streamed rows match exactly.
         choices.append(_mcp_service_choice(name, known_names, additive))
+        displayed_names.add(name.rsplit(".", 1)[-1])
         displayed_names.add(name.replace(".", "-"))
 
     for name in available_external_names:
@@ -1345,6 +1401,11 @@ def apply_mcp_server_changes(
     *,
     use_pat: bool = False,
 ) -> bool:
+    # Register each UC MCP service under its bare id (`github`, not `system-ai-github`) — the
+    # agent-visible `mcp__<name>__` tool prefix. Done here, the single chokepoint every path funnels
+    # through after its own assembly/append, so carried-over servers are renamed consistently too.
+    # Mutates `working_servers` in place so the caller persists the same (renamed) list to state.
+    _apply_mcp_service_leaf_names(working_servers)
     original_by_name = _servers_by_name(original_servers)
     working_by_name = _servers_by_name(working_servers)
 
@@ -1543,11 +1604,26 @@ def _resolve_location_mcp_servers(
             if full_name in services or full_name.split(".")[-1] in services
         ]
 
+    working_servers = _mcp_service_entries(names, clients, original_servers, workspace)
+    return [*working_servers, *_skills_entries(original_servers)]
+
+
+def _mcp_service_entries(
+    full_names: list[str], clients: list[str], original_servers: list[dict], workspace: str
+) -> list[dict]:
+    """Build (or reuse) an MCP-service server entry per `<catalog>.<schema>.<id>` full name.
+
+    Shared by the `--location` and `--all` paths. An already-registered copy is matched under
+    either its bare id (`github`, the name `apply_mcp_server_changes` assigns) or the older full
+    dashed path, so its existing clients are preserved; the leaf-vs-dashed registered name is
+    finalized later by `apply_mcp_server_changes`."""
     original_by_name = _servers_by_name(original_servers)
-    working_servers: list[dict] = []
-    for full_name in names:
+    servers: list[dict] = []
+    for full_name in full_names:
         entry_name = full_name.replace(".", "-")
-        original = original_by_name.get(entry_name)
+        original = original_by_name.get(full_name.rsplit(".", 1)[-1]) or original_by_name.get(
+            entry_name
+        )
         original_clients = list((original or {}).get("clients") or [])
         merged_clients = original_clients + [c for c in clients if c not in original_clients]
         candidate = {
@@ -1557,10 +1633,27 @@ def _resolve_location_mcp_servers(
             "clients": merged_clients,
         }
         if original is not None and original == candidate:
-            working_servers.append(original.copy())
+            servers.append(original.copy())
         else:
-            working_servers.append(candidate)
-    return [*working_servers, *_skills_entries(original_servers)]
+            servers.append(candidate)
+    return servers
+
+
+def _resolve_all_mcp_servers(
+    workspace: str, profile: str | None, clients: list[str], original_servers: list[dict]
+) -> tuple[list[dict], str | None]:
+    """Build the desired MCP server list for `--all`: every MCP service the caller can access
+    across the whole workspace (metastore-wide), plus any existing skills connection, preserved.
+    Returns ``(servers, reason)`` where ``reason`` is a non-None listing-failure description.
+
+    The workspace-wide listing is permission-filtered server-side, so this is exactly the set the
+    user is entitled to. Like `--location`, it's a strict replacement — a previously-registered
+    service the user can no longer see is removed by `apply_mcp_server_changes`."""
+    token = get_databricks_token(workspace, profile)
+    with spinner("Discovering MCP services you can access..."):
+        names, reason = list_all_mcp_services(workspace, token)
+    working_servers = _mcp_service_entries(names, clients, original_servers, workspace)
+    return [*working_servers, *_skills_entries(original_servers)], reason
 
 
 # The interactive picker searches a single source: MCP services (the `/ai-gateway/mcp-services/`
@@ -1672,14 +1765,16 @@ def add_mcp_command(
     location: str | None = None,
     services: set[str] | None = None,
     agents: set[str] | None = None,
+    *,
+    all_services: bool = False,
 ) -> int:
     """`ucode mcp add`: register Databricks MCP servers WITHOUT removing any that
     are already configured.
 
     Uses the same discovery and options as `configure mcp` — the interactive
-    picker, or the non-interactive `--location`/`--services` paths — but is purely
-    additive: unlike `configure mcp`, it never removes servers outside the
-    selection.
+    picker, the non-interactive `--location`/`--services` paths, or `--all` (every
+    MCP service the caller can access) — but is purely additive: unlike
+    `configure mcp`, it never removes servers outside the selection.
 
     ``agents`` scopes the registration to that subset of configured MCP clients
     (the agents must already be configured — the `--agents` CLI option sets up any
@@ -1690,7 +1785,13 @@ def add_mcp_command(
         # so it's a no-op (and doesn't need --location the way a real subset does).
         print_note("No MCP services given to add (empty --services); nothing to do.")
         return 0
-    return configure_mcp_command(location=location, services=services, append=True, agents=agents)
+    return configure_mcp_command(
+        location=location,
+        services=services,
+        all_services=all_services,
+        append=True,
+        agents=agents,
+    )
 
 
 def _configure_v2_mcp_selectors(
@@ -1755,6 +1856,13 @@ def _configure_v2_mcp_selectors(
     if changed or original_mcp_servers != working_mcp_servers:
         state["mcp_servers"] = working_mcp_servers
         save_state(state)
+        # `apply_mcp_server_changes` may have renamed UC services to their leaf ids in place, so
+        # recompute the working names for an accurate added/removed count in the summary.
+        working_names = {
+            n
+            for s in working_mcp_servers
+            if s.get("kind") != SKILLS_MCP_KIND and (n := _server_name(s))
+        }
         added = sorted(working_names - set(original_by_name))
         removed = [] if append else sorted(set(original_by_name) - working_names)
         print_success(_mcp_change_summary(added, removed, clients))
@@ -1765,6 +1873,7 @@ def configure_mcp_command(
     location: str | None = None,
     services: set[str] | None = None,
     *,
+    all_services: bool = False,
     exclude_sources: set[str] | None = None,
     append: bool = False,
     agents: set[str] | None = None,
@@ -1773,10 +1882,13 @@ def configure_mcp_command(
     `ucode setup` passes ``{"apps"}`` because a managed config can't carry an app's off-workspace
     host, so an app picked here would be silently dropped from the published config.
 
-    ``append`` (used by `ucode mcp add`) makes the command purely additive: the
-    final server list is unioned with the already-configured servers, so nothing
-    outside the current selection is removed. ``agents`` scopes the operation to
-    that subset of configured MCP clients."""
+    ``all_services`` skips the picker and registers every MCP service the caller can access across
+    the workspace (the `--all` / onboarding path). ``append`` (used by `ucode mcp add`) makes the
+    command purely additive: the final server list is unioned with the already-configured servers,
+    so nothing outside the current selection is removed. ``agents`` scopes the operation to that
+    subset of configured MCP clients."""
+    if all_services and (location is not None or services is not None):
+        raise RuntimeError("--all can't be combined with --location or --services.")
     if services is not None:
         # A typed V2 MCP selector (`vector-search:main.docs`, `uc-functions:main.tools`,
         # `external:conn`, `genie-space:<id>`, `app:<name>`) names a server the picker no
@@ -1810,15 +1922,30 @@ def configure_mcp_command(
             )
         location = next(iter(schemas))
     state = load_state()
+    if all_services and agents is None:
+        # `--all` targets the agents you actually set up with ucode (`available_tools`), not every
+        # installed MCP-capable CLI — so a Codex-only user isn't surprised by Cursor (an MCP-only
+        # client) getting configured too. Fall back to the full configured set only when no
+        # model-routing agent was configured (e.g. a Cursor-only user); `--agents` overrides either.
+        configured = configured_mcp_clients(state, available_mcp_clients())
+        scoped = set(state.get("available_tools") or []) & set(configured)
+        agents = scoped or None
     workspace, profile, clients = setup_mcp_clients(
         state, "Add MCP Servers" if append else "MCP Servers", agents=agents
     )
 
     original_mcp_servers_for_location: list[dict] = list(state.get("mcp_servers") or [])
-    if location is not None:
-        working_mcp_servers = _resolve_location_mcp_servers(
-            workspace, profile, clients, location, original_mcp_servers_for_location, services
-        )
+    if all_services or location is not None:
+        all_reason: str | None = None
+        if all_services:
+            working_mcp_servers, all_reason = _resolve_all_mcp_servers(
+                workspace, profile, clients, original_mcp_servers_for_location
+            )
+        else:
+            assert location is not None  # guaranteed by the `all_services or location is not None`
+            working_mcp_servers = _resolve_location_mcp_servers(
+                workspace, profile, clients, location, original_mcp_servers_for_location, services
+            )
         if append:
             working_mcp_servers = _union_missing(
                 original_mcp_servers_for_location, working_mcp_servers
@@ -1834,6 +1961,21 @@ def configure_mcp_command(
         if changed or original_mcp_servers_for_location != working_mcp_servers:
             state["mcp_servers"] = working_mcp_servers
             save_state(state)
+        if all_services:
+            # Report what's registered (not whether this run changed anything), so a re-run when
+            # everything is already registered doesn't misreport "none found".
+            service_count = sum(
+                1
+                for s in working_mcp_servers
+                if isinstance(s.get("url"), str) and _mcp_service_full_name_from_url(s["url"])
+            )
+            if service_count:
+                print_success(f"Registered {service_count} MCP server(s) you have access to")
+            elif all_reason:
+                print_warning(f"Couldn't list MCP services you can access: {all_reason}")
+            else:
+                print_note("No MCP servers you can access were found.")
+        elif changed or original_mcp_servers_for_location != working_mcp_servers:
             print_success("Saved")
         return 0
 
@@ -1928,6 +2070,13 @@ def configure_mcp_command(
     if changed or original_mcp_servers != working_mcp_servers:
         state["mcp_servers"] = working_mcp_servers
         save_state(state)
+        # `apply_mcp_server_changes` may have renamed UC services to their leaf ids in place, so
+        # recompute the working names for an accurate added/removed count in the summary.
+        working_names = {
+            n
+            for s in working_mcp_servers
+            if s.get("kind") != SKILLS_MCP_KIND and (n := _server_name(s))
+        }
         added = sorted(working_names - set(original_by_name))
         # `add` never removes; the union above re-keeps unselected servers.
         removed = [] if append else sorted(set(original_by_name) - working_names)

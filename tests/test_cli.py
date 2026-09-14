@@ -2035,7 +2035,8 @@ class TestConfigureAgentFlag:
         assert state["databricks_ai_tools_enabled"] is True
         mock_save.assert_called_once_with(state)
         mock_install.assert_called_once_with(["claude", "codex"], state)
-        mock_mcp.assert_called_once_with()
+        # Onboarding registers every accessible MCP service rather than opening the picker.
+        mock_mcp.assert_called_once_with(all_services=True)
 
     def test_optional_setup_decline_does_nothing(self):
         import ucode.cli as cli_mod

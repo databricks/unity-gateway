@@ -547,6 +547,70 @@ class TestApplyMcpServerChanges:
         assert mcp.apply_mcp_server_changes(servers, servers, ["claude"], WS) is False
 
 
+class TestMcpServiceLeafNames:
+    """UC MCP services register under their bare id (`github`), not the full dashed path
+    (`system-ai-github`), so the agent-visible tool prefix is `mcp__github__`."""
+
+    def _service(self, full_name, name=None):
+        return {
+            "name": name or full_name.replace(".", "-"),
+            "url": f"{WS}/ai-gateway/mcp-services/{full_name}",
+            "auth": "proxy",
+            "clients": ["claude"],
+        }
+
+    def test_full_name_from_url_only_matches_mcp_service_urls(self):
+        assert (
+            mcp._mcp_service_full_name_from_url(f"{WS}/ai-gateway/mcp-services/system.ai.github")
+            == "system.ai.github"
+        )
+        # Other MCP routes are not UC services and must not be renamed.
+        assert mcp._mcp_service_full_name_from_url(f"{WS}/api/2.0/mcp/sql") is None
+        assert mcp._mcp_service_full_name_from_url(f"{WS}/ai-gateway/skills/?schema=a.b") is None
+
+    def test_unique_leaf_wins(self):
+        servers = [self._service("system.ai.github"), self._service("system.ai.slack")]
+        mcp._apply_mcp_service_leaf_names(servers)
+        assert [s["name"] for s in servers] == ["github", "slack"]
+        # The full UC name stays in the URL so loading/round-trip is unaffected.
+        assert servers[0]["url"].endswith("/mcp-services/system.ai.github")
+
+    def test_leaf_collision_across_schemas_keeps_full_dashed_path(self):
+        # Two services share the id `github` in different schemas: both keep the full path so
+        # each still registers under a distinct name.
+        servers = [self._service("system.ai.github"), self._service("main.tools.github")]
+        mcp._apply_mcp_service_leaf_names(servers)
+        assert sorted(s["name"] for s in servers) == ["main-tools-github", "system-ai-github"]
+
+    def test_leaf_clashing_with_non_service_entry_keeps_full_path(self):
+        # An external connection literally named `github` blocks the service from taking the leaf.
+        servers = [
+            {"name": "github", "url": f"{WS}/api/2.0/mcp/external/github", "clients": ["claude"]},
+            self._service("system.ai.github"),
+        ]
+        mcp._apply_mcp_service_leaf_names(servers)
+        assert servers[0]["name"] == "github"  # the external connection is untouched
+        assert servers[1]["name"] == "system-ai-github"
+
+    def test_service_choice_shows_and_registers_the_leaf(self):
+        # Unconfigured: an add-choice whose title is the bare id and whose value carries the
+        # full UC name for the resolver.
+        add = mcp._mcp_service_choice("system.ai.github", set(), additive=False)
+        assert add.title == "MCP: github"
+        assert (
+            add.value == f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}system.ai.github"
+        )
+
+        # Already configured under the leaf: a pre-checked, removable toggle keyed by the leaf.
+        toggle = mcp._mcp_service_choice("system.ai.github", {"github"}, additive=False)
+        assert toggle.title == "MCP: github"
+        assert toggle.value == "github"
+
+        # A legacy config still holding the full dashed name is matched too (back-compat).
+        legacy = mcp._mcp_service_choice("system.ai.github", {"system-ai-github"}, additive=False)
+        assert legacy.value == "system-ai-github"
+
+
 class TestApplySkillsMcpChanges:
     def _entry(self, by_client):
         return mcp._build_skills_entry(WS, by_client, list(by_client))
@@ -1359,17 +1423,17 @@ class TestConfigureMcpFromLocation:
 
         assert seen == {"parent": "system.ai"}
         assert picker_called == []
-        assert [c[1] for c in configured] == ["system-ai-github", "system-ai-slack"]
+        assert [c[1] for c in configured] == ["github", "slack"]
         assert configured[0][2] == f"{WS}/ai-gateway/mcp-services/system.ai.github"
         assert saved_states[-1]["mcp_servers"] == [
             {
-                "name": "system-ai-github",
+                "name": "github",
                 "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
                 "auth": "proxy",
                 "clients": ["claude"],
             },
             {
-                "name": "system-ai-slack",
+                "name": "slack",
                 "url": f"{WS}/ai-gateway/mcp-services/system.ai.slack",
                 "auth": "proxy",
                 "clients": ["claude"],
@@ -1410,10 +1474,10 @@ class TestConfigureMcpFromLocation:
         assert mcp.configure_mcp_command(location="system.ai") == 0
 
         assert removed == [("claude", "databricks-sql")]
-        assert [c[1] for c in configured] == ["system-ai-github"]
+        assert [c[1] for c in configured] == ["github"]
         assert saved_states[-1]["mcp_servers"] == [
             {
-                "name": "system-ai-github",
+                "name": "github",
                 "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
                 "auth": "proxy",
                 "clients": ["claude"],
@@ -1461,7 +1525,7 @@ class TestConfigureMcpFromLocation:
         saved_states: list[dict] = []
         configured: list[tuple[str, str, str, dict]] = []
         existing = {
-            "name": "system-ai-github",
+            "name": "github",
             "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
             "auth": "proxy",
             "clients": ["claude"],
@@ -1492,12 +1556,150 @@ class TestConfigureMcpFromLocation:
         assert [c[0] for c in configured] == ["claude", "codex"]
         assert saved_states[-1]["mcp_servers"] == [
             {
-                "name": "system-ai-github",
+                "name": "github",
                 "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
                 "auth": "proxy",
                 "clients": ["claude", "codex"],
             }
         ]
+
+
+class TestConfigureAllMcpServices:
+    """`configure mcp --all` / onboarding: register every MCP service the user can access,
+    metastore-wide, with no picker."""
+
+    def _capture_messages(self, monkeypatch):
+        msgs: dict[str, list[str]] = {"success": [], "note": [], "warning": []}
+        monkeypatch.setattr(mcp, "print_success", lambda m: msgs["success"].append(m))
+        monkeypatch.setattr(mcp, "print_note", lambda m: msgs["note"].append(m))
+        monkeypatch.setattr(mcp, "print_warning", lambda m: msgs["warning"].append(m))
+        return msgs
+
+    def test_registers_every_accessible_service_under_leaf_names(self, monkeypatch):
+        saved_states: list[dict] = []
+        configured: list[tuple[str, str, str]] = []
+        picker_called: list[bool] = []
+        _stub_location_base(monkeypatch, {**CLAUDE_STATE})
+        # The whole workspace listing (permission-filtered server-side), across several schemas.
+        monkeypatch.setattr(
+            mcp,
+            "list_all_mcp_services",
+            lambda workspace, token, **kw: (
+                ["main.default.sanjay_tavily", "system.ai.github", "users.someone.my_mcp"],
+                None,
+            ),
+        )
+        monkeypatch.setattr(
+            mcp,
+            "prompt_for_mcp_server_choices",
+            lambda *a, **kw: picker_called.append(True) or [],
+        )
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda client, name, url, *a, **kw: configured.append((client, name, url)) or [],
+        )
+        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
+
+        assert mcp.configure_mcp_command(all_services=True) == 0
+
+        assert picker_called == []  # no picker: it just registers everything
+        # Each is registered under its bare id (the `mcp__<name>__` tool prefix).
+        assert sorted(c[1] for c in configured) == ["github", "my_mcp", "sanjay_tavily"]
+        assert sorted(s["name"] for s in saved_states[-1]["mcp_servers"]) == [
+            "github",
+            "my_mcp",
+            "sanjay_tavily",
+        ]
+        # The full UC name is preserved in each URL, so loading is unaffected.
+        by_name = {s["name"]: s for s in saved_states[-1]["mcp_servers"]}
+        assert by_name["sanjay_tavily"]["url"].endswith("/mcp-services/main.default.sanjay_tavily")
+
+    def test_rejects_combination_with_location_or_services(self, monkeypatch):
+        _stub_location_base(monkeypatch, {**CLAUDE_STATE})
+        for kwargs in ({"location": "main.default"}, {"services": {"main.default.x"}}):
+            try:
+                mcp.configure_mcp_command(all_services=True, **kwargs)
+            except RuntimeError as exc:
+                assert "--all" in str(exc)
+            else:
+                raise AssertionError(f"expected RuntimeError for all_services with {kwargs}")
+
+    def test_scopes_to_configured_agents_not_every_installed_cli(self, monkeypatch):
+        # A Codex-only user (available_tools=["codex"]) with Cursor also installed: `--all` must
+        # target Codex only, not sweep in Cursor just because it's an installed MCP-only client.
+        configured: list[tuple[str, str]] = []
+        _stub_location_base(monkeypatch, {"workspace": WS, "available_tools": ["codex"]})
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["codex", "cursor"])
+        monkeypatch.setattr(
+            mcp,
+            "list_all_mcp_services",
+            lambda workspace, token, **kw: (["system.ai.github"], None),
+        )
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda client, name, url, *a, **kw: configured.append((client, name)) or [],
+        )
+        monkeypatch.setattr(mcp, "save_state", lambda state: None)
+
+        assert mcp.configure_mcp_command(all_services=True) == 0
+        assert {c[0] for c in configured} == {"codex"}  # cursor is not configured
+
+    def test_rerun_when_already_registered_reports_count_not_none_found(self, monkeypatch):
+        # The bug: a no-op re-run (everything already registered) reported "none found". It must
+        # report what's registered instead, since the services are all there.
+        existing = {
+            "name": "github",
+            "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
+            "auth": "proxy",
+            "clients": ["claude"],
+        }
+        _stub_location_base(monkeypatch, {**CLAUDE_STATE, "mcp_servers": [existing]})
+        monkeypatch.setattr(
+            mcp,
+            "list_all_mcp_services",
+            lambda workspace, token, **kw: (["system.ai.github"], None),
+        )
+        monkeypatch.setattr(mcp, "configure_client_mcp_server", lambda *a, **kw: [])
+        monkeypatch.setattr(mcp, "save_state", lambda state: None)
+        msgs = self._capture_messages(monkeypatch)
+
+        assert mcp.configure_mcp_command(all_services=True) == 0
+        assert any("1 MCP server" in m for m in msgs["success"])
+        assert not any("No MCP servers" in m for m in msgs["note"])
+
+    def test_no_accessible_services_says_none_found(self, monkeypatch):
+        configured: list[tuple[str, str, str]] = []
+        _stub_location_base(monkeypatch, {**CLAUDE_STATE})
+        monkeypatch.setattr(mcp, "list_all_mcp_services", lambda workspace, token, **kw: ([], None))
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda client, name, url, *a, **kw: configured.append((client, name, url)) or [],
+        )
+        monkeypatch.setattr(mcp, "save_state", lambda state: None)
+        msgs = self._capture_messages(monkeypatch)
+
+        assert mcp.configure_mcp_command(all_services=True) == 0
+        assert configured == []
+        assert any("No MCP servers" in m for m in msgs["note"])
+
+    def test_listing_failure_surfaces_the_reason(self, monkeypatch):
+        _stub_location_base(monkeypatch, {**CLAUDE_STATE})
+        monkeypatch.setattr(
+            mcp,
+            "list_all_mcp_services",
+            lambda workspace, token, **kw: ([], "HTTP 403 Forbidden"),
+        )
+        monkeypatch.setattr(mcp, "configure_client_mcp_server", lambda *a, **kw: [])
+        monkeypatch.setattr(mcp, "save_state", lambda state: None)
+        msgs = self._capture_messages(monkeypatch)
+
+        assert mcp.configure_mcp_command(all_services=True) == 0
+        # Not a bare "none found" — the actual failure is surfaced.
+        assert any("HTTP 403" in m for m in msgs["warning"])
+        assert not any("No MCP servers" in m for m in msgs["note"])
 
 
 class TestAddMcpCommand:
@@ -1540,10 +1742,10 @@ class TestAddMcpCommand:
 
         # Nothing is removed; the new service is added and the outside one kept.
         assert removed == []
-        assert [c[1] for c in configured] == ["system-ai-github"]
+        assert [c[1] for c in configured] == ["github"]
         assert saved_states[-1]["mcp_servers"] == [
             {
-                "name": "system-ai-github",
+                "name": "github",
                 "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
                 "auth": "proxy",
                 "clients": ["claude"],
@@ -1557,7 +1759,7 @@ class TestAddMcpCommand:
         saved_states: list[dict] = []
         removed: list[tuple[str, str]] = []
         existing = {
-            "name": "system-ai-slack",
+            "name": "slack",
             "url": f"{WS}/ai-gateway/mcp-services/system.ai.slack",
             "auth": "proxy",
             "clients": ["claude"],
@@ -1583,7 +1785,7 @@ class TestAddMcpCommand:
 
         assert removed == []
         names = [s["name"] for s in saved_states[-1]["mcp_servers"]]
-        assert names == ["system-ai-github", "system-ai-slack"]
+        assert names == ["github", "slack"]
 
     def test_empty_services_is_a_noop(self, monkeypatch):
         """`mcp add --services ""` has nothing to add, so it's a no-op that never
@@ -1616,7 +1818,7 @@ class TestAddMcpCommand:
 
         assert mcp.add_mcp_command(location="system.ai", agents={"claude"}) == 0
 
-        assert configured == [("claude", "system-ai-github")]
+        assert configured == [("claude", "github")]
         assert saved_states[-1]["mcp_servers"][0]["clients"] == ["claude"]
 
     def test_agents_not_configured_raises(self, monkeypatch):
@@ -1797,10 +1999,10 @@ class TestConfigureMcpServicesSubset:
         )
 
         # slack is dropped; only the two requested services are configured.
-        assert sorted(c[1] for c in configured) == ["system-ai-github", "system-ai-gmail"]
+        assert sorted(c[1] for c in configured) == ["github", "gmail"]
         assert sorted(s["name"] for s in saved_states[-1]["mcp_servers"]) == [
-            "system-ai-github",
-            "system-ai-gmail",
+            "github",
+            "gmail",
         ]
 
     def test_matches_bare_short_names(self, monkeypatch):
@@ -1820,7 +2022,7 @@ class TestConfigureMcpServicesSubset:
 
         assert mcp.configure_mcp_command(location="system.ai", services={"github"}) == 0
 
-        assert [c[1] for c in configured] == ["system-ai-github"]
+        assert [c[1] for c in configured] == ["github"]
 
     def test_unknown_requested_service_warns_and_skips(self, monkeypatch):
         configured: list[tuple[str, str, str, dict]] = []
@@ -1847,7 +2049,7 @@ class TestConfigureMcpServicesSubset:
         )
 
         # The known service is still configured; the unknown one is reported, not fatal.
-        assert [c[1] for c in configured] == ["system-ai-github"]
+        assert [c[1] for c in configured] == ["github"]
         assert any("system.ai.ghost" in w for w in warnings)
 
     def test_empty_services_removes_everything(self, monkeypatch):
@@ -1888,13 +2090,13 @@ class TestConfigureMcpServicesSubset:
         # The live case teammates want mid-session: started with github+slack,
         # then the user deselects slack and selects gmail.
         github = {
-            "name": "system-ai-github",
+            "name": "github",
             "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
             "auth": "proxy",
             "clients": ["claude"],
         }
         slack = {
-            "name": "system-ai-slack",
+            "name": "slack",
             "url": f"{WS}/ai-gateway/mcp-services/system.ai.slack",
             "auth": "proxy",
             "clients": ["claude"],
@@ -1931,11 +2133,11 @@ class TestConfigureMcpServicesSubset:
         )
 
         # slack removed, gmail added, github untouched (entry unchanged).
-        assert removed == [("claude", "system-ai-slack")]
-        assert [c[1] for c in configured] == ["system-ai-gmail"]
+        assert removed == [("claude", "slack")]
+        assert [c[1] for c in configured] == ["gmail"]
         assert sorted(s["name"] for s in saved_states[-1]["mcp_servers"]) == [
-            "system-ai-github",
-            "system-ai-gmail",
+            "github",
+            "gmail",
         ]
 
     def test_full_names_without_location_derive_the_schema(self, monkeypatch):
@@ -1959,7 +2161,7 @@ class TestConfigureMcpServicesSubset:
         assert mcp.configure_mcp_command(services={"system.ai.github", "system.ai.slack"}) == 0
 
         assert seen == {"parent": "system.ai"}
-        assert sorted(c[1] for c in configured) == ["system-ai-github", "system-ai-slack"]
+        assert sorted(c[1] for c in configured) == ["github", "slack"]
 
     def test_short_name_without_location_raises(self):
         try:
@@ -2137,7 +2339,7 @@ class TestConfigureSkillsMcpCommand:
     def test_preserves_mcp_service_entries_across_set(self, monkeypatch):
         saved_states: list[dict] = []
         service_entry = {
-            "name": "system-ai-github",
+            "name": "github",
             "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
             "auth": "env:OAUTH_TOKEN",
             "clients": ["claude"],
@@ -2152,7 +2354,7 @@ class TestConfigureSkillsMcpCommand:
         assert mcp.configure_skills_mcp_command(["B.b"]) == 0
 
         names = [s["name"] for s in saved_states[-1]["mcp_servers"]]
-        assert "system-ai-github" in names
+        assert "github" in names
         assert names.count(mcp.SKILLS_MCP_SERVER_NAME) == 1
 
 

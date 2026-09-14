@@ -1140,7 +1140,10 @@ def _configure_optional_setup(state: dict, tools: list[str]) -> None:
         return
 
     install_databricks_ai_tools_for_agents(tools, state)
-    configure_mcp_command()
+    # Register every MCP service the user can access rather than making them pick during setup;
+    # `configure mcp` (below) is the granular picker for anyone who wants to choose.
+    configure_mcp_command(all_services=True)
+    print_note("To pick specific MCP servers instead, run `ug configure mcp`.")
 
 
 @mcp_app.command("add")
@@ -1177,6 +1180,14 @@ def mcp_add(
             "the server is registered for every already-configured agent.",
         ),
     ] = None,
+    all_services: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Register every MCP service you can access across the workspace, without the "
+            "picker. Can't be combined with --location or --services.",
+        ),
+    ] = False,
 ) -> None:
     """Add Databricks MCP servers to installed coding tools.
 
@@ -1192,7 +1203,9 @@ def mcp_add(
     )
     try:
         scope = _configure_agents_for_mcp(sorted(requested_agents)) if requested_agents else None
-        add_mcp_command(location=location, services=selected, agents=scope)
+        add_mcp_command(
+            location=location, services=selected, agents=scope, all_services=all_services
+        )
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -3138,13 +3151,21 @@ def configure_mcp(
             "`app:<name>` (workspace access required).",
         ),
     ] = None,
+    all_services: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Register every MCP service you can access across the workspace, without the "
+            "picker. Can't be combined with --location or --services.",
+        ),
+    ] = False,
 ) -> None:
     """Add Databricks MCP servers to installed coding tools."""
     # `--services` absent -> None (whole schema); present (even empty) -> the
     # explicit subset, so `--services ""` deselects everything.
     selected = None if services is None else {s.strip() for s in services.split(",") if s.strip()}
     try:
-        configure_mcp_command(location=location, services=selected)
+        configure_mcp_command(location=location, services=selected, all_services=all_services)
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
