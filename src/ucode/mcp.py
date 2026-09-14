@@ -366,14 +366,13 @@ def configure_client_mcp_server(
     # the agent drives the connection login natively — but only for an agent that can
     # pin an OAuth client (AGENT_OAUTH_CLIENT: Claude Code, Cursor) and only when that
     # client is registered on the workspace. Everything else keeps the stdio proxy:
-    # non-connection MCPs, the skills registry (`always_load`), PAT auth (no
+    # non-connection MCPs, the skills registry, PAT auth (no
     # interactive OAuth), agents without a mapped OAuth client, and workspaces where
     # the mapped client isn't published.
     oauth_client = AGENT_OAUTH_CLIENT.get(client)
     if (
         oauth_client is not None
         and AIGW_MCP_SERVICES_PATH in url
-        and not always_load
         and not use_pat
         and oauth_client_available(workspace, oauth_client)
     ):
