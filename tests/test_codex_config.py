@@ -22,12 +22,12 @@ class TestCodexConfigArgs:
 
         assert args[:4] == [
             "--config",
-            'model_provider="databricks"',
+            'model_provider="Databricks"',
             "--config",
             'model="gpt-5.6-luna"',
         ]
         provider_override = args[-1]
-        assert provider_override.startswith("model_providers.databricks={")
+        assert provider_override.startswith("model_providers.Databricks={")
         assert "/ai-gateway/codex/v1" in provider_override
         assert 'command = "' in provider_override
         assert '"myprof"' in provider_override

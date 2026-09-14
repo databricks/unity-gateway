@@ -48,10 +48,10 @@ ug codex --full-auto
 
 All agents route through Databricks AI Gateway using your workspace credentials — no API keys required.
 
-Codex uses the provider ID `databricks` while keeping the `ucode` profile name.
+Codex uses the provider ID `Databricks` while keeping the `ucode` profile name.
 Re-run `ug configure --agents codex` to update existing generated configurations.
-This reuses history stored under the exact lowercase `databricks` ID; it does not merge
-history stored under `Databricks` or `ucode-databricks`.
+This reuses history stored under the exact case-sensitive `Databricks` ID; it does not merge
+history stored under `databricks` or `ucode-databricks`.
 
 Smart routing is opt-in for Codex and Claude Code. Enabling it for a launch asks the AI Gateway
 router to select models for that session and its subagents. Codex may require one-time review of

@@ -73,7 +73,7 @@ class TestRenderOverlay:
 
     def test_sets_model_provider(self):
         overlay = codex.render_overlay(WS)
-        assert overlay["model_provider"] == "databricks"
+        assert overlay["model_provider"] == "Databricks"
 
     def test_sets_model_when_provided(self):
         overlay = codex.render_overlay(WS, "databricks-gpt-5")
@@ -81,26 +81,26 @@ class TestRenderOverlay:
 
     def test_provider_base_url(self):
         overlay = codex.render_overlay(WS)
-        provider = overlay["model_providers"]["databricks"]
+        provider = overlay["model_providers"]["Databricks"]
         assert provider["base_url"] == f"{WS}/ai-gateway/codex/v1"
 
     def test_provider_wire_api(self):
         overlay = codex.render_overlay(WS)
-        provider = overlay["model_providers"]["databricks"]
+        provider = overlay["model_providers"]["Databricks"]
         assert provider["wire_api"] == "responses"
 
     def test_auth_runs_ucode_auth_token(self):
         # The auth command runs the `ucode auth-token` executable directly
         # (not `sh -c`), so it works on Windows where there is no POSIX shell.
         overlay = codex.render_overlay(WS)
-        auth = overlay["model_providers"]["databricks"]["auth"]
+        auth = overlay["model_providers"]["Databricks"]["auth"]
         assert auth["command"].endswith("ucode") or auth["command"] == "ucode"
         assert auth["args"][0] == "auth-token"
         assert auth["command"] != "sh"
 
     def test_auth_contains_workspace(self):
         overlay = codex.render_overlay(WS)
-        auth = overlay["model_providers"]["databricks"]["auth"]
+        auth = overlay["model_providers"]["Databricks"]["auth"]
         assert any(WS in arg for arg in auth["args"])
 
     def test_auth_uses_custom_oauth_options(self):
@@ -112,7 +112,7 @@ class TestRenderOverlay:
                 "scopes": ["offline_access", "model-serving"],
             },
         )
-        auth = overlay["model_providers"]["databricks"]["auth"]
+        auth = overlay["model_providers"]["Databricks"]["auth"]
         assert auth["args"] == [
             "auth-token",
             "--host",
@@ -127,12 +127,12 @@ class TestRenderOverlay:
 
     def test_auth_refresh_interval(self):
         overlay = codex.render_overlay(WS)
-        auth = overlay["model_providers"]["databricks"]["auth"]
+        auth = overlay["model_providers"]["Databricks"]["auth"]
         assert auth["refresh_interval_ms"] == 900_000
 
     def test_provider_adds_routing_header(self):
         overlay = codex.render_overlay(WS, provider="main.aarushi.aarushi-openai")
-        headers = overlay["model_providers"]["databricks"]["http_headers"]
+        headers = overlay["model_providers"]["Databricks"]["http_headers"]
         assert headers["Databricks-Model-Provider-Service"] == "main.aarushi.aarushi-openai"
 
     def test_provider_omits_model(self):
@@ -141,12 +141,12 @@ class TestRenderOverlay:
 
     def test_no_provider_header_without_flag(self):
         overlay = codex.render_overlay(WS)
-        headers = overlay["model_providers"]["databricks"]["http_headers"]
+        headers = overlay["model_providers"]["Databricks"]["http_headers"]
         assert "Databricks-Model-Provider-Service" not in headers
 
     def test_parent_adds_discovery_header(self):
         overlay = codex.render_overlay(WS, parent_schema="main.default")
-        headers = overlay["model_providers"]["databricks"]["http_headers"]
+        headers = overlay["model_providers"]["Databricks"]["http_headers"]
         assert headers["Databricks-Model-Service-Parent-Schema"] == "main.default"
 
 
@@ -155,12 +155,12 @@ class TestRenderOverlayUserAgent:
         monkeypatch.setattr(codex, "ucode_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.123.0")
         overlay = codex.render_overlay(WS)
-        provider = overlay["model_providers"]["databricks"]
+        provider = overlay["model_providers"]["Databricks"]
         assert provider["http_headers"]["User-Agent"] == "ucode/0.1.0 codex/0.123.0"
 
     def test_managed_keys_include_http_headers(self):
         # Revert must clean up the new key.
-        assert ["model_providers", "databricks", "http_headers"] in codex.MANAGED_KEYS
+        assert ["model_providers", "Databricks", "http_headers"] in codex.MANAGED_KEYS
         assert ["model_catalog_json"] not in codex.MANAGED_KEYS
 
 
@@ -176,7 +176,7 @@ class TestCodexWriteConfig:
         codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
 
         doc = read_toml_safe(config_path)
-        assert doc["model_provider"] == "databricks"
+        assert doc["model_provider"] == "Databricks"
         assert "model" not in doc
         assert "model_reasoning_effort" not in doc
         assert "profiles" not in doc
@@ -247,7 +247,7 @@ class TestCodexWriteConfig:
 
         doc = read_toml_safe(config_path)
         assert "model" not in doc
-        headers = doc["model_providers"]["databricks"]["http_headers"]
+        headers = doc["model_providers"]["Databricks"]["http_headers"]
         assert "Databricks-Model-Provider-Service" not in headers
 
     def test_non_provider_write_removes_stale_provider_header(self, tmp_path, monkeypatch):
@@ -261,7 +261,7 @@ class TestCodexWriteConfig:
         codex.write_tool_config(state, provider="main.default.openai")
         codex.write_tool_config(state)
 
-        headers = read_toml_safe(config_path)["model_providers"]["databricks"]["http_headers"]
+        headers = read_toml_safe(config_path)["model_providers"]["Databricks"]["http_headers"]
         assert "Databricks-Model-Provider-Service" not in headers
 
     def test_replaces_stale_routing_headers(self, tmp_path, monkeypatch):
@@ -275,13 +275,13 @@ class TestCodexWriteConfig:
         codex.write_tool_config(state, provider="main.default.openai")
         codex.write_tool_config(state, parent_schema="main.default")
 
-        headers = read_toml_safe(config_path)["model_providers"]["databricks"]["http_headers"]
+        headers = read_toml_safe(config_path)["model_providers"]["Databricks"]["http_headers"]
         assert headers["Databricks-Model-Service-Parent-Schema"] == "main.default"
         assert "Databricks-Model-Provider-Service" not in headers
 
         codex.write_tool_config(state)
 
-        headers = read_toml_safe(config_path)["model_providers"]["databricks"]["http_headers"]
+        headers = read_toml_safe(config_path)["model_providers"]["Databricks"]["http_headers"]
         assert "Databricks-Model-Service-Parent-Schema" not in headers
         assert "Databricks-Model-Provider-Service" not in headers
 
@@ -299,12 +299,12 @@ class TestCodexWriteConfig:
         codex.write_tool_config(state, provider="main.default.openai")
         codex.write_tool_config(state, parent_schema="main.default")
 
-        headers = read_toml_safe(legacy_path)["model_providers"]["databricks"]["http_headers"]
+        headers = read_toml_safe(legacy_path)["model_providers"]["Databricks"]["http_headers"]
         assert headers["Databricks-Model-Service-Parent-Schema"] == "main.default"
         assert "Databricks-Model-Provider-Service" not in headers
 
         codex.write_tool_config(state)
-        headers = read_toml_safe(legacy_path)["model_providers"]["databricks"]["http_headers"]
+        headers = read_toml_safe(legacy_path)["model_providers"]["Databricks"]["http_headers"]
         assert "Databricks-Model-Service-Parent-Schema" not in headers
         assert "Databricks-Model-Provider-Service" not in headers
 
@@ -390,9 +390,9 @@ class TestCodexWriteConfig:
         assert not profile_path.exists()
         doc = read_toml_safe(legacy_path)
         assert doc["profile"] == "ucode"
-        assert doc["profiles"]["ucode"]["model_provider"] == "databricks"
+        assert doc["profiles"]["ucode"]["model_provider"] == "Databricks"
         assert "model" not in doc["profiles"]["ucode"]
-        provider = doc["model_providers"]["databricks"]
+        provider = doc["model_providers"]["Databricks"]
         assert provider["base_url"] == f"{WS}/ai-gateway/codex/v1"
         assert provider["wire_api"] == "responses"
 
@@ -477,7 +477,7 @@ class TestCodexWriteConfig:
 
         doc = read_toml_safe(legacy_path)
         assert doc["profiles"]["other"]["model_provider"] == "keep"
-        assert doc["profiles"]["ucode"]["model_provider"] == "databricks"
+        assert doc["profiles"]["ucode"]["model_provider"] == "Databricks"
 
 
 class TestCodexLegacyLayoutDetection:
@@ -539,8 +539,8 @@ class TestCodexRemoveLegacyProfile:
         profile_path = tmp_path / "ucode.config.toml"
         shared_path = tmp_path / "config.toml"
         original = (
-            'model_provider = "databricks"\n'
-            "[model_providers.databricks]\n"
+            'model_provider = "Databricks"\n'
+            "[model_providers.Databricks]\n"
             'name = "User gateway"\n'
             'base_url = "https://user.example.com"\n'
         )
@@ -558,13 +558,13 @@ class TestCodexRemoveLegacyProfile:
         codex.write_tool_config({"workspace": WS})
 
         shared = read_toml_safe(shared_path)
-        assert shared["model_provider"] == "databricks"
-        assert shared["model_providers"]["databricks"] == {
+        assert shared["model_provider"] == "Databricks"
+        assert shared["model_providers"]["Databricks"] == {
             "name": "User gateway",
             "base_url": "https://user.example.com",
         }
         assert "ucode-databricks" not in shared["model_providers"]
-        assert read_toml_safe(profile_path)["model_provider"] == "databricks"
+        assert read_toml_safe(profile_path)["model_provider"] == "Databricks"
         if not old_ucode_entries:
             assert shared_path.read_text() == original
 
@@ -702,8 +702,8 @@ class TestCodexLaunch:
     def _patch(tmp_path, monkeypatch):
         profile_path = tmp_path / "ucode.config.toml"
         profile_path.write_text(
-            'model_provider = "databricks"\n\n'
-            "[model_providers.databricks]\n"
+            'model_provider = "Databricks"\n\n'
+            "[model_providers.Databricks]\n"
             'name = "Databricks AI Gateway"\n'
             'base_url = "https://example.databricks.com/ai-gateway/codex/v1"\n'
             'wire_api = "responses"\n',
@@ -748,7 +748,7 @@ class TestCodexLaunch:
         assert catalog_path.exists()
         assert f'model_catalog_json="{catalog_path}"' in launches[0]
         provider_arg = next(
-            arg for arg in launches[0] if arg.startswith("model_providers.databricks=")
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
         )
         assert 'Databricks-Model-Provider-Service = "main.default.openai"' in provider_arg
 
@@ -778,7 +778,7 @@ class TestCodexLaunch:
             assert launches[0][-len(tool_args) :] == tool_args
         assert not any(arg.startswith("model_catalog_json=") for arg in launches[0])
         provider_arg = next(
-            arg for arg in launches[0] if arg.startswith("model_providers.databricks=")
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
         )
         assert 'Databricks-Model-Provider-Service = "main.default.openai"' in provider_arg
 
@@ -819,7 +819,7 @@ class TestCodexLaunch:
         profile_path = tmp_path / "ucode.config.toml"
         profile_path.write_text(
             profile_path.read_text(encoding="utf-8")
-            + "\n[model_providers.databricks.http_headers]\n"
+            + "\n[model_providers.Databricks.http_headers]\n"
             + 'Databricks-Model-Provider-Service = "main.default.old"\n',
             encoding="utf-8",
         )
@@ -827,7 +827,7 @@ class TestCodexLaunch:
         codex.launch({"workspace": WS}, [], options=LaunchOptions())
 
         provider_arg = next(
-            arg for arg in launches[0] if arg.startswith("model_providers.databricks=")
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
         )
         assert "Databricks-Model-Provider-Service" not in provider_arg
 
@@ -931,9 +931,9 @@ class TestCodexLaunch:
         assert launches[0][0] == "codex"
         assert "--profile" not in launches[0]
         assert launches[0][-len(tool_args) :] == tool_args
-        assert 'model_provider="databricks"' in launches[0]
+        assert 'model_provider="Databricks"' in launches[0]
         provider_arg = next(
-            arg for arg in launches[0] if arg.startswith("model_providers.databricks=")
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
         )
         assert 'base_url = "https://example.databricks.com/ai-gateway/codex/v1"' in provider_arg
         assert "Upgrade Codex" not in capsys.readouterr().err
@@ -963,8 +963,8 @@ class TestCodexLaunch:
 
         assert profile_path.exists() is stale_profile
         config = read_toml_safe(legacy_path)
-        assert config["profiles"]["ucode"]["model_provider"] == "databricks"
-        assert config["model_providers"]["databricks"]["base_url"] == (f"{WS}/ai-gateway/codex/v1")
+        assert config["profiles"]["ucode"]["model_provider"] == "Databricks"
+        assert config["model_providers"]["Databricks"]["base_url"] == (f"{WS}/ai-gateway/codex/v1")
 
         codex.launch(state, tool_args, options=LaunchOptions())
 
@@ -1018,29 +1018,30 @@ class TestCodexManagedConfig:
         codex.write_tool_config(state)
 
         doc = read_toml_safe(managed_path)
-        assert doc["model_provider"] == "databricks"
+        assert doc["model_provider"] == "Databricks"
         assert "model" not in doc
-        assert "databricks" in doc["model_providers"]
-        assert read_toml_safe(config_path)["model_provider"] == "databricks"
+        assert "Databricks" in doc["model_providers"]
+        assert read_toml_safe(config_path)["model_provider"] == "Databricks"
 
+    @pytest.mark.parametrize("previous_provider", ["ucode-databricks", "databricks"])
     def test_reconfigure_selects_databricks_in_existing_profile_and_managed_config(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, previous_provider
     ):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
         for path in (config_path, managed_path):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
-                'model_provider = "ucode-databricks"\n'
-                '[model_providers.ucode-databricks]\nname = "Previous ug provider"\n'
+                f'model_provider = "{previous_provider}"\n'
+                f'[model_providers.{previous_provider}]\nname = "Previous ug provider"\n'
             )
 
         codex.write_tool_config({"workspace": WS})
 
         for path in (config_path, managed_path):
             doc = read_toml_safe(path)
-            assert doc["model_provider"] == "databricks"
-            assert doc["model_providers"]["databricks"]["base_url"].startswith(WS)
-            assert "auth" in doc["model_providers"]["databricks"]
+            assert doc["model_provider"] == "Databricks"
+            assert doc["model_providers"]["Databricks"]["base_url"].startswith(WS)
+            assert "auth" in doc["model_providers"]["Databricks"]
 
     def test_managed_config_preserves_other_keys(self, tmp_path, monkeypatch):
         _, managed_path = self._patch(tmp_path, monkeypatch)
@@ -1061,7 +1062,7 @@ class TestCodexManagedConfig:
         managed_path.parent.mkdir(parents=True, exist_ok=True)
         managed_path.write_text(
             'model_catalog_json = "/tmp/stale.json"\n\n'
-            "[model_providers.databricks.http_headers]\n"
+            "[model_providers.Databricks.http_headers]\n"
             'Databricks-Model-Provider-Service = "main.default.stale"\n',
             encoding="utf-8",
         )
@@ -1071,9 +1072,9 @@ class TestCodexManagedConfig:
             provider="main.default.openai",
         )
 
-        local_headers = read_toml_safe(config_path)["model_providers"]["databricks"]["http_headers"]
+        local_headers = read_toml_safe(config_path)["model_providers"]["Databricks"]["http_headers"]
         managed = read_toml_safe(managed_path)
-        managed_headers = managed["model_providers"]["databricks"]["http_headers"]
+        managed_headers = managed["model_providers"]["Databricks"]["http_headers"]
         assert codex.MODEL_PROVIDER_SERVICE_HEADER not in local_headers
         assert codex.MODEL_PROVIDER_SERVICE_HEADER not in managed_headers
         assert managed["model_catalog_json"] == "/tmp/stale.json"
