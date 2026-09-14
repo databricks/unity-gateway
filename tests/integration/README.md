@@ -1,85 +1,208 @@
-# Installed-package integration harness
+# Integration tests
 
-This harness installs a fresh ug wheel or exact release into its own virtualenv
-and exact Claude/Codex versions into an isolated npm prefix. Pytest, pexpect, and
-pyte run from a separate test environment. It never imports the application
-under test or borrows the checkout's dependencies to make an install succeed.
+This suite runs the **installed product** through subprocesses, against the same
+`UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
+patch application functions, substitute agent executables, run a fake gateway,
+or construct ug state files. The normal test suite checks these boundaries.
 
-The three current tests check installed help/version, unconfigured status, and
-the auth error before setup. They require no workspace credentials. Live-session,
-terminal, and evidence helpers are available, but no live journeys are defined yet.
+The existing unit tests keep their fixtures. Integration has an independent
+pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
+It is not collected by the default `uv run pytest` command.
 
-## Run installation checks
+## Run a specific combination
 
-Prerequisites: Python 3.12+, uv, and Node/npm.
+Prerequisites: Python 3.12+, uv, Node/npm, and Databricks CLI >=1.0.0. The runner
+installs the requested agents into a new npm prefix and ug into a new virtualenv.
+Pytest and the PTY/screen libraries (pexpect and pyte) live in a different virtualenv, so they cannot accidentally supply a
+missing application dependency. No packages are installed into your existing
+agent installations or checkout's `.venv`.
+Native live runs refuse existing machine-wide Claude/Codex configuration, which
+could override the selected workspace even with a fresh home. Use the container
+in that case; the runner never edits or bypasses those managed settings.
+
+Use the existing e2e workspace and its `DATABRICKS_BEARER` credential. Locally,
+`--profile YOUR_PROFILE` can mint a bearer for an explicitly selected profile.
+No profile or workspace is selected automatically. The default test selection is `live` (all live CUJs).
+
+```bash
+export UCODE_TEST_WORKSPACE=https://your-existing-e2e-workspace
+
+python3.12 scripts/run_integration.py \
+  --ug-version checkout \
+  --claude-version 2.1.268 \
+  --codex-version 0.154.0 \
+  --profile YOUR_PROFILE
+```
+
+`checkout` builds a wheel and installs it with fresh consumer dependency
+resolution. **It does not use `uv.lock`.** This exercises the install path that
+caught the tomlkit discrepancy in #496. To reproduce a user's release, pass its
+exact distribution version instead, e.g. `--ug-version 0.1.0+f7b4b97`. Use
+`--default-index` for the Python index that contains that release and `--npm-registry`
+for an npm mirror if public npm is unavailable. Older releases that only
+provide the `ucode` command require `--entry-point ucode`.
+
+Select one agent by providing only its version. Exact agent versions are
+required; floating `latest`, caret, and tilde versions are rejected. Provider and default-routing CUJs use the workspace's configuration and need no model input. Cases that
+exercise explicit model arguments use a real `system.ai` model already discovered
+by `ug configure`, recorded in that case's `model.json`. Optional `--claude-model`
+and `--codex-model` overrides reproduce a particular model-related failure.
+
+```bash
+# Constrain the suspected dependency while keeping the real CLI and gateway.
+python3.12 scripts/run_integration.py \
+  --ug-version checkout --claude-version 2.1.268 --codex-version 0.154.0 \
+  --claude-model YOUR_CLAUDE_MODEL --codex-model YOUR_CODEX_MODEL \
+  --profile YOUR_PROFILE --dependency tomlkit==0.14.0 \
+  -- -k 'app_server or app_help'
+```
+
+Repeat with `--dependency tomlkit==0.15.1`, or run without constraints to test
+what a new consumer gets today. Several `--dependency` options can be supplied.
+Constraints incompatible with the selected ug release fail installation.
+
+For package-only validation without credentials:
 
 ```bash
 python3.12 scripts/run_integration.py \
   --ug-version checkout --claude-version 2.1.268 --installation-only
 ```
 
-Always select `--installation-only` for the current package checks. The runner's
-default `live` selection needs live tests; selecting an empty suite fails.
+This explicitly selects only the installation checks; it does not claim a live
+integration pass. Requested live checks fail when credentials, binaries, models,
+or capabilities are missing. There are no capability-based skips or retries of
+failed model tasks. A failing historical version should remain a failing result.
 
-`checkout` builds a wheel and resolves fresh consumer dependencies instead of
-using `uv.lock`. An exact `--ug-version` reproduces a release; `--ug-wheel`
-replays an archived wheel. Older releases may need `--entry-point ucode`.
-Agent versions must be exact. Select one agent by passing only its version.
+## Test layout and format
 
-Use `--dependency PACKAGE==VERSION` to constrain a suspected dependency,
-`--constraints dependencies.txt` to replay Python dependencies, and
-`--npm-lock npm-lock.json` to replay agent dependencies. Locks must match the
-original OS and architecture. `--default-index` and `--npm-registry` select mirrors.
+All user journeys are top-level tests. There is no separate regressions category:
 
-The separate pytest configuration and `--confcutdir` prevent the unit fixtures
-from leaking into integration. The default unit-test command does not collect
-this directory. Selection after `--` accepts `-k`, `-m`, `-x`, and `--maxfail`;
-report destinations and pytest configuration cannot be overridden.
+```text
+test_ug_configure_claude.py             # Databricks Hosted and Anthropic MPS
+test_ug_configure_codex.py              # Databricks Hosted and OpenAI MPS
+test_smart_routing_claude.py            # first prompt, subagent, explicit model
+test_smart_routing_codex.py             # first prompt, subagent, explicit model
+test_ug_claude_headless.py              # script prompts, models, caller settings
+test_ug_codex_headless.py               # script prompts and model arguments
+test_ug_claude_commands.py              # command help forwarding
+test_ug_codex_commands.py               # command help and parser error forwarding
+test_ug_codex_app_server.py             # actual client/server initialize exchange
+test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
+test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
+test_installation.py                   # fresh installed package
+utils/                                # process/terminal/evidence helpers and Docker files
+```
 
-## Isolation and evidence
+`conftest.py`, `pytest.ini`, and this README stay at the suite root for pytest
+discovery and run instructions.
 
-Every test gets a fresh home and working directory outside the checkout.
-Commands have explicit stdin, deadlines, redacted diagnostics, and process-group
-cleanup. Configured sessions revert through the real public CLI before teardown.
-The runner refuses machine-wide agent settings for live runs because those can
-override the chosen workspace; it does not edit or bypass those settings.
+Each test has a `Scenario:` / `Expected:` docstring and shows its own public
+configure command, launch, user action, and assertions. Shared code only handles
+process/terminal mechanics, evidence, and cleanup. Fixtures supply an isolated
+session and credentials; none manufacture or configure application state.
 
-Each invocation creates a new results directory, by default under
-`.integration-runs/`, containing:
+Provider CUJs use normal ug validation, then require their own completed
+interactive task. Routing CUJs skip the preliminary validation prompt and require
+the actual routed TUI task instead. Tests disable optional Databricks AI Tools and
+pass `--skip-upgrade` to preserve the selected version. They use real onboarding
+and trust choices, without seeded acceptance or disabled agent sandboxing.
 
-- `versions.json`: requested and observed versions, source/wheel hashes, and results.
-- `dependencies.txt`, `npm-lock.json`, and `test-dependencies.txt`: dependency evidence.
-- `junit.xml`: exact outcomes.
-- `artifacts/`: redacted command diagnostics.
-- `install.log` and `wheels/`: installation diagnostics and the built wheel.
+A fixture file contains an unpredictable value absent from the prompt. Success
+requires an assistant answer in the real agent transcript containing that value,
+plus normal TUI exit. Codex evidence requires its task-complete event. Subagent
+CUJs require a separate child transcript, child answer, and a correlated routing
+decision. Claude uses its real child-start audit; its model is unknown when the
+event omits it. Codex requires native parent linkage and a completed child turn
+using the routed model, excluding inherited parent turns.
 
-Homes are removed after each test. Installed environments and dependency caches
-remain in the results directory for inspection.
+MPS CUJs select the existing services already used by e2e:
 
-## Live harness and Linux reproduction
+- Claude: `main.ucode.ci_e2e_anthropic_nonrelay_mps`.
+- Codex: `main.ucode.ci_openai_mps`.
 
-Live fixtures require the existing e2e `UCODE_TEST_WORKSPACE` and
-`DATABRICKS_BEARER`, or an explicitly selected `--profile` for the runner to mint
-a bearer. No developer profile is selected automatically. Databricks CLI >=1.0.0
-is also required for live runs.
+Use `--claude-provider` / `--codex-provider` to reproduce another existing service.
+Those names are recorded in `versions.json`. No service is created or modified.
+A missing service or permission fails the selected CUJ, rather than skipping it.
 
-`utils/harness.py` drives public commands and the real app-server protocol.
-`utils/terminal.py` supplies PTY/screen handling and visible onboarding choices.
-`utils/evidence.py` reads completed agent answers and routing records. These
-helpers do not fabricate application state, responses, or onboarding completion.
-
-The optional Docker image provides a pinned Linux toolchain. Build it from the
-repository root, then run an exact published release or mount a wheel:
+There are **45 live cases** (including 10 TUI journeys) and **3 installation
+checks** with both agents. See the named coverage and gaps matrix in
+[../README.md](../README.md).
 
 ```bash
+# Append one of these selections to the runner command:
+-- -m live         # default: all live user journeys
+-- -m tui          # ten complete interactive TUI journeys
+-- -k test_ug_codex_app_server_client_initializes  # one named journey and its variants
+# Use --installation-only before -- for package checks without credentials.
+```
+
+The old focused checks are now descriptive CUJs with setup and outcomes visible
+in each test. Duplicate boot-only checks are incorporated into the Databricks,
+first-prompt, and explicit-model TUI journeys. Real failures, including generated
+config left after revert and banners on app-server stdout, remain assertions.
+MCP/skills functionality, tracing, the broad configure-option matrix, and other
+agents are outside this focused revision.
+
+## Reproduce a failure
+
+Each run writes a new `.integration-runs/<timestamp>/` directory containing:
+
+- `versions.json`: requested and observed ug/agent versions, Python, Node, uv,
+  Databricks CLI, platform, source revision/diff, suite hash, and wheel hash when available.
+- `dependencies.txt` and `npm-lock.json`: the resolved Python and npm dependency
+  graphs. Replay them with `--constraints` and `--npm-lock`.
+- `test-dependencies.txt`: the separately installed pytest/terminal-tool dependencies.
+- `junit.xml`: exact test outcomes and parametrized case names.
+- `artifacts/`: command arguments, exit codes, timeout status, redacted output,
+  app-server protocol diagnostics, and TUI transcripts/rendered screens plus
+  keystroke actions and routing logs. No credential files are archived.
+- `wheels/`: the tested wheel when built from the checkout; replay it with
+  `--ug-wheel`. For release installations, `installed.txt` records the resolution.
+
+Teardown invokes real `ug revert` through a PTY when setup created state, restoring machine-level
+configuration through the public CLI. Per-test homes and working directories are
+then deleted even on failure.
+The working directory is outside the checkout so an agent cannot inherit its
+project settings or instruction files by walking parent directories. Virtualenvs,
+agent packages, and build caches remain under the results directory for local
+inspection; remove that run directory when finished. Agent versions are checked
+before and after the suite so an automatic upgrade cannot silently change the
+combination being tested. Model requests and subprocesses have deadlines, and
+the process group is cleaned up after each command.
+Selection after `--` accepts `-k`, `-m`, `-x`, and `--maxfail`; configuration and
+report paths cannot be overridden. `--installation-only` always restricts the
+selection to installation checks, including when additional filters are used.
+
+## Colima / Docker
+
+Colima provides the Linux Docker engine on macOS. The optional image pins the
+Python, Node, uv, and Databricks toolchain; the same runner selects ug and agent
+versions inside it. Build from the repository root:
+
+```bash
+colima start
 COPYFILE_DISABLE=1 tar --format=ustar --exclude=__pycache__ --exclude=.pytest_cache \
   -cf - scripts/run_integration.py tests/integration | \
   docker build -f tests/integration/utils/Dockerfile -t ug-integration -
+
+# Reuse the same e2e variables. Credentials are passed at runtime, never built
+# into the image. The named volume keeps results after the container exits.
 docker volume create ug-integration-results
-docker run --rm --init -v ug-integration-results:/results ug-integration \
-  --ug-version YOUR_RELEASE_VERSION --claude-version 2.1.268 --installation-only
+docker run --rm --init \
+  -e UCODE_TEST_WORKSPACE -e DATABRICKS_BEARER \
+  -v ug-integration-results:/results \
+  ug-integration \
+  --ug-version YOUR_RELEASE_VERSION \
+  --claude-version 2.1.268 --codex-version 0.154.0 \
+  -- -m live
 ```
 
-Each run needs a new output directory. Installation, collection, and lint results
-are not evidence of a live integration pass. Follow [../AGENTS.md](../AGENTS.md)
-for the integration test contract.
+Use a new results volume for each run, or pass a new `--output /results/NAME`.
+To test a checkout, build a wheel on the host (`uv build --wheel`), mount the
+wheel directory read-only, and pass `--ug-wheel /wheels/FILE.whl` instead of a
+release version. The image deliberately contains no source checkout or host
+agent configuration. Record the built image digest when sharing a reproduction;
+native runs also depend on the host's OS and toolchain.
+The explicit build archive includes only the runner and integration files, even
+with legacy Docker builders that ignore per-Dockerfile ignore rules. It also
+omits macOS extended attributes that Linux cannot unpack.
