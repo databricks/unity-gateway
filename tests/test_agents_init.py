@@ -360,7 +360,8 @@ class TestResolveProviderModels:
         )
         assert (models, error, relayed) == (None, None, False)
 
-    def test_relayed_anthropic_flagged(self, monkeypatch):
+    def test_relayed_allow_all_pins_nothing(self, monkeypatch):
+        # allow_all relay declares no Claude targets: nothing pinned, still flagged relayed.
         self._patch(
             monkeypatch, {"provider_type": "anthropic", "targets": [], "relayed": True}, None
         )
@@ -369,6 +370,24 @@ class TestResolveProviderModels:
         )
         assert error is None
         assert models is None
+        assert relayed is True
+
+    def test_relayed_anthropic_with_targets_pins_family(self, monkeypatch):
+        # A curated relay maps its declared targets by family so --model can resolve against them.
+        self._patch(
+            monkeypatch,
+            {
+                "provider_type": "anthropic",
+                "targets": ["claude-opus-4-8", "claude-haiku-4-5"],
+                "relayed": True,
+            },
+            None,
+        )
+        models, error, relayed = agents_mod.resolve_provider_models(
+            "claude", self._STATE, "main.a.relayed_ent"
+        )
+        assert error is None
+        assert models == {"opus": "claude-opus-4-8", "haiku": "claude-haiku-4-5"}
         assert relayed is True
 
     def test_bedrock_returns_pinned_models(self, monkeypatch):
@@ -386,6 +405,24 @@ class TestResolveProviderModels:
             "sonnet": "us.anthropic.claude-sonnet-4-6",
             "opus": "global.anthropic.claude-opus-4-8",
         }
+
+    def test_bedrock_ignores_gpt_targets(self, monkeypatch):
+        service = {
+            "provider_type": "amazon_bedrock",
+            "targets": [
+                "global.anthropic.claude-opus-4-8",
+                "openai.gpt-oss-120b-1:0",
+            ],
+        }
+        self._patch(monkeypatch, service, None)
+
+        models, error, relayed = agents_mod.resolve_provider_models(
+            "claude", self._STATE, "main.b.mixed"
+        )
+
+        assert error is None
+        assert models == {"opus": "global.anthropic.claude-opus-4-8"}
+        assert relayed is False
 
     def test_invalid_provider_returns_error(self, monkeypatch):
         self._patch(monkeypatch, None, "boom")

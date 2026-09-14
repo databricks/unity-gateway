@@ -251,6 +251,16 @@ def clear_state() -> None:
         raise RuntimeError(f"Failed to clear state file: {STATE_PATH}") from exc
 
 
+def is_tool_managed(state: dict, tool: str) -> bool:
+    """True once configure has written ucode's config for ``tool``.
+
+    Used to distinguish a config file the user owned before ucode ran from one
+    ucode itself generated: only the former is backup-worthy, because revert
+    restores a backup in place instead of deleting ucode's generated file.
+    """
+    return bool((state.get("managed_configs") or {}).get(tool))
+
+
 def mark_tool_managed(state: dict, tool: str, managed_keys: list) -> dict:
     """Record which config keys ucode manages for ``tool``."""
     managed_configs = dict(state.get("managed_configs") or {})
