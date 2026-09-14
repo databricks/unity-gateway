@@ -24,7 +24,11 @@ from ucode.config_io import (
     read_json_safe,
     write_json_file,
 )
-from ucode.constants import LOOPBACK_HOST
+from ucode.constants import (
+    LOOPBACK_HOST,
+    MODEL_PROVIDER_SERVICE_HEADER,
+    MODEL_SERVICE_PARENT_SCHEMA_HEADER,
+)
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
 from ucode.databricks import (
     build_auth_shell_command,
@@ -34,6 +38,7 @@ from ucode.databricks import (
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
     OS,
+    ManagedFileWriteUnavailable,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
@@ -57,6 +62,8 @@ from ucode.ui import print_note, print_success, print_warning
 from .args import LaunchOptions, has_explicit_model_arg
 
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
+# If set, Claude Code launches in headless mode instead of the interactive login flow.
+CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
 CLAUDE_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "ucode-settings.json"
 CLAUDE_MCP_CONFIG_PATH = Path.home() / ".claude.json"
@@ -166,7 +173,8 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
     {
         "x-databricks-use-coding-agent-mode",
         "user-agent",
-        "databricks-model-provider-service",
+        MODEL_PROVIDER_SERVICE_HEADER.casefold(),
+        MODEL_SERVICE_PARENT_SCHEMA_HEADER.casefold(),
     }
 )
 CLAUDE_TRACING_STOP_HOOK_SUFFIX = " autolog claude stop-hook"
@@ -321,6 +329,7 @@ def render_overlay(
     relayed_base_url: str | None = None,
     route_root_model: str | None = None,
     custom_model: str | None = None,
+    parent_schema: str | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
 
@@ -357,7 +366,9 @@ def render_overlay(
         f"User-Agent: ucode/{ucode_version()} claude/{agent_version('claude')}",
     ]
     if provider:
-        header_lines.append(f"Databricks-Model-Provider-Service: {provider}")
+        header_lines.append(f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}")
+    elif parent_schema:
+        header_lines.append(f"{MODEL_SERVICE_PARENT_SCHEMA_HEADER}: {parent_schema}")
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
     custom_headers = "\n".join(header_lines)
@@ -572,6 +583,7 @@ def write_tool_config(
     route_root_model: str | None = None,
     custom_model: str | None = None,
     coding_agent_config_defaults: dict[str, str] | None = None,
+    parent_schema: str | None = None,
 ) -> dict:
     backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
     web_search_model = _resolve_web_search_model(state)
@@ -593,6 +605,7 @@ def write_tool_config(
         relayed_base_url=relayed_base_url,
         route_root_model=route_root_model,
         custom_model=custom_model,
+        parent_schema=parent_schema,
     )
     tracing_env_vars = tracing_env(state, "claude")
     stop_hook_command = claude_tracing_stop_hook_command() if tracing_env_vars else None
@@ -844,13 +857,24 @@ def _reconcile_managed_settings(
             )
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
-    reconcile_managed_file(
-        path,
-        _dump_managed_settings(desired_settings),
-        tool="claude",
-        display="Claude Code",
-        owned_paths=owned_paths,
-    )
+    try:
+        reconcile_managed_file(
+            path,
+            _dump_managed_settings(desired_settings),
+            tool="claude",
+            display="Claude Code",
+            owned_paths=owned_paths,
+        )
+    except ManagedFileWriteUnavailable:
+        conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
+        if conflicts:
+            raise
+        print_warning(
+            f"Claude Code OS-managed settings could not be updated at {path}; continuing with "
+            f"local settings at {CLAUDE_SETTINGS_PATH}."
+        )
+        mark_managed_file_verified(state, "claude", path, scope="local-compatible")
+        return
     mark_managed_file_verified(state, "claude", path)
 
 
@@ -1228,6 +1252,11 @@ def _ensure_subscription_login() -> None:
     """Ensure Claude Code has a persisted subscription login, running the browser
     flow via `claude auth login` if not. ucode never sees or stores the token —
     Claude Code persists it to its own secure store and refreshes it natively."""
+    # The OAuth token is the Authorization credential directly, so no interactive login
+    # applies — return early so unattended runs can't hang on the browser fallback.
+    is_headless_mode = os.environ.get(CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR)
+    if is_headless_mode:
+        return
     if _has_subscription_login():
         return
     print_note("Opening browser to sign in with your Claude subscription...")
@@ -1308,7 +1337,7 @@ def launch(
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return
-    # Smart routing v2 needs Unix PTY support, which Windows does not provide.
+    # Smart routing needs Unix PTY support, which Windows does not provide.
     if options.launch_smart_routing and os.name == "nt":
         raise RuntimeError(
             "Smart routing in Claude Code is currently not supported on Windows. "
