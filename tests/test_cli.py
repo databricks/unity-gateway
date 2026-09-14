@@ -784,6 +784,64 @@ class TestSubcommandRouting:
         mock_token.assert_not_called()
         assert mock_route.call_args.kwargs["token"] == token
 
+    @pytest.mark.parametrize("custom_models", [[], ["custom-model"]])
+    def test_codex_hook_discovers_only_without_custom_models(self, custom_models):
+        models = ["system.ai.glm-5-3", "gpt-5.5", "gpt-5.6-sol"]
+        model_args = [arg for model in custom_models for arg in ("--model", model)]
+        with (
+            patch(
+                "ucode.cli.codex_interposer.list_harness_models", return_value=models
+            ) as discover,
+            patch("ucode.smart_routing.codex_routing.route_pre_tool_use") as route,
+        ):
+            route.return_value = None
+            result = runner.invoke(
+                app,
+                [
+                    "codex-router-hook",
+                    "route-subagent",
+                    "--host",
+                    "https://example.com",
+                    *model_args,
+                ],
+                input='{"tool_name":"spawn_agent","tool_input":{"message":"fix it"}}',
+                env={
+                    "ENABLE_SMART_ROUTING_V2": "1",
+                    "DATABRICKS_BEARER": "token",
+                    "UCODE_CODEX_APP_SERVER_URL": "ws://127.0.0.1:41001",
+                },
+            )
+
+        assert result.exit_code == 0, result.output
+        assert route.call_args.kwargs["available_models"] == (custom_models or models)
+        if custom_models:
+            discover.assert_not_called()
+        else:
+            discover.assert_called_once_with("ws://127.0.0.1:41001")
+
+    def test_codex_hook_skips_routing_when_discovery_fails(self):
+        with (
+            patch(
+                "ucode.cli.codex_interposer.list_harness_models",
+                side_effect=RuntimeError("model discovery failed"),
+            ),
+            patch("ucode.smart_routing.codex_routing.route_pre_tool_use") as route,
+        ):
+            result = runner.invoke(
+                app,
+                ["codex-router-hook", "route-subagent", "--host", "https://example.com"],
+                input='{"tool_name":"spawn_agent","tool_input":{"message":"fix it"}}',
+                env={
+                    "ENABLE_SMART_ROUTING_V2": "1",
+                    "UCODE_CODEX_APP_SERVER_URL": "ws://127.0.0.1:41001",
+                },
+            )
+
+        assert result.exit_code == 0
+        assert result.stdout == ""
+        assert "model discovery failed" in result.stderr
+        route.assert_not_called()
+
     def test_codex_subagent_hook_refreshes_near_expiry_oauth_token(self, monkeypatch):
         monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
 

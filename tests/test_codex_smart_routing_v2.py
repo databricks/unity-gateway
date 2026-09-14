@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -9,6 +10,79 @@ from ucode.agents import LaunchOptions, codex
 from ucode.smart_routing import codex_interposer, codex_routing, v2
 
 WS = "https://example.databricks.com"
+
+
+class TestHarnessModels:
+    def test_queries_existing_server_and_paginates(self, monkeypatch):
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        connection.recv.side_effect = [
+            json.dumps({"id": 0, "result": {}}),
+            json.dumps({"method": "notification"}),
+            json.dumps(
+                {
+                    "id": 1,
+                    "result": {
+                        "data": [{"model": "gpt-5.5"}, {"model": "hidden", "hidden": True}, None],
+                        "nextCursor": "page-2",
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "id": 2,
+                    "result": {
+                        "data": [
+                            {"model": "system.ai.glm-5-3"},
+                            {"model": "gpt-5.6-sol"},
+                            {"model": "gpt-5.5"},
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            ),
+        ]
+        connect = MagicMock(return_value=connection)
+        monkeypatch.setattr(codex_interposer, "sync_connect", connect)
+
+        assert codex_interposer.list_harness_models("ws://127.0.0.1:41001") == [
+            "gpt-5.5",
+            "system.ai.glm-5-3",
+            "gpt-5.6-sol",
+        ]
+        assert connect.call_args.args == ("ws://127.0.0.1:41001",)
+        sent = [json.loads(call.args[0]) for call in connection.send.call_args_list]
+        assert [message["method"] for message in sent] == [
+            "initialize",
+            "initialized",
+            "model/list",
+            "model/list",
+        ]
+        assert sent[2]["params"] == {"includeHidden": False, "limit": 100, "cursor": None}
+        assert sent[3]["params"]["cursor"] == "page-2"
+        connection.__exit__.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            TimeoutError("timed out"),
+            OSError("closed"),
+            "invalid json",
+            json.dumps({"id": 1, "error": {"message": "unsupported"}}),
+            json.dumps({"id": 1, "result": {"data": None}}),
+            json.dumps({"id": 1, "result": {"data": []}}),
+            json.dumps({"id": 1, "result": {"data": [], "nextCursor": 2}}),
+        ],
+    )
+    def test_discovery_errors_are_actionable(self, monkeypatch, reply):
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        connection.recv.side_effect = [json.dumps({"id": 0, "result": {}}), reply]
+        monkeypatch.setattr(codex_interposer, "sync_connect", lambda *args, **kwargs: connection)
+
+        with pytest.raises(RuntimeError, match="Check workspace authentication"):
+            codex_interposer.list_harness_models("ws://127.0.0.1:41001")
+        connection.__exit__.assert_called_once()
 
 
 def test_smart_routing_switch_message_is_boxed():
@@ -104,6 +178,7 @@ class TestLaunchCodex:
 
     def test_codex_launch_normalizes_cached_bootstrap_model(self, monkeypatch):
         calls = []
+        monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         monkeypatch.setenv(v2.ENV_VAR, "1")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: None)
@@ -138,6 +213,7 @@ class TestLaunchCodex:
     def test_startup_config_precedence(
         self, tmp_path, monkeypatch, custom_home, managed, profile, user, expected
     ):
+        monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         config_home = tmp_path / "codex"
         config_home.mkdir()
         managed_path = tmp_path / "managed_config.toml"
@@ -176,6 +252,16 @@ class TestLaunchCodex:
         monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
         monkeypatch.setattr(codex, "ucode_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
+        monkeypatch.setattr(v2, "custom_catalog_models", lambda: None)
+        models = ["system.ai.glm-5-3", "gpt-5.5", "gpt-5.6-sol"]
+        discovery_calls = []
+
+        def discover(url):
+            assert len(processes) == 1
+            discovery_calls.append(url)
+            return models
+
+        monkeypatch.setattr(codex_interposer, "list_harness_models", discover)
 
         class FakeProcess:
             def __init__(self, argv, **kwargs):
@@ -245,14 +331,16 @@ class TestLaunchCodex:
         assert "codex-router-hook route-subagent" in hook_override
         assert f"--host {WS}" in hook_override
         assert "--profile myprof" in hook_override
-        assert "--model system.ai.gpt-5-6-sol" in hook_override
-        assert "--model system.ai.glm-5-2" in hook_override
+        assert "--model" not in hook_override
         assert processes[0].argv[10:] == [
             "--listen",
             "ws://127.0.0.1:41001",
         ]
         assert processes[0].kwargs["env"][v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
         assert processes[0].kwargs["env"]["CODEX_HOME"] == "/user/codex-home"
+        assert processes[0].kwargs["env"][codex_interposer.APP_SERVER_URL_ENV] == (
+            "ws://127.0.0.1:41001"
+        )
         assert processes[1].argv == [
             "codex",
             "--remote",
@@ -262,10 +350,9 @@ class TestLaunchCodex:
             "--search",
         ]
         assert interposer_args["args"] == (v2.LOOPBACK_HOST, "ws://127.0.0.1:41001")
-        assert interposer_args["kwargs"]["available_models"] == [
-            "system.ai.gpt-5-6-sol",
-            "system.ai.glm-5-2",
-        ]
+        assert interposer_args["kwargs"]["available_models"] == models
+        assert discovery_calls == ["ws://127.0.0.1:41001"]
+        assert len(processes) == 2
         assert interposer_args["kwargs"]["workspace"] == WS
         assert token_calls == [(WS, "myprof")]
         assert interposer_args["kwargs"]["token_provider"]() == "token-2"
@@ -326,6 +413,8 @@ class TestLaunchCodex:
 
     def test_missing_cached_models_starts_with_bootstrap_model(self, monkeypatch):
         monkeypatch.setattr(v2, "get_databricks_token", lambda workspace, profile: "token")
+        monkeypatch.setattr(v2, "custom_catalog_models", lambda: None)
+        monkeypatch.setattr(codex_interposer, "list_harness_models", lambda _: ["gpt-5.5"])
         monkeypatch.setattr(codex, "agent_version", lambda binary: "unknown")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
@@ -358,6 +447,30 @@ class TestLaunchCodex:
             )
 
         assert exc.value.code == 0
+
+    def test_discovery_failure_stops_launch_without_using_cached_models(self, monkeypatch):
+        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(v2, "custom_catalog_models", lambda: None)
+        monkeypatch.setattr(v2, "_wait_for_app_server", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(
+            codex_interposer,
+            "list_harness_models",
+            MagicMock(side_effect=RuntimeError("discovery failed")),
+        )
+        popen = MagicMock()
+        monkeypatch.setattr(v2.subprocess, "Popen", popen)
+
+        with pytest.raises(RuntimeError, match="discovery failed"):
+            v2.launch_codex(
+                {"workspace": WS, "codex_models": ["cached"]},
+                [],
+                binary="codex",
+                start_model="gpt-5.5",
+                render_overlay=lambda *_args, **_kwargs: {},
+            )
+
+        popen.assert_called_once()
+        popen.return_value.terminate.assert_called_once()
 
 
 class TestCustomCatalogModels:
@@ -418,14 +531,28 @@ class TestCustomCatalogModels:
 
         assert codex_config.custom_catalog_models() == expected
 
-    def test_unreadable_catalog_warns_and_falls_back(self, tmp_path, monkeypatch):
-        self._settings(tmp_path, monkeypatch, cli=tmp_path / "missing.json")
-        warnings = []
-        monkeypatch.setattr(codex_config, "print_warning", warnings.append)
+    @pytest.mark.parametrize("contents", [None, "invalid json", "{}", '{"models": []}'])
+    def test_invalid_catalog_never_falls_back(self, tmp_path, monkeypatch, contents):
+        catalog = tmp_path / "custom.json"
+        if contents is not None:
+            catalog.write_text(contents)
+        self._settings(tmp_path, monkeypatch, cli=catalog)
+        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(
+            codex_interposer, "list_harness_models", lambda *_: pytest.fail("queried harness")
+        )
+        monkeypatch.setattr(
+            v2.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("launched app-server")
+        )
 
-        assert codex_config.custom_catalog_models() is None
-        assert len(warnings) == 1
-        assert "falling back to the cached model services" in warnings[0]
+        with pytest.raises(RuntimeError, match="Fix the catalog or remove model_catalog_json"):
+            v2.launch_codex(
+                {"workspace": WS},
+                [],
+                binary="codex",
+                start_model="gpt-5.5",
+                render_overlay=codex.render_overlay,
+            )
 
     def test_launch_prefers_catalog_over_cached_models(self, tmp_path, monkeypatch):
         self._settings(
@@ -438,10 +565,16 @@ class TestCustomCatalogModels:
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.145.0")
         monkeypatch.setattr(codex, "ucode_version", lambda: "test")
+        monkeypatch.setattr(
+            codex_interposer, "list_harness_models", lambda *_: pytest.fail("queried harness")
+        )
+        monkeypatch.setenv(codex_interposer.APP_SERVER_URL_ENV, "ws://stale")
         launched = []
 
         class FakeProcess:
             def __init__(self, argv, **kwargs):
+                if "app-server" in argv:
+                    assert codex_interposer.APP_SERVER_URL_ENV not in kwargs["env"]
                 launched.append(argv)
 
             def wait(self, timeout=None):

@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from importlib import metadata
@@ -112,6 +114,7 @@ from ucode.skills_download import (
     configure_skills_download_command,
     download_managed_skills_on_launch,
 )
+from ucode.smart_routing import codex_interposer, codex_routing
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
 from ucode.state import (
@@ -136,6 +139,7 @@ from ucode.ui import (
     print_section,
     print_success,
     print_warning,
+    print_warning_err,
     prompt_for_selection,
     prompt_for_tools,
     prompt_for_workspace,
@@ -1587,17 +1591,8 @@ def codex_router_hook_cmd(
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
 ) -> None:
     """Run a Codex smart-routing lifecycle hook."""
-    import json
-    import sys
-
     if not smart_routing_v2.enabled():
         return
-
-    from ucode.smart_routing.codex_routing import (
-        record_session_start,
-        record_subagent_start,
-        route_pre_tool_use,
-    )
 
     try:
         payload = json.loads(sys.stdin.read() or "{}")
@@ -1606,10 +1601,10 @@ def codex_router_hook_cmd(
     if not isinstance(payload, dict):
         return
     if event == "session-start":
-        record_session_start(payload)
+        codex_routing.record_session_start(payload)
         return
     if event == "record-subagent":
-        record = record_subagent_start(payload)
+        record = codex_routing.record_subagent_start(payload)
         matched = record.get("matches_router_decision")
         if matched is True:
             sys.stdout.write(
@@ -1635,6 +1630,13 @@ def codex_router_hook_cmd(
         return
     if event != "route-subagent" or not host:
         return
+    app_server_url = os.environ.get(codex_interposer.APP_SERVER_URL_ENV)
+    if not model and app_server_url:
+        try:
+            model = codex_interposer.list_harness_models(app_server_url)
+        except RuntimeError as exc:
+            print_warning_err(str(exc))
+            return
     if use_pat and not ensure_pat_bearer(profile):
         return
     token = os.environ.get("DATABRICKS_BEARER", "").strip()
@@ -1645,7 +1647,7 @@ def codex_router_hook_cmd(
                 token = get_databricks_token(host, profile, force_refresh=True)
             except RuntimeError:
                 return
-    output = route_pre_tool_use(
+    output = codex_routing.route_pre_tool_use(
         payload,
         workspace=host,
         token=token,

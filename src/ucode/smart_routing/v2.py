@@ -34,7 +34,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
 )
-from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
+from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks
 from ucode.ui import print_note
 
 ENV_VAR = "ENABLE_SMART_ROUTING_V2"
@@ -469,12 +469,6 @@ def launch_claude(
     sys.exit(returncode)
 
 
-# TODO: Replace with /codex/v1/models once /codex/v1/models can send GPT models as well.
-def _cached_routing_models(state: dict) -> list[str]:
-    """Return the persisted UC model-service ids usable by Codex routing."""
-    return routing_models(state)
-
-
 def _codex_home_config_path() -> Path:
     codex_home = os.environ.get("CODEX_HOME")
     if codex_home:
@@ -514,16 +508,11 @@ def launch_codex(
     profile = state.get("profile")
     os.environ[OAUTH_TOKEN_ENV_VAR] = get_databricks_token(workspace, profile)
     catalog_models = custom_catalog_models()
-    available_models = catalog_models or _cached_routing_models(state)
+    available_models = catalog_models or []
     if catalog_models:
         print_note(
             f"Smart routing: routing across {len(catalog_models)} models from the configured "
             "Codex custom catalog (model_catalog_json); cached model services are not used."
-        )
-    if not available_models:
-        print_note(
-            f"Smart routing model metadata is unavailable; starting Codex on {start_model} "
-            "without automatic model switching. Run `ucode configure codex` to enable routing."
         )
     overlay = render_overlay(
         workspace,
@@ -537,12 +526,16 @@ def launch_codex(
     config_args = codex_config_args(overlay)
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
+    app_server_env = os.environ.copy()
+    app_server_env.pop(codex_interposer.APP_SERVER_URL_ENV, None)
+    if catalog_models is None:
+        app_server_env[codex_interposer.APP_SERVER_URL_ENV] = app_server_url
 
     # Preserve the user's normal CODEX_HOME (including MCP servers, skills, and
     # preferences) and layer only ucode's gateway settings at CLI precedence.
     app_server = subprocess.Popen(
         [binary, "app-server", *config_args, "--listen", app_server_url],
-        env=os.environ.copy(),
+        env=app_server_env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -553,6 +546,8 @@ def launch_codex(
             raise RuntimeError(
                 "Codex app-server did not become ready for smart routing; check workspace auth."
             )
+        if catalog_models is None:
+            available_models = codex_interposer.list_harness_models(app_server_url)
         tui_port, stop_interposer = codex_interposer.start_interposer_thread(
             LOOPBACK_HOST,
             app_server_url,

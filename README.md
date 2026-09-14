@@ -52,6 +52,11 @@ Smart routing is opt-in for Codex and Claude Code. Enabling it for a launch asks
 router to select models for that session and its subagents. Codex may require one-time review of
 the launch-scoped hooks through `/hooks`.
 
+Codex uses a configured `model_catalog_json` exclusively; invalid catalogs stop the launch.
+Without one, the launcher and subagent hooks query the existing app-server's `model/list`
+and pass those candidates to the router. No cached model-service list or extra process is used
+for discovery.
+
 ```bash
 ug codex --enable-smart-routing
 ug claude --enable-smart-routing

@@ -12,8 +12,11 @@ from pathlib import Path
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
+from websockets.exceptions import WebSocketException
+from websockets.sync.client import connect as sync_connect
 
 from ucode.smart_routing import codex_routing, routing
+from ucode.telemetry import ucode_version
 
 SETTINGS_UPDATED = "thread/settings/updated"
 SETTINGS_UPDATE = "thread/settings/update"
@@ -21,10 +24,70 @@ ITEM_STARTED = "item/started"
 ITEM_COMPLETED = "item/completed"
 TURN_START = "turn/start"
 TURN_STARTED = "turn/started"
+APP_SERVER_URL_ENV = "UCODE_CODEX_APP_SERVER_URL"
+MODEL_DISCOVERY_TIMEOUT_SECONDS = 5
 
 RouteDecisionFn = Callable[[str], tuple[routing.RoutingDecision | None, str | None]]
 SwitchMessageFn = Callable[[str, str], str]
 TokenProvider = Callable[[], str]
+
+
+def list_harness_models(app_server_url: str) -> list[str]:
+    """Read model/list from an existing app-server, including all pages."""
+    deadline = time.monotonic() + MODEL_DISCOVERY_TIMEOUT_SECONDS
+    try:
+        with sync_connect(
+            app_server_url, open_timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS, close_timeout=1
+        ) as connection:
+
+            def request(request_id: int, method: str, params: dict) -> dict:
+                connection.send(json.dumps({"id": request_id, "method": method, "params": params}))
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("model discovery timed out")
+                    message = json.loads(connection.recv(timeout=remaining))
+                    if not isinstance(message, dict) or message.get("id") != request_id:
+                        continue
+                    if "error" in message:
+                        raise ValueError(f"{method}: {message['error']}")
+                    result = message.get("result")
+                    if not isinstance(result, dict):
+                        raise ValueError(f"{method} returned an invalid result")
+                    return result
+
+            request(0, "initialize", {"clientInfo": {"name": "ug", "version": ucode_version()}})
+            connection.send(json.dumps({"method": "initialized"}))
+            models: list[str] = []
+            cursors: set[str] = set()
+            cursor = None
+            while True:
+                result = request(
+                    len(cursors) + 1,
+                    "model/list",
+                    {"includeHidden": False, "limit": 100, "cursor": cursor},
+                )
+                rows = result.get("data")
+                if not isinstance(rows, list):
+                    raise ValueError("model/list returned invalid model data")
+                for row in rows:
+                    if not isinstance(row, dict) or row.get("hidden"):
+                        continue
+                    model = row.get("model")
+                    if isinstance(model, str) and model.strip():
+                        models.append(model.strip())
+                cursor = result.get("nextCursor")
+                if cursor is None:
+                    if not models:
+                        raise ValueError("model/list returned no models")
+                    return list(dict.fromkeys(models))
+                if not isinstance(cursor, str) or not cursor or cursor in cursors:
+                    raise ValueError("model/list returned an invalid pagination cursor")
+                cursors.add(cursor)
+    except (OSError, ValueError, WebSocketException) as exc:
+        raise RuntimeError(
+            f"Codex model discovery failed: {exc}. Check workspace authentication and retry."
+        ) from exc
 
 
 def _prompt_from_turn(params: dict) -> str | None:

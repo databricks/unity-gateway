@@ -11,7 +11,6 @@ from tomlkit.items import Item
 
 from ucode.config_io import read_json_safe, read_toml_safe
 from ucode.managed_files import OS, current_os
-from ucode.ui import print_warning
 
 CODEX_PROFILE_NAME = "ucode"
 DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / f"{CODEX_PROFILE_NAME}.config.toml"
@@ -60,11 +59,10 @@ def custom_catalog_models() -> list[str] | None:
         slugs = _catalog_slugs(Path(catalog_ref).expanduser())
         if slugs:
             return slugs
-        print_warning(
+        raise RuntimeError(
             f"Codex smart routing could not read models from the custom catalog {catalog_ref} "
-            f"referenced by {path}; falling back to the cached model services."
+            f"referenced by {path}. Fix the catalog or remove model_catalog_json to use discovery."
         )
-        return None
     return None
 
 

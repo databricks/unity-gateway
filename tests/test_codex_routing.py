@@ -134,6 +134,35 @@ def test_exact_router_model_is_preserved():
     assert model == "databricks-gpt-5-6-sol"
 
 
+def test_harness_models_are_normalized_for_routes_select(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured.update(json.loads(request.data))
+        return _Response(
+            {
+                "route_selection": [{"route_option": {"model": "gpt-5-6-sol", "harness": "codex"}}],
+                "rationale": "Coding task.",
+            }
+        )
+
+    monkeypatch.setattr(codex_routing.urllib.request, "urlopen", fake_urlopen)
+    decision, error = codex_routing.request_routing_decision(
+        WS,
+        "token",
+        "Fix the parser",
+        ["gpt-5.5", "gpt-5.6-sol", "system.ai.glm-5-3", "system.ai.gpt-5-5"],
+    )
+
+    assert error is None
+    assert decision.model == "gpt-5.6-sol"
+    assert captured["route_options"] == [
+        {"model": "gpt-5-5", "harness": "codex"},
+        {"model": "gpt-5-6-sol", "harness": "codex"},
+        {"model": "glm-5-3", "harness": "codex"},
+    ]
+
+
 def test_router_failure_fails_open(monkeypatch):
     monkeypatch.setattr(
         codex_routing.urllib.request,

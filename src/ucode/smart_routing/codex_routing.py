@@ -31,7 +31,15 @@ DECISIONS_PATH = APP_DIR / "codex-smart-routing-decisions.jsonl"
 
 _GPT_RE = re.compile(r"gpt-(\d+)(?:[.-](\d+))?(?:[.-](\d+))?(-.+|[a-z].*)?")
 
-_normalize_model = routing.normalize_model
+
+def _normalize_model(model: str) -> str:
+    normalized = routing.normalize_model(model)
+    match = _GPT_RE.fullmatch(normalized)
+    if match is None:
+        return normalized
+    major, minor, patch, suffix = match.groups()
+    version = "-".join(part for part in (major, minor, patch) if part is not None)
+    return f"gpt-{version}{suffix or ''}"
 
 
 def request_routing_decision(
@@ -47,7 +55,7 @@ def request_routing_decision(
     available = {_normalize_model(model): model for model in available_models}
     route_options = [(model, "codex") for model in available]
     if not route_options:
-        return None, "no cached model services are available"
+        return None, "no models are available for Codex routing"
     router_name = routing.configured_router_name()
     if log is not None:
         payload = {
