@@ -61,10 +61,10 @@ ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 MIN_DATABRICKS_CLI_VERSION = (1, 0, 0)
 TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # Substrings the Databricks CLI emits when it loses the token-cache write lock
-# to a concurrent `databricks auth token` (e.g. another ucode helper process or
-# MLflow tracing refreshing the shared ~/.databricks/token-cache.json at the same
-# instant). These are transient — the credential is fine, only the local write
-# raced — so we retry rather than treat them as an expired session.
+# to a concurrent `databricks auth token` (e.g. another ucode helper process
+# refreshing the shared ~/.databricks/token-cache.json at the same instant).
+# These are transient — the credential is fine, only the local write raced — so
+# we retry rather than treat them as an expired session.
 _TOKEN_CACHE_LOCK_MARKERS = ("cache update", "exit status 45")
 _TOKEN_FETCH_MAX_ATTEMPTS = 4
 _HTTP_GET_RETRYABLE_STATUS_CODES = frozenset({429})
@@ -592,114 +592,6 @@ def get_current_user_name(workspace: str, token: str) -> str | None:
             if isinstance(entry, dict) and isinstance(entry.get("value"), str):
                 return entry["value"].strip()
     return None
-
-
-# Experiment tag Databricks sets when an experiment's traces are written to a
-# Unity Catalog table. Its value is the UC destination, e.g.
-# "my_catalog.my_schema.my_table". A plain (file/DBFS-backed) experiment does
-# not carry this tag, so its presence is our signal that traces land in UC.
-UC_TRACE_DESTINATION_TAG = "mlflow.experiment.databricksTraceDestinationPath"
-
-
-def _experiment_tags(experiment: dict) -> dict[str, str | None]:
-    """Flatten an experiment's ``tags`` list ([{key, value}, ...]) into a dict."""
-    out: dict[str, str | None] = {}
-    tags = experiment.get("tags")
-    if isinstance(tags, list):
-        for tag in tags:
-            if isinstance(tag, dict) and isinstance(tag.get("key"), str):
-                out[tag["key"]] = tag.get("value")
-    return out
-
-
-def _uc_trace_destination(experiment: dict) -> str | None:
-    """The Unity Catalog destination (``catalog.schema.table``) an experiment
-    logs traces to, or None when it isn't UC-backed. Any three-part UC name
-    qualifies — the specific catalog/schema/table is not constrained."""
-    value = _experiment_tags(experiment).get(UC_TRACE_DESTINATION_TAG)
-    if isinstance(value, str):
-        parts = value.split(".")
-        if len(parts) == 3 and all(parts):
-            return value
-    return None
-
-
-def find_uc_backed_experiment(
-    workspace: str, token: str, leaf_name: str
-) -> tuple[dict | None, str | None]:
-    """Find an existing experiment whose final path segment is ``leaf_name`` and
-    whose traces are backed by Unity Catalog.
-
-    Returns (experiment, reason). On success ``experiment`` is
-    ``{"experiment_id", "experiment_name", "uc_destination"}`` and reason is
-    None. On failure ``experiment`` is None and reason explains why (no such
-    experiment, or it exists but isn't UC-backed) so the caller can tell the
-    user to create one."""
-    hostname = workspace_hostname(workspace)
-    # Leaf-match in the filter (anything ending in the name), then confirm the
-    # exact leaf segment in Python so "/Users/<me>/ucode-traces" matches but
-    # "team-ucode-traces" does not.
-    safe_leaf = leaf_name.replace("'", "")
-    payload, reason = _http_post_json(
-        f"https://{hostname}/api/2.0/mlflow/experiments/search",
-        token,
-        {"filter": f"name LIKE '%{safe_leaf}'", "max_results": 1000},
-    )
-    if not isinstance(payload, dict):
-        return None, reason or "could not search MLflow experiments"
-
-    experiments = payload.get("experiments")
-    named = [
-        exp
-        for exp in (experiments if isinstance(experiments, list) else [])
-        if isinstance(exp, dict)
-        and str(exp.get("name") or "").rsplit("/", 1)[-1] == leaf_name
-        and exp.get("experiment_id")
-    ]
-    if not named:
-        return None, f"no experiment named '{leaf_name}' exists on this workspace"
-
-    for exp in named:
-        dest = _uc_trace_destination(exp)
-        if dest:
-            return {
-                "experiment_id": str(exp["experiment_id"]),
-                "experiment_name": str(exp.get("name") or leaf_name),
-                "uc_destination": dest,
-            }, None
-
-    return (
-        None,
-        f"experiment '{leaf_name}' exists but its traces are not backed by Unity Catalog",
-    )
-
-
-def resolve_sql_warehouse_id(workspace: str, token: str) -> tuple[str | None, str | None]:
-    """Pick a SQL warehouse for writing traces to a UC-backed experiment.
-
-    Writing traces to a Unity Catalog table requires a SQL warehouse
-    (``MLFLOW_TRACING_SQL_WAREHOUSE_ID``); without one the MLflow exporter
-    silently drops them. We prefer a RUNNING warehouse so the first trace isn't
-    blocked on a cold start, falling back to any existing warehouse (a stopped
-    one auto-starts on first query). Returns (warehouse_id, reason); reason is
-    None on success, else explains why none could be resolved."""
-    hostname = workspace_hostname(workspace)
-    payload, reason = _http_get_json(f"https://{hostname}/api/2.0/sql/warehouses", token)
-    if not isinstance(payload, dict):
-        return None, reason or "could not list SQL warehouses"
-
-    warehouses = payload.get("warehouses")
-    warehouses = (
-        [w for w in warehouses if isinstance(w, dict) and w.get("id")]
-        if isinstance(warehouses, list)
-        else []
-    )
-    if not warehouses:
-        return None, "no SQL warehouse exists on this workspace"
-
-    running = next((w for w in warehouses if str(w.get("state")).upper() == "RUNNING"), None)
-    chosen = running or warehouses[0]
-    return str(chosen["id"]), None
 
 
 @overload
