@@ -29,9 +29,7 @@ def test_ug_configure_codex_databricks(live_session, workspace):
         timeout=240,
     )
     assert not session.workspace_state().get("provider_services", {}).get("codex")
-    # Astra is Codex's current default, but it is heavily rate-limited. Pin a
-    # different model so this test validates ug rather than Astra capacity.
-    command = [str(session.binary), "codex", "--", "--model", "system.ai.gpt-5-4-nano"]
+    command = [str(session.binary), "codex"]
 
     with AgentTerminal(session, "codex", command, "first-session") as tui:
         tui.boot()

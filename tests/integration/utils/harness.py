@@ -13,6 +13,8 @@ import threading
 import time
 from pathlib import Path
 
+from .commands import CODEX_TEST_MODEL, pin_codex_test_model
+
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
@@ -99,7 +101,7 @@ class UserSession:
         binary=None,
         input_text: str | None = None,
     ):
-        command = [str(binary or self.binary), *args]
+        command = pin_codex_test_model([str(binary or self.binary), *args])
         proc = subprocess.Popen(
             command,
             cwd=self.cwd,
@@ -162,6 +164,9 @@ class UserSession:
         """Use a real discovered model only when testing an explicit model option."""
         model = os.environ.get(f"UG_INTEGRATION_{agent.upper()}_MODEL", "").strip()
         source = "runner override"
+        if not model and agent == "codex":
+            model = CODEX_TEST_MODEL
+            source = "integration default"
         if not model:
             state = self.state()
             workspace = state["workspaces"][state["current_workspace"]]
@@ -183,7 +188,7 @@ class UserSession:
 
     def app_server_handshake(self, args: list[str], timeout: int = 120) -> dict:
         """Speak the real Codex stdio protocol and require an initialize response."""
-        command = [str(self.binary), "codex", *args]
+        command = pin_codex_test_model([str(self.binary), "codex", *args])
         messages: queue.Queue = queue.Queue()
         transcript: list[str] = []
         diagnostics: list[str] = []

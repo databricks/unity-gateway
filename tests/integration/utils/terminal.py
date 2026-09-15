@@ -16,6 +16,7 @@ import uuid
 import pexpect
 import pyte
 
+from .commands import pin_codex_test_model
 from .evidence import agent_sessions, assert_no_terminal_api_error
 
 
@@ -35,7 +36,7 @@ class TerminalProcess:
         self.session = session
         self.agent = agent
         self.name = name
-        self.command = command
+        self.command = pin_codex_test_model(command)
         env = {**session.env, "TERM": "xterm-256color"}
         self.child = pexpect.spawn(
             self.command[0],

@@ -1,6 +1,7 @@
 """Keep the black-box suite independent of application internals and test doubles."""
 
 import ast
+import runpy
 from pathlib import Path
 
 
@@ -50,6 +51,47 @@ def test_integration_suite_uses_only_public_process_boundaries():
             }:
                 violations.append(f"{path.name}:{node.lineno}: uses {node.attr}")
     assert not violations, "\n".join(violations)
+
+
+def test_codex_integration_commands_pin_the_shared_test_model():
+    commands = runpy.run_path(Path(__file__).parent / "integration/utils/commands.py")
+    model = commands["CODEX_TEST_MODEL"]
+    pin = commands["pin_codex_test_model"]
+
+    assert pin(["ug", "codex"]) == ["ug", "codex", "--", "--model", model]
+    assert pin(["ug", "codex", "--", "exec", "prompt"]) == [
+        "ug",
+        "codex",
+        "--",
+        "--model",
+        model,
+        "exec",
+        "prompt",
+    ]
+    assert pin(["ug", "codex", "app-server", "--listen", "stdio://"]) == [
+        "ug",
+        "codex",
+        "--",
+        "--model",
+        model,
+        "app-server",
+        "--listen",
+        "stdio://",
+    ]
+    assert pin(["ug", "codex", "--", "--model", "provider-model", "exec"]) == [
+        "ug",
+        "codex",
+        "--",
+        "--model",
+        "provider-model",
+        "exec",
+    ]
+    assert pin(["ug", "configure", "--agents", "codex"]) == [
+        "ug",
+        "configure",
+        "--agents",
+        "codex",
+    ]
 
 
 def test_live_integration_cases_belong_to_exactly_one_ci_agent():
