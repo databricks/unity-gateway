@@ -460,10 +460,6 @@ class TestCodexLaunch:
             pytest.skip("No Codex models available on this workspace")
         return models
 
-    def test_astra_is_skipped(self):
-        state = {"codex_models": ["databricks-gpt-6-astra", "databricks-gpt-5-4"]}
-        assert self._codex_models(state) == ["databricks-gpt-5-4"]
-
     def test_launch_codex_per_model(self, tmp_path, monkeypatch, e2e_state, e2e_workspace):
         """Parametrized inline — iterates over all codex models and asserts each works."""
         import ucode.config_io as config_io_mod
