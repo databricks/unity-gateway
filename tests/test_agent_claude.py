@@ -457,14 +457,20 @@ class TestRenderOverlay:
 
 
 class TestRenderOverlayUserAgent:
-    def _ua(self, monkeypatch) -> str:
-        monkeypatch.setattr(claude, "ucode_version", lambda: "0.1.0")
-        monkeypatch.setattr(claude, "agent_version", lambda binary: "2.1.136")
+    def _ua(self, monkeypatch, claude_version: str = "2.1.136") -> str:
+        monkeypatch.setattr(claude, "ucode_release_version", lambda: "0.1.0")
+        monkeypatch.setattr(claude, "agent_version", lambda binary: claude_version)
         overlay, _ = claude.render_overlay(WS, "s4")
         return overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
     def test_user_agent_present(self, monkeypatch):
-        assert "User-Agent: ucode/0.1.0 claude/2.1.136" in self._ua(monkeypatch)
+        assert "User-Agent: ucode/0.1.0" in self._ua(monkeypatch)
+
+    def test_user_agent_does_not_change_when_claude_updates(self, monkeypatch):
+        user_agent = self._ua(monkeypatch, "2.1.272")
+
+        assert user_agent == "x-databricks-use-coding-agent-mode: true\nUser-Agent: ucode/0.1.0"
+        assert "claude/" not in user_agent
 
     def test_existing_databricks_header_preserved(self, monkeypatch):
         assert "x-databricks-use-coding-agent-mode: true" in self._ua(monkeypatch)
@@ -863,7 +869,7 @@ class TestWriteToolConfigManagedSettings:
             }
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing_managed_settings)
-        monkeypatch.setattr(claude, "ucode_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "ucode_release_version", lambda: "1.0")
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
         state = {"workspace": WS, "codex_models": []}
 
@@ -873,7 +879,7 @@ class TestWriteToolConfigManagedSettings:
         merged_headers = json.loads(text)["env"]["ANTHROPIC_CUSTOM_HEADERS"]
         assert merged_headers.splitlines() == [
             "X-Enterprise-Header: retain",  # Preserved from existing managed settings.
-            "User-Agent: ucode/1.0 claude/2.0",  # From ucode; overwrites existing.
+            "User-Agent: ucode/1.0",  # From ucode; overwrites existing.
             "x-databricks-use-coding-agent-mode: true",  # Newly added by ucode.
         ]
 

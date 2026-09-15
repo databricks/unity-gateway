@@ -15,6 +15,13 @@ class TestUcodeVersion:
         assert telemetry.ucode_version() != ""
 
 
+class TestUcodeReleaseVersion:
+    def test_drops_local_build_metadata(self, monkeypatch):
+        monkeypatch.setattr(telemetry, "ucode_version", lambda: "0.1.0+172.g673cff4")
+
+        assert telemetry.ucode_release_version() == "0.1.0"
+
+
 class TestAgentVersion:
     def setup_method(self):
         # The helper is @cache'd; clear between tests so each gets a clean run.
