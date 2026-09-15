@@ -18,6 +18,11 @@ import pyte
 
 from .evidence import agent_sessions
 
+NON_RETRYABLE_AGENT_ERROR = re.compile(
+    r"unexpected status (?:400|401|403|404|405|409|422)\b|PERMISSION_DENIED",
+    re.IGNORECASE,
+)
+
 
 class TerminalScreen(pyte.Screen):
     def __init__(self, columns, lines, send):
@@ -282,8 +287,14 @@ class AgentTerminal(TerminalProcess):
         self.exit_normally()
 
     def wait_for_task(self, task, timeout=180):
+        def completed(screen):
+            assert not NON_RETRYABLE_AGENT_ERROR.search(screen), (
+                "Agent returned a non-retryable API error:\n" + screen
+            )
+            return task.completed(self.session, self.agent)
+
         self.wait_for(
-            lambda text: task.completed(self.session, self.agent),
+            completed,
             "a completed assistant answer with the file's value",
             timeout=timeout,
         )

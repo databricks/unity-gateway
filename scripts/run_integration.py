@@ -76,6 +76,11 @@ def arguments():
         default="main.ucode.ci_openai_mps",
         help="Existing OpenAI MPS selected in the configure CUJ.",
     )
+    parser.add_argument(
+        "--codex-provider-model",
+        default="gpt-5-nano",
+        help="Model allowed by the OpenAI MPS selected in the configure CUJ.",
+    )
     parser.add_argument("--python", default=sys.executable, help="Python 3.12+ path or uv version.")
     parser.add_argument("--dependency", action="append", default=[], metavar="PACKAGE==VERSION")
     parser.add_argument("--constraints", type=Path, help="Replay a previous dependencies.txt.")
@@ -236,6 +241,7 @@ def main() -> int:
             "codex_model": args.codex_model,
             "claude_provider": args.claude_provider,
             "codex_provider": args.codex_provider,
+            "codex_provider_model": args.codex_provider_model,
             "dependencies": args.dependency,
             "workspace": args.workspace,
         },
@@ -459,6 +465,7 @@ def main() -> int:
                 "UG_INTEGRATION_AGENTS": ",".join(agents),
                 "UG_INTEGRATION_CLAUDE_PROVIDER": args.claude_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
+                "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
                 "DATABRICKS_BEARER": bearer,
             }

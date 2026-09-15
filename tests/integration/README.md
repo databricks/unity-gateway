@@ -118,10 +118,11 @@ using the routed model, excluding inherited parent turns.
 MPS CUJs select the existing services already used by e2e:
 
 - Claude: `main.ucode.ci_e2e_anthropic_nonrelay_mps`.
-- Codex: `main.ucode.ci_openai_mps`.
+- Codex: `main.ucode.ci_openai_mps`, using its allowed `gpt-5-nano` model.
 
 Use `--claude-provider` / `--codex-provider` to reproduce another existing service.
-Those names are recorded in `versions.json`. No service is created or modified.
+Use `--codex-provider-model` when that OpenAI service allows a different model.
+Those choices are recorded in `versions.json`. No service is created or modified.
 A missing service or permission fails the selected CUJ, rather than skipping it.
 
 There are **45 live cases** (including 10 TUI journeys) and **3 installation

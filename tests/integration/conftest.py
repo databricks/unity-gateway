@@ -91,3 +91,8 @@ def claude_provider():
 @pytest.fixture(scope="session")
 def codex_provider():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_provider_model():
+    return os.environ["UG_INTEGRATION_CODEX_PROVIDER_MODEL"]
