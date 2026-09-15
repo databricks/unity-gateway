@@ -213,6 +213,33 @@ ug mcp remove --agents codex
 It shows the servers you currently have configured — each with the coding tools it's registered
 on — and removes the ones you select from those tools. It needs no Databricks login.
 
+#### Sign in to connection-backed servers
+
+Some MCP services (e.g. `system.ai.github`) are backed by a Unity Catalog connection and only
+vend their tools once you've completed a one-time per-user sign-in to the underlying SaaS. Use
+`ug mcp login` to see which of your configured MCP services are signed in vs. still need a
+sign-in, and to complete the sign-in:
+
+```bash
+# Show every configured connection-backed MCP service with its sign-in status,
+# and pick which to sign in to.
+ug mcp login
+
+# Sign in to specific services non-interactively (full or short names).
+ug mcp login --services system.ai.github,system.ai.slack
+
+# Scope to specific agents' services.
+ug mcp login --agents claude,codex
+```
+
+Sign-in opens your browser to complete the connection's login (via `databricks auth login`), then
+mints the credential. The credential is **per-user and shared across every agent** — signing in
+once through any agent (or here) unblocks that MCP service for Claude Code, Cursor, Codex, and the
+rest. It works for any connection-backed MCP service, not just `system.ai.*`.
+
+> Requires a Databricks CLI that supports `--resource` (databricks/cli#6621); `ug mcp login`
+> reports a clear message if your CLI is too old.
+
 ### Skills (optional)
 
 Configure Unity Catalog Skills for your coding tools with `ug configure skills`:
@@ -343,6 +370,8 @@ The output looks like:
 | `ug mcp add --agents claude --services system.ai.slack` | Set up the agent(s) if needed and register the server for them |
 | `ug mcp remove` | Interactively unregister configured MCP servers from your coding tools |
 | `ug mcp remove --agents codex` | Unregister selected servers from specific agents only |
+| `ug mcp login` | Show configured connection-backed MCP services' sign-in status and sign in to the ones you pick |
+| `ug mcp login --services system.ai.github` | Sign in to specific connection-backed MCP service(s) non-interactively |
 | `ug configure skills` | Register the skills MCP connection (utility tools only); no skills download |
 | `ug configure skills --location main.default [--path <dir>]` | Download a schema's skills to disk (under `<dir>`, or your home dir) and register a schema-less skills MCP connection |
 | `ug configure skills --location main.default --skill my-skill` | Download only the named skill(s) from a schema (comma-separated for several) |
