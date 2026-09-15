@@ -781,6 +781,14 @@ def configure_workspace_command(
     state = states[0]
     save_state(state)
 
+    # If the workspace publishes a managed config, the admin dictates the agent setup, so sync it and
+    # stop here instead of prompting the developer to pick agents. Applying the config to each agent
+    # happens at launch.
+    managed, _ = refresh_managed_config(state)
+    if managed is not None:
+        _confirm_managed_config_applied(managed, state["workspace"])
+        return 0
+
     available_on_workspace: list[str] = []
     tools_to_check = selected_tools or list(TOOL_SPECS)
     for tool_name in tools_to_check:

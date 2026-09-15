@@ -2561,6 +2561,25 @@ class TestConfigureAgentsSelection:
         cli_mod.configure_workspace_command()
         assert picked_for == ["claude"]
 
+    def test_managed_config_skips_agent_selection(self, monkeypatch):
+        # A managed config means the admin dictates the agents, so `ug configure` must sync and stop
+        # rather than prompt the developer to pick agents.
+        import ucode.cli as cli_mod
+
+        state = {**MINIMAL_STATE, "available_tools": []}
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(
+            cli_mod, "refresh_managed_config", lambda s: ({"enabled_agents": {"claude": {}}}, False)
+        )
+        monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_tools",
+            lambda options: pytest.fail("must not prompt for tools when a managed config exists"),
+        )
+
+        assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
+
     def test_configures_available_subset_by_default(self, monkeypatch):
         """A workspace with no OpenAI models still configures claude and pi."""
         import ucode.cli as cli_mod
