@@ -115,14 +115,12 @@ from ucode.state import (
     STATE_PATH,
     clear_state,
     get_provider_service,
-    load_full_state,
     load_state,
     save_state,
     set_current_workspace,
     set_provider_service,
 )
 from ucode.string_utils import is_valid_catalog_schema
-from ucode.tracing import configure_tracing_command
 from ucode.ui import (
     console,
     heading,
@@ -985,24 +983,6 @@ def status() -> int:
                     ", ".join(locations) if locations else "none — utility tools only",
                 )
 
-    print_heading("Tracing")
-    tracing = state.get("tracing") or {}
-    if tracing.get("enabled"):
-        print_kv("MLflow tracing", "enabled")
-        print_kv("Tracking URI", str(tracing.get("tracking_uri") or "unknown"))
-        print_kv(
-            "Experiment",
-            f"{tracing.get('experiment_name')} (id {tracing.get('experiment_id')})",
-        )
-        uc_destination = tracing.get("uc_destination")
-        if uc_destination:
-            print_kv("Unity Catalog", str(uc_destination))
-        sql_warehouse_id = tracing.get("sql_warehouse_id")
-        if sql_warehouse_id:
-            print_kv("SQL warehouse", str(sql_warehouse_id))
-    else:
-        print_kv("MLflow tracing", "disabled")
-
     print_heading("State")
     print_kv("State file", str(STATE_PATH) if STATE_PATH.exists() else "missing")
     print_note("Use `ug configure` to update workspace settings or configure new tools.")
@@ -1011,7 +991,6 @@ def status() -> int:
         "Use `ug configure skills` to set up Unity Catalog Skills for configured coding tools."
     )
     print_note("Use `ug skill add` and `ug skill remove --mcp` to manage UC Skills.")
-    print_note("Use `ug configure tracing` to log coding sessions to an MLflow experiment.")
     print_note("Use `ug revert` to clear managed configs and restore prior files.")
     return 0
 
@@ -2879,13 +2858,6 @@ def configure(
             "--agents for MCP-only clients such as Cursor.",
         ),
     ] = None,
-    tracing: Annotated[
-        bool,
-        typer.Option(
-            "--tracing",
-            help="Also enable MLflow tracing for the configured workspace(s).",
-        ),
-    ] = False,
     skip_upgrade: Annotated[
         bool,
         typer.Option(
@@ -3057,18 +3029,6 @@ def configure(
             # picked agents/workspace via prompts); that's where we offer the MCP
             # step below. Flag-driven runs stay scriptable.
             fully_interactive = not flag_driven_workspace
-        if tracing:
-            # The workspaces were just configured, so enable tracing for them
-            # directly instead of re-prompting. Fall back to the workspace that
-            # `configure_workspace_command` made current (the interactive pick).
-            tracing_workspaces: list[tuple[str, str | None]] | None = workspace_entries
-            if tracing_workspaces is None:
-                current = load_full_state().get("current_workspace")
-                tracing_workspaces = (
-                    [(current, None)] if isinstance(current, str) and current else None
-                )
-            if tracing_workspaces:
-                configure_tracing_command(workspaces=tracing_workspaces)
         if mcp is not None:
             # The workspace + agents were just configured above, so the current
             # workspace state now lists the agents whose MCP configs we should
@@ -3214,24 +3174,6 @@ def configure_skills(
         else:
             configure_skills_download_command(locations, path=path, skills=selected_skills)
     except (RuntimeError, ValueError) as exc:
-        print_err(str(exc))
-        raise typer.Exit(1) from None
-    except KeyboardInterrupt:
-        print_err("Interrupted.")
-        raise typer.Exit(130) from None
-
-
-@configure_app.command("tracing")
-def configure_tracing(
-    disable: Annotated[
-        bool, typer.Option("--disable", help="Turn off MLflow tracing for configured agents.")
-    ] = False,
-) -> None:
-    """Send coding-session traces to an MLflow experiment in your workspace."""
-    try:
-        install_databricks_cli()
-        configure_tracing_command(disable=disable)
-    except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
