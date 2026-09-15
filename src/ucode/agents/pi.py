@@ -310,10 +310,3 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
 
 def validate_cmd(binary: str) -> list[str]:
     return [binary, "--print", "say hi in 5 words or less"]
-
-
-def validate_env(state: dict) -> dict[str, str]:
-    workspace = state.get("workspace")
-    if not workspace:
-        raise RuntimeError("No workspace configured.")
-    return build_runtime_env(get_databricks_token(workspace, state.get("profile")))

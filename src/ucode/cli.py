@@ -29,12 +29,9 @@ from ucode.agents import (
     install_databricks_ai_tools_for_agents,
     install_tool_binary,
     normalize_tool,
-    provider_permission_error,
     resolve_gemini_provider_model,
     resolve_launch_model,
     resolve_provider_models,
-    validate_all_tools,
-    validate_tool,
 )
 from ucode.agents import claude as claude_agent
 from ucode.agents import codex as codex_agent
@@ -767,7 +764,6 @@ def configure_workspace_command(
     *,
     prompt_optional_updates: bool = True,
     use_pat: bool = False,
-    skip_validate: bool = False,
     skip_unavailable: bool = False,
     fable_enabled: bool | None = None,
     databricks_ai_tools_enabled: bool | None = None,
@@ -809,21 +805,6 @@ def configure_workspace_command(
                 expand=False,
             )
         )
-        if skip_validate:
-            print_note(f"Skipping {spec['display']} validation (--skip-validate).")
-            return 0
-        with spinner(f"Validating {spec['display']}..."):
-            ok, err = validate_tool(tool)
-        if ok:
-            print_success(f"{spec['display']} is working")
-        else:
-            print_err(f"{spec['display']}: {provider_permission_error(tool, state, err)}")
-            managed = bool(state.get("managed_configs", {}).get(tool))
-            restore_file(spec["config_path"], spec["backup_path"], managed)
-            available_tools = [t for t in (state.get("available_tools") or []) if t != tool]
-            state["available_tools"] = available_tools
-            save_state(state)
-            raise RuntimeError(f"{spec['display']} validation failed — config reverted.")
         return 0
 
     states = _configure_shared_workspace_states(
@@ -908,14 +889,6 @@ def configure_workspace_command(
             expand=False,
         )
     )
-
-    if skip_validate:
-        print_note("Skipping agent validation (--skip-validate).")
-    else:
-        # Limit validation to just-configured tools so we don't re-validate
-        # previously-configured tools the user didn't touch this run.
-        validate_state = {**state, "available_tools": picked}
-        validate_all_tools(validate_state)
     if offer_optional_setup and not is_dry_run():
         _configure_optional_setup(state, picked)
     return 0
@@ -2858,9 +2831,9 @@ def configure(
         bool,
         typer.Option(
             "--skip-validate",
-            help="Skip the post-configure validation step that sends a quick test "
-            "message through each agent. Config files are still written with the "
-            "freshly discovered models.",
+            hidden=True,
+            help="Deprecated and ignored: agent validation has been removed. "
+            "Accepted for backward compatibility so existing scripts keep working.",
         ),
     ] = False,
     skip_unavailable: Annotated[
@@ -2972,8 +2945,6 @@ def configure(
         skip_kwargs: dict = {}
         if use_pat:
             skip_kwargs["use_pat"] = True
-        if skip_validate:
-            skip_kwargs["skip_validate"] = True
         # Only forward the Fable opt-in when the user passed the flag; `None`
         # (neither flag given) lets configure_shared_state inherit the prior
         # workspace setting instead of clobbering it.

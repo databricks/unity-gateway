@@ -1963,7 +1963,6 @@ class TestAutoConfigureOnFirstRun:
             patch("ucode.cli.ensure_provider_state", return_value=configured_state),
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
             patch("ucode.cli.configure_tool", return_value=configured_state),
-            patch("ucode.cli.validate_tool", return_value=(False, "timed out")) as mock_validate,
             patch("ucode.cli.restore_file") as mock_restore,
             patch("ucode.cli.launch_agent") as mock_launch,
         ):
@@ -1971,7 +1970,6 @@ class TestAutoConfigureOnFirstRun:
 
         assert result.exit_code == 0, result.output
         mock_configure.assert_called_once_with(tool, configured_state)
-        mock_validate.assert_not_called()
         mock_restore.assert_not_called()
         mock_launch.assert_called_once()
         assert mock_launch.call_args.args[:2] == (tool, configured_state)
@@ -2504,7 +2502,6 @@ class TestConfigureAgentsSelection:
             "configure_selected_tools",
             lambda state, tools: configured.append(tools) or {**state, "available_tools": tools},
         )
-        monkeypatch.setattr(cli_mod, "validate_all_tools", lambda state: None)
 
         assert cli_mod.configure_workspace_command(selected_tools=["claude", "codex"]) == 0
         assert install_calls == ["claude", "codex"]
@@ -2520,7 +2517,6 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(
             cli_mod, "configure_selected_tools", lambda s, tools: {**s, "available_tools": tools}
         )
-        monkeypatch.setattr(cli_mod, "validate_all_tools", lambda s: None)
         picked_for: list[str] = []
         monkeypatch.setattr(
             cli_mod,
@@ -2598,7 +2594,6 @@ class TestConfigureAgentsSelection:
             "configure_selected_tools",
             lambda state, tools: configured.append(tools) or {**state, "available_tools": tools},
         )
-        monkeypatch.setattr(cli_mod, "validate_all_tools", lambda state: None)
         warnings: list[str] = []
         monkeypatch.setattr(cli_mod, "print_warning", lambda msg: warnings.append(msg))
 
@@ -2674,7 +2669,6 @@ class TestConfigureAgentsSelection:
             "configure_selected_tools",
             lambda state, tools: {**state, "available_tools": tools},
         )
-        monkeypatch.setattr(cli_mod, "validate_all_tools", lambda state: None)
 
         assert cli_mod.configure_workspace_command() == 0
         assert captured["profile"] == "picked-profile"
@@ -2719,7 +2713,6 @@ class TestConfigureAgentsSelection:
                 or {**state, "available_tools": tools}
             ),
         )
-        monkeypatch.setattr(cli_mod, "validate_all_tools", lambda state: None)
 
         assert (
             cli_mod.configure_workspace_command(
@@ -2831,7 +2824,7 @@ class TestConfigureProfilesFlag:
             workspaces=[("https://first.databricks.com", "DEFAULT")],
         )
 
-    def test_use_pat_and_skip_validate_are_forwarded(self):
+    def test_use_pat_forwarded_and_skip_validate_ignored(self):
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.install_tool_binary"),
@@ -2856,7 +2849,6 @@ class TestConfigureProfilesFlag:
             workspaces=[("https://first.databricks.com", "DEFAULT")],
             prompt_optional_updates=True,
             use_pat=True,
-            skip_validate=True,
         )
 
     def test_use_pat_requires_profiles(self):
@@ -3310,8 +3302,8 @@ class TestConfigureSharedStateUsePat:
         }
 
 
-class TestConfigureSkipValidate:
-    def test_skip_validate_skips_agent_validation(self, monkeypatch):
+class TestConfigureNoLongerValidates:
+    def test_configure_completes_without_probe(self, monkeypatch):
         import ucode.cli as cli_mod
 
         state = {**MINIMAL_STATE, "workspace": "https://first.com"}
@@ -3324,46 +3316,14 @@ class TestConfigureSkipValidate:
             "configure_selected_tools",
             lambda s, tools: {**s, "available_tools": tools},
         )
-        validated: list = []
-        monkeypatch.setattr(cli_mod, "validate_all_tools", lambda s: validated.append(s))
-
+        # No validate_* stubs are needed anymore: configure must not probe.
+        assert not hasattr(cli_mod, "validate_all_tools")
+        assert not hasattr(cli_mod, "validate_tool")
         result = cli_mod.configure_workspace_command(
             selected_tools=["codex"],
             workspaces=[("https://first.com", None)],
-            skip_validate=True,
         )
-
         assert result == 0
-        assert validated == []
-
-    @pytest.mark.parametrize("skip_validate", [False, True])
-    @pytest.mark.parametrize("tool", list(cli_mod.TOOL_SPECS))
-    def test_single_tool_validation_is_optional(self, monkeypatch, skip_validate, tool):
-        import ucode.cli as cli_mod
-
-        state = {**MINIMAL_STATE, "workspace": "https://first.com"}
-        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
-        monkeypatch.setattr(cli_mod, "configure_single_tool", lambda t, s: s)
-        installed: list = []
-        monkeypatch.setattr(
-            cli_mod,
-            "install_databricks_ai_tools_for_agents",
-            lambda tools, s: installed.append(tools),
-        )
-        validated: list = []
-        monkeypatch.setattr(cli_mod, "validate_tool", lambda t: validated.append(t) or (True, ""))
-
-        result = cli_mod.configure_workspace_command(
-            tool,
-            workspaces=[("https://first.com", None)],
-            skip_validate=skip_validate,
-        )
-
-        assert result == 0
-        assert validated == ([] if skip_validate else [tool])
-        # `ucode configure` (single-agent) still installs AI Tools — it's the
-        # configure path, unlike launch which auto-configures without installing.
-        assert installed == [[tool]]
 
 
 class TestConfigureSharedStateMcpCleanup:

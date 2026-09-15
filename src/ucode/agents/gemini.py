@@ -261,20 +261,3 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
 
 def validate_cmd(binary: str) -> list[str]:
     return [binary, "-p", "say hi in 5 words or less"]
-
-
-def validate_env(state: dict) -> dict[str, str]:
-    """Inject env vars for the validation subprocess.
-
-    The Gemini CLI's .env auto-loading skips ~/.gemini/.env when run from an
-    untrusted folder, so we cannot rely on it during validation.
-    """
-    workspace = state.get("workspace")
-    if not workspace:
-        raise RuntimeError("No workspace configured.")
-    provider = get_provider_service(state, "gemini")
-    model = _launch_model(state, provider)
-    if not model:
-        raise RuntimeError("No Gemini model is configured.")
-    token = get_databricks_token(workspace, state.get("profile"))
-    return build_runtime_env(workspace, model, token, provider=provider)

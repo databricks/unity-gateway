@@ -111,12 +111,19 @@ class TerminalProcess:
         since = None
         while time.monotonic() < deadline:
             self.read()
-            assert not self.ended, f"TUI exited while waiting for {description}:\n{self.visible}"
             if predicate(self.visible):
+                # If the process has also finished (e.g. `ug configure` exits
+                # right after the final pick), the screen is final and stable —
+                # accept it instead of racing the exit.
+                if self.ended:
+                    return
                 since = since or time.monotonic()
                 if time.monotonic() - since >= stable_for:
                     return
             else:
+                assert not self.ended, (
+                    f"TUI exited while waiting for {description}:\n{self.visible}"
+                )
                 since = None
         raise AssertionError(f"TUI did not show {description} within {timeout}s:\n{self.visible}")
 

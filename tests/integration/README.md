@@ -99,9 +99,10 @@ configure command, launch, user action, and assertions. Shared code only handles
 process/terminal mechanics, evidence, and cleanup. Fixtures supply an isolated
 session and credentials; none manufacture or configure application state.
 
-Provider CUJs use normal ug validation, then require their own completed
-interactive task. Other journeys skip preliminary validation when they provide
-their own task or command assertions. Tests disable optional Databricks AI Tools and
+ug no longer runs a post-configure agent probe, so no CUJ validates; each
+journey still requires its own completed interactive task or command assertions
+(the deprecated `--skip-validate` flag is accepted as a no-op where older
+journeys pass it). Tests disable optional Databricks AI Tools and
 pass `--skip-upgrade` to preserve the selected version. They use real onboarding
 and trust choices, without seeded acceptance or disabled agent sandboxing. If a
 routed child asks to locate the random fixture beneath the disposable project,

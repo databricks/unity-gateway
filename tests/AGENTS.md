@@ -54,10 +54,11 @@ tests. Keep work scoped to the behavior requested by the user.
     print/exec mode while claiming interactive coverage. Require an interactive
     prompt and observable input/exit behavior. Boot is not first-prompt inference.
 
-`configure --skip-validate` in setup avoids an extra generic model prompt; task
-tests then require a real independently asserted task. Configuration alone must
-never be presented as inference coverage. Do not add shortcuts around the
-behavior a test claims to exercise.
+`configure` no longer runs a post-configure agent probe (the deprecated
+`--skip-validate` flag is accepted as a no-op); task tests still require a real
+independently asserted task. Configuration alone must never be presented as
+inference coverage. Do not add shortcuts around the behavior a test claims to
+exercise.
 
 ## Add / modify / remove
 

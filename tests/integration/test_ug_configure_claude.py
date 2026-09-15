@@ -18,7 +18,7 @@ def test_ug_configure_claude_databricks(live_session, workspace):
     session = live_session
     task = FileTask(session)
 
-    # Configure using the installed public CLI, including its normal validation.
+    # Configure using the installed public CLI (no post-configure probe runs).
     session.run(
         "configure",
         "--agents",

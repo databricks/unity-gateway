@@ -47,10 +47,10 @@ mode, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
 Generated-file cleanup and strict app-server stdout assertions remain enforced.
 
-Provider configuration tests include ug's normal validation. Other setup uses
-`--skip-validate` when the journey supplies its own task or checks a command
-contract. Tests use `--skip-upgrade` to preserve selected agent versions and disable
-optional Databricks AI Tools. Help forwarding does not claim MCP functionality.
+ug no longer runs a post-configure agent probe; the deprecated `--skip-validate`
+flag is accepted as a no-op where older journeys still pass it. Tests use
+`--skip-upgrade` to preserve selected agent versions and disable optional
+Databricks AI Tools. Help forwarding does not claim MCP functionality.
 
 Fresh consumer dependency resolution covers the install path behind #496, rather
 than consuming `uv.lock`. Use `--dependency PACKAGE==VERSION` or replay the archived
