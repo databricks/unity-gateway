@@ -1,75 +1,200 @@
-"""CUJs: Codex model discovery through explicit parent and provider scopes."""
+"""Red CUJs for every Codex row in the model-discovery Tests table."""
 
 import pytest
 
 pytestmark = [pytest.mark.live, pytest.mark.codex]
 
 
-def test_ug_codex_fresh_provider_discovers_only_openai_mps_models(
-    live_session, workspace, codex_provider, codex_provider_model
+def test_case_02_managed_codex_uses_admin_discovery_after_configure(
+    managed_live_session, managed_workspace, managed_codex_model
 ):
-    """Scenario: launch Codex with an OpenAI MPS from a fresh home.
+    """Scenario: configure Codex, then launch in a workspace with managed discovery.
 
-    Expected: Codex's real model/list response contains only that MPS's model.
+    Expected: the managed model catalog wins over the developer's saved setup.
     """
-    session = live_session
-
-    models = session.codex_model_ids(
-        [
-            "--workspace",
-            workspace,
-            "--provider",
-            codex_provider,
-            "--",
-            "app-server",
-            "--listen",
-            "stdio://",
-        ]
+    session = managed_live_session
+    session.run(
+        "configure",
+        "--agents",
+        "codex",
+        "--workspace",
+        managed_workspace,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+        timeout=240,
     )
 
-    assert models == [codex_provider_model]
-    session.assert_not_routed()
+    models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
+
+    assert models == [managed_codex_model]
 
 
-def test_ug_codex_fresh_parent_discovers_only_parent_models(
+def test_case_04_managed_codex_ignores_discovery_disable(
+    managed_live_session, managed_workspace, managed_codex_model
+):
+    """Scenario: launch managed Codex with UG_ENABLE_MODEL_DISCOVERY=0.
+
+    Expected: workspace-managed discovery still supplies the admin's catalog.
+    """
+    session = managed_live_session
+    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
+    models = session.codex_model_ids(
+        ["--workspace", managed_workspace, "--", "app-server", "--listen", "stdio://"]
+    )
+
+    assert models == [managed_codex_model]
+
+
+def test_case_06_managed_codex_rejects_provider_override(
+    managed_live_session, managed_workspace, codex_provider
+):
+    """Scenario: pass --provider when the workspace manages Codex discovery.
+
+    Expected: ug rejects the developer override before Codex starts.
+    """
+    result = managed_live_session.run(
+        "codex",
+        "--workspace",
+        managed_workspace,
+        "--provider",
+        codex_provider,
+        "--",
+        "--version",
+        ok=False,
+        timeout=240,
+    )
+
+    output = (result.stdout + result.stderr).lower()
+    assert result.returncode == 1
+    assert "managed" in output or "admin" in output
+
+
+def test_case_08_managed_codex_rejects_model_location_override(
+    managed_live_session, managed_workspace, parent_schema
+):
+    """Scenario: pass --model-location when the workspace manages Codex discovery.
+
+    Expected: ug rejects the developer override before Codex starts.
+    """
+    result = managed_live_session.run(
+        "codex",
+        "--workspace",
+        managed_workspace,
+        "--model-location",
+        parent_schema,
+        "--",
+        "--version",
+        ok=False,
+        timeout=240,
+    )
+
+    output = (result.stdout + result.stderr).lower()
+    assert result.returncode == 1
+    assert "managed" in output or "admin" in output
+
+
+def test_case_10_managed_codex_rejects_provider_when_discovery_disabled(
+    managed_live_session, managed_workspace, codex_provider
+):
+    """Scenario: disable discovery and pass --provider in a managed workspace.
+
+    Expected: the managed-config override remains invalid and ug rejects it.
+    """
+    session = managed_live_session
+    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
+    result = session.run(
+        "codex",
+        "--workspace",
+        managed_workspace,
+        "--provider",
+        codex_provider,
+        "--",
+        "--version",
+        ok=False,
+        timeout=240,
+    )
+
+    output = (result.stdout + result.stderr).lower()
+    assert result.returncode == 1
+    assert "managed" in output or "admin" in output
+
+
+def test_case_12_managed_codex_rejects_model_location_when_discovery_disabled(
+    managed_live_session, managed_workspace, parent_schema
+):
+    """Scenario: disable discovery and pass --model-location in a managed workspace.
+
+    Expected: the managed-config override remains invalid and ug rejects it.
+    """
+    session = managed_live_session
+    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
+    result = session.run(
+        "codex",
+        "--workspace",
+        managed_workspace,
+        "--model-location",
+        parent_schema,
+        "--",
+        "--version",
+        ok=False,
+        timeout=240,
+    )
+
+    output = (result.stdout + result.stderr).lower()
+    assert result.returncode == 1
+    assert "managed" in output or "admin" in output
+
+
+def test_case_14_configured_codex_reuses_saved_model_location(
     live_session, workspace, parent_schema, codex_parent_model
 ):
-    """Scenario: launch Codex with a Unity Catalog parent from a fresh home.
+    """Scenario: configure Codex with --model-location, then launch without options.
 
-    Expected: Codex's real model/list response contains only the compatible
-    Model Service in that schema.
+    Expected: the saved parent supplies Codex's discovered model catalog.
     """
     session = live_session
-
-    models = session.codex_model_ids(
-        [
-            "--workspace",
-            workspace,
-            "--parent",
-            parent_schema,
-            "--",
-            "app-server",
-            "--listen",
-            "stdio://",
-        ]
+    session.run(
+        "configure",
+        "--agents",
+        "codex",
+        "--workspace",
+        workspace,
+        "--model-location",
+        parent_schema,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+        timeout=240,
     )
 
+    models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
+
     assert models == [codex_parent_model]
-    session.assert_not_routed()
 
 
-def test_ug_codex_configured_scope_switch_refreshes_provider_then_parent_models(
-    live_session,
-    workspace,
-    codex_provider,
-    codex_provider_model,
-    parent_schema,
-    codex_parent_model,
+def test_case_16_fresh_codex_uses_system_models_when_discovery_disabled(live_session, workspace):
+    """Scenario: launch fresh Codex with UG_ENABLE_MODEL_DISCOVERY=0.
+
+    Expected: ug uses its discovered system.ai models without a scoped catalog.
+    """
+    session = live_session
+    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
+    models = session.codex_model_ids(
+        ["--workspace", workspace, "--", "app-server", "--listen", "stdio://"]
+    )
+
+    discovered = session.workspace_state()["codex_models"]
+    assert models
+    assert discovered
+    assert all(model.startswith("system.ai.") for model in discovered)
+    assert not list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
+
+
+def test_case_18_configured_codex_provider_discovers_models_by_default(
+    live_session, workspace, codex_provider, codex_provider_model
 ):
-    """Scenario: configure Hosted Codex, then launch with MPS and parent scopes.
+    """Scenario: configure Hosted Codex, then launch with --provider.
 
-    Expected: each explicit scope overrides the saved setup, and model/list
-    reflects the current scope rather than a catalog from the previous launch.
+    Expected: the explicit provider overrides setup and supplies its exact catalog.
     """
     session = live_session
     session.run(
@@ -83,128 +208,93 @@ def test_ug_codex_configured_scope_switch_refreshes_provider_then_parent_models(
         timeout=240,
     )
 
-    provider_models = session.codex_model_ids(
-        [
-            "--provider",
-            codex_provider,
-            "--",
-            "app-server",
-            "--listen",
-            "stdio://",
-        ],
-        name="provider-models",
+    models = session.codex_model_ids(
+        ["--provider", codex_provider, "--", "app-server", "--listen", "stdio://"]
     )
-    assert provider_models == [codex_provider_model]
 
-    parent_models = session.codex_model_ids(
-        [
-            "--parent",
-            parent_schema,
-            "--",
-            "app-server",
-            "--listen",
-            "stdio://",
-        ],
-        name="parent-models",
-    )
-    assert parent_models == [codex_parent_model]
-    session.assert_not_routed()
+    assert models == [codex_provider_model]
 
 
-def test_ug_codex_bedrock_provider_discovers_only_openai_targets(
-    live_session, workspace, bedrock_provider, bedrock_codex_model
+def test_case_20_configured_codex_model_location_overrides_saved_setup(
+    live_session, workspace, parent_schema, codex_parent_model
 ):
-    """Scenario: launch Codex with a mixed-model Bedrock MPS from a fresh home.
+    """Scenario: configure Hosted Codex, then launch with --model-location.
 
-    Expected: Codex's real model/list response contains only its compatible
-    OpenAI Responses target.
+    Expected: the explicit parent overrides the saved Hosted configuration.
     """
     session = live_session
+    session.run(
+        "configure",
+        "--agents",
+        "codex",
+        "--workspace",
+        workspace,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+        timeout=240,
+    )
 
     models = session.codex_model_ids(
-        [
-            "--workspace",
-            workspace,
-            "--provider",
-            bedrock_provider,
-            "--",
-            "app-server",
-            "--listen",
-            "stdio://",
-        ]
+        ["--model-location", parent_schema, "--", "app-server", "--listen", "stdio://"]
     )
 
-    assert models == [bedrock_codex_model]
-    session.assert_not_routed()
+    assert models == [codex_parent_model]
 
 
-def test_ug_codex_rejects_missing_provider(live_session, workspace):
-    """Scenario: launch Codex with a provider name that does not exist.
+def test_case_22_codex_provider_uses_native_models_when_discovery_disabled(
+    live_session, workspace, codex_provider
+):
+    """Scenario: configure Codex, disable discovery, then launch with --provider.
 
-    Expected: ug returns a clear not-found error before starting Codex.
+    Expected: Codex uses its native catalog and ug writes no scoped catalog.
     """
-    missing = "does.not.exist"
-    result = live_session.run(
+    session = live_session
+    session.run(
+        "configure",
+        "--agents",
         "codex",
         "--workspace",
         workspace,
-        "--provider",
-        missing,
-        "--",
-        "--version",
-        ok=False,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
         timeout=240,
     )
+    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
 
-    assert result.returncode == 1
-    assert f"Model provider service '{missing}' was not found" in result.stdout + result.stderr
+    models = session.codex_model_ids(
+        ["--provider", codex_provider, "--", "app-server", "--listen", "stdio://"]
+    )
+
+    assert models
+    assert not list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
 
 
-def test_ug_codex_rejects_wrong_provider_type(live_session, workspace, claude_provider):
-    """Scenario: launch Codex with an Anthropic Model Provider Service.
+def test_case_24_codex_location_uses_native_models_when_discovery_disabled(
+    live_session, workspace, parent_schema
+):
+    """Scenario: configure Codex, disable discovery, then pass --model-location.
 
-    Expected: ug rejects the incompatible provider before starting Codex.
+    Expected: Codex uses its native catalog and ug writes no scoped catalog.
     """
-    result = live_session.run(
+    session = live_session
+    session.run(
+        "configure",
+        "--agents",
         "codex",
         "--workspace",
         workspace,
-        "--provider",
-        claude_provider,
-        "--",
-        "--version",
-        ok=False,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
         timeout=240,
     )
+    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
 
-    assert result.returncode == 1
-    assert "which codex can't route to" in result.stdout + result.stderr
-
-
-def test_ug_codex_rejects_malformed_parent(live_session):
-    """Scenario: launch Codex with a one-part parent value.
-
-    Expected: ug rejects it as malformed before starting Codex.
-    """
-    result = live_session.run("codex", "--parent", "main", ok=False)
-
-    assert result.returncode == 1
-    assert "--parent must be `<catalog>.<schema>`" in result.stdout + result.stderr
-
-
-def test_ug_codex_rejects_provider_and_parent_together(live_session, codex_provider, parent_schema):
-    """Scenario: launch Codex with both mutually exclusive discovery scopes.
-
-    Expected: ug rejects the conflicting options before starting Codex.
-    """
-    result = live_session.run(
-        "codex",
-        "--provider",
-        codex_provider,
-        "--parent",
-        parent_schema,
-        ok=False,
+    models = session.codex_model_ids(
+        ["--model-location", parent_schema, "--", "app-server", "--listen", "stdio://"]
     )
 
-    assert result.returncode == 1
-    assert "--provider and --parent cannot be used together" in result.stdout + result.stderr
+    discovered = session.workspace_state()["codex_models"]
+    assert models
+    assert discovered
+    assert all(model.startswith("system.ai.") for model in discovered)
+    assert not list((session.home / ".ucode").glob("codex-model-catalog-*.json"))

@@ -101,21 +101,6 @@ def arguments():
         default="main.ucode.ci_e2e_codex",
         help="Codex-compatible Model Service in --parent-schema.",
     )
-    parser.add_argument(
-        "--bedrock-provider",
-        default="main.ucode.ci_e2e_bedrock_mps",
-        help="Bedrock MPS containing the dedicated Claude and Codex targets.",
-    )
-    parser.add_argument(
-        "--bedrock-claude-model",
-        default="anthropic.claude-haiku-4-5-20251001-v1:0",
-        help="Claude target exposed by --bedrock-provider.",
-    )
-    parser.add_argument(
-        "--bedrock-codex-model",
-        default="openai.gpt-oss-20b-1:0",
-        help="Codex target exposed by --bedrock-provider.",
-    )
     parser.add_argument("--python", default=sys.executable, help="Python 3.12+ path or uv version.")
     parser.add_argument("--dependency", action="append", default=[], metavar="PACKAGE==VERSION")
     parser.add_argument("--constraints", type=Path, help="Replay a previous dependencies.txt.")
@@ -306,9 +291,6 @@ def main() -> int:
             "parent_schema": args.parent_schema,
             "claude_parent_model": args.claude_parent_model,
             "codex_parent_model": args.codex_parent_model,
-            "bedrock_provider": args.bedrock_provider,
-            "bedrock_claude_model": args.bedrock_claude_model,
-            "bedrock_codex_model": args.bedrock_codex_model,
             "managed_workspace": args.managed_workspace,
             "managed_claude_model": args.managed_claude_model,
             "managed_codex_model": args.managed_codex_model,
@@ -548,9 +530,6 @@ def main() -> int:
                 "UG_INTEGRATION_PARENT_SCHEMA": args.parent_schema,
                 "UG_INTEGRATION_CLAUDE_PARENT_MODEL": args.claude_parent_model,
                 "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,
-                "UG_INTEGRATION_BEDROCK_PROVIDER": args.bedrock_provider,
-                "UG_INTEGRATION_BEDROCK_CLAUDE_MODEL": args.bedrock_claude_model,
-                "UG_INTEGRATION_BEDROCK_CODEX_MODEL": args.bedrock_codex_model,
                 "UG_INTEGRATION_MANAGED_WORKSPACE": args.managed_workspace or "",
                 "UG_INTEGRATION_MANAGED_CLAUDE_MODEL": args.managed_claude_model,
                 "UG_INTEGRATION_MANAGED_CODEX_MODEL": args.managed_codex_model,

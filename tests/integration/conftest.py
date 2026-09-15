@@ -140,21 +140,6 @@ def codex_parent_model():
 
 
 @pytest.fixture(scope="session")
-def bedrock_provider():
-    return os.environ["UG_INTEGRATION_BEDROCK_PROVIDER"]
-
-
-@pytest.fixture(scope="session")
-def bedrock_claude_model():
-    return os.environ["UG_INTEGRATION_BEDROCK_CLAUDE_MODEL"]
-
-
-@pytest.fixture(scope="session")
-def bedrock_codex_model():
-    return os.environ["UG_INTEGRATION_BEDROCK_CODEX_MODEL"]
-
-
-@pytest.fixture(scope="session")
 def managed_claude_model():
     return os.environ["UG_INTEGRATION_MANAGED_CLAUDE_MODEL"]
 
