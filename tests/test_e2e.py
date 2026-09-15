@@ -489,8 +489,8 @@ class TestCodexLaunch:
                 codex.write_tool_config(state, model)
 
             cmd = codex.validate_cmd("codex")
-            # Config writes intentionally leave model selection to the harness.
-            # Pin each iteration explicitly rather than repeatedly testing its default.
+            # By default, ug uses the default model of the harness.
+            # Instead, pin Codex to use the specified model.
             cmd[1:1] = ["--model", codex.codex_model_id(model)]
             try:
                 result = _run_agent(
