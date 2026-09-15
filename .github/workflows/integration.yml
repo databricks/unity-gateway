@@ -14,7 +14,7 @@ on:
         options: [full, smoke, live, tui, installation]
         default: full
       ug_version:
-        description: Exact ucode release, or checkout
+        description: Exact ug release, or checkout
         default: checkout
         required: true
       entry_point:
@@ -34,7 +34,7 @@ on:
         description: Optional exact dependency for reproduction (e.g. tomlkit==0.14.0)
         default: ''
         required: false
-      index_url:
+      default_index:
         description: Python package index containing the requested ug version
         default: https://pypi.org/simple
         required: true
@@ -52,7 +52,7 @@ env:
   ENTRY_POINT: ${{ inputs.entry_point || 'ug' }}
   CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.268' }}
   CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
-  PACKAGE_INDEX: ${{ inputs.index_url || 'https://pypi.org/simple' }}
+  PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
 
 jobs:
   installation:
@@ -74,7 +74,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION" \
-            --index-url "$PACKAGE_INDEX" --installation-only --output "$RUNNER_TEMP/ug-integration"
+            --default-index "$PACKAGE_INDEX" --installation-only --output "$RUNNER_TEMP/ug-integration"
       - name: Upload installation evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -152,7 +152,7 @@ jobs:
           fi
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
-            --index-url "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
+            --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
             "${args[@]}" -- -m "$TEST_MARKER" -k "$TEST_KEYWORD"
       - name: Upload live test evidence
         if: ${{ !cancelled() }}

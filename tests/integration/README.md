@@ -259,7 +259,7 @@ the exact model used. Basic boot cases require no model arguments. Use
 the archived wheel so a changed checkout cannot alter the reproduction:
 
 ```bash
-python3 scripts/run_integration.py \
+python3.12 scripts/run_integration.py \
   --ug-wheel .integration-runs/from-ci/wheels/EXACT_WHEEL.whl \
   --entry-point ug \
   --claude-version CLAUDE_VERSION_FROM_REPORT \

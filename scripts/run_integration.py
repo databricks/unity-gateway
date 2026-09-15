@@ -57,9 +57,7 @@ def exact_npm_version(value: str) -> str:
 def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group()
-    source.add_argument(
-        "--ug-version", default="checkout", help="Exact ucode release, or checkout."
-    )
+    source.add_argument("--ug-version", default="checkout", help="Exact ug release, or checkout.")
     source.add_argument(
         "--ug-wheel", type=Path, help="Previously built wheel to reproduce a release."
     )
