@@ -363,7 +363,7 @@ def render_overlay(
     # traffic to ucode.
     header_lines = [
         "x-databricks-use-coding-agent-mode: true",
-        f"User-Agent: ucode/{ucode_release_version()} claude/{agent_version('claude')}",
+        f"User-Agent: ucode/{ucode_release_version()}",
     ]
     if provider:
         header_lines.append(f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}")
