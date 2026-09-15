@@ -11,6 +11,11 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package without credentials |
 
+Agent-picker regression coverage in `test_ui.py` and `test_cli.py` drives actual
+keyboard selection: nothing is selected by default, selecting Codex installs only
+Codex, and submitting an empty selection installs nothing. Rendering checks cover
+the selected and empty checkboxes. These are local component checks, not live gateway tests.
+
 ## CUJ coverage matrix
 
 These are **implemented assertions**, not a claim that every version passes.
