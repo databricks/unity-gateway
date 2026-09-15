@@ -441,7 +441,7 @@ class TestCustomCatalogModels:
         assert len(warnings) == 1
         assert "falling back to the cached model services" in warnings[0]
 
-    def test_launch_prefers_catalog_over_cached_models(self, tmp_path, monkeypatch):
+    def test_launch_prefers_catalog_over_cached_models(self, tmp_path, monkeypatch, capsys):
         self._settings(
             tmp_path,
             monkeypatch,
@@ -490,6 +490,7 @@ class TestCustomCatalogModels:
         assert "--model gpt-6-astra" in hook_override
         assert "--model gpt-6-b" in hook_override
         assert "gpt-5-6-sol" not in hook_override
+        assert "Smart routing:" not in capsys.readouterr().out
 
     def test_start_model_comes_from_custom_catalog(self, monkeypatch):
         calls = []

@@ -580,7 +580,11 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.kwargs["refresh"] is True
 
-    def test_codex_forwarded_model_is_reported_in_launch_summary(self):
+    @pytest.mark.parametrize("smart_routing", ["0", "1"])
+    def test_codex_forwarded_model_is_not_printed_in_launch_summary(
+        self, monkeypatch, smart_routing
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", smart_routing)
         state = {
             **MINIMAL_STATE,
             "codex_models": ["system.ai.gpt-5-6-luna"],
@@ -606,7 +610,8 @@ class TestSubcommandRouting:
 
         output = _strip_ansi(result.output)
         assert result.exit_code == 0, result.output
-        assert "Model: system.ai.gpt-5-6-sol" in output
+        assert "Smart routing" not in output
+        assert "Model:" not in output
         assert "Model: system.ai.gpt-5-6-luna" not in output
         assert mock_launch.call_args.args[2] == forwarded_args
 
@@ -868,7 +873,7 @@ class TestClaudeModelFlag:
             ["-m", "system.ai.claude-sonnet-5"],
         ],
     )
-    def test_forwarded_model_is_reported_in_launch_summary(self, forwarded_args):
+    def test_forwarded_model_is_not_printed_in_launch_summary(self, forwarded_args):
         state = {
             **MINIMAL_STATE,
             "claude_models": {"opus": "system.ai.claude-opus-4-8"},
@@ -893,7 +898,8 @@ class TestClaudeModelFlag:
 
         output = _strip_ansi(result.output)
         assert result.exit_code == 0, result.output
-        assert "Model: system.ai.claude-sonnet-5" in output
+        assert "Smart routing" not in output
+        assert "Model:" not in output
         assert "Model: system.ai.claude-opus-4-8" not in output
         assert mock_launch.call_args.args[2] == forwarded_args
 
@@ -1115,11 +1121,10 @@ class TestGeminiProviderLaunch:
         monkeypatch.setattr("ucode.cli.launch_agent", mock_launch)
         return runner.invoke(app, ["gemini", "--provider", "cat.schema.svc"])
 
-    def test_prints_resolved_target_model(self, monkeypatch):
-        # The concrete target gemini pins must show in the launch summary (not just the provider).
+    def test_does_not_print_resolved_target_model(self, monkeypatch):
         result = self._launch(monkeypatch, lambda t, s, p: (None, None, False))
         assert result.exit_code == 0, result.output
-        assert "Model: gemini-3.5-flash" in _strip_ansi(result.output)
+        assert "Model:" not in _strip_ansi(result.output)
 
     def test_skips_resolve_provider_models(self, monkeypatch):
         # Gemini resolves its own target, so the claude-family lookup must not run (no double fetch).

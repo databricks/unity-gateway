@@ -429,8 +429,8 @@ E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     "-codex": frozenset({"copilot"}),
     "gpt-5-5": frozenset({"copilot"}),
     "gpt-5-6": frozenset({"copilot"}),
-    # Astra currently fails through these paths in prod-aws-us-east-1.
-    "astra": frozenset({"copilot", "pi", "web_search"}),
+    # Astra has limited allowance in production and will hit 429s if tested.
+    "astra": frozenset({"codex", "copilot", "pi", "web_search"}),
 }
 
 
@@ -460,11 +460,6 @@ class TestCodexLaunch:
             pytest.skip("No Codex models available on this workspace")
         return models
 
-    def test_astra_is_not_skipped(self):
-        assert self._codex_models({"codex_models": ["databricks-gpt-6-astra"]}) == [
-            "databricks-gpt-6-astra"
-        ]
-
     def test_launch_codex_per_model(self, tmp_path, monkeypatch, e2e_state, e2e_workspace):
         """Parametrized inline — iterates over all codex models and asserts each works."""
         import ucode.config_io as config_io_mod
@@ -490,6 +485,9 @@ class TestCodexLaunch:
                 codex.write_tool_config(state, model)
 
             cmd = codex.validate_cmd("codex")
+            # By default, ug uses the default model of the harness.
+            # Instead, pin Codex to use the specified model.
+            cmd[1:1] = ["--model", codex.codex_model_id(model)]
             try:
                 result = _run_agent(
                     cmd,
