@@ -450,7 +450,7 @@ class TestRenderOverlay:
 
 class TestRenderOverlayUserAgent:
     def _ua(self, monkeypatch) -> str:
-        monkeypatch.setattr(claude, "ucode_version", lambda: "0.1.0")
+        monkeypatch.setattr(claude, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(claude, "agent_version", lambda binary: "2.1.136")
         overlay, _ = claude.render_overlay(WS, "s4")
         return overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
@@ -857,7 +857,7 @@ class TestWriteToolConfigManagedSettings:
             }
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing_managed_settings)
-        monkeypatch.setattr(claude, "ucode_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
         state = {"workspace": WS, "codex_models": []}
 

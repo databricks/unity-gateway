@@ -1028,9 +1028,9 @@ app.add_typer(skill_app, name="skill", help="Databricks Skills for your coding t
 
 def _version_callback(value: bool) -> None:
     if value:
-        from ucode.telemetry import ucode_version
+        from ucode.telemetry import ug_version
 
-        print(ucode_version())
+        print(ug_version())
         raise typer.Exit()
 
 

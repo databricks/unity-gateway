@@ -50,7 +50,7 @@ from ucode.databricks import (
     get_databricks_token,
 )
 from ucode.state import mark_tool_managed, save_state
-from ucode.telemetry import agent_version, ucode_version
+from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions
 
@@ -117,7 +117,7 @@ def render_overlay(
     keys: list[list[str]] = [["model"]]
     # Pi expands header values that match an env var name. Our UA contains
     # `/` and a space so it can never collide — safe to pass as a literal.
-    ua_headers = {"User-Agent": f"ucode/{ucode_version()} pi/{agent_version('pi')}"}
+    ua_headers = {"User-Agent": f"ucode/{ug_version()} pi/{agent_version('pi')}"}
 
     claude_ids = sorted(set(claude_models.values()))
     if claude_ids:

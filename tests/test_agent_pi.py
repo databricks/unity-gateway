@@ -96,7 +96,7 @@ class TestRenderOverlayProviders:
 
 class TestRenderOverlayUserAgent:
     def test_user_agent_set_on_all_three_providers(self, monkeypatch):
-        monkeypatch.setattr(pi, "ucode_version", lambda: "0.1.0")
+        monkeypatch.setattr(pi, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(pi, "agent_version", lambda binary: "0.74.0")
         overlay, _ = _overlay(
             "claude-sonnet",

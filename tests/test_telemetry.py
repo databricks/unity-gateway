@@ -11,11 +11,11 @@ from ucode import telemetry
 
 class TestUcodeVersion:
     def test_returns_installed_distribution_version(self):
-        assert telemetry.ucode_version() == version("unity-gateway")
+        assert telemetry.ug_version() == version("unity-gateway")
 
     def test_missing_metadata_does_not_block_launch(self):
         with patch.object(telemetry, "version", side_effect=PackageNotFoundError):
-            assert telemetry.ucode_version.__wrapped__() == "unknown"
+            assert telemetry.ug_version.__wrapped__() == "unknown"
 
 
 class TestAgentVersion:

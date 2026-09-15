@@ -68,7 +68,7 @@ from ucode.smart_routing.codex_hooks import (
 )
 from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
-from ucode.telemetry import agent_version, ucode_version
+from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
@@ -188,7 +188,7 @@ def _provider_block(
         auth_argv = build_auth_token_argv(workspace, databricks_profile, use_pat=use_pat)
     base_url = build_tool_base_url("codex", workspace)
     http_headers = {
-        "User-Agent": f"ucode/{ucode_version()} codex/{agent_version('codex')}",
+        "User-Agent": f"ucode/{ug_version()} codex/{agent_version('codex')}",
     }
     if provider:
         http_headers[MODEL_PROVIDER_SERVICE_HEADER] = provider

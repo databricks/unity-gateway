@@ -31,7 +31,7 @@ from ucode.databricks import (
     upgrade_databricks_cli,
 )
 from ucode.state import load_state
-from ucode.telemetry import ucode_version
+from ucode.telemetry import ug_version
 from ucode.tracing import tracing_config
 from ucode.ui import (
     console,
@@ -257,7 +257,7 @@ def _check_tracing_mlflow() -> Check | None:
 
 def _check_ucode() -> Check:
     """Report the installed build. Explicit updates are available via `ug upgrade`."""
-    version = ucode_version()
+    version = ug_version()
     return Check("ucode", "info", f"v{version} (installed from GitHub)")
 
 

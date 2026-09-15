@@ -150,7 +150,7 @@ def run_helpers(cache_dir: Path, *, helpers: int, login_seconds: float, timeout:
 def configured_timeout() -> float:
     with (
         patch.object(codex, "agent_version", return_value="test"),
-        patch.object(codex, "ucode_version", return_value="test"),
+        patch.object(codex, "ug_version", return_value="test"),
     ):
         doc = codex.render_overlay(WORKSPACE, custom_oauth=CONFIG)
         timeout_ms = doc["model_providers"]["ucode-databricks"]["auth"]["timeout_ms"]

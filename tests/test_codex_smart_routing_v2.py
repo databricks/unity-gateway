@@ -188,7 +188,7 @@ class TestLaunchCodex:
         stopped = []
         token_calls = []
         monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
-        monkeypatch.setattr(codex, "ucode_version", lambda: "0.1.0")
+        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
 
         class FakeProcess:
@@ -453,7 +453,7 @@ class TestCustomCatalogModels:
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.145.0")
-        monkeypatch.setattr(codex, "ucode_version", lambda: "test")
+        monkeypatch.setattr(codex, "ug_version", lambda: "test")
         launched = []
 
         class FakeProcess:

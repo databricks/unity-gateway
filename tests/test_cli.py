@@ -363,11 +363,11 @@ class TestVersion:
         assert _strip_ansi(result.output).strip() != ""
 
     def test_matches_telemetry_version(self):
-        from ucode.telemetry import ucode_version
+        from ucode.telemetry import ug_version
 
         result = runner.invoke(app, ["--version"])
         assert result.exit_code == 0
-        assert ucode_version() in _strip_ansi(result.output)
+        assert ug_version() in _strip_ansi(result.output)
 
 
 def _patch_launch(tool: str):

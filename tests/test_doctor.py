@@ -238,7 +238,7 @@ class TestTracingMlflowCheck:
 
 class TestUcodeCheck:
     def test_reports_version_without_optional_reinstall(self):
-        with patch.object(doctor_mod, "ucode_version", return_value="1.2.3"):
+        with patch.object(doctor_mod, "ug_version", return_value="1.2.3"):
             check = doctor_mod._check_ucode()
         assert "1.2.3" in check.detail
         assert check.suggestion is None
