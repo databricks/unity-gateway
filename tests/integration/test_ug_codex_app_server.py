@@ -18,7 +18,7 @@ def test_ug_codex_app_server_client_initializes(live_session, workspace, separat
         "configure",
         "--agents",
         "codex",
-        "--workspaces",
+        "--workspace",
         workspace,
         "--skip-validate",
         "--skip-upgrade",

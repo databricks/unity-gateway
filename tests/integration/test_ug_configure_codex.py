@@ -22,7 +22,7 @@ def test_ug_configure_codex_databricks(live_session, workspace):
         "configure",
         "--agents",
         "codex",
-        "--workspaces",
+        "--workspace",
         workspace,
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
@@ -61,7 +61,7 @@ def test_ug_configure_codex_openai_mps(
     command = [
         str(session.binary),
         "configure",
-        "--workspaces",
+        "--workspace",
         workspace,
         "--skip-upgrade",
         "--disable-databricks-ai-tools",

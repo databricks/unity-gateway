@@ -233,7 +233,7 @@ class TestConfigureCustomOAuth:
                     "configure",
                     "--agent",
                     "claude",
-                    "--workspaces",
+                    "--workspace",
                     WS,
                     "--client-id",
                     "custom-client",

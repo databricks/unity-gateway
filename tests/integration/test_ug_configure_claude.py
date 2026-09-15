@@ -23,7 +23,7 @@ def test_ug_configure_claude_databricks(live_session, workspace):
         "configure",
         "--agents",
         "claude",
-        "--workspaces",
+        "--workspace",
         workspace,
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
@@ -59,7 +59,7 @@ def test_ug_configure_claude_anthropic_mps(live_session, workspace, claude_provi
     command = [
         str(session.binary),
         "configure",
-        "--workspaces",
+        "--workspace",
         workspace,
         "--skip-upgrade",
         "--disable-databricks-ai-tools",

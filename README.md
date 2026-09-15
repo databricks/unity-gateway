@@ -93,26 +93,26 @@ Fable is included automatically when the workspace advertises it, with no separa
 
 Installed agents are upgraded only when they fall below UG's required minimum version. Compatible versions do not trigger update checks or prompts, including in `ug doctor`. Use `ug upgrade` explicitly to update Unity Gateway itself. `--skip-upgrade` and `--skip-unavailable` remain accepted as hidden, deprecated no-ops for existing scripts.
 
-To configure without the workspace picker, pass a comma-separated list of workspaces:
+To configure without the workspace picker, pass a single workspace URL:
 
 ```bash
-ug configure --workspaces https://first.databricks.com,https://second.databricks.com
+ug configure --workspace https://first.databricks.com
 ```
 
-When multiple workspaces are provided, `ug` logs into and saves state for each workspace. Launch commands such as `ug codex` use the first workspace in the list.
+`ug` logs into and saves state for that workspace.
 
-Alternatively, pass existing Databricks CLI profiles (from `~/.databrickscfg`) instead of workspace URLs — each profile's host supplies the workspace URL:
+Alternatively, pass an existing Databricks CLI profile (from `~/.databrickscfg`) instead of a workspace URL — the profile's host supplies the workspace URL:
 
 ```bash
-ug configure --profiles DEFAULT --agents claude,codex
+ug configure --profile DEFAULT --agents claude,codex
 ```
 
-Auth behaves the same as `--workspaces`: an OAuth `databricks auth login` is forced by default.
+Auth behaves the same as `--workspace`: an OAuth `databricks auth login` is forced by default.
 
-For CI or headless environments where the profile holds a personal access token (`auth_type = pat` in `~/.databrickscfg`), add `--use-pat`. It must be combined with `--profiles` — ug never picks up a PAT implicitly — and runs no interactive login: the profile's token is used for the whole setup (and by launched agents afterwards), with workspace access verified against the AI Gateway. This makes authentication non-interactive:
+For CI or headless environments where the profile holds a personal access token (`auth_type = pat` in `~/.databrickscfg`), add `--use-pat`. It must be combined with `--profile` — ug never picks up a PAT implicitly — and runs no interactive login: the profile's token is used for the whole setup (and by launched agents afterwards), with workspace access verified against the AI Gateway. This makes authentication non-interactive:
 
 ```bash
-ug configure --profiles DEFAULT --agents claude,codex --use-pat
+ug configure --profile DEFAULT --agents claude,codex --use-pat
 ```
 
 ### MCP servers (optional)
@@ -329,9 +329,9 @@ The output looks like:
 | `ug revert` | Clear saved state and restore backed-up config files |
 | `ug configure --dry-run` | Preview config files without writing them |
 | `ug configure --agents claude,codex` | Configure specific agents without the interactive picker |
-| `ug configure --workspaces https://first.databricks.com,https://second.databricks.com` | Configure workspaces without the interactive picker |
-| `ug configure --profiles DEFAULT` | Configure using existing Databricks CLI profiles (hosts come from `~/.databrickscfg`) |
-| `ug configure --profiles DEFAULT --use-pat` | Authenticate with the profile's personal access token — no browser login |
+| `ug configure --workspace https://first.databricks.com` | Configure a workspace without the interactive picker |
+| `ug configure --profile DEFAULT` | Configure using an existing Databricks CLI profile (host comes from `~/.databrickscfg`) |
+| `ug configure --profile DEFAULT --use-pat` | Authenticate with the profile's personal access token — no browser login |
 | `ug codex --enable-smart-routing` | Enable AI Gateway routing for Codex sessions and subagents |
 | `ug codex --refresh` | Re-check Databricks, refresh models/configuration, and launch Codex |
 | `ug claude --enable-smart-routing` | Enable AI Gateway routing for Claude Code sessions and subagents |

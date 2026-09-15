@@ -1065,7 +1065,7 @@ def resolve_pat_token(profile: str | None) -> str | None:
     """Return the static PAT of a PAT-type Databricks CLI profile, or None.
 
     Only consulted when the user explicitly opted in via
-    ``ucode configure --profiles <name> --use-pat`` — ucode never picks up a
+    ``ucode configure --profile <name> --use-pat`` — ucode never picks up a
     PAT implicitly."""
     if profile and profile_auth_type(profile) == "pat":
         return _read_databrickscfg_token(profile)

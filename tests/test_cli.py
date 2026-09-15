@@ -126,7 +126,10 @@ class TestHelp:
         flat = re.sub(r"[│╭╮╯╰─\s]+", " ", output)
         assert "--agents" in output
         assert "comma-separated list of agents" in flat
-        assert "--workspaces" in output
+        assert "--workspace" in output
+        # The deprecated plural aliases are hidden from help.
+        assert "--workspaces" not in output
+        assert "--profiles" not in output
 
     def test_usage_help_is_budget_only(self):
         result = runner.invoke(app, ["usage", "--help"])
@@ -2162,7 +2165,7 @@ class TestConfigureAgentFlag:
             selected_tools=["claude", "codex"],
         )
 
-    def test_workspaces_flag_calls_configure_with_workspaces(self):
+    def test_workspace_flag_calls_configure_with_workspace(self):
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.install_tool_binary"),
@@ -2170,21 +2173,15 @@ class TestConfigureAgentFlag:
         ):
             result = runner.invoke(
                 app,
-                [
-                    "configure",
-                    "--workspaces",
-                    "first.databricks.com,https://second.databricks.com/",
-                ],
+                ["configure", "--workspace", "first.databricks.com"],
             )
         assert result.exit_code == 0, result.output
+        # A bare host is normalized to an https URL.
         mock_cfg.assert_called_once_with(
-            workspaces=[
-                ("https://first.databricks.com", None),
-                ("https://second.databricks.com", None),
-            ],
+            workspaces=[("https://first.databricks.com", None)],
         )
 
-    def test_agents_and_workspaces_flags_call_configure_with_both(self):
+    def test_agents_and_workspace_flags_call_configure_with_both(self):
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.install_tool_binary"),
@@ -2192,7 +2189,7 @@ class TestConfigureAgentFlag:
         ):
             result = runner.invoke(
                 app,
-                ["configure", "--agents", "claude,codex", "--workspaces", "https://first.com"],
+                ["configure", "--agents", "claude,codex", "--workspace", "https://first.com"],
             )
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
@@ -2200,7 +2197,7 @@ class TestConfigureAgentFlag:
             workspaces=[("https://first.com", None)],
         )
 
-    def test_agent_and_workspaces_flags_call_configure_with_both(self):
+    def test_agent_and_workspace_flags_call_configure_with_both(self):
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.install_tool_binary") as mock_install,
@@ -2208,11 +2205,43 @@ class TestConfigureAgentFlag:
         ):
             result = runner.invoke(
                 app,
-                ["configure", "--agent", "claude", "--workspaces", "https://first.com"],
+                ["configure", "--agent", "claude", "--workspace", "https://first.com"],
             )
         assert result.exit_code == 0, result.output
         mock_install.assert_called_once_with("claude", strict=True)
         mock_cfg.assert_called_once_with("claude", workspaces=[("https://first.com", None)])
+
+    def test_deprecated_workspaces_alias_forwards_single_workspace(self):
+        # `--workspaces` is a hidden alias of `--workspace` and takes one URL.
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(app, ["configure", "--workspaces", "first.databricks.com"])
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_called_once_with(
+            workspaces=[("https://first.databricks.com", None)],
+        )
+
+    def test_workspace_and_workspaces_are_mutually_exclusive(self):
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "configure",
+                    "--workspace",
+                    "https://a.databricks.com",
+                    "--workspaces",
+                    "https://b.databricks.com",
+                ],
+            )
+        assert result.exit_code == 1
+        assert "not both" in _strip_ansi(result.output)
+        mock_cfg.assert_not_called()
 
     def test_agent_flag_calls_configure_with_tool(self):
         with (
@@ -2353,14 +2382,20 @@ class TestConfigureAgentFlag:
         assert result.exit_code != 0
         mock_cfg.assert_not_called()
 
-    def test_workspaces_flag_rejects_empty_list(self):
+    def test_workspace_flag_rejects_comma_separated_list(self):
+        # `--workspace` takes a single URL; the old comma-list syntax is rejected
+        # with an actionable error instead of being treated as one bad URL.
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.install_tool_binary"),
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
         ):
-            result = runner.invoke(app, ["configure", "--workspaces", ","])
+            result = runner.invoke(
+                app,
+                ["configure", "--workspace", "https://first.com,https://second.com"],
+            )
         assert result.exit_code != 0
+        assert "single workspace" in _strip_ansi(result.output)
         mock_cfg.assert_not_called()
 
 
@@ -2395,7 +2430,7 @@ class TestConfigureMcpFlag:
                 app,
                 [
                     "configure",
-                    "--workspaces",
+                    "--workspace",
                     "https://ws.databricks.com",
                     "--mcp",
                     "system.ai.slack",
@@ -2419,7 +2454,7 @@ class TestConfigureMcpFlag:
             patch("ucode.cli.configure_mcp_command") as mock_mcp,
         ):
             result = runner.invoke(
-                app, ["configure", "--workspaces", "https://ws.databricks.com", "--mcp", "slack"]
+                app, ["configure", "--workspace", "https://ws.databricks.com", "--mcp", "slack"]
             )
         assert result.exit_code != 0
         mock_mcp.assert_not_called()
@@ -2624,61 +2659,18 @@ class TestConfigureAgentsSelection:
         assert cli_mod.configure_workspace_command() == 0
         assert captured["profile"] == "picked-profile"
 
-    def test_multiple_workspaces_configure_all_and_use_first(self, monkeypatch):
+    def test_multiple_workspaces_rejected(self):
         import ucode.cli as cli_mod
 
-        states = {
-            "https://first.com": {**MINIMAL_STATE, "workspace": "https://first.com"},
-            "https://second.com": {**MINIMAL_STATE, "workspace": "https://second.com"},
-        }
-        configured_shared: list[tuple[str, str | None, tuple[str, ...] | None, bool]] = []
-
-        def fake_configure_shared_state(
-            workspace,
-            profile=None,
-            tools=None,
-            force_login=False,
-            use_pat=False,
-            databricks_ai_tools_enabled=None,
-            clear_custom_oauth=False,
-        ):
-            configured_shared.append(
-                (workspace, profile, tuple(tools) if tools is not None else None, force_login)
-            )
-            return states[workspace]
-
-        saved: list[str] = []
-        configured_tools: list[tuple[str, list[str]]] = []
-        monkeypatch.setattr(cli_mod, "configure_shared_state", fake_configure_shared_state)
-        monkeypatch.setattr(cli_mod, "save_state", lambda state: saved.append(state["workspace"]))
-        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda state, tool: True)
-        monkeypatch.setattr(cli_mod, "prompt_for_tools", lambda available: ["codex"])
-        monkeypatch.setattr(cli_mod, "_maybe_select_provider_service", lambda tool, state: state)
-        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *args, **kwargs: True)
-        monkeypatch.setattr(
-            cli_mod,
-            "configure_selected_tools",
-            lambda state, tools: (
-                configured_tools.append((state["workspace"], tools))
-                or {**state, "available_tools": tools}
-            ),
-        )
-
-        assert (
+        # A configure run targets exactly one workspace; more than one is a
+        # programming error, not a supported mode.
+        with pytest.raises(RuntimeError, match="exactly one workspace"):
             cli_mod.configure_workspace_command(
                 workspaces=[("https://first.com", None), ("https://second.com", None)]
             )
-            == 0
-        )
-        assert configured_shared == [
-            ("https://first.com", None, None, True),
-            ("https://second.com", None, None, True),
-        ]
-        assert saved == ["https://first.com"]
-        assert configured_tools == [("https://first.com", ["codex"])]
 
 
-class TestParseProfilesOption:
+class TestParseProfileOption:
     @staticmethod
     def _patch_profiles(monkeypatch, entries):
         import ucode.cli as cli_mod
@@ -2686,22 +2678,26 @@ class TestParseProfilesOption:
         monkeypatch.setattr(cli_mod, "list_profile_entries", lambda: entries)
         return cli_mod
 
-    def test_resolves_profiles_to_workspace_entries(self, monkeypatch):
+    def test_resolves_profile_to_workspace_entry(self, monkeypatch):
         cli_mod = self._patch_profiles(
             monkeypatch,
             [
                 {"name": "DEFAULT", "host": "https://first.databricks.com/", "auth_type": "pat"},
-                {
-                    "name": "second",
-                    "host": "https://second.databricks.com",
-                    "auth_type": "databricks-cli",
-                },
             ],
         )
-        assert cli_mod._parse_profiles_option("DEFAULT, second") == [
+        # A single profile resolves to a one-element list; the trailing slash on
+        # the host is normalized away.
+        assert cli_mod._parse_profile_option("DEFAULT") == [
             ("https://first.databricks.com", "DEFAULT"),
-            ("https://second.databricks.com", "second"),
         ]
+
+    def test_comma_separated_list_raises(self, monkeypatch):
+        cli_mod = self._patch_profiles(
+            monkeypatch,
+            [{"name": "DEFAULT", "host": "https://first.databricks.com", "auth_type": "pat"}],
+        )
+        with pytest.raises(RuntimeError, match="single Databricks CLI profile"):
+            cli_mod._parse_profile_option("DEFAULT,second")
 
     def test_unknown_profile_raises_with_available_names(self, monkeypatch):
         cli_mod = self._patch_profiles(
@@ -2709,17 +2705,12 @@ class TestParseProfilesOption:
             [{"name": "DEFAULT", "host": "https://first.databricks.com", "auth_type": "pat"}],
         )
         with pytest.raises(RuntimeError, match=r"'missing' was not found.*DEFAULT"):
-            cli_mod._parse_profiles_option("missing")
+            cli_mod._parse_profile_option("missing")
 
     def test_profile_without_host_raises(self, monkeypatch):
         cli_mod = self._patch_profiles(monkeypatch, [{"name": "DEFAULT", "auth_type": "pat"}])
         with pytest.raises(RuntimeError, match="no host configured"):
-            cli_mod._parse_profiles_option("DEFAULT")
-
-    def test_empty_value_raises(self, monkeypatch):
-        cli_mod = self._patch_profiles(monkeypatch, [])
-        with pytest.raises(RuntimeError, match="No profiles provided"):
-            cli_mod._parse_profiles_option(" , ")
+            cli_mod._parse_profile_option("DEFAULT")
 
 
 class TestConfigureProfilesFlag:
@@ -2734,13 +2725,39 @@ class TestConfigureProfilesFlag:
             patch("ucode.cli.list_profile_entries", return_value=self.PROFILE_ENTRIES),
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
         ):
-            result = runner.invoke(app, ["configure", "--profiles", "DEFAULT"])
+            result = runner.invoke(app, ["configure", "--profile", "DEFAULT"])
         assert result.exit_code == 0, result.output
-        # Auth behaves like --workspaces: no skip flags are forwarded, so the
+        # Auth behaves like --workspace: no skip flags are forwarded, so the
         # default forced OAuth login applies.
         mock_cfg.assert_called_once_with(
             workspaces=[("https://first.databricks.com", "DEFAULT")],
         )
+
+    def test_deprecated_profiles_alias_resolves_single_profile(self):
+        # `--profiles` is a hidden alias of `--profile` and takes one profile.
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.list_profile_entries", return_value=self.PROFILE_ENTRIES),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(app, ["configure", "--profiles", "DEFAULT"])
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_called_once_with(
+            workspaces=[("https://first.databricks.com", "DEFAULT")],
+        )
+
+    def test_profile_and_profiles_are_mutually_exclusive(self):
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(
+                app, ["configure", "--profile", "DEFAULT", "--profiles", "second"]
+            )
+        assert result.exit_code == 1
+        assert "not both" in _strip_ansi(result.output)
+        mock_cfg.assert_not_called()
 
     def test_profiles_flag_with_agents(self):
         with (
@@ -2750,7 +2767,7 @@ class TestConfigureProfilesFlag:
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
         ):
             result = runner.invoke(
-                app, ["configure", "--agents", "claude,codex", "--profiles", "DEFAULT"]
+                app, ["configure", "--agents", "claude,codex", "--profile", "DEFAULT"]
             )
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
@@ -2765,7 +2782,7 @@ class TestConfigureProfilesFlag:
             patch("ucode.cli.list_profile_entries", return_value=self.PROFILE_ENTRIES),
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
         ):
-            result = runner.invoke(app, ["configure", "--agent", "claude", "--profiles", "DEFAULT"])
+            result = runner.invoke(app, ["configure", "--agent", "claude", "--profile", "DEFAULT"])
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             "claude",
@@ -2785,7 +2802,7 @@ class TestConfigureProfilesFlag:
                     "configure",
                     "--agents",
                     "claude,codex",
-                    "--profiles",
+                    "--profile",
                     "DEFAULT",
                     "--use-pat",
                     "--skip-validate",
@@ -2805,10 +2822,10 @@ class TestConfigureProfilesFlag:
         ):
             result = runner.invoke(
                 app,
-                ["configure", "--workspaces", "https://first.databricks.com", "--use-pat"],
+                ["configure", "--workspace", "https://first.databricks.com", "--use-pat"],
             )
         assert result.exit_code == 1
-        assert "--use-pat requires --profiles" in _strip_ansi(result.output)
+        assert "--use-pat requires --profile" in _strip_ansi(result.output)
         mock_cfg.assert_not_called()
 
     def test_skip_unavailable_accepted_without_agents(self):
@@ -2830,7 +2847,7 @@ class TestConfigureProfilesFlag:
                 app,
                 [
                     "configure",
-                    "--workspaces",
+                    "--workspace",
                     "https://example.azuredatabricks.net",
                     "--agents",
                     "claude,codex,pi",
@@ -2850,7 +2867,7 @@ class TestConfigureProfilesFlag:
         assert result.exit_code == 0, result.output
         assert "skip_unavailable" not in mock_cfg.call_args.kwargs
 
-    def test_profiles_and_workspaces_are_mutually_exclusive(self):
+    def test_profile_and_workspace_are_mutually_exclusive(self):
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
@@ -2859,9 +2876,9 @@ class TestConfigureProfilesFlag:
                 app,
                 [
                     "configure",
-                    "--profiles",
+                    "--profile",
                     "DEFAULT",
-                    "--workspaces",
+                    "--workspace",
                     "https://first.databricks.com",
                 ],
             )
@@ -3894,7 +3911,7 @@ class TestMcpProxyCmdForwardsUsePat:
 
 
 class TestForcedLoginWithExternalBearer:
-    """`configure --workspaces` forces `databricks auth login`, which cannot help
+    """`configure --workspace` forces `databricks auth login`, which cannot help
     when a bearer (or a command that mints one) is supplied from outside: the
     login is interactive, and `get_databricks_token` returns before it would ever
     reach the OAuth path. A sandbox whose credential comes from a broker would
