@@ -75,6 +75,12 @@ integration pass. Requested live checks fail when credentials, binaries, models,
 or capabilities are missing. There are no capability-based skips or retries of
 failed model tasks. A failing historical version should remain a failing result.
 
+Installation checks also invoke both `ug` and `ucode` auth helpers using the public
+bearer override and drive their real local web-search MCP handshake/tool listing.
+These assert protocol stdout without stripping ANSI escapes and make no workspace
+requests. The live Hosted configure journeys additionally execute the actual `ug`
+auth helper written into each agent's configuration before completing a real TUI task.
+
 ## Test layout and format
 
 All user journeys are top-level tests. There is no separate regressions category:
@@ -127,7 +133,7 @@ Use `--codex-provider-model` when that OpenAI service allows a different model.
 Those choices are recorded in `versions.json`. No service is created or modified.
 A missing service or permission fails the selected CUJ, rather than skipping it.
 
-There are **39 live cases** (including 4 TUI journeys) and **3 installation
+There are **39 live cases** (including 4 TUI journeys) and **5 installation
 checks** with both agents. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
@@ -144,7 +150,7 @@ The old focused checks are now descriptive CUJs with setup and outcomes visible
 in each test. Duplicate boot-only checks are incorporated into the Databricks
 configuration TUI journeys. Real failures, including generated
 config left after revert and banners on app-server stdout, remain assertions.
-MCP/skills functionality, tracing, the broad configure-option matrix, and other
+Live MCP/skills functionality, tracing, the broad configure-option matrix, and other
 agents are outside this focused revision.
 
 ## Reproduce a failure
@@ -404,7 +410,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 39 live cases. For the three installation checks, run the same
+This runs all 39 live cases. For the five installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

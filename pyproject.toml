@@ -18,7 +18,7 @@ dependencies = [
   # transitively by mcp itself); `ucode.mcp_proxy` selects whichever the
   # installed SDK uses at runtime, so no direct httpx2 dependency is declared.
   "httpx>=0.27.1",
-  # `ucode mcp-proxy` bridges a client's stdio MCP transport to a Databricks
+  # `ug mcp-proxy` bridges a client's stdio MCP transport to a Databricks
   # streamable-HTTP MCP endpoint, injecting a freshly-minted OAuth bearer per
   # request, via the SDK's stdio server + streamable-HTTP client. Works against
   # both mcp 1.x (httpx) and mcp 2.x (httpx2) — see mcp_proxy for the shared path.

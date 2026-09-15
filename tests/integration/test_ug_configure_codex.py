@@ -1,5 +1,8 @@
 """CUJs: configure Codex through ug, then use its real interactive session."""
 
+import tomllib
+from pathlib import Path
+
 import pytest
 from utils.evidence import FileTask
 from utils.terminal import AgentTerminal, ConfigureTerminal
@@ -13,6 +16,7 @@ def test_ug_configure_codex_databricks(live_session, workspace):
 
     Expected: configure succeeds, Codex returns a file value through the real
     gateway, exits normally, and can reopen the configuration ug created.
+    The generated auth helper uses ug and prints only the supplied bearer.
     Optional AI Tools are disabled; the selected agent version is kept pinned.
     """
     session = live_session
@@ -29,6 +33,16 @@ def test_ug_configure_codex_databricks(live_session, workspace):
         timeout=240,
     )
     assert not session.workspace_state().get("provider_services", {}).get("codex")
+
+    config = tomllib.loads((session.home / ".codex/ucode.config.toml").read_text())
+    helper = config["model_providers"][config["model_provider"]]["auth"]
+    assert Path(helper["command"]) == session.binary.with_name("ug")
+    assert helper["args"][0] == "auth-token"
+    token_result = session.run(
+        *helper["args"], binary=helper["command"], strip_ansi=False, timeout=30
+    )
+    assert token_result.stdout == "<redacted>\n"
+    assert token_result.stderr == ""
 
     with AgentTerminal(session, "codex", [str(session.binary), "codex"], "first-session") as tui:
         tui.boot()

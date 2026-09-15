@@ -1,4 +1,4 @@
-"""Tests for the `ucode mcp-proxy` stdio<->streamable-HTTP bridge."""
+"""Tests for the `ug mcp-proxy` stdio<->streamable-HTTP bridge."""
 
 from __future__ import annotations
 
@@ -377,7 +377,7 @@ class TestServe:
 
         assert excinfo.value.code == mcp_proxy.AUTH_FAILURE_EXIT_CODE
         captured = capsys.readouterr()
-        assert captured.err == "ucode mcp-proxy: upstream MCP transport closed unexpectedly\n"
+        assert captured.err == "ug mcp-proxy: upstream MCP transport closed unexpectedly\n"
         assert captured.out == ""
 
     def test_non_auth_failures_still_propagate(self, monkeypatch):

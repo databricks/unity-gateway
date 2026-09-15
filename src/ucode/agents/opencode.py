@@ -88,7 +88,7 @@ async function mintToken() {
     cacheToken(token)
   } catch (error) {
     const detail = String(error.stderr || error.message || "").trim()
-    throw new Error("ucode auth-token failed" + (detail ? ": " + detail : ""))
+    throw new Error("ug auth-token failed" + (detail ? ": " + detail : ""))
   }
 }
 
@@ -327,7 +327,7 @@ def write_tool_config(
 
 def build_mcp_server_entry(argv: list[str]) -> dict:
     # A `local` MCP server runs a command over stdio; `command` is the full
-    # argv. ucode registers the `ucode mcp-proxy ...` bridge here so OpenCode
+    # argv. ug registers the `ug mcp-proxy ...` bridge here so OpenCode
     # never speaks HTTP+bearer directly — the proxy mints fresh tokens itself.
     return {
         "type": "local",

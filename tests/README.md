@@ -15,6 +15,8 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 and checks their version output against the `unity-gateway` distribution metadata.
 `TestUpgrade` in `test_cli.py` covers both command names before, during, and after
 the distribution rename with mocked installer calls, including failure recovery guidance.
+Agent configuration tests also verify `ug` auth/MCP helper commands, including
+quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
 ## CUJ coverage matrix
 
@@ -26,9 +28,9 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 
 | Test | User action | Expected evidence |
 | --- | --- | --- |
-| `test_ug_configure_claude_databricks` | Configure Databricks Hosted; open Claude TUI and read a file | Assistant returns an unpredictable file value; normal exit; reopen with working keyboard input |
+| `test_ug_configure_claude_databricks` | Configure Databricks Hosted; execute the generated auth helper; open Claude TUI and read a file | Generated helper invokes `ug` with clean token stdout; assistant returns an unpredictable file value; normal exit; reopen with working keyboard input |
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task; normal exit |
-| `test_ug_configure_codex_databricks` | Configure Databricks Hosted; open Codex TUI and read a file | Completed assistant answer contains the file value; normal exit and reopen |
+| `test_ug_configure_codex_databricks` | Configure Databricks Hosted; execute the generated auth helper; open Codex TUI and read a file | Generated helper invokes `ug` with clean token stdout; completed assistant answer contains the file value; normal exit and reopen |
 | `test_ug_configure_codex_openai_mps` | Select OpenAI MPS in the real configure picker; launch Codex | Saved provider in status; completed TUI file task; normal exit |
 | `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
@@ -45,9 +47,11 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_installed_wheel_exposes_help_and_version` | Invoke freshly installed console command | Package version matches; public help works |
 | `test_ug_status_in_fresh_home_is_unconfigured` | Request status before configure | Unconfigured status |
 | `test_ug_auth_without_configuration_explains_how_to_configure` | Request auth before configure | Actionable setup error and nonzero exit |
+| `test_ug_and_ucode_auth_helpers_emit_only_the_supplied_bearer` | Run both auth helper commands with the public bearer override, with and without forced refresh | Exact token-only stdout, no warnings or ANSI escapes; no workspace authentication or saved state |
+| `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
 With both agents selected there are **39 live cases** (4 interactive TUI cases)
-and **3 installation checks**. Parametrization varies argument spelling or routing
+and **5 installation checks**. Parametrization varies argument spelling or routing
 mode, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
 Generated-file cleanup and strict app-server stdout assertions remain enforced.
@@ -93,7 +97,7 @@ pending. The descriptive jobs provide the actual coverage and diagnostics.
 
 | Scenario | Status / requirement |
 | --- | --- |
-| MCP and skills functionality | Deferred at the user's request; existing `mcp --help` dispatch checks only |
+| Live MCP and skills functionality | Deferred; installation tests cover the local web-search MCP handshake and tool listing, not upstream proxying or a real search request |
 | Broad configure flags, tracing, multiple workspaces, OAuth/PAT flows | Deferred while focusing on basic CUJs |
 | Provider switching, relayed/subscription MPS | Not covered by the four provider journeys |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |

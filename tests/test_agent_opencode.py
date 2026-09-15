@@ -68,23 +68,12 @@ class TestOpencodeSpec:
 
 class TestAuthPlugin:
     def test_calls_cross_platform_auth_token_helper_only_when_refreshing(self, monkeypatch):
-        monkeypatch.setattr(
-            opencode,
-            "build_auth_token_argv",
-            lambda workspace, profile, use_pat=False: [
-                "/opt/ucode",
-                "auth-token",
-                "--host",
-                workspace,
-                "--profile",
-                profile,
-            ],
-        )
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/opt/{command}")
 
         plugin = opencode.render_auth_plugin({"workspace": WS, "profile": "my profile"})
 
         assert (
-            'const AUTH_COMMAND = ["/opt/ucode", "auth-token", "--host", '
+            'const AUTH_COMMAND = ["/opt/ug", "auth-token", "--host", '
             f'"{WS}", "--profile", "my profile", "--force-refresh"]'
         ) in plugin
         assert "run(AUTH_COMMAND[0], AUTH_COMMAND.slice(1)" in plugin

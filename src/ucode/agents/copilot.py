@@ -107,7 +107,7 @@ def build_runtime_env(workspace: str, model: str, token: str) -> dict[str, str]:
 
 def build_mcp_server_entry(argv: list[str]) -> dict:
     # A `local` MCP server runs a stdio command; `command`/`args` split the
-    # argv. ucode registers the `ucode mcp-proxy ...` bridge here so Copilot
+    # argv. ug registers the `ug mcp-proxy ...` bridge here so Copilot
     # never speaks HTTP+bearer directly — the proxy handles token refresh. The
     # OAUTH_TOKEN env Copilot still injects at launch is for MODEL auth, not MCP.
     return {

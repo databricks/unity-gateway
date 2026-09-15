@@ -285,7 +285,8 @@ def main() -> int:
 
         if wheel:
             report["wheel_sha256"] = hashlib.sha256(wheel.read_bytes()).hexdigest()
-        package = str(wheel) if wheel else f"unity-gateway=={args.ug_version}"
+        # File URIs preserve spaces in paths parsed by uv's requirement options.
+        package = wheel.as_uri() if wheel else f"unity-gateway=={args.ug_version}"
         constraints = output / "requested-constraints.txt"
         constraints.write_text(
             (args.constraints.read_text() if args.constraints else "")
@@ -302,7 +303,7 @@ def main() -> int:
                 "--default-index",
                 args.default_index,
                 "--constraint",
-                constraints,
+                constraints.as_uri(),
                 package,
             ]
         )

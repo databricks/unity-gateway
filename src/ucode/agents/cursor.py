@@ -4,7 +4,7 @@ Cursor is an MCP-only integration. `cursor-agent` runs models on the user's own
 Cursor account and exposes no gateway base URL, so ucode configures no models
 for it (it stays out of `agents.__init__._MODULES`). What ucode does is register
 Databricks MCP servers in Cursor's config, using the same uniform mechanism as
-every other client: a local **stdio** server that runs `ucode mcp-proxy`, which
+every other client: a local **stdio** server that runs `ug mcp-proxy`, which
 bridges to the Databricks MCP endpoint and mints a fresh OAuth token per request
 (see `ucode.mcp_proxy`). So Cursor needs no token in its config and no launch-
 time token export — `cursor-agent` just spawns the proxy like any stdio server.
@@ -29,7 +29,7 @@ CURSOR_MCP_CONFIG_PATH = CURSOR_CONFIG_DIR / "mcp.json"
 
 def build_mcp_server_entry(argv: list[str]) -> dict:
     # Cursor's stdio MCP schema: `command` + `args`. ucode registers the
-    # `ucode mcp-proxy ...` bridge here so the proxy handles auth/refresh.
+    # `ug mcp-proxy ...` bridge here so the proxy handles auth/refresh.
     return {
         "command": argv[0],
         "args": list(argv[1:]),
@@ -52,7 +52,7 @@ def _upsert_mcp_server(name: str, entry: dict) -> bool:
 
 
 def write_mcp_server_config(name: str, argv: list[str]) -> bool:
-    """Add (or replace) a stdio (`ucode mcp-proxy`) MCP server in ~/.cursor/mcp.json."""
+    """Add (or replace) a stdio (`ug mcp-proxy`) MCP server in ~/.cursor/mcp.json."""
     return _upsert_mcp_server(name, build_mcp_server_entry(argv))
 
 
@@ -94,7 +94,7 @@ def launch(state: dict, tool_args: list[str]) -> None:
     """Hand the terminal to `cursor-agent`.
 
     No token wiring here: the Databricks MCP servers in ~/.cursor/mcp.json run
-    `ucode mcp-proxy`, which authenticates itself, so `ucode cursor` is a thin
+    `ug mcp-proxy`, which authenticates itself, so `ug cursor` is a thin
     convenience wrapper over `cursor-agent` (kept for symmetry with the other
     `ucode <agent>` launchers)."""
     exec_or_spawn([CURSOR_BINARY, *tool_args])

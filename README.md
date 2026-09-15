@@ -2,6 +2,8 @@
 
 Existing `ucode` commands continue to work unchanged. Going forward, the CLI is named Unity
 Gateway and its primary command is `ug`; `ucode` remains a supported alias.
+New and regenerated agent configurations use `ug` for authentication helpers,
+MCP bridges, and routing hooks. Existing helpers that invoke `ucode` remain supported.
 
 Unity Gateway is a lightweight launcher for running Codex, Claude Code, Gemini CLI, OpenCode,
 GitHub Copilot CLI, and Pi through Databricks.

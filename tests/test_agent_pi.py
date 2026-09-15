@@ -511,12 +511,11 @@ class TestBuildPiApiKey:
     """Pi resolves a leading-`!` config value as a command before every provider
     request, so the apiKey is that command rather than a baked bearer."""
 
-    def test_is_a_pi_command_value_running_auth_token(self):
+    def test_is_a_pi_command_value_running_auth_token(self, monkeypatch):
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/tools/{command}")
         api_key = pi.build_pi_api_key({"workspace": WS})
 
-        assert api_key.startswith("!")
-        assert "auth-token" in api_key
-        assert f"--host {WS}" in api_key
+        assert api_key == f"!/tools/ug auth-token --host {WS}"
 
     def test_omits_force_refresh(self):
         # Pi has no token cache on this path, so --force-refresh would round-trip

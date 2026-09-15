@@ -1,5 +1,9 @@
 """CUJs: configure Claude through ug, then use its real interactive session."""
 
+import json
+import shlex
+from pathlib import Path
+
 import pytest
 from utils.evidence import FileTask
 from utils.terminal import AgentTerminal, ConfigureTerminal
@@ -13,6 +17,7 @@ def test_ug_configure_claude_databricks(live_session, workspace):
 
     Expected: configure succeeds, Claude returns a file value through the real
     gateway, exits normally, and can reopen the configuration ug created.
+    The generated auth helper uses ug and prints only the supplied bearer.
     Optional AI Tools are disabled; the selected agent version is kept pinned.
     """
     session = live_session
@@ -30,6 +35,14 @@ def test_ug_configure_claude_databricks(live_session, workspace):
         timeout=240,
     )
     assert not session.workspace_state().get("provider_services", {}).get("claude")
+
+    settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
+    helper = shlex.split(settings["apiKeyHelper"])
+    assert Path(helper[0]) == session.binary.with_name("ug")
+    assert helper[1] == "auth-token"
+    token_result = session.run(*helper[1:], binary=helper[0], strip_ansi=False, timeout=30)
+    assert token_result.stdout == "<redacted>\n"
+    assert token_result.stderr == ""
 
     # Use the real TUI; a config file or startup banner alone is not success.
     with AgentTerminal(session, "claude", [str(session.binary), "claude"], "first-session") as tui:

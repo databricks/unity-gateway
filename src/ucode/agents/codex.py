@@ -198,7 +198,7 @@ def _provider_block(
         "base_url": base_url,
         "wire_api": "responses",
         "http_headers": http_headers,
-        # Run the `ucode auth-token` executable directly (not via `sh -c`) so the
+        # Run the `ug auth-token` executable directly (not via `sh -c`) so the
         # helper works on Windows, where there is no POSIX shell (issue #116).
         "auth": {
             "command": auth_argv[0],
