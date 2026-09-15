@@ -273,10 +273,12 @@ class TestDiscoverClaudeModels:
         assert models["opus"] == "databricks-claude-opus-4-8"
 
     def test_preserves_opus_5_when_opus_4_8_is_also_available(self, monkeypatch):
-        payload = {"data": [
-            {"id": "system.ai.claude-opus-5"},
-            {"id": "system.ai.claude-opus-4-8"},
-        ]}
+        payload = {
+            "data": [
+                {"id": "system.ai.claude-opus-5"},
+                {"id": "system.ai.claude-opus-4-8"},
+            ]
+        }
         monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (payload, None))
 
         models, reason = db_mod.discover_claude_models(WS, "token")

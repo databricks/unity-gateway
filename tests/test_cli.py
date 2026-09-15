@@ -581,7 +581,9 @@ class TestSubcommandRouting:
         assert mock_launch.call_args.kwargs["refresh"] is True
 
     @pytest.mark.parametrize("smart_routing", ["0", "1"])
-    def test_codex_forwarded_model_is_not_printed_in_launch_summary(self, monkeypatch, smart_routing):
+    def test_codex_forwarded_model_is_not_printed_in_launch_summary(
+        self, monkeypatch, smart_routing
+    ):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", smart_routing)
         state = {
             **MINIMAL_STATE,
