@@ -26,7 +26,6 @@ from concurrent.futures import (
 )
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from enum import Enum
 from pathlib import Path
 from typing import Literal, NamedTuple, NoReturn, cast, overload
 from urllib import error as urllib_error
@@ -34,10 +33,6 @@ from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
 from ucode.config_io import APP_DIR
-from ucode.constants import (
-    MODEL_PROVIDER_SERVICE_HEADER,
-    MODEL_SERVICE_PARENT_SCHEMA_HEADER,
-)
 from ucode.ui import (
     err_console,
     normalize_workspace_url,
@@ -84,12 +79,7 @@ class AnthropicModelCatalog:
 
 
 class CodexMpsModelCatalogUnavailable(RuntimeError):
-    """The workspace does not expose the Codex model-catalog route."""
-
-
-class CodexCatalogSource(Enum):
-    PROVIDER = (MODEL_PROVIDER_SERVICE_HEADER, "Provider")
-    PARENT_SCHEMA = (MODEL_SERVICE_PARENT_SCHEMA_HEADER, "Parent schema")
+    """The workspace does not expose the Codex MPS model-catalog route."""
 
 
 def _debug_enabled() -> bool:
@@ -3040,29 +3030,22 @@ def build_tool_base_url(tool: str, workspace: str) -> str:
     raise RuntimeError(f"Unsupported tool '{tool}'.")
 
 
-def _fetch_codex_model_catalog(
-    workspace: str,
-    token: str,
-    *,
-    source: CodexCatalogSource,
-    identifier: str,
-) -> dict:
-    header_name, kind = source.value
+def fetch_codex_mps_model_catalog(workspace: str, token: str, provider: str) -> dict:
     payload, reason = _http_get_json(
         f"{build_tool_base_url('codex', workspace)}/models",
         token,
         max_retries=2,
-        headers={header_name: identifier},
+        headers={"Databricks-Model-Provider-Service": provider},
     )
     if reason:
-        message = f"Could not discover Codex models for {identifier}: {reason}"
+        message = f"Could not discover Codex models for {provider}: {reason}"
         if "codex/v1/models is not enabled for this workspace" in reason.lower():
             raise CodexMpsModelCatalogUnavailable(message)
         raise RuntimeError(message)
     if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
-        raise RuntimeError(f"{kind} {identifier} returned an invalid Codex model catalog.")
+        raise RuntimeError(f"Provider {provider} returned an invalid Codex model catalog.")
     if not payload["models"]:
-        raise RuntimeError(f"{kind} {identifier} returned no Codex models.")
+        raise RuntimeError(f"Provider {provider} returned no Codex models.")
     return payload
 
 

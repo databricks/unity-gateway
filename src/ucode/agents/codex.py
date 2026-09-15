@@ -40,11 +40,10 @@ from ucode.custom_oauth import (
     get_custom_client_token,
 )
 from ucode.databricks import (
-    CodexCatalogSource,
     CodexMpsModelCatalogUnavailable,
-    _fetch_codex_model_catalog,
     build_auth_token_argv,
     build_tool_base_url,
+    fetch_codex_mps_model_catalog,
     get_databricks_token,
 )
 from ucode.launcher import exec_or_spawn
@@ -76,7 +75,7 @@ CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"
 CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / f"{CODEX_PROFILE_NAME}.config.toml"
 CODEX_BACKUP_PATH = APP_DIR / "codex-ucode-config.backup.toml"
-CODEX_MODEL_CATALOG_PATH = APP_DIR / "codex-model-catalog.json"
+CODEX_MPS_MODEL_CATALOG_PATH = APP_DIR / "codex-mps-model-catalog.json"
 LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
 CODEX_MODEL_PROVIDER_NAME = "Databricks"
@@ -589,14 +588,6 @@ def clear_model_preferences(state: dict) -> bool:
 
 
 def _set_provider_header(config: dict, provider: str | None) -> None:
-    _set_routing_header(config, MODEL_PROVIDER_SERVICE_HEADER, provider)
-
-
-def _set_parent_schema_header(config: dict, parent_schema: str | None) -> None:
-    _set_routing_header(config, MODEL_SERVICE_PARENT_SCHEMA_HEADER, parent_schema)
-
-
-def _set_routing_header(config: dict, header: str, value: str | None) -> None:
     model_providers = config.get("model_providers")
     if not isinstance(model_providers, dict):
         return
@@ -607,16 +598,16 @@ def _set_routing_header(config: dict, header: str, value: str | None) -> None:
     if not isinstance(headers, dict):
         provider_block["http_headers"] = {}
         headers = provider_block["http_headers"]
-    if value:
-        headers[header] = value
+    if provider:
+        headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
     else:
-        headers.pop(header, None)
+        headers.pop(MODEL_PROVIDER_SERVICE_HEADER, None)
 
 
-def _model_catalog_path(workspace: str, scope: str) -> Path:
-    key = f"{workspace.rstrip('/')}\0{scope}".encode()
+def _model_catalog_path(workspace: str, provider: str) -> Path:
+    key = f"{workspace.rstrip('/')}\0{provider}".encode()
     digest = hashlib.sha256(key).hexdigest()[:16]
-    base = CODEX_MODEL_CATALOG_PATH
+    base = CODEX_MPS_MODEL_CATALOG_PATH
     return base.with_name(f"{base.stem}-{digest}{base.suffix}")
 
 
@@ -653,7 +644,7 @@ def _launch_token(state: dict, workspace: str) -> str:
     return get_databricks_token(workspace, state.get("profile"))
 
 
-def _reject_managed_model_catalog() -> None:
+def _reject_managed_mps_catalog() -> None:
     path = codex_managed_config_path()
     if path is None:
         return
@@ -666,8 +657,8 @@ def _reject_managed_model_catalog() -> None:
         raise RuntimeError(f"Cannot read Codex managed settings at {path}: {exc}") from exc
     if "model_catalog_json" in managed:
         raise RuntimeError(
-            f"Codex managed settings at {path} define model_catalog_json, which overrides "
-            "model discovery. Remove it or contact your administrator."
+            f"Codex managed settings at {path} define model_catalog_json, which overrides MPS "
+            "discovery. Remove it or contact your administrator."
         )
 
 
@@ -689,14 +680,8 @@ def launch(
         if isinstance(launch_provider, str) and launch_provider.strip()
         else get_provider_service(state, "codex")
     )
-    launch_parent_schema = state.get("_codex_launch_parent_schema")
-    parent_schema = (
-        launch_parent_schema.strip()
-        if isinstance(launch_parent_schema, str) and launch_parent_schema.strip()
-        else None
-    )
-    if workspace and (provider or parent_schema):
-        _reject_managed_model_catalog()
+    if workspace and provider:
+        _reject_managed_mps_catalog()
     token = None
     if workspace:
         token = _launch_token(state, workspace)
@@ -720,29 +705,13 @@ def launch(
             "is missing or empty. Run `ucode configure --agents codex` first."
         )
     _set_provider_header(profile_doc, provider)
-    _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
-    if workspace and token and (provider or parent_schema):
+    if workspace and token and provider:
         try:
-            if provider is not None:
-                catalog_source = CodexCatalogSource.PROVIDER
-                catalog_identifier = provider
-                catalog_scope = f"provider:{provider}"
-            elif parent_schema is not None:
-                catalog_source = CodexCatalogSource.PARENT_SCHEMA
-                catalog_identifier = parent_schema
-                catalog_scope = f"parent:{parent_schema}"
-            else:
-                raise RuntimeError("Codex model discovery requires a provider or parent schema.")
-            catalog = _fetch_codex_model_catalog(
-                workspace,
-                token,
-                source=catalog_source,
-                identifier=catalog_identifier,
-            )
+            catalog = fetch_codex_mps_model_catalog(workspace, token, provider)
         except CodexMpsModelCatalogUnavailable:
             pass
         else:
-            catalog_path = _model_catalog_path(workspace, catalog_scope)
+            catalog_path = _model_catalog_path(workspace, provider)
             _write_model_catalog(catalog_path, catalog)
             profile_doc["model_catalog_json"] = str(catalog_path)
     exec_or_spawn([binary, *codex_config_args(profile_doc), *tool_args])
