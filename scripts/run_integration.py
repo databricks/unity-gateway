@@ -72,6 +72,11 @@ def arguments():
         help="Existing Anthropic MPS selected in the configure CUJ.",
     )
     parser.add_argument(
+        "--claude-relayed-provider",
+        default="main.ucode.ci_e2e_anthropic_relay_mps",
+        help="Existing relayed (subscription-relay) Anthropic MPS for the hybrid-routing CUJ.",
+    )
+    parser.add_argument(
         "--codex-provider",
         default="main.ucode.ci_openai_mps",
         help="Existing OpenAI MPS selected in the configure CUJ.",
@@ -202,9 +207,15 @@ def main() -> int:
     base_env["UV_CACHE_DIR"] = str(output / "cache")
     base_env["UV_DEFAULT_INDEX"] = args.default_index
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
+    # The relayed hybrid CUJ forwards the subscription OAuth token to the session; keep it
+    # out of logs and the archived report just like the bearer.
+    oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
 
     def redact(value: str) -> str:
-        return value.replace(bearer, "<redacted>") if bearer else value
+        for secret in (bearer, oauth_token):
+            if secret:
+                value = value.replace(secret, "<redacted>")
+        return value
 
     def run(command, *, cwd=output, env=base_env, timeout=600) -> str:
         timed_out = False
@@ -240,6 +251,7 @@ def main() -> int:
             "claude_model": args.claude_model,
             "codex_model": args.codex_model,
             "claude_provider": args.claude_provider,
+            "claude_relayed_provider": args.claude_relayed_provider,
             "codex_provider": args.codex_provider,
             "codex_provider_model": args.codex_provider_model,
             "dependencies": args.dependency,
@@ -464,6 +476,10 @@ def main() -> int:
                 "UG_INTEGRATION_RUN_DIR": str(output),
                 "UG_INTEGRATION_AGENTS": ",".join(agents),
                 "UG_INTEGRATION_CLAUDE_PROVIDER": args.claude_provider,
+                "UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER": args.claude_relayed_provider,
+                # The relayed CUJ reads this and injects it as CLAUDE_CODE_OAUTH_TOKEN for that
+                # session only; a distinct name keeps non-relayed sessions from seeing it.
+                "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN": oauth_token,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
