@@ -28,6 +28,10 @@ SPAWN_AGENT_TOOL_SUFFIX = "spawn_agent"
 CANARY_PATH = APP_DIR / "codex-smart-routing-canary.json"
 AUDIT_PATH = APP_DIR / "codex-smart-routing-audit.jsonl"
 DECISIONS_PATH = APP_DIR / "codex-smart-routing-decisions.jsonl"
+SUBAGENT_NOTICE_CONFIG = routing.SubagentNoticeConfig(
+    name_field="task_name",
+    prompt_field="message",
+)
 
 _GPT_RE = re.compile(r"gpt-(\d+)(?:[.-](\d+))?(?:[.-](\d+))?(-.+|[a-z].*)?")
 
@@ -100,6 +104,7 @@ def route_pre_tool_use(
         ),
         default_task_label="Codex subagent task",
         model_id_mapper=codex_model_id,
+        notice_config=SUBAGENT_NOTICE_CONFIG,
         record_decision=record,
     )
 

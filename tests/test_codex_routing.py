@@ -183,10 +183,13 @@ def test_spawn_rewrite_preserves_original_input(monkeypatch):
     )
 
     hook = output["hookSpecificOutput"]
-    # The rationale is surfaced in BOTH the systemMessage (shown to the user) and
-    # permissionDecisionReason, so the "why" is visible, not just the "what".
-    expected_message = codex_routing.routing.format_subagent_message(
-        "gpt-5.5", "Review needs deeper reasoning."
+    expected_message = (
+        "┌───────────────────────────────────────────────────────────────────────────┐\n"
+        "│ Using Unity Gateway Smart Router - Subagent                               │\n"
+        "│ Subagent : reviewer                                                       │\n"
+        "│ Selected Model : gpt-5.5                                                  │\n"
+        "│ Reason : Review needs deeper reasoning.                                   │\n"
+        "└───────────────────────────────────────────────────────────────────────────┘"
     )
     assert output["systemMessage"] == expected_message
     assert "Using Unity Gateway Smart Router - Subagent" in expected_message
@@ -224,9 +227,14 @@ def test_spawn_rewrite_uses_codex_model_id_for_uc_endpoint(monkeypatch):
         available_models=["system.ai.gpt-5-6-luna"],
     )
 
-    assert output["systemMessage"] == codex_routing.routing.format_subagent_message(
-        "gpt-5.6-luna", ""
+    expected_message = (
+        "┌───────────────────────────────────────────────────────────────────────────┐\n"
+        "│ Using Unity Gateway Smart Router - Subagent                               │\n"
+        "│ Subagent : routing-smoke-test                                             │\n"
+        "│ Selected Model : gpt-5.6-luna                                             │\n"
+        "└───────────────────────────────────────────────────────────────────────────┘"
     )
+    assert output["systemMessage"] == expected_message
     assert output["hookSpecificOutput"]["updatedInput"]["model"] == "gpt-5.6-luna"
 
 

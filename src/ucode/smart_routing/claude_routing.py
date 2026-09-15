@@ -29,6 +29,11 @@ SPAWN_AGENT_TOOL_NAMES = ("agent", "task")
 CANARY_PATH = APP_DIR / "claude-smart-routing-canary.json"
 AUDIT_PATH = APP_DIR / "claude-smart-routing-audit.jsonl"
 DECISIONS_PATH = APP_DIR / "claude-smart-routing-decisions.jsonl"
+SUBAGENT_NOTICE_CONFIG = routing.SubagentNoticeConfig(
+    name_field="subagent_type",
+    prompt_field="prompt",
+    display_model_mapper=routing.unwrap_anthropic_gateway_model,
+)
 
 _normalize_model = routing.normalize_model
 
@@ -125,6 +130,7 @@ def route_pre_tool_use(
         ),
         default_task_label="Claude Code subagent task",
         model_id_mapper=_claude_model_id,
+        notice_config=SUBAGENT_NOTICE_CONFIG,
         record_decision=record,
     )
 
