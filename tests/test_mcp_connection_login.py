@@ -31,6 +31,11 @@ class TestConnectionFromUrl:
 class TestRunConnectionLogin:
     def _fake_run(self, captured, *, returncode, stderr=""):
         def _run(argv, **kwargs):
+            # The `--resource`-support pre-check runs `auth login --help` first.
+            if "--help" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout="--resource stringArray", stderr=""
+                )
             captured.append(argv)
             return subprocess.CompletedProcess(argv, returncode, stdout="", stderr=stderr)
 
@@ -64,11 +69,14 @@ class TestRunConnectionLogin:
         # stdout must never be captured to the proxy's stdout (the MCP wire); the
         # CLI's URL/prompts go to this process's stderr.
         seen: dict = {}
-        monkeypatch.setattr(
-            mcl.subprocess,
-            "run",
-            lambda argv, **kw: seen.update(kw) or subprocess.CompletedProcess(argv, 0),
-        )
+
+        def _run(argv, **kw):
+            if "--help" in argv:  # the --resource pre-check; not the login call under test
+                return subprocess.CompletedProcess(argv, 0, stdout="--resource", stderr="")
+            seen.update(kw)
+            return subprocess.CompletedProcess(argv, 0)
+
+        monkeypatch.setattr(mcl.subprocess, "run", _run)
         ok, _ = mcl.run_connection_login(AIGW_URL, WS)
         assert ok
         assert seen.get("stdout") is mcl.sys.stderr
@@ -90,3 +98,18 @@ class TestRunConnectionLogin:
         monkeypatch.setattr(mcl.subprocess, "run", _run)
         ok, message = mcl.run_connection_login(AIGW_URL, WS)
         assert not ok and "could not run" in message
+
+    def test_old_cli_without_resource_flag_reports_clearly(self, monkeypatch):
+        # `auth login --help` lacking `--resource` => an old CLI (no databricks/cli#6621).
+        # We must report that clearly and never attempt the login (the flag would error).
+        def _run(argv, **kwargs):
+            if "--help" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout="usage: login [--host]", stderr=""
+                )
+            raise AssertionError("login must not run when --resource is unsupported")
+
+        monkeypatch.setattr(mcl.subprocess, "run", _run)
+        ok, message = mcl.run_connection_login(AIGW_URL, WS)
+        assert not ok
+        assert "--resource" in message and "Upgrade" in message
