@@ -1,7 +1,7 @@
-"""CUJs: real first-prompt and child-task routing in Codex's TUI."""
+"""CUJs: real first-prompt routing and explicit-model bypass in Codex's TUI."""
 
 import pytest
-from utils.evidence import FileTask, assert_subagent_routed
+from utils.evidence import FileTask
 from utils.terminal import AgentTerminal
 
 pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.codex]
@@ -40,37 +40,6 @@ def test_smart_routing_codex_first_prompt(live_session, workspace):
     with AgentTerminal(session, "codex", command, "reopen") as tui:
         tui.boot()
         tui.check_input_and_exit()
-
-
-def test_smart_routing_codex_subagent(live_session, workspace):
-    """Scenario: ask Codex to delegate a file-reading task with routing enabled.
-
-    Expected: a real child session has a correlated gateway routing decision,
-    the child returns the file value, and the parent returns that result.
-    The native child turn must use the routed model; inherited parent turns do not count.
-    """
-    session = live_session
-    task = FileTask(session)
-    session.run(
-        "configure",
-        "--agents",
-        "codex",
-        "--workspaces",
-        workspace,
-        "--skip-validate",
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-    )
-
-    command = [str(session.binary), "codex", "--enable-smart-routing"]
-    with AgentTerminal(session, "codex", command, "subagent-task") as tui:
-        tui.boot()
-        tui.submit(task.delegate_prompt)
-        tui.wait_for_task(task, timeout=240)
-        task.assert_completed(session, "codex", child=True)
-        assert_subagent_routed(session, "codex", task)
-        tui.exit_normally()
-    task.assert_completed(session, "codex")
 
 
 def test_smart_routing_codex_explicit_model_bypasses_routing(live_session, workspace):

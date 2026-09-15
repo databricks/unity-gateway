@@ -28,7 +28,6 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_smart_routing_claude_first_prompt` | Enable routing and type the first TUI prompt | Real routing decision and replay; completed task; no routing before submission; reopen |
 | `test_smart_routing_codex_first_prompt` | Enable routing and type the first TUI prompt | Real routing decision; completed task; no fallback or routing before submission; reopen |
 | `test_smart_routing_claude_subagent` | Delegate a file-reading task | Child answer, correlated routing decision/child start, parent answer |
-| `test_smart_routing_codex_subagent` | Delegate a file-reading task | Native child-parent linkage; completed child turn uses the routed model; parent answer |
 | `test_smart_routing_claude_explicit_model_bypasses_routing` | Launch TUI with an explicit model and routing enabled | Completed task, no routing wrapper, normal exit and reopen |
 | `test_smart_routing_codex_explicit_model_bypasses_routing` | Launch TUI with an explicit model and routing enabled | Completed task, no routing wrapper, normal exit and reopen |
 | `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |
@@ -47,7 +46,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_status_in_fresh_home_is_unconfigured` | Request status before configure | Unconfigured status |
 | `test_ug_auth_without_configuration_explains_how_to_configure` | Request auth before configure | Actionable setup error and nonzero exit |
 
-With both agents selected there are **45 live cases** (10 interactive TUI cases)
+With both agents selected there are **44 live cases** (9 interactive TUI cases)
 and **3 installation checks**. Parametrization varies argument spelling or routing
 mode, never hides the agent/provider in the test name. Duplicate boot-only cases
 were merged into the Databricks, first-prompt, and explicit-model TUI journeys.
@@ -63,7 +62,7 @@ than consuming `uv.lock`. Use `--dependency PACKAGE==VERSION` or replay the arch
 dependency graph to reproduce a user's combination. Every relevant same-repository
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI and headless argument journeys for both agents,
-in two parallel jobs. The full suite runs all 45 cases across eight parallel jobs:
+in two parallel jobs. The full suite runs all 44 cases across eight parallel jobs:
 Claude/Codex × configure, routing, headless, and other commands/lifecycle checks.
 The `All integration tests` check requires every selected integration job to pass; full coverage
 does not depend on a label or a manual request.

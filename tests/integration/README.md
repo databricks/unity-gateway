@@ -81,7 +81,7 @@ All user journeys are top-level tests. There is no separate regressions category
 test_ug_configure_claude.py             # Databricks Hosted and Anthropic MPS
 test_ug_configure_codex.py              # Databricks Hosted and OpenAI MPS
 test_smart_routing_claude.py            # first prompt, subagent, explicit model
-test_smart_routing_codex.py             # first prompt, subagent, explicit model
+test_smart_routing_codex.py             # first prompt, explicit model
 test_ug_claude_headless.py              # script prompts, models, caller settings
 test_ug_codex_headless.py               # script prompts and model arguments
 test_ug_claude_commands.py              # command help forwarding
@@ -128,7 +128,7 @@ Use `--codex-provider-model` when that OpenAI service allows a different model.
 Those choices are recorded in `versions.json`. No service is created or modified.
 A missing service or permission fails the selected CUJ, rather than skipping it.
 
-There are **45 live cases** (including 10 TUI journeys) and **3 installation
+There are **44 live cases** (including 9 TUI journeys) and **3 installation
 checks** with both agents. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
@@ -196,7 +196,7 @@ workspace discovery inside each test; only explicit-model scenarios choose and
 record a discovered `system.ai` model as a test argument.
 Every relevant same-repository PR and push to `main` runs **Smoke journeys** and
 **Full journeys** concurrently. Smoke runs the Hosted configure/TUI and headless
-argument journey for each agent (four cases, two agent jobs). Full runs all 45
+argument journey for each agent (four cases, two agent jobs). Full runs all 44
 live cases, including those smoke cases, in eight disjoint shards:
 
 | Group, per agent | Marker | Keyword filter |
@@ -285,7 +285,7 @@ use the same OS/architecture as the original run; add `--platform linux/amd64`
 to both `docker build` and `docker run` on an ARM Mac to match GitHub's Ubuntu runner. Changing platforms or
 resolving a fresh npm lock is a new comparison, not an exact dependency replay.
 
-Use `-- -m tui` for the ten interactive journeys or
+Use `-- -m tui` for the nine interactive journeys or
 `-- -k test_smart_routing_codex_first_prompt` to narrow a failure. Each rerun needs a new output directory. Inspect:
 
 - `junit.xml` for the failing case and assertion.
