@@ -64,6 +64,11 @@ def _non_empty_str(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _is_safe_bundle_name(bundle_name: str) -> bool:
+    path = Path(bundle_name)
+    return len(path.parts) == 1 and path.parts[0] != ".." and not path.is_absolute()
+
+
 def _skill_ref(skill: dict) -> SkillRef | None:
     """A finalized skill's ``SkillRef``, or None if it cannot be downloaded.
 
@@ -91,6 +96,10 @@ def _skill_ref(skill: dict) -> SkillRef | None:
         print_warning(
             f"Skipping `{name or '<unnamed skill>'}`: the skills API returned no {missing}."
         )
+        return None
+
+    if not _is_safe_bundle_name(bundle_name):
+        print_warning(f"Skipping `{name}`: unsafe bundle name `{bundle_name}`.")
         return None
 
     parts = name.split("/", 1)[-1].split(".")

@@ -114,6 +114,32 @@ class TestListSchemaSkills:
         assert refs == []
         assert warnings == []
 
+    @pytest.mark.parametrize(
+        "bundle_name",
+        ["..", "../escape", "nested/../escape", "a/b", "/abs"],
+        ids=["dotdot", "parent-traversal", "embedded-traversal", "separator", "absolute"],
+    )
+    def test_skips_and_warns_on_unsafe_bundle_name(self, bundle_name, monkeypatch):
+        payload = {
+            "skills": [
+                {
+                    "name": "skills/main.default.pii-handling",
+                    "bundle_name": bundle_name,
+                    "finalize_time": "2026-06-26T05:58:25Z",
+                }
+            ]
+        }
+        monkeypatch.setattr(sd, "_http_get_json", lambda url, token, timeout=30: (payload, None))
+        warnings = []
+        monkeypatch.setattr(sd, "print_warning", warnings.append)
+
+        refs, reason = sd.list_schema_skills(WS, "token", "main", "default")
+
+        assert reason is None
+        assert refs == []
+        assert len(warnings) == 1
+        assert "unsafe bundle name" in warnings[0]
+
     def test_follows_pagination(self, monkeypatch):
         pages = [
             {
