@@ -2024,12 +2024,13 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 # Maps the gateway routing dialect a coding tool speaks to the Model Provider
 # Service `provider_type`s it can be backed by. claude speaks Anthropic's API,
 # which both the `anthropic` and `amazon_bedrock` provider types serve (Bedrock
-# just exposes different model ids); codex speaks OpenAI's; gemini speaks
-# Google's, served by a Gemini Enterprise provider. Tags are the short form
-# produced by `_provider_type_tag` (e.g. `amazon_bedrock`).
+# just exposes different model ids); codex speaks OpenAI's, including Bedrock
+# services that expose OpenAI models; gemini speaks Google's, served by a
+# Gemini Enterprise provider. Tags are the short form produced by
+# `_provider_type_tag` (e.g. `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
     "claude": ("anthropic", "amazon_bedrock"),
-    "codex": ("openai",),
+    "codex": ("openai", "amazon_bedrock"),
     "gemini": ("gemini_enterprise",),
 }
 
@@ -2037,6 +2038,7 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
 # `us.anthropic.claude-sonnet-4-6`) instead of the agent's canonical model
 # names, so ucode must pin them explicitly.
 BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock",)
+_BEDROCK_OPENAI_MODEL_PREFIX = "openai."
 
 
 def tool_supports_provider_type(tool: str, provider_type: str) -> bool:
@@ -2255,16 +2257,24 @@ def list_tool_provider_services(
 def service_usable_for_tool(tool: str, service: dict) -> bool:
     """True when ``tool`` can actually route through ``service``.
 
-    Beyond the provider-type match, a Bedrock service is only usable for claude
-    if it exposes at least one Claude model in its targets — otherwise there's no
-    routable model id to pin. (Anthropic services use canonical names, so any
-    match is usable.)
+    Beyond the provider-type match, a Bedrock service must expose at least one
+    model for the tool's API dialect. Anthropic and OpenAI services use their
+    matching dialect directly, so any provider-type match is usable.
     """
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
         return False
     if provider_type in BEDROCK_PROVIDER_TYPES:
-        return bool(map_claude_family_models(service.get("targets") or []))
+        targets = service.get("targets") or []
+        if tool == "claude":
+            return bool(map_claude_family_models(targets))
+        if tool == "codex":
+            return any(
+                isinstance(model_id, str)
+                and model_id.lower().startswith(_BEDROCK_OPENAI_MODEL_PREFIX)
+                for model_id in targets
+            )
+        return False
     return True
 
 
@@ -2291,9 +2301,7 @@ def resolve_provider_service(
         # fetched directly. Only when that 404s is it really absent.
         match, get_reason = get_model_provider_service(service_name, workspace, token)
         if match is None:
-            usable = [
-                s["name"] for s in services if tool_supports_provider_type(tool, s["provider_type"])
-            ]
+            usable = [s["name"] for s in services if service_usable_for_tool(tool, s)]
             suffix = f" Available for {tool}: {', '.join(usable)}." if usable else ""
             detail = f" ({get_reason})" if get_reason and "404" not in get_reason else ""
             return None, f"Model provider service '{service_name}' was not found.{detail}{suffix}"
@@ -2304,12 +2312,11 @@ def resolve_provider_service(
             f"Model provider service '{service_name}' is a '{provider_type}' provider, "
             f"which {tool} can't route to (supported: {supported})."
         )
-    if provider_type in BEDROCK_PROVIDER_TYPES and not map_claude_family_models(
-        match.get("targets") or []
-    ):
+    if provider_type in BEDROCK_PROVIDER_TYPES and not service_usable_for_tool(tool, match):
+        model_kind = "Claude" if tool == "claude" else "OpenAI-compatible"
         return None, (
-            f"Model provider service '{service_name}' exposes no Claude models — "
-            f"add Claude targets to it or pick a different service."
+            f"Model provider service '{service_name}' exposes no {model_kind} models — "
+            f"add {model_kind} targets to it or pick a different service."
         )
     return match, None
 

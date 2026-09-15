@@ -727,6 +727,13 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.kwargs["refresh"] is True
 
+    def test_codex_enable_model_discovery_is_consumed_by_ucode(self):
+        with patch("ucode.cli._launch_tool") as mock_launch:
+            result = runner.invoke(app, ["codex", "--enable-model-discovery"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_launch.call_args.args[1].args == []
+
     @pytest.mark.parametrize("smart_routing", ["0", "1"])
     def test_codex_forwarded_model_is_not_printed_in_launch_summary(
         self, monkeypatch, smart_routing

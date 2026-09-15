@@ -71,8 +71,9 @@ def supports_provider_service(tool: str, provider_type: str) -> bool:
     """True when ``tool`` can route through a ``provider_type`` Model Provider Service.
 
     Thin pass-through to :func:`ucode.databricks.tool_supports_provider_type` so the wizard has one
-    obvious place to ask. Only claude (anthropic / amazon_bedrock) and codex (openai) have MPS
-    support today; the other harnesses are Databricks-hosted only.
+    obvious place to ask. Only claude (anthropic / amazon_bedrock) and codex
+    (openai / amazon_bedrock with OpenAI targets) have MPS support today; the
+    other harnesses are Databricks-hosted only.
     """
     return tool_supports_provider_type(tool, provider_type)
 
