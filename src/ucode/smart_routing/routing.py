@@ -146,6 +146,20 @@ class SubagentNoticeConfig:
         display_model = self.display_model_mapper(decision_model)
         return display_model if display_model != decision_model else routed_model
 
+    def message(
+        self,
+        decision: RoutingDecision,
+        routed_model: str,
+        tool_input: dict[str, Any],
+    ) -> str:
+        message = decision.display_message(
+            model_label=self.display_model(decision.model, routed_model),
+            is_subagent=True,
+            subagent_name=self.name(tool_input),
+            prompt=self.prompt(tool_input),
+        )
+        return f"\n{message}" if self.leading_newline else message
+
 
 def _nonempty_string(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
@@ -305,14 +319,11 @@ def route_spawn_tool(
     # Include the same routing notice in both hook response fields.
     # Claude launches OSS models with an `anthropic-aigw-...` alias, but the notice
     # displays the shorter `system.ai...` model ID.
-    routing_message = route.decision.display_message(
-        model_label=notice_config.display_model(route.decision.model, route.routed_model),
-        is_subagent=True,
-        subagent_name=notice_config.name(route.tool_input),
-        prompt=notice_config.prompt(route.tool_input),
+    routing_message = notice_config.message(
+        route.decision,
+        route.routed_model,
+        route.tool_input,
     )
-    if notice_config.leading_newline:
-        routing_message = f"\n{routing_message}"
     output: dict[str, Any] = {
         "hookEventName": "PreToolUse",
         "permissionDecision": "allow",

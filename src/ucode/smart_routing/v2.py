@@ -303,9 +303,10 @@ def route_claude_pre_tool_use(
             route.decision,
             route.routed_model,
         )
-    routing_message = routing.format_subagent_message(
+    routing_message = claude_routing.SUBAGENT_NOTICE_CONFIG.message(
+        route.decision,
         route.routed_model,
-        route.decision.rationale,
+        route.tool_input,
     )
     updated_input = {
         **{key: value for key, value in route.tool_input.items() if key != "model"},

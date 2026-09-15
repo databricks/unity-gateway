@@ -487,7 +487,11 @@ class TestSubagentRouting:
         output = v2.route_claude_pre_tool_use(
             {
                 "tool_name": "Agent",
-                "tool_input": {"prompt": "inspect the parser", "model": "sonnet"},
+                "tool_input": {
+                    "subagent_type": "Explore",
+                    "prompt": "inspect the parser",
+                    "model": "sonnet",
+                },
             },
             workspace="https://example.com",
             token="token",
@@ -512,9 +516,12 @@ class TestSubagentRouting:
         assert updated_input["subagent_type"] == v2._routed_claude_agent_name(
             "system.ai.claude-opus-4-8"
         )
-        expected_message = routing.format_subagent_message(
-            "system.ai.claude-opus-4-8",
-            "",
+        expected_message = (
+            "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
+            "│ Using Unity Gateway Smart Router - Subagent                               │\n"
+            "│ Subagent : Explore                                                        │\n"
+            "│ Selected Model : system.ai.claude-opus-4-8                                │\n"
+            "└───────────────────────────────────────────────────────────────────────────┘"
         )
         assert output["systemMessage"] == expected_message
         assert output["hookSpecificOutput"]["permissionDecisionReason"] == expected_message
