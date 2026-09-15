@@ -17,7 +17,7 @@ Pytest and the PTY/screen libraries (pexpect and pyte) live in a different virtu
 missing application dependency. No packages are installed into your existing
 agent installations or checkout's `.venv`.
 Native live runs refuse existing machine-wide Claude/Codex configuration, which
-could override the selected workspace even with a fresh home. Use the container
+could override the selected workspace even with a fresh home. Use a clean VM
 in that case; the runner never edits or bypasses those managed settings.
 
 Use the existing e2e workspace and its `DATABRICKS_BEARER` credential. Locally,
@@ -177,7 +177,8 @@ selection to installation checks, including when additional filters are used.
 
 ## Run in GitHub Actions
 
-The **Integration** workflow runs on relevant pull requests and pushes to `main`.
+The **CI** workflow calls **Integration** on pull requests and pushes to `main`,
+after its existing e2e shards finish (even if one fails).
 It runs directly on fresh GitHub Ubuntu VMs, not inside the optional Docker image.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
@@ -191,8 +192,8 @@ is accepted). It never changes the secret or switches workspaces. There is no CI
 model-discovery or model-selection job. Real `ug configure` performs its normal
 workspace discovery inside each test; only explicit-model scenarios choose and
 record a discovered `system.ai` model as a test argument.
-Every relevant same-repository PR and push to `main` runs **Smoke journeys** and
-**Full journeys** concurrently. Smoke runs the Hosted configure/TUI and headless
+Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
+**Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI and headless
 argument journey for each agent (four cases, two agent jobs). Full runs all 39
 live cases, including those smoke cases, in six disjoint shards:
 
@@ -205,10 +206,14 @@ live cases, including those smoke cases, in six disjoint shards:
 Each shard also selects `claude` or `codex` and installs only that CLI. The
 commands group includes lifecycle and app-server journeys. Cases remain serial
 inside each fresh VM because configure/revert can touch machine-level settings;
-parallel runners isolate those writes as well as the PTYs. Both matrices use
+separate runners isolate those writes as well as the PTYs. The six full shards
+run one at a time to avoid bursts against the shared workspace/model quota.
+Both matrices use
 `fail-fast: false` and upload uniquely named evidence even when another shard fails.
 The **All integration tests** check requires installation, workspace validation, smoke, and
-all full shards to pass. Full coverage on PRs needs no label or opt-in.
+all full shards to pass. The existing required `e2e` context also waits for the
+complete integration workflow, so integration cannot still be running when
+that gate passes. Full coverage on PRs needs no label or opt-in.
 
 Each job uses fresh consumer dependency resolution. There is no default dependency
 matrix. Manual dispatch accepts an
@@ -233,7 +238,7 @@ gh run watch RUN_ID -R databricks/unity-gateway --exit-status
 ```
 
 GitHub enables manual dispatch once the workflow exists on the default branch.
-Before this PR merges, its pull-request event runs the workflow. Missing
+Before this PR merges, CI's pull-request event calls the workflow. Missing
 credentials or a workspace mismatch fail the workspace job. Expired or invalid
 credentials fail the actual workspace calls. Those failures do not count as live
 test passes.
@@ -296,8 +301,18 @@ selectors only after confirming the agent's intended UI changed; do not seed its
 onboarding state or relax the prompt/task assertions. Test homes are deleted after
 each case; redacted diagnostics remain. For manual interaction, configure a fresh
 home with the same installed binaries and recorded public CLI arguments.
+Definitive API errors and the client's exhausted retry limit fail the TUI wait
+immediately with the actual screen. A transient 429/503 while the client is still
+retrying is not treated as terminal; the suite adds no task retries of its own.
 
 ## Colima / Docker
+
+Docker is an optional installation/command-check environment, not a guaranteed
+replacement for the native Linux live suite. Default Colima/Docker security
+policies can reject Codex's user namespaces; the image also lacks `sudo` needed
+by machine-level configure/revert journeys. Do not disable the agent sandbox or
+use privileged/unconfined containers to turn these into passing results. Use a
+clean Ubuntu 22.04 VM for the complete live run below.
 
 Colima provides the Linux Docker engine on macOS. The optional image pins the
 Python, Node, uv, and Databricks toolchain; the same runner selects ug and agent
@@ -318,7 +333,7 @@ docker run --rm --init \
   ug-integration \
   --ug-version YOUR_RELEASE_VERSION \
   --claude-version 2.1.268 --codex-version 0.154.0 \
-  -- -m live
+  --installation-only
 ```
 
 Use a new results volume for each run, or pass a new `--output /results/NAME`.
@@ -330,3 +345,63 @@ native runs also depend on the host's OS and toolchain.
 The explicit build archive includes only the runner and integration files, even
 with legacy Docker builders that ignore per-Dockerfile ignore rules. It also
 omits macOS extended attributes that Linux cannot unpack.
+
+### Complete local checkout run on the Databricks network
+
+Run from the checkout root in Bash on a clean Ubuntu 22.04 machine/VM with
+Python 3.12, uv 0.9.8, Node 22.19.0/npm, Databricks CLI 1.9.0, `sudo`, and
+`bubblewrap`. Install bubblewrap with `sudo apt-get install bubblewrap`. Verify
+the normal sandbox before starting:
+
+```bash
+bwrap --ro-bind / / --unshare-user --proc /proc --dev /dev /usr/bin/true
+```
+
+On macOS, Lima can supply a separate VM with no host mounts:
+
+```bash
+limactl start --name ug-integration --plain --cpus 2 --memory 4 --disk 12 \
+  --yes template:ubuntu-22.04
+limactl shell ug-integration
+```
+
+Install the prerequisites and copy/clone the checkout inside that VM. On recent
+Apple Silicon, the original Ubuntu 22.04 ARM kernel can crash `cryptography`
+with `Illegal instruction` before ug starts. Install Ubuntu's supported
+`linux-generic-hwe-22.04` package and restart the VM. Do not work around it by
+altering Python dependencies or weakening tests. Linux/ARM is not an exact
+replay of GitHub's Linux/AMD64 environment; the run records its actual platform.
+
+Use your authorized login and explicitly selected profile; never download CI
+secrets. The runner builds the checkout wheel and isolates the installed agents,
+ug, test dependencies, and per-case homes:
+
+```bash
+set -euo pipefail
+integration_profile=eng-ml-inference-team-us-east-1
+integration_workspace=https://eng-ml-inference-team-us-east-1.cloud.databricks.com
+integration_index=https://pypi-proxy.cloud.databricks.com/simple
+integration_registry=https://npm-proxy.cloud.databricks.com/
+
+# Keep this setting on both login and token retrieval when using plaintext storage.
+export DATABRICKS_AUTH_STORAGE=plaintext
+databricks auth login --host "$integration_workspace" --profile "$integration_profile"
+export DATABRICKS_BEARER
+DATABRICKS_BEARER=$(databricks auth token --host "$integration_workspace" \
+  --profile "$integration_profile" --output json | jq -er '.access_token | select(length > 0)')
+uv run --no-project --python 3.12 python scripts/run_integration.py \
+  --python 3.12 --ug-version checkout --workspace "$integration_workspace" \
+  --default-index "$integration_index" --npm-registry "$integration_registry" \
+  --claude-version 2.1.268 --codex-version 0.154.0 -- -m live
+unset DATABRICKS_BEARER
+```
+
+This runs all 39 live cases. For the three installation checks, run the same
+runner/version/index arguments with `--installation-only` and omit `-- -m live`;
+no bearer or workspace is needed. Results remain under `.integration-runs/`.
+Each invocation needs a new output directory; an existing one is rejected.
+The runner returns nonzero on installation or test failure.
+
+Do not drop the mirror flags if public registries resolve to `127.0.0.1` or return
+`ECONNREFUSED`. The runner deliberately ignores host `.npmrc` and resolver settings.
+Outside the Databricks network, use reachable package indexes explicitly instead.

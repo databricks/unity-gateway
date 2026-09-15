@@ -498,7 +498,11 @@ class TestCodexLaunch:
                 failures.append(f"model={model} timed out after {timeout_seconds}s")
                 continue
 
-            if result.returncode != 0 or not (result.stdout or result.stderr).strip():
+            if (
+                result.returncode != 0
+                or not result.stdout.strip()
+                or f"model: {codex.codex_model_id(model)}\n" not in result.stderr
+            ):
                 # Keep a generous tail of stderr. codex-cli logs a non-fatal model-listing error
                 # first and the actual cause last, so a short prefix reports the wrong problem —
                 # at 200 chars the geography failure above read as a `/v1/models` routing error.

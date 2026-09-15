@@ -16,12 +16,7 @@ import uuid
 import pexpect
 import pyte
 
-from .evidence import agent_sessions
-
-NON_RETRYABLE_AGENT_ERROR = re.compile(
-    r"unexpected status (?:400|401|403|404|405|409|422)\b|PERMISSION_DENIED",
-    re.IGNORECASE,
-)
+from .evidence import agent_sessions, assert_no_terminal_api_error
 
 
 class TerminalScreen(pyte.Screen):
@@ -291,9 +286,7 @@ class AgentTerminal(TerminalProcess):
 
         def completed(screen):
             nonlocal permission_in_progress
-            assert not NON_RETRYABLE_AGENT_ERROR.search(screen), (
-                "Agent returned a non-retryable API error:\n" + screen
-            )
+            assert_no_terminal_api_error(screen)
             if "Do you want to proceed?" in screen:
                 if permission_in_progress:
                     return False

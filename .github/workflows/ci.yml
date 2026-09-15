@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Unit tests
@@ -113,6 +117,15 @@ jobs:
           RESULT: ${{ needs.e2e-shards.result }}
         run: test "$RESULT" = success
 
+  integration:
+    name: Integration
+    # These suites use the same live workspace. Let agent launch coverage
+    # finish before starting integration requests, even if an agent failed.
+    if: ${{ !cancelled() }}
+    needs: e2e
+    uses: ./.github/workflows/integration.yml
+    secrets: inherit
+
   # Preserve the exact contexts required by the repository's branch rules.
   # Keep these aliases until the rules and all active branches migrate together.
   required-tests:
@@ -130,11 +143,12 @@ jobs:
   required-e2e:
     name: e2e
     if: ${{ !cancelled() }}
-    needs: e2e
+    needs: [e2e, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require all agent tests to pass
+      - name: Require all agent and integration tests to pass
         env:
           RESULT: ${{ needs.e2e.result }}
-        run: test "$RESULT" = success
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+        run: test "$RESULT" = success && test "$INTEGRATION_RESULT" = success

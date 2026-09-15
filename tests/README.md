@@ -57,8 +57,10 @@ than consuming `uv.lock`. Use `--dependency PACKAGE==VERSION` or replay the arch
 dependency graph to reproduce a user's combination. Every relevant same-repository
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI and headless argument journeys for both agents,
-in two parallel jobs. The full suite runs all 39 cases across six parallel jobs:
-Claude/Codex × configure, headless, and other commands/lifecycle checks.
+in two parallel jobs. After smoke finishes, the full suite runs all 39 cases
+across six serial jobs: Claude/Codex × configure, headless, and other
+commands/lifecycle checks. CI calls integration after the existing e2e shards
+finish, including when an e2e shard fails, to avoid overlapping their model load.
 The `All integration tests` check requires every selected integration job to pass; full coverage
 does not depend on a label or a manual request.
 
@@ -74,9 +76,10 @@ Unit tests still run as one job. Both matrices use `fail-fast: false` so one
 failure does not cancel other coverage.
 
 The small `test` and `e2e` compatibility gates retain the exact status contexts
-required by the repository's branch rules. They pass only when `Unit tests` and
-`All agent tests`, respectively, succeed; a failed or skipped dependency fails
-the gate. The descriptive jobs provide the actual coverage and diagnostics.
+required by the repository's branch rules. `test` requires `Unit tests`; `e2e`
+requires both `All agent tests` and the complete integration workflow. A failed
+or skipped dependency fails the gate, and a running integration suite keeps it
+pending. The descriptive jobs provide the actual coverage and diagnostics.
 
 ## Gaps and deferred scope
 

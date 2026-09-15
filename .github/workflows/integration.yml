@@ -1,11 +1,7 @@
 name: Integration
 
 on:
-  pull_request:
-    paths: ['src/**', 'tests/**', 'scripts/run_integration.py', 'pyproject.toml', 'uv.lock', '.github/workflows/integration.yml']
-  push:
-    branches: [main]
-    paths: ['src/**', 'tests/**', 'scripts/run_integration.py', 'pyproject.toml', 'uv.lock', '.github/workflows/integration.yml']
+  workflow_call:
   workflow_dispatch:
     inputs:
       suite:
@@ -170,14 +166,17 @@ jobs:
 
   full:
     name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.group == 'configure' && 'Configure' || matrix.group == 'headless' && 'Headless' || 'Commands' }}
-    if: ${{ inputs.suite != 'smoke' }}
-    needs: workspace
+    if: ${{ !cancelled() && inputs.suite != 'smoke' && needs.workspace.result == 'success' }}
+    needs: [workspace, smoke]
     runs-on: ubuntu-22.04
     # The runner enforces its own 3600s pytest deadline; keep the job above it
     # so a slow run fails through the runner's report instead of a job kill.
     timeout-minutes: 70
     strategy:
       fail-fast: false
+      # All shards share one workspace/model quota. Serial execution retains
+      # every case without a burst of overlapping model requests.
+      max-parallel: 1
       matrix:
         agent: [claude, codex]
         group: ${{ fromJSON(inputs.suite == 'tui' && '["configure"]' || '["configure", "headless", "commands"]') }}

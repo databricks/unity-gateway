@@ -1,8 +1,20 @@
 """Read real agent transcripts and ug routing records without changing them."""
 
 import json
+import re
 import uuid
 from pathlib import Path
+
+
+def assert_no_terminal_api_error(screen: str) -> None:
+    """Fail on definitive client errors, not an in-progress transient retry."""
+    error = re.search(
+        r"unexpected status (?:400|401|403|404|405|409|422)\b|PERMISSION_DENIED"
+        r"|exceeded retry limit",
+        screen,
+        re.IGNORECASE,
+    )
+    assert error is None, "Agent returned a terminal API error:\n" + screen
 
 
 def read_jsonl(path: Path) -> list[dict]:
