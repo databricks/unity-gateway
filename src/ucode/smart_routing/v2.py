@@ -496,6 +496,7 @@ def launch_codex(
     binary: str,
     start_model: str | None,
     render_overlay: Callable[..., dict],
+    catalog_path: str | None = None,
 ) -> NoReturn:
     workspace = state.get("workspace")
     if not workspace:
@@ -511,6 +512,8 @@ def launch_codex(
     os.environ[OAUTH_TOKEN_ENV_VAR] = get_databricks_token(workspace, profile)
     catalog_models = custom_catalog_models()
     available_models = catalog_models or _cached_routing_models(state)
+    if catalog_path and state.get("codex_static_models"):
+        available_models = state["codex_static_models"]
     if not available_models:
         print_warning(
             "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
@@ -522,6 +525,10 @@ def launch_codex(
         state.get("profile"),
         use_pat=bool(state.get("use_pat")),
     )
+    catalog_args = []
+    if catalog_path:
+        overlay["model_catalog_json"] = catalog_path
+        catalog_args = codex_config_args({"model_catalog_json": catalog_path})
     overlay["hooks"] = {
         "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
     }
@@ -554,7 +561,9 @@ def launch_codex(
             log_path=CODEX_INTERPOSER_LOG,
         )
         tui_url = _loopback_websocket_url(tui_port)
-        tui = subprocess.Popen([binary, "--remote", tui_url, "--model", start_model, *tool_args])
+        tui = subprocess.Popen(
+            [binary, *catalog_args, "--remote", tui_url, "--model", start_model, *tool_args]
+        )
         try:
             returncode = tui.wait()
         except KeyboardInterrupt:

@@ -2488,7 +2488,9 @@ class TestConfigureAgentsSelection:
         state = {**MINIMAL_STATE, "available_tools": []}
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *args, **kwargs: state)
         monkeypatch.setattr(
-            cli_mod, "check_gateway_endpoint", lambda state, tool, **kwargs: tool in {"codex", "gemini"}
+            cli_mod,
+            "check_gateway_endpoint",
+            lambda state, tool, **kwargs: tool in {"codex", "gemini"},
         )
         monkeypatch.setattr(cli_mod, "_maybe_select_provider_service", lambda tool, state: state)
         installed = []

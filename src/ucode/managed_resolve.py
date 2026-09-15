@@ -106,10 +106,11 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
     default_model = _str(_agent_model_config(managed, tool).get("default_model"))
     if default_model:
         overrides[f"{tool}_default_model"] = default_model
-    if tool == "claude":
+    if tool in ("claude", "codex"):
         static_models = managed_static_models(managed, tool)
         if static_models:
-            overrides["claude_static_models"] = static_models
+            overrides[f"{tool}_static_models"] = static_models
+    if tool == "claude":
         location = managed_model_service_location(managed, tool)
         if location:
             overrides["claude_model_service_location"] = location

@@ -137,6 +137,28 @@ class TestLaunchCodex:
 
         assert calls[0]["start_model"] == "gpt-5.6-luna"
 
+    def test_static_catalog_is_forwarded_to_routing_launch(self, tmp_path, monkeypatch):
+        profile = tmp_path / "ucode.config.toml"
+        profile.write_text('model_catalog_json = "/tmp/managed-models.json"\n')
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile)
+        monkeypatch.setattr(codex, "_smart_routing_config_model", lambda _: None)
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.154.0")
+        calls = []
+        monkeypatch.setattr(v2, "launch_codex", lambda *args, **kwargs: calls.append(kwargs))
+
+        codex.launch(
+            {
+                "workspace": WS,
+                "codex_static_models": ["system.ai.kimi-k3"],
+                "codex_models": ["stale-discovery-model"],
+            },
+            [],
+            options=LaunchOptions(launch_smart_routing=True),
+        )
+
+        assert calls[0]["catalog_path"] == "/tmp/managed-models.json"
+        assert calls[0]["start_model"] == "system.ai.kimi-k3"
+
     @pytest.mark.parametrize("custom_home", [False, True])
     @pytest.mark.parametrize(
         "managed,profile,user,expected",
@@ -182,7 +204,8 @@ class TestLaunchCodex:
                 assert path.read_text() == content
         assert codex._smart_routing_config_model({"codex_default_model": "admin"}) == "admin"
 
-    def test_owns_app_server_interposer_and_tui_lifecycle(self, monkeypatch):
+    @pytest.mark.parametrize("catalog_path", [None, "/tmp/managed-models.json"])
+    def test_owns_app_server_interposer_and_tui_lifecycle(self, monkeypatch, catalog_path):
         processes = []
         interposer_args = {}
         stopped = []
@@ -234,11 +257,13 @@ class TestLaunchCodex:
                     "profile": "myprof",
                     "codex_models": ["system.ai.gpt-5-6-sol"],
                     "oss_models": ["system.ai.glm-5-2"],
+                    "codex_static_models": ["system.ai.kimi-k3"],
                 },
                 ["--search"],
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
+                catalog_path=catalog_path,
             )
 
         assert exc.value.code == 7
@@ -252,16 +277,27 @@ class TestLaunchCodex:
             "--config",
         ]
         assert processes[0].argv[7].startswith("model_providers.Databricks={")
-        assert processes[0].argv[8] == "--config"
-        hook_override = processes[0].argv[9]
+        offset = 0
+        if catalog_path:
+            assert processes[0].argv[8:10] == [
+                "--config",
+                f'model_catalog_json="{catalog_path}"',
+            ]
+            offset = 2
+        assert processes[0].argv[8 + offset] == "--config"
+        hook_override = processes[0].argv[9 + offset]
         assert hook_override.startswith("hooks.PreToolUse=[{")
         assert 'matcher = "Agent|.*spawn_agent$"' in hook_override
         assert "codex-router-hook route-subagent" in hook_override
         assert f"--host {WS}" in hook_override
         assert "--profile myprof" in hook_override
-        assert "--model system.ai.gpt-5-6-sol" in hook_override
-        assert "--model system.ai.glm-5-2" in hook_override
-        assert processes[0].argv[10:] == [
+        if catalog_path:
+            assert "--model system.ai.kimi-k3" in hook_override
+            assert "--model system.ai.gpt-5-6-sol" not in hook_override
+        else:
+            assert "--model system.ai.gpt-5-6-sol" in hook_override
+            assert "--model system.ai.glm-5-2" in hook_override
+        assert processes[0].argv[10 + offset :] == [
             "--listen",
             "ws://127.0.0.1:41001",
         ]
@@ -269,6 +305,7 @@ class TestLaunchCodex:
         assert processes[0].kwargs["env"]["CODEX_HOME"] == "/user/codex-home"
         assert processes[1].argv == [
             "codex",
+            *(["--config", f'model_catalog_json="{catalog_path}"'] if catalog_path else []),
             "--remote",
             "ws://127.0.0.1:41002",
             "--model",
@@ -276,10 +313,11 @@ class TestLaunchCodex:
             "--search",
         ]
         assert interposer_args["args"] == (v2.LOOPBACK_HOST, "ws://127.0.0.1:41001")
-        assert interposer_args["kwargs"]["available_models"] == [
-            "system.ai.gpt-5-6-sol",
-            "system.ai.glm-5-2",
-        ]
+        assert interposer_args["kwargs"]["available_models"] == (
+            ["system.ai.kimi-k3"]
+            if catalog_path
+            else ["system.ai.gpt-5-6-sol", "system.ai.glm-5-2"]
+        )
         assert interposer_args["kwargs"]["workspace"] == WS
         assert token_calls == [(WS, "myprof")]
         assert interposer_args["kwargs"]["token_provider"]() == "token-2"

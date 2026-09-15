@@ -387,6 +387,21 @@ Existing files are backed up before being overwritten. `ug revert` restores back
 - `~/.claude.json`: ug registers the Databricks `web_search` MCP server here when a suitable endpoint is available.
 - `/etc/claude-code/managed-settings.json` (Linux) or `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS): the OS enterprise managed settings. ug mirrors the same settings here so a bare `claude`, launched outside ug, still routes through the gateway. Writing this needs local admin rights; without them ug applies only the user level file above.
 
+### Offline managed Codex model catalogs
+
+When an administrator supplies a fixed Codex model list, ug builds
+`~/.codex/ucode-models.json` offline from the active installation's bundled metadata using
+`codex debug models --bundled`. It validates the result with the same binary before updating
+configuration, and points `model_catalog_json` at the generated file so `/model` shows the
+administrator's models in order.
+
+Native GPT entries retain their bundled prompts and capabilities. Non-GPT models without native
+metadata inherit a conservative ordinary-tool template; known GLM 5.2/5.3/5.3 Flash and Kimi K3
+models receive explicit capability overrides. If bundled metadata is unavailable, a requested GPT
+is unknown, or validation fails, configuration stops with an actionable upgrade error instead of
+falling back to gateway discovery or reusing a stale catalog. Static lists require a Codex version
+that supports `debug models --bundled`; the legacy pre-0.134.0 layout is unsupported.
+
 
 ## Documentation
 

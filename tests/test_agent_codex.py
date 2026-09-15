@@ -1330,6 +1330,82 @@ class TestCodexManagedConfig:
             codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
 
 
+class TestCodexStaticCatalog:
+    """Managed lists use local, validated metadata without gateway discovery."""
+
+    @pytest.fixture(autouse=True)
+    def offline_catalog(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", tmp_path / "ucode.config.toml")
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex, "CODEX_CATALOG_PATH", tmp_path / "ucode-models.json")
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", tmp_path / "config.toml")
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.154.0")
+        monkeypatch.setattr(codex, "save_state", lambda _: None)
+
+        def no_gateway(*args, **kwargs):
+            pytest.fail("Static catalog must not authenticate or fetch gateway metadata")
+
+        monkeypatch.setattr(codex, "get_databricks_token", no_gateway)
+        monkeypatch.setattr("ucode.databricks._http_get_json", no_gateway)
+
+    def test_write_config_emits_local_catalog_and_reference(self, monkeypatch):
+        names = ["system.ai.kimi-k3", "system.ai.gpt-5-4"]
+        catalog = {"models": [{"slug": name, "base_instructions": "local"} for name in names]}
+        calls = []
+
+        def prepare(binary, requested):
+            calls.append((binary, requested))
+            return catalog
+
+        monkeypatch.setattr(codex, "prepare_codex_catalog", prepare)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": names})
+
+        assert calls == [("codex", names)]
+        assert json.loads(codex.CODEX_CATALOG_PATH.read_text()) == catalog
+        assert read_toml_safe(codex.CODEX_CONFIG_PATH)["model_catalog_json"] == str(
+            codex.CODEX_CATALOG_PATH
+        )
+
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_preparation_failure_blocks_without_changing_files(self, monkeypatch, existing):
+        if existing:
+            codex.CODEX_CONFIG_PATH.write_text('model_catalog_json = "old.json"\n')
+            codex.CODEX_CATALOG_PATH.write_text('{"models": [{"slug": "stale"}]}')
+        before = {
+            path: path.read_bytes() if path.exists() else None
+            for path in (codex.CODEX_CONFIG_PATH, codex.CODEX_CATALOG_PATH)
+        }
+        monkeypatch.setattr(
+            codex,
+            "prepare_codex_catalog",
+            lambda *_: (_ for _ in ()).throw(RuntimeError("Upgrade Codex")),
+        )
+
+        with pytest.raises(RuntimeError, match="Upgrade Codex"):
+            codex.write_tool_config({"workspace": WS, "codex_static_models": ["new-model"]})
+
+        for path, content in before.items():
+            assert (path.read_bytes() if path.exists() else None) == content
+        assert not codex.CODEX_BACKUP_PATH.exists()
+
+    def test_legacy_static_catalog_requires_upgrade(self, monkeypatch):
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.133.0")
+        with pytest.raises(RuntimeError, match="Upgrade Codex"):
+            codex.write_tool_config({"workspace": WS, "codex_static_models": ["model"]})
+        assert not codex.CODEX_CONFIG_PATH.exists()
+
+    def test_provider_suppresses_and_removes_static_catalog(self, monkeypatch):
+        codex.CODEX_CATALOG_PATH.write_text('{"models": [{"slug": "stale"}]}')
+        codex.write_tool_config(
+            {"workspace": WS, "codex_static_models": ["system.ai.kimi-k3"]},
+            provider="main.default.mps",
+        )
+
+        assert not codex.CODEX_CATALOG_PATH.exists()
+        assert "model_catalog_json" not in read_toml_safe(codex.CODEX_CONFIG_PATH)
+
+
 class TestWriteConfigBackup:
     """A re-configure must not snapshot the file ucode itself generated."""
 
