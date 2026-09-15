@@ -181,7 +181,27 @@ class UserSession:
         for name in ("codex-v2-interposer.log", "claude-v2-pty.log"):
             assert not (self.home / ".ucode" / name).exists(), f"Unexpected routing: {name}"
 
-    def app_server_handshake(self, args: list[str], timeout: int = 120) -> dict:
+    def claude_gateway_model_ids(self, name: str = "claude-gateway-models") -> list[str]:
+        """Read the real gateway catalog cached by Claude Code for this session."""
+        path = Path(self.env["CLAUDE_CONFIG_DIR"]) / "cache/gateway-models.json"
+        assert path.is_file(), f"Claude gateway model cache was not created: {path}"
+        payload = json.loads(path.read_text())
+        models = payload.get("models") if isinstance(payload, dict) else None
+        assert isinstance(models, list), f"Invalid Claude gateway model cache: {payload!r}"
+        ids = [model.get("id") for model in models if isinstance(model, dict)]
+        assert len(ids) == len(models) and all(isinstance(model_id, str) for model_id in ids), (
+            f"Invalid Claude gateway model entries: {models!r}"
+        )
+        self.record(f"{name}.json", payload)
+        return ids
+
+    def app_server_handshake(
+        self,
+        args: list[str],
+        timeout: int = 120,
+        request: tuple[str, dict] | None = None,
+        name: str = "app-server",
+    ) -> dict:
         """Speak the real Codex stdio protocol and require an initialize response."""
         command = [str(self.binary), "codex", *args]
         messages: queue.Queue = queue.Queue()
@@ -218,37 +238,47 @@ class UserSession:
         reader.start()
         stderr_reader.start()
         try:
-            proc.stdin.write(
-                json.dumps(
-                    {
-                        "id": 1,
-                        "method": "initialize",
-                        "params": {"clientInfo": {"name": "ug-integration", "version": "1.0.0"}},
-                    }
+
+            def send(message):
+                proc.stdin.write(json.dumps(message) + "\n")
+                proc.stdin.flush()
+
+            def wait_for_response(request_id, description):
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    try:
+                        message = messages.get(timeout=max(0.01, deadline - time.monotonic()))
+                    except queue.Empty:
+                        break
+                    if message is None:
+                        break
+                    assert isinstance(message, dict), message
+                    assert "protocol_error" not in message, (
+                        "Non-JSON output on the app-server protocol stream: " + str(message)
+                    )
+                    if message.get("id") == request_id:
+                        assert "error" not in message, message
+                        assert isinstance(message.get("result"), dict), message
+                        return message
+                raise AssertionError(
+                    f"No app-server {description} response:\n" + "".join(transcript)
                 )
-                + "\n"
+
+            send(
+                {
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {"clientInfo": {"name": "ug-integration", "version": "1.0.0"}},
+                }
             )
-            proc.stdin.flush()
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                try:
-                    message = messages.get(timeout=max(0.01, deadline - time.monotonic()))
-                except queue.Empty:
-                    break
-                if message is None:
-                    break
-                assert isinstance(message, dict), message
-                assert "protocol_error" not in message, (
-                    "Non-JSON output on the app-server protocol stream: " + str(message)
-                )
-                if isinstance(message, dict) and message.get("id") == 1:
-                    assert "error" not in message, message
-                    assert isinstance(message.get("result"), dict), message
-                    assert message["result"].get("userAgent"), message
-                    proc.stdin.write('{"method":"initialized","params":{}}\n')
-                    proc.stdin.flush()
-                    return message
-            raise AssertionError("No app-server initialize response:\n" + "".join(transcript))
+            initialized = wait_for_response(1, "initialize")
+            assert initialized["result"].get("userAgent"), initialized
+            send({"method": "initialized", "params": {}})
+            if request is None:
+                return initialized
+            method, params = request
+            send({"id": 2, "method": method, "params": params})
+            return wait_for_response(2, method)
         finally:
             stop_process(proc)
             reader.join(timeout=5)
@@ -257,5 +287,26 @@ class UserSession:
             proc.stdout.close()
             proc.stderr.close()
             self.record(
-                "app-server.json", {"argv": command, "stdout": transcript, "stderr": diagnostics}
+                f"{name}.json", {"argv": command, "stdout": transcript, "stderr": diagnostics}
             )
+
+    def codex_model_ids(self, args: list[str], name: str = "codex-models") -> list[str]:
+        """Ask the real Codex app-server for the catalog its model picker uses."""
+        response = self.app_server_handshake(
+            args,
+            request=(
+                "model/list",
+                {"cursor": None, "limit": 1000, "includeHidden": False},
+            ),
+            name=f"{name}-app-server",
+        )
+        result = response["result"]
+        models = result.get("data")
+        assert isinstance(models, list), response
+        assert result.get("nextCursor") is None, "Codex model catalog exceeded the test page size"
+        ids = [model.get("model") for model in models if isinstance(model, dict)]
+        assert len(ids) == len(models) and all(isinstance(model_id, str) for model_id in ids), (
+            response
+        )
+        self.record(f"{name}.json", response)
+        return ids

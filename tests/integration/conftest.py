@@ -84,8 +84,34 @@ def live_session(session, workspace):
 
 
 @pytest.fixture(scope="session")
+def managed_workspace():
+    value = os.environ.get("UG_INTEGRATION_MANAGED_WORKSPACE", "").strip().rstrip("/")
+    token = os.environ.get("DATABRICKS_MANAGED_BEARER", "").strip()
+    if not value.startswith("https://") or not token:
+        pytest.fail(
+            "Managed-config integration requires UG_INTEGRATION_MANAGED_WORKSPACE "
+            "and DATABRICKS_MANAGED_BEARER."
+        )
+    return value
+
+
+@pytest.fixture
+def managed_live_session(session, managed_workspace):
+    for binary in ["databricks", *os.environ["UG_INTEGRATION_AGENTS"].split(",")]:
+        if not shutil.which(binary, path=session.env["PATH"]):
+            pytest.fail(f"Required integration binary is missing: {binary}")
+    session.env["DATABRICKS_BEARER"] = os.environ["DATABRICKS_MANAGED_BEARER"]
+    return session
+
+
+@pytest.fixture(scope="session")
 def claude_provider():
     return os.environ["UG_INTEGRATION_CLAUDE_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def claude_provider_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_PROVIDER_MODEL"]
 
 
 @pytest.fixture(scope="session")
@@ -96,3 +122,43 @@ def codex_provider():
 @pytest.fixture(scope="session")
 def codex_provider_model():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def parent_schema():
+    return os.environ["UG_INTEGRATION_PARENT_SCHEMA"]
+
+
+@pytest.fixture(scope="session")
+def claude_parent_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_PARENT_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def codex_parent_model():
+    return os.environ["UG_INTEGRATION_CODEX_PARENT_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def bedrock_provider():
+    return os.environ["UG_INTEGRATION_BEDROCK_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def bedrock_claude_model():
+    return os.environ["UG_INTEGRATION_BEDROCK_CLAUDE_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def bedrock_codex_model():
+    return os.environ["UG_INTEGRATION_BEDROCK_CODEX_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def managed_claude_model():
+    return os.environ["UG_INTEGRATION_MANAGED_CLAUDE_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def managed_codex_model():
+    return os.environ["UG_INTEGRATION_MANAGED_CODEX_MODEL"]

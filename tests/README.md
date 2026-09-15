@@ -30,6 +30,9 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task; normal exit |
 | `test_ug_configure_codex_databricks` | Configure Databricks Hosted; open Codex TUI and read a file | Completed assistant answer contains the file value; normal exit and reopen |
 | `test_ug_configure_codex_openai_mps` | Select OpenAI MPS in the real configure picker; launch Codex | Saved provider in status; completed TUI file task; normal exit |
+| `test_ug_claude_*model_discovery*` | Launch Claude with Anthropic/Bedrock MPS and parent scopes, before and after configure | Exact IDs in Claude's real gateway cache; scope switches replace stale catalogs; invalid scopes fail before launch |
+| `test_ug_codex_*model_discovery*` | Launch Codex app-server with OpenAI/Bedrock MPS and parent scopes, before and after configure | Exact IDs from Codex's real `model/list`; scope switches replace stale catalogs; invalid scopes fail before launch |
+| `test_bugbash_case_01_*` through `test_bugbash_case_24_*` | Run every command contract from the bugbash Tests tab | Managed config wins or rejects overrides; saved/default locations and discovery-disable behavior match the table |
 | `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` with routing enabled | Real file task completes; no routing wrapper |
@@ -46,7 +49,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_status_in_fresh_home_is_unconfigured` | Request status before configure | Unconfigured status |
 | `test_ug_auth_without_configuration_explains_how_to_configure` | Request auth before configure | Actionable setup error and nonzero exit |
 
-With both agents selected there are **39 live cases** (4 interactive TUI cases)
+With both agents selected there are **79 live cases** (16 interactive TUI cases)
 and **3 installation checks**. Parametrization varies argument spelling or routing
 mode, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
@@ -69,7 +72,7 @@ than consuming `uv.lock`. Use `--dependency PACKAGE==VERSION` or replay the arch
 dependency graph to reproduce a user's combination. Every relevant same-repository
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI and headless argument journeys for both agents,
-in two parallel jobs. After smoke finishes, the full suite runs all 39 cases
+in two parallel jobs. After smoke finishes, the full suite runs all 79 cases
 across two parallel agent jobs: one Claude VM and one Codex VM, each running its
 configure, headless, and commands/lifecycle cases serially. Each agent is installed
 once for the full suite, and no two full jobs for the same agent overlap within a run.
@@ -102,7 +105,10 @@ pending. The descriptive jobs provide the actual coverage and diagnostics.
 | --- | --- |
 | MCP and skills functionality | Deferred at the user's request; existing `mcp --help` dispatch checks only |
 | Broad configure flags, tracing, multiple workspaces, OAuth/PAT flows | Deferred while focusing on basic CUJs |
-| Provider switching, relayed/subscription MPS | Not covered by the four provider journeys |
+| Relayed/subscription MPS discovery | Not covered by the scoped discovery journeys |
+| Workspace-managed discovery/override matrix | Red CUJs are present; they need a separate workspace with Coding Agent Config enabled plus its explicit workspace/token inputs |
+| `UG_ENABLE_MODEL_DISCOVERY=0` cases | Red CUJs encode the table's proposed behavior; ug does not implement the variable yet |
+| Persisted `--model-location` from `ug configure` | Red CUJs encode the table's proposed behavior; the CLI currently exposes launch-only `--parent` |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
 | Claude/Codex interactive smart routing | Deferred at the user's request; routing jobs and live journeys removed. Unit/component routing tests remain, but do not establish live routing behavior. |

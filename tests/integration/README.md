@@ -1,7 +1,8 @@
 # Integration tests
 
-This suite runs the **installed product** through subprocesses, against the same
-`UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
+This suite runs the **installed product** through subprocesses. Ordinary cases use
+the existing e2e `UCODE_TEST_WORKSPACE`; managed-config rows use the separately
+supplied `UG_INTEGRATION_MANAGED_WORKSPACE`. It does not import `ucode`,
 patch application functions, substitute agent executables, run a fake gateway,
 or construct ug state files. The normal test suite checks these boundaries.
 
@@ -87,6 +88,10 @@ test_ug_codex_commands.py               # command help and parser error forwardi
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
+test_ug_claude_model_discovery.py       # parent, Anthropic/Bedrock MPS, errors
+test_ug_codex_model_discovery.py        # parent, OpenAI/Bedrock MPS, errors
+test_ug_claude_model_discovery_bugbash.py # odd-numbered Tests-tab contracts
+test_ug_codex_model_discovery_bugbash.py  # even-numbered Tests-tab contracts
 test_installation.py                   # fresh installed package
 utils/                                # process/terminal/evidence helpers and Docker files
 ```
@@ -125,11 +130,28 @@ MPS CUJs select the existing services already used by e2e:
 - Codex: `main.ucode.ci_openai_mps`, using its allowed `gpt-5-nano` model.
 
 Use `--claude-provider` / `--codex-provider` to reproduce another existing service.
-Use `--codex-provider-model` when that OpenAI service allows a different model.
+Use `--claude-provider-model` / `--codex-provider-model` when it allows a different model.
 Those choices are recorded in `versions.json`. No service is created or modified.
 A missing service or permission fails the selected CUJ, rather than skipping it.
 
-There are **39 live cases** (including 4 TUI journeys) and **3 installation
+Scoped discovery additionally requires these stable, pre-provisioned fixtures:
+
+- Model Services `main.ucode.ci_e2e_claude` and `main.ucode.ci_e2e_codex`.
+- Mixed Bedrock MPS `main.ucode.ci_e2e_bedrock_mps`, exposing
+  `anthropic.claude-haiku-4-5-20251001-v1:0` and `openai.gpt-oss-20b-1:0`.
+
+Override them with `--parent-schema`, `--claude-parent-model`,
+`--codex-parent-model`, `--bedrock-provider`, `--bedrock-claude-model`, or
+`--bedrock-codex-model`. The tests consume but never create or modify them.
+
+The managed-config rows use a separate workspace so unmanaged rows remain valid.
+Supply `--managed-workspace` with either `--managed-profile` or
+`DATABRICKS_MANAGED_BEARER`, and set its expected single-model catalogs with
+`--managed-claude-model` / `--managed-codex-model`. Until that fixture and the
+proposed `UG_ENABLE_MODEL_DISCOVERY` / `--model-location` contracts exist, the
+24 Tests-tab CUJs are intentionally red; they are never skipped or mocked.
+
+There are **79 live cases** (including 16 TUI journeys) and **3 installation
 checks** with both agents. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
@@ -137,7 +159,7 @@ checks** with both agents. See the named coverage and gaps matrix in
 # Append one of these selections to the runner command:
 -- -m live         # default: all live user journeys
 -- -m smoke        # four Hosted configure/TUI and headless argument journeys
--- -m tui          # four complete provider-configuration TUI journeys
+-- -m tui          # sixteen interactive configuration/model-discovery journeys
 -- -k test_ug_codex_app_server_client_initializes  # one named journey and its variants
 # Use --installation-only before -- for package checks without credentials.
 ```
@@ -196,22 +218,25 @@ container option. Matching dependency versions does not make those OS environmen
 Its installation job needs no credentials. For same-repository PRs, the live jobs
 reuse the existing `UCODE_TEST_WORKSPACE` and `DATABRICKS_BEARER` secrets. Fork PRs
 run installation checks only because they cannot receive those secrets.
+The managed bugbash rows stay red until CI also supplies their separate managed
+workspace and bearer inputs.
 
 The workspace check requires the secret to match
 `https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash
-is accepted). It never changes the secret or switches workspaces. There is no CI
-model-discovery or model-selection job. Real `ug configure` performs its normal
-workspace discovery inside each test; only explicit-model scenarios choose and
-record a discovered `system.ai` model as a test argument.
+is accepted). It never changes the secret or switches workspaces. There is no
+separate CI model-selection job; the full agent lanes include scoped model
+discovery. Real `ug configure` performs its normal workspace discovery inside
+each test; only explicit-model scenarios choose and record a discovered
+`system.ai` model as a test argument.
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI and headless
-argument journey for each agent (four cases, two agent jobs). Full runs all 39
+argument journey for each agent (four cases, two agent jobs). Full runs all 79
 live cases, including those smoke cases, in two disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 15 |
-| Codex | `live and codex` | 24 |
+| Claude | `live and claude` | 35 |
+| Codex | `live and codex` | 44 |
 
 Each lane installs only its agent CLI, once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
@@ -411,7 +436,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 39 live cases. For the three installation checks, run the same
+This runs all 79 live cases. For the three installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

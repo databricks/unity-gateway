@@ -72,6 +72,11 @@ def arguments():
         help="Existing Anthropic MPS selected in the configure CUJ.",
     )
     parser.add_argument(
+        "--claude-provider-model",
+        default="claude-haiku-4-5-20251001",
+        help="Only model exposed by the Anthropic MPS discovery fixture.",
+    )
+    parser.add_argument(
         "--codex-provider",
         default="main.ucode.ci_openai_mps",
         help="Existing OpenAI MPS selected in the configure CUJ.",
@@ -80,6 +85,36 @@ def arguments():
         "--codex-provider-model",
         default="gpt-5-nano",
         help="Model allowed by the OpenAI MPS selected in the configure CUJ.",
+    )
+    parser.add_argument(
+        "--parent-schema",
+        default="main.ucode",
+        help="Schema containing the dedicated model-discovery Model Services.",
+    )
+    parser.add_argument(
+        "--claude-parent-model",
+        default="main.ucode.ci_e2e_claude",
+        help="Claude-compatible Model Service in --parent-schema.",
+    )
+    parser.add_argument(
+        "--codex-parent-model",
+        default="main.ucode.ci_e2e_codex",
+        help="Codex-compatible Model Service in --parent-schema.",
+    )
+    parser.add_argument(
+        "--bedrock-provider",
+        default="main.ucode.ci_e2e_bedrock_mps",
+        help="Bedrock MPS containing the dedicated Claude and Codex targets.",
+    )
+    parser.add_argument(
+        "--bedrock-claude-model",
+        default="anthropic.claude-haiku-4-5-20251001-v1:0",
+        help="Claude target exposed by --bedrock-provider.",
+    )
+    parser.add_argument(
+        "--bedrock-codex-model",
+        default="openai.gpt-oss-20b-1:0",
+        help="Codex target exposed by --bedrock-provider.",
     )
     parser.add_argument("--python", default=sys.executable, help="Python 3.12+ path or uv version.")
     parser.add_argument("--dependency", action="append", default=[], metavar="PACKAGE==VERSION")
@@ -93,6 +128,25 @@ def arguments():
     parser.add_argument("--npm-registry", default="https://registry.npmjs.org")
     parser.add_argument("--profile", help="Explicit Databricks profile to mint the live bearer.")
     parser.add_argument("--workspace", default=os.environ.get("UCODE_TEST_WORKSPACE"))
+    parser.add_argument(
+        "--managed-profile",
+        help="Explicit profile for the separate workspace with managed coding-agent config.",
+    )
+    parser.add_argument(
+        "--managed-workspace",
+        default=os.environ.get("UG_INTEGRATION_MANAGED_WORKSPACE"),
+        help="Workspace with the managed model-discovery fixture.",
+    )
+    parser.add_argument(
+        "--managed-claude-model",
+        default="main.ucode.ci_managed_claude",
+        help="Only Claude model selected by the managed discovery fixture.",
+    )
+    parser.add_argument(
+        "--managed-codex-model",
+        default="main.ucode.ci_managed_codex",
+        help="Only Codex model selected by the managed discovery fixture.",
+    )
     parser.add_argument("--output", type=Path, help="New results directory; never reused.")
     parser.add_argument("--installation-only", action="store_true", help="No workspace calls.")
     parser.add_argument(
@@ -135,6 +189,8 @@ def arguments():
             )
         if not (args.profile or os.environ.get("DATABRICKS_BEARER", "").strip()):
             parser.error("Provide the e2e DATABRICKS_BEARER or select --profile explicitly.")
+        if args.managed_profile and not args.managed_workspace:
+            parser.error("--managed-profile requires --managed-workspace.")
     return args
 
 
@@ -202,9 +258,13 @@ def main() -> int:
     base_env["UV_CACHE_DIR"] = str(output / "cache")
     base_env["UV_DEFAULT_INDEX"] = args.default_index
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
+    managed_bearer = os.environ.get("DATABRICKS_MANAGED_BEARER", "").strip()
 
     def redact(value: str) -> str:
-        return value.replace(bearer, "<redacted>") if bearer else value
+        for token in (bearer, managed_bearer):
+            if token:
+                value = value.replace(token, "<redacted>")
+        return value
 
     def run(command, *, cwd=output, env=base_env, timeout=600) -> str:
         timed_out = False
@@ -240,8 +300,18 @@ def main() -> int:
             "claude_model": args.claude_model,
             "codex_model": args.codex_model,
             "claude_provider": args.claude_provider,
+            "claude_provider_model": args.claude_provider_model,
             "codex_provider": args.codex_provider,
             "codex_provider_model": args.codex_provider_model,
+            "parent_schema": args.parent_schema,
+            "claude_parent_model": args.claude_parent_model,
+            "codex_parent_model": args.codex_parent_model,
+            "bedrock_provider": args.bedrock_provider,
+            "bedrock_claude_model": args.bedrock_claude_model,
+            "bedrock_codex_model": args.bedrock_codex_model,
+            "managed_workspace": args.managed_workspace,
+            "managed_claude_model": args.managed_claude_model,
+            "managed_codex_model": args.managed_codex_model,
             "dependencies": args.dependency,
             "workspace": args.workspace,
         },
@@ -413,7 +483,7 @@ def main() -> int:
                 raise RuntimeError(f"Expected {agent} {expected}, got {version!r}")
             report["agents"][agent] = version
 
-        if args.profile and not args.installation_only:
+        def token_for_profile(workspace, profile, description):
             # Never select a local profile implicitly. Do not persist auth output.
             with managed_process(
                 [
@@ -421,9 +491,9 @@ def main() -> int:
                     "auth",
                     "token",
                     "--host",
-                    args.workspace,
+                    workspace,
                     "--profile",
-                    args.profile,
+                    profile,
                     "--output",
                     "json",
                 ],
@@ -435,11 +505,19 @@ def main() -> int:
                 auth_stdout, _ = auth.communicate(timeout=30)
             if auth.returncode:
                 raise RuntimeError(
-                    "Could not obtain a token for the selected profile; log in first."
+                    f"Could not obtain a token for the selected {description} profile; log in first."
                 )
-            bearer = json.loads(auth_stdout).get("access_token", "")
-            if not bearer:
-                raise RuntimeError("Selected profile returned no access token.")
+            token = json.loads(auth_stdout).get("access_token", "")
+            if not token:
+                raise RuntimeError(f"Selected {description} profile returned no access token.")
+            return token
+
+        if args.profile and not args.installation_only:
+            bearer = token_for_profile(args.workspace, args.profile, "e2e")
+        if args.managed_profile and not args.installation_only:
+            managed_bearer = token_for_profile(
+                args.managed_workspace, args.managed_profile, "managed-workspace"
+            )
 
         run(
             [
@@ -464,10 +542,21 @@ def main() -> int:
                 "UG_INTEGRATION_RUN_DIR": str(output),
                 "UG_INTEGRATION_AGENTS": ",".join(agents),
                 "UG_INTEGRATION_CLAUDE_PROVIDER": args.claude_provider,
+                "UG_INTEGRATION_CLAUDE_PROVIDER_MODEL": args.claude_provider_model,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
+                "UG_INTEGRATION_PARENT_SCHEMA": args.parent_schema,
+                "UG_INTEGRATION_CLAUDE_PARENT_MODEL": args.claude_parent_model,
+                "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,
+                "UG_INTEGRATION_BEDROCK_PROVIDER": args.bedrock_provider,
+                "UG_INTEGRATION_BEDROCK_CLAUDE_MODEL": args.bedrock_claude_model,
+                "UG_INTEGRATION_BEDROCK_CODEX_MODEL": args.bedrock_codex_model,
+                "UG_INTEGRATION_MANAGED_WORKSPACE": args.managed_workspace or "",
+                "UG_INTEGRATION_MANAGED_CLAUDE_MODEL": args.managed_claude_model,
+                "UG_INTEGRATION_MANAGED_CODEX_MODEL": args.managed_codex_model,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
                 "DATABRICKS_BEARER": bearer,
+                "DATABRICKS_MANAGED_BEARER": managed_bearer,
             }
         )
         for agent in agents:
