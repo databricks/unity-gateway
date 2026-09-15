@@ -84,6 +84,10 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
     default_model = _str(_agent_model_config(managed, tool).get("default_model"))
     if default_model:
         overrides[f"{tool}_default_model"] = default_model
+    if tool == "claude":
+        static_models = managed_static_models(managed, tool)
+        if static_models:
+            overrides["claude_static_models"] = static_models
     return overrides
 
 
@@ -184,6 +188,19 @@ def managed_default_model(managed: dict, tool: str) -> str | None:
     pins it explicitly, so the admin's choice holds even for agents that would otherwise pick their
     own default."""
     return _str(_agent_model_config(managed, tool).get("default_model"))
+
+
+def managed_static_models(managed: dict, tool: str) -> list[str] | None:
+    """The explicit model allow-list (``model_config.model_services``) the config sets for ``tool``.
+
+    Static curation: the launch path writes exactly these into Claude's picker allow-list
+    (``availableModels``/``modelPicker``) instead of discovering the workspace's models. The order is
+    the admin's; empty and non-string entries are dropped. None when unset."""
+    model_services = _agent_model_config(managed, tool).get("model_services")
+    if isinstance(model_services, list):
+        listed = [model for model in (_str(item) for item in model_services) if model]
+        return listed or None
+    return None
 
 
 def managed_claude_family_models(managed: dict) -> dict[str, str] | None:

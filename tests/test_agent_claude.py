@@ -447,6 +447,48 @@ class TestRenderOverlay:
         env_keys = [k for k in keys if len(k) == 2 and k[0] == "env"]
         assert len(env_keys) > 0
 
+    def test_static_models_populates_picker(self):
+        # Static models are written into the picker allow-list.
+        static = ["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-4-6"]
+        overlay, keys = claude.render_overlay(WS, "s4", static_models=static)
+        assert overlay["availableModels"] == static
+        assert overlay["enforceAvailableModels"] is True
+        assert overlay["modelPicker"]["replaceBuiltInOptions"] is True
+        assert len(overlay["modelPicker"]["options"]) == 2
+        assert overlay["modelPicker"]["options"][0]["model"] == "system.ai.claude-opus-4-8"
+        assert overlay["modelPicker"]["options"][0]["label"] == "claude-opus-4-8"
+
+    def test_static_models_keys_tracked(self):
+        # The picker keys are added to managed_keys so they're tracked in the managed file.
+        static = ["system.ai.claude-opus-4-8"]
+        _, keys = claude.render_overlay(WS, "s4", static_models=static)
+        assert ["availableModels"] in keys
+        assert ["enforceAvailableModels"] in keys
+        assert ["modelPicker"] in keys
+
+    def test_static_models_skipped_when_provider_set(self):
+        # When routing through an MPS provider, static models are ignored.
+        static = ["system.ai.claude-opus-4-8"]
+        overlay, _ = claude.render_overlay(WS, "s4", provider="main.x.mps", static_models=static)
+        assert "availableModels" not in overlay
+        assert "modelPicker" not in overlay
+
+    def test_static_models_skipped_when_relayed(self):
+        # When using relayed inference, static models are ignored.
+        static = ["system.ai.claude-opus-4-8"]
+        overlay, _ = claude.render_overlay(
+            WS, "s4", relayed=True, relayed_base_url="http://localhost:8000", static_models=static
+        )
+        assert "availableModels" not in overlay
+        assert "modelPicker" not in overlay
+
+    def test_static_models_label_strips_system_ai_prefix(self):
+        # Picker labels show the model id without the ``system.ai.`` prefix.
+        static = ["system.ai.claude-opus-4-8", "databricks-custom-model"]
+        overlay, _ = claude.render_overlay(WS, "s4", static_models=static)
+        labels = [opt["label"] for opt in overlay["modelPicker"]["options"]]
+        assert labels == ["claude-opus-4-8", "databricks-custom-model"]
+
 
 class TestRenderOverlayUserAgent:
     def _ua(self, monkeypatch) -> str:
@@ -1066,6 +1108,39 @@ class TestWriteToolConfigManagedSettings:
             claude.write_tool_config(
                 {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
             )
+
+    def test_static_models_written_to_picker(self, monkeypatch):
+        # Static models from state are rendered into the managed settings picker.
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        static_models = ["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-4-6"]
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_static_models": static_models,
+        }
+        claude.write_tool_config(state, "system.ai.claude-opus-4-8")
+        # Managed file should have the picker.
+        assert len(managed_writes) > 0
+        managed_content = json.loads(managed_writes[0][1])
+        assert managed_content["availableModels"] == static_models
+        assert managed_content["enforceAvailableModels"] is True
+        assert "modelPicker" in managed_content
+        assert len(managed_content["modelPicker"]["options"]) == 2
+
+    def test_static_models_not_written_when_absent(self, monkeypatch):
+        # When claude_static_models is not in state, picker fields are not written.
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        state = {"workspace": WS, "codex_models": []}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        # Managed file should not have the picker.
+        assert len(managed_writes) > 0
+        managed_content = json.loads(managed_writes[0][1])
+        assert "availableModels" not in managed_content
+        assert "modelPicker" not in managed_content
 
 
 class TestAddClaudeMcpServer:

@@ -16,6 +16,7 @@ from ucode.managed_resolve import (
     managed_launch_model,
     managed_provider_service,
     managed_state_overrides,
+    managed_static_models,
     managed_supplies_models,
     managed_unservable_models,
     recommended_agent,
@@ -598,3 +599,103 @@ class TestManagedLaunchModel:
 
     def test_none_when_neither_names_a_model(self):
         assert managed_launch_model({}, None, "pi") is None
+
+
+class TestManagedStaticModels:
+    """Static model curation: admin's explicit allow-list for Claude's picker."""
+
+    def test_returns_model_services_list_for_claude(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "model_services": [
+                            "system.ai.claude-opus-4-8",
+                            "system.ai.claude-sonnet-4-6",
+                        ]
+                    }
+                }
+            }
+        }
+        assert managed_static_models(managed, "claude") == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-sonnet-4-6",
+        ]
+
+    def test_none_when_unset(self):
+        managed = {"enabled_agents": {"claude": {"model_config": {}}}}
+        assert managed_static_models(managed, "claude") is None
+
+    def test_none_for_empty_list(self):
+        managed = {"enabled_agents": {"claude": {"model_config": {"model_services": []}}}}
+        assert managed_static_models(managed, "claude") is None
+
+    def test_drops_empty_and_non_string_entries(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "model_services": [
+                            "system.ai.claude-opus-4-8",
+                            "",
+                            None,
+                            "system.ai.claude-sonnet-4-6",
+                            123,
+                        ]
+                    }
+                }
+            }
+        }
+        assert managed_static_models(managed, "claude") == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-sonnet-4-6",
+        ]
+
+    def test_included_in_state_overrides_for_claude(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "model_services": [
+                            "system.ai.claude-opus-4-8",
+                            "system.ai.claude-sonnet-4-6",
+                        ]
+                    }
+                }
+            }
+        }
+        overrides = managed_state_overrides(managed, "claude")
+        assert overrides["claude_static_models"] == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-sonnet-4-6",
+        ]
+
+    def test_static_models_layered_into_resolved_state(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "model_services": [
+                            "system.ai.claude-opus-4-8",
+                            "system.ai.claude-sonnet-4-6",
+                        ]
+                    }
+                }
+            }
+        }
+        state = {"workspace": WORKSPACE}
+        resolved = resolve_state(managed, state, "claude")
+        assert resolved["claude_static_models"] == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-sonnet-4-6",
+        ]
+
+    def test_static_models_overlay_tracked_when_absent_locally(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"model_services": ["system.ai.claude-opus-4-8"]}}
+            }
+        }
+        state = {"workspace": WORKSPACE}
+        resolved = resolve_state(managed, state, "claude")
+        assert resolved[MANAGED_OVERLAY_KEY]["claude_static_models"] is None
