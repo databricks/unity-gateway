@@ -516,6 +516,40 @@ class TestRenderOverlay:
         assert "X-Good: ok" in headers
 
 
+class TestRenderOverlayOtelTracing:
+    """OTLP trace export is written only when the managed config opts Claude in."""
+
+    def test_otel_tracing_off_by_default(self):
+        overlay, _ = claude.render_overlay(WS, "s4", claude_models={"opus": "system.ai.x"})
+        assert "otelHeadersHelper" not in overlay
+        assert "CLAUDE_CODE_ENABLE_TELEMETRY" not in overlay["env"]
+        assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in overlay["env"]
+
+    def test_otel_tracing_writes_env_and_refreshing_headers_helper(self):
+        overlay, _ = claude.render_overlay(WS, "s4", otel_tracing=True)
+        env = overlay["env"]
+        # Spans need BOTH the telemetry enable and the enhanced-telemetry beta gate.
+        assert env["CLAUDE_CODE_ENABLE_TELEMETRY"] == "1"
+        assert env["CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"] == "1"
+        assert env["OTEL_TRACES_EXPORTER"] == "otlp"
+        assert env["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"] == "http/protobuf"
+        # HTTP requires the full /v1/traces path on the per-signal endpoint.
+        assert env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == f"{WS}/ai-gateway/otel/v1/traces"
+        assert env["CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS"] == "900000"
+        # traceparent propagation lets the gateway link its server span to the client span.
+        assert env["CLAUDE_CODE_PROPAGATE_TRACEPARENT"] == "1"
+        # A refreshing helper supplies the bearer — never a static (stale-prone) header.
+        assert "otel-headers" in overlay["otelHeadersHelper"]
+        assert "OTEL_EXPORTER_OTLP_TRACES_HEADERS" not in env
+
+    def test_otel_tracing_keys_are_managed(self):
+        # Recorded as managed so a later disable prunes them from the settings file.
+        _, keys = claude.render_overlay(WS, "s4", otel_tracing=True)
+        assert ["otelHeadersHelper"] in keys
+        assert ["env", "CLAUDE_CODE_ENABLE_TELEMETRY"] in keys
+        assert ["env", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] in keys
+
+
 class TestRenderOverlayUserAgent:
     def _ua(self, monkeypatch) -> str:
         monkeypatch.setattr(claude, "ucode_version", lambda: "0.1.0")
@@ -754,6 +788,41 @@ class TestWriteToolConfigStripsRemovedEnvKeys:
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
 
         assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in written[0]["env"]
+
+    def test_writes_otel_tracing_when_enabled(self, monkeypatch):
+        written: list = []
+        self._patch(monkeypatch, {}, written)
+        state = {"workspace": WS, "codex_models": [], "claude_otel_tracing": True}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        env = written[0]["env"]
+        assert env["CLAUDE_CODE_ENABLE_TELEMETRY"] == "1"
+        assert env["CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"] == "1"
+        assert env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == f"{WS}/ai-gateway/otel/v1/traces"
+        assert "otel-headers" in written[0]["otelHeadersHelper"]
+
+    def test_strips_stale_otel_tracing_when_disabled(self, monkeypatch):
+        # A prior run wrote OTel export config; disabling tracing in the managed config
+        # (no claude_otel_tracing in state) must remove the env and the otelHeadersHelper.
+        existing = {
+            "env": {
+                "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+                "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
+                "OTEL_TRACES_EXPORTER": "otlp",
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": f"{WS}/ai-gateway/otel/v1/traces",
+            },
+            "otelHeadersHelper": f"ucode otel-headers --host {WS}",
+        }
+        written: list = []
+        self._patch(monkeypatch, existing, written)
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert "otelHeadersHelper" not in written[0]
+        for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS:
+            assert key not in written[0]["env"]
 
 
 FAKE_MANAGED_PATH = Path("/tmp/ucode-test/managed-settings.json")

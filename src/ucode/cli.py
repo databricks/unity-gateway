@@ -1612,6 +1612,55 @@ def auth_token_cmd(
     sys.stdout.write(token + "\n")
 
 
+@app.command("otel-headers", hidden=True)
+def otel_headers_cmd(
+    host: Annotated[
+        str | None, typer.Option("--host", help="Workspace URL. Defaults to the saved workspace.")
+    ] = None,
+    profile: Annotated[
+        str | None, typer.Option("--profile", help="Databricks CLI profile.")
+    ] = None,
+    use_pat: Annotated[
+        bool, typer.Option("--use-pat", help="Read the profile's static PAT instead of OAuth.")
+    ] = False,
+    force_refresh: Annotated[
+        bool,
+        typer.Option("--force-refresh", help="Force the Databricks CLI to mint a new token."),
+    ] = False,
+) -> None:
+    """Print the OTLP export headers as JSON to stdout, then exit.
+
+    The telemetry sibling of `auth-token`, invoked by Claude Code's `otelHeadersHelper`: the same
+    Databricks bearer, wrapped as the JSON header map (`{"Authorization": "Bearer <token>"}`) so
+    trace-export auth refreshes instead of freezing in a static header. Not for interactive use."""
+    import json
+    import sys
+
+    state = load_state()
+    workspace = host or state.get("workspace")
+    if not workspace:
+        print_err("No workspace configured. Run `ug configure` first.")
+        raise typer.Exit(1)
+    profile = profile or state.get("profile")
+    if use_pat or state.get("use_pat"):
+        # Mirror auth-token: fail closed rather than falling through to OAuth.
+        if not ensure_pat_bearer(profile):
+            print_err(
+                f"--use-pat: no personal access token available for profile "
+                f"'{profile or '<none>'}'. Add a `token = <PAT>` entry under "
+                f"[{profile or 'your-profile'}] in ~/.databrickscfg, or re-run "
+                "`ug configure` without --use-pat to use OAuth."
+            )
+            raise typer.Exit(1)
+    try:
+        token = get_databricks_token(workspace, profile, force_refresh=force_refresh)
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    # Emit ONLY the JSON header map — Claude Code parses stdout as JSON.
+    sys.stdout.write(json.dumps({"Authorization": f"Bearer {token}"}) + "\n")
+
+
 def _oauth_token_is_fresh(token: str, buffer_seconds: float = 120) -> bool:
     import base64
     import binascii

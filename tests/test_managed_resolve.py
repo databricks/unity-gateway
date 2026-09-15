@@ -16,6 +16,7 @@ from ucode.managed_resolve import (
     managed_enabled_tools,
     managed_launch_model,
     managed_model_service_location,
+    managed_otel_tracing_enabled,
     managed_provider_service,
     managed_state_overrides,
     managed_static_models,
@@ -819,6 +820,45 @@ class TestCustomHeaders:
         state = _state()
         resolved = resolve_state(managed, state, "claude")
         assert resolved["claude_custom_headers"] == {"X-Managed": "managed-value"}
+
+
+class TestOtelTracing:
+    """Per-agent `tracing_config.enabled` opts an OTEL_TRACING_TOOLS agent into OTLP export."""
+
+    def test_accessor_reads_per_agent_flag(self):
+        managed = {"enabled_agents": {"claude": {"otel_tracing_enabled": True}}}
+        assert managed_otel_tracing_enabled(managed, "claude") is True
+        assert managed_otel_tracing_enabled({"enabled_agents": {"claude": {}}}, "claude") is False
+
+    def test_per_agent_wins_over_deprecated_global(self):
+        # Per-agent explicit False overrides a deprecated workspace-level True.
+        managed = {
+            "otel_tracing_enabled": True,
+            "enabled_agents": {"claude": {"otel_tracing_enabled": False}},
+        }
+        assert managed_otel_tracing_enabled(managed, "claude") is False
+
+    def test_deprecated_global_used_as_fallback(self):
+        # No per-agent value → fall back to the deprecated workspace-level flag.
+        managed = {"otel_tracing_enabled": True, "enabled_agents": {"claude": {}}}
+        assert managed_otel_tracing_enabled(managed, "claude") is True
+
+    def test_state_override_set_for_claude(self):
+        managed = {"enabled_agents": {"claude": {"otel_tracing_enabled": True}}}
+        assert managed_state_overrides(managed, "claude") == {"claude_otel_tracing": True}
+
+    def test_not_applied_to_agents_without_otel_support(self):
+        # Per-agent flag is on for codex, but only OTEL_TRACING_TOOLS act on it.
+        managed = {"enabled_agents": {"codex": {"otel_tracing_enabled": True}}}
+        assert "codex_otel_tracing" not in managed_state_overrides(managed, "codex")
+
+    def test_no_override_when_tracing_disabled(self):
+        managed = {"enabled_agents": {"claude": {}}}
+        assert "claude_otel_tracing" not in managed_state_overrides(managed, "claude")
+
+    def test_resolve_state_overlays_otel_flag(self):
+        managed = {"enabled_agents": {"claude": {"otel_tracing_enabled": True}}}
+        assert resolve_state(managed, _state(), "claude")["claude_otel_tracing"] is True
 
     def test_resolve_state_wins_over_local_custom_headers(self):
         managed = {"enabled_agents": {"claude": {"http_headers": {"X-Managed": "managed-value"}}}}

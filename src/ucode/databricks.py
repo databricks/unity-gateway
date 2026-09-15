@@ -1457,6 +1457,31 @@ def build_auth_shell_command(
     return shlex.join(argv)
 
 
+def build_otel_headers_argv(
+    workspace: str, profile: str | None = None, *, use_pat: bool = False
+) -> list[str]:
+    """Argv for the OTLP-headers helper: `ucode otel-headers ...`.
+
+    Sibling of :func:`build_auth_token_argv` for Claude Code's `otelHeadersHelper`: same token,
+    but printed as a JSON header map instead of a bare bearer."""
+    argv = [_ucode_binary(), "otel-headers", "--host", workspace.rstrip("/")]
+    if profile:
+        argv += ["--profile", profile]
+    if use_pat:
+        argv.append("--use-pat")
+    return argv
+
+
+def build_otel_headers_shell_command(
+    workspace: str, profile: str | None = None, *, use_pat: bool = False
+) -> str:
+    """Single-line, shell-quoted form of :func:`build_otel_headers_argv` (Claude's `otelHeadersHelper`)."""
+    argv = build_otel_headers_argv(workspace, profile, use_pat=use_pat)
+    if platform.system() == "Windows":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
+
+
 # A model-service's `name` is `model-services/system.ai.<model-name>`; the
 # part after the prefix is exactly the model string agents send (no
 # `databricks-` infix — that only appears on the inner destination name).
@@ -3042,6 +3067,11 @@ def _fetch_codex_model_catalog(
     if not payload["models"]:
         raise RuntimeError(f"{kind} {identifier} returned no Codex models.")
     return payload
+
+
+def build_otel_traces_endpoint(workspace: str) -> str:
+    """The AI Gateway OTLP trace-ingest endpoint for ``workspace`` (full ``/v1/traces`` path)."""
+    return f"{workspace.rstrip('/')}/ai-gateway/otel/v1/traces"
 
 
 def extra_custom_headers(

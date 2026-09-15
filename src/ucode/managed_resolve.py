@@ -37,6 +37,11 @@ def _family_from_slot(slot: object) -> str | None:
     return None
 
 
+# Agents that act on config-level `tracing.enabled`. Add one here (and teach its writer to read
+# `{tool}_otel_tracing`) once it supports OTLP export.
+OTEL_TRACING_TOOLS = ("claude",)
+
+
 def _as_dict(value: object) -> dict[str, object]:
     """Return ``value`` as a ``dict[str, object]`` when it is a dict, else an empty dict."""
     return cast("dict[str, object]", value) if isinstance(value, dict) else {}
@@ -69,6 +74,17 @@ def managed_custom_headers(managed: dict, tool: str) -> dict[str, str]:
     Returns a cleaned {header_name: value} dict; empty when none are set."""
     headers = _as_dict(_agent_entry(managed, tool).get("http_headers"))
     return {k: v for k, v in headers.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def managed_otel_tracing_enabled(managed: dict, tool: str) -> bool:
+    """Whether OTLP trace export is on for ``tool``.
+
+    Per-agent ``AgentConfig.tracing_config.enabled`` wins; falls back to the deprecated
+    workspace-level ``CodingAgentConfig.tracing`` when the agent leaves it unset."""
+    agent = _agent_entry(managed, tool).get("otel_tracing_enabled")
+    if isinstance(agent, bool):
+        return agent
+    return _as_dict(managed).get("otel_tracing_enabled") is True
 
 
 def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
@@ -106,6 +122,8 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
         custom_hdrs = managed_custom_headers(managed, tool)
         if custom_hdrs:
             overrides["claude_custom_headers"] = custom_hdrs
+    if tool in OTEL_TRACING_TOOLS and managed_otel_tracing_enabled(managed, tool):
+        overrides[f"{tool}_otel_tracing"] = True
     return overrides
 
 

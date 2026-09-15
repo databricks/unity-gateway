@@ -35,6 +35,8 @@ from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_comman
 from ucode.databricks import (
     ANTHROPIC_FAMILIES,
     build_auth_shell_command,
+    build_otel_headers_shell_command,
+    build_otel_traces_endpoint,
     build_tool_base_url,
     extra_custom_headers,
     get_databricks_token,
@@ -157,6 +159,35 @@ CLAUDE_TRACING_ENV_KEYS = (
 CLAUDE_DEFAULT_MODEL_ENV_KEYS = {
     family: f"ANTHROPIC_DEFAULT_{family.upper()}_MODEL" for family in ANTHROPIC_FAMILIES
 }
+# OTLP trace-export env ucode writes when a managed config opts Claude in. Managed so a
+# disable prunes them. Auth is not here — a refreshing `otelHeadersHelper` supplies the bearer.
+CLAUDE_OTEL_TRACE_ENV_KEYS = (
+    "CLAUDE_CODE_ENABLE_TELEMETRY",
+    "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+    "OTEL_TRACES_EXPORTER",
+    "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS",
+    "CLAUDE_CODE_PROPAGATE_TRACEPARENT",
+)
+
+
+def _otel_trace_env(workspace: str) -> dict[str, str]:
+    # Spans need the ENHANCED_TELEMETRY_BETA gate on top of ENABLE_TELEMETRY (enable alone
+    # emits only metrics/events). HTTP needs the full /v1/traces path; auth via otelHeadersHelper.
+    # PROPAGATE_TRACEPARENT emits W3C traceparent on gateway-bound requests (custom base URL)
+    # so the gateway links its server span to Claude's client span.
+    return {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
+        "OTEL_TRACES_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": build_otel_traces_endpoint(workspace),
+        "CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS": "900000",
+        "CLAUDE_CODE_PROPAGATE_TRACEPARENT": "1",
+    }
+
+
 # Model-selection env keys ucode manages. Existing family defaults in the enterprise-managed file
 # are preserved unless Coding Agent Config explicitly supplies that family.
 CLAUDE_MANAGED_MODEL_ENV_KEYS = (
@@ -343,6 +374,7 @@ def render_overlay(
     static_models: list[str] | None = None,
     model_service_location: str | None = None,
     custom_headers: dict[str, str] | None = None,
+    otel_tracing: bool = False,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
 
@@ -486,6 +518,15 @@ def render_overlay(
     elif model_service_location and not provider and not relayed:
         env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
         keys.append(["env", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"])
+
+    # Added after `keys` is seeded so the env vars are recorded once, not twice.
+    if otel_tracing:
+        otel_env = _otel_trace_env(workspace)
+        env.update(otel_env)
+        overlay["otelHeadersHelper"] = build_otel_headers_shell_command(
+            workspace, profile, use_pat=use_pat
+        )
+        keys += [["env", k] for k in otel_env] + [["otelHeadersHelper"]]
 
     return overlay, keys
 
@@ -739,6 +780,7 @@ def write_tool_config(
         static_models=state.get("claude_static_models"),
         model_service_location=state.get("claude_model_service_location"),
         custom_headers=state.get("claude_custom_headers"),
+        otel_tracing=bool(state.get("claude_otel_tracing")),
     )
     tracing_env_vars = tracing_env(state, "claude")
     stop_hook_command = claude_tracing_stop_hook_command() if tracing_env_vars else None
@@ -760,6 +802,8 @@ def write_tool_config(
         + [["env", key] for key in CLAUDE_CONDITIONAL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_REMOVED_ENV_KEYS]
         + [["env", key] for key in CLAUDE_TRACING_ENV_KEYS]
+        + [["env", key] for key in CLAUDE_OTEL_TRACE_ENV_KEYS]
+        + [["otelHeadersHelper"]]
         + [["hooks", "Stop"]]
         + [["hooks", event] for event in ("PreToolUse", "SessionStart", "SubagentStart")]
         + [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
@@ -836,10 +880,15 @@ def write_tool_config(
             for key in CLAUDE_CONDITIONAL_ENV_KEYS:
                 if key not in overlay_env:
                     merged_env.pop(key, None)
+            for key in CLAUDE_OTEL_TRACE_ENV_KEYS:
+                if key not in overlay_env:
+                    merged_env.pop(key, None)
             # deep_merge_dict keeps keys already in the file, so drop the ones ucode no
             # longer writes.
             for key in CLAUDE_REMOVED_ENV_KEYS:
                 merged_env.pop(key, None)
+        if "otelHeadersHelper" not in overlay_for_merge:
+            merged.pop("otelHeadersHelper", None)
         # Prune availableModels/enforceAvailableModels when ucode stops writing them: the private
         # file unconditionally (ucode owns it), the managed file only when they match the ownership
         # marker (ucode wrote them) so admin-set values survive.
