@@ -24,7 +24,13 @@ from ucode.config_io import (
     read_json_safe,
     write_json_file,
 )
-from ucode.constants import LOOPBACK_HOST
+from ucode.constants import (
+    LOOPBACK_HOST,
+    MCP_CLEANUP_SCOPES,
+    MCP_USER_SCOPE,
+    MODEL_PROVIDER_SERVICE_HEADER,
+    MODEL_SERVICE_PARENT_SCHEMA_HEADER,
+)
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
 from ucode.databricks import (
     build_auth_shell_command,
@@ -34,6 +40,7 @@ from ucode.databricks import (
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
     OS,
+    ManagedFileWriteUnavailable,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
@@ -44,12 +51,13 @@ from ucode.managed_files import (
     reconcile_managed_file,
     revert_managed_file,
 )
+from ucode.mcp_oauth import CLAUDE_CODE_OAUTH_CLIENT_ID, MCP_OAUTH_CALLBACK_PORT
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
-from ucode.state import MANAGED_OVERLAY_KEY, get_provider_service, mark_tool_managed, save_state
+from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_version
 from ucode.tracing import tracing_env
 from ucode.ui import print_note, print_success, print_warning
@@ -168,7 +176,8 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
     {
         "x-databricks-use-coding-agent-mode",
         "user-agent",
-        "databricks-model-provider-service",
+        MODEL_PROVIDER_SERVICE_HEADER.casefold(),
+        MODEL_SERVICE_PARENT_SCHEMA_HEADER.casefold(),
     }
 )
 CLAUDE_TRACING_STOP_HOOK_SUFFIX = " autolog claude stop-hook"
@@ -323,6 +332,7 @@ def render_overlay(
     relayed_base_url: str | None = None,
     route_root_model: str | None = None,
     custom_model: str | None = None,
+    parent_schema: str | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
 
@@ -359,7 +369,9 @@ def render_overlay(
         f"User-Agent: ucode/{ucode_version()} claude/{agent_version('claude')}",
     ]
     if provider:
-        header_lines.append(f"Databricks-Model-Provider-Service: {provider}")
+        header_lines.append(f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}")
+    elif parent_schema:
+        header_lines.append(f"{MODEL_SERVICE_PARENT_SCHEMA_HEADER}: {parent_schema}")
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
     custom_headers = "\n".join(header_lines)
@@ -493,6 +505,106 @@ def _enforce_model_default_hierarchy(
     return selected_default_model
 
 
+def add_claude_mcp_server(
+    name: str,
+    server: list[str] | dict,
+    scope: str = MCP_USER_SCOPE,
+    *,
+    always_load: bool = False,
+) -> None:
+    # Three registration shapes share this helper. The plain proxy path passes an
+    # argv list (`ucode mcp-proxy ...`), registered via `claude mcp add ... -- <argv>`
+    # where `--` fences the proxy's own flags off from claude's parser. The
+    # web_search server passes a full stdio entry dict with its own env, which only
+    # `add-json` can express — so a dict routes there. Finally, `always_load` (the
+    # skills registry) needs `alwaysLoad: true`, which plain `mcp add` can't set, so
+    # build a stdio entry dict and route it to add-json too.
+    if isinstance(server, dict):
+        cmd = ["claude", "mcp", "add-json", name, json.dumps(server), "-s", scope]
+    elif always_load:
+        entry = {
+            "type": "stdio",
+            "command": server[0],
+            "args": list(server[1:]),
+            "alwaysLoad": True,
+        }
+        cmd = ["claude", "mcp", "add-json", name, json.dumps(entry), "-s", scope]
+    else:
+        cmd = ["claude", "mcp", "add", name, "-s", scope, "--", *server]
+    try:
+        subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"Failed to add MCP server '{name}' via claude CLI.") from exc
+
+
+def add_claude_http_mcp_server(
+    name: str,
+    url: str,
+    scope: str = MCP_USER_SCOPE,
+    *,
+    client_id: str = CLAUDE_CODE_OAUTH_CLIENT_ID,
+    callback_port: int = MCP_OAUTH_CALLBACK_PORT,
+) -> None:
+    """Register a Databricks MCP endpoint as a **direct HTTP** server so Claude
+    Code is the OAuth client and drives the RFC 8707 connection login itself.
+
+    Unlike the stdio proxy (which injects a plain workspace token and hides the
+    per-user connection state), a direct HTTP server lets Claude Code do MCP OAuth
+    against ``/oidc`` with the ``resource`` indicator: on a missing/expired
+    connection credential, ``/mcp`` shows "needs authentication" and Authenticate
+    runs the login (``/oidc`` -> ``/mcp-service-login``). ``client_id`` is the
+    published ``claude-code`` app (it has the loopback ``/callback`` redirect
+    registered); the callback port is arbitrary because ``/oidc`` ignores the port
+    for loopback redirects."""
+    cmd = [
+        "claude",
+        "mcp",
+        "add",
+        "--transport",
+        "http",
+        "-s",
+        scope,
+        "--client-id",
+        client_id,
+        "--callback-port",
+        str(callback_port),
+        name,
+        url,
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=30)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"Failed to add HTTP MCP server '{name}' via claude CLI.") from exc
+
+
+def remove_claude_mcp_server(name: str, scope: str) -> bool:
+    # Imported lazily: `_is_missing_mcp_server_output` is a shared CLI-output matcher
+    # in ucode.mcp (used by the codex/gemini removers too), and ucode.mcp imports
+    # this module at load time — a function-level import avoids that cycle.
+    from ucode.mcp import _is_missing_mcp_server_output
+
+    try:
+        subprocess.run(
+            ["claude", "mcp", "remove", name, "-s", scope],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return True
+    except subprocess.CalledProcessError as exc:
+        output = f"{exc.stderr or ''}\n{exc.stdout or ''}"
+        if _is_missing_mcp_server_output(output):
+            return False
+        raise RuntimeError(f"Failed to remove MCP server '{name}' via claude CLI.") from exc
+
+
 def _register_web_search_mcp(workspace: str, search_model: str, profile: str | None = None) -> bool:
     """Register (or replace) the web_search MCP server in Claude Code's user
     scope via `claude mcp add-json`. Removes any prior entry first so re-runs
@@ -501,13 +613,6 @@ def _register_web_search_mcp(workspace: str, search_model: str, profile: str | N
     Returns True if registration succeeded. Failures are non-blocking: we warn
     and return False so the rest of `ucode claude` setup can complete.
     """
-    # Imported lazily to avoid a circular import via ucode.mcp -> ucode.agents.
-    from ucode.mcp import (
-        MCP_CLEANUP_SCOPES,
-        add_claude_mcp_server,
-        remove_claude_mcp_server,
-    )
-
     for scope in MCP_CLEANUP_SCOPES:
         try:
             remove_claude_mcp_server(WEB_SEARCH_MCP_NAME, scope)
@@ -539,8 +644,6 @@ def _web_search_mcp_is_current(state: dict, entry: dict) -> bool:
 
 def _unregister_web_search_mcp() -> None:
     """Remove the web_search MCP server from all scopes. Used by revert."""
-    from ucode.mcp import MCP_CLEANUP_SCOPES, remove_claude_mcp_server
-
     for scope in MCP_CLEANUP_SCOPES:
         try:
             remove_claude_mcp_server(WEB_SEARCH_MCP_NAME, scope)
@@ -574,8 +677,13 @@ def write_tool_config(
     route_root_model: str | None = None,
     custom_model: str | None = None,
     coding_agent_config_defaults: dict[str, str] | None = None,
+    parent_schema: str | None = None,
 ) -> dict:
-    backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
+    # Back up only a file that predates ucode's management of the tool. A
+    # re-configure would otherwise snapshot ucode's own generated file, and
+    # revert would restore that snapshot instead of deleting the file.
+    if not is_tool_managed(state, "claude"):
+        backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
     web_search_model = _resolve_web_search_model(state)
     # Relayed inference points at a local refresh proxy; its loopback base URL is
     # recorded in state so launch starts the proxy on the matching port.
@@ -595,6 +703,7 @@ def write_tool_config(
         relayed_base_url=relayed_base_url,
         route_root_model=route_root_model,
         custom_model=custom_model,
+        parent_schema=parent_schema,
     )
     tracing_env_vars = tracing_env(state, "claude")
     stop_hook_command = claude_tracing_stop_hook_command() if tracing_env_vars else None
@@ -703,7 +812,7 @@ def write_tool_config(
 
     _reconcile_managed_settings(
         state,
-        lambda base: _compose(base, enforce_model_default_hierarchy=True),
+        lambda base: _compose(base, enforce_model_default_hierarchy=provider is None),
         managed_file_keys,
         relayed,
     )
@@ -846,13 +955,24 @@ def _reconcile_managed_settings(
             )
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
-    reconcile_managed_file(
-        path,
-        _dump_managed_settings(desired_settings),
-        tool="claude",
-        display="Claude Code",
-        owned_paths=owned_paths,
-    )
+    try:
+        reconcile_managed_file(
+            path,
+            _dump_managed_settings(desired_settings),
+            tool="claude",
+            display="Claude Code",
+            owned_paths=owned_paths,
+        )
+    except ManagedFileWriteUnavailable:
+        conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
+        if conflicts:
+            raise
+        print_warning(
+            f"Claude Code OS-managed settings could not be updated at {path}; continuing with "
+            f"local settings at {CLAUDE_SETTINGS_PATH}."
+        )
+        mark_managed_file_verified(state, "claude", path, scope="local-compatible")
+        return
     mark_managed_file_verified(state, "claude", path)
 
 
@@ -1152,13 +1272,6 @@ def _original_launch_model(state: dict) -> str | None:
     return default_model(state)
 
 
-def _has_provider_launch(state: dict) -> bool:
-    transient = state.get("_claude_launch_provider")
-    return (isinstance(transient, str) and bool(transient.strip())) or bool(
-        get_provider_service(state, "claude")
-    )
-
-
 def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[str]:
     if not launch_model or has_explicit_model_arg(tool_args):
         return []
@@ -1320,10 +1433,14 @@ def launch(
 ) -> None:
     binary = SPEC["binary"]
     workspace = state.get("workspace")
+    if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
+        # Discovery is launch-scoped. Pass it in the process environment rather
+        # than persisting it in Claude's private or OS-managed settings.
+        os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return
-    # Smart routing v2 needs Unix PTY support, which Windows does not provide.
+    # Smart routing needs Unix PTY support, which Windows does not provide.
     if options.launch_smart_routing and os.name == "nt":
         raise RuntimeError(
             "Smart routing in Claude Code is currently not supported on Windows. "
@@ -1341,14 +1458,6 @@ def launch(
             model_name=_maybe_add_1m_suffix,
         )
         return
-    if (
-        workspace
-        and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1"
-        and not _has_provider_launch(state)
-    ):
-        # Discovery is launch-scoped. Pass it in the process environment rather
-        # than persisting it in Claude's private or OS-managed settings.
-        os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     if workspace:
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     if options.claude_launch_model:
@@ -1366,10 +1475,3 @@ def validate_cmd(binary: str) -> list[str]:
         "--max-turns",
         "1",
     ]
-
-
-def skip_validation(state: dict) -> bool:
-    """Relayed configs can't be probed with a live message: the loopback proxy
-    and subscription login are only established at launch, so a validation-time
-    request has nothing listening and would hang (and burn subscription quota)."""
-    return bool(state.get("claude_relayed"))

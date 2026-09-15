@@ -20,7 +20,6 @@ from ucode.agents import (
     install_databricks_ai_tools_for_agents,
     install_tool_binary,
     normalize_tool,
-    provider_permission_error,
     resolve_launch_model,
 )
 from ucode.agents.args import has_explicit_model_arg
@@ -46,27 +45,6 @@ class TestModelArgumentParsing:
     def test_has_explicit_model_arg_stops_at_harness_separator(self):
         assert has_explicit_model_arg(["--", "--model", "model-a"]) is False
         assert has_explicit_model_arg(["--model", "model-a", "--", "--model", "model-b"])
-
-
-class TestProviderPermissionError:
-    _CONN_ERR = (
-        "User does not have USE CONNECTION on SCHEMA_CONNECTION "
-        "'299433db-cb91-4b08-9761-edab72a27836'."
-    )
-
-    def test_rewrites_when_provider_configured(self):
-        state = {"provider_services": {"codex": "main.aarushi.aarushi-test-openai"}}
-        out = provider_permission_error("codex", state, self._CONN_ERR)
-        assert "main.aarushi.aarushi-test-openai" in out
-        assert "EXECUTE" in out
-        assert "SCHEMA_CONNECTION" not in out
-
-    def test_passthrough_without_provider(self):
-        assert provider_permission_error("codex", {}, self._CONN_ERR) == self._CONN_ERR
-
-    def test_passthrough_for_unrelated_error(self):
-        state = {"provider_services": {"codex": "main.a.b"}}
-        assert provider_permission_error("codex", state, "boom") == "boom"
 
 
 class TestToolSpecs:
@@ -405,6 +383,24 @@ class TestResolveProviderModels:
             "sonnet": "us.anthropic.claude-sonnet-4-6",
             "opus": "global.anthropic.claude-opus-4-8",
         }
+
+    def test_bedrock_ignores_gpt_targets(self, monkeypatch):
+        service = {
+            "provider_type": "amazon_bedrock",
+            "targets": [
+                "global.anthropic.claude-opus-4-8",
+                "openai.gpt-oss-120b-1:0",
+            ],
+        }
+        self._patch(monkeypatch, service, None)
+
+        models, error, relayed = agents_mod.resolve_provider_models(
+            "claude", self._STATE, "main.b.mixed"
+        )
+
+        assert error is None
+        assert models == {"opus": "global.anthropic.claude-opus-4-8"}
+        assert relayed is False
 
     def test_invalid_provider_returns_error(self, monkeypatch):
         self._patch(monkeypatch, None, "boom")
@@ -792,82 +788,3 @@ class TestConfigureSelectedTools:
         state = {"workspace": "https://x.databricks.com", "available_tools": ["codex"]}
         result = configure_selected_tools(state, [])
         assert result["available_tools"] == ["codex"]
-
-
-class TestValidateAllToolsVerbosity:
-    def _run(self, monkeypatch, capsys):
-        from contextlib import nullcontext
-
-        monkeypatch.setattr(agents_mod, "validate_tool", lambda tool: (True, ""))
-        monkeypatch.setattr(agents_mod, "save_state", lambda s: None)
-        monkeypatch.setattr(agents_mod, "spinner", lambda *_a, **_kw: nullcontext())
-        agents_mod.validate_all_tools({"available_tools": ["codex"], "managed_configs": {}})
-        return capsys.readouterr().out
-
-    def test_normal_verbosity_renders_panels(self, monkeypatch, capsys):
-        import ucode.ui as ui_mod
-
-        monkeypatch.setattr(ui_mod, "_verbosity", "normal")
-        out = self._run(monkeypatch, capsys)
-        assert "Testing each tool with a quick message" in out
-        assert "Ready" in out
-        assert "Codex is working" in out
-
-    def test_low_verbosity_omits_panels(self, monkeypatch, capsys):
-        import ucode.ui as ui_mod
-
-        monkeypatch.setattr(ui_mod, "_verbosity", "low")
-        out = self._run(monkeypatch, capsys)
-        assert "Validating..." in out
-        assert "Testing each tool with a quick message" not in out
-        assert "Ready" not in out
-        # Per-tool success line is still printed.
-        assert "Codex is working" in out
-
-
-class TestValidateTool:
-    def test_runs_validate_command_with_stdin_devnull(self, monkeypatch):
-        # Regression guard: the validation smoke test must never inherit the
-        # caller's stdin, or it hangs to the timeout when ucode is launched
-        # from a non-interactive parent whose stdin is an open pipe.
-        captured: dict = {}
-
-        def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
-            captured["kwargs"] = kwargs
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-        monkeypatch.setattr("ucode.agents.subprocess.run", fake_run)
-        monkeypatch.setattr(agents_mod, "load_state", lambda: {})
-
-        ok, err = agents_mod.validate_tool("codex")
-
-        assert ok is True
-        assert err == ""
-        assert captured["kwargs"].get("stdin") is subprocess.DEVNULL
-
-    def test_reports_timed_out_on_timeout(self, monkeypatch):
-        def fake_run(cmd, **kwargs):
-            raise subprocess.TimeoutExpired(cmd, 60)
-
-        monkeypatch.setattr("ucode.agents.subprocess.run", fake_run)
-        monkeypatch.setattr(agents_mod, "load_state", lambda: {})
-
-        ok, err = agents_mod.validate_tool("codex")
-
-        assert ok is False
-        assert err == "timed out"
-
-    def test_relayed_claude_skips_live_probe(self, monkeypatch):
-        # Relayed configs have no proxy/login at validation time; probing them
-        # with a live message would hang, so validation must trust the config.
-        def fail_run(cmd, **kwargs):
-            raise AssertionError("relayed validation must not run a subprocess")
-
-        monkeypatch.setattr("ucode.agents.subprocess.run", fail_run)
-        monkeypatch.setattr(agents_mod, "load_state", lambda: {"claude_relayed": True})
-
-        ok, err = agents_mod.validate_tool("claude")
-
-        assert ok is True
-        assert err == ""

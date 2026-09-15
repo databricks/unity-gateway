@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
-import subprocess
 import threading
 from unittest.mock import MagicMock
 
 import pytest
 
 from ucode import mcp
+from ucode.agents import claude
 
 WS = "https://example.databricks.com"
 CLAUDE_STATE = {"workspace": WS, "available_tools": ["claude"]}
@@ -36,6 +35,9 @@ class TestMcpChangeSummary:
 # The proxy argv every client registers as a stdio command. The leading element
 # is the resolved `ucode` binary path, so tests assert the tail (the stable part).
 GH_URL = f"{WS}/api/2.0/mcp/external/github"
+# A connection-backed AI Gateway MCP service (3-part FQN) — the URL form that
+# registers as direct HTTP for Claude when the claude-code client is available.
+AIGW_MCP_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
 PROXY_TAIL = ["mcp-proxy", "--url", GH_URL, "--host", WS, "--profile", "p"]
 
 
@@ -64,71 +66,6 @@ class TestBuildMcpProxyArgv:
         assert with_pat[-1] == "--use-pat"
         no_profile = build_mcp_proxy_argv(GH_URL, WS, None)
         assert "--profile" not in no_profile
-
-
-class TestAddClaudeMcpServer:
-    def test_registers_stdio_proxy_command(self, monkeypatch):
-        calls: list[dict] = []
-
-        def fake_run(args, **kwargs):
-            calls.append({"args": args, "kwargs": kwargs})
-            return MagicMock(returncode=0)
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        mcp.add_claude_mcp_server("github", _proxy_argv())
-
-        args = calls[0]["args"]
-        assert args[:4] == ["claude", "mcp", "add", "github"]
-        assert args[4:6] == ["-s", "user"]
-        # `--` fences the proxy argv; everything after it is the stdio command.
-        assert args[6] == "--"
-        assert args[7:] == _proxy_argv()
-
-    def test_always_load_routes_through_add_json_stdio_entry(self, monkeypatch):
-        # The skills registry needs `alwaysLoad: true`, which plain `mcp add`
-        # can't set — so the proxy argv is wrapped in a stdio entry dict and
-        # registered via add-json instead.
-        calls: list[dict] = []
-
-        def fake_run(args, **kwargs):
-            calls.append({"args": args, "kwargs": kwargs})
-            return MagicMock(returncode=0)
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        mcp.add_claude_mcp_server("skills", _proxy_argv(), always_load=True)
-
-        args = calls[0]["args"]
-        assert args[:4] == ["claude", "mcp", "add-json", "skills"]
-        entry = json.loads(args[4])
-        assert entry == {
-            "type": "stdio",
-            "command": _proxy_argv()[0],
-            "args": _proxy_argv()[1:],
-            "alwaysLoad": True,
-        }
-        assert args[5:] == ["-s", "user"]
-
-    def test_dict_entry_routes_through_add_json(self, monkeypatch):
-        # The web_search server (agents/claude.py) registers a full stdio entry
-        # dict with its own env, which only `add-json` can express — a dict must
-        # route there rather than through the proxy `mcp add -- <argv>` path.
-        calls: list[dict] = []
-
-        def fake_run(args, **kwargs):
-            calls.append({"args": args, "kwargs": kwargs})
-            return MagicMock(returncode=0)
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        entry = {"type": "stdio", "command": "ucode", "args": ["mcp", "web-search"]}
-        mcp.add_claude_mcp_server("web_search", entry)
-
-        args = calls[0]["args"]
-        assert args[:4] == ["claude", "mcp", "add-json", "web_search"]
-        assert json.loads(args[4]) == entry
-        assert args[5:] == ["-s", "user"]
 
 
 class TestAddCodexMcpServer:
@@ -170,65 +107,6 @@ class TestAddGeminiMcpServer:
         # GEMINI_CLI_HOME must point at the launcher's home so `gemini mcp add`
         # writes the same settings.json the ucode session reads from.
         assert call["kwargs"]["env"]["GEMINI_CLI_HOME"] == str(mcp.gemini.GEMINI_HOME_DIR)
-
-
-class TestRemoveClaudeMcpServer:
-    def test_returns_true_when_server_removed(self, monkeypatch):
-        calls: list[list[str]] = []
-
-        def fake_run(args, **kwargs):
-            calls.append(args)
-            return MagicMock(returncode=0)
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        assert mcp.remove_claude_mcp_server("github", "user") is True
-        assert calls == [["claude", "mcp", "remove", "github", "-s", "user"]]
-
-    def test_returns_false_when_server_missing(self, monkeypatch):
-        def fake_run(args, **kwargs):
-            raise subprocess.CalledProcessError(1, args, stderr="No MCP server named github found")
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        assert mcp.remove_claude_mcp_server("github", "user") is False
-
-    def test_returns_false_when_project_local_server_missing(self, monkeypatch):
-        def fake_run(args, **kwargs):
-            raise subprocess.CalledProcessError(
-                1,
-                args,
-                stderr="No project-local MCP server found with name: github",
-            )
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        assert mcp.remove_claude_mcp_server("github", "project") is False
-
-    def test_returns_false_when_user_scoped_server_missing(self, monkeypatch):
-        def fake_run(args, **kwargs):
-            raise subprocess.CalledProcessError(
-                1,
-                args,
-                stderr="No user-scoped MCP server found with name: github",
-            )
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        assert mcp.remove_claude_mcp_server("github", "user") is False
-
-    def test_unexpected_failure_raises(self, monkeypatch):
-        def fake_run(args, **kwargs):
-            raise subprocess.CalledProcessError(1, args, stderr="permission denied")
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        try:
-            mcp.remove_claude_mcp_server("github", "user")
-        except RuntimeError as exc:
-            assert "Failed to remove MCP server 'github'" in str(exc)
-        else:
-            raise AssertionError("expected RuntimeError")
 
 
 class TestCursorMcpClient:
@@ -290,6 +168,104 @@ class TestConfigureClientMcpServer:
         assert removed_scopes == []
         # Copilot receives the proxy argv, not a URL/bearer entry.
         assert calls == [("github", _proxy_argv())]
+
+    def _capture_claude(self, monkeypatch, *, claude_code_available: bool):
+        http_calls: list[tuple[str, str]] = []
+        proxy_calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(
+            mcp, "oauth_client_available", lambda ws, client_id: claude_code_available
+        )
+        monkeypatch.setattr(claude, "remove_claude_mcp_server", lambda name, scope: False)
+        monkeypatch.setattr(
+            claude,
+            "add_claude_http_mcp_server",
+            lambda name, url, **kw: http_calls.append((name, url)),
+        )
+        monkeypatch.setattr(
+            claude,
+            "add_claude_mcp_server",
+            lambda name, argv, scope=mcp.MCP_USER_SCOPE, **kw: proxy_calls.append((name, argv)),
+        )
+        return http_calls, proxy_calls
+
+    def test_claude_aigw_service_registers_http_when_client_available(self, monkeypatch):
+        http_calls, proxy_calls = self._capture_claude(monkeypatch, claude_code_available=True)
+        mcp.configure_client_mcp_server("claude", "github", AIGW_MCP_URL, WS, "p")
+        assert http_calls == [("github", AIGW_MCP_URL)]
+        assert proxy_calls == []
+
+    def test_claude_aigw_service_falls_back_to_proxy_without_client(self, monkeypatch):
+        http_calls, proxy_calls = self._capture_claude(monkeypatch, claude_code_available=False)
+        mcp.configure_client_mcp_server("claude", "github", AIGW_MCP_URL, WS, "p")
+        assert http_calls == []
+        assert len(proxy_calls) == 1  # workspaces without claude-code keep the stdio proxy
+
+    def test_claude_non_aigw_url_keeps_proxy(self, monkeypatch):
+        # External/genie/vector-search/functions MCPs have no per-user connection login.
+        http_calls, proxy_calls = self._capture_claude(monkeypatch, claude_code_available=True)
+        mcp.configure_client_mcp_server("claude", "github", GH_URL, WS, "p")
+        assert http_calls == []
+        assert len(proxy_calls) == 1
+
+    def test_claude_aigw_service_with_pat_keeps_proxy(self, monkeypatch):
+        # PAT auth has no interactive OAuth, so it can't use the HTTP login path.
+        http_calls, proxy_calls = self._capture_claude(monkeypatch, claude_code_available=True)
+        mcp.configure_client_mcp_server("claude", "github", AIGW_MCP_URL, WS, "p", use_pat=True)
+        assert http_calls == []
+        assert len(proxy_calls) == 1
+
+    def _capture_cursor(self, monkeypatch, *, cursor_client_available: bool):
+        http_calls: list[tuple[str, str, str]] = []
+        proxy_calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(
+            mcp, "oauth_client_available", lambda ws, client_id: cursor_client_available
+        )
+        monkeypatch.setattr(
+            mcp.cursor,
+            "write_http_mcp_server_config",
+            lambda name, url, client_id: http_calls.append((name, url, client_id)) or False,
+        )
+        monkeypatch.setattr(
+            mcp.cursor,
+            "write_mcp_server_config",
+            lambda name, argv: proxy_calls.append((name, argv)) or False,
+        )
+        return http_calls, proxy_calls
+
+    def test_cursor_aigw_service_registers_http_when_client_available(self, monkeypatch):
+        http_calls, proxy_calls = self._capture_cursor(monkeypatch, cursor_client_available=True)
+        mcp.configure_client_mcp_server("cursor", "github", AIGW_MCP_URL, WS, "p")
+        assert http_calls == [("github", AIGW_MCP_URL, mcp.CURSOR_OAUTH_CLIENT_ID)]
+        assert proxy_calls == []
+
+    def test_cursor_aigw_service_falls_back_to_proxy_without_client(self, monkeypatch):
+        http_calls, proxy_calls = self._capture_cursor(monkeypatch, cursor_client_available=False)
+        mcp.configure_client_mcp_server("cursor", "github", AIGW_MCP_URL, WS, "p")
+        assert http_calls == []
+        assert len(proxy_calls) == 1  # workspaces without cursor-desktop keep the stdio proxy
+
+    def test_cursor_aigw_service_with_pat_keeps_proxy(self, monkeypatch):
+        # PAT auth has no interactive OAuth, so it can't use the HTTP login path.
+        http_calls, proxy_calls = self._capture_cursor(monkeypatch, cursor_client_available=True)
+        mcp.configure_client_mcp_server("cursor", "github", AIGW_MCP_URL, WS, "p", use_pat=True)
+        assert http_calls == []
+        assert len(proxy_calls) == 1
+
+    def test_oauthless_client_keeps_proxy_and_skips_probe(self, monkeypatch):
+        # An agent with no mapped OAuth client (codex) always proxies, and must not
+        # even probe /oidc — there's nothing it could pin.
+        probed: list[str] = []
+        proxy_calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(
+            mcp, "oauth_client_available", lambda ws, client_id: probed.append(client_id) or True
+        )
+        monkeypatch.setattr(
+            mcp, "add_codex_mcp_server", lambda name, argv: proxy_calls.append((name, argv))
+        )
+        monkeypatch.setattr(mcp, "remove_codex_mcp_server", lambda name: False)
+        mcp.configure_client_mcp_server("codex", "github", AIGW_MCP_URL, WS, "p")
+        assert len(proxy_calls) == 1
+        assert probed == []  # AGENT_OAUTH_CLIENT has no entry for codex → no probe
 
 
 class TestMcpPicker:
@@ -616,8 +592,8 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch, "github")
-        monkeypatch.setattr(mcp, "remove_claude_mcp_server", lambda name, scope: False)
-        monkeypatch.setattr(mcp, "add_claude_mcp_server", lambda name, entry, scope: None)
+        monkeypatch.setattr(claude, "remove_claude_mcp_server", lambda name, scope: False)
+        monkeypatch.setattr(claude, "add_claude_mcp_server", lambda name, entry, scope: None)
         monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
 
         assert mcp.configure_mcp_command() == 0

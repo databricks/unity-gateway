@@ -15,6 +15,10 @@ from ucode.databricks import (
 )
 from ucode.ui import normalize_workspace_url
 
+# The integration suite has its own configuration and subprocess-only fixtures.
+# Run it through scripts/run_integration.py, outside this fixture hierarchy.
+collect_ignore = ["integration"]
+
 
 @pytest.fixture(autouse=True)
 def _isolate_ucode_state(tmp_path, monkeypatch):
@@ -35,15 +39,17 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     state_dir.mkdir()
     monkeypatch.setattr(state_mod, "STATE_PATH", state_dir / "state.json")
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
-    # MANAGED_STATE_PATH is bound from APP_DIR at import, so patching APP_DIR alone doesn't move it;
-    # rebind it or save_managed_state writes to the developer's real ~/.ucode/managed-state.json.
-    monkeypatch.setattr(managed_config_mod, "MANAGED_STATE_PATH", state_dir / "managed-state.json")
+    # MANAGED_CONFIG_PATH is bound from APP_DIR at import, so patching APP_DIR alone doesn't move it;
+    # rebind it or save_managed_state writes to the developer's real ~/.ucode/managed-config.json.
+    monkeypatch.setattr(
+        managed_config_mod, "MANAGED_CONFIG_PATH", state_dir / "managed-config.json"
+    )
     backup_dir = state_dir / "managed-backups"
     monkeypatch.setattr(managed_files_mod, "MANAGED_BACKUP_DIR", backup_dir)
     monkeypatch.setattr(
         managed_files_mod, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
     )
-    monkeypatch.setattr(codex_mod, "_managed_config_path", lambda: None)
+    monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
 
     def reject_privileged_write(path, _desired_text):
         pytest.fail(
@@ -54,6 +60,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(managed_files_mod, "_sudo_replace", reject_privileged_write)
     monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
+    # A developer's ambient managed-config stub would otherwise short-circuit every fetch in the suite.
+    monkeypatch.delenv("UCODE_MANAGED_CONFIG_STUB", raising=False)
     # The model-services listing is memoized for the life of the process, so without this a cached
     # result would leak into the next test and make a stubbed listing look like it was never called.
     databricks_mod.clear_model_services_cache()

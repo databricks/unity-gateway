@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import textwrap
 import time
 import urllib.error
 import urllib.request
@@ -21,13 +22,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ROUTER_NAME = "task_v2"
+ROUTER_NAME = "task_v3"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 REQUEST_TIMEOUT_S = 30.0
 SUBAGENT_ROUTING_DISCLAIMER = (
     "Spawned subagents are routed independently based on their own complexity."
 )
+ROUTING_BOX_WIDTH = 73
 
 
 def format_switch_message(model: str, reason: str | None) -> str:
@@ -52,9 +54,19 @@ def format_subagent_message(model: str, reason: str | None) -> str:
 
 
 def _format_box(lines: list[str]) -> str:
-    width = max(len(line) for line in lines)
-    border = "─" * (width + 2)
-    return "\n".join([f"┌{border}┐", *(f"│ {line:<{width}} │" for line in lines), f"└{border}┘"])
+    wrapped_lines = [
+        wrapped
+        for line in lines
+        for wrapped in (textwrap.wrap(line, width=ROUTING_BOX_WIDTH) or [""])
+    ]
+    border = "─" * (ROUTING_BOX_WIDTH + 2)
+    return "\n".join(
+        [
+            f"┌{border}┐",
+            *(f"│ {line:<{ROUTING_BOX_WIDTH}} │" for line in wrapped_lines),
+            f"└{border}┘",
+        ]
+    )
 
 
 @dataclass(frozen=True)
@@ -100,7 +112,7 @@ def normalize_model(model: str) -> str:
 
 
 def configured_router_name() -> str:
-    """Return the environment-selected router, falling back to ``task_v2``."""
+    """Return the environment-selected router, falling back to ``task_v3``."""
     return os.environ.get(ROUTER_NAME_ENV_VAR, "").strip() or ROUTER_NAME
 
 

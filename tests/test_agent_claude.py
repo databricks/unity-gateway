@@ -5,16 +5,27 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import subprocess
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
+from ucode import managed_files
 from ucode.agents import LaunchOptions, claude
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
 
 WS = "https://example.databricks.com"
+# A connection MCP proxy argv, used by the Claude MCP-registration helper tests.
+# The leading element is the resolved `ucode` binary path, so tests assert the tail.
+GH_URL = f"{WS}/api/2.0/mcp/external/github"
+
+
+def _proxy_argv() -> list[str]:
+    from ucode.databricks import build_mcp_proxy_argv
+
+    return build_mcp_proxy_argv(GH_URL, WS, "p")
 
 
 @pytest.fixture(autouse=True)
@@ -205,10 +216,7 @@ class TestRenderOverlay:
         overlay, _ = claude.render_overlay(WS, "s4")
         assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in overlay["env"]
 
-    def test_gateway_model_discovery_skipped_under_provider(self, monkeypatch):
-        # A Model Provider Service routes every request to the external provider,
-        # so a discovered gateway endpoint id would reach a provider that can't
-        # resolve it — discovery must be off in that mode.
+    def test_gateway_model_discovery_not_persisted_under_provider(self, monkeypatch):
         monkeypatch.setenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", "1")
         overlay, _ = claude.render_overlay(WS, "s4", provider="main.x.claude-svc")
         assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in overlay["env"]
@@ -371,6 +379,13 @@ class TestRenderOverlay:
         overlay, _ = claude.render_overlay(WS, "s4")
         assert "Databricks-Model-Provider-Service" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
+    def test_parent_adds_discovery_header(self):
+        overlay, _ = claude.render_overlay(WS, "s4", parent_schema="main.default")
+        assert (
+            "Databricks-Model-Service-Parent-Schema: main.default"
+            in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        )
+
     def test_bedrock_provider_pins_model_ids(self):
         provider_models = {
             "opus": "global.anthropic.claude-opus-4-8",
@@ -459,6 +474,15 @@ class TestRenderOverlayUserAgent:
 
 
 class TestMergeAnthropicCustomHeaders:
+    def test_removes_stale_parent_header(self):
+        existing = "X-User: keep\nDatabricks-Model-Service-Parent-Schema: main.default"
+        managed = "x-databricks-use-coding-agent-mode: true"
+
+        merged = claude._merge_anthropic_custom_headers(existing, managed)
+
+        assert "X-User: keep" in merged
+        assert "Databricks-Model-Service-Parent-Schema" not in merged
+
     def test_merges_existing_settings_with_ucode_managed_headers(self):
         headers_from_existing_settings = "\n".join(
             [
@@ -875,6 +899,44 @@ class TestWriteToolConfigManagedSettings:
             "haiku": "system.ai.claude-haiku-5",  # Ucode default took priority.
         }
 
+    def test_managed_file_omits_workspace_defaults_for_provider(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): {
+                "env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-4-8"}
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {
+            "workspace": WS,
+            "claude_models": {
+                "opus": "system.ai.claude-opus-4-8",
+                "haiku": "system.ai.claude-haiku-4-6",
+            },
+        }
+
+        claude.write_tool_config(state, None, provider="main.default.anthropic")
+
+        env = json.loads(managed_writes[0][1])["env"]
+        assert not set(claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.values()) & env.keys()
+
+    def test_managed_file_keeps_provider_model_pins(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        state = {"workspace": WS, "claude_models": {"opus": "system.ai.claude-opus-4-8"}}
+
+        claude.write_tool_config(
+            state,
+            None,
+            provider="main.default.bedrock",
+            provider_models={"opus": "us.anthropic.claude-opus-4-6"},
+        )
+
+        env = json.loads(managed_writes[0][1])["env"]
+        assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "us.anthropic.claude-opus-4-6"
+
     def test_managed_file_removes_fable_default_when_fable_is_disabled(self, monkeypatch):
         managed_defaults = self._write_managed_model_defaults(
             monkeypatch,
@@ -961,6 +1023,183 @@ class TestWriteToolConfigManagedSettings:
 
         assert managed_writes == []
 
+    def test_sudo_failure_uses_local_settings_when_managed_file_is_compatible(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        warnings: list[str] = []
+        verified: list[dict] = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+
+        def deny_managed_write(*args, **kwargs):
+            raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+
+        monkeypatch.setattr(
+            claude,
+            "reconcile_managed_file",
+            deny_managed_write,
+        )
+        monkeypatch.setattr(claude, "print_warning", warnings.append)
+        monkeypatch.setattr(
+            claude,
+            "mark_managed_file_verified",
+            lambda *args, **kwargs: verified.append(kwargs),
+        )
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        assert private_writes
+        assert managed_writes == []
+        assert "continuing with local settings" in warnings[0]
+        assert verified == [{"scope": "local-compatible"}]
+
+    def test_sudo_failure_remains_fatal_when_managed_file_conflicts(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): {"env": {"ANTHROPIC_BASE_URL": "https://other.example.com"}}
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+
+        def deny_managed_write(*args, **kwargs):
+            raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+
+        monkeypatch.setattr(
+            claude,
+            "reconcile_managed_file",
+            deny_managed_write,
+        )
+
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+            )
+
+
+class TestAddClaudeMcpServer:
+    def test_registers_stdio_proxy_command(self, monkeypatch):
+        calls: list[dict] = []
+
+        def fake_run(args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        claude.add_claude_mcp_server("github", _proxy_argv())
+
+        args = calls[0]["args"]
+        assert args[:4] == ["claude", "mcp", "add", "github"]
+        assert args[4:6] == ["-s", "user"]
+        # `--` fences the proxy argv; everything after it is the stdio command.
+        assert args[6] == "--"
+        assert args[7:] == _proxy_argv()
+
+    def test_always_load_routes_through_add_json_stdio_entry(self, monkeypatch):
+        # The skills registry needs `alwaysLoad: true`, which plain `mcp add`
+        # can't set — so the proxy argv is wrapped in a stdio entry dict and
+        # registered via add-json instead.
+        calls: list[dict] = []
+
+        def fake_run(args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        claude.add_claude_mcp_server("skills", _proxy_argv(), always_load=True)
+
+        args = calls[0]["args"]
+        assert args[:4] == ["claude", "mcp", "add-json", "skills"]
+        entry = json.loads(args[4])
+        assert entry == {
+            "type": "stdio",
+            "command": _proxy_argv()[0],
+            "args": _proxy_argv()[1:],
+            "alwaysLoad": True,
+        }
+        assert args[5:] == ["-s", "user"]
+
+    def test_dict_entry_routes_through_add_json(self, monkeypatch):
+        # The web_search server registers a full stdio entry dict with its own
+        # env, which only `add-json` can express — a dict must route there rather
+        # than through the proxy `mcp add -- <argv>` path.
+        calls: list[dict] = []
+
+        def fake_run(args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        entry = {"type": "stdio", "command": "ucode", "args": ["mcp", "web-search"]}
+        claude.add_claude_mcp_server("web_search", entry)
+
+        args = calls[0]["args"]
+        assert args[:4] == ["claude", "mcp", "add-json", "web_search"]
+        assert json.loads(args[4]) == entry
+        assert args[5:] == ["-s", "user"]
+
+
+class TestRemoveClaudeMcpServer:
+    def test_returns_true_when_server_removed(self, monkeypatch):
+        calls: list[list[str]] = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        assert claude.remove_claude_mcp_server("github", "user") is True
+        assert calls == [["claude", "mcp", "remove", "github", "-s", "user"]]
+
+    def test_returns_false_when_server_missing(self, monkeypatch):
+        def fake_run(args, **kwargs):
+            raise subprocess.CalledProcessError(1, args, stderr="No MCP server named github found")
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        assert claude.remove_claude_mcp_server("github", "user") is False
+
+    def test_returns_false_when_project_local_server_missing(self, monkeypatch):
+        def fake_run(args, **kwargs):
+            raise subprocess.CalledProcessError(
+                1,
+                args,
+                stderr="No project-local MCP server found with name: github",
+            )
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        assert claude.remove_claude_mcp_server("github", "project") is False
+
+    def test_returns_false_when_user_scoped_server_missing(self, monkeypatch):
+        def fake_run(args, **kwargs):
+            raise subprocess.CalledProcessError(
+                1,
+                args,
+                stderr="No user-scoped MCP server found with name: github",
+            )
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        assert claude.remove_claude_mcp_server("github", "user") is False
+
+    def test_unexpected_failure_raises(self, monkeypatch):
+        def fake_run(args, **kwargs):
+            raise subprocess.CalledProcessError(1, args, stderr="permission denied")
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        try:
+            claude.remove_claude_mcp_server("github", "user")
+        except RuntimeError as exc:
+            assert "Failed to remove MCP server 'github'" in str(exc)
+        else:
+            raise AssertionError("expected RuntimeError")
+
 
 class TestRegisterWebSearchMcp:
     def test_skips_registration_when_entry_is_current(self, monkeypatch):
@@ -980,37 +1219,33 @@ class TestRegisterWebSearchMcp:
         assert claude._web_search_mcp_is_current(state, entry) is False
 
     def test_clears_existing_then_adds(self, monkeypatch):
-        import ucode.mcp as mcp_mod
-
         removed: list[str] = []
         added: list = []
         monkeypatch.setattr(
-            mcp_mod, "remove_claude_mcp_server", lambda name, scope: removed.append(scope) or True
+            claude, "remove_claude_mcp_server", lambda name, scope: removed.append(scope) or True
         )
         monkeypatch.setattr(
-            mcp_mod,
+            claude,
             "add_claude_mcp_server",
-            lambda name, entry, scope=mcp_mod.MCP_USER_SCOPE: added.append((name, entry, scope)),
+            lambda name, entry, scope=claude.MCP_USER_SCOPE: added.append((name, entry, scope)),
         )
         claude._register_web_search_mcp(WS, "databricks-gpt-5")
-        assert removed == list(mcp_mod.MCP_CLEANUP_SCOPES)
+        assert removed == list(claude.MCP_CLEANUP_SCOPES)
         assert len(added) == 1
         name, entry, _ = added[0]
         assert name == "web_search"
         assert entry["env"]["UCODE_WEB_SEARCH_MODEL"] == "databricks-gpt-5"
 
     def test_remove_failures_are_swallowed(self, monkeypatch):
-        import ucode.mcp as mcp_mod
-
         def boom(name, scope):
             raise RuntimeError("nope")
 
         added: list = []
-        monkeypatch.setattr(mcp_mod, "remove_claude_mcp_server", boom)
+        monkeypatch.setattr(claude, "remove_claude_mcp_server", boom)
         monkeypatch.setattr(
-            mcp_mod,
+            claude,
             "add_claude_mcp_server",
-            lambda name, entry, scope=mcp_mod.MCP_USER_SCOPE: added.append(name),
+            lambda name, entry, scope=claude.MCP_USER_SCOPE: added.append(name),
         )
         claude._register_web_search_mcp(WS, "m")
         assert added == ["web_search"]
@@ -1018,27 +1253,23 @@ class TestRegisterWebSearchMcp:
     def test_add_failure_is_non_blocking_and_warns(self, monkeypatch, capsys):
         # Regression: a failing `claude mcp add-json` used to abort the whole
         # `ucode claude` setup. It must now warn and return False instead.
-        import ucode.mcp as mcp_mod
+        monkeypatch.setattr(claude, "remove_claude_mcp_server", lambda name, scope: False)
 
-        monkeypatch.setattr(mcp_mod, "remove_claude_mcp_server", lambda name, scope: False)
-
-        def boom(name, entry, scope=mcp_mod.MCP_USER_SCOPE):
+        def boom(name, entry, scope=claude.MCP_USER_SCOPE):
             raise RuntimeError("Failed to add MCP server 'web_search' via claude CLI.")
 
-        monkeypatch.setattr(mcp_mod, "add_claude_mcp_server", boom)
+        monkeypatch.setattr(claude, "add_claude_mcp_server", boom)
         result = claude._register_web_search_mcp(WS, "m")
         assert result is False
         captured = capsys.readouterr()
         assert "web_search" in captured.out.lower() or "web search" in captured.out.lower()
 
     def test_add_success_returns_true(self, monkeypatch):
-        import ucode.mcp as mcp_mod
-
-        monkeypatch.setattr(mcp_mod, "remove_claude_mcp_server", lambda name, scope: False)
+        monkeypatch.setattr(claude, "remove_claude_mcp_server", lambda name, scope: False)
         monkeypatch.setattr(
-            mcp_mod,
+            claude,
             "add_claude_mcp_server",
-            lambda name, entry, scope=mcp_mod.MCP_USER_SCOPE: None,
+            lambda name, entry, scope=claude.MCP_USER_SCOPE: None,
         )
         assert claude._register_web_search_mcp(WS, "m") is True
 
@@ -1046,19 +1277,17 @@ class TestRegisterWebSearchMcp:
         # Regression for issue #100: a `claude mcp add-json` failure must not
         # block the rest of `ucode claude` setup (state save, managed-key
         # marking, etc.) from completing.
-        import ucode.mcp as mcp_mod
-
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
         monkeypatch.setattr(claude, "read_json_safe", lambda path: {})
         monkeypatch.setattr(claude, "write_json_file", lambda path, payload: None)
         saved: list[dict] = []
         monkeypatch.setattr(claude, "save_state", lambda state: saved.append(state))
-        monkeypatch.setattr(mcp_mod, "remove_claude_mcp_server", lambda name, scope: False)
+        monkeypatch.setattr(claude, "remove_claude_mcp_server", lambda name, scope: False)
 
-        def boom(name, entry, scope=mcp_mod.MCP_USER_SCOPE):
+        def boom(name, entry, scope=claude.MCP_USER_SCOPE):
             raise RuntimeError("Failed to add MCP server 'web_search' via claude CLI.")
 
-        monkeypatch.setattr(mcp_mod, "add_claude_mcp_server", boom)
+        monkeypatch.setattr(claude, "add_claude_mcp_server", boom)
 
         state = {"workspace": WS, "codex_models": ["databricks-gpt-5"]}
         result = claude.write_tool_config(state, "databricks-claude-sonnet-4")
@@ -1067,6 +1296,22 @@ class TestRegisterWebSearchMcp:
 
 
 class TestClaudeLaunch:
+    def test_gateway_discovery_enabled_for_relayed_provider(self, monkeypatch):
+        calls: list[tuple[dict, str, list[str]]] = []
+        monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
+        monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        monkeypatch.setattr(
+            claude,
+            "_launch_relayed",
+            lambda state, binary, tool_args: calls.append((state, binary, tool_args)),
+        )
+        state = {"workspace": WS, "claude_relayed": True}
+
+        claude.launch(state, ["--debug"], options=LaunchOptions())
+
+        assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert calls == [(state, "claude", ["--debug"])]
+
     def test_relayed_launch_uses_refresh_proxy(self, monkeypatch):
         calls: list[tuple] = []
 
@@ -1235,6 +1480,27 @@ class TestClaudeLaunch:
         claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
 
         assert os.environ["OAUTH_TOKEN"] == "token"
+        assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
+
+    def test_gateway_discovery_enabled_under_provider(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.delenv(v2.ENV_VAR, raising=False)
+        monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
+        monkeypatch.delenv("OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+
+        claude.launch(
+            {
+                "workspace": WS,
+                "profile": "test",
+                "_claude_launch_provider": "main.default.anthropic",
+            },
+            ["--debug"],
+            options=LaunchOptions(),
+        )
+
         assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
 
@@ -1589,3 +1855,40 @@ class TestEnsureSubscriptionLogin:
         monkeypatch.setattr(claude, "print_success", lambda *a, **kw: None)
         claude._ensure_subscription_login()
         assert calls == [[claude.SPEC["binary"], "auth", "login"]]
+
+
+class TestWriteToolConfigBackup:
+    """A re-configure must not snapshot the file ucode itself generated."""
+
+    def _patch(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "backup.json")
+        monkeypatch.setattr("ucode.config_io.APP_DIR", tmp_path)
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: None)
+
+    def test_first_configure_backs_up_user_owned_file(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path)
+        (tmp_path / "ucode-settings.json").write_text(
+            '{"permissions": {"allow": ["Read"]}}', encoding="utf-8"
+        )
+
+        claude.write_tool_config(
+            {"workspace": WS, "claude_models": {}}, "databricks-claude-sonnet-4"
+        )
+
+        backup = (tmp_path / "backup.json").read_text(encoding="utf-8")
+        assert backup == '{"permissions": {"allow": ["Read"]}}'
+
+    def test_reconfigure_does_not_back_up_generated_file(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path)
+        state = {
+            "workspace": WS,
+            "claude_models": {},
+            # load_state after a first configure: ucode already manages this file.
+            "managed_configs": {"claude": {"keys": [["env", "ANTHROPIC_BASE_URL"]]}},
+        }
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert not (tmp_path / "backup.json").exists()

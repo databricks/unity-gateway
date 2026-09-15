@@ -1,9 +1,8 @@
 """Per-agent modules + dispatch helpers.
 
 Each `agents.<tool>` module owns its own config layout, overlay rendering,
-config-file writer, default-model selection, launch logic, and validation
-command. This `__init__` aggregates the registry and exposes uniform
-dispatchers for the rest of the codebase.
+config-file writer, default-model selection, and launch logic. This `__init__`
+aggregates the registry and exposes uniform dispatchers for the rest of the codebase.
 
 Adding a new agent: create `agents/<name>.py` exposing `SPEC`, `write_tool_config`,
 `default_model`, `launch`, `validate_cmd`. Then add an entry to `_MODULES`
@@ -12,7 +11,6 @@ below and to `TOOL_ALIASES` if needed.
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 
@@ -29,8 +27,6 @@ from ucode.managed_files import managed_write_batch
 from ucode.state import get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
 from ucode.ui import (
-    console,
-    is_low_verbosity,
     print_err,
     print_note,
     print_section,
@@ -424,10 +420,13 @@ def configure_tool(
     route_root_model: str | None = None,
     custom_model: str | None = None,
     coding_agent_config_defaults: dict[str, str] | None = None,
+    parent_schema: str | None = None,
 ) -> dict:
     result: dict | tuple[dict, str]
     if tool == "codex":
-        result = codex.write_tool_config(state, model, provider=provider)
+        result = codex.write_tool_config(
+            state, model, provider=provider, parent_schema=parent_schema
+        )
     elif tool == "claude":
         # A Model Provider Service routes by header and pins no Databricks
         # model, so the usual "model required" guard doesn't apply to claude.
@@ -442,6 +441,7 @@ def configure_tool(
             route_root_model=route_root_model,
             custom_model=custom_model,
             coding_agent_config_defaults=coding_agent_config_defaults,
+            parent_schema=parent_schema,
         )
     else:
         # Every tool in this branch needs a model — including gemini under a provider,
@@ -621,118 +621,3 @@ def ensure_provider_state(tool: str) -> dict:
             f"Run `ucode configure` to set up your agents."
         )
     return state
-
-
-def validate_tool(tool: str) -> tuple[bool, str]:
-    """Invoke a tool with a simple prompt to verify it works. Returns (ok, error_msg)."""
-    spec = TOOL_SPECS[tool]
-    binary = spec["binary"]
-    module = _MODULES[tool]
-    # Some configs (e.g. claude relayed) can't be probed with a live message —
-    # the proxy + subscription login only exist at launch. Trust the written config.
-    if hasattr(module, "skip_validation") and module.skip_validation(load_state()):
-        return True, ""
-    cmd = module.validate_cmd(binary)
-    env = None
-    if hasattr(module, "validate_env"):
-        try:
-            env = module.validate_env(load_state())
-        except RuntimeError:
-            env = None
-    try:
-        result = subprocess.run(
-            cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            env=env,
-            stdin=subprocess.DEVNULL,
-        )
-        if result.returncode == 0:
-            return True, ""
-        output = (result.stderr or result.stdout or "").strip()
-        for line in output.splitlines():
-            if "error" in line.lower() and ("message" in line.lower() or ":" in line):
-                msg = line.strip()
-                if "error_code" in msg:
-                    try:
-                        payload = json.loads(msg[msg.index("{") : msg.rindex("}") + 1])
-                        return False, payload.get("message", msg)
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                return False, msg
-        last_line = output.splitlines()[-1] if output else "unknown error"
-        return False, last_line
-    except OSError as exc:
-        return False, str(exc)
-    except subprocess.TimeoutExpired:
-        return False, "timed out"
-
-
-def provider_permission_error(tool: str, state: dict, err: str) -> str:
-    """Rewrite the opaque gateway connection-permission failure into an
-    actionable message naming the Model Provider Service the user must be
-    granted access to. Returns ``err`` unchanged when it doesn't apply.
-    """
-    provider = get_provider_service(state, tool)
-    if provider and "USE CONNECTION on SCHEMA_CONNECTION" in err:
-        return (
-            f"You don't have EXECUTE permission on the model provider service "
-            f"'{provider}'. Ask its owner to grant you access, then re-run "
-            f"`ucode configure`."
-        )
-    return err
-
-
-def validate_all_tools(state: dict) -> None:
-    from rich.panel import Panel  # local to avoid bumping module-level deps
-
-    from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
-    from ucode.config_io import restore_file
-
-    low_verbosity = is_low_verbosity()
-    console.print()
-    if low_verbosity:
-        console.print("[bold blue]Validating...[/bold blue]")
-    else:
-        console.print(
-            Panel(
-                "Testing each tool with a quick message...",
-                title="Validating",
-                style="bold blue",
-                expand=False,
-            )
-        )
-    results: list[tuple[str, bool]] = []
-    available_tools = list(state.get("available_tools") or [])
-    for tool, spec in TOOL_SPECS.items():
-        if tool not in available_tools:
-            continue
-        with spinner(f"Validating {spec['display']}..."):
-            ok, err = validate_tool(tool)
-        results.append((tool, ok))
-        if ok:
-            print_success(f"{spec['display']} is working")
-        else:
-            print_err(f"{spec['display']}: {provider_permission_error(tool, state, err)}")
-            managed = bool(state.get("managed_configs", {}).get(tool))
-            restore_file(spec["config_path"], spec["backup_path"], managed)
-            # Rollback settings.json for Pi
-            if tool == "pi":
-                restore_file(PI_SETTINGS_PATH, PI_SETTINGS_BACKUP_PATH, managed)
-            available_tools.remove(tool)
-    state["available_tools"] = available_tools
-    save_state(state)
-
-    success_tools = [(t, s) for t, s in results if s]
-    if success_tools and not low_verbosity:
-        console.print()
-        lines = []
-        for tool, _ in success_tools:
-            spec = TOOL_SPECS[tool]
-            lines.append(
-                f"[green]✓[/green] [bold]{spec['display']}[/bold] — "
-                f"run with [cyan]ucode {tool}[/cyan]"
-            )
-        console.print(Panel("\n".join(lines), title="Ready", style="green", expand=False))
