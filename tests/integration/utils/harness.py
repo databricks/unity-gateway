@@ -172,7 +172,11 @@ class UserSession:
             models = workspace[f"{agent}_models"]
             values = models.values() if isinstance(models, dict) else models
             prefix = "system.ai.claude-" if agent == "claude" else "system.ai.gpt-"
-            model = next((value for value in values if value.startswith(prefix)), "")
+            usable = [
+                value for value in values if value.startswith(prefix) and "astra" not in value
+            ]
+            preferred = "system.ai.gpt-5-4-nano"
+            model = preferred if preferred in usable else next(iter(usable), "")
             source = "ug configure discovery"
         assert model, (
             f"ug configure found no system.ai model for {agent}; use --{agent}-model to reproduce a specific model."
