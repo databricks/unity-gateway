@@ -46,6 +46,27 @@ def connection_from_url(url: str) -> str | None:
     return connection or None
 
 
+def _cli_supports_resource_flag(login_binary: str) -> bool:
+    """Whether ``<login_binary> auth login`` advertises the ``--resource`` flag.
+
+    The connection sign-in needs a Databricks CLI with ``--resource``
+    (databricks/cli#6621). An older CLI rejects the flag and the login exits with
+    a cryptic parse error, so we check ``--help`` up front to give a clear message
+    instead. Fail-open (assume supported) if ``--help`` can't be run — the real
+    login attempt will surface any genuine failure."""
+    try:
+        result = subprocess.run(
+            [login_binary, "auth", "login", "--help"],
+            check=False,
+            timeout=20,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return "--resource" in f"{result.stdout or ''}{result.stderr or ''}"
+
+
 def run_connection_login(
     resource_url: str,
     workspace: str,
@@ -67,6 +88,13 @@ def run_connection_login(
     stays visible when the browser can't open (e.g. a headless remote). Returns
     ``(ok, message)``; on failure ``message`` points at that log.
     """
+    connection = connection_from_url(resource_url) or resource_url
+    if not _cli_supports_resource_flag(login_binary):
+        return False, (
+            f"the Databricks CLI ('{login_binary}') has no `--resource` flag, so the "
+            f"'{connection}' connection sign-in can't run. Upgrade the CLI "
+            "(databricks/cli#6621) and retry."
+        )
     argv = [
         login_binary,
         "auth",
@@ -78,7 +106,6 @@ def run_connection_login(
     ]
     if profile:
         argv += ["--profile", profile]
-    connection = connection_from_url(resource_url) or resource_url
     print(
         f"ucode mcp-proxy: '{connection}' needs a one-time connection sign-in. Opening your "
         "browser to complete it — if it doesn't open, use the authorization URL printed below.",
