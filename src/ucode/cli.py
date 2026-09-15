@@ -3077,14 +3077,6 @@ def codex_cmd(
         str | None,
         typer.Option("--scopes", hidden=True, help="Comma-separated custom OAuth scopes."),
     ] = None,
-    enable_model_discovery: Annotated[
-        bool,
-        typer.Option(
-            "--enable-model-discovery",
-            hidden=True,
-            help="Enable AI Gateway models in Codex's model picker.",
-        ),
-    ] = False,
     enable_smart_routing_flag: Annotated[
         bool,
         typer.Option(

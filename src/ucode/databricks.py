@@ -2024,10 +2024,9 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 # Maps the gateway routing dialect a coding tool speaks to the Model Provider
 # Service `provider_type`s it can be backed by. claude speaks Anthropic's API,
 # which both the `anthropic` and `amazon_bedrock` provider types serve (Bedrock
-# just exposes different model ids); codex speaks OpenAI's, including Bedrock
-# services that expose OpenAI models; gemini speaks Google's, served by a
-# Gemini Enterprise provider. Tags are the short form produced by
-# `_provider_type_tag` (e.g. `amazon_bedrock`).
+# just exposes different model ids); codex speaks OpenAI's; gemini speaks
+# Google's, served by a Gemini Enterprise provider. Tags are the short form
+# produced by `_provider_type_tag` (e.g. `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
     "claude": ("anthropic", "amazon_bedrock"),
     "codex": ("openai", "amazon_bedrock"),
@@ -2038,7 +2037,6 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
 # `us.anthropic.claude-sonnet-4-6`) instead of the agent's canonical model
 # names, so ucode must pin them explicitly.
 BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock",)
-_BEDROCK_OPENAI_MODEL_PREFIX = "openai."
 
 
 def tool_supports_provider_type(tool: str, provider_type: str) -> bool:
@@ -2255,12 +2253,7 @@ def list_tool_provider_services(
 
 
 def service_usable_for_tool(tool: str, service: dict) -> bool:
-    """True when ``tool`` can actually route through ``service``.
-
-    Beyond the provider-type match, a Bedrock service must expose at least one
-    model for the tool's API dialect. Anthropic and OpenAI services use their
-    matching dialect directly, so any provider-type match is usable.
-    """
+    """True when ``tool`` can actually route through ``service``."""
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
         return False
@@ -2270,8 +2263,7 @@ def service_usable_for_tool(tool: str, service: dict) -> bool:
             return bool(map_claude_family_models(targets))
         if tool == "codex":
             return any(
-                isinstance(model_id, str)
-                and model_id.lower().startswith(_BEDROCK_OPENAI_MODEL_PREFIX)
+                isinstance(model_id, str) and model_id.lower().startswith("openai.")
                 for model_id in targets
             )
         return False
