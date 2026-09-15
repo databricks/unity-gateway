@@ -781,6 +781,22 @@ def configure_workspace_command(
     state = states[0]
     save_state(state)
 
+    # If the workspace publishes a managed config, the admin dictates the setup, so apply it to every
+    # enabled agent available here rather than prompting the developer to pick. Each agent is resolved
+    # with the managed overlay and configured now (so MCP/skills/model wiring lands at configure time,
+    # not only at launch). Launch still refreshes the launched agent.
+    managed, _ = refresh_managed_config(state)
+    if managed is not None:
+        for tool_name in managed_enabled_tools(managed):
+            if check_gateway_endpoint(state, tool_name):
+                configure_selected_tools(
+                    resolve_state(managed, state, tool_name),
+                    [tool_name],
+                    install_ai_tools=not is_dry_run(),
+                )
+        _confirm_managed_config_applied(managed, state["workspace"])
+        return 0
+
     available_on_workspace: list[str] = []
     tools_to_check = selected_tools or list(TOOL_SPECS)
     for tool_name in tools_to_check:
