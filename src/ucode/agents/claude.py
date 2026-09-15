@@ -171,6 +171,8 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 # Env keys ucode used to write but no longer does; stripped from the managed
 # settings file on every launch so stale values never linger.
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
+CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
+CLAUDE_PRUNED_PICKER_KEYS = ("availableModels", "enforceAvailableModels")
 ANTHROPIC_CUSTOM_HEADERS_ENV_KEY = "ANTHROPIC_CUSTOM_HEADERS"
 CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
     {
@@ -332,6 +334,7 @@ def render_overlay(
     route_root_model: str | None = None,
     custom_model: str | None = None,
     parent_schema: str | None = None,
+    static_models: list[str] | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
 
@@ -452,7 +455,21 @@ def render_overlay(
         overlay["permissions"] = {"deny": ["WebSearch"]}
         keys.append(["permissions", "deny"])
 
+    if static_models and not provider and not relayed:
+        overlay["availableModels"] = list(static_models)
+        overlay["enforceAvailableModels"] = True
+        overlay["modelPicker"] = {
+            "replaceBuiltInOptions": True,
+            "options": [{"model": m, "label": _picker_label(m)} for m in static_models],
+        }
+        keys += [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
+
     return overlay, keys
+
+
+def _picker_label(model: str) -> str:
+    """A short picker label for a model id — the raw id minus the ``system.ai.`` prefix."""
+    return model.removeprefix("system.ai.")
 
 
 def _maybe_add_1m_suffix(model: str) -> str:
@@ -695,6 +712,7 @@ def write_tool_config(
         route_root_model=route_root_model,
         custom_model=custom_model,
         parent_schema=parent_schema,
+        static_models=state.get("claude_static_models"),
     )
     tracing_env_vars = tracing_env(state, "claude")
     stop_hook_command = claude_tracing_stop_hook_command() if tracing_env_vars else None
