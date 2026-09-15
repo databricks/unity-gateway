@@ -24,6 +24,20 @@ def test_smart_routing_switch_message_is_boxed():
     )
 
 
+def test_smart_routing_switch_message_wraps_to_fixed_width():
+    message = v2.format_routing_notice(
+        "model-x",
+        "This rationale is deliberately long enough to wrap onto another line "
+        "without making the routing box wider.",
+    )
+
+    lines = message.splitlines()
+    assert len({len(line) for line in lines}) == 1
+    assert lines[0] == "┌" + ("─" * 75) + "┐"
+    assert "│ Reason : This rationale is deliberately long enough to wrap onto another  │" in lines
+    assert "│ line without making the routing box wider.                                │" in lines
+
+
 class TestLaunchCodex:
     def test_rejects_unsupported_codex_version(self, monkeypatch):
         monkeypatch.setenv(v2.ENV_VAR, "1")
