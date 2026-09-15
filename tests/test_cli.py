@@ -2461,6 +2461,13 @@ class TestConfigureMcpFlag:
 
 
 class TestConfigureAgentsSelection:
+    @pytest.fixture(autouse=True)
+    def _no_managed_config(self, monkeypatch):
+        # `ug configure` now fetches the managed config, which shells out to the `databricks` CLI.
+        # Default it to absent so these personal-flow tests never hit the CLI (it isn't on CI);
+        # the managed-branch test overrides this.
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda state: (None, False))
+
     @pytest.mark.parametrize(("keys", "expected"), [(" \r", ["codex"]), ("\r", [])])
     def test_interactive_picker_installs_only_checked_agents(self, monkeypatch, keys, expected):
         state = {**MINIMAL_STATE, "available_tools": []}
@@ -2560,6 +2567,36 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(cli_mod, "prompt_for_tools", lambda options: ["claude"])
         cli_mod.configure_workspace_command()
         assert picked_for == ["claude"]
+
+    def test_managed_config_applies_all_enabled_and_skips_selection(self, monkeypatch):
+        # A managed config means the admin dictates the agents, so `ug configure` applies it to every
+        # enabled+available agent and does NOT prompt the developer to pick.
+        import ucode.cli as cli_mod
+
+        state = {**MINIMAL_STATE, "available_tools": []}
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(
+            cli_mod,
+            "refresh_managed_config",
+            lambda s: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
+        )
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: True)
+        monkeypatch.setattr(cli_mod, "resolve_state", lambda managed, s, tool: s)
+        monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
+        configured: list[str] = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda s, tools, **kwargs: configured.extend(tools) or s,
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_tools",
+            lambda options: pytest.fail("must not prompt for tools when a managed config exists"),
+        )
+
+        assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
+        assert configured == ["claude", "codex"]
 
     def test_configures_available_subset_by_default(self, monkeypatch):
         """A workspace with no OpenAI models still configures claude and pi."""
@@ -3250,6 +3287,10 @@ class TestConfigureSharedStateUsePat:
 
 
 class TestConfigureNoLongerValidates:
+    @pytest.fixture(autouse=True)
+    def _no_managed_config(self, monkeypatch):
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda state: (None, False))
+
     def test_configure_completes_without_probe(self, monkeypatch):
         import ucode.cli as cli_mod
 
