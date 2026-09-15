@@ -167,6 +167,38 @@ class TestFetchCodexParentModelCatalog:
         assert not isinstance(exc_info.value, db_mod.CodexMpsModelCatalogUnavailable)
 
 
+class TestFetchAnthropicGatewayModels:
+    def test_fetches_complete_scoped_catalog(self, monkeypatch):
+        seen = {}
+        models = [{"id": "claude-parent", "display_name": "Parent Claude"}]
+
+        def fake_get(url, token, **kwargs):
+            seen.update(url=url, token=token, **kwargs)
+            return {"data": models}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        result, reason = db_mod.fetch_anthropic_gateway_models(
+            WS,
+            "tok",
+            headers={"Databricks-Model-Service-Parent-Schema": "main.default"},
+        )
+
+        assert reason is None
+        assert result == models
+        assert seen["url"] == f"{WS}/ai-gateway/anthropic/v1/models?limit=1000"
+        assert seen["headers"] == {"Databricks-Model-Service-Parent-Schema": "main.default"}
+
+    @pytest.mark.parametrize("payload", [[], {}, {"data": [{}]}])
+    def test_rejects_invalid_catalog(self, monkeypatch, payload):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
+
+        models, reason = db_mod.fetch_anthropic_gateway_models(WS, "tok")
+
+        assert models is None
+        assert "invalid Anthropic" in reason
+
+
 class TestWorkspaceHostname:
     def test_extracts_hostname(self):
         assert workspace_hostname(WS) == "example.databricks.com"

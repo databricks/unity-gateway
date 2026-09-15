@@ -1296,6 +1296,7 @@ class TestClaudeLaunch:
             "_launch_relayed",
             lambda state, binary, tool_args: calls.append((state, binary, tool_args)),
         )
+        monkeypatch.setattr(claude, "_prime_gateway_models_cache", lambda *_args: "token")
         state = {"workspace": WS, "claude_relayed": True}
 
         claude.launch(state, ["--debug"], options=LaunchOptions())
@@ -1462,6 +1463,7 @@ class TestClaudeLaunch:
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "_prime_gateway_models_cache", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
 
         claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
@@ -1476,6 +1478,7 @@ class TestClaudeLaunch:
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "_prime_gateway_models_cache", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
 
         claude.launch(
@@ -1490,6 +1493,48 @@ class TestClaudeLaunch:
 
         assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
+
+
+class TestGatewayModelsCache:
+    def test_switching_parents_replaces_cached_models(self, tmp_path, monkeypatch):
+        cache_path = tmp_path / "cache" / "gateway-models.json"
+        calls = []
+        monkeypatch.setattr(claude, "CLAUDE_GATEWAY_MODELS_CACHE_PATH", cache_path)
+        monkeypatch.setattr(claude, "_launch_token", lambda *_args: "token")
+        monkeypatch.setattr(claude.time, "time", lambda: 123.456)
+
+        def fetch(workspace, token, *, headers):
+            calls.append((workspace, token, headers))
+            parent = headers[claude.MODEL_SERVICE_PARENT_SCHEMA_HEADER]
+            return [{"id": f"model-from-{parent}"}], None
+
+        monkeypatch.setattr(claude, "fetch_anthropic_gateway_models", fetch)
+
+        for parent in ("main.andy", "main.default"):
+            claude._prime_gateway_models_cache({"_claude_launch_parent_schema": parent}, WS)
+
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert cached == {
+            "baseUrl": f"{WS}/ai-gateway/anthropic",
+            "fetchedAt": 123456,
+            "models": [{"id": "model-from-main.default"}],
+        }
+        assert calls[-1][2] == {claude.MODEL_SERVICE_PARENT_SCHEMA_HEADER: "main.default"}
+
+    def test_failed_refresh_blocks_launch(self, monkeypatch):
+        monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
+        launch = Mock()
+        monkeypatch.setattr(claude, "exec_or_spawn", launch)
+        monkeypatch.setattr(
+            claude,
+            "_prime_gateway_models_cache",
+            Mock(side_effect=RuntimeError("refresh failed")),
+        )
+
+        with pytest.raises(RuntimeError, match="refresh failed"):
+            claude.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        launch.assert_not_called()
 
 
 class TestWriteToolConfigPrunesStaleModelEnv:

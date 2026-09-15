@@ -2235,6 +2235,8 @@ def _launch_tool(
                     state["_claude_launch_model"] = launch_model
             if provider:
                 state["_claude_launch_provider"] = provider
+            elif parent_schema:
+                state["_claude_launch_parent_schema"] = parent_schema
         elif tool == "codex":
             if provider:
                 state["_codex_launch_provider"] = provider

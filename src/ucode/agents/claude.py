@@ -10,7 +10,9 @@ import shutil
 import signal
 import socket
 import subprocess
+import tempfile
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -31,10 +33,15 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
-from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
+from ucode.custom_oauth import (
+    CustomOAuthConfig,
+    build_custom_auth_shell_command,
+    get_custom_client_token,
+)
 from ucode.databricks import (
     build_auth_shell_command,
     build_tool_base_url,
+    fetch_anthropic_gateway_models,
     get_databricks_token,
 )
 from ucode.launcher import exec_or_spawn
@@ -69,6 +76,7 @@ GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
 CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
 CLAUDE_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "ucode-settings.json"
+CLAUDE_GATEWAY_MODELS_CACHE_PATH = CLAUDE_CONFIG_DIR / "cache" / "gateway-models.json"
 CLAUDE_MCP_CONFIG_PATH = Path.home() / ".claude.json"
 # The default model is stored in Claude's default user settings, not the ucode settings.
 CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
@@ -296,6 +304,74 @@ def relayed_proxy_base_url(state: dict) -> str:
             port = sock.getsockname()[1]
         state["relayed_proxy_port"] = port
     return f"http://{LOOPBACK_HOST}:{port}"
+
+
+def _launch_token(state: dict, workspace: str) -> str:
+    custom_oauth = state.get("custom_oauth")
+    if isinstance(custom_oauth, dict):
+        return get_custom_client_token(
+            workspace,
+            custom_oauth["client_id"],
+            custom_oauth["redirect_url"],
+            scopes=custom_oauth["scopes"],
+        )
+    return get_databricks_token(workspace, state.get("profile"))
+
+
+def _write_gateway_models_cache(base_url: str, models: list[dict]) -> None:
+    path = CLAUDE_GATEWAY_MODELS_CACHE_PATH
+    temp_path = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, raw_temp_path = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+        os.close(fd)
+        temp_path = Path(raw_temp_path)
+        write_json_file(
+            temp_path,
+            {
+                "baseUrl": base_url,
+                "fetchedAt": int(time.time() * 1000),
+                "models": models,
+            },
+        )
+        os.replace(temp_path, path)
+    except OSError as exc:
+        raise RuntimeError(f"Could not update Claude Code's model cache at {path}.") from exc
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _prime_gateway_models_cache(state: dict, workspace: str) -> str:
+    provider = state.get("_claude_launch_provider")
+    parent_schema = state.get("_claude_launch_parent_schema")
+    headers: dict[str, str] = {}
+    scope = "this workspace"
+    if isinstance(provider, str) and provider.strip():
+        provider = provider.strip()
+        headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
+        scope = f"provider {provider}"
+    elif isinstance(parent_schema, str) and parent_schema.strip():
+        parent_schema = parent_schema.strip()
+        headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
+        scope = f"parent schema {parent_schema}"
+
+    token = _launch_token(state, workspace)
+    models, reason = fetch_anthropic_gateway_models(workspace, token, headers=headers)
+    if models is None:
+        raise RuntimeError(f"Could not discover Claude models for {scope}: {reason}")
+    base_url = (
+        relayed_proxy_base_url(state)
+        if state.get("claude_relayed")
+        else build_tool_base_url("claude", workspace)
+    )
+    _write_gateway_models_cache(base_url, models)
+    return token
 
 
 def _web_search_mcp_entry(workspace: str, search_model: str, profile: str | None = None) -> dict:
@@ -1420,10 +1496,12 @@ def launch(
 ) -> None:
     binary = SPEC["binary"]
     workspace = state.get("workspace")
+    discovery_token = None
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+        discovery_token = _prime_gateway_models_cache(state, workspace)
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return
@@ -1446,7 +1524,9 @@ def launch(
         )
         return
     if workspace:
-        os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
+        os.environ["OAUTH_TOKEN"] = discovery_token or get_databricks_token(
+            workspace, state.get("profile")
+        )
     if options.claude_launch_model:
         os.environ["ANTHROPIC_MODEL"] = options.claude_launch_model
     exec_or_spawn(_build_claude_argv(binary, tool_args))

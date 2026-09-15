@@ -2634,6 +2634,33 @@ def _get_anthropic_models_json(workspace: str, token: str) -> tuple[dict | list 
     )
 
 
+def fetch_anthropic_gateway_models(
+    workspace: str,
+    token: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> tuple[list[dict] | None, str | None]:
+    """Fetch the complete Claude Code gateway catalog for a launch scope."""
+    hostname = workspace_hostname(workspace)
+    payload, reason = _http_get_json(
+        f"https://{hostname}{ANTHROPIC_MODELS_PATH}?limit=1000",
+        token,
+        max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
+        headers=headers,
+    )
+    if payload is None:
+        return None, reason
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        return None, "AI Gateway returned an invalid Anthropic model catalog"
+    models = payload["data"]
+    if any(
+        not isinstance(model, dict) or not isinstance(model.get("id"), str) or not model["id"]
+        for model in models
+    ):
+        return None, "AI Gateway returned an invalid Anthropic model entry"
+    return [dict(model) for model in models], None
+
+
 def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | None]:
     """List every model id advertised by AI Gateway's Anthropic endpoint.
 
