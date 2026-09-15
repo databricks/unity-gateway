@@ -169,7 +169,7 @@ jobs:
             ${{ runner.temp }}/ug-integration/wheels/
 
   full:
-    name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.group == 'configure' && 'Configure' || matrix.group == 'routing' && 'Routing' || matrix.group == 'headless' && 'Headless' || 'Commands' }}
+    name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.group == 'configure' && 'Configure' || matrix.group == 'headless' && 'Headless' || 'Commands' }}
     if: ${{ inputs.suite != 'smoke' }}
     needs: workspace
     runs-on: ubuntu-22.04
@@ -180,14 +180,14 @@ jobs:
       fail-fast: false
       matrix:
         agent: [claude, codex]
-        group: ${{ fromJSON(inputs.suite == 'tui' && '["configure", "routing"]' || '["configure", "routing", "headless", "commands"]') }}
+        group: ${{ fromJSON(inputs.suite == 'tui' && '["configure"]' || '["configure", "headless", "commands"]') }}
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
-      TEST_MARKER: ${{ (matrix.group == 'configure' || matrix.group == 'routing') && 'live and tui' || 'live and not tui' }} and ${{ matrix.agent }}
-      TEST_KEYWORD: ${{ matrix.group == 'configure' && 'configure' || matrix.group == 'routing' && 'not configure' || matrix.group == 'headless' && 'headless' || 'not headless' }}
+      TEST_MARKER: ${{ matrix.group == 'configure' && 'live and tui' || 'live and not tui' }} and ${{ matrix.agent }}
+      TEST_KEYWORD: ${{ matrix.group == 'configure' && 'configure' || matrix.group == 'headless' && 'headless' || 'not headless' }}
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.group }}
     steps: *live-steps
 

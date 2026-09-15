@@ -43,7 +43,7 @@ for an npm mirror if public npm is unavailable. Older releases that only
 provide the `ucode` command require `--entry-point ucode`.
 
 Select one agent by providing only its version. Exact agent versions are
-required; floating `latest`, caret, and tilde versions are rejected. Provider and default-routing CUJs use the workspace's configuration and need no model input. Cases that
+required; floating `latest`, caret, and tilde versions are rejected. Hosted provider CUJs use the workspace's configuration and need no model input. Cases that
 exercise explicit model arguments use a real `system.ai` model already discovered
 by `ug configure`, recorded in that case's `model.json`. Optional `--claude-model`
 and `--codex-model` overrides reproduce a particular model-related failure.
@@ -80,8 +80,6 @@ All user journeys are top-level tests. There is no separate regressions category
 ```text
 test_ug_configure_claude.py             # Databricks Hosted and Anthropic MPS
 test_ug_configure_codex.py              # Databricks Hosted and OpenAI MPS
-test_smart_routing_claude.py            # subagent, explicit model
-test_smart_routing_codex.py             # first prompt, explicit model
 test_ug_claude_headless.py              # script prompts, models, caller settings
 test_ug_codex_headless.py               # script prompts and model arguments
 test_ug_claude_commands.py              # command help forwarding
@@ -102,8 +100,8 @@ process/terminal mechanics, evidence, and cleanup. Fixtures supply an isolated
 session and credentials; none manufacture or configure application state.
 
 Provider CUJs use normal ug validation, then require their own completed
-interactive task. Routing CUJs skip the preliminary validation prompt and require
-the actual routed TUI task instead. Tests disable optional Databricks AI Tools and
+interactive task. Other journeys skip preliminary validation when they provide
+their own task or command assertions. Tests disable optional Databricks AI Tools and
 pass `--skip-upgrade` to preserve the selected version. They use real onboarding
 and trust choices, without seeded acceptance or disabled agent sandboxing. If a
 routed child asks to locate the random fixture beneath the disposable project,
@@ -112,11 +110,10 @@ permission dialog; any broader permission request fails immediately.
 
 A fixture file contains an unpredictable value absent from the prompt. Success
 requires an assistant answer in the real agent transcript containing that value,
-plus normal TUI exit. Codex evidence requires its task-complete event. Subagent
-CUJs require a separate child transcript, child answer, and a correlated routing
-decision. Claude uses its real child-start audit; its model is unknown when the
-event omits it. Codex requires native parent linkage and a completed child turn
-using the routed model, excluding inherited parent turns.
+plus normal TUI exit. Codex evidence requires its task-complete event.
+Interactive smart-routing journeys and their Claude/Codex CI shards are deferred
+at the user's request. Unit/component routing tests remain; live first-prompt,
+subagent routing, and interactive explicit-model bypass are not covered.
 
 MPS CUJs select the existing services already used by e2e:
 
@@ -128,7 +125,7 @@ Use `--codex-provider-model` when that OpenAI service allows a different model.
 Those choices are recorded in `versions.json`. No service is created or modified.
 A missing service or permission fails the selected CUJ, rather than skipping it.
 
-There are **43 live cases** (including 8 TUI journeys) and **3 installation
+There are **39 live cases** (including 4 TUI journeys) and **3 installation
 checks** with both agents. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
@@ -136,14 +133,14 @@ checks** with both agents. See the named coverage and gaps matrix in
 # Append one of these selections to the runner command:
 -- -m live         # default: all live user journeys
 -- -m smoke        # four Hosted configure/TUI and headless argument journeys
--- -m tui          # ten complete interactive TUI journeys
+-- -m tui          # four complete provider-configuration TUI journeys
 -- -k test_ug_codex_app_server_client_initializes  # one named journey and its variants
 # Use --installation-only before -- for package checks without credentials.
 ```
 
 The old focused checks are now descriptive CUJs with setup and outcomes visible
-in each test. Duplicate boot-only checks are incorporated into the Databricks,
-first-prompt, and explicit-model TUI journeys. Real failures, including generated
+in each test. Duplicate boot-only checks are incorporated into the Databricks
+configuration TUI journeys. Real failures, including generated
 config left after revert and banners on app-server stdout, remain assertions.
 MCP/skills functionality, tracing, the broad configure-option matrix, and other
 agents are outside this focused revision.
@@ -196,13 +193,12 @@ workspace discovery inside each test; only explicit-model scenarios choose and
 record a discovered `system.ai` model as a test argument.
 Every relevant same-repository PR and push to `main` runs **Smoke journeys** and
 **Full journeys** concurrently. Smoke runs the Hosted configure/TUI and headless
-argument journey for each agent (four cases, two agent jobs). Full runs all 43
-live cases, including those smoke cases, in eight disjoint shards:
+argument journey for each agent (four cases, two agent jobs). Full runs all 39
+live cases, including those smoke cases, in six disjoint shards:
 
 | Group, per agent | Marker | Keyword filter |
 | --- | --- | --- |
 | configure | `live and tui` | `configure` |
-| routing | `live and tui` | `not configure` |
 | headless | `live and not tui` | `headless` |
 | commands | `live and not tui` | `not headless` |
 
@@ -225,7 +221,7 @@ The workflow consumes the stored bearer; it does not mint or refresh credentials
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
 and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
 alias for `full`. Manual subsets are explicit: `smoke` runs just the four smoke
-cases; `tui` runs all ten TUI cases across the configure/routing shards. Installation
+cases; `tui` runs all four TUI cases across the configure shards. Installation
 checks always run. Set the ug/agent versions. From the CLI:
 
 ```bash
@@ -285,13 +281,13 @@ use the same OS/architecture as the original run; add `--platform linux/amd64`
 to both `docker build` and `docker run` on an ARM Mac to match GitHub's Ubuntu runner. Changing platforms or
 resolving a fresh npm lock is a new comparison, not an exact dependency replay.
 
-Use `-- -m tui` for the eight interactive journeys or
-`-- -k test_smart_routing_codex_first_prompt` to narrow a failure. Each rerun needs a new output directory. Inspect:
+Use `-- -m tui` for the four interactive journeys or
+`-- -k test_ug_configure_codex_databricks` to narrow a failure. Each rerun needs a new output directory. Inspect:
 
 - `junit.xml` for the failing case and assertion.
 - `artifacts/<case>/command-*.json` for the real argv, exit status, stdout and stderr.
-- `artifacts/<case>/first-session.json`, `provider-session.json`, `first-prompt.json`,
-  `subagent-task.json`, or `reopen.json` for rendered terminal screens, raw terminal
+- `artifacts/<case>/first-session.json`, `provider-session.json`, or `reopen.json`
+  for rendered terminal screens, raw terminal
   output, keyboard actions, exit status, routing logs, and actual agent-session records.
 - `install.log` for resolution/bootstrap failures.
 
