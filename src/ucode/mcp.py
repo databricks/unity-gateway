@@ -34,7 +34,12 @@ from ucode.mcp_oauth import (
     CURSOR_OAUTH_CLIENT_ID,
     oauth_client_available,
 )
-from ucode.skills_api import SkillRef, list_all_skills
+from ucode.skills_api import (
+    _SKILLS_WALK_DEADLINE_SECONDS,
+    _SKILLS_WALK_TIMEOUT_REASON,
+    SkillRef,
+    list_all_skills,
+)
 from ucode.state import load_full_state, load_state, save_state
 from ucode.ui import (
     _BACK,
@@ -2015,25 +2020,32 @@ def _skill_schema_choice(location: str, skill_count: int, in_scope: bool) -> que
 
 def _skill_schema_background_loader(
     workspace: str, token: str, in_scope: set[str]
-) -> Callable[[Callable[[list[questionary.Choice]], None]], None]:
+) -> Callable[[Callable[[list[questionary.Choice]], None]], str | None]:
     """A picker ``background_loader`` that streams the workspace-wide skill walk in as schema rows.
 
     ``list_all_skills`` probes one schema per call, so each ``on_skills`` batch is that schema's
     complete skill set: one row per schema, carrying its exact skill count.
     """
 
-    def loader(append: Callable[[list[questionary.Choice]], None]) -> None:
+    def loader(append: Callable[[list[questionary.Choice]], None]) -> str | None:
         def on_skills(refs: list[SkillRef]) -> None:
             location = f"{refs[0].catalog}.{refs[0].schema}"
             append([_skill_schema_choice(location, len(refs), location in in_scope)])
 
-        list_all_skills(workspace, token, on_skills=on_skills)
+        found, reason = list_all_skills(workspace, token, on_skills=on_skills)
+        if reason == _SKILLS_WALK_TIMEOUT_REASON:
+            schemas = len({(ref.catalog, ref.schema) for ref in found})
+            return (
+                f"⚠️ Timed out after {int(_SKILLS_WALK_DEADLINE_SECONDS)}s, "
+                f"found {schemas} skill schemas"
+            )
+        return None
 
     return loader
 
 
 def prompt_for_skill_schema_choices(
-    background_loader: Callable[[Callable[[list[questionary.Choice]], None]], None],
+    background_loader: Callable[[Callable[[list[questionary.Choice]], None]], str | None],
 ) -> list[str] | None:
     """Show the skill-schema picker, returning the selected schemas or None on Ctrl-C."""
     selection = scrolling_checkbox(

@@ -2332,11 +2332,27 @@ class TestSkillSchemaPicker:
         monkeypatch.setattr(mcp, "list_all_skills", fake_list_all)
         appended = []
 
-        mcp._skill_schema_background_loader(WS, "token", {"ml.prod"})(appended.extend)
+        message = mcp._skill_schema_background_loader(WS, "token", {"ml.prod"})(appended.extend)
 
+        assert message is None
         assert [c.value for c in appended] == ["main.default", "ml.prod"]
         assert "2 skills" in appended[0].title and "already in skill MCP" not in appended[0].title
         assert "already in skill MCP" in appended[1].title
+
+    def test_background_loader_reports_timeout_message(self, monkeypatch):
+        def fake_list_all(ws, tok, *, on_skills=None, **kwargs):
+            on_skills([_skill_ref("triage")])
+            on_skills([_skill_ref("scoring", catalog="ml", schema="prod")])
+            return (
+                [_skill_ref("triage"), _skill_ref("scoring", catalog="ml", schema="prod")],
+                mcp._SKILLS_WALK_TIMEOUT_REASON,
+            )
+
+        monkeypatch.setattr(mcp, "list_all_skills", fake_list_all)
+
+        message = mcp._skill_schema_background_loader(WS, "token", set())(lambda choices: None)
+
+        assert message == "⚠️ Timed out after 30s, found 2 skill schemas"
 
     def test_prompt_returns_selected_locations(self, monkeypatch):
         loader = lambda append: None  # noqa: E731
