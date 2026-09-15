@@ -69,3 +69,8 @@ class TestDescriptionFooterTokens:
         label_token, body_token = _description_footer_tokens(f"triage: {long_body}")
         assert label_token == ("bold", "triage: ")
         assert body_token == ("class:instruction", _description_preview(long_body))
+
+    def test_newlines_and_whitespace_runs_collapse_to_single_spaces(self):
+        assert _description_footer_tokens(
+            "Routes tickets.\n\nSeverity from the body.\tEscalates."
+        ) == [("class:instruction", "Routes tickets. Severity from the body. Escalates.")]

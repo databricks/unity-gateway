@@ -49,6 +49,7 @@ def _description_footer_tokens(description: str) -> list[tuple[str, str]]:
     A caller emphasizes a leading label by formatting the description as ``"label: text"``:
     the ``label:`` renders bold and the rest as the truncated preview. A description with no
     ``": "`` renders entirely as the preview."""
+    description = " ".join(description.split())
     label, sep, body = description.partition(": ")
     if not sep:
         return [("class:instruction", _description_preview(description))]
