@@ -63,6 +63,31 @@ class TestForwardedRequestHeaders:
         assert "Content-Length" not in out
         assert "Connection" not in out
 
+    def test_injects_extra_headers(self):
+        handler = _FakeHandler({"Authorization": "Bearer client-value"})
+        out = gateway_proxy.forwarded_request_headers(
+            handler,
+            "dbx",
+            extra_headers={
+                "Authorization": "Bearer proxy-oauth",
+                "Databricks-Model-Provider-Service": "main.default.mps",
+            },
+        )
+        # Proxy-owned values win over any client-supplied header of the same name.
+        assert out["Authorization"] == "Bearer proxy-oauth"
+        assert out["Databricks-Model-Provider-Service"] == "main.default.mps"
+        # The swap header is still injected alongside.
+        assert out["X-Databricks-AI-Gateway-Token"] == "Bearer dbx"
+
+    def test_strips_named_client_headers(self):
+        # A client-supplied x-api-key must not reach upstream when the proxy owns auth.
+        handler = _FakeHandler({"x-api-key": "sk-ant-oat-leak", "Accept": "application/json"})
+        out = gateway_proxy.forwarded_request_headers(
+            handler, "dbx", strip_client_headers=frozenset({"x-api-key"})
+        )
+        assert "x-api-key" not in {k.lower() for k in out}
+        assert out["Accept"] == "application/json"
+
 
 class _FakeResponse:
     """Stand-in for httpx.Response exposing only what `_relay_response` reads."""
