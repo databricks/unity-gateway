@@ -1073,48 +1073,19 @@ def _is_app_mcp_server(server: dict) -> bool:
     return stripped.endswith("/mcp")
 
 
-def managed_mcp_server_entry(name: str, mcp_type: str, workspace: str) -> tuple[str, str] | None:
-    """Rebuild an ``(entry_name, url)`` pair from a managed config's ``{name, type}`` entry.
+def managed_mcp_service_entry(name: str, workspace: str) -> tuple[str, str] | None:
+    """Rebuild an ``(entry_name, url)`` pair for a managed UC MCP service.
 
-    ``entry_name`` is the identifier the server is registered under with the agent (dots stripped,
-    since the agent CLIs reject them); ``url`` is what the proxy forwards to. Returns None for a
-    type/name this can't reconstruct, so the caller skips it rather than registering a broken server.
-    Mirrors the shapes :func:`_resolve_mcp_selection` builds for the interactive picker, so a managed
-    and a locally-configured copy of the same server land on the same name.
-
-    The ai-gateway ``McpServer.name`` field is interpreted per ``type`` (see the proto): a UC name for
-    a UC service, a Genie space id for a genie space, a connection name for external, and — as ucode
-    serializes them — a `<catalog>.<schema>` for vector-search / uc-functions.
+    ``name`` is a dotted ``<catalog>.<schema>.<service>`` FQN, as the mcp-services API and the managed
+    config store it. Registers under the dot-free slug the interactive path uses (see
+    :func:`_resolve_mcp_selection`) so a managed and a locally-configured copy of the same service
+    land on the same name, with the URL pointed at the dotted name. Returns None for a name that isn't
+    a 3-part FQN, so the caller skips it rather than registering a broken server.
     """
-    if mcp_type == "sql":
-        return "databricks-sql", f"{workspace}/api/2.0/mcp/sql"
-    if mcp_type == "external":
-        return name, f"{workspace}/api/2.0/mcp/external/{name}"
-    if mcp_type == "mcp-service":
-        # Stored in dash form (`system-ai-dbsql`), which is already the registered name; the URL wants
-        # the UC dotted form. Only the catalog and schema separators (first two dashes) become dots —
-        # the service name keeps its own dashes/underscores.
-        parts = name.split("-", 2)
-        if len(parts) != 3:
-            return None
-        return name, build_mcp_service_url(workspace, ".".join(parts))
-    if mcp_type == "genie-space":
-        # `name` is the Genie space id (per the proto); register under the id-based name the
-        # interactive path falls back to, and point the URL at the space.
-        return f"databricks-genie-{name}", f"{workspace}/api/2.0/mcp/genie/{name}"
-    if mcp_type in ("vector-search", "uc-functions"):
-        # `name` is a `<catalog>.<schema>`; the URL is workspace-relative on that pair, and the
-        # registered name is the same dot-free slug the interactive path uses.
-        catalog, _, schema = name.partition(".")
-        if not catalog or not schema or "." in schema:
-            return None
-        url_path = "vector-search" if mcp_type == "vector-search" else "functions"
-        name_prefix = (
-            "databricks-vector-search" if mcp_type == "vector-search" else "databricks-functions"
-        )
-        entry_name = _catalog_schema_server_name(name_prefix, catalog, schema, set())
-        return entry_name, f"{workspace}/api/2.0/mcp/{url_path}/{catalog}/{schema}"
-    return None
+    parts = name.split(".")
+    if len(parts) != 3 or not all(parts):
+        return None
+    return name.replace(".", "-"), build_mcp_service_url(workspace, name)
 
 
 def apply_managed_mcp_servers(
@@ -1122,33 +1093,36 @@ def apply_managed_mcp_servers(
 ) -> list[dict]:
     """Register the managed config's MCP servers with ``tool`` so they reach its `/mcp` list.
 
-    The managed config only lists ``{name, type}`` entries; nothing else on the launch path turns
-    them into agent MCP registrations, so without this a workspace-published server never shows up.
-    Reconstructs each entry's ``(name, url)`` (see :func:`managed_mcp_server_entry`), diffs against
-    what ucode previously registered, and applies the change for the launching tool only. Entries
-    whose URL can't be rebuilt (e.g. ``app``, which needs an off-workspace host) are skipped.
+    The config selects UC MCP services either by absolute ``names`` (``<catalog>.<schema>.<service>``
+    FQNs) or by a ``location`` (``<catalog>.<schema>``) whose services are discovered; the two are
+    mutually exclusive in the config but unioned here. Nothing else on the launch path turns them into
+    agent MCP registrations, so without this a workspace-published service never shows up. Diffs
+    against what ucode previously registered and applies the change for the launching tool only.
 
-    Returns the server dicts registered (for state persistence); an empty list when the config names
-    none, or names only types that can't yet be reconstructed.
+    Returns the server dicts registered (for state persistence); an empty list when the config selects
+    none, or when discovery finds nothing.
     """
     if tool not in MCP_CLIENTS:
         return []
-    entries = managed.get("mcp_servers")
-    if not isinstance(entries, list):
+    spec = managed.get("mcp_servers")
+    if not isinstance(spec, dict):
         return []
+    names = [name for name in (spec.get("names") or []) if isinstance(name, str) and name]
+    location = spec.get("unity_catalog_location")
+    if isinstance(location, str) and location:
+        token = get_databricks_token(workspace, profile)
+        discovered, reason = list_mcp_services(workspace, token, parent=location)
+        if reason:
+            print_warning(f"Could not list managed MCP services in `{location}`: {reason}.")
+        else:
+            names.extend(discovered)
     working: list[dict] = []
     seen: set[str] = set()
     skipped: list[str] = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("name")
-        mcp_type = entry.get("type")
-        if not isinstance(name, str) or not name or not isinstance(mcp_type, str):
-            continue
-        resolved = managed_mcp_server_entry(name, mcp_type, workspace)
+    for name in names:
+        resolved = managed_mcp_service_entry(name, workspace)
         if resolved is None:
-            skipped.append(f"{name} ({mcp_type})")
+            skipped.append(name)
             continue
         entry_name, url = resolved
         if entry_name in seen:
@@ -1157,8 +1131,8 @@ def apply_managed_mcp_servers(
         working.append({"name": entry_name, "url": url, "auth": "proxy", "clients": [tool]})
     if skipped:
         print_warning(
-            "Skipping managed MCP server(s) ucode can't yet auto-register from the workspace "
-            f"config: {', '.join(skipped)}. Add them with `ucode configure mcp`."
+            "Skipping managed MCP server(s) that aren't `<catalog>.<schema>.<service>` UC services: "
+            f"{', '.join(skipped)}."
         )
     if not working:
         return []

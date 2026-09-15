@@ -211,6 +211,18 @@ class TestCheckGatewayEndpoint:
     def test_pi_unavailable_when_no_models(self):
         assert check_gateway_endpoint({}, "pi") is False
 
+    def test_managed_static_list_makes_undiscovered_tool_available(self):
+        # A managed config can name a tool's models even when discovery found none for it, so a
+        # single-agent configure must count that as available rather than erroring out.
+        managed = {
+            "enabled_agents": {"codex": {"model_config": {"default_model": "system.ai.gpt-5"}}}
+        }
+        assert check_gateway_endpoint({}, "codex", managed=managed) is True
+
+    def test_managed_without_models_leaves_undiscovered_tool_unavailable(self):
+        managed = {"enabled_agents": {"codex": {"model_config": {}}}}
+        assert check_gateway_endpoint({}, "codex", managed=managed) is False
+
 
 class TestDefaultModelForTool:
     def test_codex_returns_none_without_a_configured_model(self):

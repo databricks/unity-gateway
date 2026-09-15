@@ -437,13 +437,17 @@ class TestRefreshManagedConfig:
             mc_mod, "save_managed_state", lambda ws, cfg, **kwargs: saved.append((ws, cfg))
         )
         # The raw config is persisted verbatim; the caller gets the normalized manifest.
-        assert refresh_managed_config(_state()) == (normalize_managed_config(RAW_MANIFEST), False)
+        assert refresh_managed_config(_state()) == (
+            normalize_managed_config(RAW_MANIFEST),
+            False,
+            False,
+        )
         assert saved == [(WORKSPACE, RAW_MANIFEST)]
 
     def test_no_managed_config_returns_none(self, monkeypatch):
         monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, tok: (None, None))
         monkeypatch.setattr(mc_mod, "save_managed_state", lambda ws, cfg, **kwargs: None)
-        result, _ = refresh_managed_config(_state())
+        result, _, _ = refresh_managed_config(_state())
         assert result is None
 
     def test_read_failure_falls_back_to_the_persisted_config(self, monkeypatch):
@@ -452,7 +456,7 @@ class TestRefreshManagedConfig:
         monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, tok: (None, "HTTP 500"))
         monkeypatch.setattr(mc_mod, "load_managed_state", lambda ws: MANAGED)
         monkeypatch.setattr(mc_mod, "print_warning", lambda msg: warnings.append(msg))
-        assert refresh_managed_config(_state()) == (MANAGED, False)
+        assert refresh_managed_config(_state()) == (MANAGED, False, False)
         assert "HTTP 500" in warnings[0]
         assert "last one saved" in warnings[0]
 
@@ -464,7 +468,7 @@ class TestRefreshManagedConfig:
         monkeypatch.setattr(
             mc_mod, "print_warning", lambda msg: pytest.fail(f"should not warn: {msg}")
         )
-        result, _ = refresh_managed_config(_state())
+        result, _, _ = refresh_managed_config(_state())
         assert result is None
 
     def test_auth_failure_falls_back_to_the_persisted_config(self, monkeypatch):
@@ -476,7 +480,7 @@ class TestRefreshManagedConfig:
         monkeypatch.setattr(mc_mod, "get_databricks_token", boom)
         monkeypatch.setattr(mc_mod, "load_managed_state", lambda ws: MANAGED)
         monkeypatch.setattr(mc_mod, "print_warning", lambda msg: warnings.append(msg))
-        assert refresh_managed_config(_state()) == (MANAGED, False)
+        assert refresh_managed_config(_state()) == (MANAGED, False, False)
         assert "no token" in warnings[0]
 
     def test_auth_failure_without_persisted_config_is_silent(self, monkeypatch):
@@ -488,7 +492,7 @@ class TestRefreshManagedConfig:
         monkeypatch.setattr(
             mc_mod, "print_warning", lambda msg: pytest.fail(f"should not warn: {msg}")
         )
-        result, _ = refresh_managed_config(_state())
+        result, _, _ = refresh_managed_config(_state())
         assert result is None
 
     def test_permission_denied_without_cache_is_silent(self, monkeypatch):
@@ -500,7 +504,7 @@ class TestRefreshManagedConfig:
         monkeypatch.setattr(
             mc_mod, "print_warning", lambda msg: pytest.fail(f"should not warn: {msg}")
         )
-        result, _ = refresh_managed_config(_state())
+        result, _, _ = refresh_managed_config(_state())
         assert result is None
 
     def test_permission_denied_warns_and_keeps_the_cached_config(self, monkeypatch):
@@ -516,7 +520,7 @@ class TestRefreshManagedConfig:
             "save_managed_state",
             lambda ws, cfg, **kwargs: pytest.fail("must not clear the cache"),
         )
-        assert refresh_managed_config(_state()) == (MANAGED, False)
+        assert refresh_managed_config(_state()) == (MANAGED, False, False)
         assert "not readable by you" in warnings[0]
 
     def test_no_config_on_the_server_does_not_use_a_stale_persisted_file(self, monkeypatch):
@@ -527,7 +531,7 @@ class TestRefreshManagedConfig:
         monkeypatch.setattr(
             mc_mod, "load_managed_state", lambda ws: pytest.fail("must not fall back")
         )
-        result, _ = refresh_managed_config(_state())
+        result, _, _ = refresh_managed_config(_state())
         assert result is None
 
     def test_no_config_on_the_server_clears_the_persisted_one(self, monkeypatch):
@@ -539,7 +543,7 @@ class TestRefreshManagedConfig:
             mc_mod, "save_managed_state", lambda ws, cfg, **kwargs: saved.append((ws, cfg))
         )
         monkeypatch.setattr(mc_mod, "load_managed_state", lambda ws: None)
-        result, _ = refresh_managed_config(_state())
+        result, _, _ = refresh_managed_config(_state())
         assert result is None
         assert saved == [(WORKSPACE, {})]
 
@@ -551,14 +555,14 @@ class TestRefreshManagedConfig:
         monkeypatch.setattr(
             mc_mod, "print_warning", lambda msg: pytest.fail(f"should not warn: {msg}")
         )
-        result, _ = refresh_managed_config(_state())
+        result, _, _ = refresh_managed_config(_state())
         assert result is None
 
     def test_no_workspace_is_a_noop(self, monkeypatch):
         monkeypatch.setattr(
             mc_mod, "get_managed_config", lambda ws, tok: pytest.fail("should not fetch")
         )
-        result, _ = refresh_managed_config({})
+        result, _, _ = refresh_managed_config({})
         assert result is None
 
     def test_feature_disabled_sets_flag_when_there_is_no_fallback(self, monkeypatch):
@@ -569,9 +573,10 @@ class TestRefreshManagedConfig:
         monkeypatch.setattr(mc_mod, "load_managed_state", lambda ws: None)
         monkeypatch.setattr(mc_mod, "print_warning", lambda msg: None)
         state = _state()
-        result, flag = refresh_managed_config(state)
+        result, flag, definitively_absent = refresh_managed_config(state)
         assert result is None
         assert flag is True
+        assert definitively_absent is True
 
     def test_feature_disabled_ignores_a_cached_config_and_sets_the_flag(self, monkeypatch):
         # FEATURE_DISABLED is authoritative, so a config cached while the feature was enabled no
@@ -590,9 +595,10 @@ class TestRefreshManagedConfig:
             lambda msg: pytest.fail("feature-disabled must not warn about falling back to a cache"),
         )
         state = _state()
-        result, flag = refresh_managed_config(state)
+        result, flag, definitively_absent = refresh_managed_config(state)
         assert result is None
         assert flag is True
+        assert definitively_absent is True
         assert saved == [(WORKSPACE, {})]
 
     def test_transient_failure_does_not_set_the_flag(self, monkeypatch):
@@ -600,17 +606,19 @@ class TestRefreshManagedConfig:
         monkeypatch.setattr(mc_mod, "load_managed_state", lambda ws: None)
         monkeypatch.setattr(mc_mod, "print_warning", lambda msg: None)
         state = _state()
-        result, flag = refresh_managed_config(state)
+        result, flag, definitively_absent = refresh_managed_config(state)
         assert result is None
         assert flag is False
+        assert definitively_absent is False
 
     def test_successful_no_config_clears_the_flag(self, monkeypatch):
         monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, tok: (None, None))
         monkeypatch.setattr(mc_mod, "save_managed_state", lambda ws, cfg, **kwargs: None)
         state = _state()
-        result, flag = refresh_managed_config(state)
+        result, flag, definitively_absent = refresh_managed_config(state)
         assert result is None
         assert flag is False
+        assert definitively_absent is True
 
 
 class TestRefreshAlwaysFetches:
@@ -640,9 +648,10 @@ class TestRefreshAlwaysFetches:
         # A previously-persisted config no longer short-circuits: every launch re-reads the workspace.
         save_managed_state(WORKSPACE, RAW_MANIFEST)
         calls = self._counting_fetch(monkeypatch)
-        result, flag = refresh_managed_config(_state())
+        result, flag, definitively_absent = refresh_managed_config(_state())
         assert result == normalize_managed_config(RAW_MANIFEST)
         assert flag is False
+        assert definitively_absent is False
         assert calls["n"] == 1
 
     def test_persists_the_fetched_config_raw_without_a_timestamp(self, monkeypatch):
@@ -790,3 +799,41 @@ class TestGetModelRecommendation:
         )
         rec, _ = mc_mod.get_model_recommendation("https://w", "tok")
         assert rec is not None and rec["current_spend"] is None
+
+
+class TestDefinitivelyAbsent:
+    """Test the definitively_absent field distinguishes definitive absence from transient failures."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_token(self, monkeypatch):
+        monkeypatch.setattr(mc_mod, "get_databricks_token", lambda ws, profile: "tok")
+
+    def test_transient_failure_with_no_cache_is_not_definitive(self, monkeypatch):
+        # A transient fetch failure with no cache falls back to None, but it's not definitive.
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, tok: (None, "HTTP 500"))
+        monkeypatch.setattr(mc_mod, "load_managed_state", lambda ws: None)
+        monkeypatch.setattr(mc_mod, "print_warning", lambda msg: None)
+        result, flag, definitively_absent = refresh_managed_config(_state())
+        assert result is None
+        assert flag is False
+        assert definitively_absent is False
+
+    def test_not_found_is_definitive(self, monkeypatch):
+        # A successful NOT_FOUND from the API is definitive.
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, tok: (None, None))
+        monkeypatch.setattr(mc_mod, "save_managed_state", lambda ws, cfg, **kwargs: None)
+        result, flag, definitively_absent = refresh_managed_config(_state())
+        assert result is None
+        assert flag is False
+        assert definitively_absent is True
+
+    def test_feature_disabled_is_definitive(self, monkeypatch):
+        # FEATURE_DISABLED is authoritative and definitive.
+        reason = 'HTTP 400 Bad Request: {"error_code":"FEATURE_DISABLED"}'
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, tok: (None, reason))
+        monkeypatch.setattr(mc_mod, "load_managed_state", lambda ws: None)
+        monkeypatch.setattr(mc_mod, "print_warning", lambda msg: None)
+        result, flag, definitively_absent = refresh_managed_config(_state())
+        assert result is None
+        assert flag is True
+        assert definitively_absent is True

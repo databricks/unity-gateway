@@ -373,7 +373,7 @@ control the installation.
 | `~/.copilot/.env` | GitHub Copilot CLI |
 | `~/.pi/agent/models.json` | Pi |
 | `~/.cursor/mcp.json` | Cursor Agent (MCP servers only) |
-| `~/.ucode/managed-state.json` | The managed config (published by an admin through the AI Gateway) refreshed from the workspace on launch |
+| `~/.ucode/managed-config.json` | The managed config (published by an admin through the AI Gateway) refreshed from the workspace on launch |
 | `~/.ucode/managed-backups/` | Baseline backups for OS-managed files changed by ug |
 
 Existing files are backed up before being overwritten. `ug revert` restores backups.

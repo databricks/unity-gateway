@@ -23,7 +23,17 @@ from ucode.databricks import (
     resolve_provider_service,
 )
 from ucode.managed_files import managed_write_batch
-from ucode.state import get_provider_service, load_state, save_state
+from ucode.managed_resolve import (
+    managed_provider_service,
+    managed_supplies_models,
+    resolve_state,
+)
+from ucode.state import (
+    _without_managed_overlay,
+    get_provider_service,
+    load_state,
+    save_state,
+)
 from ucode.telemetry import agent_version
 from ucode.ui import (
     print_err,
@@ -439,24 +449,35 @@ def launch(
     _MODULES[tool].launch(state, tool_args, options=options)
 
 
-def check_gateway_endpoint(state: dict, tool: str) -> bool:
-    """V2-only: a tool is available iff we discovered models for it."""
+def check_gateway_endpoint(state: dict, tool: str, managed: dict | None = None) -> bool:
+    """A tool is available iff ucode discovered models for it or the managed config supplies them.
+
+    An agent whose models come only from the managed config (no discovered models) must still count
+    as available, so check both discovered models and managed-supplied models.
+    """
     if tool == "claude":
-        return bool(state.get("claude_models"))
-    if tool == "opencode":
-        return bool(state.get("opencode_models"))
-    if tool == "codex":
-        return bool(state.get("codex_models"))
-    if tool == "gemini":
-        return bool(state.get("gemini_models"))
-    if tool == "copilot":
-        return bool(state.get("claude_models")) or bool(state.get("codex_models"))
-    if tool == "pi":
-        return (
+        discovered = bool(state.get("claude_models"))
+    elif tool == "opencode":
+        discovered = bool(state.get("opencode_models"))
+    elif tool == "codex":
+        discovered = bool(state.get("codex_models"))
+    elif tool == "gemini":
+        discovered = bool(state.get("gemini_models"))
+    elif tool == "copilot":
+        discovered = bool(state.get("claude_models")) or bool(state.get("codex_models"))
+    elif tool == "pi":
+        discovered = (
             bool(state.get("claude_models"))
             or bool(state.get("codex_models"))
             or bool(state.get("gemini_models"))
         )
+    else:
+        return False
+
+    if discovered:
+        return True
+    if managed and managed_supplies_models(managed, tool):
+        return True
     return False
 
 
@@ -481,14 +502,29 @@ def _availability_failure_detail(tool: str, state: dict) -> str:
     return " (" + "; ".join(parts) + ")"
 
 
-def configure_single_tool(tool: str, state: dict) -> dict:
-    """Check availability, configure, and persist state for one tool only."""
+def configure_single_tool(tool: str, state: dict, managed: dict | None = None) -> dict:
+    """Check availability, configure, and persist state for one tool only.
+
+    If managed config is provided, it is applied to the state (its settings take
+    precedence) and the provider precedence rules are enforced.
+    """
+    # Apply managed config before resolving provider, so admin settings win
+    if managed is not None:
+        state = resolve_state(managed, state, tool)
+
     provider = get_provider_service(state, tool)
+
+    # When the managed config names its own model source without a provider, clear any persisted
+    # provider so the managed source drives the picker/catalog.
+    if managed is not None and managed_supplies_models(managed, tool):
+        if not managed_provider_service(managed, tool):
+            provider = None
+
     # A Model Provider Service routes through the same gateway and pins no
     # Databricks model, so the per-tool model availability check doesn't apply.
     if not provider:
         with spinner(f"Checking {TOOL_SPECS[tool]['display']} availability..."):
-            ok = check_gateway_endpoint(state, tool)
+            ok = check_gateway_endpoint(state, tool, managed=managed)
         if not ok:
             detail = _availability_failure_detail(tool, state)
             raise RuntimeError(
@@ -526,19 +562,43 @@ def _configure_one(tool: str, state: dict, provider: str | None) -> dict:
 
 
 def configure_selected_tools(
-    state: dict, tools: list[str], *, install_ai_tools: bool = True
+    state: dict, tools: list[str], *, install_ai_tools: bool = True, managed: dict | None = None
 ) -> dict:
     """Configure the given tools. Caller is responsible for ensuring each tool
     is available on the workspace.
 
     Merges newly-configured tools into state['available_tools'] rather than
     replacing it, so a previously-configured tool the user didn't pick this
-    run is preserved.
+    run is preserved. If managed config is provided, it is applied to each tool
+    (its settings take precedence) and the provider precedence rules are enforced.
     """
+    # Resolve each tool from an overlay-free state so tools' managed overlays stay independent
+    # and never leak into persisted state.
+    developer_state = state
     with managed_write_batch(_managed_settings_displays(tools)):
         for tool in tools:
-            state = _configure_one(tool, state, get_provider_service(state, tool))
+            # Apply managed config before resolving the provider so admin settings win.
+            tool_state = developer_state
+            if managed is not None:
+                tool_state = resolve_state(managed, developer_state, tool)
 
+            provider = get_provider_service(tool_state, tool)
+
+            # When the managed config names its own model source without a provider, clear any
+            # persisted provider so the managed source drives the picker/catalog.
+            if managed is not None and managed_supplies_models(managed, tool):
+                if not managed_provider_service(managed, tool):
+                    provider = None
+
+            tool_configured = _configure_one(tool, tool_state, provider)
+            # Persist the developer's own state, not the managed overlay (its values already
+            # reached the file via resolution above); keep non-overlay changes like auth.
+            if managed is not None:
+                developer_state = _without_managed_overlay(tool_configured)
+            else:
+                developer_state = tool_configured
+
+    state = developer_state
     existing = state.get("available_tools") or []
     state["available_tools"] = sorted(set(existing) | set(tools))
     save_state(state)

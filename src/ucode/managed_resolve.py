@@ -1,6 +1,6 @@
 """Resolve the effective agent settings from the managed config plus local ucode state.
 
-The managed config (``~/.ucode/managed-state.json``, published by an admin through the AI Gateway
+The managed config (``~/.ucode/managed-config.json``, published by an admin through the AI Gateway
 and refreshed from the workspace at launch through :mod:`ucode.managed_config`) and the developer's own
 ucode state (``~/.ucode/state.json``) stay separate files — they are never merged on disk. Instead
 this module resolves them *per key* at config-write time: whatever the manifest specifies wins, and
@@ -24,15 +24,17 @@ from typing import cast
 from ucode.databricks import ANTHROPIC_FAMILIES, classify_model_family
 from ucode.state import MANAGED_OVERLAY_KEY
 
-# Proto model-config slot -> the family key `claude.py`'s render_overlay reads. The manifest keeps
-# the proto spelling (`default_opus_model`), while ucode state and render_overlay both key claude
-# models by bare family (`opus`), so the two have to be bridged before the settings file is written.
-_CLAUDE_FAMILY_SLOTS = {
-    "default_opus_model": "opus",
-    "default_sonnet_model": "sonnet",
-    "default_haiku_model": "haiku",
-    "default_fable_model": "fable",
-}
+
+def _family_from_slot(slot: object) -> str | None:
+    """The bare Claude family for a ``default_<family>_model`` slot key, or None.
+
+    The manifest keeps the proto spelling (`default_opus_model`) while ucode state and
+    render_overlay key claude models by bare family (`opus`); deriving the family instead of a fixed
+    map means a new family needs no change here.
+    """
+    if isinstance(slot, str) and slot.startswith("default_") and slot.endswith("_model"):
+        return slot[len("default_") : -len("_model")] or None
+    return None
 
 
 def _as_dict(value: object) -> dict[str, object]:
@@ -114,17 +116,22 @@ def managed_unservable_models(managed: dict, tool: str) -> list[str]:
 
 def _manifest_models(managed: dict, tool: str) -> dict | list | None:
     """The manifest's models for ``tool`` in its own vocabulary, or None when it names none."""
-    manifest_models = _agent_model_config(managed, tool).get("models")
+    model_config = _agent_model_config(managed, tool)
     if tool == "claude":
         slots: dict[str, str] = {}
-        for slot, family in _CLAUDE_FAMILY_SLOTS.items():
-            model = _str(_as_dict(manifest_models).get(slot))
-            if model:
+        for slot, value in _as_dict(model_config.get("default_models_by_model_family")).items():
+            family = _family_from_slot(slot)
+            model = _str(value)
+            if family and model:
                 slots[family] = model
         return slots or None
-    if isinstance(manifest_models, list):
-        listed = [model for model in (_str(item) for item in manifest_models) if model]
-        return listed or None
+    # Codex pins only a default_model (no model_services list); the other non-claude agents read
+    # their flat `model_services` list.
+    if tool not in ("claude", "codex"):
+        model_services = model_config.get("model_services")
+        if isinstance(model_services, list):
+            listed = [model for model in (_str(item) for item in model_services) if model]
+            return listed or None
     return None
 
 
@@ -157,18 +164,14 @@ def managed_supplies_models(managed: dict | None, tool: str) -> bool:
     """True when the managed config already says which models ``tool`` should use.
 
     Lets the launch path skip Databricks model discovery, whose whole purpose is to find the models
-    the config has now specified. Any of the three counts: a provider (the agent routes by header and
-    pins no Databricks model), a ``default_model``, or at least one entry in ``models``.
+    the config has now specified. Any of these counts: a provider (the agent routes by header and
+    pins no Databricks model), a ``default_model``, or at least one model the agent's own
+    ``_manifest_models`` view resolves (Claude's family slots or a flat agent's ``model_services``).
     """
     model_config = _agent_model_config(managed or {}, tool)
     if _str(model_config.get("model_provider_service")) or _str(model_config.get("default_model")):
         return True
-    models = model_config.get("models")
-    if isinstance(models, dict):
-        return any(_str(value) for value in models.values())
-    if isinstance(models, list):
-        return any(_str(item) for item in models)
-    return False
+    return _manifest_models(managed or {}, tool) is not None
 
 
 def managed_provider_service(managed: dict, tool: str) -> str | None:
@@ -216,10 +219,10 @@ def managed_provider_family_models(managed: dict) -> dict[str, str] | None:
 
     config = _agent_model_config(managed, "claude")
     slots: dict[str, str] = {}
-    raw_slots = _as_dict(config.get("models"))
-    for slot, family in _CLAUDE_FAMILY_SLOTS.items():
-        model = _str(raw_slots.get(slot))
-        if model:
+    for slot, value in _as_dict(config.get("default_models_by_model_family")).items():
+        family = _family_from_slot(slot)
+        model = _str(value)
+        if family and model:
             slots[family] = model
     if slots:
         return slots

@@ -44,7 +44,7 @@ class TestBudgetWarnFraction:
 
     @staticmethod
     def _policy(*percentages):
-        return {"budget_policy": {"tiers": [{"spending_percentage": p} for p in percentages]}}
+        return {"spend_tiers": {"tiers": [{"spending_percentage": p} for p in percentages]}}
 
     def test_uses_the_lowest_activating_tier(self):
         assert budget_warn_fraction(self._policy(0.5, 0.8)) == 0.5
@@ -57,7 +57,7 @@ class TestBudgetWarnFraction:
     def test_falls_back_without_a_policy(self):
         assert budget_warn_fraction(None) == BUDGET_WARN_AT
         assert budget_warn_fraction({}) == BUDGET_WARN_AT
-        assert budget_warn_fraction({"budget_policy": {"tiers": []}}) == BUDGET_WARN_AT
+        assert budget_warn_fraction({"spend_tiers": {"tiers": []}}) == BUDGET_WARN_AT
 
     @pytest.mark.parametrize("bad", [True, "0.5", None, 1.5, -0.2])
     def test_ignores_unusable_percentages(self, bad):

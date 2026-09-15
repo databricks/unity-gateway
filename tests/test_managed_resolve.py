@@ -33,7 +33,7 @@ MANAGED = {
         "claude": {
             "model_config": {
                 "default_model": "system.ai.claude-opus-5",
-                "models": {
+                "default_models_by_model_family": {
                     "default_opus_model": "system.ai.claude-opus-5",
                     "default_sonnet_model": "system.ai.claude-sonnet-4-6",
                     "default_haiku_model": "system.ai.claude-haiku-4-5",
@@ -43,11 +43,10 @@ MANAGED = {
         "codex": {
             "model_config": {
                 "default_model": "databricks-gpt-5-3-codex",
-                "models": ["databricks-gpt-5-3-codex", "databricks-gpt-5-2-codex"],
             }
         },
     },
-    "budget_policy": {"display_name": "paved-path", "tiers": []},
+    "spend_tiers": {"tiers": []},
 }
 
 
@@ -84,7 +83,11 @@ class TestClaudeModels:
         # sanction. Nothing is written for it, so the agent uses its own default.
         managed = {
             "enabled_agents": {
-                "claude": {"model_config": {"models": {"default_opus_model": "managed-opus"}}}
+                "claude": {
+                    "model_config": {
+                        "default_models_by_model_family": {"default_opus_model": "managed-opus"}
+                    }
+                }
             }
         }
         state = _state(claude_models={"opus": "local-opus", "fable": "local-fable"})
@@ -98,7 +101,7 @@ class TestClaudeModels:
                 "claude": {
                     "model_config": {
                         "default_model": "managed-default",
-                        "models": {"default_opus_model": "managed-opus"},
+                        "default_models_by_model_family": {"default_opus_model": "managed-opus"},
                     }
                 }
             }
@@ -115,10 +118,20 @@ class TestClaudeModels:
 class TestListModels:
     def test_manifest_list_replaces_local(self):
         # A flat list has no per-key identity to merge on, so the manifest's list wins outright.
-        state = _state(codex_models=["local-codex"])
-        assert resolve_state(MANAGED, state, "codex")["codex_models"] == [
-            "databricks-gpt-5-3-codex",
-            "databricks-gpt-5-2-codex",
+        # gemini is a flat-list agent; its models come from model_services.
+        state = _state(gemini_models=["local-gemini"])
+        managed = {
+            "enabled_agents": {
+                "gemini": {
+                    "model_config": {
+                        "default_model": "system.ai.gemini-2-flash",
+                        "model_services": ["system.ai.gemini-2-flash"],
+                    }
+                }
+            }
+        }
+        assert resolve_state(managed, state, "gemini")["gemini_models"] == [
+            "system.ai.gemini-2-flash"
         ]
 
     def test_local_list_stands_when_manifest_silent(self):
@@ -126,8 +139,10 @@ class TestListModels:
         assert resolve_state({}, state, "codex")["codex_models"] == ["local-codex"]
 
     def test_blank_entries_dropped(self):
-        managed = {"enabled_agents": {"codex": {"model_config": {"models": ["  ", "real", ""]}}}}
-        assert managed_state_overrides(managed, "codex") == {"codex_models": ["real"]}
+        managed = {
+            "enabled_agents": {"gemini": {"model_config": {"model_services": ["  ", "real", ""]}}}
+        }
+        assert managed_state_overrides(managed, "gemini") == {"gemini_models": ["real"]}
 
 
 class TestManagedProviderService:
@@ -152,7 +167,7 @@ class TestManagedProviderService:
 
 class TestResolveState:
     def test_does_not_mutate_input_state(self):
-        # managed-state.json and state.json stay separate files: resolution is per-write and
+        # managed-config.json and state.json stay separate files: resolution is per-write and
         # in-memory, so the developer's own state must come back untouched.
         state = _state(claude_models={"opus": "local-opus"})
         before = json.dumps(state, sort_keys=True)
@@ -185,7 +200,7 @@ class TestResolveState:
 class TestStateFileIsNotRewritten:
     """The managed config must win by precedence, not by overwriting the developer's state file.
 
-    managed-state.json and state.json stay separate on disk: resolution happens in memory and only
+    managed-config.json and state.json stay separate on disk: resolution happens in memory and only
     the generated agent settings file reflects it. These tests deliberately let the real
     ``save_state`` run against a temp ``state.json`` — stubbing it out is what let this regress,
     because the overwrite happens inside ``write_tool_config``, one layer below the resolver.
@@ -305,7 +320,6 @@ class TestStateFileIsNotRewritten:
     @pytest.mark.parametrize(
         ("tool", "models_key", "managed_models"),
         [
-            ("codex", "codex_models", ["managed-codex"]),
             ("gemini", "gemini_models", ["managed-gemini"]),
         ],
     )
@@ -317,7 +331,7 @@ class TestStateFileIsNotRewritten:
         monkeypatch.setattr(config_io, "APP_DIR", tmp_path)
         monkeypatch.setattr(state_mod, "STATE_PATH", tmp_path / "state.json")
         state_mod.save_state({"workspace": WORKSPACE, models_key: ["mine"]})
-        managed = {"enabled_agents": {tool: {"model_config": {"models": managed_models}}}}
+        managed = {"enabled_agents": {tool: {"model_config": {"model_services": managed_models}}}}
 
         resolved_state = resolve_state(managed, state_mod.load_state(), tool)
         state_mod.save_state(resolved_state)
@@ -334,7 +348,9 @@ class TestManagedDefaultModel:
         assert managed_default_model(MANAGED, "claude") == "system.ai.claude-opus-5"
 
     def test_none_when_the_manifest_names_no_default(self):
-        managed = {"enabled_agents": {"claude": {"model_config": {"models": {}}}}}
+        managed = {
+            "enabled_agents": {"claude": {"model_config": {"default_models_by_model_family": {}}}}
+        }
         assert managed_default_model(managed, "claude") is None
 
     def test_none_for_agent_not_in_manifest(self):
@@ -358,7 +374,11 @@ class TestManagedSuppliesModels:
         managed = {
             "enabled_agents": {
                 "claude": {
-                    "model_config": {"models": {"default_opus_model": "system.ai.claude-opus-5"}}
+                    "model_config": {
+                        "default_models_by_model_family": {
+                            "default_opus_model": "system.ai.claude-opus-5"
+                        }
+                    }
                 }
             }
         }
@@ -378,7 +398,7 @@ class TestManagedSuppliesModels:
         assert managed_supplies_models(managed, "claude") is True
 
     def test_true_for_a_flat_model_list(self):
-        managed = {"enabled_agents": {"opencode": {"model_config": {"models": ["a", "b"]}}}}
+        managed = {"enabled_agents": {"opencode": {"model_config": {"model_services": ["a", "b"]}}}}
         assert managed_supplies_models(managed, "opencode") is True
 
     def test_false_when_the_config_names_no_models(self):
@@ -396,7 +416,11 @@ class TestManagedSuppliesModels:
     def test_false_when_slots_are_present_but_blank(self):
         managed = {
             "enabled_agents": {
-                "claude": {"model_config": {"models": {"default_opus_model": "   "}}}
+                "claude": {
+                    "model_config": {
+                        "default_models_by_model_family": {"default_opus_model": "   "}
+                    }
+                }
             }
         }
         assert managed_supplies_models(managed, "claude") is False
@@ -412,7 +436,7 @@ class TestManagedStateOverrides:
             "enabled_agents": {
                 "opencode": {
                     "model_config": {
-                        "models": [
+                        "model_services": [
                             "system.ai.claude-opus-4-8",
                             "system.ai.gemini-3-flash",
                             "system.ai.kimi-k2-7-code",
@@ -432,7 +456,7 @@ class TestManagedStateOverrides:
     def test_opencode_buckets_are_usable_by_its_own_writer(self):
         managed = {
             "enabled_agents": {
-                "opencode": {"model_config": {"models": ["system.ai.claude-opus-4-8"]}}
+                "opencode": {"model_config": {"model_services": ["system.ai.claude-opus-4-8"]}}
             }
         }
         buckets = managed_state_overrides(managed, "opencode")["opencode_models"]
@@ -445,7 +469,9 @@ class TestManagedStateOverrides:
         # They compose from claude_models/codex_models/gemini_models, which claude, codex, and gemini
         # also read — writing a per-agent policy there would let one agent's config change another's.
         managed = {
-            "enabled_agents": {tool: {"model_config": {"models": ["system.ai.claude-opus-4-8"]}}}
+            "enabled_agents": {
+                tool: {"model_config": {"model_services": ["system.ai.claude-opus-4-8"]}}
+            }
         }
         assert managed_state_overrides(managed, tool) == {
             f"{tool}_models": ["system.ai.claude-opus-4-8"]
@@ -461,7 +487,9 @@ class TestManagedStateOverrides:
         managed = {
             "enabled_agents": {
                 "opencode": {
-                    "model_config": {"models": ["mystery-model", "system.ai.claude-opus-4-8"]}
+                    "model_config": {
+                        "model_services": ["mystery-model", "system.ai.claude-opus-4-8"]
+                    }
                 }
             }
         }
@@ -472,7 +500,9 @@ class TestManagedStateOverrides:
     def test_no_override_when_nothing_is_servable(self):
         # An all-unservable list must not replace the developer's buckets with an empty dict —
         # that would leave OpenCode with no models at all.
-        managed = {"enabled_agents": {"opencode": {"model_config": {"models": ["mystery-model"]}}}}
+        managed = {
+            "enabled_agents": {"opencode": {"model_config": {"model_services": ["mystery-model"]}}}
+        }
         state = _state(opencode_models={"anthropic": ["local-opus"]})
         assert managed_state_overrides(managed, "opencode") == {}
         assert resolve_state(managed, state, "opencode")["opencode_models"] == {
@@ -495,7 +525,7 @@ class TestManagedDefaultModelStateOverrides:
                 "pi": {
                     "model_config": {
                         "default_model": "admin-default",
-                        "models": ["model-a", "model-b"],
+                        "model_services": ["model-a", "model-b"],
                     }
                 }
             }
@@ -521,7 +551,7 @@ class TestManagedEnabledTools:
 
     def test_empty_when_the_config_names_no_agents(self):
         # Callers treat this as "no opinion", so a budget-only config blocks nothing.
-        assert managed_enabled_tools({"budget_policy": {}}) == []
+        assert managed_enabled_tools({"spend_tiers": {}}) == []
 
 
 class TestManagedUnservableModels:
@@ -529,7 +559,7 @@ class TestManagedUnservableModels:
 
     @staticmethod
     def _managed(tool, models):
-        return {"enabled_agents": {tool: {"model_config": {"models": models}}}}
+        return {"enabled_agents": {tool: {"model_config": {"model_services": models}}}}
 
     def test_pi_oss_only_is_unservable(self):
         # Pi has no OSS provider block.

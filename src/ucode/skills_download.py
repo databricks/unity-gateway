@@ -396,40 +396,94 @@ def download_skills(
         )
 
 
+def _download_schema_skills(
+    workspace: str,
+    token: str,
+    roots: list[Path],
+    catalog: str,
+    schema: str,
+    *,
+    leaves: set[str] | None,
+) -> list[str]:
+    """Download skills from ``<catalog>.<schema>`` to disk, returning the bundle names newly written.
+
+    ``leaves`` limits the download to those securable names (warning for any not found); None
+    downloads every skill in the schema. Skills already on disk are left untouched -- no overwrite
+    prompt, so a developer's own same-named skill is never clobbered. Best-effort: warns and returns
+    what it managed on a listing/fetch failure.
+    """
+    location = f"{catalog}.{schema}"
+    refs, reason = list_schema_skills(workspace, token, catalog, schema)
+    if reason:
+        print_warning(f"Could not list workspace skills in `{location}`: {reason}.")
+        return []
+    if leaves is not None:
+        for leaf in sorted(leaves - {ref.securable_name for ref in refs}):
+            print_warning(f"Managed skill `{location}.{leaf}` was not found.")
+        refs = [ref for ref in refs if ref.securable_name in leaves]
+    if not refs:
+        return []
+    refs = _reject_bundle_name_collisions(refs, location=location)
+    missing = [ref for ref in refs if not existing_skill_on_disk(roots, ref.bundle_name)]
+    if not missing:
+        return []
+    written: list[str] = []
+    bundles = _fetch_bundles(workspace, token, catalog, schema, missing)
+    for ref in missing:
+        files, reason = bundles[ref.securable_name]
+        if reason or files is None:
+            print_warning(f"Skipping `{location}.{ref.securable_name}`: {reason}.")
+            continue
+        write_skill(roots, ref, files)
+        written.append(ref.bundle_name)
+    return written
+
+
 def download_managed_skills_on_launch(
-    workspace: str, token: str, locations: list[str], path: str | None = None
+    workspace: str,
+    token: str,
+    names: list[str],
+    path: str | None = None,
+    *,
+    location: str | None = None,
 ) -> list[str]:
     """Download admin-published skills to disk so the agent's ``/skills`` lists them.
 
-    Runs on the managed launch path: the config only registers the skills MCP
-    connection, so nothing else writes the bundles that ``/skills`` reads. Writes
-    only skills not already on disk -- no overwrite prompt, so the launch never
-    blocks on input and a developer's own same-named skill is never clobbered.
-    Best-effort and never raises, so it can't block the launch. Returns the bundle
+    The config selects skills either by absolute ``names`` (3-part ``<catalog>.<schema>.<skill>``
+    FQNs) or by a ``location`` (``<catalog>.<schema>``, whose every skill is downloaded); the two are
+    mutually exclusive in the config but both are honored if present. Runs on the managed launch path:
+    the config only registers the skills MCP connection, so nothing else writes the bundles that
+    ``/skills`` reads. Best-effort and never raises, so it can't block the launch. Returns the bundle
     names newly written.
     """
     roots = skill_dir_roots(path)
+    # Group by <catalog>.<schema> so each schema is listed once. A leaf set narrows to named skills;
+    # None means every skill in the schema (a location), which supersedes any named subset.
+    by_schema: dict[tuple[str, str], set[str] | None] = {}
+    for name in names:
+        parts = name.split(".")
+        if len(parts) != 3 or not all(parts):
+            print_warning(
+                f"Skipping managed skill `{name}`: expected a <catalog>.<schema>.<skill> name."
+            )
+            continue
+        catalog, schema, leaf = parts
+        leaves = by_schema.setdefault((catalog, schema), set())
+        if leaves is not None:
+            leaves.add(leaf)
+    if location:
+        parts = location.split(".")
+        if len(parts) == 2 and all(parts):
+            by_schema[(parts[0], parts[1])] = None
+        else:
+            print_warning(
+                f"Skipping managed skill location `{location}`: expected a <catalog>.<schema> name."
+            )
     written: list[str] = []
-    for location in locations:
-        if location.count(".") != 1:
-            continue
-        catalog, schema = location.split(".")
-        refs, reason = list_schema_skills(workspace, token, catalog, schema)
-        if reason:
-            print_warning(f"Could not list workspace skills in `{location}`: {reason}.")
-            continue
-        refs = _reject_bundle_name_collisions(refs, location=location)
-        missing = [ref for ref in refs if not existing_skill_on_disk(roots, ref.bundle_name)]
-        if not missing:
-            continue
-        bundles = _fetch_bundles(workspace, token, catalog, schema, missing)
-        for ref in missing:
-            files, reason = bundles[ref.securable_name]
-            if reason or files is None:
-                print_warning(f"Skipping `{location}.{ref.securable_name}`: {reason}.")
-                continue
-            write_skill(roots, ref, files)
-            written.append(ref.bundle_name)
+    for (catalog, schema), leaves in by_schema.items():
+        written.extend(
+            _download_schema_skills(workspace, token, roots, catalog, schema, leaves=leaves)
+        )
     return written
 
 
