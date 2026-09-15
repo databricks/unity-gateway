@@ -119,10 +119,9 @@ jobs:
 
   integration:
     name: Integration
-    # These suites use the same live workspace. Let agent launch coverage
-    # finish before starting integration requests, even if an agent failed.
+    # Start alongside unit/agent tests. Only the final required-e2e gate
+    # waits for both suites; an agent failure must not skip integration.
     if: ${{ !cancelled() }}
-    needs: e2e
     uses: ./.github/workflows/integration.yml
     secrets: inherit
 

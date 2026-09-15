@@ -61,8 +61,9 @@ in two parallel jobs. After smoke finishes, the full suite runs all 39 cases
 across two parallel agent jobs: one Claude VM and one Codex VM, each running its
 configure, headless, and commands/lifecycle cases serially. Each agent is installed
 once for the full suite, and no two full jobs for the same agent overlap within a run.
-CI calls integration after the existing e2e shards
-finish, including when an e2e shard fails, to avoid overlapping their model load.
+CI starts integration alongside unit tests and the existing e2e shards. Integration
+does not wait for agent e2e or get skipped when an agent shard fails. These suites
+share workspace capacity; overlapping their requests can still encounter rate limits.
 The `All integration tests` check requires every selected integration job to pass; full coverage
 does not depend on a label or a manual request.
 

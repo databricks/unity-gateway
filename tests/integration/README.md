@@ -178,7 +178,9 @@ selection to installation checks, including when additional filters are used.
 ## Run in GitHub Actions
 
 The **CI** workflow calls **Integration** on pull requests and pushes to `main`,
-after its existing e2e shards finish (even if one fails).
+starting alongside unit tests and the existing agent e2e shards. Integration has
+no dependency on agent e2e; a failure there does not prevent integration from running.
+The final required `e2e` check waits for both suites and requires both to succeed.
 It runs directly on fresh GitHub Ubuntu VMs, not inside the optional Docker image.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
@@ -208,8 +210,9 @@ inside each fresh VM because configure/revert can touch machine-level settings;
 separate runners isolate those writes as well as the PTYs. Claude and Codex run
 in parallel, with at most one full-suite job per agent in a workflow run. This
 avoids six serial job startups without overlapping same-agent shards. The two
-lanes still share workspace capacity, including with other PRs; this limit does
-not guarantee freedom from rate limits. No test retries or assertion changes
+lanes still share workspace capacity with the concurrently running agent e2e
+shards and other PRs; this limit does not guarantee freedom from rate limits.
+No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, workspace validation, smoke, and
