@@ -721,3 +721,24 @@ class TestConfigureSelectedTools:
         state = {"workspace": "https://x.databricks.com", "available_tools": ["codex"]}
         result = configure_selected_tools(state, [])
         assert result["available_tools"] == ["codex"]
+
+
+class TestConfiguredPaths:
+    def test_claude_reports_its_settings_file_home_abbreviated(self):
+        from ucode.agents import configured_paths
+        from ucode.agents.claude import CLAUDE_SETTINGS_PATH
+
+        paths = configured_paths("claude", {})
+        assert paths == [
+            str(CLAUDE_SETTINGS_PATH).replace(str(CLAUDE_SETTINGS_PATH.home()), "~", 1)
+        ]
+        assert paths[0].startswith("~/")
+
+    def test_appends_os_managed_file_recorded_in_state(self):
+        from ucode.agents import configured_paths
+        from ucode.agents.codex import CODEX_CONFIG_PATH
+
+        state = {"managed_file_fingerprints": {"codex": {"path": "/etc/codex/managed_config.toml"}}}
+        paths = configured_paths("codex", state)
+        assert str(CODEX_CONFIG_PATH).replace(str(CODEX_CONFIG_PATH.home()), "~", 1) in paths
+        assert "/etc/codex/managed_config.toml" in paths

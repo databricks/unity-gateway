@@ -7,6 +7,7 @@ or the developer's installed agents. Only the live workspace is shared with e2e.
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import datetime as dt
 import hashlib
@@ -18,11 +19,39 @@ import shutil
 import signal
 import subprocess
 import sys
+import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_PACKAGES = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}
+
+
+def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
+    """Mint a short-lived workspace token for a service principal via OAuth client credentials.
+
+    The managed e2e workspace authenticates as a service principal, whose M2M tokens expire
+    hourly, so CI mints one per run from `DATABRICKS_CLIENT_ID`/`DATABRICKS_CLIENT_SECRET` rather
+    than storing a long-lived bearer.
+    """
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    body = urllib.parse.urlencode(
+        {"grant_type": "client_credentials", "scope": "all-apis"}
+    ).encode()
+    request = urllib.request.Request(
+        f"{workspace.rstrip('/')}/oidc/v1/token",
+        data=body,
+        headers={
+            "Authorization": f"Basic {basic}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 (https workspace URL)
+        token = json.load(response).get("access_token", "")
+    if not token:
+        raise RuntimeError("Service-principal client credentials returned no access token.")
+    return token
 
 
 @contextlib.contextmanager
@@ -133,8 +162,17 @@ def arguments():
             parser.error(
                 "Set UCODE_TEST_WORKSPACE to the existing e2e workspace, or use --workspace."
             )
-        if not (args.profile or os.environ.get("DATABRICKS_BEARER", "").strip()):
-            parser.error("Provide the e2e DATABRICKS_BEARER or select --profile explicitly.")
+        has_client_creds = bool(
+            os.environ.get("DATABRICKS_CLIENT_ID", "").strip()
+            and os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
+        )
+        if not (
+            args.profile or os.environ.get("DATABRICKS_BEARER", "").strip() or has_client_creds
+        ):
+            parser.error(
+                "Provide the e2e DATABRICKS_BEARER, service-principal "
+                "DATABRICKS_CLIENT_ID/DATABRICKS_CLIENT_SECRET, or select --profile explicitly."
+            )
     return args
 
 
@@ -448,6 +486,12 @@ def main() -> int:
             bearer = json.loads(auth_stdout).get("access_token", "")
             if not bearer:
                 raise RuntimeError("Selected profile returned no access token.")
+
+        if not bearer and not args.profile and not args.installation_only:
+            client_id = os.environ.get("DATABRICKS_CLIENT_ID", "").strip()
+            client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
+            if client_id and client_secret:
+                bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
         run(
             [

@@ -23,6 +23,7 @@ from ucode.agents import (
     configure_selected_tools,
     configure_single_tool,
     configure_tool,
+    configured_paths,
     ensure_bootstrap_dependencies,
     ensure_provider_state,
     explicit_model_arg_value,
@@ -258,10 +259,27 @@ def _print_managed_summary_abridged(managed: dict, state: dict, tool: str | None
     )
 
 
-def _confirm_managed_config_applied(managed: dict, workspace: str) -> None:
-    print_success("A managed config is published for your workspace — you're all set.")
+def _announce_managed_config(managed: dict) -> None:
+    """Tell the developer, before configuring, that the admin's config drives this setup.
+
+    Printed up front so the skipped agent selector reads as intended, not as a surprise."""
+    print_success("A managed config is published for your workspace.")
+    enabled = [TOOL_SPECS[t]["display"] for t in managed_enabled_tools(managed) if t in TOOL_SPECS]
+    if enabled:
+        print_note(f"Applying it to the agents your admin enabled: {', '.join(enabled)}.")
+
+
+def _print_configured_files(tool: str, state: dict) -> None:
+    """Name the config file(s) ug just wrote for ``tool``, so the developer sees what changed."""
+    paths = configured_paths(tool, state)
+    if paths:
+        print_note(f"Updated {TOOL_SPECS[tool]['display']}: {', '.join(paths)}")
+
+
+def _summarize_managed_config(managed: dict, workspace: str) -> None:
+    """Show the resulting managed setup once every enabled agent has been configured."""
     _print_managed_summary(managed, {"workspace": workspace}, tool=None)
-    print_note("Run `ug` to launch with your managed settings.")
+    print_note("You're all set — run `ug` to launch with your managed settings.")
 
 
 def _print_discovery_diagnostics(state: dict) -> None:
@@ -780,6 +798,22 @@ def configure_workspace_command(
     )
     state = states[0]
     save_state(state)
+
+    # A published managed config means the admin dictates the setup: apply it to every enabled agent
+    # now rather than prompting the developer to pick.
+    managed, _ = refresh_managed_config(state)
+    if managed is not None:
+        _announce_managed_config(managed)
+        for tool_name in managed_enabled_tools(managed):
+            if check_gateway_endpoint(state, tool_name):
+                configured = configure_selected_tools(
+                    resolve_state(managed, state, tool_name),
+                    [tool_name],
+                    install_ai_tools=not is_dry_run(),
+                )
+                _print_configured_files(tool_name, configured)
+        _summarize_managed_config(managed, state["workspace"])
+        return 0
 
     available_on_workspace: list[str] = []
     tools_to_check = selected_tools or list(TOOL_SPECS)
@@ -2062,7 +2096,7 @@ def _launch_tool(
         _note_recommended_agent(recommendation, tool)
         if managed is not None:
             state = resolve_state(managed, state, tool)
-            print_success("Applied your workspace's managed coding agent config")
+            print_note("Applying your workspace's managed coding agent config...")
             unservable = managed_unservable_models(managed, tool)
             if unservable:
                 print_warning(

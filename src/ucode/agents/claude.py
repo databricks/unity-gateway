@@ -200,6 +200,11 @@ MAXIMUM_MLFLOW_VERSION = (3, 12)
 _RELAYED_SETTING_SOURCES = "project,local"
 
 
+def configured_paths(state: dict) -> list[str]:
+    """The Claude config file ug writes; the OS-managed file is added by the dispatcher."""
+    return [str(CLAUDE_SETTINGS_PATH)]
+
+
 def _managed_settings_path() -> Path | None:
     """OS-specific location of Claude Code's enterprise managed-settings.json.
     Returns None on unsupported platforms."""

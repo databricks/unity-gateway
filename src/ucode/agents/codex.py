@@ -356,6 +356,11 @@ def revert_legacy_shared_config() -> bool:
     return _strip_legacy_ucode_entries(_legacy_config_path())
 
 
+def configured_paths(state: dict) -> list[str]:
+    """The Codex config file ug writes; the OS-managed file is added by the dispatcher."""
+    return [str(CODEX_CONFIG_PATH)]
+
+
 def write_tool_config(
     state: dict,
     model: str | None = None,

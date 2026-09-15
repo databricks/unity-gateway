@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from pathlib import Path
 
 from ucode.config_io import ToolSpec
 from ucode.databricks import (
@@ -427,6 +428,25 @@ def configure_tool(
     if isinstance(result, tuple):
         return result[0]
     return result
+
+
+def configured_paths(tool: str, state: dict) -> list[str]:
+    """The config files ug wrote for ``tool``, home-abbreviated, for the post-configure summary.
+
+    Each agent module reports its own settings files; the OS-managed file, when one was written, is
+    recorded per tool in ``state`` and appended here so every agent surfaces it uniformly."""
+    module = _MODULES.get(tool)
+    paths = list(module.configured_paths(state)) if hasattr(module, "configured_paths") else []
+    record = (state.get("managed_file_fingerprints") or {}).get(tool)
+    if isinstance(record, dict) and record.get("path"):
+        paths.append(str(record["path"]))
+    home = str(Path.home())
+    shown: list[str] = []
+    for path in paths:
+        label = f"~{path[len(home) :]}" if path.startswith(home) else path
+        if label not in shown:
+            shown.append(label)
+    return shown
 
 
 def launch(
