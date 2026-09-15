@@ -81,13 +81,17 @@ ug configure --agents claude,codex
 
 Available agent names are `codex`, `claude`, `gemini`, `opencode`, `copilot`, and `pi`. `cursor` is also accepted (MCP-only — it registers Databricks MCP servers but configures no models).
 
-Naming agents explicitly is treated as a request for all of them: if any one isn't available on the workspace, the run fails without configuring the others. Add `--skip-unavailable` to configure the available subset instead and skip the rest with a warning:
+When naming several agents, configure sets up the available subset and reports the rest as skipped:
 
 ```bash
-ug configure --agents claude,codex,pi --skip-unavailable
+ug configure --agents claude,codex,pi
 ```
 
 This is useful in CI against a mix of workspaces — on a workspace whose AI Gateway exposes no OpenAI models, the command above still configures `claude` and `pi`, and reports Codex as skipped. It exits non-zero only when none of the requested agents are available.
+
+Fable is included automatically when the workspace advertises it, with no separate enable/disable toggle. Each agent uses its normal model selection rules.
+
+Installed agents are upgraded only when they fall below UG's required minimum version. Compatible versions do not trigger update checks or prompts, including in `ug doctor`. Use `ug upgrade` explicitly to update Unity Gateway itself. `--skip-upgrade` and `--skip-unavailable` remain accepted as hidden, deprecated no-ops for existing scripts.
 
 To configure without the workspace picker, pass a comma-separated list of workspaces:
 
@@ -105,10 +109,10 @@ ug configure --profiles DEFAULT --agents claude,codex
 
 Auth behaves the same as `--workspaces`: an OAuth `databricks auth login` is forced by default.
 
-For CI or headless environments where the profile holds a personal access token (`auth_type = pat` in `~/.databrickscfg`), add `--use-pat`. It must be combined with `--profiles` — ug never picks up a PAT implicitly — and runs no interactive login: the profile's token is used for the whole setup (and by launched agents afterwards), with workspace access verified against the AI Gateway. Combined with `--skip-upgrade`, this makes setup fully non-interactive:
+For CI or headless environments where the profile holds a personal access token (`auth_type = pat` in `~/.databrickscfg`), add `--use-pat`. It must be combined with `--profiles` — ug never picks up a PAT implicitly — and runs no interactive login: the profile's token is used for the whole setup (and by launched agents afterwards), with workspace access verified against the AI Gateway. This makes authentication non-interactive:
 
 ```bash
-ug configure --profiles DEFAULT --agents claude,codex --use-pat --skip-upgrade
+ug configure --profiles DEFAULT --agents claude,codex --use-pat
 ```
 
 ### MCP servers (optional)
@@ -332,7 +336,7 @@ The output looks like:
 | `ug codex --refresh` | Re-check Databricks, refresh models/configuration, and launch Codex |
 | `ug claude --enable-smart-routing` | Enable AI Gateway routing for Claude Code sessions and subagents |
 | `ug claude --refresh` | Re-check Databricks, refresh models/configuration, and launch Claude Code |
-| `ug configure --agents claude,codex,pi --skip-unavailable` | Configure the requested agents that are available; skip the rest with a warning |
+| `ug configure --agents claude,codex,pi` | Configure the requested agents that are available; skip the rest with a warning |
 | `ug configure --agents claude --mcp system.ai.slack` | Configure an agent and register its Databricks MCP server(s) in one command |
 | `ug mcp add --location system.ai` | Register a schema's MCP servers, keeping any already configured (additive; never removes) |
 | `ug mcp add --services system.ai.slack` | Register specific MCP server(s) without removing existing ones |

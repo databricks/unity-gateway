@@ -423,7 +423,6 @@ def configure_shared_state(
     use_pat: bool | None = None,
     skip_model_discovery: bool = False,
     skip_preflight: bool = False,
-    fable_enabled: bool | None = None,
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     clear_custom_oauth: bool = False,
@@ -446,18 +445,12 @@ def configure_shared_state(
     in ``_launch_tool``) and the gateway was verified by that earlier configure.
     Only the local profile resolution and the shared state assembly still run;
     the saved model lists are preserved.
-    ``fable_enabled`` opts the premium Claude Fable family into Claude Code's
-    ``ANTHROPIC_DEFAULT_FABLE_MODEL`` pin (default off). ``None`` means "inherit":
-    a launch re-run keeps whatever the workspace was configured with; ``True``/
-    ``False`` come from an explicit ``configure --enable-fable``/``--disable-fable``.
     """
     workspace = normalize_workspace_url(workspace)
     prior_state = load_state()
     previous_workspace = prior_state.get("workspace")
     if use_pat is None:
         use_pat = bool(prior_state.get("use_pat")) and previous_workspace == workspace
-    if fable_enabled is None:
-        fable_enabled = bool(prior_state.get("fable_enabled")) and previous_workspace == workspace
     if databricks_ai_tools_enabled is None:
         # Opt-out: on by default. With no flag, keep this workspace's prior
         # choice but don't inherit another workspace's opt-out.
@@ -489,12 +482,8 @@ def configure_shared_state(
         state["use_pat"] = True
     else:
         state.pop("use_pat", None)
-    # Persist the Fable opt-in so launches keep pinning the family; an explicit
-    # `configure --disable-fable` (fable_enabled=False) clears it.
-    if fable_enabled:
-        state["fable_enabled"] = True
-    else:
-        state.pop("fable_enabled", None)
+    # Fable follows model discovery; discard the legacy opt-in.
+    state.pop("fable_enabled", None)
     state["databricks_ai_tools_enabled"] = databricks_ai_tools_enabled
     if clear_custom_oauth:
         state.pop("custom_oauth", None)
@@ -602,12 +591,6 @@ def configure_shared_state(
                 claude_models, claude_reason = ms_claude, ms_reason
                 if not claude_models:
                     claude_models, claude_reason = discover_claude_models(workspace, token)
-                # Fable is opt-in (`configure --enable-fable`). Unless enabled,
-                # drop it from the discovered bundle entirely so it never becomes
-                # part of any agent's config — not claude's family pins, nor the
-                # opencode/pi/copilot model lists built from claude_models.
-                if not fable_enabled:
-                    claude_models.pop("fable", None)
             if want_gemini:
                 gemini_models, gemini_reason = ms_gemini, ms_reason
                 if not gemini_models:
@@ -664,7 +647,6 @@ def _configure_shared_workspace_states(
     *,
     force_login: bool,
     use_pat: bool = False,
-    fable_enabled: bool | None = None,
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     clear_custom_oauth: bool = False,
@@ -683,7 +665,6 @@ def _configure_shared_workspace_states(
                 tools=tools,
                 force_login=force_login,
                 use_pat=use_pat,
-                fable_enabled=fable_enabled,
                 databricks_ai_tools_enabled=databricks_ai_tools_enabled,
                 **custom_oauth_kwargs,
             )
@@ -762,10 +743,7 @@ def configure_workspace_command(
     selected_tools: list[str] | None = None,
     workspaces: list[tuple[str, str | None]] | None = None,
     *,
-    prompt_optional_updates: bool = True,
     use_pat: bool = False,
-    skip_unavailable: bool = False,
-    fable_enabled: bool | None = None,
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
@@ -786,7 +764,6 @@ def configure_workspace_command(
             [tool],
             force_login=True,
             use_pat=use_pat,
-            fable_enabled=fable_enabled,
             databricks_ai_tools_enabled=databricks_ai_tools_enabled,
             custom_oauth=custom_oauth,
             clear_custom_oauth=custom_oauth is None,
@@ -812,7 +789,6 @@ def configure_workspace_command(
         selected_tools,
         force_login=True,
         use_pat=use_pat,
-        fable_enabled=fable_enabled,
         databricks_ai_tools_enabled=databricks_ai_tools_enabled,
         custom_oauth=custom_oauth,
         clear_custom_oauth=custom_oauth is None,
@@ -828,9 +804,8 @@ def configure_workspace_command(
                 available_on_workspace.append(tool_name)
 
     if not available_on_workspace:
-        print_err("No coding agents are available on this workspace.")
         _print_discovery_diagnostics(state)
-        return 1
+        raise RuntimeError("No coding agents are available on this workspace.")
 
     if selected_tools is None:
         picked = prompt_for_tools([(t, TOOL_SPECS[t]["display"]) for t in available_on_workspace])
@@ -843,11 +818,6 @@ def configure_workspace_command(
             displays = ", ".join(
                 TOOL_SPECS[tool_name]["display"] for tool_name in unavailable_tools
             )
-            if not skip_unavailable:
-                raise RuntimeError(
-                    f"Requested agent(s) not available on this workspace: {displays}. "
-                    "Pass --skip-unavailable to configure the available ones instead."
-                )
             print_warning(f"Skipping agent(s) not available on this workspace: {displays}.")
         picked = [tool_name for tool_name in selected_tools if tool_name in available_on_workspace]
 
@@ -859,8 +829,6 @@ def configure_workspace_command(
         install_tool_binary(
             tool_name,
             strict=False,
-            update_existing=True,
-            prompt_optional_updates=prompt_optional_updates,
         )
 
     # Offer the provider picker for the chosen claude/codex tools only on the
@@ -1081,9 +1049,7 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-def _configure_agents_for_mcp(
-    requested: list[str], *, prompt_optional_updates: bool = True
-) -> set[str]:
+def _configure_agents_for_mcp(requested: list[str]) -> set[str]:
     """Ensure the named coding agents are set up (workspace + models) so a
     subsequent `ug mcp add` / `ug skill add --mcp` has them as targets, and
     return the full canonical name set. Agents already configured are left as-is;
@@ -1097,9 +1063,7 @@ def _configure_agents_for_mcp(
     to_bootstrap = scope - ready
     model_agents = sorted(a for a in to_bootstrap if a != "cursor")
     if model_agents:
-        configure_workspace_command(
-            selected_tools=model_agents, prompt_optional_updates=prompt_optional_updates
-        )
+        configure_workspace_command(selected_tools=model_agents)
     if "cursor" in to_bootstrap and not model_agents:
         _configure_shared_workspace_states(
             [_prompt_for_configuration(None)], tools=[], force_login=True
@@ -2065,7 +2029,7 @@ def _launch_tool(
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []
         )
-        ensure_bootstrap_dependencies(tool, update_existing=needs_auto_configure)
+        ensure_bootstrap_dependencies(tool)
         if needs_auto_configure:
             if custom_oauth is None:
                 _auto_configure_tool(tool)
@@ -2840,25 +2804,11 @@ def configure(
         bool,
         typer.Option(
             "--skip-unavailable",
-            help="With --agents, configure the agents that are available on the workspace "
-            "and skip (with a warning) any that aren't, instead of failing the whole run. "
-            "Useful in CI against heterogeneous workspaces — e.g. requesting "
-            "claude,codex,pi where the workspace exposes no OpenAI models still "
-            "configures claude and pi. Exits non-zero only if none are available.",
+            hidden=True,
+            help="Deprecated and ignored: configure already skips unavailable agents. "
+            "Accepted for backward compatibility.",
         ),
     ] = False,
-    enable_fable: Annotated[
-        bool | None,
-        typer.Option(
-            "--enable-fable/--disable-fable",
-            help="Pin the premium Claude Fable family via ANTHROPIC_DEFAULT_FABLE_MODEL "
-            "for Claude Code (opt-in; off by default). Only takes effect when the "
-            "workspace's AI Gateway actually advertises a Claude Fable model. "
-            "--disable-fable clears a prior opt-in. Omitting both keeps the "
-            "workspace's existing setting. Passed on its own (no --agent/--agents), "
-            "it configures Claude Code directly since Fable is Claude-only.",
-        ),
-    ] = None,
     enable_databricks_ai_tools: Annotated[
         bool | None,
         typer.Option(
@@ -2890,9 +2840,9 @@ def configure(
         bool,
         typer.Option(
             "--skip-upgrade",
-            help="Don't prompt to upgrade already-installed agent CLIs to a newer version. "
-            "Required updates (when an agent is below its minimum supported version) are "
-            "still applied.",
+            hidden=True,
+            help="Deprecated and ignored: agents are updated only when required for "
+            "compatibility. Accepted for backward compatibility.",
         ),
     ] = False,
     verbose: Annotated[
@@ -2912,7 +2862,6 @@ def configure(
         raise typer.Exit(2)
     set_dry_run(dry_run)
     set_verbosity(verbose)
-    prompt_optional_updates = not skip_upgrade
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
@@ -2927,15 +2876,6 @@ def configure(
                 "--use-pat requires --profiles. Pass the PAT-backed Databricks CLI "
                 "profile(s) explicitly, e.g. `ug configure --profiles DEFAULT --use-pat`."
             )
-        # Skipping only has meaning against an explicit agent list: the interactive
-        # picker already offers just the available agents, and --agent names a
-        # single agent whose absence is the whole answer.
-        if skip_unavailable and agents is None:
-            raise RuntimeError(
-                "--skip-unavailable requires --agents. It selects the available subset "
-                "of an explicit agent list, e.g. `ug configure --agents claude,codex,pi "
-                "--skip-unavailable`."
-            )
         workspace_entries = _parse_workspaces_option(workspaces) if workspaces is not None else None
         if profiles is not None:
             workspace_entries = _parse_profiles_option(profiles)
@@ -2945,16 +2885,6 @@ def configure(
         skip_kwargs: dict = {}
         if use_pat:
             skip_kwargs["use_pat"] = True
-        # Only forward the Fable opt-in when the user passed the flag; `None`
-        # (neither flag given) lets configure_shared_state inherit the prior
-        # workspace setting instead of clobbering it.
-        if enable_fable is not None:
-            skip_kwargs["fable_enabled"] = enable_fable
-        # Fable is a Claude-only model family, so `--enable-fable`/`--disable-fable`
-        # only makes sense for Claude Code. When passed on its own, implicitly
-        # target claude instead of dropping into the interactive agent picker.
-        if enable_fable is not None and agent is None and agents is None:
-            agent = "claude"
         if enable_databricks_ai_tools is not None:
             skip_kwargs["databricks_ai_tools_enabled"] = enable_databricks_ai_tools
         if custom_oauth is not None:
@@ -2968,8 +2898,6 @@ def configure(
             install_tool_binary(
                 tool,
                 strict=True,
-                update_existing=True,
-                prompt_optional_updates=prompt_optional_updates,
             )
             if workspace_entries is None:
                 configure_workspace_command(tool, **skip_kwargs)
@@ -2992,21 +2920,16 @@ def configure(
             model_agent_names = ",".join(a for a in requested if a != "cursor")
             if model_agent_names:
                 selected_tools = _parse_agents_option(model_agent_names)
-                agents_kwargs = dict(skip_kwargs)
-                if skip_unavailable:
-                    agents_kwargs["skip_unavailable"] = True
                 if workspace_entries is None:
                     configure_workspace_command(
                         selected_tools=selected_tools,
-                        prompt_optional_updates=prompt_optional_updates,
-                        **agents_kwargs,
+                        **skip_kwargs,
                     )
                 else:
                     configure_workspace_command(
                         selected_tools=selected_tools,
                         workspaces=workspace_entries,
-                        prompt_optional_updates=prompt_optional_updates,
-                        **agents_kwargs,
+                        **skip_kwargs,
                     )
             elif wants_cursor:
                 # Cursor-only: establish workspace state without the model picker.
@@ -3043,14 +2966,10 @@ def configure(
             if combined_optional_setup:
                 skip_kwargs["offer_optional_setup"] = True
             if workspace_entries is None:
-                configure_workspace_command(
-                    prompt_optional_updates=prompt_optional_updates,
-                    **skip_kwargs,
-                )
+                configure_workspace_command(**skip_kwargs)
             else:
                 configure_workspace_command(
                     workspaces=workspace_entries,
-                    prompt_optional_updates=prompt_optional_updates,
                     **skip_kwargs,
                 )
             # Only the no-agent, no-workspace path is truly interactive (the user

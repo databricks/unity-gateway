@@ -275,7 +275,7 @@ def default_model(state: dict) -> str | None:
     if codex_models:
         return codex_models[0]
     gemini_models = state.get("gemini_models") or []
-    return gemini_models[0] if gemini_models else None
+    return gemini_models[0] if gemini_models else next(iter(claude_models.values()), None)
 
 
 def _configure_launch(state: dict) -> str:

@@ -33,24 +33,6 @@ class TestOpencodeSpec:
             opencode.OPENCODE_XDG_CONFIG_HOME / "opencode" / "opencode.json"
         )
 
-    def test_update_check_uses_latest_stable_v1(self, monkeypatch):
-        monkeypatch.setattr(
-            opencode,
-            "available_npm_package_update",
-            lambda _package: ("1.18.15", "1.18.16"),
-        )
-
-        assert opencode.is_update_available() == ("1.18.15", "1.18.16")
-
-    def test_update_check_ignores_npm_beta(self, monkeypatch):
-        monkeypatch.setattr(
-            opencode,
-            "available_npm_package_update",
-            lambda _package: ("1.18.16", "0.0.0-beta-202605152242"),
-        )
-
-        assert opencode.is_update_available() is None
-
     def test_requires_version_with_custom_provider_fetch(self, monkeypatch):
         monkeypatch.setattr(opencode, "agent_version", lambda _binary: "1.0.219")
 

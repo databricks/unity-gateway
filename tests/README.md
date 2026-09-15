@@ -48,9 +48,16 @@ are incorporated into the Databricks configuration TUI journeys.
 Generated-file cleanup and strict app-server stdout assertions remain enforced.
 
 ug no longer runs a post-configure agent probe; the deprecated `--skip-validate`
-flag is accepted as a no-op where older journeys still pass it. Tests use
-`--skip-upgrade` to preserve selected agent versions and disable optional
-Databricks AI Tools. Help forwarding does not claim MCP functionality.
+flag is accepted as a no-op where older journeys still pass it. Tests retain
+`--skip-upgrade` as a deprecated no-op too; UG only upgrades agents below its
+required minimum. Tests disable optional Databricks AI Tools. Help forwarding
+does not claim MCP functionality.
+
+Unit/component tests cover automatic Fable discovery and legacy-state cleanup,
+available-subset configuration (including a nonzero exit when none are available),
+deprecated skip flags, and required-only agent upgrades. They replace the obsolete
+Fable opt-in, strict-subset, and optional-update assertions; these options do not
+have dedicated live integration coverage.
 
 Fresh consumer dependency resolution covers the install path behind #496, rather
 than consuming `uv.lock`. Use `--dependency PACKAGE==VERSION` or replay the archived

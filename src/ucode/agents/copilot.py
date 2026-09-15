@@ -85,7 +85,7 @@ def default_model(state: dict) -> str | None:
     codex_models = state.get("codex_models") or []
     if codex_models:
         return codex_models[0]
-    return None
+    return next(iter(claude_models.values()), None)
 
 
 def render_env_overlay(workspace: str, model: str, token: str) -> dict[str, str]:

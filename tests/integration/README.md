@@ -102,8 +102,11 @@ session and credentials; none manufacture or configure application state.
 ug no longer runs a post-configure agent probe, so no CUJ validates; each
 journey still requires its own completed interactive task or command assertions
 (the deprecated `--skip-validate` flag is accepted as a no-op where older
-journeys pass it). Tests disable optional Databricks AI Tools and
-pass `--skip-upgrade` to preserve the selected version. They use real onboarding
+journeys pass it). Tests disable optional Databricks AI Tools and retain
+`--skip-upgrade` as a deprecated no-op for compatibility. UG only upgrades
+agents below its required minimum; before/after version checks still enforce the
+selected versions. Fable, subset selection, and required-update policy are covered
+by unit/component tests, not dedicated live journeys. Tests use real onboarding
 and trust choices, without seeded acceptance or disabled agent sandboxing. If a
 routed child asks to locate the random fixture beneath the disposable project,
 the terminal driver accepts that exact read-only command through Claude's real

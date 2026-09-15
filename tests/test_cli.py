@@ -1682,7 +1682,7 @@ class TestConfigureAgentsForMcp:
             scope = cli_mod._configure_agents_for_mcp(["claude", "codex"])
 
         assert scope == {"claude", "codex"}
-        mock_cfg.assert_called_once_with(selected_tools=["codex"], prompt_optional_updates=True)
+        mock_cfg.assert_called_once_with(selected_tools=["codex"])
 
     def test_all_configured_skips_bootstrap(self):
         with (
@@ -1997,7 +1997,7 @@ class TestAutoConfigureOnFirstRun:
         ):
             result = runner.invoke(app, ["claude"])
         assert result.exit_code == 0, result.output
-        mock_bootstrap.assert_called_once_with("claude", update_existing=True)
+        mock_bootstrap.assert_called_once_with("claude")
         mock_auto.assert_called_once_with("claude")
 
     def test_triggers_when_tool_not_in_available_tools(self):
@@ -2022,7 +2022,7 @@ class TestAutoConfigureOnFirstRun:
         ):
             result = runner.invoke(app, ["claude"])
         assert result.exit_code == 0, result.output
-        mock_bootstrap.assert_called_once_with("claude", update_existing=True)
+        mock_bootstrap.assert_called_once_with("claude")
         mock_auto.assert_called_once_with("claude")
 
     def test_skipped_when_already_configured(self):
@@ -2045,7 +2045,7 @@ class TestAutoConfigureOnFirstRun:
             patch("ucode.cli.launch_agent"),
         ):
             runner.invoke(app, ["claude"])
-        mock_bootstrap.assert_called_once_with("claude", update_existing=False)
+        mock_bootstrap.assert_called_once_with("claude")
         mock_auto.assert_not_called()
 
 
@@ -2087,7 +2087,7 @@ class TestConfigureAgentFlag:
         ):
             result = runner.invoke(app, ["configure"])
         assert result.exit_code == 0, result.output
-        mock_cfg.assert_called_once_with(prompt_optional_updates=True, offer_optional_setup=True)
+        mock_cfg.assert_called_once_with(offer_optional_setup=True)
 
     def test_optional_setup_installs_ai_tools_and_configures_mcp(self):
         import ucode.cli as cli_mod
@@ -2145,7 +2145,6 @@ class TestConfigureAgentFlag:
         mock_install.assert_not_called()
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
-            prompt_optional_updates=True,
         )
 
     def test_agents_flag_normalizes_aliases_and_dedupes(self):
@@ -2158,7 +2157,6 @@ class TestConfigureAgentFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
-            prompt_optional_updates=True,
         )
 
     def test_workspaces_flag_calls_configure_with_workspaces(self):
@@ -2181,7 +2179,6 @@ class TestConfigureAgentFlag:
                 ("https://first.databricks.com", None),
                 ("https://second.databricks.com", None),
             ],
-            prompt_optional_updates=True,
         )
 
     def test_agents_and_workspaces_flags_call_configure_with_both(self):
@@ -2198,7 +2195,6 @@ class TestConfigureAgentFlag:
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
             workspaces=[("https://first.com", None)],
-            prompt_optional_updates=True,
         )
 
     def test_agent_and_workspaces_flags_call_configure_with_both(self):
@@ -2212,9 +2208,7 @@ class TestConfigureAgentFlag:
                 ["configure", "--agent", "claude", "--workspaces", "https://first.com"],
             )
         assert result.exit_code == 0, result.output
-        mock_install.assert_called_once_with(
-            "claude", strict=True, update_existing=True, prompt_optional_updates=True
-        )
+        mock_install.assert_called_once_with("claude", strict=True)
         mock_cfg.assert_called_once_with("claude", workspaces=[("https://first.com", None)])
 
     def test_agent_flag_calls_configure_with_tool(self):
@@ -2225,56 +2219,22 @@ class TestConfigureAgentFlag:
         ):
             result = runner.invoke(app, ["configure", "--agent", "claude"])
         assert result.exit_code == 0, result.output
-        mock_install.assert_called_once_with(
-            "claude", strict=True, update_existing=True, prompt_optional_updates=True
-        )
+        mock_install.assert_called_once_with("claude", strict=True)
         mock_cfg.assert_called_once_with("claude")
 
-    def test_disable_fable_alone_implicitly_targets_claude(self):
-        # Fable is Claude-only, so `--disable-fable` on its own should configure
-        # claude directly instead of dropping into the interactive agent picker.
-        with (
-            patch("ucode.cli.install_databricks_cli"),
-            patch("ucode.cli.install_tool_binary") as mock_install,
-            patch("ucode.cli.configure_workspace_command") as mock_cfg,
-        ):
-            result = runner.invoke(app, ["configure", "--disable-fable"])
-        assert result.exit_code == 0, result.output
-        mock_install.assert_called_once_with(
-            "claude", strict=True, update_existing=True, prompt_optional_updates=True
-        )
-        mock_cfg.assert_called_once_with("claude", fable_enabled=False)
+    @pytest.mark.parametrize("flag", ["--enable-fable", "--disable-fable"])
+    def test_fable_toggles_removed(self, flag):
+        result = runner.invoke(app, ["configure", flag])
+        assert result.exit_code == 2
+        assert "No such option" in _strip_ansi(result.output)
 
-    def test_enable_fable_alone_implicitly_targets_claude(self):
-        with (
-            patch("ucode.cli.install_databricks_cli"),
-            patch("ucode.cli.install_tool_binary") as mock_install,
-            patch("ucode.cli.configure_workspace_command") as mock_cfg,
-        ):
-            result = runner.invoke(app, ["configure", "--enable-fable"])
-        assert result.exit_code == 0, result.output
-        mock_install.assert_called_once_with(
-            "claude", strict=True, update_existing=True, prompt_optional_updates=True
-        )
-        mock_cfg.assert_called_once_with("claude", fable_enabled=True)
+    def test_removed_configure_options_hidden_from_help(self):
+        result = runner.invoke(app, ["configure", "--help"])
+        assert result.exit_code == 0
+        for flag in ("--enable-fable", "--disable-fable", "--skip-upgrade", "--skip-unavailable"):
+            assert flag not in _strip_ansi(result.output)
 
-    def test_enable_fable_with_explicit_agents_does_not_override(self):
-        # An explicit --agents selection wins; the fable flag rides along without
-        # forcing the claude-only single-agent path.
-        with (
-            patch("ucode.cli.install_databricks_cli"),
-            patch("ucode.cli.install_tool_binary"),
-            patch("ucode.cli.configure_workspace_command") as mock_cfg,
-        ):
-            result = runner.invoke(app, ["configure", "--enable-fable", "--agents", "claude,codex"])
-        assert result.exit_code == 0, result.output
-        mock_cfg.assert_called_once_with(
-            selected_tools=["claude", "codex"],
-            prompt_optional_updates=True,
-            fable_enabled=True,
-        )
-
-    def test_skip_upgrade_flag_disables_optional_update_prompt(self):
+    def test_skip_upgrade_flag_is_noop(self):
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.install_tool_binary"),
@@ -2285,7 +2245,7 @@ class TestConfigureAgentFlag:
         ):
             result = runner.invoke(app, ["configure", "--skip-upgrade"])
         assert result.exit_code == 0, result.output
-        mock_cfg.assert_called_once_with(prompt_optional_updates=False, offer_optional_setup=True)
+        mock_cfg.assert_called_once_with(offer_optional_setup=True)
 
     def test_disable_databricks_ai_tools_forwards_false_and_skips_prompt(self):
         # An explicit flag suppresses the interactive prompt and forwards the choice.
@@ -2299,9 +2259,7 @@ class TestConfigureAgentFlag:
         ):
             result = runner.invoke(app, ["configure", "--disable-databricks-ai-tools"])
         assert result.exit_code == 0, result.output
-        mock_cfg.assert_called_once_with(
-            prompt_optional_updates=True, databricks_ai_tools_enabled=False
-        )
+        mock_cfg.assert_called_once_with(databricks_ai_tools_enabled=False)
 
     def test_enable_databricks_ai_tools_with_agents_forwards_true(self):
         with (
@@ -2315,11 +2273,10 @@ class TestConfigureAgentFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
-            prompt_optional_updates=True,
             databricks_ai_tools_enabled=True,
         )
 
-    def test_skip_upgrade_flag_with_agent_skips_optional_update(self):
+    def test_skip_upgrade_flag_with_agent_is_noop(self):
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.install_tool_binary") as mock_install,
@@ -2327,11 +2284,9 @@ class TestConfigureAgentFlag:
         ):
             result = runner.invoke(app, ["configure", "--agent", "claude", "--skip-upgrade"])
         assert result.exit_code == 0, result.output
-        mock_install.assert_called_once_with(
-            "claude", strict=True, update_existing=True, prompt_optional_updates=False
-        )
+        mock_install.assert_called_once_with("claude", strict=True)
 
-    def test_skip_upgrade_flag_with_agents_forwards_to_configure(self):
+    def test_skip_upgrade_flag_with_agents_is_noop(self):
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.install_tool_binary"),
@@ -2341,7 +2296,6 @@ class TestConfigureAgentFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
-            prompt_optional_updates=False,
         )
 
     def test_agent_flag_normalizes_alias(self):
@@ -2422,7 +2376,6 @@ class TestConfigureMcpFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             selected_tools=["claude"],
-            prompt_optional_updates=True,
         )
         mock_mcp.assert_called_once_with(services={"system.ai.slack", "system.ai.github"})
 
@@ -2492,9 +2445,7 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(
             cli_mod,
             "install_tool_binary",
-            lambda tool, strict=False, update_existing=False, prompt_optional_updates=True: (
-                install_calls.append(tool) or True
-            ),
+            lambda tool, strict=False: install_calls.append(tool) or True,
         )
         configured: list[list[str]] = []
         monkeypatch.setattr(
@@ -2538,42 +2489,7 @@ class TestConfigureAgentsSelection:
         cli_mod.configure_workspace_command()
         assert picked_for == ["claude"]
 
-    def test_unavailable_selected_tool_errors_before_configure(self, monkeypatch):
-        import ucode.cli as cli_mod
-
-        state = {**MINIMAL_STATE, "available_tools": []}
-        monkeypatch.setattr(
-            cli_mod,
-            "_prompt_for_configuration",
-            lambda tool=None: ("https://example.com", None),
-        )
-        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *args, **kwargs: state)
-        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda state, tool: tool == "claude")
-        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *args, **kwargs: None)
-        monkeypatch.setattr(
-            cli_mod,
-            "configure_selected_tools",
-            lambda state, tools: pytest.fail("configure_selected_tools should not be called"),
-        )
-
-        with pytest.raises(RuntimeError, match="Codex"):
-            cli_mod.configure_workspace_command(selected_tools=["claude", "codex"])
-
-    def test_strict_error_mentions_skip_unavailable(self, monkeypatch):
-        import ucode.cli as cli_mod
-
-        state = {**MINIMAL_STATE, "available_tools": []}
-        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
-        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda state, tool: tool == "claude")
-        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: None)
-
-        with pytest.raises(RuntimeError, match="--skip-unavailable"):
-            cli_mod.configure_workspace_command(
-                selected_tools=["claude", "codex"],
-                workspaces=[("https://example.com", None)],
-            )
-
-    def test_skip_unavailable_configures_available_subset(self, monkeypatch):
+    def test_configures_available_subset_by_default(self, monkeypatch):
         """A workspace with no OpenAI models still configures claude and pi."""
         import ucode.cli as cli_mod
 
@@ -2601,7 +2517,6 @@ class TestConfigureAgentsSelection:
             cli_mod.configure_workspace_command(
                 selected_tools=["claude", "codex", "pi"],
                 workspaces=[("https://example.com", None)],
-                skip_unavailable=True,
             )
             == 0
         )
@@ -2610,26 +2525,26 @@ class TestConfigureAgentsSelection:
         assert installed == ["claude", "pi"]
         assert any("Codex" in msg for msg in warnings)
 
-    def test_skip_unavailable_still_fails_when_none_available(self, monkeypatch):
+    @pytest.mark.parametrize("flags", [[], ["--skip-unavailable"]])
+    def test_configure_fails_when_none_available(self, monkeypatch, flags):
         import ucode.cli as cli_mod
 
         state = {**MINIMAL_STATE, "available_tools": []}
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda: None)
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda state, tool: False)
         monkeypatch.setattr(
             cli_mod,
             "configure_selected_tools",
-            lambda state, tools: pytest.fail("configure_selected_tools should not be called"),
+            lambda state, tools: pytest.fail("must not configure unavailable agents"),
         )
 
-        assert (
-            cli_mod.configure_workspace_command(
-                selected_tools=["codex"],
-                workspaces=[("https://example.com", None)],
-                skip_unavailable=True,
-            )
-            == 1
+        result = runner.invoke(
+            app,
+            ["configure", "--agents", "codex", "--workspaces", "https://example.com", *flags],
         )
+        assert result.exit_code == 1
+        assert "No coding agents are available" in _strip_ansi(result.output)
 
     def test_picker_selected_profile_flows_to_configure_shared_state(self, monkeypatch):
         """Picker's (host, profile) tuple must reach configure_shared_state's
@@ -2650,7 +2565,6 @@ class TestConfigureAgentsSelection:
             tools=None,
             force_login=False,
             use_pat=False,
-            fable_enabled=None,
             databricks_ai_tools_enabled=None,
             clear_custom_oauth=False,
         ):
@@ -2688,7 +2602,6 @@ class TestConfigureAgentsSelection:
             tools=None,
             force_login=False,
             use_pat=False,
-            fable_enabled=None,
             databricks_ai_tools_enabled=None,
             clear_custom_oauth=False,
         ):
@@ -2790,7 +2703,6 @@ class TestConfigureProfilesFlag:
         # default forced OAuth login applies.
         mock_cfg.assert_called_once_with(
             workspaces=[("https://first.databricks.com", "DEFAULT")],
-            prompt_optional_updates=True,
         )
 
     def test_profiles_flag_with_agents(self):
@@ -2807,7 +2719,6 @@ class TestConfigureProfilesFlag:
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
             workspaces=[("https://first.databricks.com", "DEFAULT")],
-            prompt_optional_updates=True,
         )
 
     def test_profiles_flag_with_agent(self):
@@ -2847,7 +2758,6 @@ class TestConfigureProfilesFlag:
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
             workspaces=[("https://first.databricks.com", "DEFAULT")],
-            prompt_optional_updates=True,
             use_pat=True,
         )
 
@@ -2864,17 +2774,17 @@ class TestConfigureProfilesFlag:
         assert "--use-pat requires --profiles" in _strip_ansi(result.output)
         mock_cfg.assert_not_called()
 
-    def test_skip_unavailable_requires_agents(self):
+    def test_skip_unavailable_accepted_without_agents(self):
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
+            patch("ucode.cli.prompt_yes_no", return_value=False),
         ):
             result = runner.invoke(app, ["configure", "--skip-unavailable"])
-        assert result.exit_code == 1
-        assert "--skip-unavailable requires --agents" in _strip_ansi(result.output)
-        mock_cfg.assert_not_called()
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_called_once_with(offer_optional_setup=True)
 
-    def test_skip_unavailable_forwarded_with_agents(self):
+    def test_skip_unavailable_is_not_forwarded_with_agents(self):
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
@@ -2891,7 +2801,7 @@ class TestConfigureProfilesFlag:
                 ],
             )
         assert result.exit_code == 0, result.output
-        assert mock_cfg.call_args.kwargs["skip_unavailable"] is True
+        assert "skip_unavailable" not in mock_cfg.call_args.kwargs
         assert mock_cfg.call_args.kwargs["selected_tools"] == ["claude", "codex", "pi"]
 
     def test_skip_unavailable_absent_by_default(self):
@@ -3181,31 +3091,31 @@ class TestConfigureSharedStateUsePat:
         )
         return cli_mod
 
-    def test_fable_stripped_from_discovery_when_not_enabled(self, monkeypatch):
-        # Discovery buckets fable, but without --enable-fable it's dropped from
-        # the persisted bundle so it never reaches any agent's config.
+    def test_fable_discovered_without_opt_in(self, monkeypatch):
         cli_mod = self._stub_with_fable(monkeypatch)
 
         state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
 
-        assert state["claude_models"] == {"opus": "system.ai.claude-opus-4-8"}
+        assert state["claude_models"] == {
+            "fable": "system.ai.claude-fable-5",
+            "opus": "system.ai.claude-opus-4-8",
+        }
+        assert state["opencode_models"]["anthropic"] == [
+            "system.ai.claude-fable-5",
+            "system.ai.claude-opus-4-8",
+        ]
         assert "fable_enabled" not in state
 
-    def test_fable_retained_and_persisted_when_enabled(self, monkeypatch):
-        cli_mod = self._stub_with_fable(monkeypatch)
-
-        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", fable_enabled=True)
-
-        assert state["claude_models"]["fable"] == "system.ai.claude-fable-5"
-        assert state["fable_enabled"] is True
-
-    def test_launch_inherits_persisted_fable_opt_in(self, monkeypatch):
-        # A launch re-run passes fable_enabled=None; the persisted opt-in for the
-        # same workspace applies, so fable stays in the discovered bundle.
+    @pytest.mark.parametrize("legacy_enabled", [False, True])
+    def test_legacy_fable_toggle_is_discarded(self, monkeypatch, legacy_enabled):
         cli_mod, *_ = self._stub_deps(
             monkeypatch,
             pat_token="dapi-pat",
-            existing_state={"workspace": self.WS, "profile": "DEFAULT", "fable_enabled": True},
+            existing_state={
+                "workspace": self.WS,
+                "profile": "DEFAULT",
+                "fable_enabled": legacy_enabled,
+            },
         )
         monkeypatch.setattr(
             cli_mod,
@@ -3216,24 +3126,7 @@ class TestConfigureSharedStateUsePat:
         state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
 
         assert state["claude_models"]["fable"] == "system.ai.claude-fable-5"
-        assert state["fable_enabled"] is True
-
-    def test_reconfigure_with_disable_fable_clears_opt_in(self, monkeypatch):
-        cli_mod, *_ = self._stub_deps(
-            monkeypatch,
-            pat_token="dapi-pat",
-            existing_state={"workspace": self.WS, "profile": "DEFAULT", "fable_enabled": True},
-        )
-        monkeypatch.setattr(
-            cli_mod,
-            "discover_model_services",
-            lambda w, t: ({"fable": "system.ai.claude-fable-5"}, [], [], [], None),
-        )
-
-        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", fable_enabled=False)
-
         assert "fable_enabled" not in state
-        assert "fable" not in state["claude_models"]
 
     def test_ai_tools_disable_persists(self, monkeypatch):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
@@ -3266,7 +3159,7 @@ class TestConfigureSharedStateUsePat:
 
     def test_ai_tools_disable_does_not_leak_across_workspaces(self, monkeypatch):
         # A different workspace's opt-out must NOT carry into this one; no flag
-        # here resolves to the default (install=True), matching use_pat/fable scoping.
+        # here resolves to the default (install=True), matching use_pat scoping.
         cli_mod, *_ = self._stub_deps(
             monkeypatch,
             pat_token="dapi-pat",
