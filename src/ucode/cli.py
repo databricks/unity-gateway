@@ -84,6 +84,7 @@ from ucode.managed_resolve import (
     managed_default_model,
     managed_enabled_tools,
     managed_launch_model,
+    managed_model_service_location,
     managed_provider_family_models,
     managed_provider_service,
     managed_supplies_models,
@@ -2182,6 +2183,13 @@ def _launch_tool(
             )
         # Checked before discovery, which can take tens of seconds, so a blocked launch fails fast.
         _reject_disabled_agent(managed, tool)
+        # A managed unity_catalog_location scopes the agent's gateway model discovery to that schema,
+        # exactly like `--parent`, so its `/model` picker lists that location's models. An explicit
+        # --provider/--parent on the CLI takes precedence.
+        if parent_schema is None and provider is None and managed is not None:
+            managed_location = managed_model_service_location(managed, tool)
+            if managed_location:
+                parent_schema = managed_location
         # Discovery exists to find models and isn't needed for managed config that already names them.
         managed_models_known = managed_supplies_models(managed, tool)
         # Re-fetch model lists on every launch so newly-added Databricks
