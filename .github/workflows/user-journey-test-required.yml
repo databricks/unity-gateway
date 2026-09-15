@@ -1,0 +1,50 @@
+name: User Journey Test Required
+
+# This gate runs from the trusted base branch and reads PR patches through the
+# GitHub API. It never checks out or executes code from the PR head, including
+# for fork PRs. The Databricks bearer is sent only to the configured workspace.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: user-journey-test-required-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  require-user-journey-test:
+    name: User Journey Test Required
+    if: ${{ !github.event.pull_request.draft }}
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the trusted gate from the default branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: |
+            .github/scripts/user-journey-required/check.py
+            tests/AGENTS.md
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Require meaningful user-journey coverage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          DATABRICKS_HOST: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+          USER_JOURNEY_JUDGE_MODEL: ${{ vars.UG_CI_USER_JOURNEY_JUDGE_MODEL }}
+          TEST_POLICY_PATH: tests/AGENTS.md
+          USER_JOURNEY_WAIVER_ADMINS: rohita5l lilly-luo
+        run: |
+          : "${USER_JOURNEY_JUDGE_MODEL:?Set the UG_CI_USER_JOURNEY_JUDGE_MODEL repository variable to a chat-capable system.ai model}"
+          python3 .github/scripts/user-journey-required/check.py

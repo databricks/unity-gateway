@@ -234,6 +234,21 @@ policies prevented Codex's bubblewrap tool from reading even the test file in th
 first run. The agent sandbox is not disabled or bypassed.
 The workflow consumes the stored bearer; it does not mint or refresh credentials.
 
+Pull requests also run the **User Journey Test Required** policy check. A trusted
+base-branch script sends a bounded product and `tests/integration/` diff to a
+Databricks-hosted LLM judge using the existing `UCODE_TEST_WORKSPACE` and
+`DATABRICKS_BEARER` secrets. The judge also receives the trusted base-branch
+`tests/AGENTS.md` policy so it can reject mocked, trivial, or otherwise invalid
+coverage. If a change adds or materially changes a user journey without meaningful
+integration coverage, the check fails with a CTA to add or update the relevant test
+under `tests/integration/`. Set the repository variable
+`UG_CI_USER_JOURNEY_JUDGE_MODEL` to a chat-capable `system.ai` model and make
+`User Journey Test Required` a required branch-protection check. For an exceptional
+bypass, only `@rohita5l` or `@lilly-luo` can post the exact PR comment
+`/skip-user-journey-test`. A trusted comment workflow mirrors that authorization to the
+visible `skip-user-journey-test` label, causing the gate to rerun. Editing or deleting the
+comment removes the label and reruns the gate; manually adding the label does not bypass it.
+
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
 and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
 alias for `full`. Manual subsets are explicit: `smoke` runs just the four smoke
