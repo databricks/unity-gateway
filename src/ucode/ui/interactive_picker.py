@@ -134,7 +134,7 @@ def scrolling_checkbox(
     on screen: it's run on a daemon thread and handed an ``append(choices)`` callback that
     adds rows (deduped by value) and repaints, so the picker opens instantly on whatever
     ``choices`` are ready and fills in the rest without blocking. A footer shows a live
-    "loading more {loading_noun}…" count while it runs.
+    "Loading more {loading_noun}, this might take a few seconds..." count while it runs.
 
     ``show_description`` adds a footer previewing the highlighted row's ``Choice.description``.
     It's a separate window rather than questionary's inline ``show_description`` because the
@@ -183,7 +183,11 @@ def scrolling_checkbox(
 
     def loading_tokens() -> list[tuple[str, str]]:
         return [
-            ("class:instruction", f"  ⏳ loading more {loading_noun}… ({loading['found']} found)")
+            (
+                "class:instruction",
+                f"  ⏳ Loading more {loading_noun}, this might take a few seconds..."
+                f" ({loading['found']} found)",
+            )
         ]
 
     @Condition
