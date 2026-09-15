@@ -14,7 +14,6 @@ from ucode.doctor import (
     _check_databricks_auth,
     _check_databricks_cli,
     _check_npm,
-    _check_tracing_mlflow,
     _check_uv,
     _check_workspace,
     doctor,
@@ -224,30 +223,6 @@ class TestAnthropicEnvCollision:
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "   ")
         assert _check_anthropic_env_collision() is None
-
-
-class TestTracingMlflowCheck:
-    def test_none_when_tracing_disabled(self):
-        with patch.object(doctor_mod, "tracing_config", return_value=None):
-            assert _check_tracing_mlflow() is None
-
-    def test_ok_when_mlflow_present(self):
-        with (
-            patch.object(doctor_mod, "tracing_config", return_value={"enabled": True}),
-            patch.object(doctor_mod, "tracing_mlflow_ok", return_value=True),
-        ):
-            check = _check_tracing_mlflow()
-        assert check.status == "ok"
-        assert check.suggestion is None
-
-    def test_warn_and_install_suggestion_when_missing(self):
-        with (
-            patch.object(doctor_mod, "tracing_config", return_value={"enabled": True}),
-            patch.object(doctor_mod, "tracing_mlflow_ok", return_value=False),
-        ):
-            check = _check_tracing_mlflow()
-        assert check.status == "warn"
-        assert check.suggestion is not None
 
 
 class TestUcodeCheck:
