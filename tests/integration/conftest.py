@@ -100,7 +100,9 @@ def claude_oauth_token():
     # silently pass a degraded run — the suite has no capability skips.
     token = os.environ.get("UG_INTEGRATION_CLAUDE_OAUTH_TOKEN", "").strip()
     if not token:
-        pytest.fail("Set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) to run the relayed CUJ.")
+        pytest.fail(
+            "Set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) to run the relayed CUJ."
+        )
     return token
 
 

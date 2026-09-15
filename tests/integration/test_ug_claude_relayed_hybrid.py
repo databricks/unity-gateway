@@ -25,9 +25,7 @@ def _databricks_hosted_model(workspace: str, token: str) -> str:
     with urllib.request.urlopen(request, timeout=30) as response:
         ids = [entry.get("id") for entry in json.load(response).get("data", [])]
     hosted = [
-        model
-        for model in ids
-        if model and "." in model and not model.startswith("anthropic-aigw-")
+        model for model in ids if model and "." in model and not model.startswith("anthropic-aigw-")
     ]
     haiku = [model for model in hosted if "haiku" in model]
     model = (haiku or hosted or [""])[0]
