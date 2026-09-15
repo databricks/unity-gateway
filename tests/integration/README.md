@@ -105,7 +105,10 @@ Provider CUJs use normal ug validation, then require their own completed
 interactive task. Routing CUJs skip the preliminary validation prompt and require
 the actual routed TUI task instead. Tests disable optional Databricks AI Tools and
 pass `--skip-upgrade` to preserve the selected version. They use real onboarding
-and trust choices, without seeded acceptance or disabled agent sandboxing.
+and trust choices, without seeded acceptance or disabled agent sandboxing. If a
+routed child asks to locate the random fixture beneath the disposable project,
+the terminal driver accepts that exact read-only command through Claude's real
+permission dialog; any broader permission request fails immediately.
 
 A fixture file contains an unpredictable value absent from the prompt. Success
 requires an assistant answer in the real agent transcript containing that value,
