@@ -5,36 +5,27 @@ from __future__ import annotations
 import platform
 import shlex
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from pathlib import Path
 from typing import TypedDict
 from urllib.parse import urlparse
 
-try:
-    from databricks.sdk import oauth
-except ModuleNotFoundError:
-    oauth = None
+from databricks.sdk import oauth
 
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
 from ucode.databricks import build_auth_token_argv
 from ucode.ui import err_console, normalize_workspace_url, print_warning_err
 
 DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
-_MISSING_SDK_ERROR = (
-    "Custom OAuth requires the optional Databricks SDK dependency. "
-    'Install it with `uv tool install "ucode[custom-oauth]"` and retry.'
-)
+# Custom OAuth may need a human to finish browser consent, not just a token fetch.
+CUSTOM_OAUTH_TIMEOUT_MS = 180_000
 
 
 class CustomOAuthConfig(TypedDict):
     client_id: str
     redirect_url: str
     scopes: list[str]
-
-
-def _require_oauth():
-    if oauth is None:
-        raise RuntimeError(_MISSING_SDK_ERROR)
-    return oauth
 
 
 def _normalize_scopes(scopes: Sequence[str]) -> list[str]:
@@ -102,6 +93,25 @@ def build_custom_auth_shell_command(workspace: str, config: CustomOAuthConfig) -
     return shlex.join(argv)
 
 
+@contextmanager
+def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
+    """Serialize helpers sharing a callback port with a POSIX file lock.
+
+    Keep the lock file in place: unlinking it could let waiters lock different
+    inodes. The OS releases the lock even if the helper is killed on timeout.
+    """
+    import fcntl
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    port = urlparse(redirect_url).port
+    with (cache_dir / f"ug-oauth-{port}.lock").open("a+b") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
 def get_custom_client_token(
     workspace: str,
     client_id: str,
@@ -112,50 +122,52 @@ def get_custom_client_token(
 ) -> str:
     """Reuse the SDK's PKCE flow and per-workspace/client token cache."""
     config = create_custom_oauth_config(client_id, scopes, redirect_url)
-    sdk_oauth = _require_oauth()
     workspace = normalize_workspace_url(workspace)
     try:
-        endpoints = sdk_oauth.get_workspace_endpoints(workspace)
-        cache = sdk_oauth.TokenCache(
+        endpoints = oauth.get_workspace_endpoints(workspace)
+        cache = oauth.TokenCache(
             host=workspace,
             oidc_endpoints=endpoints,
             client_id=config["client_id"],
             redirect_url=config["redirect_url"],
             scopes=config["scopes"],
         )
-        credentials = cache.load()
-        if credentials is not None:
-            try:
-                if force_refresh:
-                    credentials = sdk_oauth.SessionCredentials(
-                        token=credentials.refresh(),
-                        token_endpoint=endpoints.token_endpoint,
-                        client_id=config["client_id"],
-                        redirect_url=config["redirect_url"],
-                    )
-                credentials.token()
-            except Exception:
-                print_warning_err("Cached OAuth token could not be refreshed. Sign in again.")
-                credentials = None
-        if credentials is None:
-            client = sdk_oauth.OAuthClient(
-                oidc_endpoints=endpoints,
-                client_id=config["client_id"],
-                redirect_url=config["redirect_url"],
-                scopes=config["scopes"],
-            )
-            consent = client.initiate_consent()
-            err_console.print(
-                f"Sign in using your browser: {consent.authorization_url}",
-                markup=False,
-                soft_wrap=True,
-            )
-            credentials = consent.launch_external_browser()
-        token = credentials.token().access_token
-        if not token:
-            raise ValueError("OAuth returned no access token")
-        cache.save(credentials)
-        return token
+        with _custom_oauth_lock(Path(cache.filename).parent, config["redirect_url"]):
+            # Read only after acquiring the lock: another helper may have just
+            # completed login or rotated the refresh token while we waited.
+            credentials = cache.load()
+            if credentials is not None:
+                try:
+                    if force_refresh:
+                        credentials = oauth.SessionCredentials(
+                            token=credentials.refresh(),
+                            token_endpoint=endpoints.token_endpoint,
+                            client_id=config["client_id"],
+                            redirect_url=config["redirect_url"],
+                        )
+                    credentials.token()
+                except Exception:
+                    print_warning_err("Cached OAuth token could not be refreshed. Sign in again.")
+                    credentials = None
+            if credentials is None:
+                client = oauth.OAuthClient(
+                    oidc_endpoints=endpoints,
+                    client_id=config["client_id"],
+                    redirect_url=config["redirect_url"],
+                    scopes=config["scopes"],
+                )
+                consent = client.initiate_consent()
+                err_console.print(
+                    f"Sign in using your browser: {consent.authorization_url}",
+                    markup=False,
+                    soft_wrap=True,
+                )
+                credentials = consent.launch_external_browser()
+            token = credentials.token().access_token
+            if not token:
+                raise ValueError("OAuth returned no access token")
+            cache.save(credentials)
+            return token
     except Exception as exc:
         raise RuntimeError(
             "Custom-client OAuth failed. Check the workspace, client ID, and registered "
