@@ -57,7 +57,7 @@ def custom_catalog_models() -> list[str] | None:
         catalog_ref = settings.get("model_catalog_json")
         if not isinstance(catalog_ref, str) or not catalog_ref.strip():
             continue
-        slugs = _catalog_slugs(Path(catalog_ref).expanduser())
+        slugs = catalog_slugs(read_json_safe(Path(catalog_ref).expanduser()))
         if slugs:
             return slugs
         print_warning(
@@ -84,11 +84,6 @@ def catalog_slugs(catalog: Mapping) -> list[str]:
         seen.add(slug)
         slugs.append(slug)
     return slugs
-
-
-def _catalog_slugs(path: Path) -> list[str]:
-    """Extract deduplicated model slugs from a Codex custom catalog JSON file."""
-    return catalog_slugs(read_json_safe(path))
 
 
 def _toml_item(value: object) -> Item:
