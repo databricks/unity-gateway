@@ -985,6 +985,25 @@ class TestCodexLaunch:
         with pytest.raises(RuntimeError, match=str(path)):
             codex._write_model_catalog(path, {"models": [{"slug": "gpt-mps"}]})
 
+    def test_injects_otel_config_when_tracing_enabled(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        codex.launch(
+            {"workspace": WS, "codex_otel_tracing": True}, ["exec", "hi"], options=LaunchOptions()
+        )
+        argv = launches[0]
+        otel = next((a for a in argv if a.startswith("otel=")), None)
+        assert otel is not None, f"no otel -c arg in {argv}"
+        assert "otlp-http" in otel
+        assert f"{WS}/ai-gateway/otel/v1/traces" in otel
+        assert 'protocol = "binary"' in otel
+        assert 'Authorization = "Bearer tok"' in otel
+        assert argv[-2:] == ["exec", "hi"]
+
+    def test_no_otel_config_when_tracing_disabled(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        codex.launch({"workspace": WS}, ["exec", "hi"], options=LaunchOptions())
+        assert not any(a.startswith("otel=") for a in launches[0])
+
     @pytest.mark.parametrize(
         "tool_args",
         [

@@ -830,27 +830,23 @@ class TestOtelTracing:
         assert managed_otel_tracing_enabled(managed, "claude") is True
         assert managed_otel_tracing_enabled({"enabled_agents": {"claude": {}}}, "claude") is False
 
-    def test_per_agent_wins_over_deprecated_global(self):
-        # Per-agent explicit False overrides a deprecated workspace-level True.
-        managed = {
-            "otel_tracing_enabled": True,
-            "enabled_agents": {"claude": {"otel_tracing_enabled": False}},
-        }
-        assert managed_otel_tracing_enabled(managed, "claude") is False
-
-    def test_deprecated_global_used_as_fallback(self):
-        # No per-agent value → fall back to the deprecated workspace-level flag.
+    def test_workspace_level_flag_is_ignored(self):
+        # Only per-agent counts; a stray workspace-level flag does not enable tracing.
         managed = {"otel_tracing_enabled": True, "enabled_agents": {"claude": {}}}
-        assert managed_otel_tracing_enabled(managed, "claude") is True
+        assert managed_otel_tracing_enabled(managed, "claude") is False
 
     def test_state_override_set_for_claude(self):
         managed = {"enabled_agents": {"claude": {"otel_tracing_enabled": True}}}
         assert managed_state_overrides(managed, "claude") == {"claude_otel_tracing": True}
 
-    def test_not_applied_to_agents_without_otel_support(self):
-        # Per-agent flag is on for codex, but only OTEL_TRACING_TOOLS act on it.
+    def test_state_override_set_for_codex(self):
         managed = {"enabled_agents": {"codex": {"otel_tracing_enabled": True}}}
-        assert "codex_otel_tracing" not in managed_state_overrides(managed, "codex")
+        assert managed_state_overrides(managed, "codex")["codex_otel_tracing"] is True
+
+    def test_not_applied_to_agents_without_otel_support(self):
+        # Per-agent flag is on for gemini, but only OTEL_TRACING_TOOLS act on it.
+        managed = {"enabled_agents": {"gemini": {"otel_tracing_enabled": True}}}
+        assert "gemini_otel_tracing" not in managed_state_overrides(managed, "gemini")
 
     def test_no_override_when_tracing_disabled(self):
         managed = {"enabled_agents": {"claude": {}}}
