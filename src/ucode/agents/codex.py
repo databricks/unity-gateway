@@ -25,6 +25,7 @@ from ucode.config_io import (
     ToolSpec,
     backup_existing_file,
     deep_merge_dict,
+    is_dry_run,
     prune_key_paths,
     read_toml_safe,
     write_json_file,
@@ -72,6 +73,7 @@ from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
+from .codex_catalog import prepare_codex_catalog
 
 CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"
@@ -357,8 +359,19 @@ def revert_legacy_shared_config() -> bool:
 
 
 def configured_paths(state: dict) -> list[str]:
-    """The Codex config file ug writes; the OS-managed file is added by the dispatcher."""
-    return [str(CODEX_CONFIG_PATH)]
+    """The Codex config files ug writes; the OS-managed file is added by the dispatcher.
+
+    Includes the model catalog only when a managed static list drives it (same condition as
+    :func:`write_tool_config`), so the summary names it exactly when it was written."""
+    paths = [str(CODEX_CONFIG_PATH)]
+    static_models = state.get("codex_static_models")
+    if (
+        isinstance(static_models, list)
+        and static_models
+        and not get_provider_service(state, "codex")
+    ):
+        paths.append(str(CODEX_MODEL_CATALOG_PATH))
+    return paths
 
 
 def write_tool_config(
@@ -374,8 +387,15 @@ def write_tool_config(
     managed_model = state.get("codex_default_model")
     chosen_model = managed_model if isinstance(managed_model, str) else None
     databricks_profile = state.get("profile")
+    static_models = state.get("codex_static_models")
+    static_models = static_models if isinstance(static_models, list) and static_models else None
 
     if _use_legacy_layout():
+        if static_models and not provider:
+            raise RuntimeError(
+                "This Codex version cannot use the managed static model catalog. "
+                "Upgrade Codex and verify `codex debug models --bundled` works, then retry."
+            )
         # Codex < 0.134.0 only reads ~/.codex/config.toml. Write the shared
         # config with [profiles.ucode] + shared [model_providers.Databricks]
         # and skip the per-profile-file cleanup that would normally strip
@@ -408,6 +428,15 @@ def write_tool_config(
         save_state(state)
         return state
 
+    catalog_path = str(CODEX_MODEL_CATALOG_PATH) if static_models and not provider else None
+    # Build and validate before modifying config so failure cannot leave a stale
+    # catalog enabled or partially rewrite the user's configuration.
+    catalog = (
+        prepare_codex_catalog(SPEC["binary"], static_models)
+        if static_models and not provider
+        else None
+    )
+
     _remove_legacy_ucode_profile()
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
@@ -424,15 +453,25 @@ def write_tool_config(
         custom_oauth=state.get("custom_oauth"),
     )
 
-    def compose(base: dict) -> dict:
+    def compose(base: dict, *, include_catalog: bool = True) -> dict:
         prune_key_paths(base, _MODEL_SERVICE_ROUTING_KEY_PATHS)
         deep_merge_dict(base, copy.deepcopy(overlay))
         # deep_merge can't drop keys, so clear model preferences from an earlier run.
         if chosen_model is None and not smart_routing_v2.enabled():
             for key in ("model", "model_reasoning_effort"):
                 base.pop(key, None)
+        if include_catalog:
+            if catalog_path:
+                base["model_catalog_json"] = catalog_path
+            else:
+                base.pop("model_catalog_json", None)
         _set_provider_header(base, None)
         return base
+
+    if catalog is not None:
+        write_json_file(CODEX_MODEL_CATALOG_PATH, catalog)
+    elif CODEX_MODEL_CATALOG_PATH.exists() and not is_dry_run():
+        CODEX_MODEL_CATALOG_PATH.unlink()
 
     doc = read_toml_safe(CODEX_CONFIG_PATH)
     compose(doc)
@@ -442,7 +481,7 @@ def write_tool_config(
         enabled=False,
     )
     write_toml_file(CODEX_CONFIG_PATH, doc)
-    _reconcile_managed_config(state, compose)
+    _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     return state
