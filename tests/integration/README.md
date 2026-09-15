@@ -87,6 +87,7 @@ test_ug_codex_commands.py               # command help and parser error forwardi
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
+test_ug_configure_managed.py            # managed workspace: static model list, no agent selector
 test_installation.py                   # fresh installed package
 utils/                                # process/terminal/evidence helpers and Docker files
 ```
@@ -130,7 +131,9 @@ Those choices are recorded in `versions.json`. No service is created or modified
 A missing service or permission fails the selected CUJ, rather than skipping it.
 
 There are **39 live cases** (including 4 TUI journeys) and **3 installation
-checks** with both agents. See the named coverage and gaps matrix in
+checks** with both agents. A separate **2 managed-workspace cases** (one per agent,
+marker `managed`) run against a workspace that publishes a CodingAgentConfig; see
+"Managed-workspace journeys" below. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -224,10 +227,36 @@ shards and other PRs; this limit does not guarantee freedom from rate limits.
 No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
-The **All integration tests** check requires installation, workspace validation, smoke, and
-both full lanes to pass. The existing required `e2e` context also waits for the
-complete integration workflow, so integration cannot still be running when
+The **All integration tests** check requires installation, workspace validation, smoke,
+both full lanes, and both managed lanes to pass. The existing required `e2e` context also
+waits for the complete integration workflow, so integration cannot still be running when
 that gate passes. Full coverage on PRs needs no label or opt-in.
+
+### Managed-workspace journeys
+
+`test_ug_configure_managed.py` (marker `managed`, not `live`) runs in its own per-agent
+**Managed config** jobs against a second workspace that publishes an admin CodingAgentConfig,
+which the shared `live` workspace deliberately does not. This is the only path exercised end to
+end: `ug configure` applies the admin config to every enabled agent with no agent selector, and
+each agent's generated config exposes exactly the admin's static `model_services`
+(Claude's `availableModels`/`modelPicker`, Codex's model catalog). The expected model ids live in
+the test and mirror the published config; update them there if the admin list changes.
+
+That workspace authenticates as a service principal, so CI mints a short-lived token per run from
+these same-repository secrets rather than storing a long-lived bearer:
+
+- `E2E_ADMIN_WORKSPACE`: the managed workspace URL.
+- `E2E_ADMIN_SP_CLIENT_ID` / `E2E_ADMIN_SP_CLIENT_SECRET`: the service principal's OAuth client
+  credentials. The job passes them to the runner as the standard `DATABRICKS_CLIENT_ID` /
+  `DATABRICKS_CLIENT_SECRET`, and `run_integration.py` mints the workspace token.
+
+Run it locally the same way, pointing at the managed workspace:
+
+```bash
+export UCODE_TEST_WORKSPACE=https://<managed-workspace>
+export DATABRICKS_CLIENT_ID=<sp-app-id> DATABRICKS_CLIENT_SECRET=<sp-oauth-secret>
+python scripts/run_integration.py --claude-version <v> --codex-version <v> -- -m managed
+```
 
 Each job uses fresh consumer dependency resolution. There is no default dependency
 matrix. Manual dispatch accepts an
