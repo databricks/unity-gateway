@@ -430,7 +430,7 @@ E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     "gpt-5-5": frozenset({"copilot"}),
     "gpt-5-6": frozenset({"copilot"}),
     # Astra currently fails through these paths in prod-aws-us-east-1.
-    # Codex also receives repeated 429s for Astra in CI.
+    # Astra has limited allowance in production and will hit 429s if tested.
     "astra": frozenset({"codex", "copilot", "pi", "web_search"}),
 }
 
