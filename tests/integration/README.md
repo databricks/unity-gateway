@@ -81,7 +81,7 @@ All user journeys are top-level tests. There is no separate regressions category
 test_ug_configure_claude.py             # Databricks Hosted and Anthropic MPS
 test_ug_configure_codex.py              # Databricks Hosted and OpenAI MPS
 test_ug_claude_headless.py              # script prompts, models, caller settings
-test_ug_claude_relayed_hybrid.py        # relayed session reaching a Databricks-hosted model
+test_ug_claude_relayed.py               # relayed session: subscription + Databricks-hosted models
 test_ug_codex_headless.py               # script prompts and model arguments
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
@@ -117,12 +117,12 @@ Interactive smart-routing journeys and their Claude/Codex CI shards are deferred
 at the user's request. Unit/component routing tests remain; live first-prompt,
 subagent routing, and interactive explicit-model bypass are not covered.
 
-The relayed hybrid CUJ launches Claude through a relayed (subscription-relay) MPS
-but pins a Databricks-hosted `system.ai` model, and asserts the loopback proxy
-re-routes that request to gateway auth (`route=databricks`) and completes the
-file task. It needs a subscription OAuth token (see below). The relay half (a
-bare Anthropic id served by the subscription) and interactive model-picker
-selection are not covered here.
+The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
+completes a file task on two models: a bare Anthropic id the subscription serves
+directly (`route=relay`) and a Databricks-hosted `system.ai` id the loopback proxy
+re-routes to gateway auth (`route=databricks`) — one relayed session reaching both.
+It needs a subscription OAuth token (see below). Interactive model-picker selection
+remains uncovered.
 
 MPS CUJs select the existing services already used by e2e:
 
