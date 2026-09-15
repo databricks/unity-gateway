@@ -20,7 +20,7 @@ _SEMVER_RE = re.compile(r"\d+\.\d+\.\d+[-+0-9A-Za-z.]*")
 @cache
 def ucode_version() -> str:
     try:
-        return version("ucode")
+        return version("unity-gateway")
     except PackageNotFoundError:
         return "unknown"
 

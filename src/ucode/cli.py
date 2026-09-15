@@ -3421,9 +3421,8 @@ def _installed_cli_distribution() -> str:
             continue
         return distribution_name
     # Source checkouts and unusual installers may expose neither distribution.
-    # The distribution remains named ucode until the Phase 3 cutover, so use the
-    # non-destructive legacy upgrade path and let uv report an actionable error.
-    return "ucode"
+    # Use the current distribution name and let uv report an actionable error.
+    return "unity-gateway"
 
 
 def _is_distribution_cutover(result: subprocess.CompletedProcess[str]) -> bool:

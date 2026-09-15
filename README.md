@@ -21,6 +21,37 @@ Check your version with `ug --version`. Between releases this looks like
 `0.1.0+14.g93986a8` — the trailing `g<hash>` is the exact commit the build came
 from, so include it when reporting a bug.
 
+### Upgrading from ucode
+
+The Python distribution is now named `unity-gateway`. Existing installations that
+include the `ug` alias and distribution-aware upgrade command can migrate with:
+
+```bash
+ucode upgrade  # ug upgrade works too
+```
+
+This replaces the legacy `ucode` tool with `unity-gateway` and verifies both commands.
+Your saved workspace, authentication, and agent configuration remain unchanged.
+
+`uv tool upgrade ucode` cannot cross the distribution rename. For older installations
+that cannot self-migrate, use:
+
+```bash
+uv tool uninstall ucode
+uv tool install git+https://github.com/databricks/unity-gateway
+ug --version
+ucode --version
+```
+
+If migration removes `ucode` but the new installation fails, there is no automatic
+rollback. Resolve the reported installation error, then run
+`uv tool install --force git+https://github.com/databricks/unity-gateway` and verify
+both version commands again.
+
+After migration, use `ug upgrade` or `ucode upgrade` for future updates. If you manage
+updates directly with uv, the tool name is now `unity-gateway`:
+`uv tool upgrade unity-gateway`.
+
 ---
 
 ## Usage

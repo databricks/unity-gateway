@@ -11,6 +11,11 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package without credentials |
 
+`test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
+and checks their version output against the `unity-gateway` distribution metadata.
+`TestUpgrade` in `test_cli.py` covers both command names before, during, and after
+the distribution rename with mocked installer calls, including failure recovery guidance.
+
 ## CUJ coverage matrix
 
 These are **implemented assertions**, not a claim that every version passes.

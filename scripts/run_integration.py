@@ -285,7 +285,7 @@ def main() -> int:
 
         if wheel:
             report["wheel_sha256"] = hashlib.sha256(wheel.read_bytes()).hexdigest()
-        package = str(wheel) if wheel else f"ucode=={args.ug_version}"
+        package = str(wheel) if wheel else f"unity-gateway=={args.ug_version}"
         constraints = output / "requested-constraints.txt"
         constraints.write_text(
             (args.constraints.read_text() if args.constraints else "")
@@ -311,7 +311,9 @@ def main() -> int:
         (output / "installed.txt").write_text(freeze + "\n")
         (output / "dependencies.txt").write_text(
             "\n".join(
-                line for line in freeze.splitlines() if not re.match(r"ucode(?:==|\s*@)", line)
+                line
+                for line in freeze.splitlines()
+                if not re.match(r"(?:unity-gateway|ucode)(?:==|\s*@)", line)
             )
             + "\n"
         )
@@ -322,8 +324,13 @@ def main() -> int:
                     python,
                     "-c",
                     (
-                        "import importlib.metadata as m, json, ucode; "
-                        "print(json.dumps({'version': m.version('ucode'), 'path': ucode.__file__}))"
+                        "import importlib.metadata as m, json, ucode\n"
+                        "try:\n"
+                        "    dist = m.distribution('unity-gateway')\n"
+                        "except m.PackageNotFoundError:\n"
+                        "    dist = m.distribution('ucode')\n"
+                        "print(json.dumps({'distribution': dist.metadata['Name'], "
+                        "'version': dist.version, 'path': ucode.__file__}))"
                     ),
                 ]
             )

@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import subprocess
+from importlib.metadata import PackageNotFoundError, version
 from unittest.mock import patch
 
 from ucode import telemetry
 
 
 class TestUcodeVersion:
-    def test_returns_string(self):
-        # Either a real version like "0.1.0" or "unknown" — both are strings.
-        assert isinstance(telemetry.ucode_version(), str)
-        assert telemetry.ucode_version() != ""
+    def test_returns_installed_distribution_version(self):
+        assert telemetry.ucode_version() == version("unity-gateway")
+
+    def test_missing_metadata_does_not_block_launch(self):
+        with patch.object(telemetry, "version", side_effect=PackageNotFoundError):
+            assert telemetry.ucode_version.__wrapped__() == "unknown"
 
 
 class TestAgentVersion:

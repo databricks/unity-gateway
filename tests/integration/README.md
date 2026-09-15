@@ -37,7 +37,9 @@ python3.12 scripts/run_integration.py \
 `checkout` builds a wheel and installs it with fresh consumer dependency
 resolution. **It does not use `uv.lock`.** This exercises the install path that
 caught the tomlkit discrepancy in #496. To reproduce a user's release, pass its
-exact distribution version instead, e.g. `--ug-version 0.1.0+f7b4b97`. Use
+exact distribution version instead, e.g. `--ug-version 0.1.0+f7b4b97`; this resolves
+`unity-gateway==VERSION`. Use `--ug-wheel` with an archived wheel to reproduce a
+legacy `ucode` distribution. Use
 `--default-index` for the Python index that contains that release and `--npm-registry`
 for an npm mirror if public npm is unavailable. Older releases that only
 provide the `ucode` command require `--entry-point ucode`.

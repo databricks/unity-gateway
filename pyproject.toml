@@ -3,7 +3,7 @@ requires = ["hatchling", "uv-dynamic-versioning>=0.7.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ucode"
+name = "unity-gateway"
 # Version is derived from git tags at build time (see [tool.uv-dynamic-versioning]).
 # On a tag it is the plain tag (e.g. `0.1.0`); between tags it carries the commit
 # count and short hash (e.g. `0.1.0+14.g93986a8`) so a reported version maps back
@@ -32,8 +32,9 @@ dependencies = [
 
 [project.optional-dependencies]
 # Only the Claude Code tracing path needs the Python MLflow runtime; OpenCode
-# and Codex trace via JS plugins. Kept out of the core deps so a plain `ucode`
-# install stays lean. Enable with `uv tool install "ucode[tracing]"`.
+# and Codex trace via JS plugins. Kept out of the core deps so a plain install
+# stays lean. Enable with:
+# uv tool install "unity-gateway[tracing] @ git+https://github.com/databricks/unity-gateway"
 tracing = ["mlflow[databricks]>=3.4"]
 
 [project.scripts]
@@ -41,6 +42,7 @@ ug = "ucode.cli:main"
 ucode = "ucode.cli:main"
 
 [tool.hatch.build.targets.wheel]
+# Keep the Python module and existing ~/.ucode configuration paths compatible.
 packages = ["src/ucode"]
 
 [tool.hatch.version]
