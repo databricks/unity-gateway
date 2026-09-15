@@ -146,6 +146,11 @@ config left after revert and banners on app-server stdout, remain assertions.
 MCP/skills functionality, tracing, the broad configure-option matrix, and other
 agents are outside this focused revision.
 
+The configure terminal helper recognizes `[✓]` / `[ ]` agent checkboxes as well
+as legacy markers in older pinned ug releases. It explicitly toggles
+the requested agent on and all others off before submitting; the existing live
+journeys still require a completed agent task.
+
 ## Reproduce a failure
 
 Each run writes a new `.integration-runs/<timestamp>/` directory containing:

@@ -555,7 +555,7 @@ def configure_shared_state(
         token = get_databricks_token(workspace, profile)
         model_service_probe = probe_unity_gateway_capabilities(workspace, token)
     if model_service_probe.resource_available:
-        print_success("Unity AI Gateway connected")
+        print_success("Unity Gateway connected")
     else:
         print_warning(f"Model service: {model_service_probe.detail}")
 

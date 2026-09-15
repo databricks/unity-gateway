@@ -183,7 +183,8 @@ class ConfigureTerminal(TerminalProcess):
         selected = False
         while True:
             current = self.selected_line()
-            match = re.search(r"[›❯>]\s*([●○])\s*(.+)", current)
+            # Retain legacy marker support for runs against older pinned ug releases.
+            match = re.search(r"[›❯>]\s*(\[✓\]|\[ \]|☑|✗|●|○)\s*(.+)", current)
             assert match, f"Unrecognized agent checkbox: {current}"
             checked, name = match.groups()
             if name in visited:
@@ -191,7 +192,7 @@ class ConfigureTerminal(TerminalProcess):
             visited.add(name)
             wanted = name.strip() == display
             selected = selected or wanted
-            if (checked == "●") != wanted:
+            if (checked in {"[✓]", "☑", "●"}) != wanted:
                 self.send(" ", f"{'select' if wanted else 'deselect'} {name}")
                 self.wait_for(
                     lambda text, before=current: self.selected_line() != before, "checkbox change"

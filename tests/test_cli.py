@@ -15,6 +15,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from prompt_toolkit.application import create_app_session
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
 from typer.testing import CliRunner
 
 import ucode.cli as cli_mod
@@ -2470,6 +2473,40 @@ class TestConfigureMcpFlag:
 
 
 class TestConfigureAgentsSelection:
+    @pytest.mark.parametrize(("keys", "expected"), [(" \r", ["codex"]), ("\r", [])])
+    def test_interactive_picker_installs_only_checked_agents(self, monkeypatch, keys, expected):
+        state = {**MINIMAL_STATE, "available_tools": []}
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *args, **kwargs: state)
+        monkeypatch.setattr(
+            cli_mod, "check_gateway_endpoint", lambda state, tool: tool in {"codex", "gemini"}
+        )
+        monkeypatch.setattr(cli_mod, "_maybe_select_provider_service", lambda tool, state: state)
+        installed = []
+        monkeypatch.setattr(
+            cli_mod, "install_tool_binary", lambda tool, **kwargs: installed.append(tool) or True
+        )
+        configured = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda state, tools: configured.append(tools) or state,
+        )
+
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            pipe.send_text(keys)
+            assert (
+                cli_mod.configure_workspace_command(
+                    workspaces=[("https://example.databricks.com", None)]
+                )
+                == 0
+            )
+
+        assert installed == expected
+        assert configured == ([expected] if expected else [])
+
     def test_selected_tools_skip_picker(self, monkeypatch):
         import ucode.cli as cli_mod
 
@@ -2989,7 +3026,7 @@ class TestConfigureSharedStateUsePat:
         cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
 
         output = _strip_ansi(capsys.readouterr().out)
-        assert "Unity AI Gateway connected" in output
+        assert "Unity Gateway connected" in output
         assert "Model service:" not in output
 
     @pytest.mark.parametrize(
@@ -3028,7 +3065,7 @@ class TestConfigureSharedStateUsePat:
 
         output = " ".join(_strip_ansi(capsys.readouterr().out).split())
         assert f"Model service: {expected_model_service}" in output
-        assert "Unity AI Gateway connected" not in output
+        assert "Unity Gateway connected" not in output
         assert "(Legacy) endpoints:" not in output
         assert "V2" not in output
         assert "V3" not in output
@@ -3066,7 +3103,7 @@ class TestConfigureSharedStateUsePat:
             cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
 
         output = _strip_ansi(capsys.readouterr().out)
-        assert "Unity AI Gateway connected" not in output
+        assert "Unity Gateway connected" not in output
         message = str(excinfo.value)
         assert "v2" not in message.lower()
         assert "v3" not in message.lower()

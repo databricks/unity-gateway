@@ -13,8 +13,10 @@ from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 import questionary
+from prompt_toolkit.formatted_text import to_formatted_text
 from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.dimension import Dimension
+from questionary.constants import INDICATOR_SELECTED, INDICATOR_UNSELECTED
 from questionary.prompts.common import InquirerControl
 from rich.console import Console
 from rich.markup import escape
@@ -419,6 +421,25 @@ def prompt_for_workspace(
             print_err(str(exc))
 
 
+def _set_checkbox_markers(question: questionary.Question) -> None:
+    """Replace questionary's radio-style dots on this prompt with familiar checkboxes."""
+    # Questionary hardcodes its indicators. Wrap this control's formatted text so
+    # its selection state and key bindings continue to drive the rendered markers.
+    markers = {
+        ("class:selected", f"{INDICATOR_SELECTED} "): ("fg:ansigreen bold", "[✓] "),
+        ("class:text", f"{INDICATOR_UNSELECTED} "): ("fg:ansired bold", "[ ] "),
+    }
+    for window in question.application.layout.find_all_windows():
+        if isinstance(window.content, InquirerControl):
+            original_text = window.content.text
+
+            def checkbox_tokens(text=original_text):
+                return [markers.get(token, token) for token in to_formatted_text(text)]
+
+            window.content.text = checkbox_tokens
+            return
+
+
 def prompt_for_tools(
     available: list[tuple[str, str]],
     preselected: list[str] | set[str] | None = None,
@@ -427,14 +448,13 @@ def prompt_for_tools(
     """Multi-select picker for coding agents.
 
     `available` is [(tool_id, display_name), ...]. Returns the chosen tool_ids.
-    When ``preselected`` is None every option is checked by default, so hitting
-    Enter selects everything; pass a subset to pre-check only those (e.g. the
-    agents an existing managed config already enables). Returns [] if the user
-    submits an empty selection.
+    Nothing is checked unless ``preselected`` explicitly names it. Space toggles
+    the highlighted agent; Enter confirms only checked agents. Returns [] if the
+    user submits an empty selection or cancels.
     """
     style = questionary.Style(
         [
-            # Theme-agnostic picker: every row renders in the terminal's
+            # Theme-agnostic labels: agent names render in the terminal's
             # default foreground colour (`noinherit` strips the
             # prompt_toolkit defaults that would otherwise re-colour the
             # cursor row or every checked row).
@@ -444,23 +464,25 @@ def prompt_for_tools(
             ("answer", "fg:cyan"),
         ]
     )
-    preselected_set = {str(item) for item in preselected} if preselected is not None else None
+    preselected_set = {str(item) for item in preselected} if preselected is not None else set()
     choices = [
         questionary.Choice(
             title=display,
             value=tool_id,
-            checked=(preselected_set is None or tool_id in preselected_set),
+            checked=tool_id in preselected_set,
         )
         for tool_id, display in available
     ]
-    answer = questionary.checkbox(
+    question = questionary.checkbox(
         prompt,
         choices=choices,
         style=style,
         pointer="›",
         qmark="",
-        instruction="(space to toggle, enter to confirm)",
-    ).ask()
+        instruction="\n  (↑/↓ move, space to toggle, enter to confirm; [✓] selected, [ ] not selected)",
+    )
+    _set_checkbox_markers(question)
+    answer = question.ask()
     return list(answer) if answer else []
 
 
@@ -473,9 +495,7 @@ def prompt_for_multi_selection(
 ) -> list[str] | None:
     """Multi-select picker over arbitrary `(value, label)` options.
 
-    Distinct from :func:`prompt_for_tools`, which is agent-specific and defaults to
-    everything checked: here nothing is checked unless ``preselected`` says so, since
-    an admin picking models wants an explicit choice rather than "all of them".
+    Nothing is checked unless ``preselected`` says so.
     Returns the chosen values, [] on an empty submission, or None if cancelled
     (Ctrl-C) so callers can distinguish "chose nothing" from "aborted".
 
