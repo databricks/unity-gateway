@@ -874,6 +874,26 @@ class TestCodexLaunch:
         )
         assert 'Databricks-Model-Service-Parent-Schema = "main.default"' in parent_arg
 
+    def test_parent_schema_does_not_pin_a_model(self, tmp_path, monkeypatch):
+        # A unity_catalog_location launch must leave model choice to the user (`/model`); pinning
+        # `-c model=` would override their selection (MPS pins; parent-schema discovery does not).
+        launches = self._patch(tmp_path, monkeypatch)
+        catalog = {"models": [{"slug": "main.default.first"}, {"slug": "main.default.second"}]}
+        monkeypatch.setattr(
+            codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "models.json"
+        )
+        monkeypatch.setattr(
+            codex, "_fetch_codex_model_catalog", lambda workspace, token, **kwargs: catalog
+        )
+
+        codex.launch(
+            {"workspace": WS, "_codex_launch_parent_schema": "main.default"},
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert not any(arg.startswith("model=") for arg in launches[0])
+
     def test_parent_discovery_refreshes_when_parent_changes(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
         monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "models.json")
@@ -1056,6 +1076,25 @@ class TestCodexLaunch:
 
         with pytest.raises(RuntimeError, match=str(path)):
             codex._write_model_catalog(path, {"models": [{"slug": "gpt-mps"}]})
+
+    def test_injects_otel_config_when_tracing_enabled(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        codex.launch(
+            {"workspace": WS, "codex_otel_tracing": True}, ["exec", "hi"], options=LaunchOptions()
+        )
+        argv = launches[0]
+        otel = next((a for a in argv if a.startswith("otel=")), None)
+        assert otel is not None, f"no otel -c arg in {argv}"
+        assert "otlp-http" in otel
+        assert f"{WS}/ai-gateway/otel/v1/traces" in otel
+        assert 'protocol = "binary"' in otel
+        assert 'Authorization = "Bearer tok"' in otel
+        assert argv[-2:] == ["exec", "hi"]
+
+    def test_no_otel_config_when_tracing_disabled(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        codex.launch({"workspace": WS}, ["exec", "hi"], options=LaunchOptions())
+        assert not any(a.startswith("otel=") for a in launches[0])
 
     @pytest.mark.parametrize(
         "tool_args",

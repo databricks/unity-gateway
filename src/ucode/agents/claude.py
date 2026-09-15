@@ -33,8 +33,12 @@ from ucode.constants import (
 )
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
 from ucode.databricks import (
+    ANTHROPIC_FAMILIES,
     build_auth_shell_command,
+    build_otel_headers_shell_command,
+    build_otel_traces_endpoint,
     build_tool_base_url,
+    extra_custom_headers,
     get_databricks_token,
 )
 from ucode.launcher import exec_or_spawn
@@ -87,6 +91,10 @@ SPEC: ToolSpec = {
 
 # Retained only to identify and remove state written by the legacy persisted opt-in.
 SMART_ROUTING_STATE_KEY = smart_routing_v2.LEGACY_STATE_KEY
+# Tracks the modelPicker that ucode wrote (for ownership detection on later pruning).
+CLAUDE_MANAGED_MODEL_PICKER_STATE_KEY = "claude_managed_model_picker"
+# Tracks the availableModels/enforceAvailableModels that ucode wrote (for ownership detection).
+CLAUDE_MANAGED_PRUNED_PICKER_STATE_KEY = "claude_managed_pruned_picker"
 
 
 def _parse_version(value: str) -> tuple[int, int, int] | None:
@@ -146,28 +154,58 @@ CLAUDE_TRACING_ENV_KEYS = (
     "MLFLOW_EXPERIMENT_ID",
     "MLFLOW_TRACING_SQL_WAREHOUSE_ID",
 )
+# The per-family default-model env var Claude Code reads for a family. Derived from
+# ANTHROPIC_FAMILIES so a new family needs no change here.
+CLAUDE_DEFAULT_MODEL_ENV_KEYS = {
+    family: f"ANTHROPIC_DEFAULT_{family.upper()}_MODEL" for family in ANTHROPIC_FAMILIES
+}
+# OTLP trace-export env ucode writes when a managed config opts Claude in. Managed so a
+# disable prunes them. Auth is not here — a refreshing `otelHeadersHelper` supplies the bearer.
+CLAUDE_OTEL_TRACE_ENV_KEYS = (
+    "CLAUDE_CODE_ENABLE_TELEMETRY",
+    "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+    "OTEL_TRACES_EXPORTER",
+    "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS",
+    "CLAUDE_CODE_PROPAGATE_TRACEPARENT",
+)
+
+
+def _otel_trace_env(workspace: str) -> dict[str, str]:
+    # Spans need the ENHANCED_TELEMETRY_BETA gate on top of ENABLE_TELEMETRY (enable alone
+    # emits only metrics/events). HTTP needs the full /v1/traces path; auth via otelHeadersHelper.
+    # PROPAGATE_TRACEPARENT emits W3C traceparent on gateway-bound requests (custom base URL)
+    # so the gateway links its server span to Claude's client span.
+    return {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
+        "OTEL_TRACES_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": build_otel_traces_endpoint(workspace),
+        "CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS": "900000",
+        "CLAUDE_CODE_PROPAGATE_TRACEPARENT": "1",
+    }
+
+
 # Model-selection env keys ucode manages. Existing family defaults in the enterprise-managed file
 # are preserved unless Coding Agent Config explicitly supplies that family.
 CLAUDE_MANAGED_MODEL_ENV_KEYS = (
     "ANTHROPIC_MODEL",
-    "ANTHROPIC_DEFAULT_FABLE_MODEL",
-    "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+    *(
+        key
+        for family in ANTHROPIC_FAMILIES
+        for key in (
+            f"ANTHROPIC_DEFAULT_{family.upper()}_MODEL",
+            f"ANTHROPIC_DEFAULT_{family.upper()}_MODEL_NAME",
+        )
+    ),
 )
-CLAUDE_DEFAULT_MODEL_ENV_KEYS = {
-    "fable": "ANTHROPIC_DEFAULT_FABLE_MODEL",
-    "opus": "ANTHROPIC_DEFAULT_OPUS_MODEL",
-    "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
-    "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-}
 # Launch-scoped feature flags that ucode may write into Claude settings. These
 # must be removed again when the corresponding launch flag is absent.
 CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
+CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
+CLAUDE_PRUNED_PICKER_KEYS = ("availableModels", "enforceAvailableModels")
 # Env keys ucode used to write but no longer does; stripped from the managed
 # settings file on every launch so stale values never linger.
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
@@ -332,6 +370,10 @@ def render_overlay(
     route_root_model: str | None = None,
     custom_model: str | None = None,
     parent_schema: str | None = None,
+    static_models: list[str] | None = None,
+    model_service_location: str | None = None,
+    custom_headers: dict[str, str] | None = None,
+    otel_tracing: bool = False,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
 
@@ -362,21 +404,31 @@ def render_overlay(
     # ANTHROPIC_CUSTOM_HEADERS is parsed as `key: value` pairs separated by
     # newlines (Anthropic SDK convention). Setting User-Agent here overrides
     # the SDK's default UA on outbound requests so the gateway can attribute
-    # traffic to ucode.
+    # traffic to ucode. Admin-supplied headers are appended, but ucode's fixed
+    # headers (User-Agent, x-databricks-use-coding-agent-mode) win on conflict.
     header_lines = [
         "x-databricks-use-coding-agent-mode: true",
         f"User-Agent: ucode/{ucode_version()} claude/{agent_version('claude')}",
     ]
     if provider:
         header_lines.append(f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}")
-    elif parent_schema:
-        header_lines.append(f"{MODEL_SERVICE_PARENT_SCHEMA_HEADER}: {parent_schema}")
+    elif parent_schema or model_service_location:
+        # A managed unity_catalog_location (model_service_location) scopes gateway model discovery
+        # to that schema, exactly like an explicit `--parent`; without this header discovery runs
+        # unscoped and the location's models never appear.
+        header_lines.append(
+            f"{MODEL_SERVICE_PARENT_SCHEMA_HEADER}: {parent_schema or model_service_location}"
+        )
+    # Append managed headers, but don't override ucode's fixed headers.
+    reserved_names = [line.split(": ", 1)[0] for line in header_lines]
+    for name, value in extra_custom_headers(custom_headers, reserved_names):
+        header_lines.append(f"{name}: {value}")
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
-    custom_headers = "\n".join(header_lines)
+    custom_headers_str = "\n".join(header_lines)
     env: dict[str, str] = {
         "ANTHROPIC_BASE_URL": base_url,
-        "ANTHROPIC_CUSTOM_HEADERS": custom_headers,
+        "ANTHROPIC_CUSTOM_HEADERS": custom_headers_str,
         "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "900000",
         # 1h prompt caching needs the extended-cache-ttl beta header, which
         # Claude Code only sends when experimental betas are enabled — so we must
@@ -452,7 +504,33 @@ def render_overlay(
         overlay["permissions"] = {"deny": ["WebSearch"]}
         keys.append(["permissions", "deny"])
 
+    if static_models and not provider and not relayed:
+        overlay["availableModels"] = list(static_models)
+        overlay["enforceAvailableModels"] = True
+        overlay["modelPicker"] = {
+            "replaceBuiltInOptions": True,
+            "options": [{"model": m, "label": _picker_label(m)} for m in static_models],
+        }
+        keys += [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
+    elif model_service_location and not provider and not relayed:
+        env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+        keys.append(["env", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"])
+
+    # Added after `keys` is seeded so the env vars are recorded once, not twice.
+    if otel_tracing:
+        otel_env = _otel_trace_env(workspace)
+        env.update(otel_env)
+        overlay["otelHeadersHelper"] = build_otel_headers_shell_command(
+            workspace, profile, use_pat=use_pat
+        )
+        keys += [["env", k] for k in otel_env] + [["otelHeadersHelper"]]
+
     return overlay, keys
+
+
+def _picker_label(model: str) -> str:
+    """A short picker label for a model id — the raw id minus the ``system.ai.`` prefix."""
+    return model.removeprefix("system.ai.")
 
 
 def _maybe_add_1m_suffix(model: str) -> str:
@@ -695,6 +773,10 @@ def write_tool_config(
         route_root_model=route_root_model,
         custom_model=custom_model,
         parent_schema=parent_schema,
+        static_models=state.get("claude_static_models"),
+        model_service_location=state.get("claude_model_service_location"),
+        custom_headers=state.get("claude_custom_headers"),
+        otel_tracing=bool(state.get("claude_otel_tracing")),
     )
     tracing_env_vars = tracing_env(state, "claude")
     stop_hook_command = claude_tracing_stop_hook_command() if tracing_env_vars else None
@@ -716,15 +798,20 @@ def write_tool_config(
         + [["env", key] for key in CLAUDE_CONDITIONAL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_REMOVED_ENV_KEYS]
         + [["env", key] for key in CLAUDE_TRACING_ENV_KEYS]
+        + [["env", key] for key in CLAUDE_OTEL_TRACE_ENV_KEYS]
+        + [["otelHeadersHelper"]]
         + [["hooks", "Stop"]]
         + [["hooks", event] for event in ("PreToolUse", "SessionStart", "SubagentStart")]
+        + [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
     ):
         if path not in managed_file_keys:
             managed_file_keys.append(path)
 
     # V2 installs routing hooks in a transient per-launch settings file. Persistent settings must
     # contain no ucode routing hooks; surgically strip legacy ones while preserving user hooks.
-    def _compose(base: dict, *, enforce_model_default_hierarchy: bool) -> dict:
+    def _compose(
+        base: dict, *, enforce_model_default_hierarchy: bool, is_managed: bool = False
+    ) -> dict:
         base_env = base.get("env")
         existing_custom_headers = (
             base_env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(base_env, dict) else None
@@ -785,24 +872,101 @@ def write_tool_config(
             for key in CLAUDE_CONDITIONAL_ENV_KEYS:
                 if key not in overlay_env:
                     merged_env.pop(key, None)
+            for key in CLAUDE_OTEL_TRACE_ENV_KEYS:
+                if key not in overlay_env:
+                    merged_env.pop(key, None)
             # deep_merge_dict keeps keys already in the file, so drop the ones ucode no
             # longer writes.
             for key in CLAUDE_REMOVED_ENV_KEYS:
                 merged_env.pop(key, None)
+        if "otelHeadersHelper" not in overlay_for_merge:
+            merged.pop("otelHeadersHelper", None)
+        # Prune availableModels/enforceAvailableModels when ucode stops writing them: the private
+        # file unconditionally (ucode owns it), the managed file only when they match the ownership
+        # marker (ucode wrote them) so admin-set values survive.
+        if not is_managed:
+            for picker_key in CLAUDE_PRUNED_PICKER_KEYS:
+                if picker_key not in overlay_for_merge:
+                    merged.pop(picker_key, None)
+        else:
+            saved_pruned = state.get(CLAUDE_MANAGED_PRUNED_PICKER_STATE_KEY)
+            if saved_pruned is not None:
+                current_pruned = {k: merged.get(k) for k in CLAUDE_PRUNED_PICKER_KEYS}
+                if current_pruned == saved_pruned:
+                    for picker_key in CLAUDE_PRUNED_PICKER_KEYS:
+                        if picker_key not in overlay_for_merge:
+                            merged.pop(picker_key, None)
+        # Prune ucode-owned modelPicker when transitioning to dynamic config. Only prune if
+        # it matches the ownership marker (ucode wrote it); preserve admin-authored pickers.
+        if "modelPicker" not in overlay_for_merge:
+            saved_picker = state.get(CLAUDE_MANAGED_MODEL_PICKER_STATE_KEY)
+            current_picker = merged.get("modelPicker")
+            if saved_picker is not None and current_picker == saved_picker:
+                merged.pop("modelPicker", None)
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
     write_json_file(
         CLAUDE_SETTINGS_PATH,
-        _compose(read_json_safe(CLAUDE_SETTINGS_PATH), enforce_model_default_hierarchy=False),
+        _compose(
+            read_json_safe(CLAUDE_SETTINGS_PATH),
+            enforce_model_default_hierarchy=False,
+            is_managed=False,
+        ),
     )
 
-    _reconcile_managed_settings(
+    # Prior markers let compose_managed prune keys ucode wrote on a previous run (e.g. a
+    # static->discovery transition).
+    prior_picker_marker = state.get(CLAUDE_MANAGED_MODEL_PICKER_STATE_KEY)
+    prior_pruned_marker = state.get(CLAUDE_MANAGED_PRUNED_PICKER_STATE_KEY)
+
+    is_writing_static_picker = (
+        "modelPicker" in overlay
+        or "availableModels" in overlay
+        or "enforceAvailableModels" in overlay
+    )
+
+    # Persist this run's markers before the fallible reconcile so a write survives a failed retry;
+    # discovery runs instead clear them only after reconcile succeeds (below).
+    if is_writing_static_picker:
+        if "modelPicker" in overlay:
+            state[CLAUDE_MANAGED_MODEL_PICKER_STATE_KEY] = overlay["modelPicker"]
+        else:
+            state.pop(CLAUDE_MANAGED_MODEL_PICKER_STATE_KEY, None)
+        if "availableModels" in overlay or "enforceAvailableModels" in overlay:
+            state[CLAUDE_MANAGED_PRUNED_PICKER_STATE_KEY] = {
+                k: overlay.get(k) for k in CLAUDE_PRUNED_PICKER_KEYS
+            }
+        else:
+            state.pop(CLAUDE_MANAGED_PRUNED_PICKER_STATE_KEY, None)
+        save_state(state)
+
+    def compose_managed(base: dict) -> dict:
+        # Compose against the prior markers so stale keys prune, then restore the current ones.
+        saved_picker = state.get(CLAUDE_MANAGED_MODEL_PICKER_STATE_KEY)
+        saved_pruned = state.get(CLAUDE_MANAGED_PRUNED_PICKER_STATE_KEY)
+        try:
+            state[CLAUDE_MANAGED_MODEL_PICKER_STATE_KEY] = prior_picker_marker
+            state[CLAUDE_MANAGED_PRUNED_PICKER_STATE_KEY] = prior_pruned_marker
+            return _compose(base, enforce_model_default_hierarchy=provider is None, is_managed=True)
+        finally:
+            state[CLAUDE_MANAGED_MODEL_PICKER_STATE_KEY] = saved_picker
+            state[CLAUDE_MANAGED_PRUNED_PICKER_STATE_KEY] = saved_pruned
+
+    managed_file_was_written = _reconcile_managed_settings(
         state,
-        lambda base: _compose(base, enforce_model_default_hierarchy=provider is None),
+        compose_managed,
         managed_file_keys,
         relayed,
     )
+
+    # Discovery runs clear the markers only after reconcile succeeds, so a failed reconcile leaves
+    # the prior markers in place for a retry to prune. Only clear if the managed file was actually
+    # written; if it was skipped/suppressed, keep the markers so a later retry can prune.
+    if not is_writing_static_picker and managed_file_was_written:
+        state.pop(CLAUDE_MANAGED_MODEL_PICKER_STATE_KEY, None)
+        state.pop(CLAUDE_MANAGED_PRUNED_PICKER_STATE_KEY, None)
+        save_state(state)
 
     if web_search_model:
         web_search_entry = _web_search_mcp_entry(
@@ -883,18 +1047,21 @@ def _reconcile_managed_settings(
     compose: Callable[[dict], dict],
     owned_paths: list[list[str]],
     relayed: bool,
-) -> None:
+) -> bool:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
     The managed file is root-owned and the highest-precedence scope, so every normal Claude
     configuration mirrors ucode's settings there. The same compose operation that produced the
     private file is applied to the existing managed file, preserving unrelated IT-authored keys.
 
-    `ug configure` updates gateway-owned fields in this file, but does not generate or modify
-    the `modelPicker` object; an existing picker is retained by the merge.
+    `ug configure` generates the `modelPicker` object only when the managed config supplies a
+    static model list; without one the `/model` surface comes from gateway model discovery instead,
+    so ucode neither writes nor prunes `modelPicker` and an existing picker is retained by the merge.
 
     Relayed launches are skipped: they depend on a per-session loopback refresh proxy that only runs
     during `ucode claude`, so a bare `claude` could not reach the gateway anyway.
+
+    Returns True if the managed file was written, False otherwise.
     """
     path = _managed_settings_path()
     if path is None:
@@ -902,7 +1069,7 @@ def _reconcile_managed_settings(
             "Machine-wide Claude settings aren't supported on this platform; skipped the managed "
             "settings."
         )
-        return
+        return False
     if path.is_symlink():
         raise RuntimeError(
             f"Refusing to use Claude Code managed settings through symlink {path}. Replace it "
@@ -918,7 +1085,7 @@ def _reconcile_managed_settings(
                 "created them, run `ucode revert` from an interactive terminal first."
             )
         mark_managed_file_verified(state, "claude", path, scope="relay-compatible")
-        return
+        return False
 
     current_text = read_managed_file(path)
     try:
@@ -941,9 +1108,9 @@ def _reconcile_managed_settings(
                 "your administrator."
             )
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
-        return
+        return False
     try:
-        reconcile_managed_file(
+        result = reconcile_managed_file(
             path,
             _dump_managed_settings(desired_settings),
             tool="claude",
@@ -959,8 +1126,10 @@ def _reconcile_managed_settings(
             f"local settings at {CLAUDE_SETTINGS_PATH}."
         )
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
-        return
+        return False
     mark_managed_file_verified(state, "claude", path)
+    # Only signal successful write if the file was actually written, not for "unchanged" or "unsupported"
+    return result in ("created", "written")
 
 
 def _preserve_permission_denies(existing: dict, desired: dict) -> None:
@@ -1307,12 +1476,20 @@ def _build_claude_argv(
         caller_settings = _merge_claude_settings(caller_settings, _load_caller_settings(value))
     # ucode wins over the caller for conflicting keys (protects gateway auth);
     # hooks from both sides survive.
-    merged = _merge_claude_settings(caller_settings, read_json_safe(CLAUDE_SETTINGS_PATH))
+    ucode_settings = read_json_safe(CLAUDE_SETTINGS_PATH)
+    merged = _merge_claude_settings(caller_settings, ucode_settings)
     if settings_override is not None:
         merged = _merge_claude_settings(merged, settings_override)
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
-        merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
+        # Keep the gateway-discovery flag only if ucode's persistent settings set it (managed
+        # config); otherwise strip a stale one from the --settings merge.
+        ucode_env = ucode_settings.get("env")
+        if not (
+            isinstance(ucode_env, dict)
+            and ucode_env.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY") == "1"
+        ):
+            merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
     return [
         binary,
         *source_args,

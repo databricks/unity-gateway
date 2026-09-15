@@ -63,6 +63,7 @@ RAW_MANIFEST = {
     ],
     "mcp_servers": {"names": ["system.ai.github", "main.default.jira"]},
     "skills": {"names": ["system.ai.pdf-extraction"]},
+    "tracing": {"enabled": True},
     "spend_tiers": {
         "budget_id": "c6563b45-df9a-4b19-afb2-d42dc2b52576",
         "tiers": [
@@ -139,6 +140,43 @@ class TestNormalize:
         cfg = normalize_managed_config(RAW_MANIFEST)
         assert cfg["spend_tiers"]["budget_id"] == "c6563b45-df9a-4b19-afb2-d42dc2b52576"
         assert cfg["spend_tiers"]["tiers"][0]["recommended_agent"] == "codex"
+
+    def test_per_agent_tracing_enabled_sets_agent_flag(self):
+        # Per-agent `AgentConfig.tracing_config.enabled` is the current opt-in.
+        raw = {
+            "enabled_agents": [
+                {
+                    "agent": "CODING_AGENT_CLAUDE_CODE",
+                    "config": {"tracing_config": {"enabled": True}},
+                }
+            ]
+        }
+        claude = normalize_managed_config(raw)["enabled_agents"]["claude"]
+        assert claude["otel_tracing_enabled"] is True
+
+    def test_per_agent_tracing_disabled_records_false(self):
+        # Explicit False is recorded (tri-state) so it can override the deprecated global.
+        raw = {
+            "enabled_agents": [
+                {
+                    "agent": "CODING_AGENT_CLAUDE_CODE",
+                    "config": {"tracing_config": {"enabled": False}},
+                }
+            ]
+        }
+        claude = normalize_managed_config(raw)["enabled_agents"]["claude"]
+        assert claude["otel_tracing_enabled"] is False
+
+    def test_deprecated_global_tracing_enabled_sets_top_level_flag(self):
+        # RAW_MANIFEST still uses the deprecated workspace-level `tracing.enabled`, kept as a fallback.
+        assert normalize_managed_config(RAW_MANIFEST)["otel_tracing_enabled"] is True
+
+    def test_tracing_disabled_or_absent_sets_no_otel_flag(self):
+        assert "otel_tracing_enabled" not in normalize_managed_config(
+            {"tracing": {"enabled": False}}
+        )
+        assert "otel_tracing_enabled" not in normalize_managed_config({"tracing": {}})
+        assert "otel_tracing_enabled" not in normalize_managed_config({})
 
     def test_spec_version_not_carried_into_internal_manifest(self):
         # Kept out so the serialize/normalize round trip (which never sees spec_version) is unaffected.

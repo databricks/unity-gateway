@@ -139,6 +139,8 @@ class AgentConfig:
 
     http_headers: dict[str, str] | None = None
     models: AgentModels | None = None
+    otel_tracing_enabled: bool | None = None
+    tracing_table: str | None = None
 
     @classmethod
     def from_wire(cls, config: object) -> AgentConfig:
@@ -148,7 +150,19 @@ class AgentConfig:
         agent_models = AgentModels.from_wire(
             config_dict.get("default_models"), config_dict.get("models")
         )
-        return cls(http_headers=headers or None, models=agent_models)
+        # Per-agent `tracing_config` supersedes the deprecated `tracing`.
+        tracing_enabled = _tracing_enabled(config_dict.get("tracing_config"))
+        if tracing_enabled is None:
+            tracing_enabled = _tracing_enabled(config_dict.get("tracing"))
+        tracing_table = _tracing_table(config_dict.get("tracing")) or _tracing_table(
+            config_dict.get("tracing_config")
+        )
+        return cls(
+            http_headers=headers or None,
+            models=agent_models,
+            otel_tracing_enabled=tracing_enabled,
+            tracing_table=tracing_table,
+        )
 
     def to_internal(self) -> dict:
         """Convert to internal shape for enabled_agents dict."""
@@ -158,6 +172,10 @@ class AgentConfig:
         model_config = self.models.to_internal() if self.models else None
         if model_config is not None:
             result["model_config"] = model_config
+        if self.tracing_table:
+            result["tracing_table"] = self.tracing_table
+        if self.otel_tracing_enabled is not None:
+            result["otel_tracing_enabled"] = self.otel_tracing_enabled
         return result
 
 
@@ -267,6 +285,8 @@ class CodingAgentConfig:
     mcp_servers: NamesOrLocation | None = None
     skills: NamesOrLocation | None = None
     spend_tiers: SpendTiers | None = None
+    otel_tracing_enabled: bool | None = None
+    tracing_table: str | None = None
 
     @classmethod
     def from_wire(cls, raw: object) -> CodingAgentConfig:
@@ -276,6 +296,10 @@ class CodingAgentConfig:
         name = _str(raw_dict.get("name"))
         default_agent = _resolve_agent_tool(raw_dict.get("default_agent"))
         update_time = _str(raw_dict.get("update_time"))
+
+        # Deprecated workspace-level tracing; a per-agent value supersedes this fallback.
+        tracing_enabled = _tracing_enabled(raw_dict.get("tracing"))
+        tracing_table = _tracing_table(raw_dict.get("tracing"))
 
         # enabled_agents is a repeated list of {agent, config} on the wire (proto EnabledAgent).
         enabled_agents_dict: dict[str, AgentConfig] = {}
@@ -300,6 +324,8 @@ class CodingAgentConfig:
             mcp_servers=mcp_servers,
             skills=skills,
             spend_tiers=spend_tiers,
+            otel_tracing_enabled=tracing_enabled,
+            tracing_table=tracing_table,
         )
 
     def to_internal(self) -> dict:
@@ -332,6 +358,11 @@ class CodingAgentConfig:
             spend_tiers_internal = self.spend_tiers.to_internal()
             if spend_tiers_internal:
                 result["spend_tiers"] = spend_tiers_internal
+
+        if self.tracing_table:
+            result["tracing_table"] = self.tracing_table
+        if self.otel_tracing_enabled is True:
+            result["otel_tracing_enabled"] = True
 
         return result
 
@@ -385,6 +416,19 @@ def _str_list(value: object) -> list[str]:
         if s:
             out.append(s)
     return out
+
+
+def _tracing_table(tracing: object) -> str | None:
+    """Extract ``TracingConfig.table`` (a UC table FQN), or None."""
+    return _str(_as_dict(tracing).get("table"))
+
+
+def _tracing_enabled(tracing: object) -> bool | None:
+    """``TracingConfig.enabled`` as a tri-state: the bool when set, None when absent.
+
+    None lets a per-agent value fall back to the deprecated workspace-level flag."""
+    value = _as_dict(tracing).get("enabled")
+    return value if isinstance(value, bool) else None
 
 
 def _resolve_agent_tool(key: object) -> str | None:

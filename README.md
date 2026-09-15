@@ -378,6 +378,15 @@ control the installation.
 
 Existing files are backed up before being overwritten. `ug revert` restores backups.
 
+### What `ug configure` and `ug` write for Claude Code
+
+`ug configure` and every `ug` launch apply the workspace's managed config to these files:
+
+- `~/.claude/ucode-settings.json`: the settings ug generates for Claude Code. Its `env` block sets `ANTHROPIC_BASE_URL` (the gateway), the per family default models `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_FABLE_MODEL`, `ANTHROPIC_CUSTOM_HEADERS`, any tracing variables, and, when the config uses model discovery, the gateway model discovery flag. When the config pins a static model list, ug also writes the model picker keys `availableModels`, `enforceAvailableModels`, and a `modelPicker` here, so `/model` shows exactly those models. Any ug managed `permissions` and hooks live here too.
+- `~/.claude/settings.json`: Claude Code's own user settings. ug records the selected default model here.
+- `~/.claude.json`: ug registers the Databricks `web_search` MCP server here when a suitable endpoint is available.
+- `/etc/claude-code/managed-settings.json` (Linux) or `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS): the OS enterprise managed settings. ug mirrors the same settings here so a bare `claude`, launched outside ug, still routes through the gateway. Writing this needs local admin rights; without them ug applies only the user level file above.
+
 
 ## Documentation
 

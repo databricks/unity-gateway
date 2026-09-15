@@ -16,7 +16,7 @@ import shlex
 import shutil
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import (
     ThreadPoolExecutor,
     as_completed,
@@ -1452,6 +1452,31 @@ def build_auth_shell_command(
     `apiKeyHelper`). On every platform this resolves to the `ucode auth-token`
     executable rather than a POSIX shell pipeline, so no `sh`/`jq` is required."""
     argv = build_auth_token_argv(workspace, profile, use_pat=use_pat)
+    if platform.system() == "Windows":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
+
+
+def build_otel_headers_argv(
+    workspace: str, profile: str | None = None, *, use_pat: bool = False
+) -> list[str]:
+    """Argv for the OTLP-headers helper: `ucode otel-headers ...`.
+
+    Sibling of :func:`build_auth_token_argv` for Claude Code's `otelHeadersHelper`: same token,
+    but printed as a JSON header map instead of a bare bearer."""
+    argv = [_ucode_binary(), "otel-headers", "--host", workspace.rstrip("/")]
+    if profile:
+        argv += ["--profile", profile]
+    if use_pat:
+        argv.append("--use-pat")
+    return argv
+
+
+def build_otel_headers_shell_command(
+    workspace: str, profile: str | None = None, *, use_pat: bool = False
+) -> str:
+    """Single-line, shell-quoted form of :func:`build_otel_headers_argv` (Claude's `otelHeadersHelper`)."""
+    argv = build_otel_headers_argv(workspace, profile, use_pat=use_pat)
     if platform.system() == "Windows":
         return subprocess.list2cmdline(argv)
     return shlex.join(argv)
@@ -3042,6 +3067,36 @@ def _fetch_codex_model_catalog(
     if not payload["models"]:
         raise RuntimeError(f"{kind} {identifier} returned no Codex models.")
     return payload
+
+
+def build_otel_traces_endpoint(workspace: str) -> str:
+    """The AI Gateway OTLP trace-ingest endpoint for ``workspace`` (full ``/v1/traces`` path)."""
+    return f"{workspace.rstrip('/')}/ai-gateway/otel/v1/traces"
+
+
+def extra_custom_headers(
+    custom_headers: dict[str, str] | None, reserved_names: Iterable[str]
+) -> list[tuple[str, str]]:
+    """Admin custom headers to add to an outbound gateway request.
+
+    Drops any whose name collides case-insensitively with a ucode-managed header in
+    ``reserved_names`` so ucode's fixed headers always win. Also drops any header whose NAME or
+    VALUE contains newline/carriage-return or whose NAME contains ':' to prevent delimiter
+    injection attacks (Claude uses newline delimiters, Gemini uses commas, and ':' is universal).
+    Returns ``(name, value)`` pairs in the order the admin authored them; each agent formats them
+    for its own config shape.
+    """
+    if not custom_headers:
+        return []
+    reserved = {name.lower() for name in reserved_names}
+    result: list[tuple[str, str]] = []
+    for name, value in custom_headers.items():
+        if name.lower() in reserved:
+            continue
+        if "\n" in name or "\r" in name or ":" in name or "\n" in value or "\r" in value:
+            continue
+        result.append((name, value))
+    return result
 
 
 def build_opencode_base_urls(workspace: str) -> dict[str, str]:

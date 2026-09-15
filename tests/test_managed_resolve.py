@@ -11,11 +11,15 @@ import ucode.agents.opencode as opencode
 import ucode.config_io as config_io
 import ucode.state as state_mod
 from ucode.managed_resolve import (
+    managed_custom_headers,
     managed_default_model,
     managed_enabled_tools,
     managed_launch_model,
+    managed_model_service_location,
+    managed_otel_tracing_enabled,
     managed_provider_service,
     managed_state_overrides,
+    managed_static_models,
     managed_supplies_models,
     managed_unservable_models,
     recommended_agent,
@@ -425,6 +429,41 @@ class TestManagedSuppliesModels:
         }
         assert managed_supplies_models(managed, "claude") is False
 
+    @pytest.mark.parametrize("tool", ["gemini", "opencode", "pi", "copilot"])
+    def test_true_for_flat_agent_with_model_services_list(self, tool):
+        # A flat-list agent's model_services list means discovery can be skipped.
+        managed = {
+            "enabled_agents": {
+                tool: {"model_config": {"model_services": ["system.ai.gemini-3-flash"]}}
+            }
+        }
+        assert managed_supplies_models(managed, tool) is True
+
+    def test_false_when_model_services_list_is_blank(self):
+        # An empty or whitespace-only model_services list should not count.
+        managed = {"enabled_agents": {"gemini": {"model_config": {"model_services": ["   ", ""]}}}}
+        assert managed_supplies_models(managed, "gemini") is False
+
+    def test_false_for_codex_with_only_model_service_location(self):
+        # Codex does not read model_service_location (only claude does), so a location-only codex
+        # config must still fall through to discovery.
+        managed = {
+            "enabled_agents": {
+                "codex": {"model_config": {"unity_catalog_location": "main.catalog.models"}}
+            }
+        }
+        assert managed_supplies_models(managed, "codex") is False
+
+    def test_true_for_claude_with_only_model_service_location(self):
+        # Claude DOES read model_service_location, so location-only config returns True
+        # to suppress discovery (gateway discovery will run instead).
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"unity_catalog_location": "main.catalog.models"}}
+            }
+        }
+        assert managed_supplies_models(managed, "claude") is True
+
 
 class TestManagedStateOverrides:
     """Each agent reads its models from a different shape, so the manifest has to be translated."""
@@ -628,3 +667,197 @@ class TestManagedLaunchModel:
 
     def test_none_when_neither_names_a_model(self):
         assert managed_launch_model({}, None, "pi") is None
+
+
+class TestStaticAndAutoModels:
+    """The static `model_services` allow-list and the `model_service_location` discovery source."""
+
+    @staticmethod
+    def _managed(tool, model_config):
+        return {"default_agent": tool, "enabled_agents": {tool: {"model_config": model_config}}}
+
+    def test_static_models_reads_model_services_list(self):
+        m = self._managed(
+            "claude", {"model_services": ["system.ai.claude-opus-4-8", "system.ai.kimi-k3"]}
+        )
+        assert managed_static_models(m, "claude") == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.kimi-k3",
+        ]
+
+    def test_static_models_none_when_absent_or_empty(self):
+        assert (
+            managed_static_models(self._managed("claude", {"model_services": []}), "claude") is None
+        )
+        assert managed_static_models(self._managed("claude", {}), "claude") is None
+
+    def test_model_service_location_read(self):
+        m = self._managed("codex", {"unity_catalog_location": "main.agents"})
+        assert managed_model_service_location(m, "codex") == "main.agents"
+
+    def test_model_services_and_location_count_as_supplying_models(self):
+        assert (
+            managed_supplies_models(self._managed("claude", {"model_services": ["x"]}), "claude")
+            is True
+        )
+        # Codex does not read model_service_location, so a location-only codex config must fall
+        # through to discovery; only claude treats a location as supplying models.
+        assert (
+            managed_supplies_models(
+                self._managed("codex", {"unity_catalog_location": "system.ai"}), "codex"
+            )
+            is False
+        )
+        assert (
+            managed_supplies_models(
+                self._managed("claude", {"unity_catalog_location": "system.ai"}), "claude"
+            )
+            is True
+        )
+
+    def test_overrides_layer_static_and_location_for_claude(self):
+        m = self._managed("claude", {"model_services": ["a", "b"]})
+        assert managed_state_overrides(m, "claude")["claude_static_models"] == ["a", "b"]
+        m2 = self._managed("claude", {"unity_catalog_location": "main.agents"})
+        assert (
+            managed_state_overrides(m2, "claude")["claude_model_service_location"] == "main.agents"
+        )
+
+    def test_resolve_state_layers_static_models_into_state(self):
+        m = self._managed("claude", {"model_services": ["system.ai.claude-opus-4-8"]})
+        resolved = resolve_state(m, {"workspace": WORKSPACE}, "claude")
+        assert resolved["claude_static_models"] == ["system.ai.claude-opus-4-8"]
+
+
+class TestFlatListAgentsWithModelServices:
+    """Flat-list agents (gemini, opencode, pi, copilot) read their model list from `model_services`."""
+
+    @staticmethod
+    def _managed(tool, model_config):
+        return {"default_agent": tool, "enabled_agents": {tool: {"model_config": model_config}}}
+
+    @pytest.mark.parametrize("tool", ["gemini", "opencode", "pi", "copilot"])
+    def test_model_services_resolve_to_each_agents_state_key(self, tool):
+        # opencode's list is bucketed by provider; the other flat-list agents get a plain list.
+        m = self._managed(
+            tool,
+            {
+                "model_services": [
+                    "system.ai.claude-opus-4-8",
+                    "system.ai.gemini-3-flash",
+                    "system.ai.kimi-k2-7-code",
+                ]
+            },
+        )
+        overrides = managed_state_overrides(m, tool)
+        if tool == "opencode":
+            assert overrides == {
+                "opencode_models": {
+                    "anthropic": ["system.ai.claude-opus-4-8"],
+                    "gemini": ["system.ai.gemini-3-flash"],
+                    "oss": ["system.ai.kimi-k2-7-code"],
+                }
+            }
+        else:
+            assert overrides == {
+                f"{tool}_models": [
+                    "system.ai.claude-opus-4-8",
+                    "system.ai.gemini-3-flash",
+                    "system.ai.kimi-k2-7-code",
+                ]
+            }
+
+    @pytest.mark.parametrize("tool", ["gemini", "pi", "copilot"])
+    def test_model_services_land_in_resolved_state(self, tool):
+        # The resolved state passed to write_tool_config carries the managed list.
+        m = self._managed(tool, {"model_services": ["model-a", "model-b", "model-c"]})
+        resolved = resolve_state(m, _state(), tool)
+        assert resolved[f"{tool}_models"] == ["model-a", "model-b", "model-c"]
+
+
+class TestCustomHeaders:
+    def test_managed_custom_headers_accessor_returns_dict(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {"http_headers": {"X-My-Tag": "hello", "X-Other": "world"}}
+            }
+        }
+        headers = managed_custom_headers(managed, "claude")
+        assert headers == {"X-My-Tag": "hello", "X-Other": "world"}
+
+    def test_managed_custom_headers_returns_empty_dict_when_absent(self):
+        managed = {"enabled_agents": {"claude": {}}}
+        headers = managed_custom_headers(managed, "claude")
+        assert headers == {}
+
+    def test_managed_custom_headers_filters_non_strings(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "http_headers": {
+                        "X-Good": "value",
+                        "X-Bad-Value": 123,
+                        123: "bad-key",
+                    }
+                }
+            }
+        }
+        headers = managed_custom_headers(managed, "claude")
+        assert headers == {"X-Good": "value"}
+
+    def test_managed_state_overrides_includes_custom_headers(self):
+        managed = {"enabled_agents": {"claude": {"http_headers": {"X-Custom": "test-value"}}}}
+        overrides = managed_state_overrides(managed, "claude")
+        assert overrides == {"claude_custom_headers": {"X-Custom": "test-value"}}
+
+    def test_managed_state_overrides_omits_empty_custom_headers(self):
+        managed = {"enabled_agents": {"claude": {}}}
+        overrides = managed_state_overrides(managed, "claude")
+        assert "claude_custom_headers" not in overrides
+
+    def test_resolve_state_overlays_custom_headers(self):
+        managed = {"enabled_agents": {"claude": {"http_headers": {"X-Managed": "managed-value"}}}}
+        state = _state()
+        resolved = resolve_state(managed, state, "claude")
+        assert resolved["claude_custom_headers"] == {"X-Managed": "managed-value"}
+
+
+class TestOtelTracing:
+    """Per-agent `tracing_config.enabled` opts an OTEL_TRACING_TOOLS agent into OTLP export."""
+
+    def test_accessor_reads_per_agent_flag(self):
+        managed = {"enabled_agents": {"claude": {"otel_tracing_enabled": True}}}
+        assert managed_otel_tracing_enabled(managed, "claude") is True
+        assert managed_otel_tracing_enabled({"enabled_agents": {"claude": {}}}, "claude") is False
+
+    def test_workspace_level_flag_is_ignored(self):
+        # Only per-agent counts; a stray workspace-level flag does not enable tracing.
+        managed = {"otel_tracing_enabled": True, "enabled_agents": {"claude": {}}}
+        assert managed_otel_tracing_enabled(managed, "claude") is False
+
+    def test_state_override_set_for_claude(self):
+        managed = {"enabled_agents": {"claude": {"otel_tracing_enabled": True}}}
+        assert managed_state_overrides(managed, "claude") == {"claude_otel_tracing": True}
+
+    def test_state_override_set_for_codex(self):
+        managed = {"enabled_agents": {"codex": {"otel_tracing_enabled": True}}}
+        assert managed_state_overrides(managed, "codex")["codex_otel_tracing"] is True
+
+    def test_not_applied_to_agents_without_otel_support(self):
+        # Per-agent flag is on for gemini, but only OTEL_TRACING_TOOLS act on it.
+        managed = {"enabled_agents": {"gemini": {"otel_tracing_enabled": True}}}
+        assert "gemini_otel_tracing" not in managed_state_overrides(managed, "gemini")
+
+    def test_no_override_when_tracing_disabled(self):
+        managed = {"enabled_agents": {"claude": {}}}
+        assert "claude_otel_tracing" not in managed_state_overrides(managed, "claude")
+
+    def test_resolve_state_overlays_otel_flag(self):
+        managed = {"enabled_agents": {"claude": {"otel_tracing_enabled": True}}}
+        assert resolve_state(managed, _state(), "claude")["claude_otel_tracing"] is True
+
+    def test_resolve_state_wins_over_local_custom_headers(self):
+        managed = {"enabled_agents": {"claude": {"http_headers": {"X-Managed": "managed-value"}}}}
+        state = _state(claude_custom_headers={"X-Local": "local-value"})
+        resolved = resolve_state(managed, state, "claude")
+        assert resolved["claude_custom_headers"] == {"X-Managed": "managed-value"}

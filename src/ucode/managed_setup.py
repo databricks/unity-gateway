@@ -367,6 +367,12 @@ def serialize_managed_config(manifest: dict) -> dict:
         if selector:
             payload["skills"] = selector
 
+    tracing_table = manifest.get("tracing_table")
+    if (isinstance(tracing_table, str) and tracing_table) or manifest.get(
+        "otel_tracing_enabled"
+    ) is True:
+        payload["tracing"] = {"enabled": True}
+
     spend_tiers = manifest.get("spend_tiers")
     if isinstance(spend_tiers, dict):
         policy = _spend_tiers_payload(spend_tiers)
