@@ -448,26 +448,6 @@ def _require_binary(binary: str):
         pytest.skip(f"`{binary}` is not installed")
 
 
-def _codex_failure_stderr(stderr: str) -> str:
-    """Separate the known nonfatal catalog warning from the actual launch failure."""
-    lines = stderr.splitlines()
-    remaining = [
-        line
-        for line in lines
-        if not (
-            "404 Not Found" in line
-            and "codex/v1/models is not enabled for this workspace" in line
-        )
-    ]
-    diagnostic = f"stderr={'\n'.join(remaining)[-1500:]!r}"
-    if len(remaining) != len(lines):
-        diagnostic += (
-            " note='Nonfatal model discovery 404: /codex/v1/models is not enabled "
-            "for this workspace; Codex can continue with the explicitly selected model.'"
-        )
-    return diagnostic
-
-
 class TestCodexLaunch:
     """Run codex against every available codex model."""
 
@@ -529,7 +509,7 @@ class TestCodexLaunch:
                 # at 200 chars the geography failure above read as a `/v1/models` routing error.
                 failures.append(
                     f"model={model} rc={result.returncode} "
-                    f"stdout={result.stdout[-500:]!r} {_codex_failure_stderr(result.stderr)}"
+                    f"stdout={result.stdout[-500:]!r} stderr={result.stderr[-1500:]!r}"
                 )
 
         assert not failures, "Codex launch failures:\n" + "\n".join(failures)
