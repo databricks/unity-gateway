@@ -107,10 +107,14 @@ configure command, launch, user action, and assertions. Shared code only handles
 process/terminal mechanics, evidence, and cleanup. Fixtures supply an isolated
 session and credentials; none manufacture or configure application state.
 
-Provider CUJs use normal ug validation, then require their own completed
-interactive task. Other journeys skip preliminary validation when they provide
-their own task or command assertions. Tests disable optional Databricks AI Tools and
-pass `--skip-upgrade` to preserve the selected version. They use real onboarding
+ug no longer runs a post-configure agent probe, so no CUJ validates; each
+journey still requires its own completed interactive task or command assertions
+(the deprecated `--skip-validate` flag is accepted as a no-op where older
+journeys pass it). Tests disable optional Databricks AI Tools and retain
+`--skip-upgrade` as a deprecated no-op for compatibility. UG only upgrades
+agents below its required minimum; before/after version checks still enforce the
+selected versions. Fable, subset selection, and required-update policy are covered
+by unit/component tests, not dedicated live journeys. Tests use real onboarding
 and trust choices, without seeded acceptance or disabled agent sandboxing. If a
 routed child asks to locate the random fixture beneath the disposable project,
 the terminal driver accepts that exact read-only command through Claude's real
@@ -152,6 +156,11 @@ configuration TUI journeys. Real failures, including generated
 config left after revert and banners on app-server stdout, remain assertions.
 Live MCP/skills functionality, tracing, the broad configure-option matrix, and other
 agents are outside this focused revision.
+
+The configure terminal helper recognizes `[✓]` / `[ ]` agent checkboxes as well
+as legacy markers in older pinned ug releases. It explicitly toggles
+the requested agent on and all others off before submitting; the existing live
+journeys still require a completed agent task.
 
 ## Reproduce a failure
 

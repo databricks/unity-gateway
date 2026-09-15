@@ -769,10 +769,82 @@ class TestCodexLaunch:
             "source": codex.CodexCatalogSource.PROVIDER,
             "identifier": "main.default.openai",
         }
+        # The MPS's primary target is pinned so the first request isn't a 403 on
+        # Codex's bundled default, which the MPS allowlist doesn't route.
+        assert 'model="gpt-mps"' in launches[0]
         provider_arg = next(
             arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
         )
         assert 'Databricks-Model-Provider-Service = "main.default.openai"' in provider_arg
+
+    def test_provider_pins_first_catalog_model(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        catalog = {"models": [{"slug": "gpt-primary"}, {"slug": "gpt-secondary"}]}
+        monkeypatch.setattr(
+            codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "models.json"
+        )
+        monkeypatch.setattr(
+            codex, "_fetch_codex_model_catalog", lambda workspace, token, **kwargs: catalog
+        )
+
+        codex.launch(
+            {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert 'model="gpt-primary"' in launches[0]
+
+    @pytest.mark.parametrize("model_args", [["--model", "gpt-chosen"], ["-m", "gpt-chosen"]])
+    def test_provider_does_not_override_user_model(self, tmp_path, monkeypatch, model_args):
+        launches = self._patch(tmp_path, monkeypatch)
+        catalog = {"models": [{"slug": "gpt-mps"}]}
+        monkeypatch.setattr(
+            codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "models.json"
+        )
+        monkeypatch.setattr(
+            codex, "_fetch_codex_model_catalog", lambda workspace, token, **kwargs: catalog
+        )
+
+        codex.launch(
+            {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
+            model_args,
+            options=LaunchOptions(),
+        )
+
+        assert not any(arg.startswith("model=") for arg in launches[0])
+        assert launches[0][-len(model_args) :] == model_args
+
+    def test_provider_keeps_managed_default_model(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        # Top-level `model` (a managed default) must precede the table header so it
+        # isn't parsed as a key inside [model_providers.ucode-databricks].
+        profile_path = tmp_path / "ucode.config.toml"
+        profile_path.write_text(
+            'model_provider = "ucode-databricks"\n'
+            'model = "managed-default"\n\n'
+            "[model_providers.ucode-databricks]\n"
+            'name = "Databricks AI Gateway"\n'
+            'base_url = "https://example.databricks.com/ai-gateway/codex/v1"\n'
+            'wire_api = "responses"\n',
+            encoding="utf-8",
+        )
+        catalog = {"models": [{"slug": "gpt-mps"}]}
+        monkeypatch.setattr(
+            codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "models.json"
+        )
+        monkeypatch.setattr(
+            codex, "_fetch_codex_model_catalog", lambda workspace, token, **kwargs: catalog
+        )
+
+        codex.launch(
+            {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert 'model="managed-default"' in launches[0]
+        assert 'model="gpt-mps"' not in launches[0]
 
     def test_parent_discovery_uses_authoritative_catalog(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)

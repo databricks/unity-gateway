@@ -233,7 +233,7 @@ class TestConfigureCustomOAuth:
                     "configure",
                     "--agent",
                     "claude",
-                    "--workspaces",
+                    "--workspace",
                     WS,
                     "--client-id",
                     "custom-client",
@@ -264,7 +264,6 @@ class TestConfigureCustomOAuth:
             result = cli_mod.configure_workspace_command(
                 "claude",
                 workspaces=[(WS, None)],
-                skip_validate=True,
             )
 
         assert result == 0
@@ -355,7 +354,6 @@ class TestLaunchCustomOAuth:
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state) as configure_shared,
             patch("ucode.cli.configure_single_tool", return_value=state),
-            patch("ucode.cli.validate_tool", return_value=(True, None)),
         ):
             cli_mod._auto_configure_tool("codex", custom_oauth=custom_oauth)
 
@@ -372,7 +370,6 @@ class TestLaunchCustomOAuth:
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state) as configure_shared,
             patch("ucode.cli.configure_single_tool", return_value=state),
-            patch("ucode.cli.validate_tool", return_value=(True, None)),
         ):
             cli_mod._auto_configure_tool("claude")
 

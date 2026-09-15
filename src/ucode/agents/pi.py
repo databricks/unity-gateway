@@ -275,7 +275,7 @@ def default_model(state: dict) -> str | None:
     if codex_models:
         return codex_models[0]
     gemini_models = state.get("gemini_models") or []
-    return gemini_models[0] if gemini_models else None
+    return gemini_models[0] if gemini_models else next(iter(claude_models.values()), None)
 
 
 def _configure_launch(state: dict) -> str:
@@ -310,10 +310,3 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
 
 def validate_cmd(binary: str) -> list[str]:
     return [binary, "--print", "say hi in 5 words or less"]
-
-
-def validate_env(state: dict) -> dict[str, str]:
-    workspace = state.get("workspace")
-    if not workspace:
-        raise RuntimeError("No workspace configured.")
-    return build_runtime_env(get_databricks_token(workspace, state.get("profile")))

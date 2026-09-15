@@ -23,12 +23,12 @@ def test_ug_configure_claude_databricks(live_session, workspace):
     session = live_session
     task = FileTask(session)
 
-    # Configure using the installed public CLI, including its normal validation.
+    # Configure using the installed public CLI (no post-configure probe runs).
     session.run(
         "configure",
         "--agents",
         "claude",
-        "--workspaces",
+        "--workspace",
         workspace,
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
@@ -72,7 +72,7 @@ def test_ug_configure_claude_anthropic_mps(live_session, workspace, claude_provi
     command = [
         str(session.binary),
         "configure",
-        "--workspaces",
+        "--workspace",
         workspace,
         "--skip-upgrade",
         "--disable-databricks-ai-tools",

@@ -29,12 +29,9 @@ from ucode.agents import (
     install_databricks_ai_tools_for_agents,
     install_tool_binary,
     normalize_tool,
-    provider_permission_error,
     resolve_gemini_provider_model,
     resolve_launch_model,
     resolve_provider_models,
-    validate_all_tools,
-    validate_tool,
 )
 from ucode.agents import claude as claude_agent
 from ucode.agents import codex as codex_agent
@@ -351,71 +348,56 @@ def _parse_skill_locations(location: str | None) -> list[str]:
     return locations
 
 
-def _parse_workspaces_option(workspaces: str) -> list[tuple[str, str | None]]:
-    """Parse `--workspaces` into [(url, profile_name | None), ...].
+def _parse_workspace_option(workspace: str) -> list[tuple[str, str | None]]:
+    """Parse `--workspace` into a single-element [(url, None)] entry.
 
-    `--workspaces` supplies bare URLs; the matching profile (if any) is
-    resolved later via `find_profile_name_for_host`.
+    `--workspace` supplies one bare URL; the matching profile (if any) is
+    resolved later via `find_profile_name_for_host`. The single entry is wrapped
+    in a list so it flows through the same plumbing as `--profile`.
     """
-    workspace_entries: list[tuple[str, str | None]] = []
-    seen: set[str] = set()
-    for raw_workspace in workspaces.split(","):
-        raw_workspace = raw_workspace.strip()
-        if not raw_workspace:
-            continue
-        try:
-            workspace = normalize_workspace_url(raw_workspace)
-        except ValueError as exc:
-            raise RuntimeError(str(exc)) from exc
-        if workspace not in seen:
-            seen.add(workspace)
-            workspace_entries.append((workspace, None))
-    if not workspace_entries:
+    if "," in workspace:
         raise RuntimeError(
-            "No workspaces provided for --workspaces. Use a comma-separated list like "
-            "`--workspaces https://workspace.databricks.com`."
+            "--workspace takes a single workspace URL, e.g. "
+            "`--workspace https://workspace.databricks.com`."
         )
-    return workspace_entries
+    try:
+        url = normalize_workspace_url(workspace)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    return [(url, None)]
 
 
-def _parse_profiles_option(profiles: str) -> list[tuple[str, str | None]]:
-    """Parse `--profiles` into [(url, profile_name), ...].
+def _parse_profile_option(profile: str) -> list[tuple[str, str | None]]:
+    """Parse `--profile` into a single-element [(url, profile_name)] entry.
 
-    Each name must be an existing Databricks CLI profile; its host supplies
-    the workspace URL. Auth behaves the same as `--workspaces`: OAuth login is
-    forced unless `--use-pat` is also passed."""
+    The name must be an existing Databricks CLI profile; its host supplies the
+    workspace URL. Auth behaves the same as `--workspace`: OAuth login is forced
+    unless `--use-pat` is also passed. The single entry is wrapped in a list so
+    it flows through the same plumbing as `--workspace`.
+    """
+    name = profile.strip()
+    if "," in name:
+        raise RuntimeError(
+            "--profile takes a single Databricks CLI profile, e.g. `--profile DEFAULT`."
+        )
     available = {str(p.get("name")): p for p in list_profile_entries() if p.get("name")}
-    workspace_entries: list[tuple[str, str | None]] = []
-    seen: set[str] = set()
-    for raw_name in profiles.split(","):
-        name = raw_name.strip()
-        if not name:
-            continue
-        entry = available.get(name)
-        if entry is None:
-            known = ", ".join(sorted(available)) or "none"
-            raise RuntimeError(
-                f"Databricks CLI profile '{name}' was not found (available: {known}). "
-                "Check `databricks auth profiles` or add the profile to ~/.databrickscfg."
-            )
-        host = str(entry.get("host") or "").strip()
-        if not host:
-            raise RuntimeError(
-                f"Databricks CLI profile '{name}' has no host configured in ~/.databrickscfg."
-            )
-        try:
-            workspace = normalize_workspace_url(host)
-        except ValueError as exc:
-            raise RuntimeError(str(exc)) from exc
-        if workspace not in seen:
-            seen.add(workspace)
-            workspace_entries.append((workspace, name))
-    if not workspace_entries:
+    entry = available.get(name)
+    if entry is None:
+        known = ", ".join(sorted(available)) or "none"
         raise RuntimeError(
-            "No profiles provided for --profiles. Use a comma-separated list like "
-            "`--profiles DEFAULT`."
+            f"Databricks CLI profile '{name}' was not found (available: {known}). "
+            "Check `databricks auth profiles` or add the profile to ~/.databrickscfg."
         )
-    return workspace_entries
+    host = str(entry.get("host") or "").strip()
+    if not host:
+        raise RuntimeError(
+            f"Databricks CLI profile '{name}' has no host configured in ~/.databrickscfg."
+        )
+    try:
+        workspace = normalize_workspace_url(host)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    return [(workspace, name)]
 
 
 def configure_shared_state(
@@ -426,7 +408,6 @@ def configure_shared_state(
     use_pat: bool | None = None,
     skip_model_discovery: bool = False,
     skip_preflight: bool = False,
-    fable_enabled: bool | None = None,
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     clear_custom_oauth: bool = False,
@@ -435,7 +416,7 @@ def configure_shared_state(
 
     If tools is provided, only fetch models for those tools. Otherwise fetch all.
     If force_login is True, always run databricks auth login (used by explicit configure).
-    If use_pat is True (explicit `configure --profiles <name> --use-pat`), the
+    If use_pat is True (explicit `configure --profile <name> --use-pat`), the
     profile's personal access token from ~/.databrickscfg is used instead of
     OAuth and no interactive login ever runs. ``None`` means "inherit": a
     launch re-run keeps the mode the workspace was configured with.
@@ -449,18 +430,12 @@ def configure_shared_state(
     in ``_launch_tool``) and the gateway was verified by that earlier configure.
     Only the local profile resolution and the shared state assembly still run;
     the saved model lists are preserved.
-    ``fable_enabled`` opts the premium Claude Fable family into Claude Code's
-    ``ANTHROPIC_DEFAULT_FABLE_MODEL`` pin (default off). ``None`` means "inherit":
-    a launch re-run keeps whatever the workspace was configured with; ``True``/
-    ``False`` come from an explicit ``configure --enable-fable``/``--disable-fable``.
     """
     workspace = normalize_workspace_url(workspace)
     prior_state = load_state()
     previous_workspace = prior_state.get("workspace")
     if use_pat is None:
         use_pat = bool(prior_state.get("use_pat")) and previous_workspace == workspace
-    if fable_enabled is None:
-        fable_enabled = bool(prior_state.get("fable_enabled")) and previous_workspace == workspace
     if databricks_ai_tools_enabled is None:
         # Opt-out: on by default. With no flag, keep this workspace's prior
         # choice but don't inherit another workspace's opt-out.
@@ -492,12 +467,8 @@ def configure_shared_state(
         state["use_pat"] = True
     else:
         state.pop("use_pat", None)
-    # Persist the Fable opt-in so launches keep pinning the family; an explicit
-    # `configure --disable-fable` (fable_enabled=False) clears it.
-    if fable_enabled:
-        state["fable_enabled"] = True
-    else:
-        state.pop("fable_enabled", None)
+    # Fable follows model discovery; discard the legacy opt-in.
+    state.pop("fable_enabled", None)
     state["databricks_ai_tools_enabled"] = databricks_ai_tools_enabled
     if clear_custom_oauth:
         state.pop("custom_oauth", None)
@@ -528,7 +499,7 @@ def configure_shared_state(
     if use_pat:
         if not profile:
             raise RuntimeError(
-                "--use-pat requires a Databricks CLI profile. Pass one via `--profiles <name>`."
+                "--use-pat requires a Databricks CLI profile. Pass one via `--profile <name>`."
             )
         pat = resolve_pat_token(profile)
         if not pat:
@@ -558,7 +529,7 @@ def configure_shared_state(
         token = get_databricks_token(workspace, profile)
         model_service_probe = probe_unity_gateway_capabilities(workspace, token)
     if model_service_probe.resource_available:
-        print_success("Unity AI Gateway connected")
+        print_success("Unity Gateway connected")
     else:
         print_warning(f"Model service: {model_service_probe.detail}")
 
@@ -605,12 +576,6 @@ def configure_shared_state(
                 claude_models, claude_reason = ms_claude, ms_reason
                 if not claude_models:
                     claude_models, claude_reason = discover_claude_models(workspace, token)
-                # Fable is opt-in (`configure --enable-fable`). Unless enabled,
-                # drop it from the discovered bundle entirely so it never becomes
-                # part of any agent's config — not claude's family pins, nor the
-                # opencode/pi/copilot model lists built from claude_models.
-                if not fable_enabled:
-                    claude_models.pop("fable", None)
             if want_gemini:
                 gemini_models, gemini_reason = ms_gemini, ms_reason
                 if not gemini_models:
@@ -667,13 +632,12 @@ def _configure_shared_workspace_states(
     *,
     force_login: bool,
     use_pat: bool = False,
-    fable_enabled: bool | None = None,
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     clear_custom_oauth: bool = False,
 ) -> list[dict]:
-    if not workspaces:
-        raise RuntimeError("At least one workspace must be provided.")
+    if len(workspaces) != 1:
+        raise RuntimeError(f"Expected exactly one workspace, got {len(workspaces)}.")
     states: list[dict] = []
     for workspace, profile in workspaces:
         custom_oauth_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
@@ -686,7 +650,6 @@ def _configure_shared_workspace_states(
                 tools=tools,
                 force_login=force_login,
                 use_pat=use_pat,
-                fable_enabled=fable_enabled,
                 databricks_ai_tools_enabled=databricks_ai_tools_enabled,
                 **custom_oauth_kwargs,
             )
@@ -765,11 +728,7 @@ def configure_workspace_command(
     selected_tools: list[str] | None = None,
     workspaces: list[tuple[str, str | None]] | None = None,
     *,
-    prompt_optional_updates: bool = True,
     use_pat: bool = False,
-    skip_validate: bool = False,
-    skip_unavailable: bool = False,
-    fable_enabled: bool | None = None,
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
@@ -790,7 +749,6 @@ def configure_workspace_command(
             [tool],
             force_login=True,
             use_pat=use_pat,
-            fable_enabled=fable_enabled,
             databricks_ai_tools_enabled=databricks_ai_tools_enabled,
             custom_oauth=custom_oauth,
             clear_custom_oauth=custom_oauth is None,
@@ -809,21 +767,6 @@ def configure_workspace_command(
                 expand=False,
             )
         )
-        if skip_validate:
-            print_note(f"Skipping {spec['display']} validation (--skip-validate).")
-            return 0
-        with spinner(f"Validating {spec['display']}..."):
-            ok, err = validate_tool(tool)
-        if ok:
-            print_success(f"{spec['display']} is working")
-        else:
-            print_err(f"{spec['display']}: {provider_permission_error(tool, state, err)}")
-            managed = bool(state.get("managed_configs", {}).get(tool))
-            restore_file(spec["config_path"], spec["backup_path"], managed)
-            available_tools = [t for t in (state.get("available_tools") or []) if t != tool]
-            state["available_tools"] = available_tools
-            save_state(state)
-            raise RuntimeError(f"{spec['display']} validation failed — config reverted.")
         return 0
 
     states = _configure_shared_workspace_states(
@@ -831,7 +774,6 @@ def configure_workspace_command(
         selected_tools,
         force_login=True,
         use_pat=use_pat,
-        fable_enabled=fable_enabled,
         databricks_ai_tools_enabled=databricks_ai_tools_enabled,
         custom_oauth=custom_oauth,
         clear_custom_oauth=custom_oauth is None,
@@ -847,9 +789,8 @@ def configure_workspace_command(
                 available_on_workspace.append(tool_name)
 
     if not available_on_workspace:
-        print_err("No coding agents are available on this workspace.")
         _print_discovery_diagnostics(state)
-        return 1
+        raise RuntimeError("No coding agents are available on this workspace.")
 
     if selected_tools is None:
         picked = prompt_for_tools([(t, TOOL_SPECS[t]["display"]) for t in available_on_workspace])
@@ -862,11 +803,6 @@ def configure_workspace_command(
             displays = ", ".join(
                 TOOL_SPECS[tool_name]["display"] for tool_name in unavailable_tools
             )
-            if not skip_unavailable:
-                raise RuntimeError(
-                    f"Requested agent(s) not available on this workspace: {displays}. "
-                    "Pass --skip-unavailable to configure the available ones instead."
-                )
             print_warning(f"Skipping agent(s) not available on this workspace: {displays}.")
         picked = [tool_name for tool_name in selected_tools if tool_name in available_on_workspace]
 
@@ -878,8 +814,6 @@ def configure_workspace_command(
         install_tool_binary(
             tool_name,
             strict=False,
-            update_existing=True,
-            prompt_optional_updates=prompt_optional_updates,
         )
 
     # Offer the provider picker for the chosen claude/codex tools only on the
@@ -908,14 +842,6 @@ def configure_workspace_command(
             expand=False,
         )
     )
-
-    if skip_validate:
-        print_note("Skipping agent validation (--skip-validate).")
-    else:
-        # Limit validation to just-configured tools so we don't re-validate
-        # previously-configured tools the user didn't touch this run.
-        validate_state = {**state, "available_tools": picked}
-        validate_all_tools(validate_state)
     if offer_optional_setup and not is_dry_run():
         _configure_optional_setup(state, picked)
     return 0
@@ -1108,9 +1034,7 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-def _configure_agents_for_mcp(
-    requested: list[str], *, prompt_optional_updates: bool = True
-) -> set[str]:
+def _configure_agents_for_mcp(requested: list[str]) -> set[str]:
     """Ensure the named coding agents are set up (workspace + models) so a
     subsequent `ug mcp add` / `ug skill add --mcp` has them as targets, and
     return the full canonical name set. Agents already configured are left as-is;
@@ -1124,9 +1048,7 @@ def _configure_agents_for_mcp(
     to_bootstrap = scope - ready
     model_agents = sorted(a for a in to_bootstrap if a != "cursor")
     if model_agents:
-        configure_workspace_command(
-            selected_tools=model_agents, prompt_optional_updates=prompt_optional_updates
-        )
+        configure_workspace_command(selected_tools=model_agents)
     if "cursor" in to_bootstrap and not model_agents:
         _configure_shared_workspace_states(
             [_prompt_for_configuration(None)], tools=[], force_login=True
@@ -1442,7 +1364,7 @@ def mcp_proxy_cmd(
             "--use-pat",
             help="Authenticate with the profile's static personal access token (from "
             "~/.databrickscfg) instead of OAuth. Set automatically for workspaces configured "
-            "with `ug configure --profiles <name> --use-pat`.",
+            "with `ug configure --profile <name> --use-pat`.",
         ),
     ] = False,
 ) -> None:
@@ -2092,7 +2014,7 @@ def _launch_tool(
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []
         )
-        ensure_bootstrap_dependencies(tool, update_existing=needs_auto_configure)
+        ensure_bootstrap_dependencies(tool)
         if needs_auto_configure:
             if custom_oauth is None:
                 _auto_configure_tool(tool)
@@ -2807,21 +2729,39 @@ def configure(
             help="Configure a comma-separated list of agents without prompting (e.g. claude,codex).",
         ),
     ] = None,
+    workspace: Annotated[
+        str | None,
+        typer.Option(
+            "--workspace",
+            help="Configure a single workspace without prompting.",
+        ),
+    ] = None,
     workspaces: Annotated[
         str | None,
         typer.Option(
             "--workspaces",
-            help="Configure a comma-separated list of workspaces without prompting.",
+            hidden=True,
+            help="Deprecated alias of --workspace, kept for backward compatibility. "
+            "Takes a single workspace URL.",
+        ),
+    ] = None,
+    profile: Annotated[
+        str | None,
+        typer.Option(
+            "--profile",
+            help="Configure a single existing Databricks CLI profile without the "
+            "workspace prompt. The profile's host from ~/.databrickscfg supplies the "
+            "workspace URL. Auth behaves like --workspace: OAuth login is forced "
+            "unless --use-pat is also passed.",
         ),
     ] = None,
     profiles: Annotated[
         str | None,
         typer.Option(
             "--profiles",
-            help="Configure a comma-separated list of existing Databricks CLI profiles "
-            "without the workspace prompt. Each profile's host from ~/.databrickscfg "
-            "supplies the workspace URL. Auth behaves like --workspaces: OAuth login "
-            "is forced unless --use-pat is also passed.",
+            hidden=True,
+            help="Deprecated alias of --profile, kept for backward compatibility. "
+            "Takes a single Databricks CLI profile.",
         ),
     ] = None,
     use_pat: Annotated[
@@ -2829,8 +2769,8 @@ def configure(
         typer.Option(
             "--use-pat",
             help="Authenticate with the personal access token stored in "
-            "~/.databrickscfg for the selected profile(s) instead of OAuth. "
-            "Requires --profiles; no interactive login is run. Intended for "
+            "~/.databrickscfg for the selected profile instead of OAuth. "
+            "Requires --profile; no interactive login is run. Intended for "
             "CI / headless environments.",
         ),
     ] = False,
@@ -2858,34 +2798,20 @@ def configure(
         bool,
         typer.Option(
             "--skip-validate",
-            help="Skip the post-configure validation step that sends a quick test "
-            "message through each agent. Config files are still written with the "
-            "freshly discovered models.",
+            hidden=True,
+            help="Deprecated and ignored: agent validation has been removed. "
+            "Accepted for backward compatibility so existing scripts keep working.",
         ),
     ] = False,
     skip_unavailable: Annotated[
         bool,
         typer.Option(
             "--skip-unavailable",
-            help="With --agents, configure the agents that are available on the workspace "
-            "and skip (with a warning) any that aren't, instead of failing the whole run. "
-            "Useful in CI against heterogeneous workspaces — e.g. requesting "
-            "claude,codex,pi where the workspace exposes no OpenAI models still "
-            "configures claude and pi. Exits non-zero only if none are available.",
+            hidden=True,
+            help="Deprecated and ignored: configure already skips unavailable agents. "
+            "Accepted for backward compatibility.",
         ),
     ] = False,
-    enable_fable: Annotated[
-        bool | None,
-        typer.Option(
-            "--enable-fable/--disable-fable",
-            help="Pin the premium Claude Fable family via ANTHROPIC_DEFAULT_FABLE_MODEL "
-            "for Claude Code (opt-in; off by default). Only takes effect when the "
-            "workspace's AI Gateway actually advertises a Claude Fable model. "
-            "--disable-fable clears a prior opt-in. Omitting both keeps the "
-            "workspace's existing setting. Passed on its own (no --agent/--agents), "
-            "it configures Claude Code directly since Fable is Claude-only.",
-        ),
-    ] = None,
     enable_databricks_ai_tools: Annotated[
         bool | None,
         typer.Option(
@@ -2917,9 +2843,9 @@ def configure(
         bool,
         typer.Option(
             "--skip-upgrade",
-            help="Don't prompt to upgrade already-installed agent CLIs to a newer version. "
-            "Required updates (when an agent is below its minimum supported version) are "
-            "still applied.",
+            hidden=True,
+            help="Deprecated and ignored: agents are updated only when required for "
+            "compatibility. Accepted for backward compatibility.",
         ),
     ] = False,
     verbose: Annotated[
@@ -2939,7 +2865,6 @@ def configure(
         raise typer.Exit(2)
     set_dry_run(dry_run)
     set_verbosity(verbose)
-    prompt_optional_updates = not skip_upgrade
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
@@ -2947,43 +2872,29 @@ def configure(
         install_databricks_cli()
         if agent is not None and agents is not None:
             raise RuntimeError("Use either --agent or --agents, not both.")
-        if workspaces is not None and profiles is not None:
-            raise RuntimeError("Use either --workspaces or --profiles, not both.")
-        if use_pat and profiles is None:
+        # --workspaces / --profiles are deprecated aliases of the singular flags.
+        if workspace is not None and workspaces is not None:
+            raise RuntimeError("Use either --workspace or --workspaces, not both.")
+        if profile is not None and profiles is not None:
+            raise RuntimeError("Use either --profile or --profiles, not both.")
+        workspace = workspace if workspace is not None else workspaces
+        profile = profile if profile is not None else profiles
+        if workspace is not None and profile is not None:
+            raise RuntimeError("Use either --workspace or --profile, not both.")
+        if use_pat and profile is None:
             raise RuntimeError(
-                "--use-pat requires --profiles. Pass the PAT-backed Databricks CLI "
-                "profile(s) explicitly, e.g. `ug configure --profiles DEFAULT --use-pat`."
+                "--use-pat requires --profile. Pass the PAT-backed Databricks CLI "
+                "profile explicitly, e.g. `ug configure --profile DEFAULT --use-pat`."
             )
-        # Skipping only has meaning against an explicit agent list: the interactive
-        # picker already offers just the available agents, and --agent names a
-        # single agent whose absence is the whole answer.
-        if skip_unavailable and agents is None:
-            raise RuntimeError(
-                "--skip-unavailable requires --agents. It selects the available subset "
-                "of an explicit agent list, e.g. `ug configure --agents claude,codex,pi "
-                "--skip-unavailable`."
-            )
-        workspace_entries = _parse_workspaces_option(workspaces) if workspaces is not None else None
-        if profiles is not None:
-            workspace_entries = _parse_profiles_option(profiles)
+        workspace_entries = _parse_workspace_option(workspace) if workspace is not None else None
+        if profile is not None:
+            workspace_entries = _parse_profile_option(profile)
         flag_driven_workspace = workspace_entries is not None
         # Only forward the opt-in flags when set so existing call expectations
         # (and defaults) stay unchanged for the common interactive path.
         skip_kwargs: dict = {}
         if use_pat:
             skip_kwargs["use_pat"] = True
-        if skip_validate:
-            skip_kwargs["skip_validate"] = True
-        # Only forward the Fable opt-in when the user passed the flag; `None`
-        # (neither flag given) lets configure_shared_state inherit the prior
-        # workspace setting instead of clobbering it.
-        if enable_fable is not None:
-            skip_kwargs["fable_enabled"] = enable_fable
-        # Fable is a Claude-only model family, so `--enable-fable`/`--disable-fable`
-        # only makes sense for Claude Code. When passed on its own, implicitly
-        # target claude instead of dropping into the interactive agent picker.
-        if enable_fable is not None and agent is None and agents is None:
-            agent = "claude"
         if enable_databricks_ai_tools is not None:
             skip_kwargs["databricks_ai_tools_enabled"] = enable_databricks_ai_tools
         if custom_oauth is not None:
@@ -2997,8 +2908,6 @@ def configure(
             install_tool_binary(
                 tool,
                 strict=True,
-                update_existing=True,
-                prompt_optional_updates=prompt_optional_updates,
             )
             if workspace_entries is None:
                 configure_workspace_command(tool, **skip_kwargs)
@@ -3021,21 +2930,16 @@ def configure(
             model_agent_names = ",".join(a for a in requested if a != "cursor")
             if model_agent_names:
                 selected_tools = _parse_agents_option(model_agent_names)
-                agents_kwargs = dict(skip_kwargs)
-                if skip_unavailable:
-                    agents_kwargs["skip_unavailable"] = True
                 if workspace_entries is None:
                     configure_workspace_command(
                         selected_tools=selected_tools,
-                        prompt_optional_updates=prompt_optional_updates,
-                        **agents_kwargs,
+                        **skip_kwargs,
                     )
                 else:
                     configure_workspace_command(
                         selected_tools=selected_tools,
                         workspaces=workspace_entries,
-                        prompt_optional_updates=prompt_optional_updates,
-                        **agents_kwargs,
+                        **skip_kwargs,
                     )
             elif wants_cursor:
                 # Cursor-only: establish workspace state without the model picker.
@@ -3072,14 +2976,10 @@ def configure(
             if combined_optional_setup:
                 skip_kwargs["offer_optional_setup"] = True
             if workspace_entries is None:
-                configure_workspace_command(
-                    prompt_optional_updates=prompt_optional_updates,
-                    **skip_kwargs,
-                )
+                configure_workspace_command(**skip_kwargs)
             else:
                 configure_workspace_command(
                     workspaces=workspace_entries,
-                    prompt_optional_updates=prompt_optional_updates,
                     **skip_kwargs,
                 )
             # Only the no-agent, no-workspace path is truly interactive (the user

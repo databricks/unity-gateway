@@ -14,6 +14,7 @@ import tomlkit
 from tomlkit.exceptions import ParseError
 
 from ucode.codex_config import (
+    catalog_slugs,
     codex_config_args,
     codex_config_precedence_paths,
     codex_managed_config_path,
@@ -653,6 +654,11 @@ def _launch_token(state: dict, workspace: str) -> str:
     return get_databricks_token(workspace, state.get("profile"))
 
 
+def _tool_args_select_model(tool_args: list[str]) -> bool:
+    """Whether the passthrough args already pin a model via ``-m``/``--model``."""
+    return any(arg in ("-m", "--model") or arg.startswith(("--model=", "-m=")) for arg in tool_args)
+
+
 def _reject_managed_model_catalog() -> None:
     path = codex_managed_config_path()
     if path is None:
@@ -745,6 +751,14 @@ def launch(
             catalog_path = _model_catalog_path(workspace, catalog_scope)
             _write_model_catalog(catalog_path, catalog)
             profile_doc["model_catalog_json"] = str(catalog_path)
+            # Codex otherwise boots on its bundled default model (e.g. gpt-5.6-sol),
+            # which an MPS's allowlist doesn't route, so the first request 403s. Pin
+            # the MPS's primary (first) target unless the user chose a model or a
+            # managed default already applies.
+            if not profile_doc.get("model") and not _tool_args_select_model(tool_args):
+                slugs = catalog_slugs(catalog)
+                if slugs:
+                    profile_doc["model"] = slugs[0]
     exec_or_spawn([binary, *codex_config_args(profile_doc), *tool_args])
 
 
