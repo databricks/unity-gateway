@@ -1,8 +1,8 @@
-"""`ucode mcp-proxy`: a stdio MCP server that bridges to a Databricks
+"""`ug mcp-proxy`: a stdio MCP server that bridges to a Databricks
 streamable-HTTP MCP endpoint, injecting a freshly-minted OAuth bearer.
 
 Every coding agent ucode configures points its Databricks MCP servers at this
-one command (``ucode mcp-proxy --url <endpoint> --profile <profile>``) as a
+one command (``ug mcp-proxy --url <endpoint> --profile <profile>``) as a
 local **stdio** server. The agent spawns and reaps the proxy as a child process
 — ucode owns no long-lived process and no background refresh thread. The proxy
 speaks stdio to the agent and streamable-HTTP to Databricks, and mints a fresh
@@ -107,7 +107,7 @@ def _fail_fast(message: str) -> None:
 
     stdout is the MCP wire, so diagnostics must go to stderr — MCP clients
     surface a child's stderr when it fails to start."""
-    print(f"ucode mcp-proxy: {message}", file=sys.stderr, flush=True)
+    print(f"ug mcp-proxy: {message}", file=sys.stderr, flush=True)
     raise SystemExit(AUTH_FAILURE_EXIT_CODE)
 
 

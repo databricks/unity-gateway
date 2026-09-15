@@ -188,7 +188,7 @@ class TestLaunchCodex:
         stopped = []
         token_calls = []
         monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
-        monkeypatch.setattr(codex, "ucode_version", lambda: "0.1.0")
+        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
 
         class FakeProcess:
@@ -311,6 +311,7 @@ class TestLaunchCodex:
         assert "--model system.ai.gpt-5-6-sol" in configured[1]["hooks"][0]["command"]
 
     def test_v2_pre_tool_hook_replaces_existing_ucode_hook(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
         codex_home = tmp_path / ".codex"
         codex_home.mkdir()
         (codex_home / "config.toml").write_text(
@@ -335,6 +336,7 @@ class TestLaunchCodex:
             if "codex-router-hook" in hook["command"]
         ]
         assert len(routing_commands) == 1
+        assert routing_commands[0].startswith("/bin/ug codex-router-hook route-subagent ")
         assert "--model system.ai.gpt-5-6-sol" in routing_commands[0]
         assert "--model old" not in routing_commands[0]
 
@@ -451,7 +453,7 @@ class TestCustomCatalogModels:
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.145.0")
-        monkeypatch.setattr(codex, "ucode_version", lambda: "test")
+        monkeypatch.setattr(codex, "ug_version", lambda: "test")
         launched = []
 
         class FakeProcess:

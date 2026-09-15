@@ -290,7 +290,7 @@ def configure_client_mcp_server(
             removed = cursor.write_http_mcp_server_config(name, url, client_id=oauth_client)
             return [MCP_USER_SCOPE] if removed else []
 
-    # Every other case registers the `ucode mcp-proxy ...` stdio command; the proxy
+    # Every other case registers the `ug mcp-proxy ...` stdio command; the proxy
     # forwards to `url` and refreshes the Databricks token itself. Only the
     # per-client registration syntax differs. `always_load` (skills registry) is
     # a Claude-only hint to load the server's tools at session start; other

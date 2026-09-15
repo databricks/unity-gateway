@@ -33,7 +33,7 @@ class TestMcpChangeSummary:
 
 
 # The proxy argv every client registers as a stdio command. The leading element
-# is the resolved `ucode` binary path, so tests assert the tail (the stable part).
+# is the resolved `ug` binary path, so tests assert the tail (the stable part).
 GH_URL = f"{WS}/api/2.0/mcp/external/github"
 # A connection-backed AI Gateway MCP service (3-part FQN) — the URL form that
 # registers as direct HTTP for Claude when the claude-code client is available.
@@ -53,11 +53,12 @@ def _proxy_argv() -> list[str]:
 
 
 class TestBuildMcpProxyArgv:
-    def test_argv_is_ucode_mcp_proxy_command(self):
+    def test_argv_is_ug_mcp_proxy_command(self, monkeypatch):
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/tools/{command}")
         argv = _proxy_argv()
-        # First element is the resolved ucode binary; the rest is stable.
+        # First element is the resolved ug binary; the rest is stable.
         assert argv[1:] == PROXY_TAIL
-        assert argv[0].endswith("ucode") or argv[0] == "ucode"
+        assert argv[0] == "/tools/ug"
 
     def test_use_pat_appends_flag_and_profile_optional(self):
         from ucode.databricks import build_mcp_proxy_argv

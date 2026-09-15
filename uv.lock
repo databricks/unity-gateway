@@ -3226,7 +3226,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ucode"
+name = "unity-gateway"
 source = { editable = "." }
 dependencies = [
     { name = "databricks-sdk" },

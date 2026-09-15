@@ -85,7 +85,7 @@ def default_model(state: dict) -> str | None:
     codex_models = state.get("codex_models") or []
     if codex_models:
         return codex_models[0]
-    return None
+    return next(iter(claude_models.values()), None)
 
 
 def render_env_overlay(workspace: str, model: str, token: str) -> dict[str, str]:
@@ -107,7 +107,7 @@ def build_runtime_env(workspace: str, model: str, token: str) -> dict[str, str]:
 
 def build_mcp_server_entry(argv: list[str]) -> dict:
     # A `local` MCP server runs a stdio command; `command`/`args` split the
-    # argv. ucode registers the `ucode mcp-proxy ...` bridge here so Copilot
+    # argv. ug registers the `ug mcp-proxy ...` bridge here so Copilot
     # never speaks HTTP+bearer directly — the proxy handles token refresh. The
     # OAUTH_TOKEN env Copilot still injects at launch is for MODEL auth, not MCP.
     return {
@@ -220,15 +220,3 @@ def mcp_config_args() -> list[str]:
     if not COPILOT_MCP_CONFIG_PATH.exists():
         return []
     return ["--additional-mcp-config", f"@{COPILOT_MCP_CONFIG_PATH}"]
-
-
-def validate_env(state: dict) -> dict[str, str]:
-    """Inject BYOK env vars for the validation subprocess (Copilot doesn't auto-load .env)."""
-    workspace = state.get("workspace")
-    if not workspace:
-        raise RuntimeError("No workspace configured.")
-    model = default_model(state)
-    if not model:
-        raise RuntimeError("No Copilot model is available on this workspace.")
-    token = get_databricks_token(workspace, state.get("profile"))
-    return build_runtime_env(workspace, model, token)

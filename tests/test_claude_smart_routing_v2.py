@@ -156,11 +156,18 @@ class TestFirstPromptHook:
             stop.set()
 
     def test_first_prompt_hook_is_per_launch(self):
-        settings = {"hooks": {"PreToolUse": [{"hooks": [{"command": "user-policy"}]}]}}
-        claude_hooks.sync_first_prompt_hook(settings, "/bin/ucode")
-        claude_hooks.sync_first_prompt_hook(settings, "/bin/ucode")
+        settings = {
+            "hooks": {
+                "PreToolUse": [{"hooks": [{"command": "user-policy"}]}],
+                "UserPromptSubmit": [
+                    {"hooks": [{"command": "ucode claude-router-hook route-first-prompt"}]}
+                ],
+            }
+        }
+        claude_hooks.sync_first_prompt_hook(settings, "/bin/ug")
+        claude_hooks.sync_first_prompt_hook(settings, "/bin/ug")
         command = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-        assert command == "/bin/ucode claude-router-hook route-first-prompt"
+        assert command == "/bin/ug claude-router-hook route-first-prompt"
         assert len(settings["hooks"]["UserPromptSubmit"]) == 1
         assert "user-policy" in str(settings["hooks"]["PreToolUse"])
 
@@ -178,10 +185,12 @@ class TestV2Launch:
         monkeypatch.setattr(claude, "APP_DIR", tmp_path)
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", ucode_settings)
         monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_settings)
+        # This scenario supplies the API catalog below, not a host-managed picker.
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ucode"])
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
         monkeypatch.setattr(
             v2,
             "list_anthropic_model_catalog",
@@ -254,7 +263,7 @@ class TestV2Launch:
         first_prompt_command = captured["settings"]["hooks"]["UserPromptSubmit"][0]["hooks"][0][
             "command"
         ]
-        assert first_prompt_command == "ucode claude-router-hook route-first-prompt"
+        assert first_prompt_command == "/bin/ug claude-router-hook route-first-prompt"
         route_commands = [
             hook["command"]
             for group in captured["settings"]["hooks"]["PreToolUse"]
@@ -262,6 +271,7 @@ class TestV2Launch:
             if "route-subagent" in hook["command"]
         ]
         assert len(route_commands) == 1
+        assert route_commands[0].startswith("/bin/ug claude-router-hook route-subagent ")
         assert "--model system.ai.claude-opus-4-8" in route_commands[0]
         assert "--model system.ai.claude-sonnet-5" in route_commands[0]
         assert "modelPicker" not in captured["settings"]
@@ -281,7 +291,7 @@ class TestV2Launch:
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ucode"])
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
         monkeypatch.setattr(
             v2,
             "list_anthropic_model_catalog",
@@ -314,7 +324,7 @@ class TestV2Launch:
         user_settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ucode"])
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
         monkeypatch.setattr(
             v2,
             "list_anthropic_model_catalog",
@@ -361,7 +371,7 @@ class TestV2ModelPickerDiscovery:
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ucode"])
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
         monkeypatch.setattr(v2, "_model_picker_catalog", lambda: picker_catalog)
 
         discovery_calls = 0

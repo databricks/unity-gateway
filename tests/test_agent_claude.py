@@ -18,7 +18,7 @@ from ucode.state import MANAGED_OVERLAY_KEY
 
 WS = "https://example.databricks.com"
 # A connection MCP proxy argv, used by the Claude MCP-registration helper tests.
-# The leading element is the resolved `ucode` binary path, so tests assert the tail.
+# The leading element is the resolved `ug` binary path, so tests assert the tail.
 GH_URL = f"{WS}/api/2.0/mcp/external/github"
 
 
@@ -163,15 +163,11 @@ class TestRenderOverlay:
         assert "main.aarushi.claude-opus-5" not in env.values()
 
     def test_custom_model_does_not_persist_fable_selection(self):
-        without = claude.render_overlay(WS, "s4", claude_models={}, custom_model="main.x.m")[0][
-            "env"
-        ]
-        assert "ANTHROPIC_MODEL" not in without
-        with_fable = claude.render_overlay(
-            WS, "s4", claude_models={}, custom_model="main.x.m", fable_enabled=True
-        )[0]["env"]
-        assert "ANTHROPIC_MODEL" not in with_fable
-        assert "ANTHROPIC_DEFAULT_FABLE_MODEL" not in with_fable
+        overlay, _ = claude.render_overlay(
+            WS, "s4", claude_models={}, custom_model="system.ai.claude-fable-5"
+        )
+        assert "ANTHROPIC_MODEL" not in overlay["env"]
+        assert "ANTHROPIC_DEFAULT_FABLE_MODEL" not in overlay["env"]
 
     def test_sets_anthropic_base_url(self):
         overlay, _ = claude.render_overlay(WS, "s4")
@@ -231,15 +227,15 @@ class TestRenderOverlay:
 
         assert claude.gateway_model_discovery_setting_is_absent() is False
 
-    def test_sets_api_key_helper(self):
+    def test_sets_api_key_helper(self, monkeypatch):
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/my tools/{command}")
         overlay, _ = claude.render_overlay(WS, "s4")
-        assert "apiKeyHelper" in overlay
-        assert WS in overlay["apiKeyHelper"]
+        assert shlex.split(overlay["apiKeyHelper"]) == ["/my tools/ug", "auth-token", "--host", WS]
 
     def test_sets_custom_oauth_api_key_helper(self, monkeypatch):
         from ucode import custom_oauth
 
-        monkeypatch.setattr("ucode.databricks._ucode_binary", lambda: "/opt/ucode")
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/opt/ug")
         monkeypatch.setattr(custom_oauth.platform, "system", lambda: "Linux")
         overlay, _ = claude.render_overlay(
             WS,
@@ -251,7 +247,7 @@ class TestRenderOverlay:
             },
         )
         assert shlex.split(overlay["apiKeyHelper"]) == [
-            "/opt/ucode",
+            "/opt/ug",
             "auth-token",
             "--host",
             WS,
@@ -323,34 +319,30 @@ class TestRenderOverlay:
         env = overlay["env"]
         assert "ANTHROPIC_DEFAULT_SONNET_MODEL" not in env
 
-    def test_fable_not_pinned_by_default(self):
-        # Fable is opt-in: even when the workspace advertises it, the env var is
-        # absent unless fable_enabled is passed.
+    def test_fable_pinned_by_default_when_discovered(self):
         models = {"fable": "databricks-claude-fable-5", "opus": "databricks-claude-opus-4-8"}
         overlay, _ = claude.render_overlay(WS, "s4", claude_models=models)
         env = overlay["env"]
-        assert "ANTHROPIC_DEFAULT_FABLE_MODEL" not in env
+        assert env["ANTHROPIC_DEFAULT_FABLE_MODEL"] == "databricks-claude-fable-5"
         assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "databricks-claude-opus-4-8[1m]"
 
-    def test_fable_pinned_when_enabled_and_discovered(self):
+    def test_discovered_fable_uses_unsuffixed_model_id(self):
         models = {"fable": "system.ai.claude-fable-5"}
-        overlay, _ = claude.render_overlay(WS, "s4", claude_models=models, fable_enabled=True)
+        overlay, _ = claude.render_overlay(WS, "s4", claude_models=models)
         env = overlay["env"]
         # Fable 5 is 1M-context by default, so no `[1m]` suffix is appended.
         assert env["ANTHROPIC_DEFAULT_FABLE_MODEL"] == "system.ai.claude-fable-5"
 
-    def test_fable_not_pinned_when_enabled_but_not_discovered(self):
-        # --enable-fable is a no-op when the workspace advertises no fable model,
-        # mirroring the opus/sonnet/haiku "only if discovered" behavior.
+    def test_fable_not_pinned_when_not_discovered(self):
         models = {"opus": "databricks-claude-opus-4-8"}
-        overlay, _ = claude.render_overlay(WS, "s4", claude_models=models, fable_enabled=True)
+        overlay, _ = claude.render_overlay(WS, "s4", claude_models=models)
         assert "ANTHROPIC_DEFAULT_FABLE_MODEL" not in overlay["env"]
 
     def test_fable_not_pinned_under_provider(self):
         # A Model Provider Service routes by header and pins no Databricks model.
         models = {"fable": "databricks-claude-fable-5"}
         overlay, _ = claude.render_overlay(
-            WS, "s4", claude_models=models, fable_enabled=True, provider="main.x.claude-svc"
+            WS, "s4", claude_models=models, provider="main.x.claude-svc"
         )
         assert "ANTHROPIC_DEFAULT_FABLE_MODEL" not in overlay["env"]
 
@@ -458,7 +450,7 @@ class TestRenderOverlay:
 
 class TestRenderOverlayUserAgent:
     def _ua(self, monkeypatch) -> str:
-        monkeypatch.setattr(claude, "ucode_version", lambda: "0.1.0")
+        monkeypatch.setattr(claude, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(claude, "agent_version", lambda binary: "2.1.136")
         overlay, _ = claude.render_overlay(WS, "s4")
         return overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
@@ -559,13 +551,14 @@ class TestRenderOverlayWebSearchDisable:
 
 
 class TestWebSearchMcpEntry:
-    def test_entry_shape(self):
+    def test_entry_shape(self, monkeypatch):
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/tools/{command}")
         entry = claude._web_search_mcp_entry(WS, "databricks-gpt-5")
         assert entry["type"] == "stdio"
         assert entry["args"] == ["mcp", "web-search"]
         assert entry["env"]["DATABRICKS_HOST"] == WS
         assert entry["env"]["UCODE_WEB_SEARCH_MODEL"] == "databricks-gpt-5"
-        assert isinstance(entry["command"], str) and entry["command"]
+        assert entry["command"] == "/tools/ug"
 
 
 class TestResolveWebSearchModel:
@@ -587,7 +580,7 @@ class TestResolveWebSearchModel:
 
 class TestClaudeDefaultModel:
     def test_prefers_opus(self):
-        state = {"claude_models": {"sonnet": "s4", "opus": "o4", "haiku": "h4"}}
+        state = {"claude_models": {"fable": "f5", "sonnet": "s4", "opus": "o4", "haiku": "h4"}}
         assert claude.default_model(state) == "o4"
 
     def test_falls_back_to_sonnet(self):
@@ -595,8 +588,11 @@ class TestClaudeDefaultModel:
         assert claude.default_model(state) == "s4"
 
     def test_falls_back_to_haiku(self):
-        state = {"claude_models": {"haiku": "h4"}}
+        state = {"claude_models": {"fable": "f5", "haiku": "h4"}}
         assert claude.default_model(state) == "h4"
+
+    def test_fable_only_workspace_has_a_default(self):
+        assert claude.default_model({"claude_models": {"fable": "f5"}}) == "f5"
 
     def test_returns_none_when_no_models(self):
         assert claude.default_model({}) is None
@@ -743,7 +739,6 @@ class TestWriteToolConfigManagedSettings:
         coding_agent_config_defaults: dict[str, str],
         managed_settings_defaults: dict[str, str],
         ucode_defaults: dict[str, str],
-        fable_enabled: bool,
     ) -> dict[str, str]:
         private_writes: list = []
         managed_writes: list = []
@@ -762,7 +757,6 @@ class TestWriteToolConfigManagedSettings:
             "workspace": WS,
             "codex_models": [],
             "claude_models": resolved_defaults,
-            "fable_enabled": fable_enabled,
         }
         if coding_agent_config_defaults:
             state[MANAGED_OVERLAY_KEY] = {"claude_models": ucode_defaults}
@@ -863,7 +857,7 @@ class TestWriteToolConfigManagedSettings:
             }
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing_managed_settings)
-        monkeypatch.setattr(claude, "ucode_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
         state = {"workspace": WS, "codex_models": []}
 
@@ -890,7 +884,6 @@ class TestWriteToolConfigManagedSettings:
                 "sonnet": "system.ai.claude-sonnet-5",
                 "haiku": "system.ai.claude-haiku-5",
             },
-            fable_enabled=False,
         )
 
         assert managed_defaults == {
@@ -937,16 +930,15 @@ class TestWriteToolConfigManagedSettings:
         env = json.loads(managed_writes[0][1])["env"]
         assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "us.anthropic.claude-opus-4-6"
 
-    def test_managed_file_removes_fable_default_when_fable_is_disabled(self, monkeypatch):
+    def test_managed_file_applies_fable_default_precedence_without_opt_in(self, monkeypatch):
         managed_defaults = self._write_managed_model_defaults(
             monkeypatch,
             coding_agent_config_defaults={"fable": "coding-agent-config-fable"},
             managed_settings_defaults={"fable": "managed-settings-fable"},
             ucode_defaults={"fable": "ucode-fable"},
-            fable_enabled=False,
         )
 
-        assert "fable" not in managed_defaults
+        assert managed_defaults["fable"] == "coding-agent-config-fable"
 
     def test_managed_file_preserves_enterprise_permission_denies(self, monkeypatch):
         private_writes: list = []
@@ -1202,6 +1194,19 @@ class TestRemoveClaudeMcpServer:
 
 
 class TestRegisterWebSearchMcp:
+    def test_legacy_ucode_command_requires_reregistration(self, monkeypatch):
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/tools/{command}")
+        entry = claude._web_search_mcp_entry(WS, "m", "profile")
+        legacy_entry = {**entry, "command": "/tools/ucode"}
+        state = {claude.WEB_SEARCH_MCP_STATE_KEY: legacy_entry}
+        monkeypatch.setattr(
+            claude,
+            "read_json_safe",
+            lambda path: {"mcpServers": {claude.WEB_SEARCH_MCP_NAME: legacy_entry}},
+        )
+
+        assert claude._web_search_mcp_is_current(state, entry) is False
+
     def test_skips_registration_when_entry_is_current(self, monkeypatch):
         entry = claude._web_search_mcp_entry(WS, "m", "profile")
         state = {claude.WEB_SEARCH_MCP_STATE_KEY: entry}

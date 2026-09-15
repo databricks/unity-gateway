@@ -1065,7 +1065,7 @@ def resolve_pat_token(profile: str | None) -> str | None:
     """Return the static PAT of a PAT-type Databricks CLI profile, or None.
 
     Only consulted when the user explicitly opted in via
-    ``ucode configure --profiles <name> --use-pat`` — ucode never picks up a
+    ``ucode configure --profile <name> --use-pat`` — ucode never picks up a
     PAT implicitly."""
     if profile and profile_auth_type(profile) == "pat":
         return _read_databrickscfg_token(profile)
@@ -1394,27 +1394,27 @@ def list_databricks_apps(workspace: str, profile: str | None = None) -> list[dic
         raise RuntimeError("Databricks apps listing returned invalid JSON.") from exc
 
 
-def _ucode_binary() -> str:
-    """Resolve the absolute path to the running `ucode` executable.
+def ug_binary() -> str:
+    """Resolve the absolute path to the canonical `ug` executable.
 
     Agents persist the auth command into config files and re-run it on every
     token refresh, possibly from launchers without a full PATH (desktop GUIs).
     An absolute path keeps the helper working regardless of PATH. Falls back to
     the bare name when resolution fails."""
-    return shutil.which("ucode") or "ucode"
+    return shutil.which("ug") or "ug"
 
 
 def build_auth_token_argv(
     workspace: str, profile: str | None = None, *, use_pat: bool = False
 ) -> list[str]:
-    """Argv for the cross-platform token helper: `ucode auth-token ...`.
+    """Argv for the cross-platform token helper: `ug auth-token ...`.
 
     Unlike the previous POSIX `databricks ... | jq` pipeline, this is a single
     executable with plain arguments — no `sh`, no `jq`, no shell quoting — so it
     runs identically on macOS, Linux, and Windows (issue #116). The DATABRICKS_BEARER
     short-circuit, its DATABRICKS_BEARER_COMMAND counterpart, and the PAT path all
     live inside `auth-token` itself."""
-    argv = [_ucode_binary(), "auth-token", "--host", workspace.rstrip("/")]
+    argv = [ug_binary(), "auth-token", "--host", workspace.rstrip("/")]
     if profile:
         argv += ["--profile", profile]
     if use_pat:
@@ -1425,17 +1425,17 @@ def build_auth_token_argv(
 def build_mcp_proxy_argv(
     url: str, workspace: str, profile: str | None = None, *, use_pat: bool = False
 ) -> list[str]:
-    """Argv for the stdio MCP bridge: `ucode mcp-proxy --url ... --host ...`.
+    """Argv for the stdio MCP bridge: `ug mcp-proxy --url ... --host ...`.
 
     Every coding agent registers this single command as a local stdio MCP
     server instead of a per-client HTTP endpoint with a bearer header. The proxy
     forwards to ``url`` and mints a fresh OAuth token on each upstream request,
     so tokens never expire mid-session — the client only ever spawns a process,
     which keeps registration uniform across CLIs that disagree on HTTP-auth
-    syntax. Like `build_auth_token_argv`, this resolves the absolute `ucode`
+    syntax. Like `build_auth_token_argv`, this resolves the absolute `ug`
     path and passes plain arguments (no shell), so it runs identically on every
     platform."""
-    argv = [_ucode_binary(), "mcp-proxy", "--url", url, "--host", workspace.rstrip("/")]
+    argv = [ug_binary(), "mcp-proxy", "--url", url, "--host", workspace.rstrip("/")]
     if profile:
         argv += ["--profile", profile]
     if use_pat:
@@ -1449,7 +1449,7 @@ def build_auth_shell_command(
     """Single-line, shell-quoted form of :func:`build_auth_token_argv`.
 
     Used where a tool wants the helper as one command *string* (Claude Code's
-    `apiKeyHelper`). On every platform this resolves to the `ucode auth-token`
+    `apiKeyHelper`). On every platform this resolves to the `ug auth-token`
     executable rather than a POSIX shell pipeline, so no `sh`/`jq` is required."""
     argv = build_auth_token_argv(workspace, profile, use_pat=use_pat)
     if platform.system() == "Windows":

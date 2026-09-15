@@ -36,6 +36,7 @@ from ucode.databricks import (
     build_auth_shell_command,
     build_tool_base_url,
     get_databricks_token,
+    ug_binary,
 )
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
@@ -58,7 +59,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
-from ucode.telemetry import agent_version, ucode_version
+from ucode.telemetry import agent_version, ug_version
 from ucode.tracing import tracing_env
 from ucode.ui import print_note, print_success, print_warning
 
@@ -299,10 +300,9 @@ def relayed_proxy_base_url(state: dict) -> str:
 
 
 def _web_search_mcp_entry(workspace: str, search_model: str, profile: str | None = None) -> dict:
-    """Stdio MCP server entry pointing at `ucode mcp web-search`. Resolves
-    the absolute path to the `ucode` binary so launchers without the right
+    """Stdio MCP server entry pointing at `ug mcp web-search`. Resolves
+    the absolute path to the `ug` binary so launchers without the right
     PATH (e.g. desktop GUI launchers) still find it."""
-    ucode_binary = shutil.which("ucode") or "ucode"
     env: dict[str, str] = {
         "DATABRICKS_HOST": workspace,
         "UCODE_WEB_SEARCH_MODEL": search_model,
@@ -311,7 +311,7 @@ def _web_search_mcp_entry(workspace: str, search_model: str, profile: str | None
         env["DATABRICKS_CONFIG_PROFILE"] = profile
     return {
         "type": "stdio",
-        "command": ucode_binary,
+        "command": ug_binary(),
         "args": ["mcp", "web-search"],
         "env": env,
     }
@@ -327,7 +327,6 @@ def render_overlay(
     custom_oauth: CustomOAuthConfig | None = None,
     provider: str | None = None,
     provider_models: dict[str, str] | None = None,
-    fable_enabled: bool = False,
     relayed: bool = False,
     relayed_base_url: str | None = None,
     route_root_model: str | None = None,
@@ -366,7 +365,7 @@ def render_overlay(
     # traffic to ucode.
     header_lines = [
         "x-databricks-use-coding-agent-mode: true",
-        f"User-Agent: ucode/{ucode_version()} claude/{agent_version('claude')}",
+        f"User-Agent: ucode/{ug_version()} claude/{agent_version('claude')}",
     ]
     if provider:
         header_lines.append(f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}")
@@ -419,20 +418,13 @@ def render_overlay(
         # so users can see which gateway-routable model is behind each shortcut.
         # We deliberately don't set the `_NAME` companion env vars — the raw id
         # is more useful than a friendly label for debugging gateway routing.
-        #
-        # Fable is opt-in only (`ucode configure --enable-fable`): it's a premium
-        # model, so we don't pin the family alias unless the user asked for it.
-        # When off, ANTHROPIC_DEFAULT_FABLE_MODEL is simply never written — and
-        # since it's in CLAUDE_MANAGED_MODEL_ENV_KEYS, any stale value from a
-        # prior `--enable-fable` run is pruned from settings.json on next launch.
-        if fable_enabled and claude_models.get("fable"):
-            env["ANTHROPIC_DEFAULT_FABLE_MODEL"] = claude_models["fable"]
-        if claude_models.get("opus"):
-            env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = _maybe_add_1m_suffix(claude_models["opus"])
-        if claude_models.get("sonnet"):
-            env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = _maybe_add_1m_suffix(claude_models["sonnet"])
-        if claude_models.get("haiku"):
-            env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = claude_models["haiku"]
+        for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items():
+            if family_model := claude_models.get(family):
+                env[key] = (
+                    _maybe_add_1m_suffix(family_model)
+                    if family in ("opus", "sonnet")
+                    else family_model
+                )
     # Relayed omits apiKeyHelper so Claude Code's subscription OAuth stays the
     # Authorization credential; every other path uses it as the gateway auth.
     overlay: dict = {"env": env}
@@ -513,7 +505,7 @@ def add_claude_mcp_server(
     always_load: bool = False,
 ) -> None:
     # Three registration shapes share this helper. The plain proxy path passes an
-    # argv list (`ucode mcp-proxy ...`), registered via `claude mcp add ... -- <argv>`
+    # argv list (`ug mcp-proxy ...`), registered via `claude mcp add ... -- <argv>`
     # where `--` fences the proxy's own flags off from claude's parser. The
     # web_search server passes a full stdio entry dict with its own env, which only
     # `add-json` can express — so a dict routes there. Finally, `always_load` (the
@@ -698,7 +690,6 @@ def write_tool_config(
         custom_oauth=state.get("custom_oauth"),
         provider=provider,
         provider_models=provider_models,
-        fable_enabled=bool(state.get("fable_enabled")),
         relayed=relayed,
         relayed_base_url=relayed_base_url,
         route_root_model=route_root_model,
@@ -755,10 +746,6 @@ def write_tool_config(
             )
 
             for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items():
-                if family == "fable" and not state.get("fable_enabled"):
-                    target_env.pop(key, None)
-                    continue
-
                 selected_default_model = _enforce_model_default_hierarchy(
                     family,
                     coding_agent_config_defaults=configured_defaults,
@@ -1152,7 +1139,12 @@ def _ensure_mlflow_cli() -> bool:
 
 def default_model(state: dict) -> str | None:
     claude_models = state.get("claude_models") or {}
-    return claude_models.get("opus") or claude_models.get("sonnet") or claude_models.get("haiku")
+    return (
+        claude_models.get("opus")
+        or claude_models.get("sonnet")
+        or claude_models.get("haiku")
+        or next(iter(claude_models.values()), None)
+    )
 
 
 def _extract_caller_settings(tool_args: list[str]) -> tuple[list[str], list[str]]:
@@ -1470,10 +1462,3 @@ def validate_cmd(binary: str) -> list[str]:
         "--max-turns",
         "1",
     ]
-
-
-def skip_validation(state: dict) -> bool:
-    """Relayed configs can't be probed with a live message: the loopback proxy
-    and subscription login are only established at launch, so a validation-time
-    request has nothing listening and would hang (and burn subscription quota)."""
-    return bool(state.get("claude_relayed"))

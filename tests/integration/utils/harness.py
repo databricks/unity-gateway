@@ -85,11 +85,11 @@ class UserSession:
         self.artifacts.mkdir(parents=True, exist_ok=True)
         self.commands = 0
 
-    def redact(self, text: str) -> str:
+    def redact(self, text: str, *, strip_ansi: bool = True) -> str:
         for token in (os.environ.get("DATABRICKS_BEARER"), self.env.get("DATABRICKS_BEARER")):
             if token:
                 text = text.replace(token, "<redacted>")
-        return ANSI.sub("", text)
+        return ANSI.sub("", text) if strip_ansi else text
 
     def run(
         self,
@@ -98,6 +98,7 @@ class UserSession:
         ok: bool = True,
         binary=None,
         input_text: str | None = None,
+        strip_ansi: bool = True,
     ):
         command = [str(binary or self.binary), *args]
         proc = subprocess.Popen(
@@ -120,7 +121,10 @@ class UserSession:
         finally:
             stop_process(proc)
         result = subprocess.CompletedProcess(
-            command, proc.returncode, self.redact(stdout), self.redact(stderr)
+            command,
+            proc.returncode,
+            self.redact(stdout, strip_ansi=strip_ansi),
+            self.redact(stderr, strip_ansi=strip_ansi),
         )
         self.commands += 1
         self.record(

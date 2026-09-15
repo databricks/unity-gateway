@@ -1496,12 +1496,33 @@ class TestApplyPatEnvironment:
         assert os.environ["DATABRICKS_BEARER"] == "explicit-bearer"
 
 
+class TestUgBinary:
+    @pytest.mark.parametrize("resolved", ["/tools with spaces/ug", r"C:\Tools with spaces\ug.exe"])
+    def test_resolves_canonical_command_even_when_invoked_as_ucode(self, monkeypatch, resolved):
+        requested = []
+
+        def which(command):
+            requested.append(command)
+            return resolved
+
+        monkeypatch.setattr(db_mod.shutil, "which", which)
+        monkeypatch.setattr("sys.argv", ["ucode", "configure"])
+
+        assert db_mod.ug_binary() == resolved
+        assert requested == ["ug"]
+
+    def test_falls_back_to_ug_without_path_entry(self, monkeypatch):
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: None)
+        assert db_mod.ug_binary() == "ug"
+
+
 class TestBuildAuthTokenArgv:
-    def test_basic_argv(self):
+    def test_basic_argv(self, monkeypatch):
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: f"/tools/{command}")
         argv = build_auth_token_argv(WS)
-        # First element resolves to the ucode executable; the rest is the
+        # First element resolves to the ug executable; the rest is the
         # cross-platform helper invocation — no `sh`, no `jq`, no shell syntax.
-        assert argv[0].endswith("ucode") or argv[0] == "ucode"
+        assert argv[0] == "/tools/ug"
         assert argv[1:] == ["auth-token", "--host", WS]
 
     def test_strips_trailing_slash_from_host(self):
@@ -1532,8 +1553,8 @@ class TestBuildAuthShellCommand:
         cmd = build_auth_shell_command(WS)
         assert WS in cmd
 
-    def test_is_ucode_auth_token_invocation(self):
-        # The persisted helper now points at the `ucode auth-token` executable
+    def test_is_ug_auth_token_invocation(self):
+        # The persisted helper points at the `ug auth-token` executable
         # on every platform — not a POSIX `databricks ... | jq` pipeline.
         cmd = build_auth_shell_command(WS)
         assert "auth-token" in cmd
@@ -1541,6 +1562,15 @@ class TestBuildAuthShellCommand:
         # POSIX-only constructs that broke Windows (#116) must be gone.
         assert "jq" not in cmd
         assert "if [ -n" not in cmd
+
+    def test_windows_quotes_ug_path_with_spaces(self, monkeypatch):
+        executable = r"C:\Program Files\Unity Gateway\ug.exe"
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: executable)
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+
+        assert build_auth_shell_command(WS, "my profile") == (
+            f'"{executable}" auth-token --host {WS} --profile "my profile"'
+        )
 
     def test_embeds_profile_when_provided(self):
         cmd = build_auth_shell_command(WS, profile="stablebox")
