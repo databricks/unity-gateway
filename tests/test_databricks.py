@@ -70,12 +70,7 @@ class TestFetchCodexMpsModelCatalog:
 
         monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
 
-        result = db_mod._fetch_codex_model_catalog(
-            WS,
-            "tok",
-            source=db_mod.CodexCatalogSource.PROVIDER,
-            identifier="main.default.openai",
-        )
+        result = db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
 
         assert result["models"][0]["slug"] == "gpt-mps"
         assert seen["url"] == f"{WS}/ai-gateway/codex/v1/models"
@@ -87,49 +82,7 @@ class TestFetchCodexMpsModelCatalog:
         )
 
         with pytest.raises(RuntimeError, match="returned no Codex models"):
-            db_mod._fetch_codex_model_catalog(
-                WS,
-                "tok",
-                source=db_mod.CodexCatalogSource.PROVIDER,
-                identifier="main.default.openai",
-            )
-
-
-class TestFetchCodexParentModelCatalog:
-    def test_sends_parent_header(self, monkeypatch):
-        seen = {}
-
-        def fake_get(url, token, **kwargs):
-            seen.update(url=url, token=token, **kwargs)
-            return {"models": [{"slug": "gpt-parent"}]}, None
-
-        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
-
-        result = db_mod._fetch_codex_model_catalog(
-            WS,
-            "tok",
-            source=db_mod.CodexCatalogSource.PARENT_SCHEMA,
-            identifier="main.default",
-        )
-
-        assert result["models"][0]["slug"] == "gpt-parent"
-        assert seen["url"] == f"{WS}/ai-gateway/codex/v1/models"
-        assert seen["headers"] == {"Databricks-Model-Service-Parent-Schema": "main.default"}
-
-    def test_rejects_empty_catalog(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod, "_http_get_json", lambda *args, **kwargs: ({"models": []}, None)
-        )
-
-        with pytest.raises(
-            RuntimeError, match="Parent schema main.default returned no Codex models"
-        ):
-            db_mod._fetch_codex_model_catalog(
-                WS,
-                "tok",
-                source=db_mod.CodexCatalogSource.PARENT_SCHEMA,
-                identifier="main.default",
-            )
+            db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
 
     def test_reports_disabled_route_as_unavailable(self, monkeypatch):
         monkeypatch.setattr(
@@ -142,12 +95,7 @@ class TestFetchCodexParentModelCatalog:
         )
 
         with pytest.raises(db_mod.CodexMpsModelCatalogUnavailable):
-            db_mod._fetch_codex_model_catalog(
-                WS,
-                "tok",
-                source=db_mod.CodexCatalogSource.PROVIDER,
-                identifier="main.default.openai",
-            )
+            db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
 
     def test_keeps_other_discovery_errors_fatal(self, monkeypatch):
         monkeypatch.setattr(
@@ -157,12 +105,7 @@ class TestFetchCodexParentModelCatalog:
         )
 
         with pytest.raises(RuntimeError, match="HTTP 403 Forbidden") as exc_info:
-            db_mod._fetch_codex_model_catalog(
-                WS,
-                "tok",
-                source=db_mod.CodexCatalogSource.PROVIDER,
-                identifier="main.default.openai",
-            )
+            db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
 
         assert not isinstance(exc_info.value, db_mod.CodexMpsModelCatalogUnavailable)
 

@@ -1095,23 +1095,6 @@ class TestClaudeModelFlag:
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.args[1]["_codex_launch_provider"] == "main.default.openai"
 
-    def test_parent_sets_transient_codex_launch_marker(self):
-        state = dict(MINIMAL_STATE)
-        with (
-            patch("ucode.cli.ensure_bootstrap_dependencies"),
-            patch("ucode.cli.load_state", return_value=state),
-            patch("ucode.cli.ensure_provider_state", return_value=state),
-            patch("ucode.cli.configure_shared_state", return_value=state),
-            patch("ucode.cli.resolve_launch_model", return_value=(state, "system.ai.gpt-5")),
-            patch("ucode.cli.configure_tool", return_value=state),
-            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
-            patch("ucode.cli.launch_agent") as mock_launch,
-        ):
-            result = runner.invoke(app, ["codex", "--parent", "main.default"])
-
-        assert result.exit_code == 0, result.output
-        assert mock_launch.call_args.args[1]["_codex_launch_parent_schema"] == "main.default"
-
 
 class TestGeminiProviderLaunch:
     @staticmethod
