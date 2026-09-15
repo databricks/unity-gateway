@@ -99,7 +99,8 @@ def scrolling_checkbox(
     instruction: str,
     style: questionary.Style,
     allow_back: bool = False,
-    background_loader: Callable[[Callable[[list[questionary.Choice]], None]], None] | None = None,
+    background_loader: Callable[[Callable[[list[questionary.Choice]], None]], str | None]
+    | None = None,
     loading_noun: str = "MCP services",
 ) -> Question:
     """Multi-select checkbox picker.
@@ -123,7 +124,7 @@ def scrolling_checkbox(
         show_description=False,
     )
     # Live loading state for the background-loader footer (see below).
-    loading = {"active": background_loader is not None, "found": 0}
+    loading: dict[str, Any] = {"active": background_loader is not None, "found": 0, "message": None}
 
     def get_prompt_tokens() -> list[tuple[str, str]]:
         tokens = [("class:qmark", ""), ("class:question", f" {message} ")]
@@ -148,13 +149,18 @@ def scrolling_checkbox(
         return len(control.choices) > PICKER_VISIBLE_ROWS
 
     @Condition
-    def is_loading() -> bool:
-        return bool(loading["active"])
+    def show_loading_footer() -> bool:
+        return bool(loading["active"]) or loading["message"] is not None
 
     def loading_tokens() -> list[tuple[str, str]]:
-        return [
-            ("class:instruction", f"  ⏳ loading more {loading_noun}… ({loading['found']} found)")
-        ]
+        if loading["active"]:
+            return [
+                (
+                    "class:instruction",
+                    f"  ⏳ loading more {loading_noun}… ({loading['found']} found)",
+                )
+            ]
+        return [("class:instruction", f"  {loading['message']}")]
 
     @Condition
     def has_search_string() -> bool:
@@ -197,7 +203,7 @@ def scrolling_checkbox(
                         height=Dimension.exact(1),
                         content=FormattedTextControl(loading_tokens),
                     ),
-                    filter=is_loading & ~IsDone(),
+                    filter=show_loading_footer & ~IsDone(),
                 ),
                 ConditionalContainer(
                     Window(
@@ -340,8 +346,9 @@ def scrolling_checkbox(
             run_on_loop(apply)
 
         def worker() -> None:
+            message: str | None = None
             try:
-                background_loader(append)
+                message = background_loader(append)
             except Exception:
                 # Discovery is best-effort; a failed background walk just stops streaming.
                 pass
@@ -349,6 +356,7 @@ def scrolling_checkbox(
 
                 def finish() -> None:
                     loading["active"] = False
+                    loading["message"] = message
                     app.invalidate()
 
                 run_on_loop(finish)

@@ -42,6 +42,7 @@ _MAX_FETCH_WORKERS = 8
 # Wall-clock budget for the workspace-wide skill walk; a slow workspace degrades
 # to partial results instead of hanging the picker.
 _SKILLS_WALK_DEADLINE_SECONDS = 30.0
+_SKILLS_WALK_TIMEOUT_REASON = "deadline exceeded while listing skills"
 
 
 # --- Download client (UC skills API + Files API) ---------------------------
@@ -567,11 +568,12 @@ def list_all_skills(
     reason = walk_catalog_schemas(workspace, token, deadline=deadline, probe=probe, collect=collect)
     if reason is not None:
         return [], reason
-    if not by_fqn:
-        if time.monotonic() > deadline:
-            return [], "deadline exceeded while listing skills"
+    refs = sorted(by_fqn.values(), key=lambda ref: ref.fqn)
+    if time.monotonic() > deadline:
+        return refs, _SKILLS_WALK_TIMEOUT_REASON
+    if not refs:
         return [], "no skills found"
-    return sorted(by_fqn.values(), key=lambda ref: ref.fqn), None
+    return refs, None
 
 
 def _skill_download_choice(ref: SkillRef, roots: list[Path]) -> questionary.Choice:
@@ -586,21 +588,24 @@ def _skill_download_choice(ref: SkillRef, roots: list[Path]) -> questionary.Choi
 
 def _skills_download_background_loader(
     workspace: str, token: str, roots: list[Path]
-) -> Callable[[Callable[[list[questionary.Choice]], None]], None]:
+) -> Callable[[Callable[[list[questionary.Choice]], None]], str | None]:
     """A picker ``background_loader`` that streams the workspace-wide skill walk in as choices."""
 
-    def loader(append: Callable[[list[questionary.Choice]], None]) -> None:
+    def loader(append: Callable[[list[questionary.Choice]], None]) -> str | None:
         def on_skills(refs: list[SkillRef]) -> None:
             append([_skill_download_choice(ref, roots) for ref in refs])
 
-        list_all_skills(workspace, token, on_skills=on_skills)
+        found, reason = list_all_skills(workspace, token, on_skills=on_skills)
+        if reason == _SKILLS_WALK_TIMEOUT_REASON:
+            return f"⚠ Timed out after {int(_SKILLS_WALK_DEADLINE_SECONDS)}s, found {len(found)} skills"
+        return None
 
     return loader
 
 
 def prompt_for_skill_download_choices(
     roots: list[Path],
-    background_loader: Callable[[Callable[[list[questionary.Choice]], None]], None],
+    background_loader: Callable[[Callable[[list[questionary.Choice]], None]], str | None],
 ) -> list[str] | None:
     """Show the skill-download picker, returning the selected FQNs or None on Ctrl-C."""
     selection = scrolling_checkbox(

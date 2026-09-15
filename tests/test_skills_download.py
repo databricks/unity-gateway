@@ -1023,6 +1023,15 @@ class TestListAllSkills:
 
         assert sd.list_all_skills(WS, "token") == ([], "no skills found")
 
+    def test_timeout_returns_partial_results_with_reason(self, monkeypatch):
+        monkeypatch.setattr(sd, "walk_catalog_schemas", _walk_stub([("main", "default")]))
+        monkeypatch.setattr(sd, "list_schema_skills", lambda ws, tok, c, s: ([ref("triage")], None))
+
+        refs, reason = sd.list_all_skills(WS, "token", deadline_seconds=-1)
+
+        assert [r.fqn for r in refs] == ["main.default.triage"]
+        assert reason == sd._SKILLS_WALK_TIMEOUT_REASON
+
 
 class TestSkillDownloadPicker:
     def test_choice_value_is_fqn_and_flags_on_disk(self, tmp_path):
@@ -1049,10 +1058,24 @@ class TestSkillDownloadPicker:
         monkeypatch.setattr(sd, "list_all_skills", fake_list_all)
         appended = []
 
-        sd._skills_download_background_loader(WS, "token", roots)(appended.extend)
+        message = sd._skills_download_background_loader(WS, "token", roots)(appended.extend)
 
+        assert message is None
         assert captured["token"] == "token"
         assert [c.value for c in appended] == ["main.default.triage", "ml.prod.scoring"]
+
+    def test_background_loader_reports_timeout_message(self, tmp_path, monkeypatch):
+        roots = skill_dir_roots(str(tmp_path))
+
+        def fake_list_all(ws, tok, *, on_skills=None, **kwargs):
+            on_skills([ref("triage"), ref("pii")])
+            return [ref("triage"), ref("pii")], sd._SKILLS_WALK_TIMEOUT_REASON
+
+        monkeypatch.setattr(sd, "list_all_skills", fake_list_all)
+
+        message = sd._skills_download_background_loader(WS, "token", roots)(lambda choices: None)
+
+        assert message == "⚠ Timed out after 30s, found 2 skills"
 
     def test_prompt_returns_selected_fqns(self, tmp_path, monkeypatch):
         roots = skill_dir_roots(str(tmp_path))
