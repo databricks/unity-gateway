@@ -35,7 +35,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
-from ucode.ui import print_note
+from ucode.ui import print_warning
 
 ENV_VAR = "ENABLE_SMART_ROUTING_V2"
 LEGACY_STATE_KEY = "smart_routing_enabled"
@@ -448,10 +448,6 @@ def launch_claude(
             rationale=decision.rationale,
         )
 
-    print_note(
-        "Smart routing: the first submitted prompt will select Claude Code's "
-        f"model; log: {CLAUDE_PTY_LOG}."
-    )
     try:
         returncode = claude_pty.run_claude_pty(
             argv,
@@ -515,15 +511,10 @@ def launch_codex(
     os.environ[OAUTH_TOKEN_ENV_VAR] = get_databricks_token(workspace, profile)
     catalog_models = custom_catalog_models()
     available_models = catalog_models or _cached_routing_models(state)
-    if catalog_models:
-        print_note(
-            f"Smart routing: routing across {len(catalog_models)} models from the configured "
-            "Codex custom catalog (model_catalog_json); cached model services are not used."
-        )
     if not available_models:
-        print_note(
-            f"Smart routing model metadata is unavailable; starting Codex on {start_model} "
-            "without automatic model switching. Run `ucode configure codex` to enable routing."
+        print_warning(
+            "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
+            "Run `ucode configure codex` to enable routing."
         )
     overlay = render_overlay(
         workspace,

@@ -272,6 +272,18 @@ class TestDiscoverClaudeModels:
         assert reason is None
         assert models["opus"] == "databricks-claude-opus-4-8"
 
+    def test_preserves_opus_5_when_opus_4_8_is_also_available(self, monkeypatch):
+        payload = {"data": [
+            {"id": "system.ai.claude-opus-5"},
+            {"id": "system.ai.claude-opus-4-8"},
+        ]}
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (payload, None))
+
+        models, reason = db_mod.discover_claude_models(WS, "token")
+
+        assert reason is None
+        assert models["opus"] == "system.ai.claude-opus-5"
+
     def test_buckets_system_ai_claude_models(self, monkeypatch):
         payload = {
             "data": [
@@ -2553,9 +2565,8 @@ class TestModelServicesCache:
         claude, _codex, _gemini, _oss, _reason = db_mod.discover_model_services(WS, "tok")
         unbucketed, _ = db_mod.discover_claude_models_unbucketed(WS, "tok")
         assert calls["n"] == 1
-        # Both views still come back intact: newest-per-family (pinned to opus-4-8
-        # for smart-routing compatibility by _prefer_opus_4_8), and the full list.
-        assert claude["opus"] == "system.ai.claude-opus-4-8"
+        # Both views retain the newest-per-family choice and the full list.
+        assert claude["opus"] == "system.ai.claude-opus-5"
         assert unbucketed == ["system.ai.claude-opus-4-8", "system.ai.claude-opus-5"]
 
     def test_use_cache_false_forces_a_fresh_walk(self, monkeypatch):

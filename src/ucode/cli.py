@@ -2285,25 +2285,7 @@ def _launch_tool(
             print_kv("Config", "workspace-managed")
         if provider:
             print_kv("Provider", provider)
-            # The tier the session will start on when it isn't Claude Code's own opus default.
-            if forwarded_model:
-                print_kv("Model", forwarded_model)
-            elif route_root_model:
-                print_kv("Model", route_root_model)
-            # Gemini pins a concrete target under a provider (held in resolved_model).
-            elif resolved_model:
-                print_kv("Model", resolved_model)
-        elif forwarded_model:
-            print_kv("Model", forwarded_model)
-        elif model and tool == "claude":
-            # Claude's --model is pinned via the family aliases, not resolved_model/route_root_model.
-            print_kv("Model", model)
-        elif route_root_model:
-            print_kv("Model", route_root_model)
-        elif resolved_model:
-            print_kv("Model", resolved_model)
         if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and not provider:
-            print_kv("Smart routing", "enabled")
             print_note(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
                 "`/hooks` and trust the ug routing hooks if prompted."
