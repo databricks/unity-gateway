@@ -195,23 +195,25 @@ record a discovered `system.ai` model as a test argument.
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI and headless
 argument journey for each agent (four cases, two agent jobs). Full runs all 39
-live cases, including those smoke cases, in six disjoint shards:
+live cases, including those smoke cases, in two disjoint agent lanes:
 
-| Group, per agent | Marker | Keyword filter |
+| Agent lane | Marker | Cases |
 | --- | --- | --- |
-| configure | `live and tui` | `configure` |
-| headless | `live and not tui` | `headless` |
-| commands | `live and not tui` | `not headless` |
+| Claude | `live and claude` | 15 |
+| Codex | `live and codex` | 24 |
 
-Each shard also selects `claude` or `codex` and installs only that CLI. The
-commands group includes lifecycle and app-server journeys. Cases remain serial
+Each lane installs only its agent CLI, once, and runs all its configure, headless,
+commands, lifecycle, and applicable app-server journeys. Cases remain serial
 inside each fresh VM because configure/revert can touch machine-level settings;
-separate runners isolate those writes as well as the PTYs. The six full shards
-run one at a time to avoid bursts against the shared workspace/model quota.
-Both matrices use
-`fail-fast: false` and upload uniquely named evidence even when another shard fails.
+separate runners isolate those writes as well as the PTYs. Claude and Codex run
+in parallel, with at most one full-suite job per agent in a workflow run. This
+avoids six serial job startups without overlapping same-agent shards. The two
+lanes still share workspace capacity, including with other PRs; this limit does
+not guarantee freedom from rate limits. No test retries or assertion changes
+compensate for capacity failures. Both matrices use `fail-fast: false` and upload
+uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, workspace validation, smoke, and
-all full shards to pass. The existing required `e2e` context also waits for the
+both full lanes to pass. The existing required `e2e` context also waits for the
 complete integration workflow, so integration cannot still be running when
 that gate passes. Full coverage on PRs needs no label or opt-in.
 
@@ -226,7 +228,7 @@ The workflow consumes the stored bearer; it does not mint or refresh credentials
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
 and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
 alias for `full`. Manual subsets are explicit: `smoke` runs just the four smoke
-cases; `tui` runs all four TUI cases across the configure shards. Installation
+cases; `tui` adds `and tui` to each agent lane's marker and runs all four TUI cases. Installation
 checks always run. Set the ug/agent versions. From the CLI:
 
 ```bash
@@ -251,12 +253,13 @@ the CI workspace. Select that local profile explicitly; CI secrets are not downl
 
 ```bash
 gh run download RUN_ID -R databricks/unity-gateway \
-  -n integration-full-claude-configure -D .integration-runs/from-ci
+  -n integration-full-claude -D .integration-runs/from-ci
 ```
 
-Use `integration-full-AGENT-GROUP` for a full shard, `integration-smoke-AGENT` for
+Use `integration-full-AGENT` for a full lane, `integration-smoke-AGENT` for
 smoke, or `integration-installation` for package failures. Older runs used
-`integration-cujs` or numbered `integration-live-*` artifacts; download the name
+`integration-full-AGENT-GROUP`, `integration-cujs`, or numbered `integration-live-*`
+artifacts; download the name
 shown on that run. Read `versions.json` for the
 exact agent versions, model overrides, entry point, platform and source revision.
 For an explicit-model case without a runner override, read its `model.json` for
@@ -278,9 +281,9 @@ python3.12 scripts/run_integration.py \
 
 For an explicit-model failure, also pass the recorded `--claude-model` or
 `--codex-model`. For a release run without an archived wheel, use the reported `--ug-version`.
-The example replays a Claude shard; for Codex use only `--codex-version` and its
+The example replays a Claude case; for Codex use only `--codex-version` and its
 test filter. Match the report's selected agents, `pytest_args`, and suite revision
-to replay an entire shard; a `-k` filter can reproduce one case independently.
+to replay an entire lane; a `-k` filter can reproduce one case independently.
 Match Python and Node versions from the report too. `npm-lock.json` replay must
 use the same OS/architecture as the original run; add `--platform linux/amd64`
 to both `docker build` and `docker run` on an ARM Mac to match GitHub's Ubuntu runner. Changing platforms or

@@ -123,7 +123,6 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: live and smoke and ${{ matrix.agent }}
-      TEST_KEYWORD: ''
       ARTIFACT_NAME: integration-smoke-${{ matrix.agent }}
     steps: &live-steps
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -149,7 +148,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${args[@]}" -- -m "$TEST_MARKER" -k "$TEST_KEYWORD"
+            "${args[@]}" -- -m "$TEST_MARKER"
       - name: Upload live test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -165,7 +164,7 @@ jobs:
             ${{ runner.temp }}/ug-integration/wheels/
 
   full:
-    name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }} · ${{ matrix.group == 'configure' && 'Configure' || matrix.group == 'headless' && 'Headless' || 'Commands' }}
+    name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
     if: ${{ !cancelled() && inputs.suite != 'smoke' && needs.workspace.result == 'success' }}
     needs: [workspace, smoke]
     runs-on: ubuntu-22.04
@@ -174,20 +173,18 @@ jobs:
     timeout-minutes: 70
     strategy:
       fail-fast: false
-      # All shards share one workspace/model quota. Serial execution retains
-      # every case without a burst of overlapping model requests.
-      max-parallel: 1
+      # One VM per agent: reuse its install and run its cases serially. Allow
+      # Claude and Codex to overlap, but never launch concurrent same-agent shards.
+      max-parallel: 2
       matrix:
         agent: [claude, codex]
-        group: ${{ fromJSON(inputs.suite == 'tui' && '["configure"]' || '["configure", "headless", "commands"]') }}
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
-      TEST_MARKER: ${{ matrix.group == 'configure' && 'live and tui' || 'live and not tui' }} and ${{ matrix.agent }}
-      TEST_KEYWORD: ${{ matrix.group == 'configure' && 'configure' || matrix.group == 'headless' && 'headless' || 'not headless' }}
-      ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.group }}
+      TEST_MARKER: ${{ inputs.suite == 'tui' && 'live and tui' || 'live' }} and ${{ matrix.agent }}
+      ARTIFACT_NAME: integration-full-${{ matrix.agent }}
     steps: *live-steps
 
   cujs:
