@@ -2253,7 +2253,11 @@ def list_tool_provider_services(
 
 
 def service_usable_for_tool(tool: str, service: dict) -> bool:
-    """True when ``tool`` can actually route through ``service``."""
+    """True when ``tool`` can actually route through ``service``.
+
+    Beyond the provider-type match, a Bedrock service is only usable if it
+    exposes at least one compatible model in its targets.
+    """
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
         return False
