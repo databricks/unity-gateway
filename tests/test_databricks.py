@@ -70,7 +70,12 @@ class TestFetchCodexMpsModelCatalog:
 
         monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
 
-        result = db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
+        result = db_mod._fetch_codex_model_catalog(
+            WS,
+            "tok",
+            source=db_mod.CodexCatalogSource.PROVIDER,
+            identifier="main.default.openai",
+        )
 
         assert result["models"][0]["slug"] == "gpt-mps"
         assert seen["url"] == f"{WS}/ai-gateway/codex/v1/models"
@@ -82,7 +87,49 @@ class TestFetchCodexMpsModelCatalog:
         )
 
         with pytest.raises(RuntimeError, match="returned no Codex models"):
-            db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
+            db_mod._fetch_codex_model_catalog(
+                WS,
+                "tok",
+                source=db_mod.CodexCatalogSource.PROVIDER,
+                identifier="main.default.openai",
+            )
+
+
+class TestFetchCodexParentModelCatalog:
+    def test_sends_parent_header(self, monkeypatch):
+        seen = {}
+
+        def fake_get(url, token, **kwargs):
+            seen.update(url=url, token=token, **kwargs)
+            return {"models": [{"slug": "gpt-parent"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        result = db_mod._fetch_codex_model_catalog(
+            WS,
+            "tok",
+            source=db_mod.CodexCatalogSource.PARENT_SCHEMA,
+            identifier="main.default",
+        )
+
+        assert result["models"][0]["slug"] == "gpt-parent"
+        assert seen["url"] == f"{WS}/ai-gateway/codex/v1/models"
+        assert seen["headers"] == {"Databricks-Model-Service-Parent-Schema": "main.default"}
+
+    def test_rejects_empty_catalog(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda *args, **kwargs: ({"models": []}, None)
+        )
+
+        with pytest.raises(
+            RuntimeError, match="Parent schema main.default returned no Codex models"
+        ):
+            db_mod._fetch_codex_model_catalog(
+                WS,
+                "tok",
+                source=db_mod.CodexCatalogSource.PARENT_SCHEMA,
+                identifier="main.default",
+            )
 
     def test_reports_disabled_route_as_unavailable(self, monkeypatch):
         monkeypatch.setattr(
@@ -95,7 +142,12 @@ class TestFetchCodexMpsModelCatalog:
         )
 
         with pytest.raises(db_mod.CodexMpsModelCatalogUnavailable):
-            db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
+            db_mod._fetch_codex_model_catalog(
+                WS,
+                "tok",
+                source=db_mod.CodexCatalogSource.PROVIDER,
+                identifier="main.default.openai",
+            )
 
     def test_keeps_other_discovery_errors_fatal(self, monkeypatch):
         monkeypatch.setattr(
@@ -105,7 +157,12 @@ class TestFetchCodexMpsModelCatalog:
         )
 
         with pytest.raises(RuntimeError, match="HTTP 403 Forbidden") as exc_info:
-            db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
+            db_mod._fetch_codex_model_catalog(
+                WS,
+                "tok",
+                source=db_mod.CodexCatalogSource.PROVIDER,
+                identifier="main.default.openai",
+            )
 
         assert not isinstance(exc_info.value, db_mod.CodexMpsModelCatalogUnavailable)
 
@@ -271,6 +328,20 @@ class TestDiscoverClaudeModels:
 
         assert reason is None
         assert models["opus"] == "databricks-claude-opus-4-8"
+
+    def test_preserves_opus_5_when_opus_4_8_is_also_available(self, monkeypatch):
+        payload = {
+            "data": [
+                {"id": "system.ai.claude-opus-5"},
+                {"id": "system.ai.claude-opus-4-8"},
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (payload, None))
+
+        models, reason = db_mod.discover_claude_models(WS, "token")
+
+        assert reason is None
+        assert models["opus"] == "system.ai.claude-opus-5"
 
     def test_buckets_system_ai_claude_models(self, monkeypatch):
         payload = {
@@ -2553,9 +2624,8 @@ class TestModelServicesCache:
         claude, _codex, _gemini, _oss, _reason = db_mod.discover_model_services(WS, "tok")
         unbucketed, _ = db_mod.discover_claude_models_unbucketed(WS, "tok")
         assert calls["n"] == 1
-        # Both views still come back intact: newest-per-family (pinned to opus-4-8
-        # for smart-routing compatibility by _prefer_opus_4_8), and the full list.
-        assert claude["opus"] == "system.ai.claude-opus-4-8"
+        # Both views retain the newest-per-family choice and the full list.
+        assert claude["opus"] == "system.ai.claude-opus-5"
         assert unbucketed == ["system.ai.claude-opus-4-8", "system.ai.claude-opus-5"]
 
     def test_use_cache_false_forces_a_fresh_walk(self, monkeypatch):
@@ -2888,15 +2958,13 @@ class TestCodingAgentConfigCrudClients:
         emitted = set(
             serialize_managed_config(
                 {
-                    "display_name": "org config",
                     "default_agent": "claude",
                     "enabled_agents": {
                         "claude": {"model_config": {"default_model": "system.ai.claude-opus-5"}}
                     },
-                    "mcp_servers": [{"name": "databricks-sql", "type": "sql"}],
-                    "skills": {"names": ["main.default"]},
-                    "tracing_table": "main.default.traces",
-                    "budget_policy": {
+                    "mcp_servers": {"names": ["main.default.databricks_sql"]},
+                    "skills": {"names": ["main.default.triage"]},
+                    "spend_tiers": {
                         "budget_id": "11111111-1111-1111-1111-111111111111",
                         "tiers": [],
                     },

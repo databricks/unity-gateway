@@ -26,6 +26,7 @@ from concurrent.futures import (
 )
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from enum import Enum
 from pathlib import Path
 from typing import Literal, NamedTuple, NoReturn, cast, overload
 from urllib import error as urllib_error
@@ -33,6 +34,10 @@ from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
 from ucode.config_io import APP_DIR
+from ucode.constants import (
+    MODEL_PROVIDER_SERVICE_HEADER,
+    MODEL_SERVICE_PARENT_SCHEMA_HEADER,
+)
 from ucode.ui import (
     err_console,
     normalize_workspace_url,
@@ -79,7 +84,12 @@ class AnthropicModelCatalog:
 
 
 class CodexMpsModelCatalogUnavailable(RuntimeError):
-    """The workspace does not expose the Codex MPS model-catalog route."""
+    """The workspace does not expose the Codex model-catalog route."""
+
+
+class CodexCatalogSource(Enum):
+    PROVIDER = (MODEL_PROVIDER_SERVICE_HEADER, "Provider")
+    PARENT_SCHEMA = (MODEL_SERVICE_PARENT_SCHEMA_HEADER, "Parent schema")
 
 
 def _debug_enabled() -> bool:
@@ -1749,20 +1759,6 @@ def discover_claude_models_unbucketed(workspace: str, token: str) -> tuple[list[
     return [m for m in ids if "claude-" in m.lower()], None
 
 
-def _prefer_opus_4_8(models: dict[str, str], all_ids: list[str]) -> None:
-    """Swap the opus slot to claude-opus-4-8 when it's available.
-
-    Discovery picks the newest opus (opus-5) but smart routing's
-    CLAUDE_ROUTE_ARMS require claude-opus-4-8. Pin to 4-8 when both
-    exist so the routing availability check passes.
-    """
-    opus = models.get("opus")
-    if opus and "claude-opus-5" in opus:
-        opus_48 = next((m for m in all_ids if "claude-opus-4-8" in m), None)
-        if opus_48:
-            models["opus"] = opus_48
-
-
 def discover_model_services(
     workspace: str, token: str
 ) -> tuple[dict[str, str], list[str], list[str], list[str], str | None]:
@@ -1793,12 +1789,6 @@ def discover_model_services(
         )
         if candidates:
             claude_models[family] = candidates[0]
-    # Smart routing's CLAUDE_ROUTE_ARMS require claude-opus-4-8, but the
-    # newest-wins sort above picks opus-5 when both exist — making the
-    # routing availability check fail. Pin opus-4-8 when it's available so
-    # routing works with the current task_v2 router. Revert to
-    # newest-wins once the router accepts opus-5 (PR databricks-eng/universe#2365446).
-    _prefer_opus_4_8(claude_models, ids)
 
     codex_models = sorted([m for m in ids if "gpt-" in m], key=model_version_sort_key)
     gemini_models = sorted([m for m in ids if "gemini-" in m], key=model_version_sort_key)
@@ -1904,16 +1894,15 @@ def fetch_external_model_prices(workspace: str, token: str) -> tuple[list[dict],
 
 # The `update_mask` paths a config PATCH sends. The server rejects paths outside its mutable set,
 # so this omits `spec_version` (an estore-internal format marker, still sent in the body; naming it
-# in the mask is the 400 this fixes) and the deprecated `budget_id`/`default_options`/`tiers`.
+# in the mask is the 400 this fixes) and the reserved/deprecated fields (`display_name`, `tracing`,
+# `budget_id`/`default_options`/`tiers`).
 # Sending all owned paths lets a re-run clear an admin-removed field, since the server merges per path.
 MANAGED_CONFIG_UPDATE_MASK_PATHS: tuple[str, ...] = (
-    "display_name",
     "default_agent",
     "enabled_agents",
     "mcp_servers",
     "skills",
-    "tracing",
-    "budget_policy",
+    "spend_tiers",
 )
 
 
@@ -2711,8 +2700,6 @@ def discover_claude_models(workspace: str, token: str) -> tuple[dict[str, str], 
         )
         if candidates:
             result[family] = candidates[0]
-    # Same opus-4-8 pin as discover_model_services — see comment there.
-    _prefer_opus_4_8(result, raw_ids)
     if result:
         return result, None
     if not raw_ids:
@@ -2896,7 +2883,7 @@ def _raise_ai_gateway_scope_failure(workspace: str, reason: str) -> NoReturn:
 
 def _raise_model_service_permission_failure(workspace: str, model_service_reason: str) -> NoReturn:
     raise RuntimeError(
-        "Databricks Unity AI Gateway model service access could not be verified on "
+        "Databricks Unity Gateway model service access could not be verified on "
         f"{workspace} ({model_service_reason}). Listing Unity Catalog model services requires "
         "USE CATALOG on `system`, and USE SCHEMA and EXECUTE on `system.ai`."
     )
@@ -2919,7 +2906,7 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
         _raise_model_service_permission_failure(workspace, reason)
 
     raise RuntimeError(
-        "Databricks Unity AI Gateway is not enabled on this workspace: model services "
+        "Databricks Unity Gateway is not enabled on this workspace: model services "
         f"({reason}) are not available. See {AI_GATEWAY_DOCS_URL}"
     )
 
@@ -3031,22 +3018,29 @@ def build_tool_base_url(tool: str, workspace: str) -> str:
     raise RuntimeError(f"Unsupported tool '{tool}'.")
 
 
-def fetch_codex_mps_model_catalog(workspace: str, token: str, provider: str) -> dict:
+def _fetch_codex_model_catalog(
+    workspace: str,
+    token: str,
+    *,
+    source: CodexCatalogSource,
+    identifier: str,
+) -> dict:
+    header_name, kind = source.value
     payload, reason = _http_get_json(
         f"{build_tool_base_url('codex', workspace)}/models",
         token,
         max_retries=2,
-        headers={"Databricks-Model-Provider-Service": provider},
+        headers={header_name: identifier},
     )
     if reason:
-        message = f"Could not discover Codex models for {provider}: {reason}"
+        message = f"Could not discover Codex models for {identifier}: {reason}"
         if "codex/v1/models is not enabled for this workspace" in reason.lower():
             raise CodexMpsModelCatalogUnavailable(message)
         raise RuntimeError(message)
     if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
-        raise RuntimeError(f"Provider {provider} returned an invalid Codex model catalog.")
+        raise RuntimeError(f"{kind} {identifier} returned an invalid Codex model catalog.")
     if not payload["models"]:
-        raise RuntimeError(f"Provider {provider} returned no Codex models.")
+        raise RuntimeError(f"{kind} {identifier} returned no Codex models.")
     return payload
 
 
