@@ -681,6 +681,7 @@ class TestListModelProviderServices:
                             "native_api_types": ["anthropic/v1/messages"],
                         },
                         {"model": "global.anthropic.claude-opus-4-8"},
+                        {"model": "openai.gpt-oss-20b-1:0"},
                     ],
                 },
             },
@@ -731,6 +732,7 @@ class TestListModelProviderServices:
         assert bedrock["targets"] == [
             "us.anthropic.claude-sonnet-4-6",
             "global.anthropic.claude-opus-4-8",
+            "openai.gpt-oss-20b-1:0",
         ]
 
     def test_returns_reason_on_failure(self, monkeypatch):
@@ -756,12 +758,12 @@ class TestListModelProviderServices:
             "main.schema2.bedrock-svc",
         ]
 
-    def test_codex_filters_to_openai(self, monkeypatch):
+    def test_codex_includes_openai_and_usable_bedrock(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_http_get_json", lambda url, token, timeout=30: (self._PAYLOAD, None)
         )
         names, _ = db_mod.list_tool_provider_services("codex", WS, "token")
-        assert names == ["main.schema1.openai-svc"]
+        assert names == ["main.schema1.openai-svc", "main.schema2.bedrock-svc"]
 
 
 class TestMapClaudeFamilyModels:
@@ -1006,6 +1008,14 @@ class TestResolveProviderService:
         assert error is None
         assert service["provider_type"] == "amazon_bedrock"
 
+    def test_bedrock_with_openai_model_ok_for_codex(self, monkeypatch):
+        self._patch(monkeypatch)
+        service, error = db_mod.resolve_provider_service(
+            "codex", "main.schema2.bedrock-svc", WS, "token"
+        )
+        assert error is None
+        assert service["provider_type"] == "amazon_bedrock"
+
     def test_wrong_type_rejected(self, monkeypatch):
         self._patch(monkeypatch)
         service, error = db_mod.resolve_provider_service(
@@ -1021,6 +1031,14 @@ class TestResolveProviderService:
         )
         assert service is None
         assert "no Claude models" in error
+
+    def test_bedrock_without_openai_model_rejected_for_codex(self, monkeypatch):
+        self._patch(monkeypatch)
+        service, error = db_mod.resolve_provider_service(
+            "codex", "main.schema2.bedrock-titan-svc", WS, "token"
+        )
+        assert service is None
+        assert "no OpenAI-compatible models" in error
 
     def test_not_found_lists_usable(self, monkeypatch):
         self._patch(monkeypatch)
