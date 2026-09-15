@@ -4,6 +4,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from utils.constants import CODEX_TEST_MODEL
 from utils.evidence import FileTask
 from utils.terminal import AgentTerminal, ConfigureTerminal
 
@@ -35,7 +36,7 @@ def test_ug_configure_codex_databricks(live_session, workspace):
     assert not session.workspace_state().get("provider_services", {}).get("codex")
     # Astra is Codex's current default, but it is heavily rate-limited. Pin a
     # different model so this test validates ug rather than Astra capacity.
-    command = [str(session.binary), "codex", "--", "--model", "system.ai.gpt-5-4-nano"]
+    command = [str(session.binary), "codex", "--", "--model", CODEX_TEST_MODEL]
 
     config = tomllib.loads((session.home / ".codex/ucode.config.toml").read_text())
     helper = config["model_providers"][config["model_provider"]]["auth"]

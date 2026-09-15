@@ -13,6 +13,8 @@ import threading
 import time
 from pathlib import Path
 
+from .constants import CODEX_TEST_MODEL
+
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
@@ -175,8 +177,7 @@ class UserSession:
             usable = [
                 value for value in values if value.startswith(prefix) and "astra" not in value
             ]
-            preferred = "system.ai.gpt-5-4-nano"
-            model = preferred if preferred in usable else next(iter(usable), "")
+            model = CODEX_TEST_MODEL if CODEX_TEST_MODEL in usable else next(iter(usable), "")
             source = "ug configure discovery"
         assert model, (
             f"ug configure found no system.ai model for {agent}; use --{agent}-model to reproduce a specific model."

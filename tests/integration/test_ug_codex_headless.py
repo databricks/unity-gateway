@@ -1,6 +1,7 @@
 """CUJs for using codex from scripts through installed ug."""
 
 import pytest
+from utils.constants import CODEX_TEST_MODEL
 from utils.evidence import FileTask
 
 pytestmark = [pytest.mark.live, pytest.mark.codex]
@@ -33,7 +34,7 @@ def test_ug_codex_headless_prompt_argument(live_session, workspace):
         "--skip-git-repo-check",
         "--json",
         "--model",
-        "system.ai.gpt-5-4-nano",
+        CODEX_TEST_MODEL,
         task.prompt,
         timeout=180,
     )
@@ -67,7 +68,7 @@ def test_ug_codex_headless_prompt_stdin(live_session, workspace):
         "--skip-git-repo-check",
         "--json",
         "--model",
-        "system.ai.gpt-5-4-nano",
+        CODEX_TEST_MODEL,
         "-",
         timeout=180,
         input_text=task.prompt + "\n",
@@ -102,7 +103,7 @@ def test_ug_codex_headless_prompt_after_separator(live_session, workspace):
         "--skip-git-repo-check",
         "--json",
         "--model",
-        "system.ai.gpt-5-4-nano",
+        CODEX_TEST_MODEL,
         "--",
         task.prompt,
         timeout=180,

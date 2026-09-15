@@ -3,6 +3,7 @@
 import tomllib
 
 import pytest
+from utils.constants import CODEX_TEST_MODEL
 from utils.evidence import FileTask
 from utils.terminal import TerminalProcess
 
@@ -65,7 +66,7 @@ def test_ug_configure_codex_repeat_and_revert(live_session, workspace):
         "--skip-git-repo-check",
         "--json",
         "--model",
-        "system.ai.gpt-5-4-nano",
+        CODEX_TEST_MODEL,
         task.prompt,
         timeout=180,
     )
