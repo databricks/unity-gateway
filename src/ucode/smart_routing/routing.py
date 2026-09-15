@@ -32,6 +32,7 @@ SUBAGENT_ROUTING_DISCLAIMER = (
 )
 ROUTING_BOX_WIDTH = 73
 _ANTHROPIC_AIGW_MODEL_RE = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{8}-(.+)$")
+_FERNET_TOKEN_RE = re.compile(r"^gAAAAA[A-Za-z0-9_-]+={0,2}$")
 
 
 def format_switch_message(model: str, reason: str | None) -> str:
@@ -165,6 +166,13 @@ def _nonempty_string(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _plaintext_string(value: Any) -> str | None:
+    text = _nonempty_string(value)
+    if text is None or _FERNET_TOKEN_RE.fullmatch(text):
+        return None
+    return text
+
+
 def normalize_model(model: str) -> str:
     """Strip provider prefixes so router arms and workspace ids compare equal.
 
@@ -280,7 +288,7 @@ def resolve_spawn_route(
         (
             value
             for field in ("prompt", "description", "message", "task_name", "agent_name")
-            if isinstance(value := tool_input.get(field), str) and value
+            if (value := _plaintext_string(tool_input.get(field))) is not None
         ),
         default_task_label,
     )

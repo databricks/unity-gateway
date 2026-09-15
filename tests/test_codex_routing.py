@@ -356,6 +356,59 @@ def test_spawn_falls_through_encrypted_message_to_task_name(monkeypatch):
     assert captured["task"] == "reviewer"
 
 
+def test_spawn_falls_through_fernet_message_to_task_name(monkeypatch):
+    captured = {}
+
+    def fake_decision(*args, **kwargs):
+        captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
+        return (
+            codex_routing.RoutingDecision(model="databricks-gpt-5-5", raw_model="gpt-5-6-sol"),
+            None,
+        )
+
+    monkeypatch.setattr(codex_routing, "request_routing_decision", fake_decision)
+    codex_routing.route_pre_tool_use(
+        {
+            "tool_name": "collaborationspawn_agent",
+            "tool_input": {
+                "task_name": "reviewer",
+                "message": "gAAAAABqqU8EOCRSZac8zPpmJqgyznI8gFYExjTbUKzfT9vq7EAz722mbQxTY2ctkVwoX69",
+            },
+        },
+        workspace=WS,
+        token="token",
+        available_models=["databricks-gpt-5-5"],
+    )
+
+    assert captured["task"] == "reviewer"
+
+
+def test_spawn_uses_generic_task_instead_of_fernet_message(monkeypatch):
+    captured = {}
+
+    def fake_decision(*args, **kwargs):
+        captured["task"] = args[2] if len(args) > 2 else kwargs.get("task")
+        return (
+            codex_routing.RoutingDecision(model="databricks-gpt-5-5", raw_model="gpt-5-6-sol"),
+            None,
+        )
+
+    monkeypatch.setattr(codex_routing, "request_routing_decision", fake_decision)
+    codex_routing.route_pre_tool_use(
+        {
+            "tool_name": "collaborationspawn_agent",
+            "tool_input": {
+                "message": "gAAAAABqqU8EOCRSZac8zPpmJqgyznI8gFYExjTbUKzfT9vq7EAz722mbQxTY2ctkVwoX69"
+            },
+        },
+        workspace=WS,
+        token="token",
+        available_models=["databricks-gpt-5-5"],
+    )
+
+    assert captured["task"] == "Codex subagent task"
+
+
 def test_canary_and_audit_are_written(tmp_path, monkeypatch):
     canary = tmp_path / "canary.json"
     audit = tmp_path / "audit.jsonl"
