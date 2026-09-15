@@ -748,11 +748,12 @@ class TestCodexLaunch:
         launches = self._patch(tmp_path, monkeypatch)
         catalog_path = tmp_path / "models.json"
         catalog = {"models": [{"slug": "gpt-mps"}]}
+        fetch_kwargs = {}
         monkeypatch.setattr(codex, "_model_catalog_path", lambda workspace, provider: catalog_path)
         monkeypatch.setattr(
             codex,
             "_fetch_codex_model_catalog",
-            lambda workspace, token, **kwargs: catalog,
+            lambda workspace, token, **kwargs: fetch_kwargs.update(kwargs) or catalog,
         )
 
         codex.launch(
@@ -763,6 +764,10 @@ class TestCodexLaunch:
 
         assert catalog_path.exists()
         assert f'model_catalog_json="{catalog_path}"' in launches[0]
+        assert fetch_kwargs == {
+            "source": codex.CodexCatalogSource.PROVIDER,
+            "identifier": "main.default.openai",
+        }
         provider_arg = next(
             arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
         )
@@ -772,11 +777,12 @@ class TestCodexLaunch:
         launches = self._patch(tmp_path, monkeypatch)
         catalog_path = tmp_path / "models.json"
         catalog = {"models": [{"slug": "gpt-parent"}]}
+        fetch_kwargs = {}
         monkeypatch.setattr(codex, "_model_catalog_path", lambda workspace, scope: catalog_path)
         monkeypatch.setattr(
             codex,
             "_fetch_codex_model_catalog",
-            lambda workspace, token, **kwargs: catalog,
+            lambda workspace, token, **kwargs: fetch_kwargs.update(kwargs) or catalog,
         )
 
         codex.launch(
@@ -787,8 +793,12 @@ class TestCodexLaunch:
 
         assert catalog_path.exists()
         assert f'model_catalog_json="{catalog_path}"' in launches[0]
+        assert fetch_kwargs == {
+            "source": codex.CodexCatalogSource.PARENT_SCHEMA,
+            "identifier": "main.default",
+        }
         parent_arg = next(
-            arg for arg in launches[0] if arg.startswith("model_providers.ucode-databricks=")
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
         )
         assert 'Databricks-Model-Service-Parent-Schema = "main.default"' in parent_arg
 

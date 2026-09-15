@@ -73,9 +73,8 @@ class TestFetchCodexMpsModelCatalog:
         result = db_mod._fetch_codex_model_catalog(
             WS,
             "tok",
-            headers={"Databricks-Model-Provider-Service": "main.default.openai"},
+            source=db_mod.CodexCatalogSource.PROVIDER,
             identifier="main.default.openai",
-            kind="Provider",
         )
 
         assert result["models"][0]["slug"] == "gpt-mps"
@@ -91,9 +90,8 @@ class TestFetchCodexMpsModelCatalog:
             db_mod._fetch_codex_model_catalog(
                 WS,
                 "tok",
-                headers={"Databricks-Model-Provider-Service": "main.default.openai"},
+                source=db_mod.CodexCatalogSource.PROVIDER,
                 identifier="main.default.openai",
-                kind="Provider",
             )
 
 
@@ -110,9 +108,8 @@ class TestFetchCodexParentModelCatalog:
         result = db_mod._fetch_codex_model_catalog(
             WS,
             "tok",
-            headers={"Databricks-Model-Service-Parent-Schema": "main.default"},
+            source=db_mod.CodexCatalogSource.PARENT_SCHEMA,
             identifier="main.default",
-            kind="Parent schema",
         )
 
         assert result["models"][0]["slug"] == "gpt-parent"
@@ -130,9 +127,8 @@ class TestFetchCodexParentModelCatalog:
             db_mod._fetch_codex_model_catalog(
                 WS,
                 "tok",
-                headers={"Databricks-Model-Service-Parent-Schema": "main.default"},
+                source=db_mod.CodexCatalogSource.PARENT_SCHEMA,
                 identifier="main.default",
-                kind="Parent schema",
             )
 
     def test_reports_disabled_route_as_unavailable(self, monkeypatch):
@@ -149,9 +145,8 @@ class TestFetchCodexParentModelCatalog:
             db_mod._fetch_codex_model_catalog(
                 WS,
                 "tok",
-                headers={"Databricks-Model-Provider-Service": "main.default.openai"},
+                source=db_mod.CodexCatalogSource.PROVIDER,
                 identifier="main.default.openai",
-                kind="Provider",
             )
 
     def test_keeps_other_discovery_errors_fatal(self, monkeypatch):
@@ -165,9 +160,8 @@ class TestFetchCodexParentModelCatalog:
             db_mod._fetch_codex_model_catalog(
                 WS,
                 "tok",
-                headers={"Databricks-Model-Provider-Service": "main.default.openai"},
+                source=db_mod.CodexCatalogSource.PROVIDER,
                 identifier="main.default.openai",
-                kind="Provider",
             )
 
         assert not isinstance(exc_info.value, db_mod.CodexMpsModelCatalogUnavailable)

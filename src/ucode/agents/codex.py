@@ -40,6 +40,7 @@ from ucode.custom_oauth import (
     get_custom_client_token,
 )
 from ucode.databricks import (
+    CodexCatalogSource,
     CodexMpsModelCatalogUnavailable,
     _fetch_codex_model_catalog,
     build_auth_token_argv,
@@ -722,25 +723,22 @@ def launch(
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
     if workspace and token and (provider or parent_schema):
         try:
-            if provider:
-                catalog = _fetch_codex_model_catalog(
-                    workspace,
-                    token,
-                    headers={MODEL_PROVIDER_SERVICE_HEADER: provider},
-                    identifier=provider,
-                    kind="Provider",
-                )
+            if provider is not None:
+                catalog_source = CodexCatalogSource.PROVIDER
+                catalog_identifier = provider
                 catalog_scope = f"provider:{provider}"
-            else:
-                assert parent_schema is not None
-                catalog = _fetch_codex_model_catalog(
-                    workspace,
-                    token,
-                    headers={MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema},
-                    identifier=parent_schema,
-                    kind="Parent schema",
-                )
+            elif parent_schema is not None:
+                catalog_source = CodexCatalogSource.PARENT_SCHEMA
+                catalog_identifier = parent_schema
                 catalog_scope = f"parent:{parent_schema}"
+            else:
+                raise RuntimeError("Codex model discovery requires a provider or parent schema.")
+            catalog = _fetch_codex_model_catalog(
+                workspace,
+                token,
+                source=catalog_source,
+                identifier=catalog_identifier,
+            )
         except CodexMpsModelCatalogUnavailable:
             pass
         else:

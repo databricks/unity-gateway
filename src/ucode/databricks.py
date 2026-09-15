@@ -26,6 +26,7 @@ from concurrent.futures import (
 )
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from enum import Enum
 from pathlib import Path
 from typing import Literal, NamedTuple, NoReturn, cast, overload
 from urllib import error as urllib_error
@@ -33,6 +34,10 @@ from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
 from ucode.config_io import APP_DIR
+from ucode.constants import (
+    MODEL_PROVIDER_SERVICE_HEADER,
+    MODEL_SERVICE_PARENT_SCHEMA_HEADER,
+)
 from ucode.ui import (
     err_console,
     normalize_workspace_url,
@@ -80,6 +85,11 @@ class AnthropicModelCatalog:
 
 class CodexMpsModelCatalogUnavailable(RuntimeError):
     """The workspace does not expose the Codex model-catalog route."""
+
+
+class CodexCatalogSource(Enum):
+    PROVIDER = (MODEL_PROVIDER_SERVICE_HEADER, "Provider")
+    PARENT_SCHEMA = (MODEL_SERVICE_PARENT_SCHEMA_HEADER, "Parent schema")
 
 
 def _debug_enabled() -> bool:
@@ -3034,15 +3044,15 @@ def _fetch_codex_model_catalog(
     workspace: str,
     token: str,
     *,
-    headers: dict[str, str],
+    source: CodexCatalogSource,
     identifier: str,
-    kind: str,
 ) -> dict:
+    header_name, kind = source.value
     payload, reason = _http_get_json(
         f"{build_tool_base_url('codex', workspace)}/models",
         token,
         max_retries=2,
-        headers=headers,
+        headers={header_name: identifier},
     )
     if reason:
         message = f"Could not discover Codex models for {identifier}: {reason}"
