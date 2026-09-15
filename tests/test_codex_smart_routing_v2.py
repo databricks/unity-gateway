@@ -261,7 +261,11 @@ class TestLaunchCodex:
         assert "--profile myprof" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override
         assert "--model system.ai.glm-5-2" in hook_override
-        assert processes[0].argv[10:] == [
+        assert processes[0].argv[10:12] == [
+            "--config",
+            "features={multi_agent_v2 = false}",
+        ]
+        assert processes[0].argv[12:] == [
             "--listen",
             "ws://127.0.0.1:41001",
         ]
@@ -490,6 +494,7 @@ class TestCustomCatalogModels:
         assert "--model gpt-6-astra" in hook_override
         assert "--model gpt-6-b" in hook_override
         assert "gpt-5-6-sol" not in hook_override
+        assert "features={multi_agent_v2 = false}" in launched[0]
         assert "Smart routing:" not in capsys.readouterr().out
 
     def test_start_model_comes_from_custom_catalog(self, monkeypatch):

@@ -525,6 +525,7 @@ def launch_codex(
     overlay["hooks"] = {
         "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
     }
+    overlay.setdefault("features", {})["multi_agent_v2"] = False
     config_args = codex_config_args(overlay)
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
