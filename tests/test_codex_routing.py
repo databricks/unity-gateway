@@ -184,7 +184,7 @@ def test_spawn_rewrite_preserves_original_input(monkeypatch):
 
     hook = output["hookSpecificOutput"]
     expected_message = (
-        "┌───────────────────────────────────────────────────────────────────────────┐\n"
+        "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
         "│ Using Unity Gateway Smart Router - Subagent                               │\n"
         "│ Subagent : reviewer                                                       │\n"
         "│ Selected Model : gpt-5.5                                                  │\n"
@@ -228,7 +228,7 @@ def test_spawn_rewrite_uses_codex_model_id_for_uc_endpoint(monkeypatch):
     )
 
     expected_message = (
-        "┌───────────────────────────────────────────────────────────────────────────┐\n"
+        "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
         "│ Using Unity Gateway Smart Router - Subagent                               │\n"
         "│ Subagent : routing-smoke-test                                             │\n"
         "│ Selected Model : gpt-5.6-luna                                             │\n"

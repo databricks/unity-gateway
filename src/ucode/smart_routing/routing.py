@@ -132,6 +132,7 @@ class SubagentNoticeConfig:
     name_field: str
     prompt_field: str
     display_model_mapper: Callable[[str], str] | None = None
+    leading_newline: bool = False
 
     def name(self, tool_input: dict[str, Any]) -> str | None:
         return _nonempty_string(tool_input.get(self.name_field))
@@ -310,6 +311,8 @@ def route_spawn_tool(
         subagent_name=notice_config.name(route.tool_input),
         prompt=notice_config.prompt(route.tool_input),
     )
+    if notice_config.leading_newline:
+        routing_message = f"\n{routing_message}"
     output: dict[str, Any] = {
         "hookEventName": "PreToolUse",
         "permissionDecision": "allow",

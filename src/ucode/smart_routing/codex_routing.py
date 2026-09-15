@@ -31,6 +31,7 @@ DECISIONS_PATH = APP_DIR / "codex-smart-routing-decisions.jsonl"
 SUBAGENT_NOTICE_CONFIG = routing.SubagentNoticeConfig(
     name_field="task_name",
     prompt_field="message",
+    leading_newline=True,
 )
 
 _GPT_RE = re.compile(r"gpt-(\d+)(?:[.-](\d+))?(?:[.-](\d+))?(-.+|[a-z].*)?")
