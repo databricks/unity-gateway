@@ -81,6 +81,7 @@ All user journeys are top-level tests. There is no separate regressions category
 test_ug_configure_claude.py             # Databricks Hosted and Anthropic MPS
 test_ug_configure_codex.py              # Databricks Hosted and OpenAI MPS
 test_ug_claude_headless.py              # script prompts, models, caller settings
+test_ug_claude_relayed.py               # relayed session: subscription + Databricks-hosted models
 test_ug_codex_headless.py               # script prompts and model arguments
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
@@ -116,17 +117,28 @@ Interactive smart-routing journeys and their Claude/Codex CI shards are deferred
 at the user's request. Unit/component routing tests remain; live first-prompt,
 subagent routing, and interactive explicit-model bypass are not covered.
 
+The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
+completes a file task on two models: a bare Anthropic id the subscription serves
+directly (`route=relay`) and a Databricks-hosted `system.ai` id the loopback proxy
+re-routes to gateway auth (`route=databricks`) — one relayed session reaching both.
+It needs a subscription OAuth token (see below). Interactive model-picker selection
+remains uncovered.
+
 MPS CUJs select the existing services already used by e2e:
 
 - Claude: `main.ucode.ci_e2e_anthropic_nonrelay_mps`.
+- Claude (relayed hybrid): `main.ucode.ci_e2e_anthropic_relay_mps`, which also
+  requires `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) so the relayed
+  launch runs headless instead of opening a browser login.
 - Codex: `main.ucode.ci_openai_mps`, using its allowed `gpt-5-nano` model.
 
-Use `--claude-provider` / `--codex-provider` to reproduce another existing service.
-Use `--codex-provider-model` when that OpenAI service allows a different model.
-Those choices are recorded in `versions.json`. No service is created or modified.
-A missing service or permission fails the selected CUJ, rather than skipping it.
+Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` to
+reproduce another existing service. Use `--codex-provider-model` when that OpenAI
+service allows a different model. Those choices are recorded in `versions.json`.
+No service is created or modified. A missing service, permission, or OAuth token
+fails the selected CUJ, rather than skipping it.
 
-There are **39 live cases** (including 4 TUI journeys) and **3 installation
+There are **40 live cases** (including 4 TUI journeys) and **3 installation
 checks** with both agents. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
@@ -191,8 +203,10 @@ It runs directly on fresh GitHub Ubuntu VMs, not inside the optional Docker imag
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
 Its installation job needs no credentials. For same-repository PRs, the live jobs
-reuse the existing `UCODE_TEST_WORKSPACE` and `DATABRICKS_BEARER` secrets. Fork PRs
-run installation checks only because they cannot receive those secrets.
+reuse the existing `UCODE_TEST_WORKSPACE` and `DATABRICKS_BEARER` secrets; the full
+Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workflow
+uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
+cannot receive those secrets.
 
 The workspace check requires the secret to match
 `https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash
@@ -202,12 +216,12 @@ workspace discovery inside each test; only explicit-model scenarios choose and
 record a discovered `system.ai` model as a test argument.
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI and headless
-argument journey for each agent (four cases, two agent jobs). Full runs all 39
+argument journey for each agent (four cases, two agent jobs). Full runs all 40
 live cases, including those smoke cases, in two disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 15 |
+| Claude | `live and claude` | 16 |
 | Codex | `live and codex` | 24 |
 
 Each lane installs only its agent CLI, once, and runs all its configure, headless,
@@ -408,7 +422,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 39 live cases. For the three installation checks, run the same
+This runs all 40 live cases. For the three installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.
