@@ -158,7 +158,7 @@ def test_spawn_rewrite_injects_routed_model(monkeypatch):
     # The rationale is surfaced in the systemMessage (shown to the user), not
     # only in permissionDecisionReason. The model field is the short family
     # name ("opus") that Claude Code's Agent tool schema accepts.
-    expected_message = claude_routing.routing.format_subagent_message(
+    expected_message = "\n" + claude_routing.routing.format_subagent_message(
         "opus",
         "Deep exploration needs the strongest model.",
         subagent_name="Explore",
@@ -200,7 +200,7 @@ def test_spawn_oss_notice_unwraps_gateway_model_and_includes_prompt(monkeypatch)
     )
 
     expected_message = (
-        "┌───────────────────────────────────────────────────────────────────────────┐\n"
+        "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
         "│ Using Unity Gateway Smart Router - Subagent                               │\n"
         "│ Prompt : Inspect the parser for edge cases                                │\n"
         "│ Selected Model : system.ai.glm-5-3                                        │\n"

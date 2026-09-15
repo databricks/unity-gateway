@@ -33,6 +33,7 @@ SUBAGENT_NOTICE_CONFIG = routing.SubagentNoticeConfig(
     name_field="subagent_type",
     prompt_field="prompt",
     display_model_mapper=routing.unwrap_anthropic_gateway_model,
+    leading_newline=True,
 )
 
 _normalize_model = routing.normalize_model
