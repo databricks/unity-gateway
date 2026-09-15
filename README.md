@@ -48,6 +48,11 @@ ug codex --full-auto
 
 All agents route through Databricks AI Gateway using your workspace credentials — no API keys required.
 
+Codex uses the provider ID `Databricks` while keeping the `ucode` profile name.
+Re-run `ug configure --agents codex` to update existing generated configurations.
+This reuses history stored under the exact case-sensitive `Databricks` ID; it does not merge
+history stored under `databricks` or `ucode-databricks`.
+
 Smart routing is opt-in for Codex and Claude Code. Enabling it for a launch asks the AI Gateway
 router to select models for that session and its subagents. Codex may require one-time review of
 the launch-scoped hooks through `/hooks`.
@@ -401,7 +406,13 @@ uv sync
    uv run ruff check .    # lint
    ```
 
-4. For end-to-end testing against a real workspace:
+4. For **integration tests** of installed ug and agent versions against the same
+   real workspace, see [the integration suite](tests/integration/README.md).
+   It uses separate processes and fresh homes, with no application mocks or
+   monkeypatching. The runner accepts ug/Claude/Codex versions and dependency
+   constraints to reproduce user issues.
+
+   The existing e2e tests remain available separately:
 
    ```bash
    UCODE_TEST_WORKSPACE=<db_workspace_url> uv run pytest tests/test_e2e.py -v

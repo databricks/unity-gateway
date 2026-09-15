@@ -2951,15 +2951,13 @@ class TestCodingAgentConfigCrudClients:
         emitted = set(
             serialize_managed_config(
                 {
-                    "display_name": "org config",
                     "default_agent": "claude",
                     "enabled_agents": {
                         "claude": {"model_config": {"default_model": "system.ai.claude-opus-5"}}
                     },
-                    "mcp_servers": [{"name": "databricks-sql", "type": "sql"}],
-                    "skills": {"names": ["main.default"]},
-                    "tracing_table": "main.default.traces",
-                    "budget_policy": {
+                    "mcp_servers": {"names": ["main.default.databricks_sql"]},
+                    "skills": {"names": ["main.default.triage"]},
+                    "spend_tiers": {
                         "budget_id": "11111111-1111-1111-1111-111111111111",
                         "tiers": [],
                     },
