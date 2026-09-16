@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import signal
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -19,8 +18,6 @@ import ucode.databricks as db_mod
 from ucode.cli import app
 from ucode.custom_oauth import (
     CustomOAuthFlowTimeout,
-    CustomOAuthLockTimeout,
-    _custom_oauth_flow_deadline,
     _custom_oauth_lock,
     get_custom_client_token,
 )
@@ -36,62 +33,30 @@ class TestCustomOAuthLock:
             with _custom_oauth_lock(
                 tmp_path,
                 "http://localhost:8020/callback",
-                timeout_seconds=1,
                 lease_seconds=1,
             ):
                 raise ValueError("login failed")
         with _custom_oauth_lock(
             tmp_path,
             "http://127.0.0.1:8020/other-callback",
-            timeout_seconds=1,
             lease_seconds=1,
         ):
             assert len(list(tmp_path.glob("*.lock"))) == 1
-
-    def test_times_out_with_holder_pid_without_entering(self, tmp_path):
-        entered = False
-        with _custom_oauth_lock(
-            tmp_path,
-            "http://localhost:8020/callback",
-            timeout_seconds=1,
-            lease_seconds=1,
-        ):
-            with pytest.raises(CustomOAuthLockTimeout, match=r"held by PID \d+"):
-                with _custom_oauth_lock(
-                    tmp_path,
-                    "http://localhost:8020/callback",
-                    timeout_seconds=0.01,
-                    lease_seconds=1,
-                ):
-                    entered = True
-        assert entered is False
 
     def test_owner_lease_interrupts_work_and_releases_lock(self, tmp_path):
         with pytest.raises(CustomOAuthFlowTimeout, match="its lock was released"):
             with _custom_oauth_lock(
                 tmp_path,
                 "http://localhost:8020/callback",
-                timeout_seconds=1,
                 lease_seconds=0.01,
             ):
                 time.sleep(1)
         with _custom_oauth_lock(
             tmp_path,
             "http://localhost:8020/callback",
-            timeout_seconds=1,
             lease_seconds=1,
         ):
             pass
-
-    def test_flow_deadline_restores_an_existing_timer(self):
-        signal.setitimer(signal.ITIMER_REAL, 10)
-        try:
-            with _custom_oauth_flow_deadline(1):
-                pass
-            remaining, _ = signal.getitimer(signal.ITIMER_REAL)
-            assert remaining == pytest.approx(10, abs=0.1)
-        finally:
-            signal.setitimer(signal.ITIMER_REAL, 0)
 
 
 class TestCustomClientToken:
