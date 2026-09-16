@@ -112,7 +112,11 @@ class TestCustomClientToken:
                 [], 0, stdout='{"access_token": "cli-token"}', stderr=""
             )
             token = get_custom_client_token(
-                WS, client_id="custom-client", scopes=TEST_SCOPES, force_refresh=True
+                WS,
+                client_id="custom-client",
+                scopes=TEST_SCOPES,
+                profile="custom-profile",
+                force_refresh=True,
             )
 
         assert token == "cli-token"
@@ -121,8 +125,8 @@ class TestCustomClientToken:
             "databricks",
             "auth",
             "token",
-            "--host",
-            WS,
+            "--profile",
+            "custom-profile",
             "--force-refresh",
         ]
         assert run_cli.call_args.kwargs["env"]["DATABRICKS_CLIENT_ID"] == "custom-client"
@@ -253,6 +257,7 @@ class TestCustomClientCommand:
             client_id="my-client",
             redirect_url="http://localhost:41735/callback",
             scopes=["offline_access", "catalog.catalogs:read"],
+            profile="saved",
             force_refresh=True,
         )
 

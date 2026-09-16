@@ -119,12 +119,14 @@ def _get_custom_client_token_from_cli(
     workspace: str,
     client_id: str,
     *,
+    profile: str | None = None,
     force_refresh: bool = False,
 ) -> str:
     ensure_databricks_cli_version(CUSTOM_OAUTH_CLI_MIN_VERSION)
     env = os.environ.copy()
     env["DATABRICKS_CLIENT_ID"] = client_id
-    args = ["databricks", "auth", "token", "--host", workspace]
+    args = ["databricks", "auth", "token"]
+    args.extend(["--profile", profile] if profile else ["--host", workspace])
     if force_refresh:
         args.append("--force-refresh")
     try:
@@ -153,6 +155,7 @@ def get_custom_client_token(
     redirect_url: str = DEFAULT_REDIRECT_URL,
     *,
     scopes: Sequence[str],
+    profile: str | None = None,
     force_refresh: bool = False,
 ) -> str:
     """Reuse the SDK's PKCE flow and per-workspace/client token cache."""
@@ -162,6 +165,7 @@ def get_custom_client_token(
         return _get_custom_client_token_from_cli(
             workspace,
             config["client_id"],
+            profile=profile,
             force_refresh=force_refresh,
         )
     try:

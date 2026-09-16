@@ -1569,6 +1569,7 @@ def auth_token_cmd(
                     redirect_url if redirect_url is not None else custom_oauth.DEFAULT_REDIRECT_URL
                 ),
                 scopes=scopes.split(","),
+                profile=profile,
                 force_refresh=force_refresh,
             )
         else:
