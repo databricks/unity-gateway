@@ -671,6 +671,19 @@ class TestSubcommandRouting:
             "X-Second: two:three",
         ]
 
+    def test_claude_headers_are_forwarded(self):
+        with patch("ucode.cli._launch_tool") as mock_launch:
+            result = runner.invoke(
+                app,
+                ["claude", "--header", "X-First: one", "--header", "X-Second: two:three"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_launch.call_args.kwargs["headers"] == [
+            "X-First: one",
+            "X-Second: two:three",
+        ]
+
     def test_headers_parse_values_with_colons_and_deduplicate_case_insensitively(self):
         assert cli_mod._parse_custom_headers(
             [

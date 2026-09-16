@@ -20,6 +20,7 @@ from ucode.databricks import (
 
 STATE_PATH = APP_DIR / "state.json"
 STATE_VERSION = 3
+GLOBAL_STATE_KEY = "global"
 # Transient key holding the developer's own values for whatever a managed config layered over them.
 # Present only in memory: the layered values render the agent settings files, while `save_state`
 # restores what's under it so `state.json` keeps recording the developer's own configuration.
@@ -50,6 +51,28 @@ def load_state() -> dict:
     ws_state = full.get("workspaces", {}).get(workspace, {})
     ws_state["workspace"] = workspace
     return hydrate_state(ws_state)
+
+
+def load_global_state() -> dict:
+    """Load state shared by all configured workspaces."""
+    state = load_full_state().get(GLOBAL_STATE_KEY)
+    return dict(state) if isinstance(state, dict) else {}
+
+
+def save_global_state(state: dict) -> None:
+    """Save state shared by all configured workspaces."""
+    if is_dry_run():
+        return
+    full = load_full_state()
+    if state:
+        full[GLOBAL_STATE_KEY] = state
+    else:
+        full.pop(GLOBAL_STATE_KEY, None)
+    try:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
 
 
 def save_state(state: dict) -> None:
@@ -247,6 +270,7 @@ def clear_state() -> None:
     if workspace:
         full.get("workspaces", {}).pop(workspace, None)
         full["current_workspace"] = None
+    full.pop(GLOBAL_STATE_KEY, None)
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
