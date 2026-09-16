@@ -834,6 +834,7 @@ class TestCodexLaunch:
             lambda workspace, profile=None, force_refresh=False: "tok",
         )
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
         return launches
 
     def test_sets_oauth_token(self, tmp_path, monkeypatch):
@@ -848,6 +849,46 @@ class TestCodexLaunch:
 
         assert os.environ["OAUTH_TOKEN"] == "fresh-token"
         assert launches[0][-1] == "--search"
+
+    def test_custom_header_is_launch_only(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        value = "route://development/test"
+
+        codex.launch(
+            {"workspace": WS},
+            [],
+            options=LaunchOptions(custom_headers=(("X-Development-Route", value),)),
+        )
+
+        env_name = f"{codex.CUSTOM_HEADER_ENV_PREFIX}_{os.getpid()}_0"
+        provider_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
+        )
+        assert "X-Development-Route" in provider_arg
+        assert env_name in provider_arg
+        assert value not in provider_arg
+        assert os.environ[env_name] == value
+        assert "X-Development-Route" not in codex.CODEX_CONFIG_PATH.read_text(encoding="utf-8")
+        monkeypatch.delenv(env_name)
+
+    @pytest.mark.parametrize("header_table", ["http_headers", "env_http_headers"])
+    def test_custom_header_rejects_managed_header(self, tmp_path, monkeypatch, header_table):
+        self._patch(tmp_path, monkeypatch)
+        managed_path = tmp_path / "managed_config.toml"
+        managed_path.write_text(
+            f'[model_providers.Databricks.{header_table}]\nX-Test = "ENTERPRISE_VALUE"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
+
+        with pytest.raises(RuntimeError, match="OS-managed Codex header"):
+            codex.launch(
+                {"workspace": WS},
+                [],
+                options=LaunchOptions(custom_headers=(("x-test", "temporary"),)),
+            )
+
+        assert "temporary" not in managed_path.read_text(encoding="utf-8")
 
     def test_provider_discovery_uses_authoritative_catalog(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
@@ -1094,6 +1135,19 @@ class TestCodexLaunch:
                 {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
                 [],
                 options=LaunchOptions(),
+            )
+
+        assert launches == []
+
+    def test_custom_header_requires_modern_codex(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.133.0")
+
+        with pytest.raises(RuntimeError, match="--header requires Codex 0.145.0 or newer"):
+            codex.launch(
+                {"workspace": WS},
+                [],
+                options=LaunchOptions(custom_headers=(("X-Test", "temporary"),)),
             )
 
         assert launches == []
