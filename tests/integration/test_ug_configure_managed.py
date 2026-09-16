@@ -11,14 +11,8 @@ expected model ids mirror the published config; update them here if the admin li
 import json
 
 import pytest
+from utils.constants import MANAGED_CLAUDE_MODELS, MANAGED_CODEX_MODELS
 from utils.terminal import AgentTerminal
-
-MANAGED_CLAUDE_MODELS = [
-    "system.ai.claude-opus-4-8",
-    "system.ai.claude-sonnet-4-6",
-    "system.ai.claude-haiku-4-5",
-]
-MANAGED_CODEX_MODEL = "system.ai.gpt-5-6-sol"
 
 
 @pytest.mark.managed
@@ -67,7 +61,7 @@ def test_ug_configure_managed_codex(live_session, workspace):
         for model in catalog.get("models", [])
         if model.get("visibility") == "list"
     ]
-    assert listed == [MANAGED_CODEX_MODEL], catalog
+    assert listed == MANAGED_CODEX_MODELS, catalog
 
     with AgentTerminal(session, "codex", [str(session.binary), "codex"], "managed-codex") as tui:
         tui.boot()

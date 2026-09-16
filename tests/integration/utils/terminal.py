@@ -289,6 +289,23 @@ class AgentTerminal(TerminalProcess):
         self.wait_for(lambda text: marker not in text, "cleared prompt")
         self.exit_normally()
 
+    def open_model_picker(self):
+        """Open Claude's real model picker, record it, then return to the prompt."""
+        self.submit("/model")
+        self.wait_for(
+            lambda text: "Select model" in text and "Switch between Claude models." in text,
+            "the model picker",
+            timeout=60,
+        )
+        screen = self.visible
+        self.actions.append({"reason": "model-picker-visible", "screen": screen})
+        self.send("\x1b", "close the model picker")
+        self.wait_for(
+            lambda text: "Select model" not in text,
+            "the prompt after closing the model picker",
+        )
+        return screen
+
     def wait_for_task(self, task, timeout=180):
         permission_in_progress = False
 
