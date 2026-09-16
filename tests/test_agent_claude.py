@@ -1027,6 +1027,28 @@ class TestWriteToolConfigManagedSettings:
         env = json.loads(managed_writes[0][1])["env"]
         assert not set(claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.values()) & env.keys()
 
+    def test_managed_file_omits_workspace_defaults_for_model_location(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): {
+                "env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-4-8"}
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {
+            "workspace": WS,
+            "claude_models": {
+                "opus": "system.ai.claude-opus-4-8",
+                "haiku": "system.ai.claude-haiku-4-6",
+            },
+        }
+
+        claude.write_tool_config(state, None, parent_schema="main.managed_models")
+
+        env = json.loads(managed_writes[0][1])["env"]
+        assert not set(claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.values()) & env.keys()
+
     def test_managed_file_keeps_provider_model_pins(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []

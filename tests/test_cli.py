@@ -1582,10 +1582,7 @@ class TestManagedModelLocationLaunch:
         }
 
     @pytest.mark.parametrize("tool", ["claude", "codex"])
-    def test_admin_location_overrides_saved_source_and_forces_scoped_discovery(
-        self, monkeypatch, tool
-    ):
-        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "0")
+    def test_admin_location_overrides_saved_source(self, tool):
         state = {
             **MINIMAL_STATE,
             "provider_services": {tool: f"main.user.{tool}"},
@@ -1620,12 +1617,69 @@ class TestManagedModelLocationLaunch:
         assert mock_configure.call_args.kwargs["parent_schema"] == "main.managed_models"
         launch_state = mock_launch.call_args.args[1]
         assert launch_state[f"_{tool}_launch_parent_schema"] == "main.managed_models"
-        assert launch_state[f"_{tool}_scoped_model_discovery"] is True
         assert not launch_state.get("provider_services", {}).get(tool)
         assert launch_state["model_locations"][tool] == "main.user_models"
         assert "main.managed_models" not in launch_state.get("model_locations", {}).values()
         assert "_managed_overlay" not in launch_state
         assert state == original_state
+
+    def test_admin_claude_location_scopes_native_discovery(self, monkeypatch):
+        key = cli_mod.claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR
+        monkeypatch.delenv(key, raising=False)
+        observed = []
+        state = {**MINIMAL_STATE, "claude_models": {}}
+        managed = self._managed("claude")
+
+        def launch(*_args, **_kwargs):
+            observed.append(os.environ.get(key))
+
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
+            patch("ucode.cli._fetch_budget_recommendation", return_value=None),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.cli.configure_tool", return_value=state),
+            patch("ucode.cli.launch_agent", side_effect=launch),
+        ):
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert observed == ["1"]
+        assert key not in os.environ
+
+    def test_admin_claude_location_blocks_old_native_discovery_version(self, monkeypatch):
+        key = cli_mod.claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR
+        monkeypatch.delenv(key, raising=False)
+        install_environments = []
+        state = {**MINIMAL_STATE, "claude_models": {}}
+        managed = self._managed("claude")
+
+        def install(_tool, *, strict):
+            install_environments.append((strict, os.environ.get(key)))
+            raise RuntimeError("Claude Code 2.1.247 could not be upgraded")
+
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
+            patch("ucode.cli._fetch_budget_recommendation", return_value=None),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.cli.claude_agent.agent_version", return_value="2.1.247"),
+            patch("ucode.cli.install_tool_binary", side_effect=install),
+            patch("ucode.cli.configure_tool") as mock_configure,
+            patch("ucode.cli.launch_agent") as mock_launch,
+        ):
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 1
+        assert "2.1.247 could not be upgraded" in _strip_ansi(result.output)
+        assert install_environments == [(True, "1")]
+        mock_configure.assert_not_called()
+        mock_launch.assert_not_called()
+        assert key not in os.environ
 
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     @pytest.mark.parametrize(
@@ -1635,10 +1689,7 @@ class TestManagedModelLocationLaunch:
             (["--model-location", "main.user_models"], "--model-location"),
         ],
     )
-    def test_admin_location_rejects_explicit_source_when_discovery_is_disabled(
-        self, monkeypatch, tool, option, expected
-    ):
-        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "0")
+    def test_admin_location_rejects_explicit_source(self, tool, option, expected):
         managed = self._managed(tool)
         with (
             patch("ucode.cli.ensure_bootstrap_dependencies"),
