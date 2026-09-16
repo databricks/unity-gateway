@@ -771,6 +771,13 @@ def configure_workspace_command(
     offer_provider = tool is None and selected_tools is None and model_location is None
 
     workspace_entries = workspaces or [_prompt_for_configuration(tool)]
+    requested_tools = [tool] if tool is not None else selected_tools
+    if model_location is not None:
+        cached_managed = load_managed_state(normalize_workspace_url(workspace_entries[0][0]))
+        _reject_configure_model_location(
+            cached_managed,
+            requested_tools or managed_enabled_tools(cached_managed or {}),
+        )
 
     if tool is not None:
         states = _configure_shared_workspace_states(
@@ -783,6 +790,9 @@ def configure_workspace_command(
             clear_custom_oauth=custom_oauth is None,
         )
         state = states[0]
+        if model_location is not None:
+            managed, _ = refresh_managed_config(state)
+            _reject_configure_model_location(managed, [tool])
         if model_location is not None and tool in CAN_USE_CACHED_CONFIG_AGENTS:
             state = _configure_tools_with_model_location(
                 state, [tool], model_location, install_ai_tools=False
@@ -818,6 +828,11 @@ def configure_workspace_command(
     # A published managed config means the admin dictates the setup: apply it to every enabled agent
     # now rather than prompting the developer to pick.
     managed, _ = refresh_managed_config(state)
+    if model_location is not None:
+        _reject_configure_model_location(
+            managed,
+            selected_tools or managed_enabled_tools(managed or {}),
+        )
     if managed is not None:
         _announce_managed_config(managed)
         for tool_name in managed_enabled_tools(managed):
@@ -2213,6 +2228,17 @@ def _managed_controls_model_source(managed: dict | None, tool: str) -> bool:
     return managed_supplies_models(managed, tool) or bool(managed_static_models(managed, tool))
 
 
+def _reject_configure_model_location(managed: dict | None, tools: list[str]) -> None:
+    """Reject a persisted model location when managed config owns a selected source."""
+    for tool in tools:
+        _reject_managed_source_override(
+            managed,
+            tool,
+            explicit_provider=None,
+            explicit_model_location=True,
+        )
+
+
 def _reject_managed_source_override(
     managed: dict | None,
     tool: str,
@@ -2374,11 +2400,10 @@ def _launch_tool(
             print_note("No managed coding agent config found; using your own settings")
         if managed is not None:
             managed_provider = managed_provider_service(managed, tool)
-            if managed_provider:
-                provider = managed_provider
             if _managed_controls_model_source(managed, tool):
                 # The managed source outranks saved developer preferences. Managed
                 # unity_catalog_location remains intentionally out of scope.
+                provider = managed_provider
                 parent_schema = None
         if provider and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
@@ -2529,7 +2554,9 @@ def _launch_tool(
         # a saved provider that an explicit --model-location overrode, and transient markers can
         # never leak into a later state save.
         launch_state = dict(state)
-        if explicit_model_location:
+        if explicit_model_location or (
+            _managed_controls_model_source(managed, tool) and provider is None
+        ):
             set_provider_service(launch_state, tool, None)
         if tool == "claude":
             if provider:

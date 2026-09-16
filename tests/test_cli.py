@@ -1365,6 +1365,55 @@ class TestClaudeModelFlag:
         mock_configure.assert_not_called()
         mock_launch.assert_not_called()
 
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    @pytest.mark.parametrize(
+        "model_config",
+        [
+            {"default_model": "system.ai.managed-model"},
+            {"model_services": ["system.ai.managed-model"]},
+        ],
+        ids=["hosted-default", "static-list"],
+    )
+    def test_managed_hosted_source_overrides_saved_provider_for_bare_launch(
+        self, tool, model_config
+    ):
+        saved_provider = f"main.user.{tool}"
+        state = {
+            **MINIMAL_STATE,
+            "provider_services": {tool: saved_provider},
+        }
+        managed = {"enabled_agents": {tool: {"model_config": model_config}}}
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
+            patch("ucode.cli._fetch_budget_recommendation", return_value=None),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch(
+                "ucode.cli.resolve_launch_model",
+                side_effect=lambda selected_tool, resolved, model: (
+                    resolved,
+                    model or "system.ai.managed-model",
+                ),
+            ),
+            patch("ucode.cli.resolve_provider_models") as mock_resolve_provider,
+            patch(
+                "ucode.cli.configure_tool", side_effect=lambda *args, **kwargs: args[1]
+            ) as mock_configure,
+            patch("ucode.cli.launch_agent") as mock_launch,
+        ):
+            result = runner.invoke(app, [tool])
+
+        assert result.exit_code == 0, result.output
+        mock_resolve_provider.assert_not_called()
+        assert mock_configure.call_args.kwargs["provider"] is None
+        assert mock_configure.call_args.kwargs["parent_schema"] is None
+        launch_state = mock_launch.call_args.args[1]
+        assert not launch_state.get("provider_services", {}).get(tool)
+        assert f"_{tool}_launch_provider" not in launch_state
+        assert state["provider_services"][tool] == saved_provider
+
 
 class TestGeminiProviderLaunch:
     @staticmethod
@@ -2587,6 +2636,102 @@ class TestConfigureAgentFlag:
             selected_tools=["claude", "codex"],
             model_location="main.models",
         )
+
+    @pytest.mark.parametrize("agent_option", ["--agent", "--agents"])
+    @pytest.mark.parametrize(
+        "model_config",
+        [
+            {"default_model": "system.ai.managed-model"},
+            {"model_services": ["system.ai.managed-model"]},
+        ],
+        ids=["hosted-default", "static-list"],
+    )
+    def test_model_location_rejects_cached_managed_source_before_writes(
+        self, agent_option, model_config
+    ):
+        managed = {"enabled_agents": {"claude": {"model_config": model_config}}}
+        state = {
+            **MINIMAL_STATE,
+            "model_locations": {"claude": "old.models"},
+            "provider_services": {"claude": "old.providers.anthropic"},
+        }
+        original_state = json.loads(json.dumps(state))
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.load_managed_state", return_value=managed),
+            patch("ucode.cli._configure_shared_workspace_states") as mock_shared,
+            patch("ucode.cli.configure_tool") as mock_configure,
+            patch("ucode.cli.configure_selected_tools") as mock_configure_selected,
+            patch("ucode.cli.save_state") as mock_save,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "configure",
+                    agent_option,
+                    "claude",
+                    "--workspace",
+                    MINIMAL_STATE["workspace"],
+                    "--model-location",
+                    "main.models",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "--model-location" in _strip_ansi(result.output)
+        mock_shared.assert_not_called()
+        mock_configure.assert_not_called()
+        mock_configure_selected.assert_not_called()
+        mock_save.assert_not_called()
+        assert state == original_state
+
+    @pytest.mark.parametrize("agent_option", ["--agent", "--agents"])
+    def test_model_location_rechecks_fresh_managed_source_before_agent_writes(self, agent_option):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"default_model": "system.ai.managed-model"}}
+            }
+        }
+        state = {
+            **MINIMAL_STATE,
+            "model_locations": {"claude": "old.models"},
+            "provider_services": {"claude": "old.providers.anthropic"},
+        }
+        original_state = json.loads(json.dumps(state))
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.load_managed_state", return_value=None),
+            patch(
+                "ucode.cli._configure_shared_workspace_states", return_value=[state]
+            ) as mock_shared,
+            patch("ucode.cli.refresh_managed_config", return_value=(managed, False)),
+            patch("ucode.cli.configure_tool") as mock_configure,
+            patch("ucode.cli.configure_selected_tools") as mock_configure_selected,
+            patch("ucode.cli.save_state") as mock_save,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "configure",
+                    agent_option,
+                    "claude",
+                    "--workspace",
+                    MINIMAL_STATE["workspace"],
+                    "--model-location",
+                    "main.models",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "--model-location" in _strip_ansi(result.output)
+        mock_shared.assert_called_once()
+        mock_configure.assert_not_called()
+        mock_configure_selected.assert_not_called()
+        mock_save.assert_not_called()
+        assert state == original_state
 
     def test_no_flag_calls_configure_all(self):
         with (
