@@ -34,6 +34,9 @@ _CLAUDE_FAMILY_SLOTS = {
     "default_fable_model": "fable",
 }
 
+# Agents whose writers support the per-agent managed OTLP tracing flag.
+OTEL_TRACING_TOOLS = ("claude", "codex")
+
 
 def _as_dict(value: object) -> dict[str, object]:
     """Return ``value`` as a ``dict[str, object]`` when it is a dict, else an empty dict."""
@@ -59,13 +62,16 @@ def _agent_model_config(managed: dict, tool: str) -> dict[str, object]:
     return _as_dict(_agent_entry(managed, tool).get("model_config"))
 
 
-def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
-    """The state keys to layer over local state so ``tool``'s writer sees the admin's models.
+def managed_otel_tracing_enabled(managed: dict, tool: str) -> bool:
+    """Whether managed config enables OTLP trace export for ``tool``."""
+    return _agent_entry(managed, tool).get("otel_tracing_enabled") is True
 
-    Each agent reads its models from a different shape, so the manifest's list has to be translated
-    rather than dropped into one key: opencode wants provider-bucketed lists, and pi/copilot compose
-    from their own per-agent keys. Returns ``{state_key: value}`` — empty when the manifest names
-    nothing for ``tool``, in which case the developer's own state stands.
+
+def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
+    """The state keys to layer over local state so ``tool``'s writer sees managed settings.
+
+    Each agent reads models from a different shape, so the manifest's list has to be translated.
+    Supported tracing flags are also mapped to the state key each writer consumes.
     """
     overrides: dict[str, object] = {}
     models = _manifest_models(managed, tool)
@@ -88,6 +94,8 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
     default_model = _str(_agent_model_config(managed, tool).get("default_model"))
     if default_model:
         overrides[f"{tool}_default_model"] = default_model
+    if tool in OTEL_TRACING_TOOLS and managed_otel_tracing_enabled(managed, tool):
+        overrides[f"{tool}_otel_tracing"] = True
     return overrides
 
 

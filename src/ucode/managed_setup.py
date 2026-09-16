@@ -224,6 +224,9 @@ def _enabled_agent_payload(tool: str, agent_config: dict) -> dict:
         payload = _model_config_payload(tool, model_config)
         if payload:
             config.update(payload)
+    tracing_enabled = agent_config.get("otel_tracing_enabled")
+    if isinstance(tracing_enabled, bool):
+        config["tracing"] = {"enabled": tracing_enabled}
 
     entry: dict = {"agent": AGENT_TOOL_TO_ENUM[tool]}
     if config:

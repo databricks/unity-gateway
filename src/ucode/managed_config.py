@@ -139,6 +139,7 @@ class AgentConfig:
 
     http_headers: dict[str, str] | None = None
     models: AgentModels | None = None
+    otel_tracing_enabled: bool | None = None
 
     @classmethod
     def from_wire(cls, config: object) -> AgentConfig:
@@ -148,7 +149,11 @@ class AgentConfig:
         agent_models = AgentModels.from_wire(
             config_dict.get("default_models"), config_dict.get("models")
         )
-        return cls(http_headers=headers or None, models=agent_models)
+        return cls(
+            http_headers=headers or None,
+            models=agent_models,
+            otel_tracing_enabled=_tracing_enabled(config_dict.get("tracing")),
+        )
 
     def to_internal(self) -> dict:
         """Convert to internal shape for enabled_agents dict."""
@@ -158,6 +163,8 @@ class AgentConfig:
         model_config = self.models.to_internal() if self.models else None
         if model_config is not None:
             result["model_config"] = model_config
+        if self.otel_tracing_enabled is not None:
+            result["otel_tracing_enabled"] = self.otel_tracing_enabled
         return result
 
 
@@ -382,6 +389,12 @@ def _str_list(value: object) -> list[str]:
         if s:
             out.append(s)
     return out
+
+
+def _tracing_enabled(tracing: object) -> bool | None:
+    """Return ``TracingConfig.enabled`` as a tri-state value."""
+    value = _as_dict(tracing).get("enabled")
+    return value if isinstance(value, bool) else None
 
 
 def _resolve_agent_tool(key: object) -> str | None:

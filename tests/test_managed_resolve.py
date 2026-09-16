@@ -14,6 +14,7 @@ from ucode.managed_resolve import (
     managed_default_model,
     managed_enabled_tools,
     managed_launch_model,
+    managed_otel_tracing_enabled,
     managed_provider_service,
     managed_state_overrides,
     managed_static_models,
@@ -59,6 +60,30 @@ def _state(**overrides) -> dict:
     }
     state.update(overrides)
     return state
+
+
+class TestOtelTracing:
+    def test_accessor_reads_only_per_agent_flag(self):
+        managed = {"enabled_agents": {"claude": {"otel_tracing_enabled": True}}}
+        assert managed_otel_tracing_enabled(managed, "claude") is True
+        assert managed_otel_tracing_enabled({"otel_tracing_enabled": True}, "claude") is False
+
+    def test_state_overrides_enable_supported_agents(self):
+        for tool in ("claude", "codex"):
+            managed = {"enabled_agents": {tool: {"otel_tracing_enabled": True}}}
+            assert managed_state_overrides(managed, tool)[f"{tool}_otel_tracing"] is True
+
+    def test_state_overrides_ignore_unsupported_agents(self):
+        managed = {"enabled_agents": {"gemini": {"otel_tracing_enabled": True}}}
+        assert "gemini_otel_tracing" not in managed_state_overrides(managed, "gemini")
+
+    def test_disabled_tracing_adds_no_override(self):
+        managed = {"enabled_agents": {"claude": {"otel_tracing_enabled": False}}}
+        assert "claude_otel_tracing" not in managed_state_overrides(managed, "claude")
+
+    def test_resolve_state_layers_tracing_flag(self):
+        managed = {"enabled_agents": {"codex": {"otel_tracing_enabled": True}}}
+        assert resolve_state(managed, _state(), "codex")["codex_otel_tracing"] is True
 
 
 class TestClaudeModels:
