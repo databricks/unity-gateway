@@ -361,9 +361,10 @@ class TestProviderServiceSupport:
         assert supports_provider_service("claude", "anthropic")
         assert supports_provider_service("claude", "amazon_bedrock")
 
-    def test_codex_supports_openai_and_azure(self):
+    def test_codex_supports_openai_azure_and_foundry(self):
         assert supports_provider_service("codex", "openai")
         assert supports_provider_service("codex", "azure_openai")
+        assert supports_provider_service("codex", "microsoft_foundry")
 
     def test_claude_does_not_support_openai(self):
         assert not supports_provider_service("claude", "openai")
