@@ -85,6 +85,7 @@ LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
 CODEX_MODEL_PROVIDER_NAME = "Databricks"
 LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
+CUSTOM_HEADER_ENV_PREFIX = "UCODE_CUSTOM_HEADER"
 _MODEL_SERVICE_ROUTING_KEY_PATHS = [
     ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers", MODEL_PROVIDER_SERVICE_HEADER],
     [
@@ -503,6 +504,61 @@ def _parse_managed_config(text: str) -> dict:
         raise RuntimeError(f"invalid TOML: {exc}") from exc
 
 
+def _managed_header_names() -> set[str]:
+    """Return header names fixed by OS-managed config."""
+    path = codex_managed_config_path()
+    if path is None:
+        return set()
+    text = read_managed_file(path)
+    if text is None:
+        return set()
+    try:
+        doc = _parse_managed_config(text)
+    except RuntimeError:
+        # Configuration validates the managed file before launch and reports the
+        # full parse error there.
+        return set()
+    providers = doc.get("model_providers")
+    provider = providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, dict) else None
+    if not isinstance(provider, dict):
+        return set()
+    names: set[str] = set()
+    for table_name in ("http_headers", "env_http_headers"):
+        headers = provider.get(table_name)
+        if isinstance(headers, dict):
+            names.update(str(name).casefold() for name in headers)
+    return names
+
+
+def _with_custom_headers(doc: dict, custom_headers: dict[str, str]) -> dict:
+    """Return a launch-only config that reads custom header values from the environment."""
+    if not custom_headers:
+        return doc
+    blocked_names = _managed_header_names() & {name.casefold() for name in custom_headers}
+    if blocked_names:
+        names = ", ".join(sorted(blocked_names))
+        raise RuntimeError(f"--header cannot override OS-managed Codex header(s): {names}.")
+
+    launch_doc = copy.deepcopy(doc)
+    providers = launch_doc.get("model_providers")
+    provider = providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, dict) else None
+    if not isinstance(provider, dict):
+        raise RuntimeError("Codex's Databricks model provider configuration is missing or invalid.")
+    env_headers = provider.setdefault("env_http_headers", {})
+    if not isinstance(env_headers, dict):
+        raise RuntimeError("Codex's Databricks environment-header configuration is invalid.")
+
+    requested_names = {name.casefold() for name in custom_headers}
+    for existing_name in list(env_headers):
+        if str(existing_name).casefold() in requested_names:
+            env_headers.pop(existing_name, None)
+    for index, (name, value) in enumerate(custom_headers.items()):
+        env_name = f"{CUSTOM_HEADER_ENV_PREFIX}_{os.getpid()}_{index}"
+        os.environ[env_name] = value
+        env_headers[name] = env_name
+    return launch_doc
+
+
 def managed_config_is_current(state: dict) -> bool:
     path = codex_managed_config_path()
     if path is None:
@@ -747,8 +803,9 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
+    custom_headers = dict(options.custom_headers)
     if options.launch_smart_routing:
-        _launch_smart_routing(state, tool_args)
+        _launch_smart_routing(state, tool_args, custom_headers=custom_headers)
         return
     clear_model_preferences(state)
     binary = SPEC["binary"]
@@ -775,6 +832,8 @@ def launch(
         if state.get("codex_otel_tracing"):
             otel_args = codex_config_args(_otel_overlay(workspace, token))
     if _use_legacy_layout():
+        if custom_headers:
+            raise RuntimeError(f"--header requires Codex {MINIMUM_CODEX_VERSION_TEXT} or newer.")
         print_warning_err(
             f"Codex {agent_version(binary)} is outdated. Upgrade Codex to "
             f"{MINIMUM_CODEX_VERSION_TEXT} or newer, then run `codex --version` to verify "
@@ -826,10 +885,13 @@ def launch(
                 slugs = catalog_slugs(catalog)
                 if slugs:
                     profile_doc["model"] = slugs[0]
+    profile_doc = _with_custom_headers(profile_doc, custom_headers)
     exec_or_spawn([binary, *codex_config_args(profile_doc), *otel_args, *tool_args])
 
 
-def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
+def _launch_smart_routing(
+    state: dict, tool_args: list[str], *, custom_headers: dict[str, str] | None = None
+) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
     binary = SPEC["binary"]
     version_text = agent_version(binary)
@@ -848,12 +910,20 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         or (codex_model_id(models[0]) if models else None)
         or APP_SERVER_SMART_ROUTING_STARTING_MODEL
     )
+    if custom_headers:
+
+        def routed_render_overlay(*args, **kwargs) -> dict:
+            return _with_custom_headers(render_overlay(*args, **kwargs), custom_headers)
+
+    else:
+        routed_render_overlay = render_overlay
+
     smart_routing_v2.launch_codex(
         state,
         tool_args,
         binary=binary,
         start_model=start_model,
-        render_overlay=render_overlay,
+        render_overlay=routed_render_overlay,
     )
 
 
