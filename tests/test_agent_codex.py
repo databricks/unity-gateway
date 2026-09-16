@@ -107,6 +107,7 @@ class TestRenderOverlay:
     def test_auth_uses_custom_oauth_options(self):
         overlay = codex.render_overlay(
             WS,
+            databricks_profile="custom-profile",
             custom_oauth={
                 "client_id": "custom-client",
                 "redirect_url": "http://localhost:8020/callback",
@@ -118,6 +119,8 @@ class TestRenderOverlay:
             "auth-token",
             "--host",
             WS,
+            "--profile",
+            "custom-profile",
             "--client-id",
             "custom-client",
             "--redirect-url",

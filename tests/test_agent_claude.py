@@ -240,6 +240,7 @@ class TestRenderOverlay:
         overlay, _ = claude.render_overlay(
             WS,
             "s4",
+            profile="custom-profile",
             custom_oauth={
                 "client_id": "custom-client",
                 "redirect_url": "http://localhost:8020/callback",
@@ -251,6 +252,8 @@ class TestRenderOverlay:
             "auth-token",
             "--host",
             WS,
+            "--profile",
+            "custom-profile",
             "--client-id",
             "custom-client",
             "--redirect-url",

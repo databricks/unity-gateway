@@ -186,7 +186,7 @@ def _provider_block(
     custom_oauth: CustomOAuthConfig | None = None,
 ) -> dict:
     if custom_oauth:
-        auth_argv = build_custom_auth_token_argv(workspace, custom_oauth)
+        auth_argv = build_custom_auth_token_argv(workspace, custom_oauth, databricks_profile)
     else:
         auth_argv = build_auth_token_argv(workspace, databricks_profile, use_pat=use_pat)
     base_url = build_tool_base_url("codex", workspace)

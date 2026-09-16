@@ -296,6 +296,7 @@ class TestBuildAgentState:
         result = build_agent_state(
             {
                 "workspace": "https://example.databricks.com",
+                "profile": "custom-profile",
                 "base_urls": FAKE_URLS,
                 "custom_oauth": {
                     "client_id": "custom-client",
@@ -306,6 +307,7 @@ class TestBuildAgentState:
         )
 
         assert "--client-id custom-client" in result["claude"]["auth_command"]
+        assert "--profile custom-profile" in result["claude"]["auth_command"]
         assert result["codex"]["auth"]["args"][-1] == "offline_access,model-serving"
         assert result["codex"]["auth"]["timeout_ms"] == 180_000
 

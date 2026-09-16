@@ -74,12 +74,16 @@ def create_custom_oauth_config(
     }
 
 
-def build_custom_auth_token_argv(workspace: str, config: CustomOAuthConfig) -> list[str]:
+def build_custom_auth_token_argv(
+    workspace: str,
+    config: CustomOAuthConfig,
+    profile: str | None = None,
+) -> list[str]:
     normalized = create_custom_oauth_config(
         config["client_id"], config["scopes"], config["redirect_url"]
     )
     return [
-        *build_auth_token_argv(workspace),
+        *build_auth_token_argv(workspace, profile),
         "--client-id",
         normalized["client_id"],
         "--redirect-url",
@@ -89,8 +93,12 @@ def build_custom_auth_token_argv(workspace: str, config: CustomOAuthConfig) -> l
     ]
 
 
-def build_custom_auth_shell_command(workspace: str, config: CustomOAuthConfig) -> str:
-    argv = build_custom_auth_token_argv(workspace, config)
+def build_custom_auth_shell_command(
+    workspace: str,
+    config: CustomOAuthConfig,
+    profile: str | None = None,
+) -> str:
+    argv = build_custom_auth_token_argv(workspace, config, profile)
     if platform.system() == "Windows":
         return subprocess.list2cmdline(argv)
     return shlex.join(argv)
