@@ -659,6 +659,47 @@ class TestSubcommandRouting:
         assert mock_launch.call_args.kwargs["parent_schema"] == "main.default"
         assert mock_launch.call_args.args[1].args == []
 
+    def test_codex_headers_are_forwarded(self):
+        with patch("ucode.cli._launch_tool") as mock_launch:
+            result = runner.invoke(
+                app, ["codex", "--header", "X-First: one", "--header", "X-Second: two:three"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_launch.call_args.kwargs["headers"] == [
+            "X-First: one",
+            "X-Second: two:three",
+        ]
+
+    def test_headers_parse_values_with_colons_and_deduplicate_case_insensitively(self):
+        assert cli_mod._parse_custom_headers(
+            [
+                "X-Test: first",
+                "x-test: second",
+                "X-Development-Route: route://development/test",
+            ]
+        ) == {
+            "x-test": "second",
+            "X-Development-Route": "route://development/test",
+        }
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            ("missing-separator", "format `Name: value`"),
+            ("bad name: value", "format `Name: value`"),
+            ("X-Test: line\nbreak", "control characters"),
+            ("X-Test: safe\u0085Authorization: injected", "line separators"),
+            ("X-Test: safe\u2028Authorization: injected", "line separators"),
+            ("X-Test: safe\u2029Authorization: injected", "line separators"),
+            ("Authorization: secret", "protected header"),
+            ("Cookie: secret", "protected header"),
+        ],
+    )
+    def test_invalid_codex_header_is_rejected(self, value, message):
+        with pytest.raises(RuntimeError, match=message):
+            cli_mod._parse_custom_headers([value])
+
     def test_codex_provider_and_model_location_are_mutually_exclusive(self):
         result = runner.invoke(
             app,
