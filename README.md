@@ -160,6 +160,10 @@ ug skills remove --location main.default --via mcp
 request header for Codex. Use it only for non-secret development routing values: headers are
 passed through environment variables and are not written to persistent Codex configuration.
 
+`ug claude --header 'X-Development-Route: test-target'` is also repeatable, but Claude Code
+requires these values in global settings. They apply to active Claude sessions until the next
+successful header-free Claude launch or configuration.
+
 Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
 with `ug configure` to control installation.

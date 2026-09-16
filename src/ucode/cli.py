@@ -2840,6 +2840,7 @@ def _launch_tool(
             custom_model=None,
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
+            **({"custom_headers": custom_headers} if tool == "claude" and custom_headers else {}),
         )
         if picker_catalog and picker_catalog.model_ids:
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
@@ -3171,6 +3172,7 @@ def claude_cmd(
             help="Discover model services in `<catalog>.<schema>`. Example: main.default",
         ),
     ] = None,
+    header: CustomHeaderOption = None,
     model: Annotated[
         str | None,
         typer.Option(
@@ -3231,6 +3233,7 @@ def claude_cmd(
                 workspace_url=workspace,
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
+                headers=header,
             )
 
 

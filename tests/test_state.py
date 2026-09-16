@@ -16,8 +16,10 @@ from ucode.state import (
     get_provider_service,
     hydrate_state,
     load_full_state,
+    load_global_state,
     load_state,
     mark_tool_managed,
+    save_global_state,
     save_state,
     set_applied_managed_update_time,
     set_provider_service,
@@ -142,6 +144,13 @@ class TestSaveLoadRoundTrip:
         result = load_state()
         assert result == {}
 
+    def test_global_state_survives_workspace_switch(self):
+        save_state({"workspace": FAKE_WS})
+        save_global_state({"claude_custom_headers": {"x-route": "test"}})
+        save_state({"workspace": "https://other.databricks.com"})
+
+        assert load_global_state() == {"claude_custom_headers": {"x-route": "test"}}
+
 
 # ---------------------------------------------------------------------------
 # clear_state
@@ -151,10 +160,12 @@ class TestSaveLoadRoundTrip:
 class TestClearState:
     def test_clears_current_workspace(self):
         save_state({"workspace": FAKE_WS, "claude_models": {}})
+        save_global_state({"temporary": True})
         clear_state()
         full = load_full_state()
         assert full["current_workspace"] is None
         assert FAKE_WS not in full.get("workspaces", {})
+        assert load_global_state() == {}
 
     def test_clear_when_no_state_is_noop(self):
         clear_state()  # should not raise
