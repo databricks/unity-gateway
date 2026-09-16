@@ -55,6 +55,16 @@
 # Note: a PAT passed as a JAMF parameter is visible in the JAMF policy config and
 # logs. For a real fleet, prefer a Databricks service principal (OAuth M2M) as the
 # machine identity rather than a shared user PAT (see the team writeup).
+#
+# OS-managed enforcement layer:
+# This script provisions ug + LOCAL settings and runs `ug configure` NON-
+# interactively, so it never writes the OS-managed files
+# (/Library/Application Support/ClaudeCode/managed-settings.json,
+# /etc/codex/managed_config.toml) and never prompts for a sudo password.
+# `ug claude` / `ug codex` work off the local settings regardless. Deploy the
+# OS-managed enforcement separately as JAMF configuration profiles
+# (com.anthropic.claudecode, com.openai.codex) — see scripts/mdm/README.md — so
+# gateway routing is enforced even for bare `claude` / `codex` launches.
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -270,7 +280,10 @@ configure_ug() {
   local args=(configure --profile "$UG_PROFILE_NAME" --use-pat)
   [ -n "$UG_AGENTS" ] && args+=(--agents "$UG_AGENTS")
   info "ug ${args[*]}"
-  ug "${args[@]}"
+  # stdin from /dev/null keeps ug non-interactive: it writes only local settings
+  # and skips the sudo OS-managed reconciliation (which would prompt). The
+  # OS-managed enforcement is deployed via MDM profiles — see scripts/mdm/.
+  ug "${args[@]}" </dev/null
   ok "ug configured"
 }
 
@@ -304,10 +317,12 @@ probe_agent() {
     pi)       run+=(--print "$PROBE_PROMPT") ;;
     *) warn "no probe recipe for '$tool'; skipping"; return 2 ;;
   esac
+  # stdin from /dev/null so the launch stays non-interactive too (no per-launch
+  # sudo managed-settings prompt); -p/exec read the prompt from argv, not stdin.
   if command -v timeout >/dev/null 2>&1; then
-    out="$(timeout 180 "${run[@]}" 2>/dev/null)" && rc=0 || rc=$?
+    out="$(timeout 180 "${run[@]}" </dev/null 2>/dev/null)" && rc=0 || rc=$?
   else
-    out="$("${run[@]}" 2>/dev/null)" && rc=0 || rc=$?
+    out="$("${run[@]}" </dev/null 2>/dev/null)" && rc=0 || rc=$?
   fi
   if [ "$rc" -eq 0 ] && [ -n "${out//[[:space:]]/}" ]; then
     ok "$tool responded: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-60)"
