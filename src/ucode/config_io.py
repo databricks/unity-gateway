@@ -109,10 +109,26 @@ def write_json_file(path: Path, payload: dict) -> None:
         console.print(f"\n[bold]\\[dry run] {path}[/bold]\n{content}")
         return
     ensure_parent_dir(path)
+    tmp_path: Path | None = None
     try:
-        path.write_text(content, encoding="utf-8")
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=path.parent, delete=False, encoding="utf-8"
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            tmp.write(content)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, path)
+        tmp_path = None
     except OSError as exc:
         raise RuntimeError(f"Failed to write config file: {path}") from exc
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def deep_merge_dict(base: dict, overlay: dict) -> dict:

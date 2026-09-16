@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -13,7 +14,7 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 from ucode import gateway_proxy
 from ucode.config_io import (
@@ -21,6 +22,7 @@ from ucode.config_io import (
     ToolSpec,
     backup_existing_file,
     deep_merge_dict,
+    is_dry_run,
     read_json_safe,
     write_json_file,
 )
@@ -55,11 +57,14 @@ from ucode.managed_files import (
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_status,
+    managed_last_applied_paths,
     managed_writes_allowed,
     mark_managed_file_verified,
     read_managed_file,
     reconcile_managed_file,
+    restore_unchanged_managed_paths,
     revert_managed_file,
+    write_private_json_file,
 )
 from ucode.mcp_oauth import CLAUDE_CODE_OAUTH_CLIENT_ID, MCP_OAUTH_CALLBACK_PORT
 from ucode.smart_routing import v2 as smart_routing_v2
@@ -72,6 +77,8 @@ from ucode.state import (
     MANAGED_OVERLAY_KEY,
     get_provider_service,
     is_tool_managed,
+    load_full_state,
+    load_state,
     mark_tool_managed,
     save_state,
 )
@@ -79,6 +86,14 @@ from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_note, print_success, print_warning
 
 from .args import LaunchOptions, has_explicit_model_arg
+
+
+class _WindowsFileLockApi(Protocol):
+    LK_LOCK: int
+    LK_UNLCK: int
+
+    def locking(self, fd: int, mode: int, nbytes: int) -> None: ...
+
 
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
 CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
@@ -90,6 +105,8 @@ CLAUDE_MCP_CONFIG_PATH = Path.home() / ".claude.json"
 # The default model is stored in Claude's default user settings, not the ucode settings.
 CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
 CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
+CLAUDE_PICKER_MANAGEMENT_PATH = APP_DIR / "claude-picker-management.json"
+CLAUDE_PICKER_MANAGEMENT_VERSION = 2
 WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
 MINIMUM_CLAUDE_VERSION = (2, 1, 248)
 MINIMUM_CLAUDE_VERSION_TEXT = "2.1.248"
@@ -103,6 +120,10 @@ SPEC: ToolSpec = {
 }
 
 _MISSING_ENV_VALUE = object()
+_MISSING_PICKER_VALUE = object()
+_picker_thread_lock = threading.RLock()
+_picker_lock_state = threading.local()
+_web_search_registration_thread_lock = threading.Lock()
 
 
 @contextmanager
@@ -250,7 +271,6 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 # settings file on every launch so stale values never linger.
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
-CLAUDE_PRUNED_PICKER_KEYS = ("availableModels", "enforceAvailableModels")
 ANTHROPIC_CUSTOM_HEADERS_ENV_KEY = "ANTHROPIC_CUSTOM_HEADERS"
 CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
     {
@@ -326,12 +346,85 @@ def managed_settings_status(state: dict) -> tuple[Path | None, str, str]:
 
 
 def revert_managed_settings() -> str:
-    return revert_managed_file(
-        "claude",
-        display="Claude Code",
-        parser=_parse_managed_settings,
-        dumper=_dump_managed_settings,
-    )
+    path = _managed_settings_path()
+    if path is None:
+        return revert_managed_file(
+            "claude",
+            display="Claude Code",
+            parser=_parse_managed_settings,
+            dumper=_dump_managed_settings,
+        )
+    with _picker_management_lock():
+        current_text = read_managed_file(path)
+        current = _parse_managed_settings(current_text) if current_text is not None else {}
+        lease, recovery, phase = _recover_picker_transition("managed", path, current)
+        if phase == "applying" and recovery in {"target", "drift"}:
+            raise RuntimeError(
+                "Cannot safely revert Claude Code managed settings while a picker update is "
+                "incomplete. Re-run configuration to repair its metadata, then run `ucode "
+                "revert` again."
+            )
+        if not lease and recovery is None:
+            lease = _legacy_managed_picker_management(path, current)
+
+        transitioned = copy.deepcopy(current)
+        if lease:
+            _transition_private_picker(transitioned, {}, lease)
+        target = _picker_group(transitioned)
+        journaled = bool(lease or recovery is not None)
+        if journaled:
+            _begin_picker_transition(
+                "managed",
+                path,
+                lease,
+                {},
+                _picker_group(current),
+                target,
+                phase="reverting",
+            )
+        acquisition_lease = [
+            {
+                "path": [key],
+                "baseline_exists": entry["original_exists"],
+                **(
+                    {"baseline": copy.deepcopy(entry["original"])}
+                    if entry["original_exists"]
+                    else {}
+                ),
+                "applied": copy.deepcopy(entry["last_applied"]),
+            }
+            for key, entry in lease.items()
+        ]
+
+        def mark_revert_written() -> None:
+            written_text = read_managed_file(path)
+            written = _parse_managed_settings(written_text) if written_text is not None else {}
+            if not _picker_group_matches(written, target):
+                raise RuntimeError(f"Could not verify restored Claude picker settings at {path}.")
+            _mark_picker_revert_written("managed", path)
+
+        result = revert_managed_file(
+            "claude",
+            display="Claude Code",
+            parser=_parse_managed_settings,
+            dumper=_dump_managed_settings,
+            acquisition_lease=acquisition_lease,
+            excluded_owned_paths=[[key] for key in CLAUDE_MANAGED_PICKER_KEYS],
+            before_backup_delete=mark_revert_written if journaled else None,
+        )
+        written_text = read_managed_file(path)
+        written = _parse_managed_settings(written_text) if written_text is not None else {}
+        if journaled and not _picker_group_matches(written, target):
+            raise RuntimeError(f"Could not verify restored Claude picker settings at {path}.")
+        if journaled:
+            _save_managed_picker_management(path, {})
+        return result
+
+
+def revert_settings(state: dict) -> tuple[str, bool]:
+    """Revert both Claude settings scopes as one serialized transaction."""
+    with _picker_management_lock():
+        return revert_managed_settings(), revert_private_settings(state)
 
 
 def _managed_relayed_conflicts(path: Path) -> list[str]:
@@ -527,7 +620,7 @@ def render_overlay(
         overlay["permissions"] = {"deny": ["WebSearch"]}
         keys.append(["permissions", "deny"])
 
-    if static_models and not provider and not relayed:
+    if static_models and not provider and not parent_schema and not relayed:
         overlay["availableModels"] = list(static_models)
         overlay["enforceAvailableModels"] = True
         overlay["modelPicker"] = {
@@ -550,6 +643,693 @@ def render_overlay(
 def _picker_label(model: str) -> str:
     """A short picker label for a model id — the raw id minus the ``system.ai.`` prefix."""
     return model.removeprefix("system.ai.")
+
+
+@contextmanager
+def _picker_management_lock() -> Iterator[None]:
+    """Serialize sidecar and settings transitions that share picker ownership."""
+    if is_dry_run():
+        yield
+        return
+
+    with _picker_thread_lock:
+        depth = getattr(_picker_lock_state, "depth", 0)
+        if depth:
+            _picker_lock_state.depth = depth + 1
+            try:
+                yield
+            finally:
+                _picker_lock_state.depth = depth
+            return
+        _picker_lock_state.depth = 1
+        try:
+            with _picker_process_lock():
+                yield
+        finally:
+            _picker_lock_state.depth = 0
+
+
+@contextmanager
+def _picker_process_lock() -> Iterator[None]:
+    lock_path = CLAUDE_PICKER_MANAGEMENT_PATH.with_name(
+        f"{CLAUDE_PICKER_MANAGEMENT_PATH.name}.lock"
+    )
+    with _process_file_lock(lock_path):
+        yield
+
+
+@contextmanager
+def _process_file_lock(lock_path: Path) -> Iterator[None]:
+    """Hold one cross-platform advisory byte lock at an explicit private path."""
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = lock_path.open("a+b")
+    except OSError as exc:
+        raise RuntimeError(f"Cannot lock Claude picker metadata at {lock_path}: {exc}") from exc
+    with lock_file:
+        try:
+            os.chmod(lock_path, 0o600)
+            _lock_picker_file(lock_file)
+        except OSError as exc:
+            raise RuntimeError(f"Cannot lock Claude picker metadata at {lock_path}: {exc}") from exc
+        try:
+            yield
+        finally:
+            _unlock_picker_file(lock_file)
+
+
+@contextmanager
+def _web_search_registration_lock() -> Iterator[None]:
+    lock_path = CLAUDE_PICKER_MANAGEMENT_PATH.with_name("claude-web-search-registration.lock")
+    with _web_search_registration_thread_lock:
+        with _process_file_lock(lock_path):
+            yield
+
+
+def _lock_picker_file(lock_file) -> None:
+    if current_os() is OS.WINDOWS:
+        import msvcrt
+
+        windows_lock = cast("_WindowsFileLockApi", msvcrt)
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b"\0")
+            lock_file.flush()
+        lock_file.seek(0)
+        windows_lock.locking(lock_file.fileno(), windows_lock.LK_LOCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(lock_file, fcntl.LOCK_EX)
+
+
+def _unlock_picker_file(lock_file) -> None:
+    if current_os() is OS.WINDOWS:
+        import msvcrt
+
+        windows_lock = cast("_WindowsFileLockApi", msvcrt)
+        lock_file.seek(0)
+        windows_lock.locking(lock_file.fileno(), windows_lock.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def _valid_picker_entries(entries: object) -> bool:
+    if not isinstance(entries, dict) or set(entries) != set(CLAUDE_MANAGED_PICKER_KEYS):
+        return False
+    for entry in entries.values():
+        if not isinstance(entry, dict) or not isinstance(entry.get("original_exists"), bool):
+            return False
+        expected = {"original_exists", "last_applied"}
+        if entry["original_exists"]:
+            expected.add("original")
+        if set(entry) != expected:
+            return False
+    return True
+
+
+def _picker_group(settings: dict) -> dict[str, dict]:
+    group: dict[str, dict] = {}
+    for key in CLAUDE_MANAGED_PICKER_KEYS:
+        exists = key in settings
+        entry: dict = {"exists": exists}
+        if exists:
+            entry["value"] = copy.deepcopy(settings[key])
+        group[key] = entry
+    return group
+
+
+def _valid_picker_group(group: object) -> bool:
+    if not isinstance(group, dict) or set(group) != set(CLAUDE_MANAGED_PICKER_KEYS):
+        return False
+    for entry in group.values():
+        if not isinstance(entry, dict) or not isinstance(entry.get("exists"), bool):
+            return False
+        if set(entry) != ({"exists", "value"} if entry["exists"] else {"exists"}):
+            return False
+    return True
+
+
+def _picker_group_matches(settings: dict, group: dict[str, dict]) -> bool:
+    return _picker_group(settings) == group
+
+
+def _private_document_sha256(settings: dict) -> str:
+    encoded = json.dumps(settings, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _read_private_json_object(path: Path) -> dict:
+    """Read private Claude transaction input strictly; only a missing file means empty."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise RuntimeError(f"Cannot read Claude settings at {path}: {exc}") from exc
+    try:
+        settings = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Cannot parse Claude settings at {path}: {exc}") from exc
+    if not isinstance(settings, dict):
+        raise RuntimeError(f"Claude settings at {path} must contain a JSON object.")
+    return settings
+
+
+def _load_picker_management() -> dict[str, dict]:
+    """Load per-scope acquisition leases for ucode's Claude picker fields."""
+    path = CLAUDE_PICKER_MANAGEMENT_PATH
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to read symlinked Claude picker metadata at {path}.")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise RuntimeError(f"Cannot read Claude picker metadata at {path}: {exc}") from exc
+    try:
+        metadata = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Cannot parse Claude picker metadata at {path}: {exc}") from exc
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("version") != CLAUDE_PICKER_MANAGEMENT_VERSION
+        or not isinstance(metadata.get("leases"), dict)
+    ):
+        raise RuntimeError(f"Invalid Claude picker metadata at {path}.")
+
+    leases = metadata["leases"]
+    if not leases or not set(leases).issubset({"private", "managed"}):
+        raise RuntimeError(f"Invalid Claude picker metadata at {path}.")
+    pending_keys = {"phase", "prior", "intended", "before", "target"}
+    document_proof_keys = {
+        "before_document_exists",
+        "before_document_sha256",
+        "target_document_exists",
+        "target_document_sha256",
+    }
+    for scope, lease in leases.items():
+        if not isinstance(lease, dict) or not isinstance(lease.get("path"), str):
+            raise RuntimeError(f"Invalid Claude picker metadata at {path}.")
+        pending = lease.get("pending")
+        if pending is None:
+            if set(lease) != {"path", "keys"} or not _valid_picker_entries(lease.get("keys")):
+                raise RuntimeError(f"Invalid Claude picker metadata at {path}.")
+            continue
+        if (
+            set(lease) != {"path", "pending"}
+            or not isinstance(pending, dict)
+            or frozenset(pending)
+            not in {frozenset(pending_keys), frozenset(pending_keys | document_proof_keys)}
+            or pending.get("phase") not in {"applying", "reverting", "revert_written"}
+            or (pending.get("prior") is not None and not _valid_picker_entries(pending["prior"]))
+            or (
+                pending.get("intended") is not None
+                and not _valid_picker_entries(pending["intended"])
+            )
+            or not _valid_picker_group(pending.get("before"))
+            or not _valid_picker_group(pending.get("target"))
+            or (
+                document_proof_keys.issubset(pending)
+                and (
+                    scope != "private"
+                    or not isinstance(pending["before_document_exists"], bool)
+                    or not isinstance(pending["target_document_exists"], bool)
+                    or not isinstance(pending["before_document_sha256"], str)
+                    or re.fullmatch(r"[0-9a-f]{64}", pending["before_document_sha256"]) is None
+                    or not isinstance(pending["target_document_sha256"], str)
+                    or re.fullmatch(r"[0-9a-f]{64}", pending["target_document_sha256"]) is None
+                )
+            )
+        ):
+            raise RuntimeError(f"Invalid Claude picker metadata at {path}.")
+    return copy.deepcopy(leases)
+
+
+def _save_picker_management(leases: dict[str, dict]) -> None:
+    path = CLAUDE_PICKER_MANAGEMENT_PATH
+    if leases:
+        write_private_json_file(
+            path,
+            {
+                "version": CLAUDE_PICKER_MANAGEMENT_VERSION,
+                "leases": leases,
+            },
+        )
+        return
+    if is_dry_run():
+        return
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to remove symlinked Claude picker metadata at {path}.")
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"Cannot remove Claude picker metadata at {path}: {exc}") from exc
+
+
+def _save_picker_lease(scope: str, path: Path, entries: dict[str, dict]) -> None:
+    if entries and not _valid_picker_entries(entries):
+        raise RuntimeError("Invalid Claude picker lease.")
+    leases = _load_picker_management()
+    if entries:
+        leases[scope] = {"path": str(path), "keys": copy.deepcopy(entries)}
+    else:
+        leases.pop(scope, None)
+    _save_picker_management(leases)
+
+
+def _begin_picker_transition(
+    scope: str,
+    path: Path,
+    previous: dict[str, dict],
+    intended: dict[str, dict],
+    before: dict[str, dict],
+    target: dict[str, dict],
+    *,
+    phase: str = "applying",
+    document_transition: tuple[bool, dict, bool, dict] | None = None,
+) -> None:
+    if (
+        (previous and not _valid_picker_entries(previous))
+        or (intended and not _valid_picker_entries(intended))
+        or not _valid_picker_group(before)
+        or not _valid_picker_group(target)
+        or phase not in {"applying", "reverting"}
+    ):
+        raise RuntimeError("Invalid Claude picker transition.")
+    pending = {
+        "phase": phase,
+        "prior": copy.deepcopy(previous) or None,
+        "intended": copy.deepcopy(intended) or None,
+        "before": copy.deepcopy(before),
+        "target": copy.deepcopy(target),
+    }
+    if document_transition is not None:
+        before_exists, before_document, target_exists, target_document = document_transition
+        pending.update(
+            {
+                "before_document_exists": before_exists,
+                "before_document_sha256": _private_document_sha256(before_document),
+                "target_document_exists": target_exists,
+                "target_document_sha256": _private_document_sha256(target_document),
+            }
+        )
+    leases = _load_picker_management()
+    leases[scope] = {
+        "path": str(path),
+        "pending": pending,
+    }
+    _save_picker_management(leases)
+
+
+def _recover_picker_transition(
+    scope: str, path: Path, settings: dict
+) -> tuple[dict[str, dict], str | None, str | None]:
+    """Resolve an interrupted transition without discarding its retry proof."""
+    leases = _load_picker_management()
+    lease = leases.get(scope)
+    if lease is None:
+        return {}, None, None
+    if lease["path"] != str(path):
+        raise RuntimeError(
+            f"Claude picker metadata for {scope} targets {lease['path']}, not {path}."
+        )
+    pending = lease.get("pending")
+    if pending is None:
+        return copy.deepcopy(lease["keys"]), None, None
+
+    current_exists = path.exists()
+    document_sha256 = _private_document_sha256(settings)
+    has_document_proof = "target_document_sha256" in pending
+    target_matches = (
+        current_exists == pending["target_document_exists"]
+        and document_sha256 == pending["target_document_sha256"]
+        if has_document_proof
+        else _picker_group_matches(settings, pending["target"])
+    )
+    before_matches = (
+        current_exists == pending["before_document_exists"]
+        and document_sha256 == pending["before_document_sha256"]
+        if has_document_proof
+        else _picker_group_matches(settings, pending["before"])
+    )
+    if target_matches:
+        recovered = pending["intended"]
+        recovery = "target"
+    elif pending["phase"] == "revert_written":
+        # Once the revert target was durably verified, every later non-target value is external
+        # post-revert drift, even if it exactly recreates the old pre-revert settings.
+        recovered = pending["intended"]
+        recovery = "drift"
+    elif before_matches:
+        recovered = pending["prior"]
+        recovery = "before"
+    else:
+        # The complete group is neither the pre-write nor intended state. Treat it as external
+        # drift after the attempted transition; the next transition will preserve or rebase it.
+        recovered = pending["intended"]
+        recovery = "drift"
+    return copy.deepcopy(recovered or {}), recovery, pending["phase"]
+
+
+def _save_private_picker_management(entries: dict[str, dict]) -> None:
+    _save_picker_lease("private", CLAUDE_SETTINGS_PATH, entries)
+
+
+def _save_managed_picker_management(path: Path, entries: dict[str, dict]) -> None:
+    _save_picker_lease("managed", path, entries)
+
+
+def _mark_picker_revert_written(scope: str, path: Path) -> None:
+    """Durably record that one revert target was written and fully verified."""
+    leases = _load_picker_management()
+    lease = leases.get(scope)
+    if not isinstance(lease, dict):
+        raise RuntimeError(f"Claude {scope} revert journal is not ready to commit.")
+    pending = lease.get("pending")
+    if (
+        not isinstance(pending, dict)
+        or lease.get("path") != str(path)
+        or pending.get("phase") != "reverting"
+    ):
+        raise RuntimeError(f"Claude {scope} revert journal is not ready to commit.")
+    pending["phase"] = "revert_written"
+    _save_picker_management(leases)
+
+
+def _apply_picker_group(settings: dict, group: dict[str, dict]) -> None:
+    for key, entry in group.items():
+        if entry["exists"]:
+            settings[key] = copy.deepcopy(entry["value"])
+        else:
+            settings.pop(key, None)
+
+
+def _state_records_legacy_picker_ownership(state: dict) -> bool:
+    states = [state]
+    workspaces = load_full_state().get("workspaces")
+    if isinstance(workspaces, dict):
+        states.extend(entry for entry in workspaces.values() if isinstance(entry, dict))
+    for candidate in states:
+        managed_configs = candidate.get("managed_configs")
+        claude_management = (
+            managed_configs.get("claude") if isinstance(managed_configs, dict) else None
+        )
+        paths = claude_management.get("keys") if isinstance(claude_management, dict) else None
+        if isinstance(paths, list) and any([key] in paths for key in CLAUDE_MANAGED_PICKER_KEYS):
+            return True
+    return False
+
+
+def _legacy_private_picker_management(settings: dict) -> dict[str, dict]:
+    """Bootstrap pre-sidecar ownership only from an all-three managed snapshot proof."""
+    managed_path = _managed_settings_path()
+    picker_paths = [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
+    if managed_path is None:
+        return {}
+    last_managed, recorded_paths = managed_last_applied_paths(
+        "claude", managed_path, picker_paths, parser=_parse_managed_settings
+    )
+    if {tuple(path) for path in recorded_paths} != {tuple(path) for path in picker_paths}:
+        return {}
+    private_matches_last = all(
+        settings.get(key, _MISSING_PICKER_VALUE) == last_managed.get(key, _MISSING_PICKER_VALUE)
+        for key in CLAUDE_MANAGED_PICKER_KEYS
+    )
+    if not private_matches_last:
+        return {}
+    original = _read_private_json_object(CLAUDE_BACKUP_PATH)
+    entries: dict[str, dict] = {}
+    for key in CLAUDE_MANAGED_PICKER_KEYS:
+        if key not in settings:
+            continue
+        entry = {
+            "original_exists": key in original,
+            "last_applied": copy.deepcopy(settings[key]),
+        }
+        if key in original:
+            entry["original"] = copy.deepcopy(original[key])
+        entries[key] = entry
+    return entries if _valid_picker_entries(entries) else {}
+
+
+def _legacy_managed_picker_management(path: Path, settings: dict) -> dict[str, dict]:
+    """Bootstrap one all-three lease from integrity-checked legacy manifest snapshots."""
+    picker_paths = [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
+    applied = copy.deepcopy(settings)
+    restored, restored_paths = restore_unchanged_managed_paths(
+        "claude",
+        path,
+        copy.deepcopy(settings),
+        picker_paths,
+        parser=_parse_managed_settings,
+    )
+    if {tuple(candidate) for candidate in restored_paths} != {
+        tuple(candidate) for candidate in picker_paths
+    }:
+        return {}
+    if not all(key in applied for key in CLAUDE_MANAGED_PICKER_KEYS):
+        return {}
+    entries: dict[str, dict] = {}
+    for key in CLAUDE_MANAGED_PICKER_KEYS:
+        entry = {
+            "original_exists": key in restored,
+            "last_applied": copy.deepcopy(applied[key]),
+        }
+        if key in restored:
+            entry["original"] = copy.deepcopy(restored[key])
+        entries[key] = entry
+    return entries
+
+
+def _transition_private_picker(
+    settings: dict, overlay: dict, previous: dict[str, dict]
+) -> dict[str, dict]:
+    """Restore or rebase private picker fields before applying the current overlay."""
+    static_picker_active = all(key in overlay for key in CLAUDE_MANAGED_PICKER_KEYS)
+    if not static_picker_active:
+        unchanged = bool(previous) and all(
+            settings.get(key, _MISSING_PICKER_VALUE) == entry["last_applied"]
+            for key, entry in previous.items()
+        )
+        if unchanged:
+            for key, entry in previous.items():
+                if entry["original_exists"]:
+                    settings[key] = copy.deepcopy(entry["original"])
+                else:
+                    settings.pop(key, None)
+        return {}
+
+    current_management: dict[str, dict] = {}
+    previous_unchanged = bool(previous) and all(
+        settings.get(key, _MISSING_PICKER_VALUE) == entry["last_applied"]
+        for key, entry in previous.items()
+    )
+    for key in CLAUDE_MANAGED_PICKER_KEYS:
+        current = settings.get(key, _MISSING_PICKER_VALUE)
+        previous_entry = previous.get(key)
+        if previous_unchanged and previous_entry is not None:
+            original_exists = previous_entry["original_exists"]
+            original = previous_entry.get("original")
+        else:
+            original_exists = current is not _MISSING_PICKER_VALUE
+            original = current
+        entry = {
+            "original_exists": original_exists,
+            "last_applied": copy.deepcopy(overlay[key]),
+        }
+        if original_exists:
+            entry["original"] = copy.deepcopy(original)
+        current_management[key] = entry
+    return current_management
+
+
+def _reconcile_private_settings(
+    state: dict, overlay: dict, compose: Callable[[dict], dict]
+) -> None:
+    """Apply private settings with a crash-safe picker lease; caller holds the lock."""
+    settings = _read_private_json_object(CLAUDE_SETTINGS_PATH)
+    settings_existed = CLAUDE_SETTINGS_PATH.exists()
+    settings_before = copy.deepcopy(settings)
+    before = _picker_group(settings)
+    previous, recovery, phase = _recover_picker_transition(
+        "private", CLAUDE_SETTINGS_PATH, settings
+    )
+    if phase == "reverting" and recovery == "drift":
+        raise RuntimeError(
+            "Cannot safely configure Claude settings while an interrupted private revert has "
+            "unverified external changes. Restore the file to its pre-revert state or remove "
+            f"{CLAUDE_SETTINGS_PATH}, then run `ug revert` again."
+        )
+    legacy_management = (
+        not previous and recovery is None and _state_records_legacy_picker_ownership(state)
+    )
+
+    # Back up only a file that predates ucode's management of the tool. A re-configure would
+    # otherwise snapshot ucode's generated file, and revert would restore that snapshot.
+    if not is_tool_managed(state, "claude") and not previous and not legacy_management:
+        backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
+    elif phase == "revert_written" and recovery == "drift":
+        # The old backup may still exist if the verified revert crashed before cleanup. Replace
+        # it atomically so this complete post-revert document becomes the next lease baseline.
+        if settings_existed:
+            write_json_file(CLAUDE_BACKUP_PATH, settings_before)
+        else:
+            _remove_private_backup()
+    elif (
+        recovery == "target"
+        and phase in {"reverting", "revert_written"}
+        and not CLAUDE_BACKUP_PATH.exists()
+    ):
+        # The prior revert restored and verified this complete document before its backup was
+        # removed, but failed to clear the journal. Treat it as the baseline of this new lease.
+        backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
+    if legacy_management:
+        previous = _legacy_private_picker_management(settings)
+
+    intended = _transition_private_picker(settings, overlay, previous)
+    desired = compose(settings)
+    target = _picker_group(desired)
+    if not previous and intended and before == target:
+        # Matching IT policy was not changed by ucode, so it must not become leased merely
+        # because the requested static policy happens to have the same values.
+        intended = {}
+    transition = bool(recovery is not None or previous or intended)
+    if transition:
+        _begin_picker_transition(
+            "private",
+            CLAUDE_SETTINGS_PATH,
+            previous,
+            intended,
+            before,
+            target,
+            document_transition=(settings_existed, settings_before, True, desired),
+        )
+    write_json_file(CLAUDE_SETTINGS_PATH, desired)
+    if is_dry_run():
+        return
+    written = _read_private_json_object(CLAUDE_SETTINGS_PATH)
+    if written != desired:
+        raise RuntimeError(f"Could not verify Claude settings at {CLAUDE_SETTINGS_PATH}.")
+    if transition:
+        _save_private_picker_management(intended)
+
+
+def _remove_private_backup() -> None:
+    try:
+        CLAUDE_BACKUP_PATH.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Failed to remove Claude settings backup at {CLAUDE_BACKUP_PATH}"
+        ) from exc
+
+
+def revert_private_settings(state: dict) -> bool:
+    """Restore private settings atomically while honoring the picker acquisition lease."""
+    with _picker_management_lock():
+        current = _read_private_json_object(CLAUDE_SETTINGS_PATH)
+        lease, recovery, phase = _recover_picker_transition(
+            "private", CLAUDE_SETTINGS_PATH, current
+        )
+        legacy_claim = _state_records_legacy_picker_ownership(state)
+
+        if phase in {"reverting", "revert_written"} and recovery == "target":
+            _remove_private_backup()
+            _save_private_picker_management({})
+            return True
+        if phase == "reverting" and recovery == "drift":
+            raise RuntimeError(
+                "Cannot safely resume Claude settings revert because the file changed after the "
+                "revert was journaled but before its target was verified. Restore the file to "
+                f"its pre-revert state or remove {CLAUDE_SETTINGS_PATH}, then retry."
+            )
+        if not lease and recovery is None and legacy_claim:
+            lease = _legacy_private_picker_management(current)
+
+        backup_exists = CLAUDE_BACKUP_PATH.exists()
+        managed_configs = state.get("managed_configs")
+        state_managed = isinstance(managed_configs, dict) and bool(managed_configs.get("claude"))
+        if not (backup_exists or state_managed or lease or recovery is not None or legacy_claim):
+            return False
+
+        retry_preserves_current = phase == "revert_written" and recovery == "drift"
+        if retry_preserves_current:
+            desired = copy.deepcopy(current)
+        elif backup_exists:
+            desired = _read_private_json_object(CLAUDE_BACKUP_PATH)
+        else:
+            desired = {}
+        preserve_current_group = phase == "reverting" and recovery == "drift"
+        if lease:
+            transitioned = copy.deepcopy(current)
+            _transition_private_picker(transitioned, {}, lease)
+            _apply_picker_group(desired, _picker_group(transitioned))
+        elif legacy_claim or preserve_current_group:
+            _apply_picker_group(desired, _picker_group(current))
+
+        desired_exists = (
+            CLAUDE_SETTINGS_PATH.exists()
+            if retry_preserves_current
+            else backup_exists or bool(desired)
+        )
+        before = _picker_group(current)
+        target = _picker_group(desired if desired_exists else {})
+        _begin_picker_transition(
+            "private",
+            CLAUDE_SETTINGS_PATH,
+            lease,
+            {},
+            before,
+            target,
+            phase="reverting",
+            document_transition=(
+                CLAUDE_SETTINGS_PATH.exists(),
+                current,
+                desired_exists,
+                desired if desired_exists else {},
+            ),
+        )
+
+        if desired_exists:
+            write_json_file(CLAUDE_SETTINGS_PATH, desired)
+            if _read_private_json_object(CLAUDE_SETTINGS_PATH) != desired:
+                raise RuntimeError(
+                    f"Could not verify restored Claude settings at {CLAUDE_SETTINGS_PATH}."
+                )
+        else:
+            try:
+                CLAUDE_SETTINGS_PATH.unlink(missing_ok=True)
+            except OSError as exc:
+                raise RuntimeError(
+                    f"Failed to remove Claude settings at {CLAUDE_SETTINGS_PATH}"
+                ) from exc
+            if CLAUDE_SETTINGS_PATH.exists():
+                raise RuntimeError(
+                    f"Could not verify removal of Claude settings at {CLAUDE_SETTINGS_PATH}."
+                )
+
+        _mark_picker_revert_written("private", CLAUDE_SETTINGS_PATH)
+        _remove_private_backup()
+        _save_private_picker_management({})
+        return True
+
+
+def private_settings_are_globally_managed(state: dict | None = None) -> bool:
+    """Whether global metadata records picker fields written into ucode's Claude settings."""
+    with _picker_management_lock():
+        settings = _read_private_json_object(CLAUDE_SETTINGS_PATH)
+        lease, _recovery, _phase = _recover_picker_transition(
+            "private", CLAUDE_SETTINGS_PATH, settings
+        )
+        return bool(lease) or _state_records_legacy_picker_ownership(state or {})
+
+
+def clear_private_picker_management() -> None:
+    """Forget private picker ownership after the corresponding settings file was reverted."""
+    with _picker_management_lock():
+        _save_private_picker_management({})
 
 
 def _maybe_add_1m_suffix(model: str) -> str:
@@ -731,6 +1511,61 @@ def _web_search_mcp_is_current(state: dict, entry: dict) -> bool:
     return isinstance(servers, dict) and servers.get(WEB_SEARCH_MCP_NAME) == entry
 
 
+def _claude_state_generation(state: dict) -> tuple:
+    """Return the persisted fields that identify one Claude settings generation."""
+    managed_configs = state.get("managed_configs")
+    claude_management = managed_configs.get("claude") if isinstance(managed_configs, dict) else None
+    fingerprints = state.get("managed_file_fingerprints")
+    claude_fingerprint = fingerprints.get("claude") if isinstance(fingerprints, dict) else None
+    return (
+        state.get("workspace"),
+        state.get("profile"),
+        state.get("web_search_model"),
+        state.get("codex_models"),
+        state.get("claude_static_models"),
+        state.get("provider_services"),
+        state.get(MANAGED_OVERLAY_KEY),
+        claude_management,
+        claude_fingerprint,
+    )
+
+
+def _desired_web_search_mcp_entry(state: dict) -> dict | None:
+    model = _resolve_web_search_model(state)
+    if not model or not state.get("workspace"):
+        return None
+    return _web_search_mcp_entry(state["workspace"], model, state.get("profile"))
+
+
+def _register_web_search_for_current_generation(state: dict, entry: dict) -> dict:
+    """Register only if this generation is still current, then CAS its cache."""
+    with _web_search_registration_lock():
+        with _picker_management_lock():
+            latest = load_state()
+            if (
+                _claude_state_generation(latest) != _claude_state_generation(state)
+                or _desired_web_search_mcp_entry(latest) != entry
+            ):
+                return latest
+            already_current = _web_search_mcp_is_current(latest, entry)
+
+        model = _resolve_web_search_model(state)
+        registration_success = bool(model) and (
+            already_current
+            or _register_web_search_mcp(state["workspace"], model, state.get("profile"))
+        )
+        with _picker_management_lock():
+            latest = load_state()
+            if (
+                registration_success
+                and _claude_state_generation(latest) == _claude_state_generation(state)
+                and _desired_web_search_mcp_entry(latest) == entry
+            ):
+                latest[WEB_SEARCH_MCP_STATE_KEY] = entry
+                save_state(latest)
+            return latest
+
+
 def _unregister_web_search_mcp() -> None:
     """Remove the web_search MCP server from all scopes. Used by revert."""
     for scope in MCP_CLEANUP_SCOPES:
@@ -768,11 +1603,6 @@ def write_tool_config(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
 ) -> dict:
-    # Back up only a file that predates ucode's management of the tool. A
-    # re-configure would otherwise snapshot ucode's own generated file, and
-    # revert would restore that snapshot instead of deleting the file.
-    if not is_tool_managed(state, "claude"):
-        backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
     web_search_model = _resolve_web_search_model(state)
     # Relayed inference points at a local refresh proxy; its loopback base URL is
     # recorded in state so launch starts the proxy on the matching port.
@@ -795,7 +1625,8 @@ def write_tool_config(
         static_models=state.get("claude_static_models"),
         otel_tracing=bool(state.get("claude_otel_tracing")),
     )
-    managed_file_keys = list(managed_keys)
+    picker_paths = [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
+    managed_file_keys = [path for path in managed_keys if path not in picker_paths]
     for path in (
         [["env", key] for key in CLAUDE_MANAGED_MODEL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_CONDITIONAL_ENV_KEYS]
@@ -873,44 +1704,39 @@ def write_tool_config(
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
-    write_json_file(
-        CLAUDE_SETTINGS_PATH,
-        _compose(read_json_safe(CLAUDE_SETTINGS_PATH), enforce_model_default_hierarchy=False),
-    )
-
-    _reconcile_managed_settings(
-        state,
-        lambda base: _compose(
-            base,
-            enforce_model_default_hierarchy=provider is None and parent_schema is None,
-        ),
-        managed_file_keys,
-        relayed,
-    )
+    with _picker_management_lock():
+        _reconcile_private_settings(
+            state,
+            overlay,
+            lambda base: _compose(base, enforce_model_default_hierarchy=False),
+        )
+        _reconcile_managed_settings(
+            state,
+            lambda base: _compose(
+                base,
+                enforce_model_default_hierarchy=provider is None and parent_schema is None,
+            ),
+            managed_file_keys,
+            relayed,
+            static_picker_active=all(key in overlay for key in CLAUDE_MANAGED_PICKER_KEYS),
+        )
+        if not web_search_model:
+            state.pop(WEB_SEARCH_MCP_STATE_KEY, None)
+        # Persist the state generation under the same lock as both settings scopes. Registration
+        # runs after releasing the lock and uses a generation check before recording its cache.
+        if relayed:
+            state["claude_relayed"] = True
+        else:
+            state.pop("claude_relayed", None)
+            state.pop("relayed_proxy_port", None)
+        state = mark_tool_managed(state, "claude", managed_keys)
+        save_state(state)
 
     if web_search_model:
         web_search_entry = _web_search_mcp_entry(
             state["workspace"], web_search_model, state.get("profile")
         )
-        if not _web_search_mcp_is_current(state, web_search_entry):
-            # Registration runs multiple `claude mcp` subprocesses and can take several seconds.
-            registration_success = _register_web_search_mcp(
-                state["workspace"], web_search_model, state.get("profile")
-            )
-            if registration_success:
-                state[WEB_SEARCH_MCP_STATE_KEY] = web_search_entry
-    else:
-        state.pop(WEB_SEARCH_MCP_STATE_KEY, None)
-
-    # Persist relayed mode + proxy port so launch() wires the refresh proxy and
-    # subscription login; cleared on a non-relayed launch.
-    if relayed:
-        state["claude_relayed"] = True
-    else:
-        state.pop("claude_relayed", None)
-        state.pop("relayed_proxy_port", None)
-    state = mark_tool_managed(state, "claude", managed_keys)
-    save_state(state)
+        state = _register_web_search_for_current_generation(state, web_search_entry)
     return state
 
 
@@ -967,6 +1793,8 @@ def _reconcile_managed_settings(
     compose: Callable[[dict], dict],
     owned_paths: list[list[str]],
     relayed: bool,
+    *,
+    static_picker_active: bool,
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -974,8 +1802,8 @@ def _reconcile_managed_settings(
     configuration mirrors ucode's settings there. The same compose operation that produced the
     private file is applied to the existing managed file, preserving unrelated IT-authored keys.
 
-    `ug configure` updates gateway-owned fields in this file, but does not generate or modify
-    the `modelPicker` object; an existing picker is retained by the merge.
+    An existing IT-authored picker is retained by the merge. Picker fields that ucode recorded as
+    managed are removed when the active model source switches away from a static model list.
 
     Relayed launches are skipped: they depend on a per-session loopback refresh proxy that only runs
     during `ucode claude`, so a bare `claude` could not reach the gateway anyway.
@@ -1004,47 +1832,87 @@ def _reconcile_managed_settings(
         mark_managed_file_verified(state, "claude", path, scope="relay-compatible")
         return
 
-    current_text = read_managed_file(path)
-    try:
-        existing = _parse_managed_settings(current_text) if current_text is not None else {}
-    except RuntimeError as exc:
-        raise RuntimeError(
-            f"Cannot safely update Claude Code managed settings at {path}: {exc}. "
-            "ucode did not modify the file. Repair it or contact your administrator."
-        ) from exc
-    managed_before = copy.deepcopy(existing)
-    desired_settings = compose(existing)
-    _preserve_permission_denies(managed_before, desired_settings)
-    if not managed_writes_allowed():
-        conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
-        if conflicts:
+    with _picker_management_lock():
+        current_text = read_managed_file(path)
+        try:
+            existing = _parse_managed_settings(current_text) if current_text is not None else {}
+            managed_before = copy.deepcopy(existing)
+            before = _picker_group(existing)
+            previous, recovery, _phase = _recover_picker_transition("managed", path, existing)
+            if not previous and recovery is None:
+                previous = _legacy_managed_picker_management(path, existing)
+            picker_overlay: dict = {}
+            if static_picker_active:
+                composed = compose(copy.deepcopy(existing))
+                picker_overlay = {
+                    key: copy.deepcopy(composed[key]) for key in CLAUDE_MANAGED_PICKER_KEYS
+                }
+            intended = _transition_private_picker(existing, picker_overlay, previous)
+            desired_settings = compose(existing)
+            target = _picker_group(desired_settings)
+            if not previous and intended and before == target:
+                intended = {}
+        except (KeyError, RuntimeError) as exc:
             raise RuntimeError(
-                "Claude Code configuration cannot be applied non-interactively because "
-                f"OS-managed settings at {path} override ucode values: {', '.join(conflicts)}. "
-                "Run `ucode configure --agent claude` from an interactive terminal or contact "
-                "your administrator."
+                f"Cannot safely update Claude Code managed settings at {path}: {exc}. "
+                "ucode did not modify the file. Repair it or contact your administrator."
+            ) from exc
+
+        transition = bool(recovery is not None or previous or intended)
+        conflict_paths = list(owned_paths)
+        if transition or before != target:
+            for picker_path in [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]:
+                if picker_path not in conflict_paths:
+                    conflict_paths.append(picker_path)
+        _preserve_permission_denies(managed_before, desired_settings)
+        if not managed_writes_allowed():
+            conflicts = managed_file_conflicts(managed_before, desired_settings, conflict_paths)
+            if conflicts:
+                raise RuntimeError(
+                    "Claude Code configuration cannot be applied non-interactively because "
+                    f"OS-managed settings at {path} override ucode values: {', '.join(conflicts)}. "
+                    "Run `ucode configure --agent claude` from an interactive terminal or contact "
+                    "your administrator."
+                )
+            mark_managed_file_verified(state, "claude", path, scope="local-compatible")
+            return
+
+        picker_paths = [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
+        if transition:
+            _begin_picker_transition("managed", path, previous, intended, before, target)
+        try:
+            reconcile_managed_file(
+                path,
+                _dump_managed_settings(desired_settings),
+                tool="claude",
+                display="Claude Code",
+                owned_paths=owned_paths,
+                conditional_owned_paths=picker_paths,
+                repair_last_applied=bool(previous or recovery is not None),
             )
-        mark_managed_file_verified(state, "claude", path, scope="local-compatible")
-        return
-    try:
-        reconcile_managed_file(
-            path,
-            _dump_managed_settings(desired_settings),
-            tool="claude",
-            display="Claude Code",
-            owned_paths=owned_paths,
-        )
-    except ManagedFileWriteUnavailable:
-        conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
-        if conflicts:
-            raise
-        print_warning(
-            f"Claude Code OS-managed settings could not be updated at {path}; continuing with "
-            f"local settings at {CLAUDE_SETTINGS_PATH}."
-        )
-        mark_managed_file_verified(state, "claude", path, scope="local-compatible")
-        return
-    mark_managed_file_verified(state, "claude", path)
+        except ManagedFileWriteUnavailable:
+            conflicts = managed_file_conflicts(managed_before, desired_settings, conflict_paths)
+            if conflicts:
+                raise
+            print_warning(
+                f"Claude Code OS-managed settings could not be updated at {path}; continuing with "
+                f"local settings at {CLAUDE_SETTINGS_PATH}."
+            )
+            mark_managed_file_verified(state, "claude", path, scope="local-compatible")
+            return
+
+        if is_dry_run():
+            return
+        written_text = read_managed_file(path)
+        try:
+            written = _parse_managed_settings(written_text) if written_text is not None else {}
+        except RuntimeError as exc:
+            raise RuntimeError(f"Could not verify Claude picker settings at {path}: {exc}") from exc
+        if not _picker_group_matches(written, target):
+            raise RuntimeError(f"Could not verify Claude picker settings at {path}.")
+        if transition:
+            _save_managed_picker_management(path, intended)
+        mark_managed_file_verified(state, "claude", path)
 
 
 def _preserve_permission_denies(existing: dict, desired: dict) -> None:

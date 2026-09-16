@@ -6,7 +6,11 @@ import json
 import os
 import shlex
 import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -28,6 +32,24 @@ def _proxy_argv() -> list[str]:
     return build_mcp_proxy_argv(GH_URL, WS, "p")
 
 
+def _patch_private_json_store(monkeypatch, initial: dict, on_write=None) -> dict[str, dict]:
+    """Mock the strict private settings reader and its matching atomic writer."""
+    store = {str(claude.CLAUDE_SETTINGS_PATH): json.loads(json.dumps(initial))}
+
+    def read(path):
+        return json.loads(json.dumps(store.get(str(path), {})))
+
+    def write(path, payload):
+        copied = json.loads(json.dumps(payload))
+        store[str(path)] = copied
+        if on_write is not None:
+            on_write(path, copied)
+
+    monkeypatch.setattr(claude, "_read_private_json_object", read)
+    monkeypatch.setattr(claude, "write_json_file", write)
+    return store
+
+
 @pytest.fixture(autouse=True)
 def _avoid_real_managed_settings(monkeypatch):
     monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
@@ -42,6 +64,52 @@ class TestClaudeSpec:
 
     def test_display(self):
         assert claude.SPEC["display"] == "Claude Code"
+
+
+def test_picker_process_lock_uses_msvcrt_on_windows(tmp_path, monkeypatch):
+    metadata_path = tmp_path / "claude-picker-management.json"
+    calls: list[tuple[int, int]] = []
+    fake_msvcrt = SimpleNamespace(
+        LK_LOCK=11,
+        LK_UNLCK=12,
+        locking=lambda _fd, mode, size: calls.append((mode, size)),
+    )
+    monkeypatch.setattr(claude, "CLAUDE_PICKER_MANAGEMENT_PATH", metadata_path)
+    monkeypatch.setattr(claude, "current_os", lambda: claude.OS.WINDOWS)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+
+    with claude._picker_process_lock():
+        assert metadata_path.with_name(f"{metadata_path.name}.lock").read_bytes() == b"\0"
+
+    assert calls == [(fake_msvcrt.LK_LOCK, 1), (fake_msvcrt.LK_UNLCK, 1)]
+
+
+def test_process_file_lock_blocks_a_second_process(tmp_path):
+    lock_path = tmp_path / "registration.lock"
+    ready_path = tmp_path / "child-ready"
+    acquired_path = tmp_path / "child-acquired"
+    script = "\n".join(
+        [
+            "from pathlib import Path",
+            "from ucode.agents.claude import _process_file_lock",
+            f"lock_path = Path({str(lock_path)!r})",
+            f"Path({str(ready_path)!r}).write_text('ready')",
+            "with _process_file_lock(lock_path):",
+            f"    Path({str(acquired_path)!r}).write_text('acquired')",
+        ]
+    )
+
+    with claude._process_file_lock(lock_path):
+        child = subprocess.Popen([sys.executable, "-c", script])
+        deadline = time.monotonic() + 5
+        while not ready_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready_path.exists()
+        time.sleep(0.1)
+        assert not acquired_path.exists()
+
+    assert child.wait(timeout=5) == 0
+    assert acquired_path.read_text() == "acquired"
 
 
 class TestMinimumVersion:
@@ -725,9 +793,15 @@ class TestClaudeValidateCmd:
 class TestWriteToolConfigMcpRegistration:
     def _common_patches(self, monkeypatch, calls):
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
-        monkeypatch.setattr(claude, "read_json_safe", lambda path: {})
-        monkeypatch.setattr(claude, "write_json_file", lambda path, payload: None)
-        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        _patch_private_json_store(monkeypatch, {})
+        persisted: dict = {}
+
+        def save(state):
+            persisted.clear()
+            persisted.update(json.loads(json.dumps(state)))
+
+        monkeypatch.setattr(claude, "save_state", save)
+        monkeypatch.setattr(claude, "load_state", lambda: json.loads(json.dumps(persisted)))
         monkeypatch.setattr(
             claude,
             "_register_web_search_mcp",
@@ -765,9 +839,8 @@ class TestWriteToolConfigStripsRemovedEnvKeys:
 
     def _patch(self, monkeypatch, existing, written):
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
-        monkeypatch.setattr(claude, "read_json_safe", lambda path: existing)
-        monkeypatch.setattr(
-            claude, "write_json_file", lambda path, payload: written.append(payload)
+        _patch_private_json_store(
+            monkeypatch, existing, lambda _path, payload: written.append(payload)
         )
         monkeypatch.setattr(claude, "save_state", lambda state: None)
         monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: True)
@@ -838,17 +911,16 @@ class TestWriteToolConfigManagedSettings:
     def _patch(self, monkeypatch, private_writes, managed_writes, existing_by_path=None):
         existing_by_path = existing_by_path or {}
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
-        # Deep-copy the seeded existing content so the compose step can't mutate the fixture.
-        monkeypatch.setattr(
-            claude,
-            "read_json_safe",
-            lambda path: json.loads(json.dumps(existing_by_path.get(str(path), {}))),
-        )
-        monkeypatch.setattr(
-            claude,
-            "write_json_file",
-            lambda path, payload: private_writes.append((str(path), payload)),
-        )
+
+        def fake_write_private(path, payload):
+            existing_by_path[str(path)] = payload
+            private_writes.append((str(path), payload))
+
+        private_initial = existing_by_path.get(str(claude.CLAUDE_SETTINGS_PATH), {})
+        private_store = _patch_private_json_store(monkeypatch, private_initial, fake_write_private)
+        existing_by_path[str(claude.CLAUDE_SETTINGS_PATH)] = private_store[
+            str(claude.CLAUDE_SETTINGS_PATH)
+        ]
         monkeypatch.setattr(claude, "save_state", lambda state: None)
         monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: True)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
@@ -864,6 +936,7 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(claude, "mark_managed_file_verified", lambda *a, **kw: None)
 
         def fake_write_managed(path, text, **kwargs):
+            existing_by_path[str(path)] = json.loads(text)
             managed_writes.append((str(path), text))
             return "written"
 
@@ -964,6 +1037,135 @@ class TestWriteToolConfigManagedSettings:
         written = json.loads(managed_writes[0][1])
         assert written["modelPicker"] == picker
         assert written["env"]["ANTHROPIC_BASE_URL"] == f"{WS}/ai-gateway/anthropic"
+
+    @pytest.mark.parametrize(
+        "source_kwargs",
+        [
+            {"provider": "main.default.anthropic"},
+            {"parent_schema": "main.managed_models"},
+        ],
+        ids=["provider", "model-location"],
+    )
+    def test_native_discovery_removes_previously_managed_static_picker(
+        self, monkeypatch, source_kwargs
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        stale_picker = {
+            "availableModels": ["system.ai.claude-opus-4-8"],
+            "enforceAvailableModels": True,
+            "modelPicker": {
+                "replaceBuiltInOptions": True,
+                "options": [
+                    {
+                        "model": "system.ai.claude-opus-4-8",
+                        "label": "claude-opus-4-8",
+                    }
+                ],
+            },
+        }
+        existing_settings = {
+            **stale_picker,
+            "companyPolicy": {"keep": True},
+            "env": {"MY_OWN": "keep"},
+        }
+        existing = {
+            str(claude.CLAUDE_SETTINGS_PATH): existing_settings,
+            str(FAKE_MANAGED_PATH): existing_settings,
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+
+        def restore_managed_picker(tool, path, current, candidate_paths, **kwargs):
+            for candidate_path in candidate_paths:
+                current.pop(candidate_path[0], None)
+            return current, candidate_paths
+
+        monkeypatch.setattr(claude, "restore_unchanged_managed_paths", restore_managed_picker)
+        monkeypatch.setattr(
+            claude,
+            "managed_last_applied_paths",
+            lambda tool, path, candidate_paths, **kwargs: (
+                existing_settings,
+                candidate_paths,
+            ),
+        )
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_static_models": stale_picker["availableModels"],
+            "managed_configs": {
+                "claude": {"keys": [[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS]}
+            },
+        }
+
+        result = claude.write_tool_config(state, None, **source_kwargs)
+
+        written_settings = [private_writes[0][1], json.loads(managed_writes[0][1])]
+        for written in written_settings:
+            assert not set(claude.CLAUDE_MANAGED_PICKER_KEYS) & written.keys()
+            assert written["companyPolicy"] == {"keep": True}
+            assert written["env"]["MY_OWN"] == "keep"
+        assert not any(
+            [key] in result["managed_configs"]["claude"]["keys"]
+            for key in claude.CLAUDE_MANAGED_PICKER_KEYS
+        )
+
+    def test_model_location_preserves_unowned_picker_settings(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        picker_settings = {
+            "availableModels": ["enterprise-model"],
+            "enforceAvailableModels": True,
+            "modelPicker": {
+                "replaceBuiltInOptions": True,
+                "options": [{"model": "enterprise-model", "label": "Enterprise"}],
+            },
+        }
+        existing = {
+            str(claude.CLAUDE_SETTINGS_PATH): picker_settings,
+            str(FAKE_MANAGED_PATH): picker_settings,
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "managed_configs": {"claude": {"keys": [["env", "ANTHROPIC_BASE_URL"]]}},
+        }
+
+        claude.write_tool_config(state, None, parent_schema="main.managed_models")
+
+        assert {
+            key: private_writes[0][1][key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS
+        } == picker_settings
+        managed = json.loads(managed_writes[0][1])
+        assert {key: managed[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == picker_settings
+
+    def test_managed_file_preserves_picker_without_global_ownership_proof(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        picker_settings = {
+            "availableModels": ["enterprise-model"],
+            "enforceAvailableModels": True,
+            "modelPicker": {"options": [{"model": "enterprise-model"}]},
+        }
+        self._patch(
+            monkeypatch,
+            private_writes,
+            managed_writes,
+            {str(FAKE_MANAGED_PATH): picker_settings},
+        )
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "managed_configs": {
+                "claude": {"keys": [[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS]}
+            },
+        }
+
+        claude.write_tool_config(state, None, parent_schema="main.managed_models")
+
+        managed = json.loads(managed_writes[0][1])
+        assert {key: managed[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == picker_settings
 
     def test_managed_file_strips_stale_gateway_model_discovery(self, monkeypatch):
         private_writes: list = []
@@ -1238,7 +1440,7 @@ class TestWriteToolConfigManagedSettings:
             "codex_models": [],
             "claude_static_models": static_models,
         }
-        claude.write_tool_config(state, "system.ai.claude-opus-4-8")
+        result = claude.write_tool_config(state, "system.ai.claude-opus-4-8")
         # Managed file should have the picker.
         assert len(managed_writes) > 0
         managed_content = json.loads(managed_writes[0][1])
@@ -1246,6 +1448,10 @@ class TestWriteToolConfigManagedSettings:
         assert managed_content["enforceAvailableModels"] is True
         assert "modelPicker" in managed_content
         assert len(managed_content["modelPicker"]["options"]) == 2
+        assert all(
+            [key] in result["managed_configs"]["claude"]["keys"]
+            for key in claude.CLAUDE_MANAGED_PICKER_KEYS
+        )
 
     def test_static_models_not_written_when_absent(self, monkeypatch):
         # When claude_static_models is not in state, picker fields are not written.
@@ -1259,6 +1465,1262 @@ class TestWriteToolConfigManagedSettings:
         managed_content = json.loads(managed_writes[0][1])
         assert "availableModels" not in managed_content
         assert "modelPicker" not in managed_content
+
+
+class TestPickerOwnershipAcrossWorkspaces:
+    @staticmethod
+    def _patch_files(monkeypatch, tmp_path):
+        private_path = tmp_path / "ucode-settings.json"
+        managed_path = tmp_path / "managed-settings.json"
+        backup_path = tmp_path / "ucode-settings.backup.json"
+        metadata_path = tmp_path / "claude-picker-management.json"
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", private_path)
+        monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", backup_path)
+        monkeypatch.setattr(claude, "CLAUDE_PICKER_MANAGEMENT_PATH", metadata_path)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda path, text: path.write_text(text, encoding="utf-8"),
+        )
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: True)
+        return private_path, managed_path, backup_path, metadata_path
+
+    def test_scoped_configuration_without_picker_lease_preserves_it_policy(
+        self, monkeypatch, tmp_path
+    ):
+        private_path, managed_path, _backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        picker = {
+            "availableModels": ["enterprise"],
+            "enforceAvailableModels": True,
+            "modelPicker": {"options": [{"model": "enterprise"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps(picker), encoding="utf-8")
+
+        claude.write_tool_config(
+            {"workspace": "https://workspace.example.com", "codex_models": []},
+            None,
+            parent_schema="main.models",
+        )
+
+        for path in (private_path, managed_path):
+            settings = json.loads(path.read_text())
+            assert {key: settings[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == picker
+        assert not metadata_path.exists()
+        manifest = json.loads(managed_files.MANAGED_BACKUP_MANIFEST_PATH.read_text())
+        assert not any(
+            [key] in manifest["files"]["claude"]["owned_paths"]
+            for key in claude.CLAUDE_MANAGED_PICKER_KEYS
+        )
+
+    def test_legacy_private_backup_without_managed_proof_preserves_current_picker(
+        self, monkeypatch, tmp_path
+    ):
+        private_path, managed_path, backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        backup_picker = {
+            "availableModels": ["enterprise-one"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise-one"}]},
+        }
+        current_picker = {
+            "availableModels": ["enterprise-two"],
+            "enforceAvailableModels": True,
+            "modelPicker": {"options": [{"model": "enterprise-two"}]},
+        }
+        private_path.write_text(json.dumps(current_picker), encoding="utf-8")
+        managed_path.write_text(json.dumps(current_picker), encoding="utf-8")
+        backup_path.write_text(json.dumps(backup_picker), encoding="utf-8")
+        monkeypatch.setattr(
+            claude,
+            "load_full_state",
+            lambda: {
+                "workspaces": {
+                    "https://workspace-a.example.com": {
+                        "managed_configs": {
+                            "claude": {"keys": [[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS]}
+                        }
+                    }
+                }
+            },
+        )
+
+        claude.write_tool_config(
+            {"workspace": "https://workspace-b.example.com", "codex_models": []},
+            None,
+            parent_schema="main.models",
+        )
+
+        written = json.loads(private_path.read_text())
+        assert {key: written[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == current_picker
+        assert json.loads(backup_path.read_text()) == backup_picker
+        assert not metadata_path.exists()
+
+    @pytest.mark.parametrize(
+        ("contents", "message"),
+        [("{", "Cannot parse Claude settings"), ("[]", "must contain a JSON object")],
+        ids=["invalid", "non-object"],
+    )
+    def test_invalid_private_settings_fail_before_any_mutation(
+        self, monkeypatch, tmp_path, contents, message
+    ):
+        private_path, managed_path, backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        private_path.write_text(contents, encoding="utf-8")
+        managed_path.write_text('{"companyPolicy": "keep"}', encoding="utf-8")
+        state = {
+            "workspace": "https://workspace.example.com",
+            "codex_models": [],
+            "managed_configs": {"claude": {"keys": [["env", "ANTHROPIC_BASE_URL"]]}},
+        }
+
+        with pytest.raises(RuntimeError, match=message):
+            claude.write_tool_config(state, "system.ai.claude-opus-4-8")
+
+        assert private_path.read_text() == contents
+        assert json.loads(managed_path.read_text()) == {"companyPolicy": "keep"}
+        assert not backup_path.exists()
+        assert not metadata_path.exists()
+
+    def test_private_revert_restores_latest_acquisition_baseline(self, monkeypatch, tmp_path):
+        private_path, managed_path, _backup_path, _metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        picker_one = {
+            "availableModels": ["enterprise-one"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise-one"}]},
+        }
+        picker_two = {
+            "availableModels": ["enterprise-two"],
+            "enforceAvailableModels": True,
+            "modelPicker": {"options": [{"model": "enterprise-two"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps(picker_one), encoding="utf-8")
+        static_models = ["system.ai.claude-opus-4-8"]
+        static_state = {
+            "workspace": "https://workspace-a.example.com",
+            "codex_models": [],
+            "claude_static_models": static_models,
+        }
+        claude.write_tool_config(static_state, static_models[0])
+        claude.write_tool_config(
+            {"workspace": "https://workspace-b.example.com", "codex_models": []},
+            None,
+            parent_schema="main.models",
+        )
+        current = json.loads(private_path.read_text())
+        current.update(picker_two)
+        private_path.write_text(json.dumps(current), encoding="utf-8")
+        claude.write_tool_config(static_state, static_models[0])
+
+        assert claude.revert_private_settings(static_state) is True
+
+        restored = json.loads(private_path.read_text())
+        assert {key: restored[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == picker_two
+
+    def test_private_revert_preserves_whole_drifted_picker_group(self, monkeypatch, tmp_path):
+        private_path, managed_path, _backup_path, _metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        baseline = {
+            "availableModels": ["enterprise-one"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise-one"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps(baseline), encoding="utf-8")
+        static_models = ["system.ai.claude-opus-4-8"]
+        state = {
+            "workspace": "https://workspace-a.example.com",
+            "codex_models": [],
+            "claude_static_models": static_models,
+        }
+        claude.write_tool_config(state, static_models[0])
+        drift = {
+            "availableModels": ["enterprise-drift"],
+            "enforceAvailableModels": True,
+            "modelPicker": {
+                "replaceBuiltInOptions": False,
+                "options": [{"model": "enterprise-drift", "label": "Enterprise"}],
+            },
+        }
+        current = json.loads(private_path.read_text())
+        current.update(drift)
+        private_path.write_text(json.dumps(current), encoding="utf-8")
+
+        assert claude.revert_private_settings(state) is True
+
+        restored = json.loads(private_path.read_text())
+        assert {key: restored[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == drift
+
+    def test_private_revert_retry_after_lease_clear_failure_keeps_restored_target(
+        self, monkeypatch, tmp_path
+    ):
+        private_path, managed_path, backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        baseline = {
+            "availableModels": ["enterprise"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps(baseline), encoding="utf-8")
+        state = {
+            "workspace": "https://workspace.example.com",
+            "codex_models": [],
+            "claude_static_models": ["system.ai.claude-opus-4-8"],
+        }
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        save_lease = claude._save_private_picker_management
+        failed = False
+
+        def fail_first_clear(entries):
+            nonlocal failed
+            if not entries and not failed:
+                failed = True
+                raise RuntimeError("injected private lease clear failure")
+            save_lease(entries)
+
+        monkeypatch.setattr(claude, "_save_private_picker_management", fail_first_clear)
+        with pytest.raises(RuntimeError, match="injected private lease clear failure"):
+            claude.revert_private_settings(state)
+
+        assert json.loads(private_path.read_text()) == baseline
+        assert not backup_path.exists()
+        assert (
+            json.loads(metadata_path.read_text())["leases"]["private"]["pending"]["phase"]
+            == "revert_written"
+        )
+
+        assert claude.revert_private_settings(state) is True
+        assert json.loads(private_path.read_text()) == baseline
+        assert set(json.loads(metadata_path.read_text())["leases"]) == {"managed"}
+
+    def test_private_revert_without_picker_lease_is_journaled_for_retry(
+        self, monkeypatch, tmp_path
+    ):
+        private_path, managed_path, backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        original = {"companyPolicy": "original"}
+        private_path.write_text(json.dumps(original), encoding="utf-8")
+        managed_path.write_text("{}", encoding="utf-8")
+        state = {"workspace": "https://workspace.example.com", "codex_models": []}
+        claude.write_tool_config(state, "system.ai.claude-opus-4-8")
+        assert backup_path.exists()
+        save_lease = claude._save_private_picker_management
+        failed = False
+
+        def fail_first_clear(entries):
+            nonlocal failed
+            if not entries and not failed:
+                failed = True
+                raise RuntimeError("injected private lease clear failure")
+            save_lease(entries)
+
+        monkeypatch.setattr(claude, "_save_private_picker_management", fail_first_clear)
+        with pytest.raises(RuntimeError, match="injected private lease clear failure"):
+            claude.revert_private_settings(state)
+
+        assert json.loads(private_path.read_text()) == original
+        assert not backup_path.exists()
+        pending = json.loads(metadata_path.read_text())["leases"]["private"]["pending"]
+        assert pending["phase"] == "revert_written"
+        assert "target_document_sha256" in pending
+
+        externally_edited = json.loads(private_path.read_text())
+        externally_edited["external"] = "preserve"
+        private_path.write_text(json.dumps(externally_edited), encoding="utf-8")
+
+        assert claude.revert_private_settings(state) is True
+        assert json.loads(private_path.read_text()) == {
+            **original,
+            "external": "preserve",
+        }
+        assert not metadata_path.exists()
+
+    def test_reconfigure_after_failed_revert_reacquires_complete_private_baseline(
+        self, monkeypatch, tmp_path
+    ):
+        private_path, managed_path, backup_path, _metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        original = {
+            "companyPolicy": {"preserve": True},
+            "availableModels": ["enterprise"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps(original), encoding="utf-8")
+        state = {
+            "workspace": "https://workspace.example.com",
+            "codex_models": [],
+            "claude_static_models": ["system.ai.claude-opus-4-8"],
+        }
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        save_lease = claude._save_private_picker_management
+        failed = False
+
+        def fail_first_clear(entries):
+            nonlocal failed
+            if not entries and not failed:
+                failed = True
+                raise RuntimeError("injected private lease clear failure")
+            save_lease(entries)
+
+        monkeypatch.setattr(claude, "_save_private_picker_management", fail_first_clear)
+        with pytest.raises(RuntimeError, match="injected private lease clear failure"):
+            claude.revert_private_settings(state)
+        assert json.loads(private_path.read_text()) == original
+        assert not backup_path.exists()
+
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        assert backup_path.exists()
+        assert claude.revert_private_settings(state) is True
+        assert json.loads(private_path.read_text()) == original
+
+    def test_reconfigure_replaces_stale_backup_after_verified_revert_drift(
+        self, monkeypatch, tmp_path
+    ):
+        private_path, managed_path, backup_path, _metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        original = {
+            "companyPolicy": {"preserve": True},
+            "availableModels": ["enterprise"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps(original), encoding="utf-8")
+        state = {
+            "workspace": "https://workspace.example.com",
+            "codex_models": [],
+            "claude_static_models": ["system.ai.claude-opus-4-8"],
+        }
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        remove_backup = claude._remove_private_backup
+        failed = False
+
+        def fail_first_backup_cleanup():
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise RuntimeError("injected crash before backup cleanup")
+            remove_backup()
+
+        monkeypatch.setattr(claude, "_remove_private_backup", fail_first_backup_cleanup)
+        with pytest.raises(RuntimeError, match="injected crash before backup cleanup"):
+            claude.revert_private_settings(state)
+        assert json.loads(private_path.read_text()) == original
+        assert json.loads(backup_path.read_text()) == original
+
+        drifted = {**original, "external": "preserve this edit"}
+        private_path.write_text(json.dumps(drifted), encoding="utf-8")
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        assert json.loads(backup_path.read_text()) == drifted
+
+        assert claude.revert_private_settings(state) is True
+        assert json.loads(private_path.read_text()) == drifted
+
+    def test_verified_revert_exact_before_recreation_is_postwrite_drift(
+        self, monkeypatch, tmp_path
+    ):
+        private_path, managed_path, _backup_path, _metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        original = {
+            "companyPolicy": {"preserve": True},
+            "availableModels": ["enterprise"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps(original), encoding="utf-8")
+        state = {
+            "workspace": "https://workspace.example.com",
+            "codex_models": [],
+            "claude_static_models": ["system.ai.claude-opus-4-8"],
+        }
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        exact_before = json.loads(private_path.read_text())
+        save_lease = claude._save_private_picker_management
+        failed = False
+
+        def fail_first_clear(entries):
+            nonlocal failed
+            if not entries and not failed:
+                failed = True
+                raise RuntimeError("injected private lease clear failure")
+            save_lease(entries)
+
+        monkeypatch.setattr(claude, "_save_private_picker_management", fail_first_clear)
+        with pytest.raises(RuntimeError, match="injected private lease clear failure"):
+            claude.revert_private_settings(state)
+
+        private_path.write_text(json.dumps(exact_before), encoding="utf-8")
+        assert claude.revert_private_settings(state) is True
+        assert json.loads(private_path.read_text()) == exact_before
+
+    def test_prewrite_revert_drift_does_not_succeed_with_ucode_settings(
+        self, monkeypatch, tmp_path
+    ):
+        private_path, managed_path, backup_path, _metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        managed_path.write_text("{}", encoding="utf-8")
+        state = {
+            "workspace": "https://workspace.example.com",
+            "codex_models": [],
+            "claude_static_models": ["system.ai.claude-opus-4-8"],
+        }
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        assert not backup_path.exists()
+        begin_transition = claude._begin_picker_transition
+
+        def crash_after_journal(*args, **kwargs):
+            begin_transition(*args, **kwargs)
+            if kwargs.get("phase") == "reverting":
+                raise RuntimeError("injected crash after revert journal")
+
+        monkeypatch.setattr(claude, "_begin_picker_transition", crash_after_journal)
+        with pytest.raises(RuntimeError, match="injected crash after revert journal"):
+            claude.revert_private_settings(state)
+        settings = json.loads(private_path.read_text())
+        settings["external"] = "edited"
+        private_path.write_text(json.dumps(settings), encoding="utf-8")
+        monkeypatch.setattr(claude, "_begin_picker_transition", begin_transition)
+
+        with pytest.raises(RuntimeError, match="before its target was verified"):
+            claude.revert_private_settings(state)
+
+        remaining = json.loads(private_path.read_text())
+        assert remaining["external"] == "edited"
+        assert "apiKeyHelper" in remaining
+        assert not backup_path.exists()
+
+    def test_reconfigure_does_not_capture_unverified_prewrite_revert_drift(
+        self, monkeypatch, tmp_path
+    ):
+        private_path, managed_path, backup_path, _metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        managed_path.write_text("{}", encoding="utf-8")
+        state = {
+            "workspace": "https://workspace.example.com",
+            "codex_models": [],
+            "claude_static_models": ["system.ai.claude-opus-4-8"],
+        }
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        begin_transition = claude._begin_picker_transition
+
+        def crash_after_journal(*args, **kwargs):
+            begin_transition(*args, **kwargs)
+            if kwargs.get("phase") == "reverting":
+                raise RuntimeError("injected crash after revert journal")
+
+        monkeypatch.setattr(claude, "_begin_picker_transition", crash_after_journal)
+        with pytest.raises(RuntimeError, match="injected crash after revert journal"):
+            claude.revert_private_settings(state)
+        settings = json.loads(private_path.read_text())
+        settings["external"] = "edited"
+        private_path.write_text(json.dumps(settings), encoding="utf-8")
+        monkeypatch.setattr(claude, "_begin_picker_transition", begin_transition)
+
+        with pytest.raises(RuntimeError, match="unverified external changes"):
+            claude.write_tool_config(state, state["claude_static_models"][0])
+
+        assert not backup_path.exists()
+        assert json.loads(private_path.read_text())["apiKeyHelper"] == settings["apiKeyHelper"]
+
+    def test_managed_revert_retry_after_lease_clear_failure_clears_stale_lease(
+        self, monkeypatch, tmp_path
+    ):
+        private_path, managed_path, _backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        baseline = {
+            "availableModels": ["enterprise"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps(baseline), encoding="utf-8")
+        state = {
+            "workspace": "https://workspace.example.com",
+            "codex_models": [],
+            "claude_static_models": ["system.ai.claude-opus-4-8"],
+        }
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        save_lease = claude._save_managed_picker_management
+        failed = False
+
+        def fail_first_clear(path, entries):
+            nonlocal failed
+            if not entries and not failed:
+                failed = True
+                raise RuntimeError("injected managed lease clear failure")
+            save_lease(path, entries)
+
+        monkeypatch.setattr(claude, "_save_managed_picker_management", fail_first_clear)
+        with pytest.raises(RuntimeError, match="injected managed lease clear failure"):
+            claude.revert_managed_settings()
+
+        assert {
+            key: json.loads(managed_path.read_text())[key]
+            for key in claude.CLAUDE_MANAGED_PICKER_KEYS
+        } == baseline
+        assert (
+            "claude"
+            not in json.loads(managed_files.MANAGED_BACKUP_MANIFEST_PATH.read_text())["files"]
+        )
+
+        assert claude.revert_managed_settings() == "unchanged"
+        assert set(json.loads(metadata_path.read_text())["leases"]) == {"private"}
+
+    def test_managed_verified_revert_preserves_recreated_before_picker(self, monkeypatch, tmp_path):
+        private_path, managed_path, _backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        baseline = {
+            "companyPolicy": "preserve",
+            "availableModels": ["enterprise"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps(baseline), encoding="utf-8")
+        state = {
+            "workspace": "https://workspace.example.com",
+            "codex_models": [],
+            "claude_static_models": ["system.ai.claude-opus-4-8"],
+        }
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        applied = json.loads(managed_path.read_text())
+        applied_picker = {key: applied[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS}
+        save_lease = claude._save_managed_picker_management
+        failed = False
+
+        def fail_first_clear(path, entries):
+            nonlocal failed
+            if not entries and not failed:
+                failed = True
+                raise RuntimeError("injected managed lease clear failure")
+            save_lease(path, entries)
+
+        monkeypatch.setattr(claude, "_save_managed_picker_management", fail_first_clear)
+        with pytest.raises(RuntimeError, match="injected managed lease clear failure"):
+            claude.revert_managed_settings()
+        assert (
+            json.loads(metadata_path.read_text())["leases"]["managed"]["pending"]["phase"]
+            == "revert_written"
+        )
+
+        recreated = json.loads(managed_path.read_text())
+        recreated.update(applied_picker)
+        managed_path.write_text(json.dumps(recreated), encoding="utf-8")
+
+        assert claude.revert_managed_settings() == "unchanged"
+        written = json.loads(managed_path.read_text())
+        assert {key: written[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == applied_picker
+        assert written["companyPolicy"] == "preserve"
+        assert set(json.loads(metadata_path.read_text())["leases"]) == {"private"}
+
+    def test_managed_marker_failure_retains_manifest_for_exact_before_retry(
+        self, monkeypatch, tmp_path
+    ):
+        private_path, managed_path, _backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        baseline = {
+            "companyPolicy": "preserve",
+            "availableModels": ["enterprise"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps(baseline), encoding="utf-8")
+        state = {
+            "workspace": "https://workspace.example.com",
+            "codex_models": [],
+            "claude_static_models": ["system.ai.claude-opus-4-8"],
+        }
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        applied = json.loads(managed_path.read_text())
+        applied_picker = {key: applied[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS}
+        mark_written = claude._mark_picker_revert_written
+        failed = False
+
+        def fail_first_managed_marker(scope, path):
+            nonlocal failed
+            if scope == "managed" and not failed:
+                failed = True
+                raise RuntimeError("injected managed marker failure")
+            mark_written(scope, path)
+
+        monkeypatch.setattr(claude, "_mark_picker_revert_written", fail_first_managed_marker)
+        with pytest.raises(RuntimeError, match="injected managed marker failure"):
+            claude.revert_managed_settings()
+
+        manifest = json.loads(managed_files.MANAGED_BACKUP_MANIFEST_PATH.read_text())
+        assert "claude" in manifest["files"]
+        assert (
+            json.loads(metadata_path.read_text())["leases"]["managed"]["pending"]["phase"]
+            == "reverting"
+        )
+        recreated = json.loads(managed_path.read_text())
+        recreated.update(applied_picker)
+        managed_path.write_text(json.dumps(recreated), encoding="utf-8")
+
+        assert (
+            claude.revert_managed_settings() == "ucode entries removed; external changes preserved"
+        )
+        written = json.loads(managed_path.read_text())
+        assert {key: written[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == {
+            key: baseline[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS
+        }
+        assert written["companyPolicy"] == "preserve"
+        assert (
+            "claude"
+            not in json.loads(managed_files.MANAGED_BACKUP_MANIFEST_PATH.read_text())["files"]
+        )
+        assert set(json.loads(metadata_path.read_text())["leases"]) == {"private"}
+
+    @pytest.mark.parametrize(
+        "source_kwargs",
+        [
+            {"provider": "main.default.anthropic"},
+            {"parent_schema": "main.managed_models"},
+        ],
+        ids=["provider", "model-location"],
+    )
+    def test_fresh_workspace_restores_preexisting_picker(
+        self, monkeypatch, tmp_path, source_kwargs
+    ):
+        private_path, managed_path, _backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        original_picker = {
+            "availableModels": ["user-model"],
+            "enforceAvailableModels": False,
+            "modelPicker": {
+                "replaceBuiltInOptions": False,
+                "options": [{"model": "user-model", "label": "User"}],
+            },
+        }
+        original = {**original_picker, "companyPolicy": {"keep": True}}
+        private_path.write_text(json.dumps(original), encoding="utf-8")
+        managed_path.write_text(json.dumps(original), encoding="utf-8")
+        static_models = ["system.ai.claude-opus-4-8"]
+        workspace_a = {
+            "workspace": "https://workspace-a.example.com",
+            "codex_models": [],
+            "claude_static_models": static_models,
+        }
+
+        claude.write_tool_config(workspace_a, static_models[0])
+        assert json.loads(private_path.read_text())["availableModels"] == static_models
+        assert json.loads(managed_path.read_text())["availableModels"] == static_models
+
+        workspace_b = {"workspace": "https://workspace-b.example.com", "codex_models": []}
+        claude.write_tool_config(workspace_b, None, **source_kwargs)
+
+        for path in (private_path, managed_path):
+            written = json.loads(path.read_text())
+            assert {key: written[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == (
+                original_picker
+            )
+            assert written["companyPolicy"] == {"keep": True}
+        assert not metadata_path.exists()
+        manifest = json.loads(managed_files.MANAGED_BACKUP_MANIFEST_PATH.read_text())
+        owned_paths = manifest["files"]["claude"]["owned_paths"]
+        assert not any([key] in owned_paths for key in claude.CLAUDE_MANAGED_PICKER_KEYS)
+
+    def test_reacquisition_restores_each_scopes_new_picker_baseline(self, monkeypatch, tmp_path):
+        private_path, managed_path, _backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        picker_one = {
+            "availableModels": ["enterprise-one"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise-one"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps({**picker_one, "companyPolicy": "keep"}), encoding="utf-8")
+
+        static_models = ["system.ai.claude-opus-4-8"]
+        static_state = {
+            "workspace": "https://workspace-a.example.com",
+            "codex_models": [],
+            "claude_static_models": static_models,
+        }
+        scoped_state = {"workspace": "https://workspace-b.example.com", "codex_models": []}
+        claude.write_tool_config(dict(static_state), static_models[0])
+        metadata = json.loads(metadata_path.read_text())
+        assert set(metadata["leases"]) == {"private", "managed"}
+        for lease in metadata["leases"].values():
+            assert set(lease["keys"]) == set(claude.CLAUDE_MANAGED_PICKER_KEYS)
+        manifest = json.loads(managed_files.MANAGED_BACKUP_MANIFEST_PATH.read_text())
+        assert not any(
+            [key] in manifest["files"]["claude"]["owned_paths"]
+            for key in claude.CLAUDE_MANAGED_PICKER_KEYS
+        )
+        claude.write_tool_config(dict(scoped_state), None, parent_schema="main.models")
+
+        picker_two = {
+            "availableModels": ["enterprise-two"],
+            "enforceAvailableModels": True,
+            "modelPicker": {"options": [{"model": "enterprise-two"}]},
+        }
+        for path in (private_path, managed_path):
+            settings = json.loads(path.read_text())
+            settings.update(picker_two)
+            path.write_text(json.dumps(settings), encoding="utf-8")
+
+        claude.write_tool_config(dict(static_state), static_models[0])
+        claude.write_tool_config(dict(scoped_state), None, provider="main.default.anthropic")
+
+        for path in (private_path, managed_path):
+            settings = json.loads(path.read_text())
+            assert {key: settings[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == picker_two
+            assert settings["companyPolicy"] == "keep"
+        assert not metadata_path.exists()
+
+    def test_private_static_update_failure_keeps_committed_baseline(self, monkeypatch, tmp_path):
+        private_path, managed_path, _backup_path, _metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        baseline = {
+            "availableModels": ["enterprise"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps(baseline), encoding="utf-8")
+        state_a = {
+            "workspace": "https://workspace-a.example.com",
+            "codex_models": [],
+            "claude_static_models": ["system.ai.claude-opus-4-8"],
+        }
+        state_b = {
+            "workspace": "https://workspace-b.example.com",
+            "codex_models": [],
+            "claude_static_models": ["system.ai.claude-sonnet-4-6"],
+        }
+        claude.write_tool_config(dict(state_a), state_a["claude_static_models"][0])
+        write_json = claude.write_json_file
+
+        def fail_private_write(path, payload):
+            if path == private_path:
+                raise RuntimeError("injected private write failure")
+            write_json(path, payload)
+
+        monkeypatch.setattr(claude, "write_json_file", fail_private_write)
+        with pytest.raises(RuntimeError, match="injected private write failure"):
+            claude.write_tool_config(dict(state_b), state_b["claude_static_models"][0])
+        assert (
+            json.loads(private_path.read_text())["availableModels"]
+            == state_a["claude_static_models"]
+        )
+
+        monkeypatch.setattr(claude, "write_json_file", write_json)
+        claude.write_tool_config(dict(state_b), state_b["claude_static_models"][0])
+        claude.write_tool_config(
+            {"workspace": "https://workspace-c.example.com", "codex_models": []},
+            None,
+            parent_schema="main.models",
+        )
+        settings = json.loads(private_path.read_text())
+        assert {key: settings[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == baseline
+
+    def test_managed_static_update_failure_keeps_committed_baseline(self, monkeypatch, tmp_path):
+        private_path, managed_path, _backup_path, _metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        baseline = {
+            "availableModels": ["enterprise"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps(baseline), encoding="utf-8")
+        state_a = {
+            "workspace": "https://workspace-a.example.com",
+            "codex_models": [],
+            "claude_static_models": ["system.ai.claude-opus-4-8"],
+        }
+        state_b = {
+            "workspace": "https://workspace-b.example.com",
+            "codex_models": [],
+            "claude_static_models": ["system.ai.claude-sonnet-4-6"],
+        }
+        claude.write_tool_config(dict(state_a), state_a["claude_static_models"][0])
+        replace = managed_files._sudo_replace
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda path, text: (_ for _ in ()).throw(PermissionError("injected managed failure")),
+        )
+        with pytest.raises(managed_files.ManagedFileWriteUnavailable):
+            claude.write_tool_config(dict(state_b), state_b["claude_static_models"][0])
+        assert (
+            json.loads(managed_path.read_text())["availableModels"]
+            == state_a["claude_static_models"]
+        )
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", replace)
+        claude.write_tool_config(dict(state_b), state_b["claude_static_models"][0])
+        claude.write_tool_config(
+            {"workspace": "https://workspace-c.example.com", "codex_models": []},
+            None,
+            parent_schema="main.models",
+        )
+        settings = json.loads(managed_path.read_text())
+        assert {key: settings[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == baseline
+
+    def test_managed_release_repairs_snapshot_before_clearing_pending_lease(
+        self, monkeypatch, tmp_path
+    ):
+        private_path, managed_path, _backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        baseline = {
+            "availableModels": ["enterprise"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps(baseline), encoding="utf-8")
+        static_models = ["system.ai.claude-opus-4-8"]
+        claude.write_tool_config(
+            {
+                "workspace": "https://workspace-a.example.com",
+                "codex_models": [],
+                "claude_static_models": static_models,
+            },
+            static_models[0],
+        )
+        scoped_state = {"workspace": "https://workspace-b.example.com", "codex_models": []}
+        record_last_applied = managed_files._record_last_applied
+
+        def fail_record(*args, **kwargs):
+            raise RuntimeError("injected managed metadata failure")
+
+        monkeypatch.setattr(managed_files, "_record_last_applied", fail_record)
+        with pytest.raises(RuntimeError, match="injected managed metadata failure"):
+            claude.write_tool_config(dict(scoped_state), None, parent_schema="main.models")
+        assert "pending" in json.loads(metadata_path.read_text())["leases"]["managed"]
+        assert {
+            key: json.loads(managed_path.read_text())[key]
+            for key in claude.CLAUDE_MANAGED_PICKER_KEYS
+        } == baseline
+
+        monkeypatch.setattr(managed_files, "_record_last_applied", record_last_applied)
+        claude.write_tool_config(dict(scoped_state), None, parent_schema="main.models")
+
+        assert not metadata_path.exists()
+        manifest = json.loads(managed_files.MANAGED_BACKUP_MANIFEST_PATH.read_text())
+        entry = manifest["files"]["claude"]
+        assert not any([key] in entry["owned_paths"] for key in claude.CLAUDE_MANAGED_PICKER_KEYS)
+        assert (managed_files.MANAGED_BACKUP_DIR / entry["last_applied_file"]).read_text() == (
+            managed_path.read_text()
+        )
+
+    def test_managed_revert_uses_latest_acquisition_baseline(self, monkeypatch, tmp_path):
+        private_path, managed_path, _backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        picker_one = {
+            "availableModels": ["enterprise-one"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise-one"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps(picker_one), encoding="utf-8")
+        static_models = ["system.ai.claude-opus-4-8"]
+        static_state = {
+            "workspace": "https://workspace-a.example.com",
+            "codex_models": [],
+            "claude_static_models": static_models,
+        }
+        scoped_state = {"workspace": "https://workspace-b.example.com", "codex_models": []}
+        claude.write_tool_config(dict(static_state), static_models[0])
+        claude.write_tool_config(dict(scoped_state), None, parent_schema="main.models")
+
+        picker_two = {
+            "availableModels": ["enterprise-two"],
+            "enforceAvailableModels": True,
+            "modelPicker": {"options": [{"model": "enterprise-two"}]},
+        }
+        managed = json.loads(managed_path.read_text())
+        managed.update(picker_two)
+        managed_path.write_text(json.dumps(managed), encoding="utf-8")
+        claude.write_tool_config(dict(static_state), static_models[0])
+
+        assert claude.revert_managed_settings() == "restored"
+        restored = json.loads(managed_path.read_text())
+        assert {key: restored[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == picker_two
+        metadata = json.loads(metadata_path.read_text())
+        assert set(metadata["leases"]) == {"private"}
+
+    def test_managed_revert_preserves_whole_drifted_picker_group(self, monkeypatch, tmp_path):
+        private_path, managed_path, _backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        baseline = {
+            "availableModels": ["enterprise-one"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "enterprise-one"}]},
+        }
+        for path in (private_path, managed_path):
+            path.write_text(json.dumps(baseline), encoding="utf-8")
+        static_models = ["system.ai.claude-opus-4-8"]
+        claude.write_tool_config(
+            {
+                "workspace": "https://workspace-a.example.com",
+                "codex_models": [],
+                "claude_static_models": static_models,
+            },
+            static_models[0],
+        )
+        drift = {
+            "availableModels": ["enterprise-drift"],
+            "enforceAvailableModels": True,
+            "modelPicker": {"options": [{"model": "enterprise-drift"}]},
+        }
+        managed = json.loads(managed_path.read_text())
+        managed.update(drift)
+        managed_path.write_text(json.dumps(managed), encoding="utf-8")
+
+        assert (
+            claude.revert_managed_settings() == "ucode entries removed; external changes preserved"
+        )
+        restored = json.loads(managed_path.read_text())
+        assert {key: restored[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == drift
+        metadata = json.loads(metadata_path.read_text())
+        assert set(metadata["leases"]) == {"private"}
+
+    def test_fresh_workspace_migrates_legacy_picker_ownership(self, monkeypatch, tmp_path):
+        private_path, managed_path, backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        original_picker = {
+            "availableModels": ["user-model"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "user-model"}]},
+        }
+        stale_picker = {
+            "availableModels": ["system.ai.claude-opus-4-8"],
+            "enforceAvailableModels": True,
+            "modelPicker": {"options": [{"model": "system.ai.claude-opus-4-8"}]},
+        }
+        managed_path.write_text(json.dumps(original_picker), encoding="utf-8")
+        managed_files.reconcile_managed_file(
+            managed_path,
+            json.dumps(stale_picker),
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS],
+        )
+        private_path.write_text(json.dumps(stale_picker), encoding="utf-8")
+        backup_path.write_text(json.dumps(original_picker), encoding="utf-8")
+        monkeypatch.setattr(
+            claude,
+            "load_full_state",
+            lambda: {
+                "workspaces": {
+                    "https://workspace-a.example.com": {
+                        "managed_configs": {
+                            "claude": {"keys": [[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS]}
+                        }
+                    }
+                }
+            },
+        )
+
+        claude.write_tool_config(
+            {"workspace": "https://workspace-b.example.com", "codex_models": []},
+            None,
+            parent_schema="main.managed_models",
+        )
+
+        written = json.loads(private_path.read_text())
+        assert {key: written[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == original_picker
+        assert json.loads(backup_path.read_text()) == original_picker
+        assert not metadata_path.exists()
+
+    def test_legacy_migration_preserves_private_picker_changed_after_ucode(
+        self, monkeypatch, tmp_path
+    ):
+        private_path, managed_path, backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        stale_picker = {
+            "availableModels": ["system.ai.claude-opus-4-8"],
+            "enforceAvailableModels": True,
+            "modelPicker": {"options": [{"model": "system.ai.claude-opus-4-8"}]},
+        }
+        managed_path.write_text("{}", encoding="utf-8")
+        managed_files.reconcile_managed_file(
+            managed_path,
+            json.dumps(stale_picker),
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS],
+        )
+        edited_picker = {
+            "availableModels": ["user-edited-model"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "user-edited-model"}]},
+        }
+        private_path.write_text(json.dumps(edited_picker), encoding="utf-8")
+        backup_path.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(
+            claude,
+            "load_full_state",
+            lambda: {
+                "workspaces": {
+                    "https://workspace-a.example.com": {
+                        "managed_configs": {
+                            "claude": {"keys": [[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS]}
+                        }
+                    }
+                }
+            },
+        )
+
+        claude.write_tool_config(
+            {"workspace": "https://workspace-b.example.com", "codex_models": []},
+            None,
+            parent_schema="main.managed_models",
+        )
+
+        written_private = json.loads(private_path.read_text())
+        assert {
+            key: written_private[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS
+        } == edited_picker
+        assert (
+            not set(claude.CLAUDE_MANAGED_PICKER_KEYS) & json.loads(managed_path.read_text()).keys()
+        )
+        assert not metadata_path.exists()
+
+    def test_fresh_workspace_preserves_post_ucode_picker_edits(self, monkeypatch, tmp_path):
+        private_path, managed_path, _backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        private_path.write_text('{"companyPolicy": {"keep": true}}', encoding="utf-8")
+        managed_path.write_text('{"companyPolicy": {"keep": true}}', encoding="utf-8")
+        static_models = ["system.ai.claude-opus-4-8"]
+        claude.write_tool_config(
+            {
+                "workspace": "https://workspace-a.example.com",
+                "codex_models": [],
+                "claude_static_models": static_models,
+            },
+            static_models[0],
+        )
+        edited_picker = {
+            "availableModels": ["enterprise-model"],
+            "enforceAvailableModels": True,
+            "modelPicker": {
+                "replaceBuiltInOptions": True,
+                "options": [{"model": "enterprise-model", "label": "Enterprise"}],
+            },
+        }
+        for path in (private_path, managed_path):
+            settings = json.loads(path.read_text())
+            settings.update(edited_picker)
+            path.write_text(json.dumps(settings), encoding="utf-8")
+
+        claude.write_tool_config(
+            {"workspace": "https://workspace-b.example.com", "codex_models": []},
+            None,
+            parent_schema="main.managed_models",
+        )
+        claude.write_tool_config(
+            {"workspace": "https://workspace-c.example.com", "codex_models": []},
+            None,
+            provider="main.default.anthropic",
+        )
+
+        for path in (private_path, managed_path):
+            written = json.loads(path.read_text())
+            assert {key: written[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == edited_picker
+            assert written["companyPolicy"] == {"keep": True}
+        assert not metadata_path.exists()
+        manifest = json.loads(managed_files.MANAGED_BACKUP_MANIFEST_PATH.read_text())
+        owned_paths = manifest["files"]["claude"]["owned_paths"]
+        assert not any([key] in owned_paths for key in claude.CLAUDE_MANAGED_PICKER_KEYS)
+
+    def test_required_managed_picker_cleanup_cannot_fall_back_noninteractively(
+        self, monkeypatch, tmp_path
+    ):
+        private_path, managed_path, _backup_path, _metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        static_models = ["system.ai.claude-opus-4-8"]
+        claude.write_tool_config(
+            {
+                "workspace": "https://workspace-a.example.com",
+                "codex_models": [],
+                "claude_static_models": static_models,
+            },
+            static_models[0],
+        )
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+
+        with pytest.raises(RuntimeError, match="cannot be applied non-interactively"):
+            claude.write_tool_config(
+                {"workspace": "https://workspace-b.example.com", "codex_models": []},
+                None,
+                parent_schema="main.managed_models",
+            )
+
+        assert "availableModels" not in json.loads(private_path.read_text())
+        assert json.loads(managed_path.read_text())["availableModels"] == static_models
+
+    def test_static_picker_sidecar_failure_is_retry_safe(self, monkeypatch, tmp_path):
+        private_path, _managed_path, _backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        user_picker = {
+            "availableModels": ["user-model"],
+            "enforceAvailableModels": False,
+            "modelPicker": {"options": [{"model": "user-model"}]},
+        }
+        private_path.write_text(json.dumps(user_picker), encoding="utf-8")
+        static_models = ["system.ai.claude-opus-4-8"]
+        static_state = {
+            "workspace": "https://workspace-a.example.com",
+            "codex_models": [],
+            "claude_static_models": static_models,
+        }
+        begin_picker_transition = claude._begin_picker_transition
+        attempts = 0
+
+        def fail_first_sidecar_write(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("injected sidecar failure")
+            begin_picker_transition(*args, **kwargs)
+
+        monkeypatch.setattr(claude, "_begin_picker_transition", fail_first_sidecar_write)
+
+        with pytest.raises(RuntimeError, match="injected sidecar failure"):
+            claude.write_tool_config(dict(static_state), static_models[0])
+        assert {
+            key: json.loads(private_path.read_text())[key]
+            for key in claude.CLAUDE_MANAGED_PICKER_KEYS
+        } == user_picker
+
+        claude.write_tool_config(dict(static_state), static_models[0])
+        assert json.loads(private_path.read_text())["availableModels"] == static_models
+        assert metadata_path.exists()
+
+        claude.write_tool_config(
+            {"workspace": "https://workspace-b.example.com", "codex_models": []},
+            None,
+            parent_schema="main.managed_models",
+        )
+        written = json.loads(private_path.read_text())
+        assert {key: written[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == user_picker
+        assert not metadata_path.exists()
+
+    def test_picker_sidecar_supports_each_scope_and_both(self, monkeypatch, tmp_path):
+        private_path, managed_path, _backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        entries = {
+            key: {"original_exists": False, "last_applied": f"applied-{key}"}
+            for key in claude.CLAUDE_MANAGED_PICKER_KEYS
+        }
+
+        claude._save_private_picker_management(entries)
+        assert set(json.loads(metadata_path.read_text())["leases"]) == {"private"}
+        claude._save_managed_picker_management(managed_path, entries)
+        assert set(json.loads(metadata_path.read_text())["leases"]) == {"private", "managed"}
+        claude._save_private_picker_management({})
+        assert set(json.loads(metadata_path.read_text())["leases"]) == {"managed"}
+        claude._save_managed_picker_management(managed_path, {})
+        assert not metadata_path.exists()
+
+        metadata_path.write_text(
+            json.dumps({"version": claude.CLAUDE_PICKER_MANAGEMENT_VERSION, "leases": {}}),
+            encoding="utf-8",
+        )
+        with pytest.raises(RuntimeError, match="Invalid Claude picker metadata"):
+            claude._load_picker_management()
+
+    def test_malformed_private_picker_metadata_fails_without_changing_settings(
+        self, monkeypatch, tmp_path
+    ):
+        private_path, managed_path, _backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        private_path.write_text('{"user": "keep"}', encoding="utf-8")
+        managed_path.write_text('{"companyPolicy": "keep"}', encoding="utf-8")
+        metadata_path.write_text("{", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="Cannot parse Claude picker metadata"):
+            claude.write_tool_config(
+                {"workspace": "https://workspace-b.example.com", "codex_models": []},
+                None,
+                parent_schema="main.managed_models",
+            )
+
+        assert json.loads(private_path.read_text()) == {"user": "keep"}
+        assert json.loads(managed_path.read_text()) == {"companyPolicy": "keep"}
+
+    @pytest.mark.parametrize("managed_keys", [[], ["availableModels"]], ids=["empty", "partial"])
+    def test_incomplete_private_picker_metadata_fails_without_changing_settings(
+        self, monkeypatch, tmp_path, managed_keys
+    ):
+        private_path, managed_path, _backup_path, metadata_path = self._patch_files(
+            monkeypatch, tmp_path
+        )
+        private_path.write_text('{"user": "keep"}', encoding="utf-8")
+        managed_path.write_text('{"companyPolicy": "keep"}', encoding="utf-8")
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "version": claude.CLAUDE_PICKER_MANAGEMENT_VERSION,
+                    "leases": {
+                        "private": {
+                            "path": str(private_path),
+                            "keys": {
+                                key: {"original_exists": False, "last_applied": []}
+                                for key in managed_keys
+                            },
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(RuntimeError, match="Invalid Claude picker metadata"):
+            claude.write_tool_config(
+                {"workspace": "https://workspace-b.example.com", "codex_models": []},
+                None,
+                parent_schema="main.managed_models",
+            )
+
+        assert json.loads(private_path.read_text()) == {"user": "keep"}
+        assert json.loads(managed_path.read_text()) == {"companyPolicy": "keep"}
 
 
 class TestAddClaudeMcpServer:
@@ -1475,10 +2937,14 @@ class TestRegisterWebSearchMcp:
         # block the rest of `ucode claude` setup (state save, managed-key
         # marking, etc.) from completing.
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
-        monkeypatch.setattr(claude, "read_json_safe", lambda path: {})
-        monkeypatch.setattr(claude, "write_json_file", lambda path, payload: None)
+        _patch_private_json_store(monkeypatch, {})
         saved: list[dict] = []
         monkeypatch.setattr(claude, "save_state", lambda state: saved.append(state))
+        monkeypatch.setattr(
+            claude,
+            "load_state",
+            lambda: json.loads(json.dumps(saved[-1])) if saved else {},
+        )
         monkeypatch.setattr(claude, "remove_claude_mcp_server", lambda name, scope: False)
 
         def boom(name, entry, scope=claude.MCP_USER_SCOPE):
@@ -1911,13 +3377,12 @@ class TestWriteToolConfigPrunesStaleModelEnv:
 
     def _patch(self, monkeypatch, existing_settings):
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
-        monkeypatch.setattr(claude, "read_json_safe", lambda path: existing_settings)
         written: dict = {}
 
         def fake_write(path, payload):
             written["payload"] = payload
 
-        monkeypatch.setattr(claude, "write_json_file", fake_write)
+        _patch_private_json_store(monkeypatch, existing_settings, fake_write)
         monkeypatch.setattr(claude, "save_state", lambda state: None)
         monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: True)
         return written
@@ -2110,9 +3575,8 @@ class TestBuildClaudeArgv:
 class TestClaudeSmartRouting:
     def _capture_write(self, monkeypatch, existing, written):
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
-        monkeypatch.setattr(claude, "read_json_safe", lambda path: existing)
-        monkeypatch.setattr(
-            claude, "write_json_file", lambda path, payload: written.append(payload)
+        _patch_private_json_store(
+            monkeypatch, existing, lambda _path, payload: written.append(payload)
         )
         monkeypatch.setattr(claude, "save_state", lambda state: None)
         monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: True)
@@ -2289,3 +3753,136 @@ class TestWriteToolConfigBackup:
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
 
         assert not (tmp_path / "backup.json").exists()
+
+
+def test_write_tool_config_serializes_both_scopes_and_state_save(monkeypatch):
+    calls: list[str] = []
+    calls_lock = threading.Lock()
+    b_started = threading.Event()
+    errors: list[BaseException] = []
+
+    def record(label: str) -> None:
+        with calls_lock:
+            calls.append(label)
+
+    def private(state, _overlay, _compose):
+        label = state["workspace"]
+        record(f"{label}-private")
+        if label == "A":
+            assert b_started.wait(timeout=5)
+
+    def managed(state, *_args, **_kwargs):
+        record(f"{state['workspace']}-managed")
+
+    monkeypatch.setattr(claude, "_reconcile_private_settings", private)
+    monkeypatch.setattr(claude, "_reconcile_managed_settings", managed)
+    monkeypatch.setattr(claude, "save_state", lambda state: record(f"{state['workspace']}-save"))
+
+    def configure(label: str) -> None:
+        try:
+            if label == "B":
+                b_started.set()
+            claude.write_tool_config(
+                {"workspace": label, "codex_models": []},
+                "system.ai.claude-opus-4-8",
+            )
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread_a = threading.Thread(target=configure, args=("A",))
+    thread_b = threading.Thread(target=configure, args=("B",))
+    thread_a.start()
+    thread_b.start()
+    thread_a.join(timeout=5)
+    thread_b.join(timeout=5)
+
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
+    assert errors == []
+    assert calls == [
+        "A-private",
+        "A-managed",
+        "A-save",
+        "B-private",
+        "B-managed",
+        "B-save",
+    ]
+
+
+def test_web_search_registration_converges_to_latest_generation(monkeypatch):
+    persisted: dict = {}
+    persisted_lock = threading.Lock()
+    b_saved = threading.Event()
+    release_a = threading.Event()
+    picker_released = threading.Event()
+    registrations: list[tuple[str, str | None]] = []
+    errors: list[BaseException] = []
+
+    monkeypatch.setattr(claude, "_reconcile_private_settings", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(claude, "_reconcile_managed_settings", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(claude, "_web_search_mcp_is_current", lambda *_args: False)
+
+    def save(state):
+        with persisted_lock:
+            persisted.clear()
+            persisted.update(json.loads(json.dumps(state)))
+        if state.get("web_search_model") == "model-b":
+            b_saved.set()
+
+    def load():
+        with persisted_lock:
+            return json.loads(json.dumps(persisted))
+
+    def register(_workspace, model, profile=None):
+        registrations.append((model, profile))
+        if model == "model-a":
+
+            def probe_lock():
+                with claude._picker_management_lock():
+                    picker_released.set()
+
+            probe = threading.Thread(target=probe_lock)
+            probe.start()
+            assert picker_released.wait(timeout=5)
+            probe.join(timeout=5)
+            assert release_a.wait(timeout=5)
+        return True
+
+    monkeypatch.setattr(claude, "save_state", save)
+    monkeypatch.setattr(claude, "load_state", load)
+    monkeypatch.setattr(claude, "_register_web_search_mcp", register)
+
+    def configure(model: str, profile: str) -> None:
+        try:
+            claude.write_tool_config(
+                {
+                    "workspace": WS,
+                    "profile": profile,
+                    "web_search_model": model,
+                    "codex_models": [f"fallback-{model}"],
+                },
+                "system.ai.claude-opus-4-8",
+            )
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread_a = threading.Thread(target=configure, args=("model-a", "profile-a"))
+    thread_b = threading.Thread(target=configure, args=("model-b", "profile-b"))
+    thread_a.start()
+    assert picker_released.wait(timeout=5)
+    thread_b.start()
+    assert b_saved.wait(timeout=5)
+    release_a.set()
+    thread_a.join(timeout=5)
+    thread_b.join(timeout=5)
+
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
+    assert errors == []
+    assert registrations == [("model-a", "profile-a"), ("model-b", "profile-b")]
+    latest = load()
+    assert latest["web_search_model"] == "model-b"
+    assert latest["profile"] == "profile-b"
+    assert latest[claude.WEB_SEARCH_MCP_STATE_KEY] == claude._web_search_mcp_entry(
+        WS, "model-b", "profile-b"
+    )

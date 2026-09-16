@@ -33,6 +33,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.managed_config as managed_config_mod
     import ucode.managed_files as managed_files_mod
     import ucode.state as state_mod
+    from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
 
     state_dir = tmp_path / ".ucode"
@@ -48,6 +49,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(managed_files_mod, "MANAGED_BACKUP_DIR", backup_dir)
     monkeypatch.setattr(
         managed_files_mod, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
+    )
+    monkeypatch.setattr(
+        claude_mod, "CLAUDE_PICKER_MANAGEMENT_PATH", state_dir / "claude-picker-management.json"
     )
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
 

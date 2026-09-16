@@ -1116,9 +1116,10 @@ class TestCodexLaunch:
         path = tmp_path / "models.json"
         monkeypatch.setattr(codex.os, "replace", lambda *args: (_ for _ in ()).throw(OSError()))
 
-        with pytest.raises(RuntimeError, match=str(path)):
+        with pytest.raises(RuntimeError, match=str(path)) as exc_info:
             codex._write_model_catalog(path, {"models": [{"slug": "gpt-mps"}]})
 
+        assert str(path) in str(exc_info.value.__cause__)
         assert list(tmp_path.glob(".models.json.*.tmp")) == []
 
     def test_catalog_cleanup_does_not_mask_write_failure(self, tmp_path, monkeypatch):

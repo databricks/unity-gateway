@@ -165,6 +165,42 @@ class TestWriteHelpers:
         write_json_file(p, {"a": 1})
         data = json.loads(p.read_text())
         assert data == {"a": 1}
+        assert p.stat().st_mode & 0o777 == 0o600
+
+    def test_write_json_file_replace_failure_preserves_original(self, tmp_path, monkeypatch):
+        p = tmp_path / "out.json"
+        original = b'{"original": true}\n'
+        p.write_bytes(original)
+        original_entries = set(tmp_path.iterdir())
+
+        def fail_replace(source, target):
+            assert target == p
+            raise OSError("injected replace failure")
+
+        monkeypatch.setattr(config_io.os, "replace", fail_replace)
+
+        with pytest.raises(RuntimeError, match="Failed to write config file"):
+            write_json_file(p, {"replacement": True})
+
+        assert p.read_bytes() == original
+        assert set(tmp_path.iterdir()) == original_entries
+
+    def test_write_json_file_fsync_failure_removes_temp_file(self, tmp_path, monkeypatch):
+        p = tmp_path / "out.json"
+        original = b'{"original": true}\n'
+        p.write_bytes(original)
+        original_entries = set(tmp_path.iterdir())
+
+        def fail_fsync(_fd):
+            raise OSError("injected fsync failure")
+
+        monkeypatch.setattr(config_io.os, "fsync", fail_fsync)
+
+        with pytest.raises(RuntimeError, match=f"Failed to write config file: {p}"):
+            write_json_file(p, {"replacement": True})
+
+        assert p.read_bytes() == original
+        assert set(tmp_path.iterdir()) == original_entries
 
     def test_write_json_file_dry_run_no_write(self, tmp_path):
         set_dry_run(True)
