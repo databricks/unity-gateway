@@ -95,12 +95,12 @@ from ucode.mcp import (
     add_mcp_command,
     add_skills_command,
     agents_share_one_scope,
-    apply_managed_mcp_servers,
     available_mcp_clients,
     configure_mcp_command,
     configure_skills_mcp_command,
     configured_mcp_clients,
     purge_cross_workspace_mcp_residue,
+    reconcile_managed_mcp_servers,
     remove_mcp_command,
     remove_skills_command,
     revert_mcp_configs,
@@ -807,7 +807,15 @@ def configure_workspace_command(
                     [tool_name],
                     install_ai_tools=not is_dry_run(),
                 )
+                # Each iteration resolves from `state` and persists a copy, so carry the
+                # accumulated available_tools forward — otherwise the last agent's save drops
+                # the earlier ones, and the MCP reconcile below only sees that final agent.
+                state["available_tools"] = configured.get("available_tools") or state.get(
+                    "available_tools"
+                )
                 _print_configured_files(tool_name, configured)
+        if not is_dry_run():
+            _configure_managed_mcp_servers(managed)
         _summarize_managed_config(managed, state["workspace"])
         return 0
 
@@ -856,6 +864,11 @@ def configure_workspace_command(
         state = configure_selected_tools(state, picked, install_ai_tools=False)
     else:
         state = configure_selected_tools(state, picked)
+
+    # This workspace has no managed config, so unregister any MCP servers a prior managed
+    # workspace registered — otherwise switching workspaces leaves the old registry behind.
+    if not is_dry_run():
+        _configure_managed_mcp_servers(None)
 
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
@@ -1920,35 +1933,25 @@ def _print_budget_panel(recommendation: dict, tool: str, managed: dict | None = 
         console.print(panel)
 
 
-def _register_managed_mcp_servers(managed: dict, tool: str, state: dict) -> None:
-    """Apply the managed config's MCP servers to ``tool`` and persist what was registered.
+def _configure_managed_mcp_servers(managed: dict | None) -> None:
+    """Register the managed config's MCP servers for every enabled MCP-client agent.
 
-    Persisting under ``managed_mcp_servers`` lets the next launch diff against it, so a server the
-    admin later removes from the config is unregistered rather than left behind. A failure here never
-    blocks the launch — the agent still starts, just without the workspace's MCP servers.
+    Runs during ``ug configure`` after the enabled agents are configured, so a workspace-published
+    server reaches each agent's `/mcp` list without the developer re-adding it. ``managed`` is None
+    when the (now-current) workspace has no managed config: the reconcile then unregisters any
+    servers a prior managed workspace registered, so switching workspaces resets the MCP registry.
+    Best-effort: a failure warns and leaves the rest of configure intact.
     """
+    managed = managed or {}
+    agents = {tool for tool in managed_enabled_tools(managed) if tool in MCP_CLIENTS}
     try:
-        registered = apply_managed_mcp_servers(
-            managed,
-            tool,
-            state["workspace"],
-            state.get("profile"),
-            use_pat=bool(state.get("use_pat")),
-        )
+        registered = reconcile_managed_mcp_servers(managed, agents)
     except RuntimeError as exc:
         print_warning(f"Could not register your workspace's MCP servers: {exc}")
         return
-    # Persist even when empty so a config that dropped its last server clears the prior registration.
-    others = [
-        server
-        for server in (state.get("managed_mcp_servers") or [])
-        if isinstance(server, dict) and tool not in (server.get("clients") or [])
-    ]
-    state["managed_mcp_servers"] = others + registered
-    save_state(state)
     if registered:
         names = ", ".join(str(server["name"]) for server in registered)
-        print_note(f"Registered workspace MCP server(s) for {TOOL_SPECS[tool]['display']}: {names}")
+        print_note(f"Registered workspace MCP server(s): {names}")
 
 
 def _managed_skill_locations(managed: dict) -> list[str]:
@@ -2318,11 +2321,10 @@ def _launch_tool(
             )
         if recommendation is not None:
             _print_budget_panel(recommendation, tool, managed)
-        # Register the managed config's MCP servers so they reach the agent's `/mcp` list. Nothing
-        # else on this path does it — the config only lists them — so without this a
-        # workspace-published server never shows up. Skipped on --dry-run, which writes nothing.
+        # Download the managed config's skills so they reach the agent's `/skills` picker. MCP
+        # servers are registered at `ug configure`, not here. Skipped on --dry-run, which writes
+        # nothing.
         if managed is not None and not is_dry_run():
-            _register_managed_mcp_servers(managed, tool, state)
             _download_managed_skills(managed, state)
         if tool == "claude":
             if provider:

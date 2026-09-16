@@ -1798,7 +1798,6 @@ class TestManagedSkillsOnLaunch:
             patch("ucode.cli.configure_tool", return_value=state),
             patch("ucode.cli.get_databricks_token", return_value="tok"),
             patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
-            patch("ucode.cli.apply_managed_mcp_servers", return_value=[]),
             patch("ucode.cli.launch_agent"),
             patch(
                 "ucode.cli.download_managed_skills_on_launch", return_value=["main.default"]
@@ -2648,6 +2647,132 @@ class TestConfigureAgentsSelection:
 
         assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
         assert configured == ["claude", "codex"]
+
+    def test_managed_config_registers_mcp_servers_after_configuring_agents(self, monkeypatch):
+        # The managed branch registers the config's MCP servers for the enabled agents once they are
+        # configured — after the per-agent configure loop, so the agents' MCP configs already exist.
+        import ucode.cli as cli_mod
+
+        state = {**MINIMAL_STATE, "available_tools": []}
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        managed = {
+            "enabled_agents": {"claude": {}, "codex": {}},
+            "mcp_servers": {"names": ["x.y.z"]},
+        }
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s: (managed, False))
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: True)
+        monkeypatch.setattr(cli_mod, "resolve_state", lambda m, s, tool: s)
+        monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
+        order: list[str] = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda s, tools, **kwargs: order.append(f"configure:{tools[0]}") or s,
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "_configure_managed_mcp_servers",
+            lambda m: order.append("mcp") or None,
+        )
+
+        assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
+        assert order == ["configure:claude", "configure:codex", "mcp"]
+
+    def test_managed_configure_accumulates_available_tools_for_all_agents(self, monkeypatch):
+        # Regression: each agent is configured from a fresh copy of `state`, and
+        # configure_selected_tools persists available_tools from that copy. Without carrying the
+        # accumulated set forward, the last agent's save drops the earlier agents, so the MCP
+        # reconcile would only see the final agent. Every enabled agent must survive in
+        # available_tools by the time MCP registration runs.
+        import ucode.cli as cli_mod
+
+        state = {**MINIMAL_STATE, "available_tools": []}
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(
+            cli_mod,
+            "refresh_managed_config",
+            lambda s: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
+        )
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: True)
+        # Mirror production: resolve_state hands each iteration a fresh copy of `state`.
+        monkeypatch.setattr(cli_mod, "resolve_state", lambda m, s, tool: dict(s))
+        monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
+
+        def fake_configure(s, tools, **kwargs):
+            # Mirror configure_selected_tools: merge onto a copy, never the caller's dict.
+            merged = dict(s)
+            merged["available_tools"] = sorted(set(s.get("available_tools") or []) | set(tools))
+            return merged
+
+        monkeypatch.setattr(cli_mod, "configure_selected_tools", fake_configure)
+        seen: dict = {}
+        monkeypatch.setattr(
+            cli_mod,
+            "_configure_managed_mcp_servers",
+            lambda m: seen.update(available=list(state.get("available_tools") or [])),
+        )
+
+        assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
+        assert seen["available"] == ["claude", "codex"]
+
+    def test_configure_managed_mcp_servers_scopes_to_enabled_mcp_clients(self, monkeypatch):
+        import ucode.cli as cli_mod
+
+        seen: dict = {}
+        monkeypatch.setattr(
+            cli_mod,
+            "reconcile_managed_mcp_servers",
+            lambda managed, agents: seen.update(agents=agents) or [{"name": "x-y-z", "url": "u"}],
+        )
+        notes: list[str] = []
+        monkeypatch.setattr(cli_mod, "print_note", lambda msg: notes.append(msg))
+        # `pi` is enabled but not an MCP client, so it is excluded from the registration scope.
+        cli_mod._configure_managed_mcp_servers(
+            {"enabled_agents": {"claude": {}, "codex": {}, "pi": {}}}
+        )
+        assert seen["agents"] == {"claude", "codex"}
+        assert notes and "x-y-z" in notes[0]
+
+    def test_configure_managed_mcp_servers_warns_and_continues_on_failure(self, monkeypatch):
+        import ucode.cli as cli_mod
+
+        monkeypatch.setattr(
+            cli_mod,
+            "reconcile_managed_mcp_servers",
+            lambda managed, agents: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        warned: list[str] = []
+        monkeypatch.setattr(cli_mod, "print_warning", lambda msg: warned.append(msg))
+        # Must not raise: a failed MCP registration warns but never aborts configure.
+        cli_mod._configure_managed_mcp_servers({"enabled_agents": {"claude": {}}})
+        assert warned and "boom" in warned[0]
+
+    def test_unmanaged_workspace_reconciles_managed_mcp_servers(self, monkeypatch):
+        # Switching to a workspace with no managed config must still run the MCP reconcile (with a
+        # None managed config) so servers a prior managed workspace registered are unregistered,
+        # rather than left behind — otherwise the MCP registry never resets across workspaces.
+        import ucode.cli as cli_mod
+
+        state = {**MINIMAL_STATE, "available_tools": []}
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s: (None, False))
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: t == "claude")
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda s, tools, **k: {**s, "available_tools": tools},
+        )
+        calls: list = []
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda m: calls.append(m))
+
+        assert (
+            cli_mod.configure_workspace_command(
+                selected_tools=["claude"], workspaces=[("https://unmanaged.com", None)]
+            )
+            == 0
+        )
+        assert calls == [None]
 
     def test_configures_available_subset_by_default(self, monkeypatch):
         """A workspace with no OpenAI models still configures claude and pi."""

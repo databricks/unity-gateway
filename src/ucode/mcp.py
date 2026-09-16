@@ -735,104 +735,96 @@ def _is_app_mcp_server(server: dict) -> bool:
     return stripped.endswith("/mcp")
 
 
-def managed_mcp_server_entry(name: str, mcp_type: str, workspace: str) -> tuple[str, str] | None:
-    """Rebuild an ``(entry_name, url)`` pair from a managed config's ``{name, type}`` entry.
-
-    ``entry_name`` is the identifier the server is registered under with the agent (dots stripped,
-    since the agent CLIs reject them); ``url`` is what the proxy forwards to. Returns None for a
-    type/name this can't reconstruct, so the caller skips it rather than registering a broken server.
-    Mirrors the shapes :func:`_resolve_mcp_selection` builds for the interactive picker, so a managed
-    and a locally-configured copy of the same server land on the same name.
-
-    The ai-gateway ``McpServer.name`` field is interpreted per ``type`` (see the proto): a UC name for
-    a UC service, a Genie space id for a genie space, a connection name for external, and — as ucode
-    serializes them — a `<catalog>.<schema>` for vector-search / uc-functions.
-    """
-    if mcp_type == "sql":
-        return "databricks-sql", f"{workspace}/api/2.0/mcp/sql"
-    if mcp_type == "external":
-        return name, f"{workspace}/api/2.0/mcp/external/{name}"
-    if mcp_type == "mcp-service":
-        # Stored in dash form (`system-ai-dbsql`), which is already the registered name; the URL wants
-        # the UC dotted form. Only the catalog and schema separators (first two dashes) become dots —
-        # the service name keeps its own dashes/underscores.
-        parts = name.split("-", 2)
-        if len(parts) != 3:
-            return None
-        return name, build_mcp_service_url(workspace, ".".join(parts))
-    if mcp_type == "genie-space":
-        # `name` is the Genie space id (per the proto); register under the id-based name the
-        # interactive path falls back to, and point the URL at the space.
-        return f"databricks-genie-{name}", f"{workspace}/api/2.0/mcp/genie/{name}"
-    if mcp_type in ("vector-search", "uc-functions"):
-        # `name` is a `<catalog>.<schema>`; the URL is workspace-relative on that pair, and the
-        # registered name is the same dot-free slug the interactive path uses.
-        catalog, _, schema = name.partition(".")
-        if not catalog or not schema or "." in schema:
-            return None
-        url_path = "vector-search" if mcp_type == "vector-search" else "functions"
-        name_prefix = (
-            "databricks-vector-search" if mcp_type == "vector-search" else "databricks-functions"
-        )
-        entry_name = _catalog_schema_server_name(name_prefix, catalog, schema, set())
-        return entry_name, f"{workspace}/api/2.0/mcp/{url_path}/{catalog}/{schema}"
-    return None
-
-
-def apply_managed_mcp_servers(
-    managed: dict, tool: str, workspace: str, profile: str | None = None, *, use_pat: bool = False
+def _resolve_managed_mcp_servers(
+    selector: dict, workspace: str, profile: str | None, clients: list[str]
 ) -> list[dict]:
-    """Register the managed config's MCP servers with ``tool`` so they reach its `/mcp` list.
+    """Resolve a managed ``mcp_servers`` selector into MCP server entries for ``clients``.
 
-    The managed config only lists ``{name, type}`` entries; nothing else on the launch path turns
-    them into agent MCP registrations, so without this a workspace-published server never shows up.
-    Reconstructs each entry's ``(name, url)`` (see :func:`managed_mcp_server_entry`), diffs against
-    what ucode previously registered, and applies the change for the launching tool only. Entries
-    whose URL can't be rebuilt (e.g. ``app``, which needs an off-workspace host) are skipped.
-
-    Returns the server dicts registered (for state persistence); an empty list when the config names
-    none, or names only types that can't yet be reconstructed.
+    ``selector`` is the normalized ``NamesOrLocation`` (``{names?, unity_catalog_location?}``): a
+    ``unity_catalog_location`` registers every MCP service discovered under that
+    ``<catalog>.<schema>``; ``names`` registers exactly those services, each a full
+    ``<catalog>.<schema>.<service>`` name. Discovery and narrowing reuse
+    :func:`_resolve_location_mcp_servers` with no ``original_servers``, so the managed set is
+    tracked on its own and never entangles the developer's own servers or the skills connection.
+    A name that isn't a full three-part FQN is skipped with a warning, so an admin's typo in one
+    entry never blocks the developer from the entries that are valid.
     """
-    if tool not in MCP_CLIENTS:
+    location = selector.get("unity_catalog_location")
+    if isinstance(location, str) and location:
+        return _resolve_location_mcp_servers(workspace, profile, clients, location, [])
+    names = [n for n in (selector.get("names") or []) if isinstance(n, str) and n]
+    if not names:
         return []
-    entries = managed.get("mcp_servers")
-    if not isinstance(entries, list):
+    malformed = sorted(
+        n for n in names if n.count(".") != 2 or not all(part for part in n.split("."))
+    )
+    if malformed:
+        print_warning(
+            "Skipping managed mcp_servers name(s) that aren't full "
+            f"`<catalog>.<schema>.<service>` names: {', '.join(malformed)}."
+        )
+    names = [n for n in names if n not in set(malformed)]
+    if not names:
         return []
+    # Group the valid FQNs by their `<catalog>.<schema>` so each schema is discovered once, e.g.
+    # {"system.ai": {"system.ai.slack", "system.ai.github"}, "main.default": {"main.default.custom"}}.
+    by_schema: dict[str, set[str]] = {}
+    for name in names:
+        by_schema.setdefault(".".join(name.split(".")[:2]), set()).add(name)
     working: list[dict] = []
     seen: set[str] = set()
-    skipped: list[str] = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("name")
-        mcp_type = entry.get("type")
-        if not isinstance(name, str) or not name or not isinstance(mcp_type, str):
-            continue
-        resolved = managed_mcp_server_entry(name, mcp_type, workspace)
-        if resolved is None:
-            skipped.append(f"{name} ({mcp_type})")
-            continue
-        entry_name, url = resolved
-        if entry_name in seen:
-            continue
-        seen.add(entry_name)
-        working.append({"name": entry_name, "url": url, "auth": "proxy", "clients": [tool]})
-    if skipped:
-        print_warning(
-            "Skipping managed MCP server(s) ucode can't yet auto-register from the workspace "
-            f"config: {', '.join(skipped)}. Add them with `ucode configure mcp`."
-        )
-    if not working:
-        return []
-    # Diff against the managed servers ucode registered on a prior launch so a removed entry is
-    # unregistered and an unchanged one is a no-op. Only this tool's managed servers are considered.
+    for schema in sorted(by_schema):
+        for server in _resolve_location_mcp_servers(
+            workspace, profile, clients, schema, [], services=by_schema[schema]
+        ):
+            name = server.get("name")
+            if isinstance(name, str) and name not in seen:
+                seen.add(name)
+                working.append(server)
+    return working
+
+
+def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]:
+    """Register the managed config's ``mcp_servers`` for ``agents`` and reconcile removals.
+
+    Called from ``ug configure`` once the enabled agents are configured. Resolves the managed
+    ``mcp_servers`` selector (see :func:`_resolve_managed_mcp_servers`) into server entries for the
+    MCP-client ``agents`` that are installed and configured, diffs them against the managed set a
+    prior configure registered (persisted under ``managed_mcp_servers``), and applies the change so
+    a server the admin later drops is unregistered rather than left behind. Returns the servers now
+    registered — an empty list when the config names none, which clears any prior managed set.
+
+    The managed set is tracked separately from the developer's own ``mcp_servers`` so reconciling
+    never touches a server they configured themselves. Raises ``RuntimeError`` on a discovery or
+    registration failure; the caller keeps it best-effort.
+    """
+    selector = managed.get("mcp_servers")
+    selector = selector if isinstance(selector, dict) else {}
     state = load_state()
     previous = [
-        server
-        for server in (state.get("managed_mcp_servers") or [])
-        if isinstance(server, dict) and tool in (server.get("clients") or [])
+        server for server in (state.get("managed_mcp_servers") or []) if isinstance(server, dict)
     ]
-    apply_mcp_server_changes(previous, working, [tool], workspace, profile, use_pat=use_pat)
+    if not selector and not previous:
+        return []
+    configured = set(configured_mcp_clients(state, available_mcp_clients()))
+    scope = {agent for agent in agents if agent in configured}
+    if scope:
+        workspace, profile, clients = setup_mcp_clients(
+            state, "Managed MCP Servers", agents=scope, action_note="Registering for"
+        )
+        working = _resolve_managed_mcp_servers(selector, workspace, profile, clients)
+    else:
+        # No enabled MCP client is installed and configured, so there is nothing to register — but
+        # still unregister any servers a prior configure registered (removal is a local no-auth op).
+        workspace = state.get("workspace")
+        if not workspace:
+            raise RuntimeError("Workspace is not configured. Run `ucode configure` first.")
+        profile, clients, working = state.get("profile"), [], []
+    apply_mcp_server_changes(
+        previous, working, clients, workspace, profile, use_pat=bool(state.get("use_pat"))
+    )
+    state["managed_mcp_servers"] = working
+    save_state(state)
     return working
 
 
