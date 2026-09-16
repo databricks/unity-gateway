@@ -72,6 +72,9 @@ _HTTP_GET_RETRY_BASE_SECONDS = 1.0
 _HTTP_GET_RETRY_MAX_SECONDS = 5.0
 _HTTP_GET_RETRY_AFTER_JITTER_SECONDS = 0.25
 _ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES = 2
+# The models endpoint's documented `limit` maximum, and a bound on the walk behind it.
+_ANTHROPIC_MODELS_PAGE_SIZE = 1000
+_ANTHROPIC_MODELS_MAX_PAGES = 20
 
 
 @dataclass(frozen=True)
@@ -2680,13 +2683,53 @@ def list_all_mcp_services(
     return sorted(names), None
 
 
-def _get_anthropic_models_json(workspace: str, token: str) -> tuple[dict | list | None, str | None]:
+def _get_anthropic_models_page(
+    workspace: str, token: str, after_id: str | None
+) -> tuple[dict | list | None, str | None]:
     hostname = workspace_hostname(workspace)
+    params: dict[str, str] = {"limit": str(_ANTHROPIC_MODELS_PAGE_SIZE)}
+    if after_id:
+        params["after_id"] = after_id
     return _http_get_json(
-        f"https://{hostname}{ANTHROPIC_MODELS_PATH}",
+        f"https://{hostname}{ANTHROPIC_MODELS_PATH}?{urlencode(params)}",
         token,
         max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
     )
+
+
+def _get_anthropic_models(workspace: str, token: str) -> tuple[list[dict] | None, str | None]:
+    """Every model the gateway's Anthropic endpoint advertises, following ``has_more``.
+
+    The endpoint implements Anthropic's cursor pagination — ``limit`` (20 by default, 1000 at
+    most), ``after_id``, ``has_more`` — so one unpaged read stops at the first page and drops
+    the rest, the same way the model-provider-service listing used to. The cursor is the last
+    id in ``data``: the response's ``last_id`` is documented as the ``after_id`` for the next
+    page, but the gateway leaves it null even when it sets ``has_more``, so a walk that
+    trusted it would stall after one page.
+
+    Returns (models, reason). ``models`` is None only when the first page failed; a blip
+    later in the walk returns what was collected, like the model-services walk.
+    """
+    models: list[dict] = []
+    after_id: str | None = None
+    seen_cursors: set[str] = set()
+    for _ in range(_ANTHROPIC_MODELS_MAX_PAGES):
+        payload, reason = _get_anthropic_models_page(workspace, token, after_id)
+        if payload is None:
+            if not models:
+                return None, reason
+            break
+        data = cast(dict, payload) if isinstance(payload, dict) else {}
+        page = [model for model in data.get("data") or [] if isinstance(model, dict)]
+        models.extend(page)
+        if not data.get("has_more"):
+            break
+        cursor = data.get("last_id") or (page[-1].get("id") if page else None)
+        if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+            break
+        seen_cursors.add(cursor)
+        after_id = cursor
+    return models, None
 
 
 def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | None]:
@@ -2702,17 +2745,14 @@ def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | 
 
 def list_anthropic_model_catalog(workspace: str, token: str) -> AnthropicModelCatalog:
     """Return advertised Anthropic model ids and their optional display names."""
-    payload, reason = _get_anthropic_models_json(workspace, token)
-    if payload is None:
+    models, reason = _get_anthropic_models(workspace, token)
+    if models is None:
         return AnthropicModelCatalog(model_ids=[], model_id_to_display_name={}, error_msg=reason)
 
-    data = cast(dict, payload) if isinstance(payload, dict) else {}
     model_ids: list[str] = []
     display_names: dict[str, str] = {}
     seen: set[str] = set()
-    for model in data.get("data", []):
-        if not isinstance(model, dict):
-            continue
+    for model in models:
         model_id = model.get("id")
         if isinstance(model_id, str) and model_id and model_id not in seen:
             seen.add(model_id)
@@ -2736,14 +2776,13 @@ def discover_claude_models(workspace: str, token: str) -> tuple[dict[str, str], 
     describes why the dict is empty (HTTP error, network error, or no models
     matching the expected naming convention).
     """
-    payload, reason = _get_anthropic_models_json(workspace, token)
-    if payload is None:
+    models, reason = _get_anthropic_models(workspace, token)
+    if models is None:
         return {}, reason
 
-    data = cast(dict, payload) if isinstance(payload, dict) else {}
     raw_ids = [
         m["id"]
-        for m in data.get("data", [])
+        for m in models
         if isinstance(m.get("id"), str) and not m["id"].endswith("-anthropic")
     ]
 

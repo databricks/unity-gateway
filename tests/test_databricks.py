@@ -306,7 +306,7 @@ class TestDiscoverClaudeModels:
             "opaque-model-id",
         ]
         assert captured["request"] == (
-            f"{WS}/ai-gateway/anthropic/v1/models",
+            f"{WS}/ai-gateway/anthropic/v1/models?limit=1000",
             "token",
             {"max_retries": 2},
         )
@@ -386,6 +386,116 @@ class TestDiscoverClaudeModels:
 
         assert reason is None
         assert models["fable"] == "databricks-claude-fable-5"
+
+    @staticmethod
+    def _paging_gateway(pages: dict, calls: list | None = None):
+        """Serve `pages` keyed by the request's `after_id` (None for the first page)."""
+
+        def fake_get(url, token, **_kwargs):
+            _, _, query = url.partition("?")
+            after = parse_qs(query).get("after_id", [None])[0]
+            if calls is not None:
+                calls.append(after)
+            page = pages.get(after)
+            if page is None:
+                return None, f"HTTP 500 for after_id={after}"
+            return page, None
+
+        return fake_get
+
+    def test_follows_has_more_until_every_model_is_collected(self, monkeypatch):
+        # The endpoint caps a page at `limit` (20 by default) and reports `has_more`, so a
+        # single unpaged read stops at the first page and drops every model after it.
+        pages = {
+            None: {
+                "data": [{"id": "system.ai.claude-opus-4-8"}],
+                "has_more": True,
+                "first_id": None,
+                "last_id": None,
+            },
+            "system.ai.claude-opus-4-8": {
+                "data": [{"id": "system.ai.claude-sonnet-5", "display_name": "Sonnet 5"}],
+                "has_more": False,
+                "first_id": None,
+                "last_id": None,
+            },
+        }
+        calls: list = []
+        monkeypatch.setattr(db_mod, "_http_get_json", self._paging_gateway(pages, calls))
+
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token")
+
+        assert catalog.error_msg is None
+        assert catalog.model_ids == ["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"]
+        assert catalog.model_id_to_display_name == {"system.ai.claude-sonnet-5": "Sonnet 5"}
+        # The cursor comes from the last item in `data`: the gateway leaves the documented
+        # `last_id` null even when it sets `has_more`.
+        assert calls == [None, "system.ai.claude-opus-4-8"]
+
+    def test_a_family_advertised_only_on_a_later_page_is_still_discovered(self, monkeypatch):
+        pages = {
+            None: {"data": [{"id": "system.ai.claude-opus-5"}], "has_more": True, "last_id": None},
+            "system.ai.claude-opus-5": {
+                "data": [{"id": "system.ai.claude-sonnet-5"}],
+                "has_more": False,
+                "last_id": None,
+            },
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", self._paging_gateway(pages))
+
+        models, reason = db_mod.discover_claude_models(WS, "token")
+
+        assert reason is None
+        assert models == {
+            "opus": "system.ai.claude-opus-5",
+            "sonnet": "system.ai.claude-sonnet-5",
+        }
+
+    def test_last_id_is_the_cursor_when_the_gateway_sends_one(self, monkeypatch):
+        pages = {
+            None: {"data": [{"id": "a"}], "has_more": True, "last_id": "cursor-1"},
+            "cursor-1": {"data": [{"id": "b"}], "has_more": False, "last_id": None},
+        }
+        calls: list = []
+        monkeypatch.setattr(db_mod, "_http_get_json", self._paging_gateway(pages, calls))
+
+        models, reason = db_mod.list_anthropic_models(WS, "token")
+
+        assert reason is None
+        assert models == ["a", "b"]
+        assert calls == [None, "cursor-1"]
+
+    def test_a_repeated_cursor_stops_the_walk(self, monkeypatch):
+        # A gateway that keeps handing back the same cursor must not spin.
+        calls: list = []
+        pages = {
+            None: {"data": [{"id": "a"}], "has_more": True, "last_id": "stuck"},
+            "stuck": {"data": [{"id": "b"}], "has_more": True, "last_id": "stuck"},
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", self._paging_gateway(pages, calls))
+
+        models, reason = db_mod.list_anthropic_models(WS, "token")
+
+        assert reason is None
+        assert models == ["a", "b"]
+        assert calls == [None, "stuck"]
+
+    def test_a_failure_mid_walk_keeps_the_models_already_collected(self, monkeypatch):
+        pages = {None: {"data": [{"id": "a"}], "has_more": True, "last_id": None}}
+        monkeypatch.setattr(db_mod, "_http_get_json", self._paging_gateway(pages))
+
+        models, reason = db_mod.list_anthropic_models(WS, "token")
+
+        assert models == ["a"]
+        assert reason is None
+
+    def test_a_first_page_failure_surfaces_the_reason(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "_http_get_json", self._paging_gateway({}))
+
+        models, reason = db_mod.list_anthropic_models(WS, "token")
+
+        assert models == []
+        assert reason == "HTTP 500 for after_id=None"
 
 
 def _model_service(model_id: str) -> dict:
