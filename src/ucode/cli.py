@@ -15,7 +15,7 @@ import typer
 from rich.panel import Panel
 from typer.core import TyperCommand
 
-from ucode import custom_oauth
+from ucode import custom_oauth, skills_status
 from ucode.agents import (
     TOOL_SPECS,
     LaunchOptions,
@@ -106,7 +106,6 @@ from ucode.mcp import (
     remove_skills_command,
     remove_skills_locations_command,
     revert_mcp_configs,
-    skill_locations_for_client,
 )
 from ucode.skills_download import (
     configure_location_skills_download_command,
@@ -968,29 +967,26 @@ def status() -> int:
         console.print()
 
     print_heading("Skills")
-    skill_mcp_entry = next((s for s in mcp_servers if s.get("kind") == SKILLS_MCP_KIND), None)
-    if not skill_mcp_entry:
-        print_kv("Skills", "not configured")
+    skills = skills_status.collect(state)
+    print_kv("Downloaded skills", str(len(skills.downloaded)) if skills.downloaded else "none")
+    scopes = skills.mcp.by_agent
+    if not skills.mcp.configured:
+        print_kv("Skill MCP", "not configured")
+    elif agents_share_one_scope(scopes):
+        locations = next(iter(scopes.values()), [])
+        print_kv(
+            "Skill MCP Locations",
+            ", ".join(locations) if locations else "none — utility tools only",
+        )
+        configured_agents = [str(MCP_CLIENTS[client]["display"]) for client in scopes]
+        print_kv("Configured", ", ".join(configured_agents) if configured_agents else "none")
     else:
-        scopes = {
-            client: skill_locations_for_client(skill_mcp_entry, client)
-            for client in (skill_mcp_entry.get("clients") or [])
-            if client in MCP_CLIENTS
-        }
-        if agents_share_one_scope(scopes):
-            locations = next(iter(scopes.values()), [])
+        for client, locations in scopes.items():
             print_kv(
-                "Skill MCP Locations",
+                f"{MCP_CLIENTS[client]['display']} skill MCP locations",
                 ", ".join(locations) if locations else "none — utility tools only",
             )
-            configured_agents = [str(MCP_CLIENTS[client]["display"]) for client in scopes]
-            print_kv("Configured", ", ".join(configured_agents) if configured_agents else "none")
-        else:
-            for client, locations in scopes.items():
-                print_kv(
-                    f"{MCP_CLIENTS[client]['display']} skill MCP locations",
-                    ", ".join(locations) if locations else "none — utility tools only",
-                )
+    print_note("Run `ug skill status` (or `--json`) for downloaded skills and change commands.")
 
     print_heading("Tracing")
     tracing = state.get("tracing") or {}
@@ -1433,6 +1429,36 @@ def skills_remove(
     except KeyboardInterrupt:
         print_err("Interrupted.")
         raise typer.Exit(130) from None
+
+
+@skill_app.command("status")
+def skills_status_cmd(
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit machine-readable JSON to stdout instead of a report."),
+    ] = False,
+    path: Annotated[
+        str | None,
+        typer.Option("--path", help="Limit downloaded skills to this base directory."),
+    ] = None,
+) -> None:
+    """Show configured skills: downloaded skills and the skills MCP scope.
+
+    Reports the exact ``ug skill add``/``ug skill remove`` inputs for each, so an agent can act on
+    the output without the interactive picker. Stale download records (skill dir deleted out of
+    band) are pruned as a side effect.
+    """
+    try:
+        status = skills_status.collect(load_state(), base=path)
+    except (RuntimeError, ValueError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    if as_json:
+        import json
+
+        print(json.dumps(skills_status.to_json(status), indent=2))
+    else:
+        skills_status.render(status)
 
 
 @app.command("mcp-proxy", hidden=True)

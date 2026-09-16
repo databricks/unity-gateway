@@ -169,6 +169,11 @@ def list_downloaded() -> list[dict]:
     return _load()
 
 
+def record_dirs_missing(record: dict) -> bool:
+    """Whether any of a record's on-disk directories no longer exists."""
+    return any(not Path(directory).exists() for directory in record.get("dirs") or [])
+
+
 def attribution_for_dir(path: str | Path) -> dict | None:
     """The install whose directories include ``path``, or None if unattributed."""
     target = _norm(str(path))

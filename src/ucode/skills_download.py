@@ -22,6 +22,7 @@ from ucode.skills_api import (
 from ucode.skills_state import (
     SkillInstall,
     list_downloaded,
+    record_dirs_missing,
     record_downloads,
     records_for_fqns,
     records_for_schema,
@@ -443,14 +444,9 @@ def configure_skills_download_picker_command(path: str | None = None) -> int:
 # --- Removing and listing downloaded skills ---------------------------------
 
 
-def _record_dirs_missing(record: dict) -> bool:
-    """Whether any of a record's on-disk directories no longer exists."""
-    return any(not Path(directory).exists() for directory in record.get("dirs") or [])
-
-
 def _download_label(record: dict) -> str:
     label = f"{record.get('fqn')}  ({record.get('scope')}: {record.get('base')})"
-    return f"{label}  (missing)" if _record_dirs_missing(record) else label
+    return f"{label}  (missing)" if record_dirs_missing(record) else label
 
 
 def _removal_choice(record: dict, index: int) -> questionary.Choice:
