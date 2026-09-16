@@ -107,7 +107,7 @@ def _custom_oauth_lock(
     cache_dir: Path,
     redirect_url: str,
     *,
-    timeout_seconds: float = CUSTOM_OAUTH_LOCK_TIMEOUT_SECONDS,
+    timeout_seconds: float,
 ) -> Iterator[None]:
     """Serialize helpers sharing a callback port with a POSIX file lock.
 
@@ -167,7 +167,11 @@ def get_custom_client_token(
             redirect_url=config["redirect_url"],
             scopes=config["scopes"],
         )
-        with _custom_oauth_lock(Path(cache.filename).parent, config["redirect_url"]):
+        with _custom_oauth_lock(
+            Path(cache.filename).parent,
+            config["redirect_url"],
+            timeout_seconds=CUSTOM_OAUTH_LOCK_TIMEOUT_SECONDS,
+        ):
             # Read only after acquiring the lock: another helper may have just
             # completed login or rotated the refresh token while we waited.
             credentials = cache.load()

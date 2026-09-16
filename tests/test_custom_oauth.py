@@ -25,14 +25,18 @@ runner = CliRunner()
 class TestCustomOAuthLock:
     def test_releases_lock_when_login_fails(self, tmp_path):
         with pytest.raises(ValueError, match="login failed"):
-            with _custom_oauth_lock(tmp_path, "http://localhost:8020/callback"):
+            with _custom_oauth_lock(
+                tmp_path, "http://localhost:8020/callback", timeout_seconds=1
+            ):
                 raise ValueError("login failed")
-        with _custom_oauth_lock(tmp_path, "http://127.0.0.1:8020/other-callback"):
+        with _custom_oauth_lock(
+            tmp_path, "http://127.0.0.1:8020/other-callback", timeout_seconds=1
+        ):
             assert len(list(tmp_path.glob("*.lock"))) == 1
 
     def test_times_out_with_holder_pid_without_entering(self, tmp_path):
         entered = False
-        with _custom_oauth_lock(tmp_path, "http://localhost:8020/callback"):
+        with _custom_oauth_lock(tmp_path, "http://localhost:8020/callback", timeout_seconds=1):
             with pytest.raises(CustomOAuthLockTimeout, match=r"held by PID \d+"):
                 with _custom_oauth_lock(
                     tmp_path,
