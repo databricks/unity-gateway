@@ -51,6 +51,11 @@ On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
 
+Use `--model-location <catalog>.<schema>` on `ug claude` or `ug codex` for a launch-only schema
+override. It does not change the saved model location or provider preference. An explicit
+`--provider` similarly overrides a saved model location for that launch; the two explicit options
+cannot be supplied together.
+
 For a scoped Claude launch, ug enables Claude Code's native gateway discovery; Claude Code owns
 any model-cache update after it starts. ug does not fetch or rewrite Claude's private model cache
 before launch. Codex continues to receive a launch-scoped model catalog from ug. Set
@@ -64,9 +69,14 @@ precedence over the developer environment switch.
 ```bash
 ug configure
 ug configure --agents claude,codex
+ug configure --agents claude,codex --model-location main.models
 ug configure --workspace https://first.databricks.com
 ug configure --profile DEFAULT --agents claude,codex
 ```
+
+`--model-location` saves the Unity Catalog schema per selected Claude/Codex agent and replaces its
+saved Model Provider Service choice. Reconfiguring that agent without the option clears the saved
+location without changing the other agent.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
@@ -142,6 +152,8 @@ ug skills remove --skill main.default.my-skill
 | `ug usage` | Show AI Gateway spend and budget |
 | `ug revert` | Clear saved state and restore backed-up config files |
 | `ug upgrade` | Upgrade Unity Gateway |
+| `ug configure --agents claude,codex --model-location main.models` | Save a Unity Catalog model location for the selected Claude/Codex agents |
+| `ug claude/codex --model-location main.models` | Launch with a temporary Unity Catalog model-location override |
 
 Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`

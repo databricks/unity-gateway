@@ -724,6 +724,25 @@ class TestSubcommandRouting:
         assert launch_env == ["1"]
         assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_parent_and_model_location_are_mutually_exclusive(self, tool):
+        result = runner.invoke(
+            app,
+            [tool, "--model-location", "main.models", "--parent", "main.legacy"],
+        )
+
+        assert result.exit_code == 1
+        assert "Use only one of --model-location or --parent" in result.output
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_launch_help_uses_model_location_and_hides_parent(self, tool):
+        result = runner.invoke(app, [tool, "--help"])
+
+        output = _strip_ansi(result.output)
+        assert result.exit_code == 0, result.output
+        assert "--model-location" in output
+        assert "--parent" not in output
+
     def test_codex_model_location_is_forwarded(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
             result = runner.invoke(app, ["codex", "--model-location", "main.default"])
@@ -749,13 +768,15 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 1
         assert "--provider and --model-location cannot be used together" in result.output
-
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     def test_invalid_model_location_is_rejected(self, tool):
         result = runner.invoke(app, [tool, "--model-location", "main"])
 
         assert result.exit_code == 1
-        assert "--model-location must be `<catalog>.<schema>`." in _strip_ansi(result.output)
+        assert (
+            "--model-location must be a literal `<catalog>.<schema>` identifier."
+            in _strip_ansi(result.output)
+        )
 
     def test_claude_enable_model_discovery_is_hidden_from_help(self):
         result = runner.invoke(app, ["claude", "--help"])
@@ -1330,6 +1351,147 @@ class TestClaudeModelFlag:
 
         assert cli_mod._scoped_model_discovery_enabled() is False
         assert cli_mod._scoped_model_discovery_enabled(force=True) is True
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_bare_launch_reuses_saved_model_location(self, tool):
+        state = {
+            **MINIMAL_STATE,
+            "model_locations": {tool: "main.saved"},
+            "claude_models": {},
+            "codex_models": [],
+        }
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state) as mock_shared,
+            patch(
+                "ucode.cli.resolve_launch_model",
+                return_value=(state, "system.ai.default"),
+            ) as mock_resolve,
+            patch("ucode.cli.configure_tool", return_value=state) as mock_configure,
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.launch_agent"),
+        ):
+            result = runner.invoke(app, [tool])
+
+        assert result.exit_code == 0, result.output
+        assert mock_shared.call_args.kwargs["skip_model_discovery"] is True
+        mock_resolve.assert_not_called()
+        assert mock_configure.call_args.args[2] is None
+        assert mock_configure.call_args.kwargs["parent_schema"] == "main.saved"
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_explicit_model_location_overrides_saved_provider_without_mutating_state(self, tool):
+        saved_provider = f"main.providers.{tool}"
+        state = {
+            **MINIMAL_STATE,
+            "model_locations": {tool: "main.saved"},
+            "provider_services": {tool: saved_provider},
+        }
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state) as mock_shared,
+            patch(
+                "ucode.cli.resolve_launch_model",
+                return_value=(state, "system.ai.default"),
+            ),
+            patch("ucode.cli.configure_tool", return_value=state) as mock_configure,
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.launch_agent") as mock_launch,
+        ):
+            result = runner.invoke(app, [tool, "--model-location", "main.override"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_shared.call_args.kwargs["skip_model_discovery"] is True
+        assert mock_configure.call_args.kwargs["provider"] is None
+        assert mock_configure.call_args.kwargs["parent_schema"] == "main.override"
+        launch_state = mock_launch.call_args.args[1]
+        if tool == "codex":
+            assert launch_state["_codex_launch_parent_schema"] == "main.override"
+        assert not launch_state.get("provider_services", {}).get(tool)
+        assert state["model_locations"][tool] == "main.saved"
+        assert state["provider_services"][tool] == saved_provider
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_explicit_provider_overrides_saved_model_location_without_mutating_state(self, tool):
+        state = {**MINIMAL_STATE, "model_locations": {tool: "main.saved"}}
+        provider = f"main.providers.{tool}"
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state) as mock_shared,
+            patch("ucode.cli.resolve_provider_models", return_value=(None, None, False)),
+            patch("ucode.cli.configure_tool", return_value=state) as mock_configure,
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.launch_agent"),
+        ):
+            result = runner.invoke(app, [tool, "--provider", provider])
+
+        assert result.exit_code == 0, result.output
+        assert mock_shared.call_args.kwargs["skip_model_discovery"] is True
+        assert mock_configure.call_args.kwargs["provider"] == provider
+        assert mock_configure.call_args.kwargs["parent_schema"] is None
+        assert state["model_locations"][tool] == "main.saved"
+        assert "provider_services" not in state
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_explicit_provider_and_model_location_are_mutually_exclusive(self, tool):
+        result = runner.invoke(
+            app,
+            [
+                tool,
+                "--provider",
+                "main.providers.service",
+                "--model-location",
+                "main.models",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "--provider and --model-location cannot be used together" in result.output
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_invalid_launch_model_location_fails_before_bootstrap(self, tool):
+        with patch("ucode.cli.ensure_bootstrap_dependencies") as mock_bootstrap:
+            result = runner.invoke(app, [tool, "--model-location", "not-a-schema"])
+
+        assert result.exit_code == 1
+        assert "literal `<catalog>.<schema>`" in _strip_ansi(result.output)
+        mock_bootstrap.assert_not_called()
+
+    def test_managed_provider_conflict_reports_raw_explicit_provider(self):
+        state = dict(MINIMAL_STATE)
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "model_provider_service": "main.admin.anthropic",
+                    }
+                }
+            }
+        }
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
+            patch("ucode.cli._fetch_budget_recommendation", return_value=None),
+            patch("ucode.cli.configure_tool", return_value=state),
+            patch("ucode.cli.launch_agent"),
+        ):
+            result = runner.invoke(
+                app,
+                ["claude", "--provider", "main.user.anthropic"],
+            )
+
+        assert result.exit_code == 1
+        assert "provider main.user.anthropic" in _strip_ansi(result.output)
+        assert "managed provider main.admin.anthropic" in _strip_ansi(result.output)
 
 
 class TestGeminiProviderLaunch:
@@ -2557,6 +2719,45 @@ def test_cursor_launch_uses_unity_gateway_branding():
 
 
 class TestConfigureAgentFlag:
+    def test_help_lists_model_location(self):
+        result = runner.invoke(app, ["configure", "--help"])
+
+        assert result.exit_code == 0, result.output
+        assert "--model-location" in _strip_ansi(result.output)
+
+    def test_invalid_model_location_fails_before_install(self):
+        with patch("ucode.cli.install_databricks_cli") as mock_install:
+            result = runner.invoke(
+                app,
+                ["configure", "--agents", "claude,codex", "--model-location", "main"],
+            )
+
+        assert result.exit_code == 1
+        assert "literal `<catalog>.<schema>`" in _strip_ansi(result.output)
+        mock_install.assert_not_called()
+
+    def test_model_location_forwards_to_selected_agents(self):
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "configure",
+                    "--agents",
+                    "claude,codex",
+                    "--model-location",
+                    "main.models",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_called_once_with(
+            selected_tools=["claude", "codex"],
+            model_location="main.models",
+        )
+
     def test_no_flag_calls_configure_all(self):
         with (
             patch("ucode.cli.install_databricks_cli"),
@@ -3008,6 +3209,200 @@ class TestConfigureAgentsSelection:
         assert cli_mod.configure_workspace_command(selected_tools=["claude", "codex"]) == 0
         assert install_calls == ["claude", "codex"]
         assert configured == [["claude", "codex"]]
+
+    def test_model_location_persists_clears_selected_providers_and_scopes_configs(
+        self, monkeypatch
+    ):
+        state = {
+            **MINIMAL_STATE,
+            "model_locations": {"codex": "other.models"},
+            "provider_services": {
+                "claude": "main.providers.anthropic",
+                "codex": "main.providers.openai",
+                "gemini": "main.providers.gemini",
+            },
+        }
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "configure_selected_tools", lambda s, tools: s)
+        configure_calls = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_tool",
+            lambda *args, **kwargs: configure_calls.append((args, kwargs)) or args[1],
+        )
+
+        assert (
+            cli_mod.configure_workspace_command(
+                selected_tools=["claude"],
+                workspaces=[("https://example.databricks.com", None)],
+                model_location="main.models",
+            )
+            == 0
+        )
+
+        assert state["model_locations"] == {
+            "claude": "main.models",
+            "codex": "other.models",
+        }
+        assert state["provider_services"] == {
+            "codex": "main.providers.openai",
+            "gemini": "main.providers.gemini",
+        }
+        assert [(args[0], kwargs["parent_schema"]) for args, kwargs in configure_calls] == [
+            ("claude", "main.models"),
+        ]
+
+    def test_reconfigure_without_model_location_clears_saved_location(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "model_locations": {"claude": "main.models", "codex": "other.models"},
+            "provider_services": {"claude": "main.providers.anthropic"},
+        }
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "configure_selected_tools", lambda s, tools: s)
+
+        assert (
+            cli_mod.configure_workspace_command(
+                selected_tools=["claude"],
+                workspaces=[("https://example.databricks.com", None)],
+            )
+            == 0
+        )
+
+        assert state["model_locations"] == {"codex": "other.models"}
+        assert state["provider_services"] == {"claude": "main.providers.anthropic"}
+
+    def test_codex_model_location_is_scoped_without_changing_claude(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "provider_services": {
+                "claude": "main.providers.anthropic",
+                "codex": "main.providers.openai",
+            },
+        }
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "configure_selected_tools", lambda s, tools: s)
+        configure_calls = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_tool",
+            lambda *args, **kwargs: configure_calls.append((args, kwargs)) or args[1],
+        )
+
+        assert (
+            cli_mod.configure_workspace_command(
+                selected_tools=["codex"],
+                workspaces=[("https://example.databricks.com", None)],
+                model_location="main.models",
+            )
+            == 0
+        )
+
+        assert state["model_locations"] == {"codex": "main.models"}
+        assert state["provider_services"] == {"claude": "main.providers.anthropic"}
+        assert configure_calls[0][0][0] == "codex"
+        assert configure_calls[0][1]["parent_schema"] == "main.models"
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_model_location_configures_without_globally_discovered_models(self, monkeypatch, tool):
+        state = {
+            **MINIMAL_STATE,
+            "claude_models": {},
+            "codex_models": [],
+            "available_tools": [],
+        }
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(
+            cli_mod,
+            "check_gateway_endpoint",
+            lambda *a, **k: pytest.fail("global availability must not gate a model location"),
+        )
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        configure_calls = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_tool",
+            lambda *args, **kwargs: configure_calls.append((args, kwargs)) or args[1],
+        )
+
+        assert (
+            cli_mod.configure_workspace_command(
+                selected_tools=[tool],
+                workspaces=[("https://example.databricks.com", None)],
+                model_location="main.models",
+            )
+            == 0
+        )
+
+        assert configure_calls[0][0] == (tool, state)
+        assert configure_calls[0][1]["parent_schema"] == "main.models"
+        assert state["model_locations"] == {tool: "main.models"}
+
+    def test_managed_config_detection_does_not_reset_saved_locations(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "model_locations": {"claude": "main.models"},
+        }
+        managed = {"enabled_agents": {}}
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s: (managed, False))
+        monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
+
+        assert (
+            cli_mod.configure_workspace_command(
+                selected_tools=["claude"],
+                workspaces=[("https://example.databricks.com", None)],
+            )
+            == 0
+        )
+
+        assert state["model_locations"] == {"claude": "main.models"}
+
+    def test_unavailable_selection_does_not_reset_saved_location(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "model_locations": {"claude": "main.models"},
+            "claude_models": {},
+        }
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *a, **k: False)
+
+        with pytest.raises(RuntimeError, match="No coding agents are available"):
+            cli_mod.configure_workspace_command(
+                selected_tools=["claude"],
+                workspaces=[("https://example.databricks.com", None)],
+            )
+
+        assert state["model_locations"] == {"claude": "main.models"}
+
+    def test_unrelated_agent_configure_preserves_model_locations(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "model_locations": {"claude": "main.models", "codex": "other.models"},
+        }
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "configure_selected_tools", lambda s, tools: s)
+
+        assert (
+            cli_mod.configure_workspace_command(
+                selected_tools=["gemini"],
+                workspaces=[("https://example.databricks.com", None)],
+            )
+            == 0
+        )
+
+        assert state["model_locations"] == {
+            "claude": "main.models",
+            "codex": "other.models",
+        }
 
     def test_provider_picker_gated_by_interactive_path(self, monkeypatch):
         import ucode.cli as cli_mod

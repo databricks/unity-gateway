@@ -13,6 +13,7 @@ from ucode.state import (
     build_agent_state,
     clear_state,
     get_applied_managed_update_time,
+    get_model_location,
     get_provider_service,
     hydrate_state,
     load_full_state,
@@ -20,6 +21,7 @@ from ucode.state import (
     mark_tool_managed,
     save_state,
     set_applied_managed_update_time,
+    set_model_location,
     set_provider_service,
 )
 
@@ -184,6 +186,26 @@ class TestProviderService:
         state = set_provider_service(state, "claude", None)
         assert get_provider_service(state, "claude") is None
         assert get_provider_service(state, "codex") == "main.a.openai"
+
+
+class TestModelLocation:
+    def test_get_returns_none_when_unset_or_invalid(self):
+        assert get_model_location({}, "claude") is None
+        assert get_model_location({"model_locations": 123}, "claude") is None
+
+    def test_set_and_clear(self):
+        state = set_model_location({}, "claude", "main.models")
+        set_model_location(state, "codex", "other.models")
+        assert get_model_location(state, "claude") == "main.models"
+        assert get_model_location(state, "codex") == "other.models"
+
+        set_model_location(state, "claude", None)
+        assert get_model_location(state, "claude") is None
+        assert get_model_location(state, "codex") == "other.models"
+
+    def test_survives_workspace_roundtrip(self):
+        save_state(set_model_location({"workspace": FAKE_WS}, "claude", "main.models"))
+        assert get_model_location(load_state(), "claude") == "main.models"
 
 
 class TestAppliedManagedUpdateTime:

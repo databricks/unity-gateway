@@ -396,11 +396,21 @@ class TestRenderOverlay:
         assert "Databricks-Model-Provider-Service" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
     def test_parent_adds_discovery_header(self):
-        overlay, _ = claude.render_overlay(WS, "s4", parent_schema="main.default")
+        overlay, _ = claude.render_overlay(
+            WS,
+            None,
+            claude_models={
+                "opus": "system.ai.claude-opus-4-8",
+                "sonnet": "system.ai.claude-sonnet-4-6",
+            },
+            parent_schema="main.default",
+        )
         assert (
             "Databricks-Model-Service-Parent-Schema: main.default"
             in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
         )
+        assert "ANTHROPIC_DEFAULT_OPUS_MODEL" not in overlay["env"]
+        assert "ANTHROPIC_DEFAULT_SONNET_MODEL" not in overlay["env"]
 
     def test_bedrock_provider_pins_model_ids(self):
         provider_models = {
