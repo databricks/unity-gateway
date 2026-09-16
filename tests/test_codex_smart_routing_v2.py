@@ -84,29 +84,25 @@ class TestLaunchCodex:
             )
         ]
 
-    def test_scoped_smart_launch_preserves_routing_header_without_catalog(self, monkeypatch):
-        calls = []
-        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "0")
-        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.145.0")
-        monkeypatch.setattr(codex, "_smart_routing_config_model", lambda _state: "gpt-start")
+    @pytest.mark.parametrize(
+        "scope_state",
+        [
+            {"_codex_launch_provider": "main.default.openai"},
+            {"_codex_launch_parent_schema": "main.default"},
+        ],
+    )
+    def test_direct_scoped_launch_rejects_smart_routing_before_v2(self, monkeypatch, scope_state):
+        launch_v2 = []
+        monkeypatch.setattr(v2, "launch_codex", lambda *args, **kwargs: launch_v2.append(kwargs))
 
-        def launch_v2(_state, _tool_args, **kwargs):
-            calls.append(kwargs)
-            raise SystemExit(0)
-
-        monkeypatch.setattr(v2, "launch_codex", launch_v2)
-
-        with pytest.raises(SystemExit):
+        with pytest.raises(RuntimeError, match="cannot be used.*model location"):
             codex.launch(
-                {"workspace": WS, "_codex_launch_parent_schema": "main.default"},
+                {"workspace": WS, **scope_state},
                 [],
                 options=LaunchOptions(launch_smart_routing=True),
             )
 
-        overlay = calls[0]["render_overlay"](WS, "gpt-start")
-        provider = overlay["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]
-        assert provider["http_headers"][codex.MODEL_SERVICE_PARENT_SCHEMA_HEADER] == "main.default"
-        assert "model_catalog_json" not in overlay
+        assert launch_v2 == []
 
     @pytest.mark.parametrize(
         "tool_args",

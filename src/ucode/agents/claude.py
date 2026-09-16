@@ -151,6 +151,18 @@ def _minimum_version_requirement_message(version: str) -> str:
     )
 
 
+def _model_discovery_minimum_version_error() -> str | None:
+    """Return the discovery blocker after the effective launch source is known."""
+    version = agent_version(SPEC["binary"])
+    parsed_version = _parse_version(version)
+    if parsed_version is None or parsed_version >= MINIMUM_CLAUDE_VERSION:
+        return None
+    return (
+        f"Model discovery requires Claude Code {MINIMUM_CLAUDE_VERSION_TEXT} or newer. "
+        f"Your current version is Claude Code {version}. Upgrade Claude Code and try again."
+    )
+
+
 def minimum_version_error() -> str | None:
     if (
         os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) != "1"
@@ -1336,11 +1348,20 @@ def launch(
     scoped_discovery = scoped_model_discovery_enabled(
         override=override if isinstance(override, bool) else None
     )
+    if options.launch_smart_routing and scoped_model_source:
+        raise RuntimeError(
+            "Claude Code smart routing cannot be used with a Model Provider Service or model "
+            "location. Disable smart routing or remove the scoped model source and try again."
+        )
     requested_discovery = os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1"
     launch_discovery = scoped_discovery if scoped_model_source else requested_discovery
     manage_discovery_env = launch_discovery if scoped_model_source or requested_discovery else None
 
     with launch_discovery_environment(manage_discovery_env):
+        if workspace and launch_discovery:
+            version_error = _model_discovery_minimum_version_error()
+            if version_error:
+                raise RuntimeError(version_error)
         if state.get("claude_relayed"):
             _launch_relayed(state, binary, tool_args)
             return
@@ -1361,7 +1382,6 @@ def launch(
                 compose_settings=_compose_v2_settings,
                 launch_model_args=_launch_model_args,
                 model_name=_maybe_add_1m_suffix,
-                enable_gateway_model_discovery=not scoped_model_source or launch_discovery,
             )
             return
         if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):

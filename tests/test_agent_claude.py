@@ -1636,21 +1636,64 @@ class TestClaudeLaunch:
             compose_settings=claude._compose_v2_settings,
             launch_model_args=claude._launch_model_args,
             model_name=claude._maybe_add_1m_suffix,
-            enable_gateway_model_discovery=True,
         )
 
-    def test_v2_scoped_launch_disabled_uses_native_picker(self, monkeypatch):
-        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "0")
+    @pytest.mark.parametrize(
+        "scope_state",
+        [
+            {"_claude_launch_provider": "main.default.anthropic"},
+            {"_claude_launch_parent_schema": "main.default"},
+        ],
+    )
+    def test_direct_scoped_launch_rejects_smart_routing_before_v2(self, monkeypatch, scope_state):
         launch_v2 = Mock()
         monkeypatch.setattr(v2, "launch_claude", launch_v2)
 
-        claude.launch(
-            {"workspace": WS, "_claude_launch_parent_schema": "main.default"},
-            [],
-            options=LaunchOptions(launch_smart_routing=True),
-        )
+        with pytest.raises(RuntimeError, match="cannot be used.*model location"):
+            claude.launch(
+                {"workspace": WS, **scope_state},
+                [],
+                options=LaunchOptions(launch_smart_routing=True),
+            )
 
-        assert launch_v2.call_args.kwargs["enable_gateway_model_discovery"] is False
+        launch_v2.assert_not_called()
+
+    def test_saved_provider_enforces_discovery_minimum_at_launch(self, monkeypatch):
+        launch = Mock()
+        monkeypatch.delenv("UG_ENABLE_MODEL_DISCOVERY", raising=False)
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.247")
+        monkeypatch.setattr(claude, "exec_or_spawn", launch)
+
+        with pytest.raises(RuntimeError, match="requires Claude Code 2.1.248.*Upgrade"):
+            claude.launch(
+                {
+                    "workspace": WS,
+                    "provider_services": {"claude": "main.default.saved"},
+                },
+                [],
+                options=LaunchOptions(),
+            )
+
+        launch.assert_not_called()
+
+    def test_managed_provider_enforces_discovery_minimum_despite_disable(self, monkeypatch):
+        launch = Mock()
+        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "0")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.247")
+        monkeypatch.setattr(claude, "exec_or_spawn", launch)
+
+        with pytest.raises(RuntimeError, match="requires Claude Code 2.1.248.*Upgrade"):
+            claude.launch(
+                {
+                    "workspace": WS,
+                    "_claude_launch_provider": "main.default.managed",
+                    "_claude_scoped_model_discovery": True,
+                },
+                [],
+                options=LaunchOptions(),
+            )
+
+        launch.assert_not_called()
 
     def test_gateway_discovery_uses_direct_gateway(self, monkeypatch):
         calls: list[list[str]] = []

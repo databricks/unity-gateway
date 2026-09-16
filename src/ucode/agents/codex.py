@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import functools
 import hashlib
 import os
 import re
@@ -767,18 +766,18 @@ def launch(
         if isinstance(launch_parent_schema, str) and launch_parent_schema.strip()
         else None
     )
-    if options.launch_smart_routing:
-        _launch_smart_routing(
-            state,
-            tool_args,
-            provider=provider,
-            parent_schema=parent_schema if not provider else None,
+    scoped_model_source = bool(provider or parent_schema)
+    if options.launch_smart_routing and scoped_model_source:
+        raise RuntimeError(
+            "Codex smart routing cannot be used with a Model Provider Service or model location. "
+            "Disable smart routing or remove the scoped model source and try again."
         )
+    if options.launch_smart_routing:
+        _launch_smart_routing(state, tool_args)
         return
     clear_model_preferences(state)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
-    scoped_model_source = bool(provider or parent_schema)
     override = state.get(CODEX_SCOPED_MODEL_DISCOVERY_STATE_KEY)
     scoped_model_discovery = scoped_model_discovery_enabled(
         override=override if isinstance(override, bool) else None
@@ -851,13 +850,7 @@ def launch(
     exec_or_spawn([binary, *codex_config_args(profile_doc), *otel_args, *tool_args])
 
 
-def _launch_smart_routing(
-    state: dict,
-    tool_args: list[str],
-    *,
-    provider: str | None = None,
-    parent_schema: str | None = None,
-) -> None:
+def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
     binary = SPEC["binary"]
     version_text = agent_version(binary)
@@ -876,19 +869,12 @@ def _launch_smart_routing(
         or (codex_model_id(models[0]) if models else None)
         or APP_SERVER_SMART_ROUTING_STARTING_MODEL
     )
-    launch_overlay = render_overlay
-    if provider or parent_schema:
-        launch_overlay = functools.partial(
-            render_overlay,
-            provider=provider,
-            parent_schema=parent_schema,
-        )
     smart_routing_v2.launch_codex(
         state,
         tool_args,
         binary=binary,
         start_model=start_model,
-        render_overlay=launch_overlay,
+        render_overlay=render_overlay,
     )
 
 

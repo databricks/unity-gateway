@@ -2370,10 +2370,11 @@ def _launch_tool(
         scoped_model_discovery = _scoped_model_discovery_enabled(force=managed_provider is not None)
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
         # guard too, or routing would be persisted as on while a provider is active.
-        if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and provider:
+        if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and scoped_model_source:
             raise RuntimeError(
-                f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
-                "--provider. Launch without a Model Provider Service and try again."
+                f"{TOOL_SPECS[tool]['display']} smart routing cannot be used with a Model "
+                "Provider Service or model location. Disable smart routing or remove the scoped "
+                "model source and try again."
             )
         # Validate the provider service before launching — it must exist, be a
         # provider type this tool can route to (e.g. claude can't use an OpenAI

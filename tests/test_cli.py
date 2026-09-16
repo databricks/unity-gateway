@@ -560,6 +560,25 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         assert captured == [("1", ["fix the parser"])]
 
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    @pytest.mark.parametrize(
+        "source_args",
+        [
+            ["--provider", "main.default.provider"],
+            ["--parent", "main.default"],
+        ],
+    )
+    def test_scoped_source_rejects_smart_routing(self, tool, source_args):
+        patches = _patch_launch(tool)
+        with contextlib.ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            result = runner.invoke(app, [tool, "--enable-smart-routing", *source_args])
+
+        assert result.exit_code == 1
+        assert "smart routing cannot be used" in result.output
+        assert "Disable smart routing or remove the scoped model source" in result.output
+
     @pytest.mark.parametrize(
         ("args", "forwarded", "has_separator"),
         [
@@ -1166,6 +1185,33 @@ class TestClaudeModelFlag:
         assert launch_state["_claude_launch_provider"] == "main.default.anthropic"
         assert launch_state["_claude_scoped_model_discovery"] is True
         assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
+
+    def test_saved_claude_provider_version_error_is_actionable_at_cli(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "provider_services": {"claude": "main.default.saved"},
+        }
+        monkeypatch.delenv("UG_ENABLE_MODEL_DISCOVERY", raising=False)
+        monkeypatch.setattr(cli_mod.claude_agent, "agent_version", lambda _binary: "2.1.247")
+
+        def launch_direct(_tool, launch_state, tool_args, *, options):
+            cli_mod.claude_agent.launch(launch_state, tool_args, options=options)
+
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.cli.resolve_provider_models", return_value=(None, None, False)),
+            patch("ucode.cli.configure_tool", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.launch_agent", side_effect=launch_direct),
+        ):
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 1
+        assert "Model discovery requires Claude Code 2.1.248 or newer" in result.output
+        assert "Upgrade Claude Code and try again" in result.output
 
     def test_parent_sets_transient_claude_launch_marker(self):
         state = dict(MINIMAL_STATE)
