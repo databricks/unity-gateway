@@ -26,7 +26,6 @@ DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
 CUSTOM_OAUTH_TIMEOUT_MS = 180_000
 CUSTOM_OAUTH_CLI_VERSION = (1, 17, 0)
 CUSTOM_OAUTH_CONFIG_FILE = APP_DIR / "ug.databrickscfg"
-ENABLE_CUSTOM_OAUTH_PROFILE = "ENABLE_CUSTOM_OAUTH_PROFILE"
 
 
 class CustomOAuthConfig(TypedDict):
@@ -217,6 +216,7 @@ def _get_custom_client_token_from_sdk(
     config: CustomOAuthConfig,
     force_refresh: bool,
 ) -> str:
+    """Reuse the SDK's PKCE flow and per-workspace/client token cache."""
     try:
         endpoints = oauth.get_workspace_endpoints(workspace)
         cache = oauth.TokenCache(
@@ -276,8 +276,9 @@ def get_custom_client_token(
     scopes: Sequence[str],
     force_refresh: bool = False,
 ) -> str:
+    """Use CLI-managed OAuth profiles when enabled; otherwise retain the SDK flow."""
     config = create_custom_oauth_config(client_id, scopes, redirect_url)
     workspace = normalize_workspace_url(workspace)
-    if os.environ.get(ENABLE_CUSTOM_OAUTH_PROFILE) == "1":
+    if os.environ.get("CUSTOM_OAUTH_CONFIG_FILE") == "1":
         return _get_custom_client_token_from_cli(workspace, config, force_refresh)
     return _get_custom_client_token_from_sdk(workspace, config, force_refresh)

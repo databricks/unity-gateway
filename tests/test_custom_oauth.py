@@ -22,7 +22,7 @@ runner = CliRunner()
 class TestCustomClientToken:
     @pytest.fixture(autouse=True)
     def _setup(self, tmp_path, monkeypatch):
-        monkeypatch.setenv(oauth_mod.ENABLE_CUSTOM_OAUTH_PROFILE, "1")
+        monkeypatch.setenv("CUSTOM_OAUTH_CONFIG_FILE", "1")
         monkeypatch.setattr(db_mod, "databricks_cli_version", lambda: (1, 17, 0))
         monkeypatch.setattr(oauth_mod, "CUSTOM_OAUTH_CONFIG_FILE", tmp_path / "oauth.cfg")
 
@@ -99,9 +99,9 @@ class TestCustomClientToken:
 @pytest.mark.parametrize("value", [None, "0"])
 def test_cli_profile_is_opt_in(monkeypatch, value):
     if value is None:
-        monkeypatch.delenv(oauth_mod.ENABLE_CUSTOM_OAUTH_PROFILE, raising=False)
+        monkeypatch.delenv("CUSTOM_OAUTH_CONFIG_FILE", raising=False)
     else:
-        monkeypatch.setenv(oauth_mod.ENABLE_CUSTOM_OAUTH_PROFILE, value)
+        monkeypatch.setenv("CUSTOM_OAUTH_CONFIG_FILE", value)
     legacy = Mock(return_value="legacy-token")
     monkeypatch.setattr(oauth_mod, "_get_custom_client_token_from_sdk", legacy)
     cli = Mock(side_effect=AssertionError("CLI profile path must be disabled"))
