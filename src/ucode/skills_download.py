@@ -2,26 +2,33 @@
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
 
+import questionary
+
 from ucode.databricks import (
     _http_get_bytes,
     _http_get_json,
     get_databricks_token,
+    walk_catalog_schemas,
     workspace_hostname,
 )
 from ucode.mcp import register_schemaless_skills_connection, setup_mcp_clients
 from ucode.state import load_state
 from ucode.ui import (
     console,
+    picker_style,
     print_note,
     print_success,
     print_warning,
     progress_bar,
     prompt_yes_no,
+    scrolling_checkbox,
 )
 
 # `.claude/skills` (Claude) + `.agents/skills` (the alias other agents read).
@@ -31,6 +38,11 @@ SKILL_FILES_API_PREFIX = "Skills"
 
 # Parallel skill fetches per schema; writes stay sequential (they prompt).
 _MAX_FETCH_WORKERS = 8
+
+# Wall-clock budget for the workspace-wide skill walk; a slow workspace degrades
+# to partial results instead of hanging the picker.
+_SKILLS_WALK_DEADLINE_SECONDS = 30.0
+_SKILLS_WALK_TIMEOUT_REASON = "deadline exceeded while listing skills"
 
 
 # --- Download client (UC skills API + Files API) ---------------------------
@@ -46,13 +58,15 @@ class SkillRef:
     ``name:`` an agent reads from the bundle's SKILL.md frontmatter, so it names
     the on-disk directory. Finalize does not require the securable and bundle name
     to match, so a skill created under a securable that differs from its
-    frontmatter carries both.
+    frontmatter carries both. ``description`` is the skill's UC description, used only
+    to preview a skill in the interactive picker.
     """
 
     catalog: str
     schema: str
     securable_name: str
     bundle_name: str
+    description: str | None = None
 
     @property
     def fqn(self) -> str:
@@ -108,7 +122,11 @@ def _skill_ref(skill: dict) -> SkillRef | None:
         return None
     catalog, schema, securable_name = parts
     return SkillRef(
-        catalog=catalog, schema=schema, securable_name=securable_name, bundle_name=bundle_name
+        catalog=catalog,
+        schema=schema,
+        securable_name=securable_name,
+        bundle_name=bundle_name,
+        description=_non_empty_str(skill.get("description")),
     )
 
 
@@ -512,5 +530,123 @@ def configure_skills_download_command(
 
     download_skills_from_schema_locations(workspace, token, locations, path, skills)
 
+    register_schemaless_skills_connection(state, workspace, profile, clients)
+    return 0
+
+
+# --- Interactive picker (workspace discovery + selective download) ----------
+
+
+def list_all_skills(
+    workspace: str,
+    token: str,
+    *,
+    deadline_seconds: float = _SKILLS_WALK_DEADLINE_SECONDS,
+    on_progress: Callable[[int, int, int], None] | None = None,
+    on_skills: Callable[[list[SkillRef]], None] | None = None,
+) -> tuple[list[SkillRef], str | None]:
+    """Return every finalized skill across all ``<catalog>.<schema>`` in the workspace, by FQN.
+
+    The skills API is one-schema-per-call, so this walks catalogs -> schemas ->
+    skills in parallel under a wall-clock budget, returning partial results once
+    ``deadline_seconds`` is exceeded. ``on_progress`` is called as each schema
+    completes with ``(schemas_done, schemas_total, skills_found)``, and
+    ``on_skills`` with each schema's newly-found refs (deduped by FQN against
+    everything emitted so far) so a picker can stream them in as the walk runs.
+    The workspace-wide counterpart to ``list_schema_skills``.
+    """
+    deadline = time.monotonic() + deadline_seconds
+    by_fqn: dict[str, SkillRef] = {}
+
+    def probe(catalog: str, schema: str) -> tuple[list[SkillRef], str | None]:
+        return list_schema_skills(workspace, token, catalog, schema)
+
+    def collect(result: tuple[list[SkillRef], str | None], done: int, total: int) -> None:
+        found, _ = result
+        new = [ref for ref in found if ref.fqn not in by_fqn]
+        for ref in new:
+            by_fqn[ref.fqn] = ref
+        if on_progress is not None:
+            on_progress(done, total, len(by_fqn))
+        if on_skills is not None and new:
+            on_skills(sorted(new, key=lambda ref: ref.fqn))
+
+    reason = walk_catalog_schemas(workspace, token, deadline=deadline, probe=probe, collect=collect)
+    if reason is not None:
+        return [], reason
+    refs = sorted(by_fqn.values(), key=lambda ref: ref.fqn)
+    if time.monotonic() > deadline:
+        return refs, _SKILLS_WALK_TIMEOUT_REASON
+    if not refs:
+        return [], "no skills found"
+    return refs, None
+
+
+def _skill_download_choice(ref: SkillRef, roots: list[Path]) -> questionary.Choice:
+    """Picker row for one skill: value is its FQN, title flags an on-disk bundle.
+
+    On-disk skills stay selectable, since re-downloading is a legitimate update and
+    the existing overwrite prompt confirms it. The detail footer previews the
+    description behind a bold bundle-name label (the row itself shows the FQN, so the
+    bundle name is the one identifier not otherwise on screen).
+    """
+    on_disk = " (on disk)" if existing_skill_on_disk(roots, ref.bundle_name) else ""
+    description = f"{ref.bundle_name}: {ref.description}" if ref.description else None
+    return questionary.Choice(title=f"{ref.fqn}{on_disk}", value=ref.fqn, description=description)
+
+
+def _skills_download_background_loader(
+    workspace: str, token: str, roots: list[Path]
+) -> Callable[[Callable[[list[questionary.Choice]], None]], str | None]:
+    """A picker ``background_loader`` that streams the workspace-wide skill walk in as choices."""
+
+    def loader(append: Callable[[list[questionary.Choice]], None]) -> str | None:
+        def on_skills(refs: list[SkillRef]) -> None:
+            append([_skill_download_choice(ref, roots) for ref in refs])
+
+        found, reason = list_all_skills(workspace, token, on_skills=on_skills)
+        if reason == _SKILLS_WALK_TIMEOUT_REASON:
+            return f"⚠ Timed out after {int(_SKILLS_WALK_DEADLINE_SECONDS)}s, found {len(found)} skills"
+        return None
+
+    return loader
+
+
+def prompt_for_skill_download_choices(
+    roots: list[Path],
+    background_loader: Callable[[Callable[[list[questionary.Choice]], None]], str | None],
+) -> list[str] | None:
+    """Show the skill-download picker, returning the selected FQNs or None on Ctrl-C."""
+    selection = scrolling_checkbox(
+        "Skills:",
+        choices=[],
+        instruction="(space to toggle, ctrl-a all, enter to save, type to filter)",
+        style=picker_style(),
+        background_loader=background_loader,
+        loading_noun="skills",
+        show_description=True,
+    ).ask()
+    if selection is None:
+        return None
+    return [str(value) for value in selection]
+
+
+def configure_skills_download_picker_command(path: str | None = None) -> int:
+    """Pick skills from an interactive workspace-wide list, download them, and register.
+
+    Opens the picker immediately and streams skills in as discovery finds them.
+    Ctrl-C downloads nothing and leaves the connection untouched.
+    """
+    state = load_state()
+    workspace, profile, clients = setup_mcp_clients(state, "Skills")
+    token = get_databricks_token(workspace, profile)
+    roots = skill_dir_roots(path)
+
+    loader = _skills_download_background_loader(workspace, token, roots)
+    fqns = prompt_for_skill_download_choices(roots, loader)
+    if fqns is None:
+        return 0
+
+    download_selected_skills(workspace, token, fqns, path)
     register_schemaless_skills_connection(state, workspace, profile, clients)
     return 0
