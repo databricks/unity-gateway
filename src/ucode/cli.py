@@ -125,6 +125,7 @@ from ucode.state import (
     get_provider_service,
     load_full_state,
     load_state,
+    load_workspace_state,
     save_state,
     set_current_workspace,
     set_model_location,
@@ -463,7 +464,7 @@ def configure_shared_state(
     in ``_launch_tool``) and the gateway was verified by that earlier configure.
     Only the local profile resolution and the shared state assembly still run;
     the saved model lists are preserved. If ``persist`` is false, return the
-    assembled state without changing developer state; first-run explicit source
+    assembled state without changing developer state; prompted first-run
     launches use this to check managed policy before writing anything.
     """
     workspace = normalize_workspace_url(workspace)
@@ -795,10 +796,13 @@ def configure_workspace_command(
             clear_custom_oauth=custom_oauth is None,
         )
         state = states[0]
+        managed = None
         if model_location is not None:
             managed, _ = refresh_managed_config(state)
             _reject_configure_model_location(managed, [tool])
         if model_location is not None and tool in CAN_USE_CACHED_CONFIG_AGENTS:
+            if managed is not None:
+                state = resolve_state(managed, state, tool)
             state = _configure_tools_with_model_location(
                 state, [tool], model_location, install_ai_tools=False
             )
@@ -840,20 +844,35 @@ def configure_workspace_command(
         )
     if managed is not None:
         _announce_managed_config(managed)
-        for tool_name in managed_enabled_tools(managed):
-            if check_gateway_endpoint(state, tool_name):
-                configured = configure_selected_tools(
-                    resolve_state(managed, state, tool_name),
+        managed_tools = managed_enabled_tools(managed)
+        location_targets = selected_tools if selected_tools is not None else managed_tools
+        fallback_location_tools = [
+            tool_name
+            for tool_name in location_targets
+            if model_location is not None
+            and tool_name in CAN_USE_CACHED_CONFIG_AGENTS
+            and not _managed_controls_model_source(managed, tool_name)
+        ]
+        tools_to_configure = managed_tools + [
+            tool_name for tool_name in fallback_location_tools if tool_name not in managed_tools
+        ]
+        for tool_name in tools_to_configure:
+            resolved = resolve_state(managed, state, tool_name)
+            if tool_name in fallback_location_tools:
+                configured = _configure_tools_with_model_location(
+                    resolved,
                     [tool_name],
+                    model_location,
                     install_ai_tools=not is_dry_run(),
                 )
-                # Each iteration resolves from `state` and persists a copy, so carry the
-                # accumulated available_tools forward — otherwise the last agent's save drops
-                # the earlier ones, and the MCP reconcile below only sees that final agent.
-                state["available_tools"] = configured.get("available_tools") or state.get(
-                    "available_tools"
+            elif check_gateway_endpoint(state, tool_name):
+                configured = configure_selected_tools(
+                    resolved, [tool_name], install_ai_tools=not is_dry_run()
                 )
-                _print_configured_files(tool_name, configured)
+            else:
+                continue
+            state = configured
+            _print_configured_files(tool_name, configured)
         if not is_dry_run():
             _configure_managed_mcp_servers(managed)
         _summarize_managed_config(managed, state["workspace"])
@@ -1909,29 +1928,31 @@ def _auto_configure_tool(
     custom_oauth: CustomOAuthConfig | None = None,
     model_location: str | None = None,
     explicit_provider: str | None = None,
-) -> None:
+) -> tuple[dict | None, bool]:
     """Configure a tool for launch without sending a separate validation prompt.
 
     The real agent session follows immediately; explicit configure retains the
-    test-prompt validation.
+    test-prompt validation. A prompted first run returns the managed-policy
+    snapshot fetched before agent/state writes so the caller reuses that exact
+    result for the rest of the launch.
     """
     existing = load_state()
     workspace = existing.get("workspace")
     profile = existing.get("profile")
-    check_managed_source = not workspace and (
-        model_location is not None or explicit_provider is not None
-    )
+    prompted_first_run = not workspace
     if not workspace:
         workspace, profile = _prompt_for_configuration(tool)
     configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
     if model_location is not None:
         configure_kwargs["skip_model_discovery"] = True
-    if check_managed_source:
+    if prompted_first_run:
         configure_kwargs["persist"] = False
     state = configure_shared_state(workspace, profile=profile, tools=[tool], **configure_kwargs)
 
-    if check_managed_source:
-        managed, _ = refresh_managed_config(state)
+    managed = None
+    coding_agent_config_feature_disabled = False
+    if prompted_first_run:
+        managed, coding_agent_config_feature_disabled = refresh_managed_config(state)
         _reject_disabled_agent(managed, tool)
         _reject_managed_source_override(
             managed,
@@ -1963,6 +1984,7 @@ def _auto_configure_tool(
             expand=False,
         )
     )
+    return managed, coding_agent_config_feature_disabled
 
 
 CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
@@ -2328,12 +2350,10 @@ def _launch_tool(
         # `--model` is exposed by the claude and gemini launch commands. Under a provider it selects
         # which of the service's targets/tiers to launch on, rather than being rejected — see the
         # provider branch below.
-        # An explicit --workspace targets that workspace for this launch (and
-        # auto-configures it if unseen), so `ug claude --provider ... --workspace ...`
-        # works without a prior `ug configure`.
-        if workspace_url:
-            set_current_workspace(normalize_workspace_url(workspace_url))
-        existing = load_state()
+        # Read an explicit target without making it current yet. Managed policy
+        # must accept the launch before the workspace selection is persisted.
+        target_workspace = normalize_workspace_url(workspace_url) if workspace_url else None
+        existing = load_workspace_state(target_workspace) if target_workspace else load_state()
         explicit_provider = provider
         explicit_model_location = parent_schema is not None
         saved_provider = get_provider_service(existing, tool)
@@ -2355,7 +2375,7 @@ def _launch_tool(
         ensure_bootstrap_dependencies(tool)
         coding_agent_config_feature_disabled = False
         managed_config_checked = managed is not None
-        if needs_auto_configure and existing.get("workspace"):
+        if (target_workspace is not None or needs_auto_configure) and existing.get("workspace"):
             if not managed_config_checked:
                 managed, coding_agent_config_feature_disabled = _fetch_managed_config(existing)
                 managed_config_checked = True
@@ -2366,23 +2386,30 @@ def _launch_tool(
                 explicit_provider=explicit_provider,
                 explicit_model_location=explicit_model_location,
             )
+        if target_workspace is not None:
+            set_current_workspace(target_workspace)
         if needs_auto_configure:
             if custom_oauth is not None and parent_schema is not None:
-                _auto_configure_tool(tool, custom_oauth=custom_oauth, model_location=parent_schema)
+                auto_managed = _auto_configure_tool(
+                    tool, custom_oauth=custom_oauth, model_location=parent_schema
+                )
             elif custom_oauth is not None and explicit_provider is not None:
-                _auto_configure_tool(
+                auto_managed = _auto_configure_tool(
                     tool,
                     custom_oauth=custom_oauth,
                     explicit_provider=explicit_provider,
                 )
             elif custom_oauth is not None:
-                _auto_configure_tool(tool, custom_oauth=custom_oauth)
+                auto_managed = _auto_configure_tool(tool, custom_oauth=custom_oauth)
             elif parent_schema is not None:
-                _auto_configure_tool(tool, model_location=parent_schema)
+                auto_managed = _auto_configure_tool(tool, model_location=parent_schema)
             elif explicit_provider is not None:
-                _auto_configure_tool(tool, explicit_provider=explicit_provider)
+                auto_managed = _auto_configure_tool(tool, explicit_provider=explicit_provider)
             else:
-                _auto_configure_tool(tool)
+                auto_managed = _auto_configure_tool(tool)
+            if not existing.get("workspace"):
+                managed, coding_agent_config_feature_disabled = auto_managed
+                managed_config_checked = True
         state = ensure_provider_state(tool)
         # Remembered above before persisted launch preferences were applied: a managed config may
         # not silently override a provider the user typed on the command line (it errors instead).
@@ -2742,9 +2769,8 @@ def _launch_managed_default(
     workspace: str | None,
 ) -> None:
     """Route bare ``ucode`` by whether the workspace publishes a managed config."""
-    if workspace:
-        set_current_workspace(normalize_workspace_url(workspace))
-    state = load_state()
+    target_workspace = normalize_workspace_url(workspace) if workspace else None
+    state = load_workspace_state(target_workspace) if target_workspace else load_state()
     current = state.get("workspace")
     if not current:
         console.print(ctx.get_help())
@@ -2758,12 +2784,16 @@ def _launch_managed_default(
         with spinner("Loading..."):
             managed, coding_agent_config_feature_disabled = refresh_managed_config(state)
     if coding_agent_config_feature_disabled:
+        if target_workspace is not None:
+            set_current_workspace(target_workspace)
         print_note(
             "Run `ug configure` to set up your coding agents, then launch one with "
             "`ug <agent>` (for example `ug claude`)."
         )
         return
     if not managed:
+        if target_workspace is not None:
+            set_current_workspace(target_workspace)
         _print_no_managed_config_guidance()
         return
     # The budget tier can move the org to a cheaper agent, so it outranks the config's
