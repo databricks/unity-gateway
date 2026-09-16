@@ -1,0 +1,20 @@
+# Starter managed_config.toml for Codex (Databricks AI Gateway).
+#
+# This is a STARTER. The authoritative content is whatever `ug configure` writes
+# to /etc/codex/managed_config.toml on a reference machine — prefer copying that
+# (it has the correct base URL and model-catalog pointer for your workspace).
+#
+# Deploy either as base64 in the com.openai.codex MDM profile
+# (config_toml_base64 in codex.mobileconfig) or as the file
+# /etc/codex/managed_config.toml. Replace WORKSPACE_HOST.
+
+# Dynamic per-workspace model list; `ug` maintains this file in the user's home
+# (no sudo), while this managed file only points at it.
+model_catalog_json = "~/.codex/ucode-models.json"
+
+model_provider = "Databricks"
+
+[model_providers.Databricks]
+name = "Databricks"
+base_url = "https://WORKSPACE_HOST/ai-gateway/codex/v1"
+wire_api = "responses"

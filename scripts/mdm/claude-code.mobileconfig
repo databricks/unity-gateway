@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Claude Code OS-managed settings for JAMF/MDM (macOS).
+
+  This is a TEMPLATE. Claude Code reads enterprise-managed settings from the
+  `com.anthropic.claudecode` managed-preferences domain (same top-level keys as
+  managed-settings.json), and an MDM configuration profile OUTRANKS the on-disk
+  managed-settings.json file. Deploy this via JAMF -> Configuration Profiles ->
+  Application & Custom Settings; Claude Code re-reads it at startup and every 30
+  minutes and never writes it. See:
+  https://code.claude.com/docs/en/managed-settings  and Anthropic's Jamf template
+  at https://github.com/anthropics/claude-code/tree/main/examples/mdm
+
+  Before deploying:
+   1. Replace WORKSPACE_HOST with your workspace host (no scheme in the host slot,
+      full https:// URL in ANTHROPIC_BASE_URL / apiKeyHelper).
+   2. Replace the model slugs + picker labels with your workspace's enabled models.
+   3. Regenerate the two PayloadUUID values (uuidgen) and set PayloadOrganization.
+   4. apiKeyHelper calls `ug auth-token`, so `ug` must be installed and on PATH for
+      the launching user (the bootstrap installs it); use an absolute path to `ug`
+      if it isn't on a system-wide PATH.
+
+  NOTE: the exact values below mirror what `ug configure` writes for Claude Code
+  (src/ucode/agents/claude.py). Ideally `ug` would emit this profile directly
+  (see the "ug MDM gaps" note) rather than admins hand-maintaining it.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+  <key>PayloadIdentifier</key>
+  <string>com.example.mdm.claudecode</string>
+  <key>PayloadUUID</key>
+  <string>REPLACE-WITH-UUIDGEN-1</string>
+  <key>PayloadDisplayName</key>
+  <string>Claude Code Managed Settings (Databricks AI Gateway)</string>
+  <key>PayloadOrganization</key>
+  <string>Example Organization</string>
+  <key>PayloadScope</key>
+  <string>System</string>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadType</key>
+      <string>com.anthropic.claudecode</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>PayloadIdentifier</key>
+      <string>com.example.mdm.claudecode.preferences</string>
+      <key>PayloadUUID</key>
+      <string>REPLACE-WITH-UUIDGEN-2</string>
+      <key>PayloadDisplayName</key>
+      <string>Claude Code Preferences</string>
+
+      <!-- Gateway credential helper: mints the AI Gateway token per request. -->
+      <key>apiKeyHelper</key>
+      <string>ug auth-token --host https://WORKSPACE_HOST --profile ug-mdm --use-pat</string>
+
+      <!-- Point Claude Code at the workspace's AI Gateway. -->
+      <key>env</key>
+      <dict>
+        <key>ANTHROPIC_BASE_URL</key>
+        <string>https://WORKSPACE_HOST/ai-gateway/anthropic</string>
+        <key>ANTHROPIC_CUSTOM_HEADERS</key>
+        <string>x-databricks-use-coding-agent-mode: true
+User-Agent: ucode/managed claude/managed</string>
+        <key>CLAUDE_CODE_USE_GATEWAY</key>
+        <string>1</string>
+        <key>CLAUDE_CODE_API_KEY_HELPER_TTL_MS</key>
+        <string>900000</string>
+        <key>ENABLE_PROMPT_CACHING_1H</key>
+        <string>1</string>
+        <key>ENABLE_TOOL_SEARCH</key>
+        <string>true</string>
+        <!-- Per-family default model ids (replace with your enabled models). -->
+        <key>ANTHROPIC_DEFAULT_OPUS_MODEL</key>
+        <string>system.ai.claude-opus-4-8[1m]</string>
+        <key>ANTHROPIC_DEFAULT_SONNET_MODEL</key>
+        <string>system.ai.claude-sonnet-4-6[1m]</string>
+        <key>ANTHROPIC_DEFAULT_HAIKU_MODEL</key>
+        <string>system.ai.claude-haiku-4-5</string>
+      </dict>
+
+      <!-- Restrict + relabel the /model picker to the workspace's enabled models. -->
+      <key>availableModels</key>
+      <array>
+        <string>system.ai.claude-opus-4-8[1m]</string>
+        <string>system.ai.claude-sonnet-4-6[1m]</string>
+        <string>system.ai.claude-haiku-4-5</string>
+      </array>
+      <key>enforceAvailableModels</key>
+      <true/>
+      <key>modelPicker</key>
+      <dict>
+        <key>replaceBuiltInOptions</key>
+        <true/>
+        <key>options</key>
+        <array>
+          <dict>
+            <key>model</key>
+            <string>system.ai.claude-opus-4-8[1m]</string>
+            <key>label</key>
+            <string>Claude Opus 4.8 (1M)</string>
+          </dict>
+          <dict>
+            <key>model</key>
+            <string>system.ai.claude-sonnet-4-6[1m]</string>
+            <key>label</key>
+            <string>Claude Sonnet 4.6 (1M)</string>
+          </dict>
+          <dict>
+            <key>model</key>
+            <string>system.ai.claude-haiku-4-5</string>
+            <key>label</key>
+            <string>Claude Haiku 4.5</string>
+          </dict>
+        </array>
+      </dict>
+    </dict>
+  </array>
+</dict>
+</plist>
