@@ -107,6 +107,11 @@ def _custom_oauth_profile(workspace: str, client_id: str, scopes: Sequence[str])
 
 @contextmanager
 def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
+    """Serialize helpers sharing a callback port with a POSIX file lock.
+
+    Keep the lock file in place: unlinking it could let waiters lock different
+    inodes. The OS releases the lock even if the helper is killed on timeout.
+    """
     import fcntl
 
     cache_dir.mkdir(parents=True, exist_ok=True)
