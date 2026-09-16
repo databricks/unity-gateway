@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 from contextlib import contextmanager
 
 import pytest
@@ -773,6 +774,36 @@ class TestConfigureSelectedTools:
         state = {"workspace": "https://x.databricks.com", "available_tools": ["codex"]}
         result = configure_selected_tools(state, [])
         assert result["available_tools"] == ["codex"]
+
+    def test_concurrent_newer_state_is_not_overwritten_after_claude_returns(self, monkeypatch):
+        saved: list[dict] = []
+        saved_lock = threading.Lock()
+
+        def save(state):
+            with saved_lock:
+                saved.append(dict(state))
+
+        def configure(_tool, state, _provider):
+            assert state["available_tools"] == ["claude"]
+            save(state)
+            writer = threading.Thread(
+                target=save,
+                args=({**state, "generation": "newer"},),
+            )
+            writer.start()
+            writer.join(timeout=5)
+            return state
+
+        monkeypatch.setattr(agents_mod, "_configure_one", configure)
+        monkeypatch.setattr(agents_mod, "save_state", save)
+        monkeypatch.setattr(agents_mod, "install_databricks_ai_tools_for_agents", lambda *_: None)
+
+        configure_selected_tools(
+            {"workspace": "https://x.databricks.com", "generation": "original"},
+            ["claude"],
+        )
+
+        assert saved[-1]["generation"] == "newer"
 
 
 class TestConfiguredPaths:

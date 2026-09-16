@@ -982,11 +982,9 @@ def _state_with_model_location(state: dict, tool: str, location: str | None) -> 
 
 def _configure_location_backed_tool(state: dict, tool: str, location: str) -> dict:
     """Configure one agent at ``location`` and persist only ordinary developer state."""
-    state = configure_tool(tool, state, parent_schema=location)
     existing = state.get("available_tools") or []
     state["available_tools"] = sorted(set(existing) | {tool})
-    save_state(state)
-    return state
+    return configure_tool(tool, state, parent_schema=location)
 
 
 def _configure_tools_with_model_location(
@@ -1152,12 +1150,16 @@ def revert() -> int:
     state = load_state()
     managed_configs = state.get("managed_configs") or {}
     mcp_results = revert_mcp_configs(state)
-    claude_managed_result = claude_agent.revert_managed_settings()
+    claude_managed_result, claude_private_result = claude_agent.revert_settings(state)
     codex_managed_result = codex_agent.revert_managed_config()
 
     results: dict[str, bool] = {
-        tool: restore_file(
-            spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool))
+        tool: (
+            claude_private_result
+            if tool == "claude"
+            else restore_file(
+                spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool))
+            )
         )
         for tool, spec in TOOL_SPECS.items()
     }
