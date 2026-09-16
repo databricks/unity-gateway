@@ -1999,7 +1999,7 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
 
     # Merge developer- and workspace-managed servers by registered name, unioning their agents.
     # ``--agents`` drops agents outside the scope, and a server left with no in-scope agent is
-    # omitted. The skills connection is appended as a final row so everything is one table.
+    # omitted. The skills connection is intentionally excluded — it's reported by the skill commands.
     configured: dict[str, dict[str, Any]] = {}
 
     def _collect(server: dict, *, managed: bool) -> None:
@@ -2020,18 +2020,7 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
     for server in state.get("managed_mcp_servers") or []:
         _collect(server, managed=True)
 
-    skills_entry = _skills_entry(list(state.get("mcp_servers") or []))
-    skills_clients = (
-        [
-            client
-            for client in _mcp_server_clients(skills_entry)
-            if agents is None or client in agents
-        ]
-        if skills_entry
-        else []
-    )
-
-    if configured or skills_clients:
+    if configured:
         table = Table(box=None, pad_edge=False, header_style="bold")
         table.add_column("NAME", no_wrap=True)
         table.add_column("LOCATION")
@@ -2048,22 +2037,14 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
                 ", ".join(entry["clients"]),
                 _row_status(entry["clients"], name, installed, live),
             )
-        if skills_clients:
-            table.add_row(
-                SKILLS_MCP_SERVER_NAME,
-                "skills",
-                ", ".join(skills_clients),
-                _row_status(skills_clients, SKILLS_MCP_SERVER_NAME, installed, live),
-            )
         console.print(table)
     else:
         print_note(f"No MCP servers are configured by ug{scope_note}.")
 
     # Anything an agent lists that ug didn't configure (e.g. hand-added servers): a one-line count
-    # per agent, so the developer sees them without a long name dump conflated with ug's.
-    ug_names = set(configured)
-    if skills_clients:
-        ug_names.add(SKILLS_MCP_SERVER_NAME)
+    # per agent, so the developer sees them without a long name dump conflated with ug's. The skills
+    # registry is ug-managed (shown by the skill commands), so it's never counted here either.
+    ug_names = set(configured) | {SKILLS_MCP_SERVER_NAME}
     other_counts = [
         (client, sum(1 for name in live.get(client, {}) if name not in ug_names))
         for client in probe_clients

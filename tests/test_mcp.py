@@ -3267,9 +3267,8 @@ class TestListMcpCommand:
         assert "databricks-genie-abc" in out
         assert "(managed)" in out
         assert "failed" in out
-        # The skills connection is a row in the same table (LOCATION "skills").
-        assert "databricks-skill-registry" in out
-        assert "skills" in out
+        # The skills connection is NOT listed here — it's reported by the skill commands.
+        assert "databricks-skill-registry" not in out
 
     def test_marks_server_missing_when_absent_from_agent_listing(self, monkeypatch, capsys):
         # Agents list nothing, so servers ug configured show STATUS "missing".
