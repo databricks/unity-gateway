@@ -1306,6 +1306,65 @@ class TestClaudeModelFlag:
         assert "provider main.user.anthropic" in _strip_ansi(result.output)
         assert "managed provider main.admin.anthropic" in _strip_ansi(result.output)
 
+    def test_managed_provider_rejects_redundant_explicit_provider(self):
+        state = dict(MINIMAL_STATE)
+        provider = "main.admin.anthropic"
+        managed = {
+            "enabled_agents": {"claude": {"model_config": {"model_provider_service": provider}}}
+        }
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
+            patch("ucode.cli.configure_shared_state") as mock_shared,
+        ):
+            result = runner.invoke(app, ["claude", "--provider", provider])
+
+        assert result.exit_code == 1
+        assert f"provider {provider}" in _strip_ansi(result.output)
+        mock_shared.assert_not_called()
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    @pytest.mark.parametrize(
+        ("option", "expected"),
+        [
+            (["--provider", "main.user.provider"], "provider main.user.provider"),
+            (["--model-location", "main.models"], "--model-location"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "model_config",
+        [
+            {"default_model": "system.ai.managed-model"},
+            {"model_services": ["system.ai.managed-model"]},
+        ],
+        ids=["hosted-default", "static-list"],
+    )
+    def test_managed_hosted_source_rejects_explicit_source_override(
+        self, tool, option, expected, model_config
+    ):
+        state = dict(MINIMAL_STATE)
+        managed = {"enabled_agents": {tool: {"model_config": model_config}}}
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
+            patch("ucode.cli.configure_shared_state") as mock_shared,
+            patch("ucode.cli.configure_tool") as mock_configure,
+            patch("ucode.cli.launch_agent") as mock_launch,
+        ):
+            result = runner.invoke(app, [tool, *option])
+
+        output = _strip_ansi(result.output)
+        assert result.exit_code == 1
+        assert expected in output
+        assert "admin" in output
+        mock_shared.assert_not_called()
+        mock_configure.assert_not_called()
+        mock_launch.assert_not_called()
+
 
 class TestGeminiProviderLaunch:
     @staticmethod
@@ -2327,6 +2386,64 @@ class TestAutoConfigureOnFirstRun:
         mock_launch.assert_called_once()
         assert mock_launch.call_args.args[:2] == (tool, configured_state)
 
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_fresh_model_location_launch_autoconfigures_without_global_models(self, tool):
+        configured_state = {
+            **MINIMAL_STATE,
+            "available_tools": [tool],
+            "claude_models": {},
+            "codex_models": [],
+        }
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value={}),
+            patch("ucode.cli._auto_configure_tool") as mock_auto,
+            patch("ucode.cli.ensure_provider_state", return_value=configured_state),
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.configure_shared_state", return_value=configured_state) as mock_shared,
+            patch("ucode.cli.resolve_launch_model") as mock_resolve,
+            patch("ucode.cli.configure_tool", return_value=configured_state),
+            patch("ucode.cli.launch_agent") as mock_launch,
+        ):
+            result = runner.invoke(app, [tool, "--model-location", "main.models"])
+
+        assert result.exit_code == 0, result.output
+        mock_auto.assert_called_once_with(tool, model_location="main.models")
+        assert mock_shared.call_args.kwargs["skip_model_discovery"] is True
+        mock_resolve.assert_not_called()
+        mock_launch.assert_called_once()
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_model_location_autoconfigure_is_launch_scoped(self, tool):
+        existing_state = {"workspace": MINIMAL_STATE["workspace"]}
+        configured_state = {
+            **MINIMAL_STATE,
+            "available_tools": [],
+            "claude_models": {},
+            "codex_models": [],
+        }
+        saved_states = []
+        with (
+            patch("ucode.cli.load_state", return_value=existing_state),
+            patch("ucode.cli.configure_shared_state", return_value=configured_state) as mock_shared,
+            patch("ucode.cli.configure_tool", return_value=configured_state) as mock_configure,
+            patch(
+                "ucode.cli.save_state",
+                side_effect=lambda state: saved_states.append(json.loads(json.dumps(state))),
+            ),
+        ):
+            cli_mod._auto_configure_tool(tool, model_location="main.models")
+
+        mock_shared.assert_called_once_with(
+            MINIMAL_STATE["workspace"],
+            profile=None,
+            tools=[tool],
+            skip_model_discovery=True,
+        )
+        mock_configure.assert_called_once_with(tool, configured_state, parent_schema="main.models")
+        assert saved_states[-1]["available_tools"] == [tool]
+        assert "model_locations" not in saved_states[-1]
+
     def test_triggers_when_no_workspace(self):
         """Auto-configure runs when state has no workspace."""
         empty_state = {}
@@ -2938,6 +3055,7 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *a, **k: True)
         monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
         monkeypatch.setattr(cli_mod, "configure_selected_tools", lambda s, tools: s)
         configure_calls = []
         monkeypatch.setattr(
@@ -2955,14 +3073,17 @@ class TestConfigureAgentsSelection:
             == 0
         )
 
-        assert state["model_locations"] == {
+        configured_state = configure_calls[0][0][1]
+        assert configured_state["model_locations"] == {
             "claude": "main.models",
             "codex": "other.models",
         }
-        assert state["provider_services"] == {
+        assert configured_state["provider_services"] == {
             "codex": "main.providers.openai",
             "gemini": "main.providers.gemini",
         }
+        assert state["model_locations"] == {"codex": "other.models"}
+        assert state["provider_services"]["claude"] == "main.providers.anthropic"
         assert [(args[0], kwargs["parent_schema"]) for args, kwargs in configure_calls] == [
             ("claude", "main.models"),
         ]
@@ -2976,7 +3097,13 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *a, **k: True)
         monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
-        monkeypatch.setattr(cli_mod, "configure_selected_tools", lambda s, tools: s)
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+        configured_states = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda s, tools, **kwargs: configured_states.append(s) or s,
+        )
 
         assert (
             cli_mod.configure_workspace_command(
@@ -2986,8 +3113,53 @@ class TestConfigureAgentsSelection:
             == 0
         )
 
-        assert state["model_locations"] == {"codex": "other.models"}
-        assert state["provider_services"] == {"claude": "main.providers.anthropic"}
+        assert configured_states[0]["model_locations"] == {"codex": "other.models"}
+        assert configured_states[0]["provider_services"] == {"claude": "main.providers.anthropic"}
+        assert state["model_locations"] == {
+            "claude": "main.models",
+            "codex": "other.models",
+        }
+
+    def test_model_location_persists_only_after_each_agent_succeeds(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "model_locations": {
+                "claude": "old.claude_models",
+                "codex": "old.codex_models",
+            },
+            "provider_services": {
+                "claude": "old.providers.anthropic",
+                "codex": "old.providers.openai",
+            },
+        }
+        saved_states = []
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(
+            cli_mod,
+            "save_state",
+            lambda value: saved_states.append(json.loads(json.dumps(value))),
+        )
+
+        def configure(tool, candidate, **kwargs):
+            if tool == "codex":
+                raise RuntimeError("codex write failed")
+            return candidate
+
+        monkeypatch.setattr(cli_mod, "configure_tool", configure)
+
+        with pytest.raises(RuntimeError, match="codex write failed"):
+            cli_mod.configure_workspace_command(
+                selected_tools=["claude", "codex"],
+                workspaces=[("https://example.databricks.com", None)],
+                model_location="main.models",
+            )
+
+        assert saved_states[-1]["model_locations"] == {
+            "claude": "main.models",
+            "codex": "old.codex_models",
+        }
+        assert saved_states[-1]["provider_services"] == {"codex": "old.providers.openai"}
 
     def test_codex_model_location_is_scoped_without_changing_claude(self, monkeypatch):
         state = {
@@ -3000,6 +3172,7 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *a, **k: True)
         monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
         monkeypatch.setattr(cli_mod, "configure_selected_tools", lambda s, tools: s)
         configure_calls = []
         monkeypatch.setattr(
@@ -3017,8 +3190,14 @@ class TestConfigureAgentsSelection:
             == 0
         )
 
-        assert state["model_locations"] == {"codex": "main.models"}
-        assert state["provider_services"] == {"claude": "main.providers.anthropic"}
+        configured_state = configure_calls[0][0][1]
+        assert configured_state["model_locations"] == {"codex": "main.models"}
+        assert configured_state["provider_services"] == {"claude": "main.providers.anthropic"}
+        assert "model_locations" not in state
+        assert state["provider_services"] == {
+            "claude": "main.providers.anthropic",
+            "codex": "main.providers.openai",
+        }
         assert configure_calls[0][0][0] == "codex"
         assert configure_calls[0][1]["parent_schema"] == "main.models"
 
@@ -3037,6 +3216,7 @@ class TestConfigureAgentsSelection:
             lambda *a, **k: pytest.fail("global availability must not gate a model location"),
         )
         monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
         configure_calls = []
         monkeypatch.setattr(
             cli_mod,
@@ -3053,9 +3233,13 @@ class TestConfigureAgentsSelection:
             == 0
         )
 
-        assert configure_calls[0][0] == (tool, state)
+        assert configure_calls[0][0][0] == tool
+        configured_state = configure_calls[0][0][1]
+        assert configured_state is not state
         assert configure_calls[0][1]["parent_schema"] == "main.models"
-        assert state["model_locations"] == {tool: "main.models"}
+        assert configured_state["model_locations"] == {tool: "main.models"}
+        assert configured_state["available_tools"] == [tool]
+        assert "model_locations" not in state
 
     def test_managed_config_detection_does_not_reset_saved_locations(self, monkeypatch):
         state = {

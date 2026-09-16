@@ -84,6 +84,7 @@ from ucode.managed_resolve import (
     managed_launch_model,
     managed_provider_family_models,
     managed_provider_service,
+    managed_static_models,
     managed_supplies_models,
     managed_unservable_models,
     recommended_agent,
@@ -782,13 +783,13 @@ def configure_workspace_command(
             clear_custom_oauth=custom_oauth is None,
         )
         state = states[0]
-        _prepare_model_location(state, [tool], model_location)
         if model_location is not None and tool in CAN_USE_CACHED_CONFIG_AGENTS:
             state = _configure_tools_with_model_location(
                 state, [tool], model_location, install_ai_tools=False
             )
         else:
-            state = configure_single_tool(tool, state)
+            candidate = _state_with_model_location(state, tool, model_location)
+            state = configure_single_tool(tool, candidate)
         install_databricks_ai_tools_for_agents([tool], state)
         spec = TOOL_SPECS[tool]
         console.print(
@@ -870,8 +871,6 @@ def configure_workspace_command(
         print_note("No coding agents selected — nothing to configure.")
         return 0
 
-    _prepare_model_location(state, picked, model_location)
-
     for tool_name in picked:
         install_tool_binary(
             tool_name,
@@ -916,13 +915,14 @@ def configure_workspace_command(
     return 0
 
 
-def _prepare_model_location(state: dict, tools: list[str], location: str | None) -> None:
-    """Apply the selected agents' location/provider preferences to in-memory state."""
-    for tool in tools:
-        if tool in CAN_USE_CACHED_CONFIG_AGENTS:
-            set_model_location(state, tool, location)
-            if location is not None:
-                set_provider_service(state, tool, None)
+def _state_with_model_location(state: dict, tool: str, location: str | None) -> dict:
+    """Copy ``state`` and apply one agent's location/provider preference to the copy."""
+    candidate = dict(state)
+    if tool in CAN_USE_CACHED_CONFIG_AGENTS:
+        set_model_location(candidate, tool, location)
+        if location is not None:
+            set_provider_service(candidate, tool, None)
+    return candidate
 
 
 def _configure_model_location(state: dict, tools: list[str], location: str | None) -> dict:
@@ -943,6 +943,15 @@ def _configure_tools_with_model_location(
 ) -> dict:
     """Configure selected tools, using ``location`` as Claude/Codex's model source."""
     if location is None:
+        has_location_to_reset = any(get_model_location(state, tool) for tool in tools)
+        if has_location_to_reset:
+            configured = state
+            for tool in tools:
+                candidate = _state_with_model_location(configured, tool, None)
+                configured = configure_selected_tools(candidate, [tool], install_ai_tools=False)
+            if install_ai_tools:
+                install_databricks_ai_tools_for_agents(tools, configured)
+            return configured
         if install_ai_tools:
             return configure_selected_tools(state, tools)
         return configure_selected_tools(state, tools, install_ai_tools=False)
@@ -951,10 +960,11 @@ def _configure_tools_with_model_location(
     regular_tools = [tool for tool in tools if tool not in scoped_tools]
     if regular_tools:
         state = configure_selected_tools(state, regular_tools, install_ai_tools=False)
-    if scoped_tools:
-        state = _configure_model_location(state, scoped_tools, location)
+    for tool in scoped_tools:
+        candidate = _state_with_model_location(state, tool, location)
+        state = _configure_model_location(candidate, [tool], location)
         existing = state.get("available_tools") or []
-        state["available_tools"] = sorted(set(existing) | set(scoped_tools))
+        state["available_tools"] = sorted(set(existing) | {tool})
         save_state(state)
     if install_ai_tools:
         install_databricks_ai_tools_for_agents(tools, state)
@@ -1874,7 +1884,11 @@ def claude_router_hook_cmd(
         sys.stdout.write(json.dumps(output))
 
 
-def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = None) -> None:
+def _auto_configure_tool(
+    tool: str,
+    custom_oauth: CustomOAuthConfig | None = None,
+    model_location: str | None = None,
+) -> None:
     """Configure a tool for launch without sending a separate validation prompt.
 
     The real agent session follows immediately; explicit configure retains the
@@ -1886,9 +1900,21 @@ def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = Non
     if not workspace:
         workspace, profile = _prompt_for_configuration(tool)
     configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
+    if model_location is not None:
+        configure_kwargs["skip_model_discovery"] = True
     state = configure_shared_state(workspace, profile=profile, tools=[tool], **configure_kwargs)
 
-    state = configure_single_tool(tool, state)
+    if model_location is not None and tool in CAN_USE_CACHED_CONFIG_AGENTS:
+        # This is a launch-scoped choice, not an explicit `ug configure` preference.
+        # Write the agent config needed by the imminent session and remember only
+        # that the agent is available; a later bare launch must not inherit this
+        # one-shot location.
+        state = configure_tool(tool, state, parent_schema=model_location)
+        existing_tools = state.get("available_tools") or []
+        state["available_tools"] = sorted(set(existing_tools) | {tool})
+        save_state(state)
+    else:
+        state = configure_single_tool(tool, state)
 
     spec = TOOL_SPECS[tool]
     console.print(
@@ -2176,6 +2202,47 @@ def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
     return agent_config.get("smart_routing_enabled") is True
 
 
+def _managed_controls_model_source(managed: dict | None, tool: str) -> bool:
+    """Whether the managed config selects a provider or Hosted/static models for ``tool``.
+
+    Managed ``unity_catalog_location`` intentionally remains outside this PR; the downstream
+    managed-location change owns interpreting and enforcing that source.
+    """
+    if managed is None:
+        return False
+    return managed_supplies_models(managed, tool) or bool(managed_static_models(managed, tool))
+
+
+def _reject_managed_source_override(
+    managed: dict | None,
+    tool: str,
+    *,
+    explicit_provider: str | None,
+    explicit_model_location: bool,
+) -> None:
+    """Reject explicit developer source flags when the admin selected a managed source."""
+    if not _managed_controls_model_source(managed, tool):
+        return
+    display = TOOL_SPECS[tool]["display"]
+    managed_provider = managed_provider_service(managed or {}, tool)
+    if explicit_model_location:
+        source = f"provider {managed_provider}" if managed_provider else "Hosted/static models"
+        raise RuntimeError(
+            f"You cannot launch {display} with --model-location because your admin has "
+            f"specified managed {source}."
+        )
+    if explicit_provider is not None:
+        if managed_provider:
+            raise RuntimeError(
+                f"You cannot launch {display} with provider {explicit_provider} because your "
+                f"admin has specified managed provider {managed_provider}."
+            )
+        raise RuntimeError(
+            f"You cannot launch {display} with provider {explicit_provider} because your admin "
+            "has specified managed Hosted/static models."
+        )
+
+
 def _launch_tool(
     tool_name: str,
     ctx: typer.Context,
@@ -2238,10 +2305,14 @@ def _launch_tool(
         )
         ensure_bootstrap_dependencies(tool)
         if needs_auto_configure:
-            if custom_oauth is None:
-                _auto_configure_tool(tool)
-            else:
+            if custom_oauth is not None and parent_schema is not None:
+                _auto_configure_tool(tool, custom_oauth=custom_oauth, model_location=parent_schema)
+            elif custom_oauth is not None:
                 _auto_configure_tool(tool, custom_oauth=custom_oauth)
+            elif parent_schema is not None:
+                _auto_configure_tool(tool, model_location=parent_schema)
+            else:
+                _auto_configure_tool(tool)
         state = ensure_provider_state(tool)
         # Remembered above before persisted launch preferences were applied: a managed config may
         # not silently override a provider the user typed on the command line (it errors instead).
@@ -2259,6 +2330,12 @@ def _launch_tool(
         # policy equivalent and must take effect before launch options are computed.
         managed_smart_routing_enabled = _managed_smart_routing_enabled(managed, tool)
         smart_routing_enabled = smart_routing_enabled or managed_smart_routing_enabled
+        _reject_managed_source_override(
+            managed,
+            tool,
+            explicit_provider=explicit_provider,
+            explicit_model_location=explicit_model_location,
+        )
         # Discovery exists to find models and isn't needed for managed config that already names them.
         managed_models_known = managed_supplies_models(managed, tool)
         # Re-fetch model lists on every launch so newly-added Databricks
@@ -2297,20 +2374,12 @@ def _launch_tool(
             print_note("No managed coding agent config found; using your own settings")
         if managed is not None:
             managed_provider = managed_provider_service(managed, tool)
-            if explicit_provider and managed_provider and managed_provider != explicit_provider:
-                # An explicit --provider that disagrees with the admin's is a hard error rather
-                # than a silent override: the user asked for something the managed config forbids,
-                # and quietly routing them elsewhere would hide it.
-                raise RuntimeError(
-                    f"You cannot launch {TOOL_SPECS[tool]['display']} with provider "
-                    f"{explicit_provider} because your admin has specified managed provider "
-                    f"{managed_provider}."
-                )
             if managed_provider:
                 provider = managed_provider
-            # The workspace-managed source selection outranks the developer's saved/explicit
-            # location. Managed unity_catalog_location support is intentionally out of scope.
-            parent_schema = None
+            if _managed_controls_model_source(managed, tool):
+                # The managed source outranks saved developer preferences. Managed
+                # unity_catalog_location remains intentionally out of scope.
+                parent_schema = None
         if provider and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
