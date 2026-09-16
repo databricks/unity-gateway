@@ -23,6 +23,7 @@ from ucode.agents import (
     resolve_launch_model,
 )
 from ucode.agents.args import has_explicit_model_arg
+from ucode.managed_config import ManagedConfigResult
 
 
 class TestModelArgumentParsing:
@@ -76,12 +77,15 @@ def test_launch_dispatches_invocation_options(monkeypatch):
 
 
 class TestInstallAiToolsForAgents:
-    def _capture(self, monkeypatch):
+    def _capture(self, monkeypatch, *, managed=None):
         captured = {}
         monkeypatch.setattr(
             agents_mod,
             "install_ai_tools",
             lambda agents, profile: captured.update(agents=agents, profile=profile),
+        )
+        monkeypatch.setattr(
+            agents_mod, "refresh_managed_config", lambda state: ManagedConfigResult(managed, False)
         )
         return captured
 
@@ -89,14 +93,21 @@ class TestInstallAiToolsForAgents:
         captured = self._capture(monkeypatch)
         # Gemini and Pi aren't supported by `databricks aitools`, so they drop.
         install_databricks_ai_tools_for_agents(
-            ["claude", "codex", "gemini", "pi"], {"profile": "prof"}
+            ["claude", "codex", "gemini", "pi"],
+            {"profile": "prof", "databricks_ai_tools_enabled": True},
         )
         assert captured == {"agents": ["claude-code", "codex"], "profile": "prof"}
 
-    def test_installed_by_default(self, monkeypatch):
-        # Opt-out: absent flag means install.
+    def test_skipped_by_default(self, monkeypatch):
         captured = self._capture(monkeypatch)
         install_databricks_ai_tools_for_agents(["claude"], {"profile": "p"})
+        assert captured == {}  # install_ai_tools never called
+
+    def test_installed_when_enabled(self, monkeypatch):
+        captured = self._capture(monkeypatch)
+        install_databricks_ai_tools_for_agents(
+            ["claude"], {"profile": "p", "databricks_ai_tools_enabled": True}
+        )
         assert captured == {"agents": ["claude-code"], "profile": "p"}
 
     def test_skipped_when_disabled(self, monkeypatch):
@@ -104,6 +115,23 @@ class TestInstallAiToolsForAgents:
         captured = self._capture(monkeypatch)
         install_databricks_ai_tools_for_agents(
             ["claude"], {"profile": "p", "databricks_ai_tools_enabled": False}
+        )
+        assert captured == {}  # install_ai_tools never called
+
+    def test_skipped_under_managed_config(self, monkeypatch):
+        # An admin's managed config governs the workspace; skip even when enabled.
+        captured = self._capture(monkeypatch, managed={"enabled_agents": {"claude": {}}})
+        install_databricks_ai_tools_for_agents(
+            ["claude"], {"profile": "p", "databricks_ai_tools_enabled": True}
+        )
+        assert captured == {}  # install_ai_tools never called
+
+    def test_skipped_under_empty_managed_config(self, monkeypatch):
+        # A published-but-empty config still means the admin defined one; a present
+        # manifest (even {}) skips, while a truly absent config (None) does not.
+        captured = self._capture(monkeypatch, managed={})
+        install_databricks_ai_tools_for_agents(
+            ["claude"], {"profile": "p", "databricks_ai_tools_enabled": True}
         )
         assert captured == {}  # install_ai_tools never called
 
@@ -122,6 +150,9 @@ class TestConfigureWiresAiToolsInstall:
             "install_ai_tools",
             lambda agents, profile: captured.update(agents=agents, profile=profile),
         )
+        monkeypatch.setattr(
+            agents_mod, "refresh_managed_config", lambda state: ManagedConfigResult(None, False)
+        )
         return captured
 
     def test_configure_single_tool_does_not_install(self, monkeypatch):
@@ -133,8 +164,15 @@ class TestConfigureWiresAiToolsInstall:
 
     def test_configure_selected_tools_triggers_install(self, monkeypatch):
         captured = self._stub_configure(monkeypatch)
-        agents_mod.configure_selected_tools({"profile": "myprof"}, ["codex"])
+        agents_mod.configure_selected_tools(
+            {"profile": "myprof", "databricks_ai_tools_enabled": True}, ["codex"]
+        )
         assert captured == {"agents": ["codex"], "profile": "myprof"}
+
+    def test_configure_selected_tools_skips_install_by_default(self, monkeypatch):
+        captured = self._stub_configure(monkeypatch)
+        agents_mod.configure_selected_tools({"profile": "myprof"}, ["codex"])
+        assert captured == {}
 
     def test_configure_selected_tools_can_defer_install(self, monkeypatch):
         captured = self._stub_configure(monkeypatch)

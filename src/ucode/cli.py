@@ -455,13 +455,9 @@ def configure_shared_state(
     if use_pat is None:
         use_pat = bool(prior_state.get("use_pat")) and previous_workspace == workspace
     if databricks_ai_tools_enabled is None:
-        # Opt-out: on by default. With no flag, keep this workspace's prior
-        # choice but don't inherit another workspace's opt-out.
-        disabled = (
-            prior_state.get("databricks_ai_tools_enabled") is False
-            and previous_workspace == workspace
-        )
-        databricks_ai_tools_enabled = not disabled
+        # Opt-in: a True from an opt-out-era configure is a stale default, not a
+        # standing opt-in, so it is not carried forward.
+        databricks_ai_tools_enabled = False
     fetch_all = tools is None
 
     # Assemble the shared workspace state that doesn't depend on model discovery:
@@ -2894,8 +2890,9 @@ def configure(
         typer.Option(
             "--enable-databricks-ai-tools/--disable-databricks-ai-tools",
             help="Install Databricks AI Tools (skills + plugins that teach agents to use "
-            "Databricks) for the configured agents. Installation is configure-only; pass "
-            "--disable-databricks-ai-tools to opt out.",
+            "Databricks) for the configured agents. Installation is configure-only and off "
+            "by default; pass --enable-databricks-ai-tools to opt in. Skipped when your "
+            "workspace has an admin-managed config.",
         ),
     ] = None,
     mcp: Annotated[
