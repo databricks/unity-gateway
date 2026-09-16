@@ -520,6 +520,24 @@ class TestSubcommandRouting:
         assert captured == [("1", ["fix the parser"])]
 
     @pytest.mark.parametrize(
+        "source_args",
+        [
+            ["--provider", "main.default.provider"],
+            ["--model-location", "main.default"],
+        ],
+    )
+    def test_claude_scoped_source_rejects_smart_routing(self, source_args):
+        patches = _patch_launch("claude")
+        with contextlib.ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            result = runner.invoke(app, ["claude", "--enable-smart-routing", *source_args])
+
+        assert result.exit_code == 1
+        assert "smart routing cannot be used" in result.output
+        assert "Disable smart routing or remove the scoped model source" in result.output
+
+    @pytest.mark.parametrize(
         ("args", "forwarded", "has_separator"),
         [
             (["codex", "--", "fix the parser"], ["fix the parser"], True),
@@ -635,21 +653,34 @@ class TestSubcommandRouting:
         assert mock_launch.call_args.args[2] == forwarded_args
 
     def test_claude_enable_model_discovery_sets_ucode_env(self):
-        with patch("ucode.cli._launch_tool") as mock_launch:
+        launch_env: list[str | None] = []
+        with patch(
+            "ucode.cli._launch_tool",
+            side_effect=lambda *_args, **_kwargs: launch_env.append(
+                os.environ.get("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY")
+            ),
+        ) as mock_launch:
             result = runner.invoke(app, ["claude", "--enable-model-discovery"])
 
         assert result.exit_code == 0, result.output
-        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert launch_env == ["1"]
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
         assert mock_launch.call_args.args[1].args == []
 
     def test_claude_model_location_is_forwarded(self):
-        with patch("ucode.cli._launch_tool") as mock_launch:
+        launch_env: list[str | None] = []
+        with patch(
+            "ucode.cli._launch_tool",
+            side_effect=lambda *_args, **_kwargs: launch_env.append(
+                os.environ.get("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY")
+            ),
+        ) as mock_launch:
             result = runner.invoke(app, ["claude", "--model-location", "main.default"])
 
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.kwargs["parent_schema"] == "main.default"
-        assert mock_launch.call_args.args[1].args == []
-        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert launch_env == ["1"]
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
     def test_codex_model_location_is_forwarded(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
@@ -1108,7 +1139,57 @@ class TestClaudeModelFlag:
             result = runner.invoke(app, ["claude", "--provider", "main.default.anthropic"])
 
         assert result.exit_code == 0, result.output
-        assert mock_launch.call_args.args[1]["_claude_launch_provider"] == "main.default.anthropic"
+        launch_state = mock_launch.call_args.args[1]
+        assert launch_state["_claude_launch_provider"] == "main.default.anthropic"
+        assert launch_state["_claude_scoped_model_discovery"] is True
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
+
+    def test_saved_claude_provider_version_error_is_actionable_at_cli(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "provider_services": {"claude": "main.default.saved"},
+        }
+        monkeypatch.delenv("UG_ENABLE_MODEL_DISCOVERY", raising=False)
+        monkeypatch.setattr(cli_mod.claude_agent, "agent_version", lambda _binary: "2.1.247")
+
+        def launch_direct(_tool, launch_state, tool_args, *, options):
+            cli_mod.claude_agent.launch(launch_state, tool_args, options=options)
+
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.cli.resolve_provider_models", return_value=(None, None, False)),
+            patch("ucode.cli.configure_tool", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.launch_agent", side_effect=launch_direct),
+        ):
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 1
+        assert "Model discovery requires Claude Code 2.1.248 or newer" in result.output
+        assert "Upgrade Claude Code and try again" in result.output
+
+    def test_model_location_sets_transient_claude_launch_marker(self):
+        state = dict(MINIMAL_STATE)
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.cli.resolve_launch_model", return_value=(state, "system.ai.claude")),
+            patch("ucode.cli.configure_tool", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.launch_agent") as mock_launch,
+        ):
+            result = runner.invoke(app, ["claude", "--model-location", "main.default"])
+
+        assert result.exit_code == 0, result.output
+        launch_state = mock_launch.call_args.args[1]
+        assert launch_state["_claude_launch_parent_schema"] == "main.default"
+        assert launch_state["_claude_scoped_model_discovery"] is True
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
     def test_provider_sets_transient_codex_launch_marker(self):
         state = dict(MINIMAL_STATE)
@@ -1143,6 +1224,55 @@ class TestClaudeModelFlag:
 
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.args[1]["_codex_launch_parent_schema"] == "main.default"
+
+    @pytest.mark.parametrize(
+        ("tool", "source_args", "expected_marker"),
+        [
+            (
+                "claude",
+                ["--provider", "main.default.anthropic"],
+                ("_claude_launch_provider", "main.default.anthropic"),
+            ),
+            (
+                "claude",
+                ["--model-location", "main.default"],
+                ("_claude_launch_parent_schema", "main.default"),
+            ),
+        ],
+    )
+    def test_claude_discovery_disable_keeps_scope_but_suppresses_native_discovery(
+        self, monkeypatch, tool, source_args, expected_marker
+    ):
+        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "0")
+        state = dict(MINIMAL_STATE)
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state) as mock_shared,
+            patch("ucode.cli.resolve_provider_models", return_value=(None, None, False)),
+            patch("ucode.cli.resolve_launch_model", return_value=(state, "system.ai.model")),
+            patch("ucode.cli.configure_tool", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.launch_agent") as mock_launch,
+        ):
+            result = runner.invoke(app, [tool, *source_args])
+
+        assert result.exit_code == 0, result.output
+        launch_state = mock_launch.call_args.args[1]
+        assert launch_state[expected_marker[0]] == expected_marker[1]
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
+        assert launch_state["_claude_scoped_model_discovery"] is False
+        if source_args[0] == "--model-location":
+            # The policy flag suppresses only the agent-native scoped catalog;
+            # ordinary system.ai discovery still refreshes for this launch.
+            assert mock_shared.call_args.kwargs["skip_model_discovery"] is False
+
+    def test_managed_config_overrides_developer_discovery_disable(self, monkeypatch):
+        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "0")
+
+        assert cli_mod._scoped_model_discovery_enabled() is False
+        assert cli_mod._scoped_model_discovery_enabled(managed_config_exists=True) is True
 
 
 class TestGeminiProviderLaunch:

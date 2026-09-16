@@ -11,6 +11,10 @@ MODEL_SERVICE_PARENT_SCHEMA_HEADER = "Databricks-Model-Service-Parent-Schema"
 # Controls provider- and location-scoped agent catalogs.
 MODEL_DISCOVERY_ENV_VAR = "UG_ENABLE_MODEL_DISCOVERY"
 
+# Launch-only state handed from the CLI to Claude. A managed source sets this
+# true so workspace policy can override a developer's environment variable.
+CLAUDE_SCOPED_MODEL_DISCOVERY_STATE_KEY = "_claude_scoped_model_discovery"
+
 
 def scoped_model_discovery_enabled(
     *,

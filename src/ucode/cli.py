@@ -43,6 +43,10 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
+from ucode.constants import (
+    CLAUDE_SCOPED_MODEL_DISCOVERY_STATE_KEY,
+    scoped_model_discovery_enabled,
+)
 from ucode.databricks import (
     apply_pat_environment,
     build_shared_base_urls,
@@ -2221,6 +2225,7 @@ def _launch_tool(
                 )
         elif not coding_agent_config_feature_disabled:
             print_note("No managed coding agent config found; using your own settings")
+        managed_provider = None
         if managed is not None:
             managed_provider = managed_provider_service(managed, tool)
             if explicit_provider and managed_provider and managed_provider != explicit_provider:
@@ -2236,8 +2241,18 @@ def _launch_tool(
                 provider = managed_provider
         if provider and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
+        claude_scoped_model_source = tool == "claude" and bool(provider or parent_schema)
+        claude_scoped_model_discovery = _scoped_model_discovery_enabled(
+            managed_config_exists=managed is not None
+        )
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
         # guard too, or routing would be persisted as on while a provider is active.
+        if smart_routing_enabled and claude_scoped_model_source:
+            raise RuntimeError(
+                f"{TOOL_SPECS[tool]['display']} smart routing cannot be used with a Model "
+                "Provider Service or model location. Disable smart routing or remove the scoped "
+                "model source and try again."
+            )
         if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and provider:
             raise RuntimeError(
                 f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
@@ -2378,6 +2393,10 @@ def _launch_tool(
         if tool == "claude":
             if provider:
                 state["_claude_launch_provider"] = provider
+            elif parent_schema:
+                state["_claude_launch_parent_schema"] = parent_schema
+            if claude_scoped_model_source:
+                state[CLAUDE_SCOPED_MODEL_DISCOVERY_STATE_KEY] = claude_scoped_model_discovery
         elif tool == "codex":
             if provider:
                 state["_codex_launch_provider"] = provider
@@ -2567,6 +2586,17 @@ def _print_no_managed_config_guidance() -> None:
     )
 
 
+def _scoped_model_discovery_enabled(*, managed_config_exists: bool = False) -> bool:
+    """Whether an agent should refresh a provider/location-scoped catalog.
+
+    ``UG_ENABLE_MODEL_DISCOVERY=0`` affects only an agent's scoped picker
+    catalog. It does not suppress the normal workspace discovery that populates
+    ``system.ai`` models. Managed config may force discovery because workspace
+    policy outranks a developer environment variable.
+    """
+    return scoped_model_discovery_enabled(managed_config_exists=managed_config_exists)
+
+
 @app.command(
     "codex",
     cls=_PromptAwareCommand,
@@ -2750,21 +2780,25 @@ def claude_cmd(
         claude_agent.disable_smart_routing(load_state())
         print_success("Claude Code smart routing disabled; ug routing hooks removed")
         return
-    if enable_model_discovery or (model_location is not None and provider is None):
-        os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
-    with _smart_routing_v2_flag(enable_smart_routing_flag):
-        with _disable_smart_routing_for_subcommand("claude", ctx):
-            _launch_tool(
-                "claude",
-                ctx,
-                provider=provider,
-                model=model,
-                refresh=refresh,
-                skip_preflight=skip_preflight,
-                workspace_url=workspace,
-                parent_schema=model_location,
-                custom_oauth=custom_oauth,
-            )
+    requested_discovery: bool | None = None
+    if enable_model_discovery:
+        requested_discovery = True
+    elif provider is not None or model_location is not None:
+        requested_discovery = _scoped_model_discovery_enabled()
+    with claude_agent.launch_discovery_environment(requested_discovery):
+        with _smart_routing_v2_flag(enable_smart_routing_flag):
+            with _disable_smart_routing_for_subcommand("claude", ctx):
+                _launch_tool(
+                    "claude",
+                    ctx,
+                    provider=provider,
+                    model=model,
+                    refresh=refresh,
+                    skip_preflight=skip_preflight,
+                    workspace_url=workspace,
+                    parent_schema=model_location,
+                    custom_oauth=custom_oauth,
+                )
 
 
 @app.command("gemini", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
