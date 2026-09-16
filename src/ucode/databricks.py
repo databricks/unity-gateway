@@ -2066,11 +2066,12 @@ def list_model_provider_services(
 
     Returns ``(services, reason)`` where each service is
     ``{"name": "<catalog>.<schema>.<service>", "provider_type": "anthropic"|...,
-    "targets": [model_id, ...], "allow_all_targets": bool, "relayed": bool}``.
-    ``targets`` is the provider-side model ids the service exposes (used to pin
-    Bedrock model names). ``relayed`` is True for a credential-less Anthropic
-    service (Claude Max/Team/Enterprise subscription relay). A non-None
-    ``reason`` means the listing call itself failed.
+    "targets": [model_id, ...], "target_native_api_types": {model_id: [api_type, ...]},
+    "allow_all_targets": bool, "relayed": bool}``. ``targets`` is the provider-side model ids the
+    service exposes (used to pin Bedrock model names), while ``target_native_api_types`` preserves
+    the protocols each target advertises. ``relayed`` is True for a credential-less Anthropic
+    service (Claude Max/Team/Enterprise subscription relay). A non-None ``reason`` means the
+    listing call itself failed.
 
     Pages through the endpoint: a metastore with more services than fit on one page used to have the
     remainder silently dropped, so a service that plainly existed looked absent. ``parent`` scopes
@@ -2150,13 +2151,23 @@ def _provider_service_entry(raw_service: object) -> dict | None:
     raw_config = service.get("config")
     config = cast("dict[str, object]", raw_config) if isinstance(raw_config, dict) else {}
     targets: list[str] = []
+    target_native_api_types: dict[str, list[str]] = {}
     raw_targets = config.get("targets")
     for target in raw_targets if isinstance(raw_targets, list) else []:
         if not isinstance(target, dict):
             continue
-        model_id = cast("dict[str, object]", target).get("model")
+        target_config = cast("dict[str, object]", target)
+        model_id = target_config.get("model")
         if isinstance(model_id, str) and model_id:
             targets.append(model_id)
+            raw_native_api_types = target_config.get("native_api_types")
+            target_native_api_types[model_id] = [
+                api_type
+                for api_type in (
+                    raw_native_api_types if isinstance(raw_native_api_types, list) else []
+                )
+                if isinstance(api_type, str) and api_type
+            ]
     # Relayed = credential-less Anthropic (subscription relay). Only whether
     # it's relayed matters here; the tier (Max vs Team/Enterprise) is governed
     # server-side, so both launch identically.
@@ -2167,6 +2178,7 @@ def _provider_service_entry(raw_service: object) -> dict | None:
         "name": full_name,
         "provider_type": _provider_type_tag(raw_type if isinstance(raw_type, str) else None),
         "targets": targets,
+        "target_native_api_types": target_native_api_types,
         "allow_all_targets": bool(config.get("allow_all_targets")),
         "relayed": relayed,
     }
@@ -2255,8 +2267,9 @@ def list_tool_provider_services(
 def service_usable_for_tool(tool: str, service: dict) -> bool:
     """True when ``tool`` can actually route through ``service``.
 
-    Beyond the provider-type match, a Bedrock service is only usable if it
-    exposes at least one compatible model in its targets.
+    Beyond the provider-type match, a Bedrock service is only usable if it exposes at least one
+    compatible model in its targets. An allow-all Bedrock service is potentially usable by Codex;
+    the scoped runtime catalog is authoritative about whether it exposes any Responses models.
     """
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
@@ -2266,8 +2279,15 @@ def service_usable_for_tool(tool: str, service: dict) -> bool:
         if tool == "claude":
             return bool(map_claude_family_models(targets))
         if tool == "codex":
+            if service.get("allow_all_targets"):
+                return True
+            target_native_api_types = service.get("target_native_api_types")
+            if not isinstance(target_native_api_types, dict):
+                return False
             return any(
-                isinstance(model_id, str) and model_id.lower().startswith("openai.")
+                isinstance(model_id, str)
+                and isinstance(api_types := target_native_api_types.get(model_id), list)
+                and "openai/v1/responses" in api_types
                 for model_id in targets
             )
         return False
@@ -2280,7 +2300,8 @@ def resolve_provider_service(
     """Validate that ``service_name`` exists and is usable by ``tool``.
 
     Returns ``(service, error)``. On success ``service`` is the full service
-    dict (``name``/``provider_type``/``targets``/``allow_all_targets``) and
+    dict (``name``/``provider_type``/``targets``/``target_native_api_types``/
+    ``allow_all_targets``) and
     ``error`` is None. On failure ``service`` is None and ``error`` is an
     actionable message: the feature is off, the listing failed, the service
     doesn't exist, or its provider type isn't one ``tool`` can route to (e.g.
