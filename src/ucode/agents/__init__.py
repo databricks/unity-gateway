@@ -85,16 +85,22 @@ AITOOLS_AGENT_TOKENS = {
 }
 
 
-def install_databricks_ai_tools_for_agents(tools: list[str], state: dict) -> None:
+def install_databricks_ai_tools_for_agents(
+    tools: list[str], state: dict, *, force_refresh: bool = False
+) -> None:
     """Install Databricks AI Tools for supported agents.
 
     Gemini and Pi have no ``aitools`` support and are dropped.
+
+    This runs only during ``ug configure``. ``force_refresh`` reads the managed config fresh; a
+    caller that already refreshed this launch (the main configure path) leaves it False so the gate
+    reuses that read instead of adding another control-plane round trip.
     """
     if not state.get("databricks_ai_tools_enabled"):
         return
     # An admin's managed config governs the workspace, so ucode does not
     # self-install AI Tools under one (may become a managed-config option later).
-    if refresh_managed_config(state).manifest is not None:
+    if refresh_managed_config(state, force_refresh=force_refresh).manifest is not None:
         return
     agents = [AITOOLS_AGENT_TOKENS[tool] for tool in tools if tool in AITOOLS_AGENT_TOKENS]
     if not agents:

@@ -85,7 +85,9 @@ class TestInstallAiToolsForAgents:
             lambda agents, profile: captured.update(agents=agents, profile=profile),
         )
         monkeypatch.setattr(
-            agents_mod, "refresh_managed_config", lambda state: ManagedConfigResult(managed, False)
+            agents_mod,
+            "refresh_managed_config",
+            lambda state, **_k: ManagedConfigResult(managed, False),
         )
         return captured
 
@@ -135,6 +137,23 @@ class TestInstallAiToolsForAgents:
         )
         assert captured == {}  # install_ai_tools never called
 
+    def test_forwards_force_refresh_to_managed_read(self, monkeypatch):
+        # The gate forwards force_refresh so `ug configure --agent` (no prior refresh) reads fresh,
+        # while the main configure path (already refreshed) reuses its read instead of re-fetching.
+        seen: list[bool] = []
+        monkeypatch.setattr(agents_mod, "install_ai_tools", lambda agents, profile: None)
+        monkeypatch.setattr(
+            agents_mod,
+            "refresh_managed_config",
+            lambda state, *, force_refresh=False: (
+                seen.append(force_refresh) or ManagedConfigResult(None, False)
+            ),
+        )
+        state = {"profile": "p", "databricks_ai_tools_enabled": True}
+        install_databricks_ai_tools_for_agents(["claude"], state)
+        install_databricks_ai_tools_for_agents(["claude"], state, force_refresh=True)
+        assert seen == [False, True]
+
 
 class TestConfigureWiresAiToolsInstall:
     """AI Tools install is a `ucode configure`-only step. `configure_selected_tools`
@@ -151,7 +170,9 @@ class TestConfigureWiresAiToolsInstall:
             lambda agents, profile: captured.update(agents=agents, profile=profile),
         )
         monkeypatch.setattr(
-            agents_mod, "refresh_managed_config", lambda state: ManagedConfigResult(None, False)
+            agents_mod,
+            "refresh_managed_config",
+            lambda state, **_k: ManagedConfigResult(None, False),
         )
         return captured
 

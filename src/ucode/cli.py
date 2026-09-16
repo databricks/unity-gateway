@@ -761,7 +761,9 @@ def configure_workspace_command(
         )
         state = states[0]
         state = configure_single_tool(tool, state)
-        install_databricks_ai_tools_for_agents([tool], state)
+        # No managed refresh precedes this branch, so read fresh here: `ug configure` never decides
+        # from a stale cache.
+        install_databricks_ai_tools_for_agents([tool], state, force_refresh=True)
         spec = TOOL_SPECS[tool]
         console.print(
             Panel(
@@ -788,8 +790,9 @@ def configure_workspace_command(
     save_state(state)
 
     # A published managed config means the admin dictates the setup: apply it to every enabled agent
-    # now rather than prompting the developer to pick.
-    managed, _ = refresh_managed_config(state)
+    # now rather than prompting the developer to pick. Configure always reads fresh so it never
+    # applies a config the admin has since changed.
+    managed, _ = refresh_managed_config(state, force_refresh=True)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
         configured_tools: list[str] = []
