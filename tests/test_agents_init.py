@@ -481,6 +481,20 @@ class TestConfigureOneGeminiProvider:
             agents_mod._configure_one("gemini", self._STATE, "c.s.g")
 
 
+def test_configure_claude_allows_parent_location_without_global_model(monkeypatch):
+    state = {"workspace": "https://ws.databricks.com", "claude_models": {}}
+    captured = {}
+
+    def fake_write_tool_config(state, model, **kwargs):
+        captured.update(model=model, parent_schema=kwargs.get("parent_schema"))
+        return state
+
+    monkeypatch.setattr(agents_mod.claude, "write_tool_config", fake_write_tool_config)
+
+    assert agents_mod.configure_tool("claude", state, parent_schema="main.models") is state
+    assert captured == {"model": None, "parent_schema": "main.models"}
+
+
 class TestResolveGeminiProviderModel:
     _STATE = {"workspace": "https://ws.databricks.com", "profile": None}
 

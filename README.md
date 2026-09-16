@@ -79,6 +79,11 @@ ug claude -r          # resume last session
 ug codex --full-auto
 ```
 
+Use `--model-location <catalog>.<schema>` on `ug claude` or `ug codex` for a launch-only schema
+override. It does not change the saved model location or provider preference. An explicit
+`--provider` similarly overrides a saved model location for that launch; the two explicit options
+cannot be supplied together.
+
 All agents route through Databricks AI Gateway using your workspace credentials — no API keys required.
 
 Codex uses the provider ID `Databricks` while keeping the `ucode` profile name.
@@ -113,6 +118,19 @@ ug configure --agents claude,codex
 ```
 
 Available agent names are `codex`, `claude`, `gemini`, `opencode`, `copilot`, and `pi`. `cursor` is also accepted (MCP-only — it registers Databricks MCP servers but configures no models).
+
+To discover models for Claude and Codex from one Unity Catalog schema, save a literal
+`<catalog>.<schema>` model location during configuration:
+
+```bash
+ug configure --agents claude,codex --model-location main.models
+```
+
+The location is saved per selected agent within the workspace and reused by later `ug claude` and
+`ug codex` launches. For each selected Claude/Codex agent, it replaces any saved Model Provider
+Service choice. Reconfiguring that agent without `--model-location` clears its saved location; this
+makes an explicit reconfigure the reset back to normal Hosted/provider selection without changing
+the other agent or unrelated configure subcommands.
 
 When naming several agents, configure sets up the available subset and reports the rest as skipped:
 
@@ -389,15 +407,16 @@ The output looks like:
 | `ug revert` | Clear saved state and restore backed-up config files |
 | `ug configure --dry-run` | Preview config files without writing them |
 | `ug configure --agents claude,codex` | Configure specific agents without the interactive picker |
+| `ug configure --agents claude,codex --model-location main.models` | Save a Unity Catalog model location for the selected Claude/Codex agents |
 | `ug configure --workspace https://first.databricks.com` | Configure a workspace without the interactive picker |
 | `ug configure --profile DEFAULT` | Configure using an existing Databricks CLI profile (host comes from `~/.databrickscfg`) |
 | `ug configure --profile DEFAULT --use-pat` | Authenticate with the profile's personal access token — no browser login |
 | `ug codex --enable-smart-routing` | Enable AI Gateway routing for Codex sessions and subagents |
 | `ug codex --refresh` | Re-check Databricks, refresh models/configuration, and launch Codex |
-| `ug codex --model-location main.default` | Discover model services in the specified catalog and schema |
+| `ug codex --model-location main.models` | Launch Codex with a temporary Unity Catalog model-location override |
 | `ug claude --enable-smart-routing` | Enable AI Gateway routing for Claude Code sessions and subagents |
 | `ug claude --refresh` | Re-check Databricks, refresh models/configuration, and launch Claude Code |
-| `ug claude --model-location main.default` | Discover model services in the specified catalog and schema |
+| `ug claude --model-location main.models` | Launch Claude Code with a temporary Unity Catalog model-location override |
 | `ug configure --agents claude,codex,pi` | Configure the requested agents that are available; skip the rest with a warning |
 | `ug configure --agents claude --mcp system.ai.slack` | Configure an agent and register its Databricks MCP server(s) in one command |
 | `ug mcp add --location system.ai` | Register a schema's MCP servers, keeping any already configured (additive; never removes) |

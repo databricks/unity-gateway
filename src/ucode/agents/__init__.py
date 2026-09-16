@@ -401,9 +401,9 @@ def configure_tool(
             state, model, provider=provider, parent_schema=parent_schema
         )
     elif tool == "claude":
-        # A Model Provider Service routes by header and pins no Databricks
-        # model, so the usual "model required" guard doesn't apply to claude.
-        if not model and not provider:
+        # A Model Provider Service or model location routes by header and pins no global
+        # Databricks model, so the usual "model required" guard doesn't apply to claude.
+        if not model and not provider and not parent_schema:
             raise RuntimeError(f"A {tool} model must be selected before configuration.")
         result = claude.write_tool_config(
             state,

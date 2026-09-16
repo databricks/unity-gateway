@@ -47,9 +47,17 @@ def load_state() -> dict:
     workspace = full.get("current_workspace")
     if not workspace:
         return {}
-    ws_state = full.get("workspaces", {}).get(workspace, {})
-    ws_state["workspace"] = workspace
-    return hydrate_state(ws_state)
+    return load_workspace_state(workspace, full_state=full)
+
+
+def load_workspace_state(workspace: str, *, full_state: dict | None = None) -> dict:
+    """Load one workspace's state without changing the current workspace."""
+    full = full_state if full_state is not None else load_full_state()
+    workspaces = full.get("workspaces")
+    raw = workspaces.get(workspace) if isinstance(workspaces, dict) else None
+    state = dict(raw) if isinstance(raw, dict) else {}
+    state["workspace"] = workspace
+    return hydrate_state(state)
 
 
 def save_state(state: dict) -> None:
@@ -67,7 +75,7 @@ def save_state(state: dict) -> None:
     workspace = state.get("workspace") or full.get("current_workspace")
     if workspace:
         full["current_workspace"] = workspace
-        full["workspaces"][workspace] = hydrate_state(_without_managed_overlay(state))
+        full["workspaces"][workspace] = hydrate_state(developer_state_from_resolved(state))
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
@@ -75,15 +83,17 @@ def save_state(state: dict) -> None:
         raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
 
 
-def _without_managed_overlay(state: dict) -> dict:
+def developer_state_from_resolved(state: dict) -> dict:
     """Return ``state`` with managed-config values swapped back for the developer's own.
 
     Returns a new dict and leaves ``state`` untouched, so the caller keeps the layered values it
-    needs for rendering and repeated saves stay idempotent.
+    needs for rendering and repeated saves stay idempotent. Multi-agent configuration also uses
+    this between agents so one agent's managed overlay cannot become the next agent's developer
+    state.
     """
     overlay = state.get(MANAGED_OVERLAY_KEY)
     if not isinstance(overlay, dict):
-        return state
+        return dict(state)
     persisted = {key: value for key, value in state.items() if key != MANAGED_OVERLAY_KEY}
     for key, value in overlay.items():
         # A key the developer never set is dropped rather than persisted as None.
@@ -297,6 +307,29 @@ def set_provider_service(state: dict, tool: str, full_name: str | None) -> dict:
         state["provider_services"] = providers
     else:
         state.pop("provider_services", None)
+    return state
+
+
+def get_model_location(state: dict, tool: str) -> str | None:
+    """Return ``tool``'s persisted ``<catalog>.<schema>`` model location."""
+    locations = state.get("model_locations")
+    if not isinstance(locations, dict):
+        return None
+    location = locations.get(tool)
+    return location if isinstance(location, str) and location else None
+
+
+def set_model_location(state: dict, tool: str, location: str | None) -> dict:
+    """Persist (or clear) ``tool``'s workspace-scoped model location."""
+    locations = dict(state.get("model_locations") or {})
+    if location:
+        locations[tool] = location
+    else:
+        locations.pop(tool, None)
+    if locations:
+        state["model_locations"] = locations
+    else:
+        state.pop("model_locations", None)
     return state
 
 
