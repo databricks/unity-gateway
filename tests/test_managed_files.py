@@ -91,6 +91,14 @@ class TestImmutableFlags:
 
 
 class TestManagedFileLifecycle:
+    def test_private_json_metadata_is_atomic_and_owner_only(self, tmp_path, backup_dir):
+        path = tmp_path / "metadata.json"
+
+        managed_files.write_private_json_file(path, {"version": 1})
+
+        assert json.loads(path.read_text()) == {"version": 1}
+        assert path.stat().st_mode & 0o777 == 0o600
+
     def test_dry_run_does_not_write_or_backup(self, tmp_path, backup_dir, monkeypatch):
         path = tmp_path / "managed.json"
         config_io.set_dry_run(True)
@@ -228,6 +236,193 @@ class TestManagedFileLifecycle:
         assert result == "unchanged"
         assert not backup_dir.exists()
 
+    def test_unchanged_retry_repairs_last_applied_after_metadata_failure(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        path = tmp_path / "managed.json"
+        path.write_text('{"picker": "enterprise"}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        record_last_applied = managed_files._record_last_applied
+
+        def fail_record(*args, **kwargs):
+            raise RuntimeError("injected metadata failure")
+
+        monkeypatch.setattr(managed_files, "_record_last_applied", fail_record)
+
+        with pytest.raises(RuntimeError, match="injected metadata failure"):
+            managed_files.reconcile_managed_file(
+                path,
+                '{"picker": "ucode"}\n',
+                tool="claude",
+                display="Claude Code",
+                owned_paths=[["picker"]],
+                conditional_owned_paths=[["picker"]],
+            )
+        assert json.loads(path.read_text()) == {"picker": "ucode"}
+        assert (backup_dir / "manifest.json").exists()
+        with pytest.raises(RuntimeError, match="last-applied snapshot is missing"):
+            managed_files.revert_managed_file(
+                "claude",
+                display="Claude Code",
+                parser=json.loads,
+                dumper=lambda doc: json.dumps(doc) + "\n",
+            )
+        assert (backup_dir / "manifest.json").exists()
+
+        monkeypatch.setattr(managed_files, "_record_last_applied", record_last_applied)
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda *args: pytest.fail("unchanged retry must not rewrite settings"),
+        )
+        assert (
+            managed_files.reconcile_managed_file(
+                path,
+                '{"picker": "ucode"}\n',
+                tool="claude",
+                display="Claude Code",
+                owned_paths=[["picker"]],
+                conditional_owned_paths=[["picker"]],
+                repair_last_applied=True,
+            )
+            == "unchanged"
+        )
+
+        restored, restored_paths = managed_files.restore_unchanged_managed_paths(
+            "claude",
+            path,
+            {"picker": "ucode"},
+            [["picker"]],
+            parser=json.loads,
+        )
+        assert restored == {"picker": "enterprise"}
+        assert restored_paths == [["picker"]]
+
+    def test_unchanged_file_with_backup_is_not_claimed_without_repair_proof(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        path = tmp_path / "managed.json"
+        path.write_text('{"picker": "ucode"}\n', encoding="utf-8")
+        managed_files._ensure_backup("claude", path, '{"picker": "enterprise"}\n')
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda *args: pytest.fail("unchanged settings must not be rewritten"),
+        )
+
+        result = managed_files.reconcile_managed_file(
+            path,
+            '{"picker": "ucode"}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["picker"]],
+        )
+
+        assert result == "unchanged"
+        entry = json.loads((backup_dir / "manifest.json").read_text())["files"]["claude"]
+        assert "last_applied_file" not in entry
+        assert entry["owned_paths"] == []
+
+    def test_failed_manifest_switch_keeps_previous_snapshot_readable(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        path = tmp_path / "managed.json"
+        path.write_text('{"value": "original"}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        managed_files.reconcile_managed_file(
+            path,
+            '{"value": "one"}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["value"]],
+        )
+        first_manifest = json.loads((backup_dir / "manifest.json").read_text())
+        first_file = first_manifest["files"]["claude"]["last_applied_file"]
+        first_text = (backup_dir / first_file).read_text()
+        write_manifest = managed_files._write_manifest
+        monkeypatch.setattr(
+            managed_files,
+            "_write_manifest",
+            lambda manifest: (_ for _ in ()).throw(RuntimeError("injected manifest failure")),
+        )
+
+        with pytest.raises(RuntimeError, match="injected manifest failure"):
+            managed_files.reconcile_managed_file(
+                path,
+                '{"value": "two"}\n',
+                tool="claude",
+                display="Claude Code",
+                owned_paths=[["value"]],
+            )
+
+        persisted = json.loads((backup_dir / "manifest.json").read_text())
+        assert persisted["files"]["claude"]["last_applied_file"] == first_file
+        assert (backup_dir / first_file).read_text() == first_text
+
+        monkeypatch.setattr(managed_files, "_write_manifest", write_manifest)
+        assert (
+            managed_files.reconcile_managed_file(
+                path,
+                '{"value": "two"}\n',
+                tool="claude",
+                display="Claude Code",
+                owned_paths=[["value"]],
+                repair_last_applied=True,
+            )
+            == "unchanged"
+        )
+        repaired = json.loads((backup_dir / "manifest.json").read_text())
+        second_file = repaired["files"]["claude"]["last_applied_file"]
+        assert second_file != first_file
+        assert (backup_dir / second_file).read_text() == '{"value": "two"}\n'
+
+    def test_old_snapshot_cleanup_failure_is_harmless(self, tmp_path, backup_dir, monkeypatch):
+        path = tmp_path / "managed.json"
+        path.write_text('{"value": "original"}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        managed_files.reconcile_managed_file(
+            path,
+            '{"value": "one"}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["value"]],
+        )
+        first_manifest = json.loads((backup_dir / "manifest.json").read_text())
+        first_file = first_manifest["files"]["claude"]["last_applied_file"]
+        first_path = backup_dir / first_file
+        unlink = type(first_path).unlink
+
+        def fail_old_snapshot(candidate, *args, **kwargs):
+            if candidate == first_path:
+                raise OSError("injected cleanup failure")
+            return unlink(candidate, *args, **kwargs)
+
+        monkeypatch.setattr(type(first_path), "unlink", fail_old_snapshot)
+
+        managed_files.reconcile_managed_file(
+            path,
+            '{"value": "two"}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["value"]],
+        )
+
+        persisted = json.loads((backup_dir / "manifest.json").read_text())
+        assert persisted["files"]["claude"]["last_applied_file"] != first_file
+        assert first_path.exists()
+
     def test_verified_check_uses_fingerprint(self, tmp_path):
         path = tmp_path / "managed.json"
         path.write_text("current", encoding="utf-8")
@@ -237,6 +432,94 @@ class TestManagedFileLifecycle:
         assert managed_files.managed_file_is_verified(state, "claude", path) is True
         path.write_text("changed-content", encoding="utf-8")
         assert managed_files.managed_file_is_verified(state, "claude", path) is False
+
+    def test_unchanged_managed_paths_match_integrity_checked_snapshot(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        path = tmp_path / "managed.json"
+        path.write_text('{"picker": "enterprise", "other": 1}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        managed_files.reconcile_managed_file(
+            path,
+            '{"picker": "ucode", "other": 1}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["picker"], ["other"]],
+        )
+
+        assert managed_files.unchanged_managed_paths(
+            "claude",
+            path,
+            {"picker": "ucode", "other": 1},
+            [["picker"], ["unowned"]],
+            parser=json.loads,
+        ) == [["picker"]]
+        restored, restored_paths = managed_files.restore_unchanged_managed_paths(
+            "claude",
+            path,
+            {"picker": "ucode", "other": 1},
+            [["picker"]],
+            parser=json.loads,
+        )
+        assert restored == {"picker": "enterprise", "other": 1}
+        assert restored_paths == [["picker"]]
+
+        path.write_text('{"picker": "enterprise", "other": 1}\n', encoding="utf-8")
+        assert (
+            managed_files.unchanged_managed_paths(
+                "claude",
+                path,
+                {"picker": "enterprise", "other": 1},
+                [["picker"]],
+                parser=json.loads,
+            )
+            == []
+        )
+
+    def test_conditional_ownership_is_relinquished_after_external_change(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        path = tmp_path / "managed.json"
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        managed_files.reconcile_managed_file(
+            path,
+            '{"picker": "ucode", "other": 1}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["picker"], ["other"]],
+            conditional_owned_paths=[["picker"]],
+        )
+        path.write_text('{"picker": "enterprise", "other": 1}\n', encoding="utf-8")
+
+        managed_files.reconcile_managed_file(
+            path,
+            '{"picker": "enterprise", "other": 2}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["other"]],
+            conditional_owned_paths=[["picker"]],
+        )
+
+        manifest = json.loads((backup_dir / "manifest.json").read_text())
+        assert ["picker"] not in manifest["files"]["claude"]["owned_paths"]
+        assert (
+            managed_files.unchanged_managed_paths(
+                "claude",
+                path,
+                {"picker": "enterprise", "other": 2},
+                [["picker"]],
+                parser=json.loads,
+            )
+            == []
+        )
 
     def test_revert_restores_exact_original(self, tmp_path, backup_dir, monkeypatch):
         path = tmp_path / "managed.json"
@@ -264,6 +547,96 @@ class TestManagedFileLifecycle:
         assert result == "restored"
         assert path.read_text() == '{"enterprise": true}\n'
         assert json.loads((backup_dir / "manifest.json").read_text())["files"] == {}
+
+    def test_revert_manifest_switch_failure_keeps_snapshots_for_retry(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        path = tmp_path / "managed.json"
+        path.write_text('{"value": "original"}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        managed_files.reconcile_managed_file(
+            path,
+            '{"value": "ucode"}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["value"]],
+        )
+        persisted = json.loads((backup_dir / "manifest.json").read_text())
+        entry = persisted["files"]["claude"]
+        referenced = [
+            backup_dir / entry[key] for key in ("backup_file", "last_applied_file") if key in entry
+        ]
+        write_manifest = managed_files._write_manifest
+        monkeypatch.setattr(
+            managed_files,
+            "_write_manifest",
+            lambda manifest: (_ for _ in ()).throw(RuntimeError("injected manifest failure")),
+        )
+
+        with pytest.raises(RuntimeError, match="injected manifest failure"):
+            managed_files.revert_managed_file(
+                "claude",
+                display="Claude Code",
+                parser=json.loads,
+                dumper=lambda doc: json.dumps(doc) + "\n",
+            )
+
+        assert "claude" in json.loads((backup_dir / "manifest.json").read_text())["files"]
+        assert all(snapshot.exists() for snapshot in referenced)
+
+        monkeypatch.setattr(managed_files, "_write_manifest", write_manifest)
+        assert (
+            managed_files.revert_managed_file(
+                "claude",
+                display="Claude Code",
+                parser=json.loads,
+                dumper=lambda doc: json.dumps(doc) + "\n",
+            )
+            == "ucode entries removed; external changes preserved"
+        )
+        assert json.loads((backup_dir / "manifest.json").read_text())["files"] == {}
+
+    def test_revert_snapshot_gc_failure_is_harmless(self, tmp_path, backup_dir, monkeypatch):
+        path = tmp_path / "managed.json"
+        path.write_text('{"value": "original"}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        managed_files.reconcile_managed_file(
+            path,
+            '{"value": "ucode"}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["value"]],
+        )
+        entry = json.loads((backup_dir / "manifest.json").read_text())["files"]["claude"]
+        stale_snapshot = backup_dir / entry["last_applied_file"]
+        unlink = type(stale_snapshot).unlink
+
+        def fail_snapshot_gc(candidate, *args, **kwargs):
+            if candidate == stale_snapshot:
+                raise OSError("injected snapshot GC failure")
+            return unlink(candidate, *args, **kwargs)
+
+        monkeypatch.setattr(type(stale_snapshot), "unlink", fail_snapshot_gc)
+
+        assert (
+            managed_files.revert_managed_file(
+                "claude",
+                display="Claude Code",
+                parser=json.loads,
+                dumper=lambda doc: json.dumps(doc) + "\n",
+            )
+            == "restored"
+        )
+        assert json.loads((backup_dir / "manifest.json").read_text())["files"] == {}
+        assert stale_snapshot.exists()
 
     def test_revert_removes_file_created_by_ucode(self, tmp_path, backup_dir, monkeypatch):
         path = tmp_path / "managed.json"
@@ -320,6 +693,34 @@ class TestManagedFileLifecycle:
 
         assert result == "ucode entries removed; external changes preserved"
         assert json.loads(path.read_text()) == {"enterprise": "new-policy", "new": True}
+
+    def test_revert_exact_last_snapshot_preserves_unowned_paths(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        path = tmp_path / "managed.json"
+        path.write_text('{"picker": "enterprise", "owned": "old"}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        managed_files.reconcile_managed_file(
+            path,
+            '{"picker": "relinquished", "owned": "new"}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["owned"]],
+        )
+
+        result = managed_files.revert_managed_file(
+            "claude",
+            display="Claude Code",
+            parser=json.loads,
+            dumper=lambda doc: json.dumps(doc, sort_keys=True) + "\n",
+        )
+
+        assert result == "restored"
+        assert json.loads(path.read_text()) == {"picker": "relinquished", "owned": "old"}
 
     def test_reconcile_retries_exact_mdm_restore_once(self, tmp_path, backup_dir, monkeypatch):
         path = tmp_path / "managed.json"

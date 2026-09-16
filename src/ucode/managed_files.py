@@ -136,6 +136,13 @@ def managed_writes_allowed() -> bool:
     return sys.stdin.isatty()
 
 
+def write_private_json_file(path: Path, payload: dict) -> None:
+    """Atomically write owner-only JSON metadata on the same filesystem as managed backups."""
+    if is_dry_run():
+        return
+    _write_private_file(path, json.dumps(payload, indent=2) + "\n")
+
+
 @contextmanager
 def managed_write_batch(displays: list[str]) -> Iterator[None]:
     """Group setup messaging for agents configured in one command."""
@@ -180,6 +187,112 @@ def managed_file_conflicts(
         if existing_value != _path_value(desired, path):
             conflicts.append(".".join(path))
     return conflicts
+
+
+def managed_last_applied_paths(
+    tool: str,
+    path: Path,
+    candidate_paths: list[list[str]],
+    *,
+    parser: ManagedParser,
+) -> tuple[dict, list[list[str]]]:
+    """Return the last-applied document and candidate paths recorded as ucode-owned.
+
+    Ownership of an OS-managed file is machine-global, while workspace state is not. Consult the
+    integrity-checked snapshot so a new workspace can identify values written by an earlier one.
+    """
+    entry = _manifest_files(_load_manifest()).get(tool)
+    if not isinstance(entry, dict) or entry.get("path") != str(path):
+        return {}, []
+    last_text = _snapshot_text(entry, "last_applied_file")
+    if last_text is None:
+        return {}, []
+    try:
+        last = parser(last_text)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"Cannot safely inspect the last managed settings written for {tool} at {path}: {exc}"
+        ) from exc
+    if not isinstance(last, dict):
+        raise RuntimeError(
+            f"Cannot safely inspect the last managed settings written for {tool} at {path}: "
+            "the snapshot is not an object."
+        )
+
+    owned_paths = entry.get("owned_paths")
+    recorded = {
+        tuple(owned_path)
+        for raw_path in (owned_paths if isinstance(owned_paths, list) else [])
+        if (owned_path := _owned_path(raw_path)) is not None
+    }
+    candidates: list[list[str]] = []
+    for raw_path in candidate_paths:
+        candidate = _owned_path(raw_path)
+        if candidate is None or tuple(candidate) not in recorded:
+            continue
+        candidates.append(candidate)
+    return deepcopy(last), candidates
+
+
+def unchanged_managed_paths(
+    tool: str,
+    path: Path,
+    current: dict,
+    candidate_paths: list[list[str]],
+    *,
+    parser: ManagedParser,
+) -> list[list[str]]:
+    """Return recorded candidates whose current values still match ucode's last write."""
+    last, recorded_candidates = managed_last_applied_paths(
+        tool, path, candidate_paths, parser=parser
+    )
+    unchanged: list[list[str]] = []
+    for candidate in recorded_candidates:
+        if _path_value(current, candidate) == _path_value(last, candidate):
+            unchanged.append(candidate)
+    return unchanged
+
+
+def restore_unchanged_managed_paths(
+    tool: str,
+    path: Path,
+    current: dict,
+    candidate_paths: list[list[str]],
+    *,
+    parser: ManagedParser,
+) -> tuple[dict, list[list[str]]]:
+    """Restore unchanged owned candidates to their pre-ucode values.
+
+    Returns a copy of ``current`` plus the paths restored. Values changed since ucode's last write
+    remain untouched and are omitted so the next successful reconcile can relinquish ownership.
+    """
+    unchanged = unchanged_managed_paths(tool, path, current, candidate_paths, parser=parser)
+    if not unchanged:
+        return deepcopy(current), []
+    entry = _manifest_files(_load_manifest()).get(tool)
+    if not isinstance(entry, dict) or entry.get("path") != str(path):
+        return deepcopy(current), []
+    original_text = _original_text(entry)
+    try:
+        original = parser(original_text) if original_text is not None else {}
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"Cannot safely inspect the original managed settings for {tool} at {path}: {exc}"
+        ) from exc
+    if not isinstance(original, dict):
+        raise RuntimeError(
+            f"Cannot safely inspect the original managed settings for {tool} at {path}: "
+            "the snapshot is not an object."
+        )
+
+    restored = deepcopy(current)
+    for owned_path in unchanged:
+        original_value = _path_value(original, owned_path)
+        if original_value is _MISSING:
+            _delete_path_value(restored, owned_path)
+        else:
+            _set_path_value(restored, owned_path, original_value)
+    return restored, unchanged
 
 
 def managed_file_status(
@@ -233,11 +346,15 @@ def reconcile_managed_file(
     tool: str,
     display: str,
     owned_paths: list[list[str]],
+    conditional_owned_paths: list[list[str]] | None = None,
+    repair_last_applied: bool = False,
 ) -> str:
     """Back up, atomically write, and verify one OS-managed settings file.
 
     The first pre-ucode contents are retained until ``ucode revert``. Subsequent writes update only
-    the last-applied snapshot used for drift-safe three-way restoration.
+    the last-applied snapshot used for drift-safe three-way restoration. Conditional paths are
+    relinquished when omitted from ``owned_paths`` so externally changed values cannot become
+    ucode-owned merely because they appear in the next whole-file snapshot.
     """
     if not managed_files_supported():
         print_warning(
@@ -256,6 +373,18 @@ def reconcile_managed_file(
         )
     current_text = read_managed_file(path)
     if current_text == desired_text:
+        # A prior write may have replaced the settings and then failed while recording its
+        # last-applied snapshot. Only an active caller-owned transaction proves that retry; the
+        # same-path backup alone must not claim an unrelated exact-match file.
+        entry = _manifest_files(_load_manifest()).get(tool)
+        if repair_last_applied and isinstance(entry, dict) and entry.get("path") == str(path):
+            _record_last_applied(
+                tool,
+                path,
+                desired_text,
+                owned_paths,
+                conditional_owned_paths=conditional_owned_paths or [],
+            )
         return "unchanged"
     if is_dry_run():
         console.print(f"\n[bold]\\[dry run] {path} (via sudo)[/bold]\n{desired_text}")
@@ -298,7 +427,13 @@ def reconcile_managed_file(
             f"{display} managed settings changed concurrently at {path}. ucode will not overwrite "
             "the newer policy; run the command again or contact your administrator."
         )
-    _record_last_applied(tool, path, desired_text, owned_paths)
+    _record_last_applied(
+        tool,
+        path,
+        desired_text,
+        owned_paths,
+        conditional_owned_paths=conditional_owned_paths or [],
+    )
     if not _managed_write_batch:
         print_success(f"Settings configured for {display}")
     return "created" if created else "written"
@@ -310,6 +445,9 @@ def revert_managed_file(
     display: str,
     parser: ManagedParser,
     dumper: ManagedDumper,
+    acquisition_lease: list[dict] | None = None,
+    excluded_owned_paths: list[list[str]] | None = None,
+    before_backup_delete: Callable[[], None] | None = None,
 ) -> str:
     """Restore one managed file from its baseline while preserving later external edits."""
     manifest = _load_manifest()
@@ -327,23 +465,45 @@ def revert_managed_file(
     original_text = _original_text(entry)
     last_text = _snapshot_text(entry, "last_applied_file")
 
-    if current_text == last_text:
-        desired_text = original_text
-    elif current_text is None or last_text is None:
+    lease_drift = False
+    if last_text is None and current_text != original_text:
+        raise RuntimeError(
+            f"Cannot safely revert {display} managed settings at {path}: the last-applied "
+            f"snapshot is missing. The backup was retained under {MANAGED_BACKUP_DIR}. "
+            "Re-run configuration to repair its metadata, then run `ucode revert` again."
+        )
+    if current_text is None or last_text is None:
         desired_text = current_text
     else:
         try:
             current_doc = parser(current_text)
             original_doc = parser(original_text) if original_text is not None else {}
             last_doc = parser(last_text)
+            if not all(isinstance(doc, dict) for doc in (current_doc, original_doc, last_doc)):
+                raise ValueError("managed settings snapshots must be objects")
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
                 f"Cannot safely revert {display} managed settings at {path}: {exc}"
             ) from exc
         owned_paths = entry.get("owned_paths")
         paths = owned_paths if isinstance(owned_paths, list) else []
-        reverted = _three_way_revert(current_doc, original_doc, last_doc, paths)
-        desired_text = dumper(reverted)
+        lease_paths = _acquisition_lease_paths(acquisition_lease or [])
+        excluded_paths = {
+            tuple(excluded_path)
+            for raw_path in (excluded_owned_paths or [])
+            if (excluded_path := _owned_path(raw_path)) is not None
+        }
+        generic_paths = [
+            raw_path
+            for raw_path in paths
+            if (path_value := _owned_path(raw_path)) is None
+            or tuple(path_value) not in lease_paths | excluded_paths
+        ]
+        reverted = _three_way_revert(current_doc, original_doc, last_doc, generic_paths)
+        reverted, lease_drift = _apply_acquisition_lease(
+            current_doc, reverted, acquisition_lease or []
+        )
+        desired_text = None if original_text is None and not reverted else dumper(reverted)
 
     if desired_text != current_text:
         if not managed_writes_allowed():
@@ -368,10 +528,12 @@ def revert_managed_file(
                 f"retained under {MANAGED_BACKUP_DIR}."
             )
 
+    if before_backup_delete is not None:
+        before_backup_delete()
     _delete_backup(tool, manifest, entry)
     if original_text is None and desired_text is None:
         return "removed"
-    if current_text != last_text:
+    if current_text != last_text or lease_drift:
         return "ucode entries removed; external changes preserved"
     return "restored"
 
@@ -436,9 +598,9 @@ def _backup_filename(tool: str, path: Path) -> str:
     return f"{tool}-managed-settings.backup{suffix}"
 
 
-def _last_applied_filename(tool: str, path: Path) -> str:
+def _last_applied_filename(tool: str, path: Path, content_sha256: str) -> str:
     suffix = path.suffix or ".txt"
-    return f"{tool}-managed-settings.last-applied{suffix}"
+    return f"{tool}-managed-settings.last-applied-{content_sha256}{suffix}"
 
 
 def _ensure_backup(tool: str, path: Path, current_text: str | None) -> bool:
@@ -471,22 +633,53 @@ def _ensure_backup(tool: str, path: Path, current_text: str | None) -> bool:
 
 
 def _record_last_applied(
-    tool: str, path: Path, desired_text: str, owned_paths: list[list[str]]
+    tool: str,
+    path: Path,
+    desired_text: str,
+    owned_paths: list[list[str]],
+    *,
+    conditional_owned_paths: list[list[str]],
 ) -> None:
     manifest = _load_manifest()
     entry = _manifest_files(manifest).get(tool)
     if not isinstance(entry, dict):
         raise RuntimeError(f"Missing managed-settings backup metadata for {tool}.")
-    last_file = _last_applied_filename(tool, path)
+    content_sha256 = _sha256(desired_text)
+    last_file = _last_applied_filename(tool, path, content_sha256)
+    previous_last_file = entry.get("last_applied_file")
     _write_private_file(MANAGED_BACKUP_DIR / last_file, desired_text)
     entry["last_applied_file"] = last_file
-    entry["last_applied_sha256"] = _sha256(desired_text)
+    entry["last_applied_sha256"] = content_sha256
     known_paths = entry.get("owned_paths") if isinstance(entry.get("owned_paths"), list) else []
+    active = {
+        tuple(owned_path)
+        for raw_path in owned_paths
+        if (owned_path := _owned_path(raw_path)) is not None
+    }
+    conditional = {
+        tuple(owned_path)
+        for raw_path in conditional_owned_paths
+        if (owned_path := _owned_path(raw_path)) is not None
+    }
+    known_paths = [
+        raw_path
+        for raw_path in known_paths
+        if (known_path := _owned_path(raw_path)) is None
+        or tuple(known_path) not in conditional
+        or tuple(known_path) in active
+    ]
     for owned_path in owned_paths:
         if owned_path not in known_paths:
             known_paths.append(list(owned_path))
     entry["owned_paths"] = known_paths
     _write_manifest(manifest)
+    if isinstance(previous_last_file, str) and previous_last_file != last_file:
+        try:
+            _snapshot_path(previous_last_file).unlink(missing_ok=True)
+        except OSError:
+            # The manifest now points at the new immutable generation. A stale unreferenced
+            # snapshot is harmless and can be removed by a later revert or manual cleanup.
+            pass
 
 
 def _snapshot_text(entry: dict, key: str) -> str | None:
@@ -520,15 +713,21 @@ def _backup_label(tool: str) -> str:
 
 
 def _delete_backup(tool: str, manifest: dict, entry: dict) -> None:
-    for key in ("backup_file", "last_applied_file"):
-        filename = entry.get(key)
-        if isinstance(filename, str):
-            try:
-                _snapshot_path(filename).unlink(missing_ok=True)
-            except OSError as exc:
-                raise RuntimeError(f"Could not remove managed-settings backup: {exc}") from exc
+    snapshots = [
+        _snapshot_path(filename)
+        for key in ("backup_file", "last_applied_file")
+        if isinstance((filename := entry.get(key)), str)
+    ]
     _manifest_files(manifest).pop(tool, None)
     _write_manifest(manifest)
+
+    # Once the manifest no longer references these generations, cleanup is best-effort. A stale
+    # private snapshot is harmless; unlinking first would make a failed manifest switch unretryable.
+    for snapshot in snapshots:
+        try:
+            snapshot.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _snapshot_path(filename: str) -> Path:
@@ -577,6 +776,39 @@ def _owned_path(value: object) -> list[str] | None:
     if not isinstance(value, list) or not value or not all(isinstance(part, str) for part in value):
         return None
     return cast(list[str], value)
+
+
+def _acquisition_lease_paths(lease: list[dict]) -> set[tuple[str, ...]]:
+    paths: set[tuple[str, ...]] = set()
+    for entry in lease:
+        path = _owned_path(entry.get("path")) if isinstance(entry, dict) else None
+        if (
+            path is None
+            or not isinstance(entry.get("baseline_exists"), bool)
+            or "applied" not in entry
+            or (entry["baseline_exists"] and "baseline" not in entry)
+        ):
+            raise RuntimeError("Invalid managed-settings acquisition lease.")
+        paths.add(tuple(path))
+    return paths
+
+
+def _apply_acquisition_lease(current: dict, reverted: dict, lease: list[dict]) -> tuple[dict, bool]:
+    if not lease:
+        return reverted, False
+    _acquisition_lease_paths(lease)
+    unchanged = all(
+        _path_value(current, cast(list[str], entry["path"])) == entry["applied"] for entry in lease
+    )
+    if not unchanged:
+        return reverted, True
+    for entry in lease:
+        path = cast(list[str], entry["path"])
+        if entry["baseline_exists"]:
+            _set_path_value(reverted, path, entry["baseline"])
+        else:
+            _delete_path_value(reverted, path)
+    return reverted, False
 
 
 def _three_way_revert(current: dict, original: dict, last: dict, paths: list) -> dict:

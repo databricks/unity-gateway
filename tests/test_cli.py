@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 import tomllib
 from importlib import metadata
@@ -2705,6 +2706,10 @@ class TestRevert:
                 ),
             ),
             patch("ucode.cli.clear_state", side_effect=lambda: cleared.append(True)),
+            patch(
+                "ucode.cli.claude_agent.revert_settings",
+                return_value=("unchanged", False),
+            ),
         ):
             result = runner.invoke(app, ["revert"])
 
@@ -2712,6 +2717,44 @@ class TestRevert:
         assert reverted_mcp == [state]
         assert cleared == [True]
         assert "Claude Code MCP config: restored" in result.output
+
+    def test_global_picker_ownership_removes_claude_file_for_fresh_workspace(self):
+        with (
+            patch("ucode.cli.load_state", return_value={"workspace": MINIMAL_STATE["workspace"]}),
+            patch("ucode.cli.restore_file", return_value=False) as mock_restore,
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.clear_state"),
+            patch(
+                "ucode.cli.claude_agent.revert_settings",
+                return_value=("unchanged", True),
+            ),
+            patch("ucode.cli.codex_agent.revert_managed_config", return_value="unchanged"),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        assert all(
+            call.args[0] != cli_mod.TOOL_SPECS["claude"]["config_path"]
+            for call in mock_restore.call_args_list
+        )
+        assert "Claude Code config: restored" in result.output
+
+    def test_global_picker_metadata_survives_when_claude_file_was_not_reverted(self):
+        with (
+            patch("ucode.cli.load_state", return_value={"workspace": MINIMAL_STATE["workspace"]}),
+            patch("ucode.cli.restore_file", return_value=False),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.clear_state"),
+            patch(
+                "ucode.cli.claude_agent.revert_settings",
+                return_value=("unchanged", False),
+            ),
+            patch("ucode.cli.codex_agent.revert_managed_config", return_value="unchanged"),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        assert "Claude Code config: unchanged" in result.output
 
 
 class TestDoctorCommand:
@@ -2929,14 +2972,15 @@ class TestAutoConfigureOnFirstRun:
             "codex_models": [],
         }
         saved_states = []
+
+        def configure_and_save(_tool, current, **_kwargs):
+            saved_states.append(json.loads(json.dumps(current)))
+            return current
+
         with (
             patch("ucode.cli.load_state", return_value=existing_state),
             patch("ucode.cli.configure_shared_state", return_value=configured_state) as mock_shared,
-            patch("ucode.cli.configure_tool", return_value=configured_state) as mock_configure,
-            patch(
-                "ucode.cli.save_state",
-                side_effect=lambda state: saved_states.append(json.loads(json.dumps(state))),
-            ),
+            patch("ucode.cli.configure_tool", side_effect=configure_and_save) as mock_configure,
         ):
             cli_mod._auto_configure_tool(tool, model_location="main.models")
 
@@ -3001,6 +3045,11 @@ class TestAutoConfigureOnFirstRun:
             }
         }
         persisted: list[dict] = []
+
+        def configure_and_save(_tool, current, *_args, **_kwargs):
+            cli_mod.save_state(current)
+            return current
+
         with (
             patch("ucode.cli.ensure_bootstrap_dependencies"),
             patch("ucode.cli.load_state", return_value={}),
@@ -3019,9 +3068,7 @@ class TestAutoConfigureOnFirstRun:
             patch("ucode.cli.ensure_provider_state", return_value=configured_state),
             patch("ucode.cli._fetch_budget_recommendation", return_value=None),
             patch("ucode.cli.resolve_launch_model") as mock_resolve,
-            patch(
-                "ucode.cli.configure_tool", side_effect=lambda *args, **kwargs: args[1]
-            ) as mock_configure,
+            patch("ucode.cli.configure_tool", side_effect=configure_and_save) as mock_configure,
             patch(
                 "ucode.cli.save_state",
                 side_effect=lambda state: persisted.append(
@@ -3156,6 +3203,39 @@ def test_cursor_launch_uses_unity_gateway_branding():
 
 
 class TestConfigureAgentFlag:
+    def test_model_location_does_not_overwrite_newer_state_after_agent_returns(self):
+        saved: list[dict] = []
+        saved_lock = threading.Lock()
+
+        def save(state):
+            with saved_lock:
+                saved.append(dict(state))
+
+        def configure(tool, state, **kwargs):
+            assert tool == "claude"
+            assert kwargs == {"parent_schema": "main.models"}
+            assert state["available_tools"] == ["claude"]
+            save(state)
+            writer = threading.Thread(
+                target=save,
+                args=({**state, "generation": "newer"},),
+            )
+            writer.start()
+            writer.join(timeout=5)
+            return state
+
+        with (
+            patch("ucode.cli.configure_tool", side_effect=configure),
+            patch("ucode.cli.save_state", side_effect=save),
+        ):
+            cli_mod._configure_location_backed_tool(
+                {"workspace": MINIMAL_STATE["workspace"], "generation": "original"},
+                "claude",
+                "main.models",
+            )
+
+        assert saved[-1]["generation"] == "newer"
+
     def test_help_lists_model_location(self):
         result = runner.invoke(app, ["configure", "--help"])
 
@@ -3363,6 +3443,11 @@ class TestConfigureAgentFlag:
         managed = {"enabled_agents": enabled_agents}
         state = {**MINIMAL_STATE, "available_tools": []}
         saved_states: list[dict] = []
+
+        def write_and_save(_tool, current, **_kwargs):
+            saved_states.append(json.loads(json.dumps(current)))
+            return current
+
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.install_tool_binary"),
@@ -3373,9 +3458,7 @@ class TestConfigureAgentFlag:
             patch("ucode.cli.refresh_managed_config", return_value=(managed, False)),
             patch("ucode.cli.check_gateway_endpoint", return_value=True) as mock_available,
             patch("ucode.cli.resolve_state", wraps=cli_mod.resolve_state) as mock_resolve,
-            patch(
-                "ucode.cli.configure_tool", side_effect=lambda tool, current, **kwargs: current
-            ) as mock_write,
+            patch("ucode.cli.configure_tool", side_effect=write_and_save) as mock_write,
             patch(
                 "ucode.cli.configure_selected_tools",
                 side_effect=lambda current, *args, **kwargs: current,
@@ -3431,6 +3514,10 @@ class TestConfigureAgentFlag:
         def configure_managed(current, *args, **kwargs):
             return {**current, "available_tools": ["claude"]}
 
+        def write_and_save(_tool, current, **_kwargs):
+            saved_states.append(json.loads(json.dumps(current)))
+            return current
+
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.install_tool_binary"),
@@ -3442,7 +3529,7 @@ class TestConfigureAgentFlag:
             patch(
                 "ucode.cli.configure_selected_tools", side_effect=configure_managed
             ) as mock_managed,
-            patch("ucode.cli.configure_tool", side_effect=lambda tool, current, **kwargs: current),
+            patch("ucode.cli.configure_tool", side_effect=write_and_save),
             patch(
                 "ucode.cli.save_state",
                 side_effect=lambda current: saved_states.append(json.loads(json.dumps(current))),
@@ -3492,6 +3579,11 @@ class TestConfigureAgentFlag:
             },
         }
         saved_states: list[dict] = []
+
+        def write_and_save(_tool, current, **_kwargs):
+            saved_states.append(json.loads(json.dumps(current)))
+            return current
+
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.install_tool_binary"),
@@ -3503,7 +3595,7 @@ class TestConfigureAgentFlag:
                 "ucode.cli.configure_selected_tools",
                 side_effect=lambda current, *args, **kwargs: current,
             ) as mock_managed,
-            patch("ucode.cli.configure_tool", side_effect=lambda tool, current, **kwargs: current),
+            patch("ucode.cli.configure_tool", side_effect=write_and_save),
             patch(
                 "ucode.cli.save_state",
                 side_effect=lambda current: saved_states.append(json.loads(json.dumps(current))),
@@ -4089,6 +4181,7 @@ class TestConfigureAgentsSelection:
         def configure(tool, candidate, **kwargs):
             if tool == "codex":
                 raise RuntimeError("codex write failed")
+            cli_mod.save_state(candidate)
             return candidate
 
         monkeypatch.setattr(cli_mod, "configure_tool", configure)

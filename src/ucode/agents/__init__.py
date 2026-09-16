@@ -25,7 +25,8 @@ from ucode.databricks import (
 )
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import managed_write_batch
-from ucode.state import get_provider_service, load_state, save_state
+from ucode.state import get_provider_service, load_state
+from ucode.state import save_state as save_state
 from ucode.telemetry import agent_version
 from ucode.ui import (
     print_err,
@@ -519,11 +520,9 @@ def configure_single_tool(tool: str, state: dict) -> dict:
             raise RuntimeError(
                 f"{TOOL_SPECS[tool]['display']} is not available on this workspace.{detail}"
             )
+    state["available_tools"] = list(set((state.get("available_tools") or []) + [tool]))
     with managed_write_batch(_managed_settings_displays([tool])):
         state = _configure_one(tool, state, provider)
-    available_tools = list(set((state.get("available_tools") or []) + [tool]))
-    state["available_tools"] = available_tools
-    save_state(state)
     return state
 
 
@@ -562,11 +561,10 @@ def configure_selected_tools(
     """
     with managed_write_batch(_managed_settings_displays(tools)):
         for tool in tools:
+            existing = state.get("available_tools") or []
+            state["available_tools"] = sorted(set(existing) | {tool})
             state = _configure_one(tool, state, get_provider_service(state, tool))
 
-    existing = state.get("available_tools") or []
-    state["available_tools"] = sorted(set(existing) | set(tools))
-    save_state(state)
     if install_ai_tools:
         install_databricks_ai_tools_for_agents(tools, state)
     return state
