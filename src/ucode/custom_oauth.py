@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import platform
+import random
 import shlex
+import signal
 import subprocess
 import time
 from collections.abc import Iterator, Sequence
@@ -20,15 +22,20 @@ from ucode.databricks import build_auth_token_argv
 from ucode.ui import err_console, normalize_workspace_url, print_warning_err
 
 DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
-# Custom OAuth may need a human to finish browser consent, not just a token fetch.
-CUSTOM_OAUTH_TIMEOUT_MS = 180_000
-# A waiter must never proceed without the lock: doing so would reopen the browser-storm race. Keep
-# this shorter than the harness auth timeout so a blocked helper can report the owning PID.
-CUSTOM_OAUTH_LOCK_TIMEOUT_SECONDS = 30.0
+# Custom OAuth may need a human to finish browser consent. An owner gets three minutes; a waiter gets
+# a little longer so it can inherit the lock after that lease expires. Codex's outer process timeout
+# covers both a full wait and a fresh owner's full browser flow.
+CUSTOM_OAUTH_FLOW_TIMEOUT_SECONDS = 180.0
+CUSTOM_OAUTH_LOCK_TIMEOUT_SECONDS = 185.0
+CUSTOM_OAUTH_TIMEOUT_MS = 370_000
 
 
 class CustomOAuthLockTimeout(RuntimeError):
     """Another custom-OAuth helper held the shared callback-port lock for too long."""
+
+
+class CustomOAuthFlowTimeout(RuntimeError):
+    """The custom-OAuth lock owner exceeded its authentication lease."""
 
 
 class CustomOAuthConfig(TypedDict):
@@ -108,6 +115,7 @@ def _custom_oauth_lock(
     redirect_url: str,
     *,
     timeout_seconds: float,
+    lease_seconds: float,
 ) -> Iterator[None]:
     """Serialize helpers sharing a callback port with a POSIX file lock.
 
@@ -121,6 +129,7 @@ def _custom_oauth_lock(
     lock_path = cache_dir / f"ug-oauth-{port}.lock"
     with lock_path.open("a+b") as lock_file:
         deadline = time.monotonic() + timeout_seconds
+        delay = 0.1
         while True:
             try:
                 fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -136,15 +145,45 @@ def _custom_oauth_lock(
                         f"{lock_path}, held by{holder_detail}. If that process is no longer "
                         "authenticating, inspect it before terminating it."
                     ) from None
-                time.sleep(min(0.1, remaining))
+                time.sleep(min(random.uniform(delay / 2, delay), remaining))
+                delay = min(delay * 2, 5.0)
         lock_file.seek(0)
         lock_file.truncate()
         lock_file.write(f"{getpid()}\n".encode())
         lock_file.flush()
         try:
-            yield
+            with _custom_oauth_flow_deadline(lease_seconds):
+                yield
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+@contextmanager
+def _custom_oauth_flow_deadline(timeout_seconds: float) -> Iterator[None]:
+    """Interrupt a lock owner's OAuth work so its advisory lock cannot live forever."""
+
+    def expire(_signum: int, _frame: object) -> None:
+        raise CustomOAuthFlowTimeout(
+            f"Custom OAuth did not finish within {timeout_seconds:g}s; its lock was released. Retry "
+            "the coding agent to start a new authentication attempt."
+        )
+
+    previous_handler = signal.signal(signal.SIGALRM, expire)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        previous_remaining, previous_interval = previous_timer
+        if previous_remaining > 0:
+            elapsed = time.monotonic() - started
+            signal.setitimer(
+                signal.ITIMER_REAL,
+                max(previous_remaining - elapsed, 1e-6),
+                previous_interval,
+            )
 
 
 def get_custom_client_token(
@@ -171,6 +210,7 @@ def get_custom_client_token(
             Path(cache.filename).parent,
             config["redirect_url"],
             timeout_seconds=CUSTOM_OAUTH_LOCK_TIMEOUT_SECONDS,
+            lease_seconds=CUSTOM_OAUTH_FLOW_TIMEOUT_SECONDS,
         ):
             # Read only after acquiring the lock: another helper may have just
             # completed login or rotated the refresh token while we waited.
@@ -207,7 +247,7 @@ def get_custom_client_token(
                 raise ValueError("OAuth returned no access token")
             cache.save(credentials)
             return token
-    except CustomOAuthLockTimeout:
+    except (CustomOAuthFlowTimeout, CustomOAuthLockTimeout):
         raise
     except Exception as exc:
         raise RuntimeError(

@@ -10,6 +10,7 @@ import fcntl
 import multiprocessing
 import os
 import signal
+import time
 from pathlib import Path
 from queue import Empty
 
@@ -36,23 +37,41 @@ def acquire_and_report(lock_path, acquired):
         fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
-def acquire_with_ug_timeout(lock_path, timeout_seconds, result):
-    from ucode.custom_oauth import CustomOAuthLockTimeout, _custom_oauth_lock
+def hold_with_ug_lease(lock_path, lease_seconds, acquired, result):
+    from ucode.custom_oauth import (
+        CustomOAuthFlowTimeout,
+        _custom_oauth_lock,
+    )
+
+    port = int(lock_path.stem.removeprefix("ug-oauth-"))
+    try:
+        with _custom_oauth_lock(
+            lock_path.parent,
+            f"http://localhost:{port}/callback",
+            timeout_seconds=1,
+            lease_seconds=lease_seconds,
+        ):
+            acquired.set()
+            time.sleep(lease_seconds + 60)
+    except CustomOAuthFlowTimeout as exc:
+        result.put(("expired", str(exc)))
+
+
+def acquire_after_owner(lock_path, wait_seconds, result):
+    from ucode.custom_oauth import _custom_oauth_lock
 
     prefix = "ug-oauth-"
     if not lock_path.stem.startswith(prefix):
         result.put(("error", f"lock filename must look like {prefix}<port>.lock"))
         return
     port = int(lock_path.stem.removeprefix(prefix))
-    try:
-        with _custom_oauth_lock(
-            lock_path.parent,
-            f"http://localhost:{port}/callback",
-            timeout_seconds=timeout_seconds,
-        ):
-            result.put(("entered", "waiter entered the protected OAuth section"))
-    except CustomOAuthLockTimeout as exc:
-        result.put(("timeout", str(exc)))
+    with _custom_oauth_lock(
+        lock_path.parent,
+        f"http://localhost:{port}/callback",
+        timeout_seconds=wait_seconds,
+        lease_seconds=wait_seconds,
+    ):
+        result.put(("acquired", "waiter acquired the lock after the owner's lease expired"))
 
 
 def ensure_lock_is_free(lock_path):
@@ -118,20 +137,20 @@ def automatic_repro(lock_path, blocked_seconds):
                 process.join(5)
 
 
-def verify_fix(lock_path, timeout_seconds):
+def verify_fix(lock_path, lease_seconds):
     ensure_lock_is_free(lock_path)
     context = multiprocessing.get_context("spawn")
     holder_acquired = context.Event()
-    release_holder = context.Event()
-    result = context.Queue()
+    holder_result = context.Queue()
+    waiter_result = context.Queue()
     holder = context.Process(
-        target=acquire_and_wait,
-        args=(lock_path, holder_acquired, release_holder),
+        target=hold_with_ug_lease,
+        args=(lock_path, lease_seconds, holder_acquired, holder_result),
         name="hung-auth-token",
     )
     waiter = context.Process(
-        target=acquire_with_ug_timeout,
-        args=(lock_path, timeout_seconds, result),
+        target=acquire_after_owner,
+        args=(lock_path, lease_seconds + 5, waiter_result),
         name="bounded-auth-token",
     )
     try:
@@ -139,27 +158,30 @@ def verify_fix(lock_path, timeout_seconds):
         if not holder_acquired.wait(5):
             raise SystemExit("The simulated hung helper could not acquire the lock")
         waiter.start()
-        waiter.join(timeout_seconds + 5)
-        if waiter.is_alive():
-            raise SystemExit("FIX FAILED: UG's waiter remained blocked beyond its deadline")
+        holder.join(lease_seconds + 5)
+        waiter.join(lease_seconds + 10)
+        if holder.is_alive() or waiter.is_alive():
+            raise SystemExit("FIX FAILED: a helper remained blocked beyond the owner's lease")
         try:
-            outcome, detail = result.get(timeout=1)
+            holder_outcome, holder_detail = holder_result.get(timeout=1)
+            waiter_outcome, waiter_detail = waiter_result.get(timeout=1)
         except Empty:
-            raise SystemExit("FIX FAILED: UG's waiter exited without reporting an outcome") from None
-        if outcome != "timeout":
-            raise SystemExit(f"FIX FAILED: {detail}")
-        print(f"FIX VERIFIED: {detail}")
-        print("The waiter exited without entering OAuth; no second browser flow was started.")
+            raise SystemExit("FIX FAILED: a helper exited without reporting an outcome") from None
+        if holder_outcome != "expired" or waiter_outcome != "acquired":
+            raise SystemExit(f"FIX FAILED: {holder_detail}; {waiter_detail}")
+        print(f"OWNER EVICTED: {holder_detail}")
+        print(f"FIX VERIFIED: {waiter_detail}.")
+        print("Only the lock owner can enter OAuth at any time, so browser flows remain serialized.")
     finally:
-        release_holder.set()
         for process in (holder, waiter):
             if process.pid is not None:
                 process.join(1)
             if process.is_alive():
                 process.terminate()
                 process.join(5)
-        result.close()
-        result.join_thread()
+        for result in (holder_result, waiter_result):
+            result.close()
+            result.join_thread()
 
 
 def manual_repro(lock_path):
@@ -199,7 +221,7 @@ def main():
         "--verify-fix",
         metavar="SECONDS",
         type=float,
-        help="use UG's real bounded lock helper and require it to time out after SECONDS",
+        help="use UG's real lock helper and verify an owner is evicted after SECONDS",
     )
     args = parser.parse_args()
     if args.blocked_seconds <= 0:
