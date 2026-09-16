@@ -880,7 +880,10 @@ def write_tool_config(
 
     _reconcile_managed_settings(
         state,
-        lambda base: _compose(base, enforce_model_default_hierarchy=provider is None),
+        lambda base: _compose(
+            base,
+            enforce_model_default_hierarchy=provider is None and parent_schema is None,
+        ),
         managed_file_keys,
         relayed,
     )
