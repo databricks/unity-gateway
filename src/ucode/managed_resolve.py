@@ -169,11 +169,16 @@ def managed_supplies_models(managed: dict | None, tool: str) -> bool:
     """True when the managed config already says which models ``tool`` should use.
 
     Lets the launch path skip Databricks model discovery, whose whole purpose is to find the models
-    the config has now specified. Any of the three counts: a provider (the agent routes by header and
-    pins no Databricks model), a ``default_model``, or at least one entry in ``models``.
+    the config has now specified. Any of the four counts: a provider or Unity Catalog location (the
+    agent routes by header and pins no Databricks model), a ``default_model``, or at least one entry
+    in ``models``.
     """
     model_config = _agent_model_config(managed or {}, tool)
-    if _str(model_config.get("model_provider_service")) or _str(model_config.get("default_model")):
+    if (
+        _str(model_config.get("model_provider_service"))
+        or _str(model_config.get("unity_catalog_location"))
+        or _str(model_config.get("default_model"))
+    ):
         return True
     models = model_config.get("models")
     if isinstance(models, dict):
@@ -186,6 +191,11 @@ def managed_supplies_models(managed: dict | None, tool: str) -> bool:
 def managed_provider_service(managed: dict, tool: str) -> str | None:
     """Return only the provider the managed config specifies for ``tool``, ignoring local state."""
     return _str(_agent_model_config(managed, tool).get("model_provider_service"))
+
+
+def managed_model_location(managed: dict, tool: str) -> str | None:
+    """Return the admin-selected Unity Catalog model location for ``tool``, if any."""
+    return _str(_agent_model_config(managed, tool).get("unity_catalog_location"))
 
 
 def managed_static_models(managed: dict, tool: str) -> list[str] | None:
