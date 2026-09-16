@@ -199,7 +199,7 @@ def _provider_block(
         http_headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
     elif parent_schema:
         http_headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
-    if smart_routing_v2.enabled():
+    if smart_routing_v2.smart_routing_enabled():
         http_headers[SMART_ROUTER_RECIPE_HEADER] = configured_router_name()
     return {
         "name": "Databricks AI Gateway",
