@@ -188,6 +188,11 @@ def managed_provider_service(managed: dict, tool: str) -> str | None:
     return _str(_agent_model_config(managed, tool).get("model_provider_service"))
 
 
+def managed_model_discovery_enabled(managed: dict | None, tool: str) -> bool:
+    """Whether managed config enables model discovery for ``tool`` through an MPS."""
+    return bool(managed_provider_service(managed or {}, tool))
+
+
 def managed_static_models(managed: dict, tool: str) -> list[str] | None:
     """The explicit model allow-list (``model_config.model_services``) the config sets for ``tool``.
 

@@ -42,6 +42,7 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
+from ucode.constants import MODEL_DISCOVERY_ENV_VAR
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
     custom_oauth_cli_enabled,
@@ -87,6 +88,7 @@ from ucode.managed_resolve import (
     managed_default_model,
     managed_enabled_tools,
     managed_launch_model,
+    managed_model_discovery_enabled,
     managed_provider_family_models,
     managed_provider_service,
     managed_supplies_models,
@@ -2100,6 +2102,24 @@ def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
     return agent_config.get("smart_routing_enabled") is True
 
 
+@contextmanager
+def _managed_model_discovery_environment(managed: dict | None, tool: str) -> Iterator[None]:
+    """Expose managed model discovery only to the launched agent."""
+    existed = MODEL_DISCOVERY_ENV_VAR in os.environ
+    previous = os.environ.get(MODEL_DISCOVERY_ENV_VAR)
+    os.environ[MODEL_DISCOVERY_ENV_VAR] = (
+        "1" if managed_model_discovery_enabled(managed, tool) else "0"
+    )
+    try:
+        yield
+    finally:
+        if existed:
+            assert previous is not None
+            os.environ[MODEL_DISCOVERY_ENV_VAR] = previous
+        else:
+            os.environ.pop(MODEL_DISCOVERY_ENV_VAR, None)
+
+
 def _launch_tool(
     tool_name: str,
     ctx: typer.Context,
@@ -2173,6 +2193,19 @@ def _launch_tool(
             managed, coding_agent_config_feature_disabled = _fetch_managed_config(state)
         # Checked before discovery, which can take tens of seconds, so a blocked launch fails fast.
         _reject_disabled_agent(managed, tool)
+        managed_provider = managed_provider_service(managed or {}, tool)
+        if managed_provider and explicit_provider is not None:
+            raise RuntimeError(
+                f"--provider cannot be used for {TOOL_SPECS[tool]['display']} because your admin "
+                f"has configured managed provider {managed_provider}."
+            )
+        if managed_provider and parent_schema is not None:
+            raise RuntimeError(
+                f"--model-location cannot be used for {TOOL_SPECS[tool]['display']} because your "
+                f"admin has configured managed provider {managed_provider}."
+            )
+        if parent_schema is not None:
+            provider = None
         # The environment switch remains a developer override; managed config is the workspace
         # policy equivalent and must take effect before launch options are computed.
         managed_smart_routing_enabled = _managed_smart_routing_enabled(managed, tool)
@@ -2211,20 +2244,8 @@ def _launch_tool(
         elif not coding_agent_config_feature_disabled:
             print_note("No managed coding agent config found; using your own settings")
         if managed is not None:
-            managed_provider = managed_provider_service(managed, tool)
-            if explicit_provider and managed_provider and managed_provider != explicit_provider:
-                # An explicit --provider that disagrees with the admin's is a hard error rather
-                # than a silent override: the user asked for something the managed config forbids,
-                # and quietly routing them elsewhere would hide it.
-                raise RuntimeError(
-                    f"You cannot launch {TOOL_SPECS[tool]['display']} with provider "
-                    f"{explicit_provider} because your admin has specified managed provider "
-                    f"{managed_provider}."
-                )
             if managed_provider:
                 provider = managed_provider
-        if provider and parent_schema is not None:
-            raise RuntimeError("--provider and --model-location cannot be used together.")
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
         # guard too, or routing would be persisted as on while a provider is active.
         if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and provider:
@@ -2381,7 +2402,10 @@ def _launch_tool(
             provider=provider,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
-        with _managed_smart_routing_environment(managed, tool):
+        with (
+            _managed_smart_routing_environment(managed, tool),
+            _managed_model_discovery_environment(managed, tool),
+        ):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
         print_err(str(exc))

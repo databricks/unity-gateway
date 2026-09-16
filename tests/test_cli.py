@@ -4053,6 +4053,96 @@ class TestManagedConfigDecidesDiscoveryFromFreshRead:
         assert mock_shared.call_args.kwargs["skip_model_discovery"] is False
 
 
+class TestManagedModelDiscoveryLaunch:
+    MPS = {
+        "enabled_agents": {
+            "claude": {"model_config": {"model_provider_service": "main.default.mps"}}
+        }
+    }
+    STATIC = {
+        "enabled_agents": {"claude": {"model_config": {"model_services": ["system.ai.claude"]}}}
+    }
+
+    @staticmethod
+    def _run(monkeypatch, argv, managed, *, launch_error=None, local_provider=False):
+        state = dict(MINIMAL_STATE)
+        if local_provider:
+            state["provider_services"] = {"claude": "main.default.local"}
+        seen: dict[str, str | None] = {}
+
+        def configure_shared(*args, **kwargs):
+            seen["configure"] = os.environ.get("UG_ENABLE_MODEL_DISCOVERY")
+            return state
+
+        def launch(*args, **kwargs):
+            seen["launch"] = os.environ.get("UG_ENABLE_MODEL_DISCOVERY")
+            if launch_error is not None:
+                raise launch_error
+
+        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *a, **k: None)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
+        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda tool: state)
+        monkeypatch.setattr(cli_mod, "configure_shared_state", configure_shared)
+        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda current: (managed, False))
+        monkeypatch.setattr(cli_mod, "_fetch_budget_recommendation", lambda current, cfg: None)
+        monkeypatch.setattr(cli_mod, "resolve_provider_models", lambda *a, **k: (None, None, False))
+        monkeypatch.setattr(cli_mod, "resolve_launch_model", lambda *a, **k: (state, "model"))
+        monkeypatch.setattr(cli_mod, "configure_tool", lambda *a, **k: state)
+        mock_launch = MagicMock(side_effect=launch)
+        monkeypatch.setattr(cli_mod, "launch_agent", mock_launch)
+
+        return runner.invoke(app, argv), seen, mock_launch
+
+    @pytest.mark.parametrize(("managed", "expected"), [(MPS, "1"), (STATIC, "0")])
+    def test_sets_literal_value_only_during_launch_and_restores_prior(
+        self, monkeypatch, managed, expected
+    ):
+        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "prior-value")
+
+        result, seen, _ = self._run(monkeypatch, ["claude"], managed)
+
+        assert result.exit_code == 0, result.output
+        assert seen == {"configure": "prior-value", "launch": expected}
+        assert os.environ["UG_ENABLE_MODEL_DISCOVERY"] == "prior-value"
+
+    def test_restores_absent_environment_after_launch_error(self, monkeypatch):
+        monkeypatch.delenv("UG_ENABLE_MODEL_DISCOVERY", raising=False)
+
+        result, seen, _ = self._run(
+            monkeypatch, ["claude"], self.MPS, launch_error=RuntimeError("launch failed")
+        )
+
+        assert result.exit_code == 1
+        assert seen == {"configure": None, "launch": "1"}
+        assert "UG_ENABLE_MODEL_DISCOVERY" not in os.environ
+
+    @pytest.mark.parametrize(
+        ("flag", "value"),
+        [("--provider", "main.default.other"), ("--model-location", "main.models")],
+    )
+    def test_managed_provider_rejects_explicit_routing_flags(self, monkeypatch, flag, value):
+        result, _seen, mock_launch = self._run(monkeypatch, ["claude", flag, value], self.MPS)
+
+        assert result.exit_code == 1
+        assert flag in _strip_ansi(result.output)
+        mock_launch.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("flag", "value"),
+        [("--provider", "main.default.other"), ("--model-location", "main.models")],
+    )
+    def test_static_config_allows_explicit_routing_flags(self, monkeypatch, flag, value):
+        result, _seen, mock_launch = self._run(
+            monkeypatch,
+            ["claude", flag, value],
+            self.STATIC,
+            local_provider=flag == "--model-location",
+        )
+
+        assert result.exit_code == 0, result.output
+        mock_launch.assert_called_once()
+
+
 class TestBareUcode:
     """Bare `ucode` launches the managed default agent, or explains why it can't."""
 
