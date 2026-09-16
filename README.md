@@ -54,7 +54,8 @@ the saved workspace and credentials.
 Claude and Codex refresh the model picker from the selected Model Provider Service or Unity
 Catalog location on each scoped launch. Set `UG_ENABLE_MODEL_DISCOVERY=0` to keep the routing
 header while using the agent's native picker catalog instead. This switch does not disable normal
-Databricks `system.ai` model discovery.
+Databricks `system.ai` model discovery. A workspace-managed scoped source still refreshes its
+catalog because administrator policy takes precedence over the developer environment switch.
 
 ## Configure
 

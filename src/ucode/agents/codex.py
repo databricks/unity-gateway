@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 import os
 import re
@@ -36,6 +37,7 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
+    scoped_model_discovery_enabled,
 )
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_TIMEOUT_MS,
@@ -753,12 +755,6 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
-    if options.launch_smart_routing:
-        _launch_smart_routing(state, tool_args)
-        return
-    clear_model_preferences(state)
-    binary = SPEC["binary"]
-    workspace = state.get("workspace")
     launch_provider = state.get("_codex_launch_provider")
     provider = (
         launch_provider.strip()
@@ -771,8 +767,22 @@ def launch(
         if isinstance(launch_parent_schema, str) and launch_parent_schema.strip()
         else None
     )
+    if options.launch_smart_routing:
+        _launch_smart_routing(
+            state,
+            tool_args,
+            provider=provider,
+            parent_schema=parent_schema if not provider else None,
+        )
+        return
+    clear_model_preferences(state)
+    binary = SPEC["binary"]
+    workspace = state.get("workspace")
     scoped_model_source = bool(provider or parent_schema)
-    scoped_model_discovery = state.get(CODEX_SCOPED_MODEL_DISCOVERY_STATE_KEY) is not False
+    override = state.get(CODEX_SCOPED_MODEL_DISCOVERY_STATE_KEY)
+    scoped_model_discovery = scoped_model_discovery_enabled(
+        override=override if isinstance(override, bool) else None
+    )
     if workspace and scoped_model_source and scoped_model_discovery:
         _reject_managed_model_catalog()
     otel_args: list[str] = []
@@ -802,6 +812,10 @@ def launch(
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
+    if scoped_model_source and not scoped_model_discovery:
+        # A persisted/static catalog must not defeat the native-catalog policy
+        # for this invocation. This changes only the launch overlay, not disk.
+        profile_doc.pop("model_catalog_json", None)
     if workspace and token and scoped_model_source and scoped_model_discovery:
         try:
             if provider is not None:
@@ -837,7 +851,13 @@ def launch(
     exec_or_spawn([binary, *codex_config_args(profile_doc), *otel_args, *tool_args])
 
 
-def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
+def _launch_smart_routing(
+    state: dict,
+    tool_args: list[str],
+    *,
+    provider: str | None = None,
+    parent_schema: str | None = None,
+) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
     binary = SPEC["binary"]
     version_text = agent_version(binary)
@@ -856,12 +876,19 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         or (codex_model_id(models[0]) if models else None)
         or APP_SERVER_SMART_ROUTING_STARTING_MODEL
     )
+    launch_overlay = render_overlay
+    if provider or parent_schema:
+        launch_overlay = functools.partial(
+            render_overlay,
+            provider=provider,
+            parent_schema=parent_schema,
+        )
     smart_routing_v2.launch_codex(
         state,
         tool_args,
         binary=binary,
         start_model=start_model,
-        render_overlay=render_overlay,
+        render_overlay=launch_overlay,
     )
 
 

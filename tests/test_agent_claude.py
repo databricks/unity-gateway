@@ -1462,20 +1462,27 @@ class TestRegisterWebSearchMcp:
 
 class TestClaudeLaunch:
     def test_gateway_discovery_enabled_for_relayed_provider(self, monkeypatch):
-        calls: list[tuple[dict, str, list[str]]] = []
+        calls: list[tuple[dict, str, list[str], str | None]] = []
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
         monkeypatch.setattr(
             claude,
             "_launch_relayed",
-            lambda state, binary, tool_args: calls.append((state, binary, tool_args)),
+            lambda state, binary, tool_args: calls.append(
+                (
+                    state,
+                    binary,
+                    tool_args,
+                    os.environ.get(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR),
+                )
+            ),
         )
         state = {"workspace": WS, "claude_relayed": True}
 
         claude.launch(state, ["--debug"], options=LaunchOptions())
 
-        assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
-        assert calls == [(state, "claude", ["--debug"])]
+        assert claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR not in os.environ
+        assert calls == [(state, "claude", ["--debug"], "1")]
 
     def test_relayed_launch_uses_refresh_proxy(self, monkeypatch):
         calls: list[tuple] = []
@@ -1629,42 +1636,192 @@ class TestClaudeLaunch:
             compose_settings=claude._compose_v2_settings,
             launch_model_args=claude._launch_model_args,
             model_name=claude._maybe_add_1m_suffix,
+            enable_gateway_model_discovery=True,
         )
+
+    def test_v2_scoped_launch_disabled_uses_native_picker(self, monkeypatch):
+        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "0")
+        launch_v2 = Mock()
+        monkeypatch.setattr(v2, "launch_claude", launch_v2)
+
+        claude.launch(
+            {"workspace": WS, "_claude_launch_parent_schema": "main.default"},
+            [],
+            options=LaunchOptions(launch_smart_routing=True),
+        )
+
+        assert launch_v2.call_args.kwargs["enable_gateway_model_discovery"] is False
 
     def test_gateway_discovery_uses_direct_gateway(self, monkeypatch):
         calls: list[list[str]] = []
+        discovery_env: list[str | None] = []
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(
+            claude,
+            "exec_or_spawn",
+            lambda argv: (
+                calls.append(argv),
+                discovery_env.append(os.environ.get(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR)),
+            ),
+        )
 
         claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
 
         assert os.environ["OAUTH_TOKEN"] == "token"
-        assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert discovery_env == ["1"]
+        assert claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR not in os.environ
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
 
     def test_gateway_discovery_enabled_under_provider(self, monkeypatch):
         calls: list[list[str]] = []
+        discovery_env: list[str | None] = []
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
-        monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
+        monkeypatch.delenv("UG_ENABLE_MODEL_DISCOVERY", raising=False)
+        monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(
+            claude,
+            "exec_or_spawn",
+            lambda argv: (
+                calls.append(argv),
+                discovery_env.append(os.environ.get(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR)),
+            ),
+        )
 
         claude.launch(
             {
                 "workspace": WS,
                 "profile": "test",
-                "_claude_launch_provider": "main.default.anthropic",
+                "provider_services": {"claude": "main.default.anthropic"},
             },
             ["--debug"],
             options=LaunchOptions(),
         )
 
-        assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert discovery_env == ["1"]
+        assert claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR not in os.environ
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
+
+    def test_direct_scoped_launch_honors_public_disable_and_restores_environment(self, monkeypatch):
+        child_env: list[tuple[str | None, str | None]] = []
+        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "0")
+        monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "caller-internal")
+        monkeypatch.setenv(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR, "caller-claude")
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(
+            claude,
+            "exec_or_spawn",
+            lambda _argv: child_env.append(
+                (
+                    os.environ.get(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR),
+                    os.environ.get(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR),
+                )
+            ),
+        )
+
+        claude.launch(
+            {"workspace": WS, "_claude_launch_parent_schema": "main.default"},
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert child_env == [(None, None)]
+        assert os.environ[claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR] == "caller-internal"
+        assert os.environ[claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR] == "caller-claude"
+
+    def test_managed_scoped_override_forces_direct_discovery(self, monkeypatch):
+        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "0")
+        monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
+        monkeypatch.delenv(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
+        child_env: list[str | None] = []
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(
+            claude,
+            "exec_or_spawn",
+            lambda _argv: child_env.append(
+                os.environ.get(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR)
+            ),
+        )
+
+        claude.launch(
+            {
+                "workspace": WS,
+                "_claude_launch_provider": "main.default.anthropic",
+                "_claude_scoped_model_discovery": True,
+            },
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert child_env == ["1"]
+        assert claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR not in os.environ
+        assert claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR not in os.environ
+
+    def test_failed_launch_restores_discovery_environment(self, monkeypatch):
+        monkeypatch.delenv("UG_ENABLE_MODEL_DISCOVERY", raising=False)
+        monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "caller-internal")
+        monkeypatch.setenv(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR, "caller-claude")
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "exec_or_spawn", Mock(side_effect=RuntimeError("launch failed")))
+
+        with pytest.raises(RuntimeError, match="launch failed"):
+            claude.launch(
+                {"workspace": WS, "_claude_launch_parent_schema": "main.default"},
+                [],
+                options=LaunchOptions(),
+            )
+
+        assert os.environ[claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR] == "caller-internal"
+        assert os.environ[claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR] == "caller-claude"
+
+    def test_scoped_launch_preserves_native_gateway_cache(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / "claude-config"
+        cache_path = config_dir / "cache" / "gateway-models.json"
+        cache_path.parent.mkdir(parents=True)
+        sentinel = b'{"sentinel":"native Claude cache"}\n'
+        cache_path.write_bytes(sentinel)
+        sentinel_mtime_ns = 1_700_000_000_123_456_789
+        os.utime(cache_path, ns=(sentinel_mtime_ns, sentinel_mtime_ns))
+        launch_events: list[str] = []
+        launch_env: list[tuple[str | None, str | None]] = []
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        monkeypatch.setattr(
+            claude,
+            "get_databricks_token",
+            lambda *_args: launch_events.append("token") or "token",
+        )
+        monkeypatch.setattr(
+            claude,
+            "exec_or_spawn",
+            lambda _argv: (
+                launch_events.append("launch"),
+                launch_env.append(
+                    (
+                        os.environ.get(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR),
+                        os.environ.get(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR),
+                    )
+                ),
+            ),
+        )
+
+        claude.launch(
+            {
+                "workspace": WS,
+                "_claude_launch_parent_schema": "main.default",
+                "_claude_scoped_model_discovery": True,
+            },
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert launch_env == [("1", "1")]
+        assert launch_events == ["token", "launch"]
+        assert cache_path.read_bytes() == sentinel
+        assert cache_path.stat().st_mtime_ns == sentinel_mtime_ns
 
 
 class TestWriteToolConfigPrunesStaleModelEnv:

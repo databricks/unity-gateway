@@ -10,8 +10,10 @@ import signal
 import socket
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import cast
 
 from ucode import gateway_proxy
 from ucode.config_io import (
@@ -23,12 +25,14 @@ from ucode.config_io import (
     write_json_file,
 )
 from ucode.constants import (
+    CLAUDE_SCOPED_MODEL_DISCOVERY_STATE_KEY,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
+    scoped_model_discovery_enabled,
 )
 from ucode.custom_oauth import (
     CustomOAuthConfig,
@@ -64,13 +68,20 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.routing import configured_router_name
-from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
+from ucode.state import (
+    MANAGED_OVERLAY_KEY,
+    get_provider_service,
+    is_tool_managed,
+    mark_tool_managed,
+    save_state,
+)
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_note, print_success, print_warning
 
 from .args import LaunchOptions, has_explicit_model_arg
 
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
+CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
 # If set, Claude Code launches in headless mode instead of the interactive login flow.
 CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
@@ -90,6 +101,35 @@ SPEC: ToolSpec = {
     "config_path": CLAUDE_SETTINGS_PATH,
     "backup_path": CLAUDE_BACKUP_PATH,
 }
+
+_MISSING_ENV_VALUE = object()
+
+
+@contextmanager
+def launch_discovery_environment(enabled: bool | None) -> Iterator[None]:
+    """Apply Claude discovery variables only for the lifetime of one launch.
+
+    POSIX launches replace this process, so the successful production path
+    never reaches restoration. Spawned, mocked, and failed launches do, and
+    must leave the caller's environment exactly as it was.
+    """
+    names = (GATEWAY_MODEL_DISCOVERY_ENV_VAR, CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR)
+    previous = {name: os.environ.get(name, _MISSING_ENV_VALUE) for name in names}
+    try:
+        if enabled is not None:
+            for name in names:
+                if enabled:
+                    os.environ[name] = "1"
+                else:
+                    os.environ.pop(name, None)
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is _MISSING_ENV_VALUE:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = cast(str, value)
+
 
 # Retained only to identify and remove state written by the legacy persisted opt-in.
 SMART_ROUTING_STATE_KEY = smart_routing_v2.LEGACY_STATE_KEY
@@ -1224,7 +1264,14 @@ def _rewrite_relayed_port(state: dict, port: int) -> None:
     a different port than the cached one. Keeps ANTHROPIC_BASE_URL (which Claude
     Code reads) in sync with the live proxy so requests reach it."""
     state["relayed_proxy_port"] = port
-    save_state(state)
+    persisted_state = dict(state)
+    for key in (
+        CLAUDE_SCOPED_MODEL_DISCOVERY_STATE_KEY,
+        "_claude_launch_provider",
+        "_claude_launch_parent_schema",
+    ):
+        persisted_state.pop(key, None)
+    save_state(persisted_state)
     settings = read_json_safe(CLAUDE_SETTINGS_PATH)
     env = settings.get("env")
     if isinstance(env, dict):
@@ -1280,44 +1327,57 @@ def launch(
 ) -> None:
     binary = SPEC["binary"]
     workspace = state.get("workspace")
-    if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
-        # Discovery is launch-scoped. Pass it in the process environment rather
-        # than persisting it in Claude's private or OS-managed settings.
-        os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-    if state.get("claude_relayed"):
-        _launch_relayed(state, binary, tool_args)
-        return
-    # Smart routing needs Unix PTY support, which Windows does not provide.
-    if options.launch_smart_routing and os.name == "nt":
-        raise RuntimeError(
-            "Smart routing in Claude Code is currently not supported on Windows. "
-            "Please use Codex or disable smart routing."
+    scoped_model_source = bool(
+        state.get("_claude_launch_provider")
+        or get_provider_service(state, "claude")
+        or state.get("_claude_launch_parent_schema")
+    )
+    override = state.get(CLAUDE_SCOPED_MODEL_DISCOVERY_STATE_KEY)
+    scoped_discovery = scoped_model_discovery_enabled(
+        override=override if isinstance(override, bool) else None
+    )
+    requested_discovery = os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1"
+    launch_discovery = scoped_discovery if scoped_model_source else requested_discovery
+    manage_discovery_env = launch_discovery if scoped_model_source or requested_discovery else None
+
+    with launch_discovery_environment(manage_discovery_env):
+        if state.get("claude_relayed"):
+            _launch_relayed(state, binary, tool_args)
+            return
+        # Smart routing needs Unix PTY support, which Windows does not provide.
+        if options.launch_smart_routing and os.name == "nt":
+            raise RuntimeError(
+                "Smart routing in Claude Code is currently not supported on Windows. "
+                "Please use Codex or disable smart routing."
+            )
+        if options.launch_smart_routing:
+            smart_routing_v2.launch_claude(
+                state,
+                tool_args,
+                binary=binary,
+                user_settings_path=CLAUDE_USER_SETTINGS_PATH,
+                # With no user pin, let Claude resolve its starting model from its own settings.
+                launch_model=options.user_pinned_model,
+                compose_settings=_compose_v2_settings,
+                launch_model_args=_launch_model_args,
+                model_name=_maybe_add_1m_suffix,
+                enable_gateway_model_discovery=not scoped_model_source or launch_discovery,
+            )
+            return
+        if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
+            os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
+        settings_override = None
+        launch_args = list(tool_args)
+        if options.user_pinned_model:
+            os.environ["ANTHROPIC_MODEL"] = options.user_pinned_model
+            settings_override = {"env": {"ANTHROPIC_MODEL": options.user_pinned_model}}
+            launch_args = [
+                *_launch_model_args(tool_args, options.user_pinned_model),
+                *tool_args,
+            ]
+        exec_or_spawn(
+            _build_claude_argv(binary, launch_args, settings_override=settings_override)
         )
-    if options.launch_smart_routing:
-        smart_routing_v2.launch_claude(
-            state,
-            tool_args,
-            binary=binary,
-            user_settings_path=CLAUDE_USER_SETTINGS_PATH,
-            # With no user pin, let Claude resolve its starting model from its own settings.
-            launch_model=options.user_pinned_model,
-            compose_settings=_compose_v2_settings,
-            launch_model_args=_launch_model_args,
-            model_name=_maybe_add_1m_suffix,
-        )
-        return
-    if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
-        os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
-    settings_override = None
-    launch_args = list(tool_args)
-    if options.user_pinned_model:
-        os.environ["ANTHROPIC_MODEL"] = options.user_pinned_model
-        settings_override = {"env": {"ANTHROPIC_MODEL": options.user_pinned_model}}
-        launch_args = [
-            *_launch_model_args(tool_args, options.user_pinned_model),
-            *tool_args,
-        ]
-    exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 
 def validate_cmd(binary: str) -> list[str]:

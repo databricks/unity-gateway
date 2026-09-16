@@ -366,7 +366,13 @@ class TestV2ModelPickerDiscovery:
     """modelPicker takes priority over gateway model discovery for smart routing."""
 
     @staticmethod
-    def _launch(monkeypatch, tmp_path, *, picker_catalog):
+    def _launch(
+        monkeypatch,
+        tmp_path,
+        *,
+        picker_catalog,
+        enable_gateway_model_discovery: bool = True,
+    ):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
@@ -397,6 +403,7 @@ class TestV2ModelPickerDiscovery:
                 compose_settings=lambda _args: ({}, []),
                 launch_model_args=claude._launch_model_args,
                 model_name=claude._maybe_add_1m_suffix,
+                enable_gateway_model_discovery=enable_gateway_model_discovery,
             )
         assert exc.value.code == 0
         return discovery_calls
@@ -423,6 +430,20 @@ class TestV2ModelPickerDiscovery:
         assert discovery_calls == 1
         assert os.environ.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY") == "1"
         assert os.environ.get("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY") == "1"
+
+    def test_no_model_picker_can_keep_native_catalog(self, tmp_path, monkeypatch):
+        discovery_calls = self._launch(
+            monkeypatch,
+            tmp_path,
+            picker_catalog=None,
+            enable_gateway_model_discovery=False,
+        )
+
+        # Routing may still use ordinary system.ai metadata, but Claude's own
+        # picker remains native for a scoped launch disabled by public policy.
+        assert discovery_calls == 1
+        assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in os.environ
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
 
 class TestSubagentRouting:

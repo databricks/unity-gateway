@@ -419,6 +419,7 @@ def launch_claude(
     compose_settings: Callable[[list[str]], tuple[dict, list[str]]],
     launch_model_args: Callable[[list[str], str | None], list[str]],
     model_name: Callable[[str], str],
+    enable_gateway_model_discovery: bool = True,
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
@@ -434,8 +435,9 @@ def launch_claude(
     # if modelPicker is defined, then skip model discovery.
     picker_catalog = _model_picker_catalog()
     if picker_catalog is None:
-        os.environ[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
-        os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+        if enable_gateway_model_discovery:
+            os.environ[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
+            os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
         catalog = list_anthropic_model_catalog(workspace, token)
     else:
         catalog = picker_catalog

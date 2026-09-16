@@ -84,6 +84,30 @@ class TestLaunchCodex:
             )
         ]
 
+    def test_scoped_smart_launch_preserves_routing_header_without_catalog(self, monkeypatch):
+        calls = []
+        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "0")
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.145.0")
+        monkeypatch.setattr(codex, "_smart_routing_config_model", lambda _state: "gpt-start")
+
+        def launch_v2(_state, _tool_args, **kwargs):
+            calls.append(kwargs)
+            raise SystemExit(0)
+
+        monkeypatch.setattr(v2, "launch_codex", launch_v2)
+
+        with pytest.raises(SystemExit):
+            codex.launch(
+                {"workspace": WS, "_codex_launch_parent_schema": "main.default"},
+                [],
+                options=LaunchOptions(launch_smart_routing=True),
+            )
+
+        overlay = calls[0]["render_overlay"](WS, "gpt-start")
+        provider = overlay["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]
+        assert provider["http_headers"][codex.MODEL_SERVICE_PARENT_SCHEMA_HEADER] == "main.default"
+        assert "model_catalog_json" not in overlay
+
     @pytest.mark.parametrize(
         "tool_args",
         [
