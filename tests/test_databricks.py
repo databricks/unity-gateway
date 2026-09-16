@@ -2536,12 +2536,12 @@ class TestEnsureDatabricksCliVersion:
         return {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
 
     def test_passes_when_version_meets_minimum(self, tmp_path, monkeypatch):
-        env = self._fake_databricks(tmp_path, "Databricks CLI v1.0.0")
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.17.0")
         monkeypatch.setattr("os.environ", env)
         ensure_databricks_cli_version()  # should not raise
 
     def test_passes_when_version_exceeds_minimum(self, tmp_path, monkeypatch):
-        env = self._fake_databricks(tmp_path, "Databricks CLI v1.8.0")
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.18.0")
         monkeypatch.setattr("os.environ", env)
         ensure_databricks_cli_version()
 

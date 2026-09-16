@@ -11,7 +11,7 @@ It is not collected by the default `uv run pytest` command.
 
 ## Run a specific combination
 
-Prerequisites: Python 3.12+, uv, Node/npm, and Databricks CLI >=1.0.0. The runner
+Prerequisites: Python 3.12+, uv, Node/npm, and Databricks CLI >=1.17.0. The runner
 installs the requested agents into a new npm prefix and ug into a new virtualenv.
 Pytest and the PTY/screen libraries (pexpect and pyte) live in a different virtualenv, so they cannot accidentally supply a
 missing application dependency. No packages are installed into your existing

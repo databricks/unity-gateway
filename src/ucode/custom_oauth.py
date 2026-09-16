@@ -14,13 +14,12 @@ from urllib.parse import urlparse
 
 from ucode.config_io import APP_DIR
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
-from ucode.databricks import build_auth_token_argv
+from ucode.databricks import MIN_DATABRICKS_CLI_VERSION, build_auth_token_argv
 from ucode.ui import normalize_workspace_url
 
 DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
 # Custom OAuth may need a human to finish browser consent, not just a token fetch.
 CUSTOM_OAUTH_TIMEOUT_MS = 180_000
-CUSTOM_OAUTH_CLI_VERSION = (1, 17, 0)
 CUSTOM_OAUTH_CONFIG_FILE = APP_DIR / "custom-oauth.databrickscfg"
 
 
@@ -104,8 +103,8 @@ def _require_custom_oauth_cli() -> None:
     from ucode.databricks import databricks_cli_version
 
     version = databricks_cli_version()
-    if version is None or version < CUSTOM_OAUTH_CLI_VERSION:
-        required = ".".join(map(str, CUSTOM_OAUTH_CLI_VERSION))
+    if version is None or version < MIN_DATABRICKS_CLI_VERSION:
+        required = ".".join(map(str, MIN_DATABRICKS_CLI_VERSION))
         raise RuntimeError(
             f"Custom-client OAuth requires Databricks CLI v{required} or newer. Upgrade the CLI "
             "and retry."
