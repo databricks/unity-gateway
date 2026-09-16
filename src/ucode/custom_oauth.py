@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import platform
 import shlex
 import subprocess
@@ -14,12 +16,13 @@ from urllib.parse import urlparse
 from databricks.sdk import oauth
 
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
-from ucode.databricks import build_auth_token_argv
+from ucode.databricks import build_auth_token_argv, ensure_databricks_cli_version, run
 from ucode.ui import err_console, normalize_workspace_url, print_warning_err
 
 DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
 # Custom OAuth may need a human to finish browser consent, not just a token fetch.
 CUSTOM_OAUTH_TIMEOUT_MS = 180_000
+CUSTOM_OAUTH_CLI_MIN_VERSION = (1, 17, 0)
 
 
 class CustomOAuthConfig(TypedDict):
@@ -123,6 +126,32 @@ def get_custom_client_token(
     """Reuse the SDK's PKCE flow and per-workspace/client token cache."""
     config = create_custom_oauth_config(client_id, scopes, redirect_url)
     workspace = normalize_workspace_url(workspace)
+    if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1":
+        ensure_databricks_cli_version(CUSTOM_OAUTH_CLI_MIN_VERSION)
+        env = os.environ.copy()
+        env["DATABRICKS_CLIENT_ID"] = config["client_id"]
+        args = ["databricks", "auth", "token", "--host", workspace]
+        if force_refresh:
+            args.append("--force-refresh")
+        try:
+            result = run(
+                args,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000,
+            )
+            token = json.loads(result.stdout or "{}").get("access_token", "")
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            raise RuntimeError("Custom-client OAuth via Databricks CLI failed.") from exc
+        if result.returncode != 0 or not token:
+            raise RuntimeError(
+                "Custom-client OAuth via Databricks CLI failed. Run "
+                f"`databricks auth login --host {workspace} --client-id {config['client_id']}` "
+                "and retry."
+            )
+        return token
     try:
         endpoints = oauth.get_workspace_endpoints(workspace)
         cache = oauth.TokenCache(
