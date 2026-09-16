@@ -100,9 +100,19 @@ def _claims_any(record: dict, dirs: set[str]) -> bool:
     return any(_norm(d) in dirs for d in record.get("dirs") or [])
 
 
-def _delete_dirs(dirs: list[str]) -> None:
+def _delete_dirs(dirs: list[str]) -> list[str]:
+    undeletable: list[str] = []
     for directory in dirs:
-        shutil.rmtree(directory, ignore_errors=True)
+        path = Path(directory)
+        try:
+            if path.is_symlink():
+                path.unlink()
+            else:
+                shutil.rmtree(path)
+        except OSError:
+            if path.exists() or path.is_symlink():
+                undeletable.append(directory)
+    return undeletable
 
 
 def _to_record(install: SkillInstall) -> dict:
@@ -201,6 +211,9 @@ def remove_downloads(records: list[dict]) -> None:
     """Delete each record's on-disk directories, then drop it from the manifest."""
     if not records:
         return
+    undeletable: list[str] = []
     for record in records:
-        _delete_dirs(record.get("dirs") or [])
+        undeletable.extend(_delete_dirs(record.get("dirs") or []))
     forget(records)
+    if undeletable:
+        print_warning(f"Could not remove: {', '.join(undeletable)}. Delete these manually.")

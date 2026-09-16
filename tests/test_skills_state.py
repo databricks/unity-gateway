@@ -215,3 +215,40 @@ class TestRemoveDownloads:
     def test_empty_is_a_noop(self):
         skills_state.remove_downloads([])
         assert skills_state.list_downloaded() == []
+
+    def test_symlinked_dir_is_unlinked_not_its_target(self, tmp_path):
+        base = tmp_path / "proj"
+        install = _install(base, "main.default.triage", "triage")
+        target = tmp_path / "real-skill"
+        target.mkdir()
+        (target / "SKILL.md").write_text("bundle")
+        link_dir = Path(install.dirs[0])
+        link_dir.parent.mkdir(parents=True, exist_ok=True)
+        link_dir.symlink_to(target)
+        Path(install.dirs[1]).mkdir(parents=True, exist_ok=True)
+        skills_state.record_downloads([install])
+
+        skills_state.remove_downloads(skills_state.records_for_schema("main.default"))
+
+        assert not link_dir.is_symlink() and not link_dir.exists()
+        assert target.exists()
+        assert skills_state.list_downloaded() == []
+
+    def test_warns_on_undeletable_dir(self, tmp_path, monkeypatch):
+        base = tmp_path / "proj"
+        install = _install(base, "main.default.triage", "triage")
+        _write_dirs(install)
+        skills_state.record_downloads([install])
+
+        def boom(path):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(skills_state.shutil, "rmtree", boom)
+        warnings: list[str] = []
+        monkeypatch.setattr(skills_state, "print_warning", warnings.append)
+
+        skills_state.remove_downloads(skills_state.records_for_schema("main.default"))
+
+        assert len(warnings) == 1
+        assert install.dirs[0] in warnings[0]
+        assert skills_state.list_downloaded() == []
