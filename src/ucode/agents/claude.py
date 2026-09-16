@@ -1395,9 +1395,7 @@ def launch(
                 *_launch_model_args(tool_args, options.user_pinned_model),
                 *tool_args,
             ]
-        exec_or_spawn(
-            _build_claude_argv(binary, launch_args, settings_override=settings_override)
-        )
+        exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 
 def validate_cmd(binary: str) -> list[str]:

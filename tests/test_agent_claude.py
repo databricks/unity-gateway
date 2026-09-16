@@ -1809,7 +1809,9 @@ class TestClaudeLaunch:
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "caller-internal")
         monkeypatch.setenv(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR, "caller-claude")
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", Mock(side_effect=RuntimeError("launch failed")))
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", Mock(side_effect=RuntimeError("launch failed"))
+        )
 
         with pytest.raises(RuntimeError, match="launch failed"):
             claude.launch(
@@ -1865,6 +1867,7 @@ class TestClaudeLaunch:
         assert launch_events == ["token", "launch"]
         assert cache_path.read_bytes() == sentinel
         assert cache_path.stat().st_mtime_ns == sentinel_mtime_ns
+        assert not (cache_path.parent / ".gateway-models.lock").exists()
 
 
 class TestWriteToolConfigPrunesStaleModelEnv:

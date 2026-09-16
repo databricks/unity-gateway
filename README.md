@@ -51,11 +51,13 @@ On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
 
-Claude and Codex refresh the model picker from the selected Model Provider Service or Unity
-Catalog location on each scoped launch. Set `UG_ENABLE_MODEL_DISCOVERY=0` to keep the routing
-header while using the agent's native picker catalog instead. This switch does not disable normal
-Databricks `system.ai` model discovery. A workspace-managed scoped source still refreshes its
-catalog because administrator policy takes precedence over the developer environment switch.
+For a scoped Claude launch, ug enables Claude Code's native gateway discovery; Claude Code owns
+any model-cache update after it starts. ug does not fetch or rewrite Claude's private model cache
+before launch. Codex continues to receive a launch-scoped model catalog from ug. Set
+`UG_ENABLE_MODEL_DISCOVERY=0` to keep the routing header while using the agent's native picker
+catalog instead. This switch does not disable normal Databricks `system.ai` model discovery. A
+workspace-managed scoped source still enables discovery because administrator policy takes
+precedence over the developer environment switch.
 
 ## Configure
 

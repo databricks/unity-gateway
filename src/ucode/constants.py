@@ -12,9 +12,10 @@ MODEL_SERVICE_PARENT_SCHEMA_HEADER = "Databricks-Model-Service-Parent-Schema"
 # Names the smart-router recipe (e.g. `task_v3`) in use; sent only when smart routing is enabled.
 SMART_ROUTER_RECIPE_HEADER = "Databricks-Smart-Router-Recipe"
 
-# Public policy switch for agent-native catalogs scoped by a Model Provider
-# Service or Unity Catalog location.  Ordinary ``system.ai`` discovery is
-# intentionally independent of this flag.
+# Public policy switch for agent-owned catalogs scoped by a Model Provider
+# Service or Unity Catalog location. Ordinary ``system.ai`` discovery is
+# intentionally independent of this flag. Claude handles its own discovery
+# after startup; Codex receives a launch-scoped catalog from ug.
 MODEL_DISCOVERY_ENV_VAR = "UG_ENABLE_MODEL_DISCOVERY"
 
 # Launch-only state handed from the CLI to Claude. A managed source sets this
@@ -31,7 +32,7 @@ def scoped_model_discovery_enabled(
     override: bool | None = None,
     force: bool = False,
 ) -> bool:
-    """Whether a provider/location-scoped agent catalog should be refreshed.
+    """Whether provider/location-scoped agent discovery should be enabled.
 
     ``override`` is transient launch state, not persisted configuration. Managed
     workspace policy uses ``force`` (or an override of true) because it outranks
