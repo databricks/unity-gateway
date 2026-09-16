@@ -48,6 +48,7 @@ from ucode.custom_oauth import (
     custom_oauth_cli_enabled,
     ensure_custom_oauth_cli_token,
 )
+from ucode.constants import CODEX_SCOPED_MODEL_DISCOVERY_STATE_KEY, MODEL_DISCOVERY_ENV_VAR
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     apply_pat_environment,
@@ -2345,6 +2346,7 @@ def _launch_tool(
                 )
         elif not coding_agent_config_feature_disabled:
             print_note("No managed coding agent config found; using your own settings")
+        managed_provider = None
         if managed is not None:
             managed_provider = managed_provider_service(managed, tool)
             if explicit_provider and managed_provider and managed_provider != explicit_provider:
@@ -2360,6 +2362,14 @@ def _launch_tool(
                 provider = managed_provider
         if provider and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
+        scoped_model_source = bool(provider or parent_schema)
+        scoped_model_discovery = _scoped_model_discovery_enabled(force=managed_provider is not None)
+        if tool == "claude" and scoped_model_source:
+            if scoped_model_discovery:
+                os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
+            else:
+                os.environ.pop(claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR, None)
+                os.environ.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
         # guard too, or routing would be persisted as on while a provider is active.
         if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and provider:
@@ -2501,6 +2511,8 @@ def _launch_tool(
             if provider:
                 state["_claude_launch_provider"] = provider
         elif tool == "codex":
+            if scoped_model_source:
+                state[CODEX_SCOPED_MODEL_DISCOVERY_STATE_KEY] = scoped_model_discovery
             if provider:
                 state["_codex_launch_provider"] = provider
             elif parent_schema:
@@ -2682,6 +2694,17 @@ def _print_no_managed_config_guidance() -> None:
         "No managed coding agent config is published for this workspace. Run `ug configure` to "
         "set up your coding agents, then launch one with `ug <agent>` (for example `ug claude`)."
     )
+
+
+def _scoped_model_discovery_enabled(*, force: bool = False) -> bool:
+    """Whether an agent should refresh a provider/location-scoped catalog.
+
+    ``UG_ENABLE_MODEL_DISCOVERY=0`` affects only an agent's scoped picker
+    catalog. It does not suppress the normal workspace discovery that populates
+    ``system.ai`` models. A managed source may force discovery because workspace
+    policy outranks a developer environment variable.
+    """
+    return force or os.environ.get(MODEL_DISCOVERY_ENV_VAR) != "0"
 
 
 @app.command(
@@ -2869,8 +2892,13 @@ def claude_cmd(
         claude_agent.disable_smart_routing(load_state())
         print_success("Claude Code smart routing disabled; ug routing hooks removed")
         return
-    if enable_model_discovery or (model_location is not None and provider is None):
+    if enable_model_discovery or (
+        (provider is not None or model_location is not None) and _scoped_model_discovery_enabled()
+    ):
         os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
+    elif provider is not None or model_location is not None:
+        os.environ.pop(claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR, None)
+        os.environ.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
     with _smart_routing_v2_flag(enable_smart_routing_flag):
         with _disable_smart_routing_for_subcommand("claude", ctx):
             _launch_tool(

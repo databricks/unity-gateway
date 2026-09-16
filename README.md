@@ -51,6 +51,11 @@ On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
 
+Claude and Codex refresh the model picker from the selected Model Provider Service or Unity
+Catalog location on each scoped launch. Set `UG_ENABLE_MODEL_DISCOVERY=0` to keep the routing
+header while using the agent's native picker catalog instead. This switch does not disable normal
+Databricks `system.ai` model discovery.
+
 ## Configure
 
 ```bash

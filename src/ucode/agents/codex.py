@@ -32,6 +32,7 @@ from ucode.config_io import (
     write_toml_file,
 )
 from ucode.constants import (
+    CODEX_SCOPED_MODEL_DISCOVERY_STATE_KEY,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
@@ -770,7 +771,9 @@ def launch(
         if isinstance(launch_parent_schema, str) and launch_parent_schema.strip()
         else None
     )
-    if workspace and (provider or parent_schema):
+    scoped_model_source = bool(provider or parent_schema)
+    scoped_model_discovery = state.get(CODEX_SCOPED_MODEL_DISCOVERY_STATE_KEY) is not False
+    if workspace and scoped_model_source and scoped_model_discovery:
         _reject_managed_model_catalog()
     otel_args: list[str] = []
     token = None
@@ -799,7 +802,7 @@ def launch(
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
-    if workspace and token and (provider or parent_schema):
+    if workspace and token and scoped_model_source and scoped_model_discovery:
         try:
             if provider is not None:
                 catalog_source = CodexCatalogSource.PROVIDER
