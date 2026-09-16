@@ -1974,7 +1974,11 @@ def _auto_configure_tool(
             explicit_provider=explicit_provider,
             explicit_model_location=model_location is not None,
         )
-    admin_location = managed_model_location(managed or {}, tool)
+    admin_location = (
+        managed_model_location(managed or {}, tool)
+        if tool in CAN_USE_CACHED_CONFIG_AGENTS
+        else None
+    )
     effective_location = admin_location or model_location
     if effective_location is not None and tool in CAN_USE_CACHED_CONFIG_AGENTS:
         # This is a launch-scoped choice, not an explicit `ug configure` preference.
@@ -2294,11 +2298,7 @@ def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
 
 
 def _managed_controls_model_source(managed: dict | None, tool: str) -> bool:
-    """Whether the managed config selects a provider or Hosted/static models for ``tool``.
-
-    Managed ``unity_catalog_location`` intentionally remains outside this PR; the downstream
-    managed-location change owns interpreting and enforcing that source.
-    """
+    """Whether managed config selects a provider, location, or Hosted/static models."""
     if managed is None:
         return False
     return managed_supplies_models(managed, tool) or bool(managed_static_models(managed, tool))
@@ -2329,8 +2329,18 @@ def _reject_managed_source_override(
         return
     display = TOOL_SPECS[tool]["display"]
     managed_provider = managed_provider_service(managed or {}, tool)
+    managed_location = (
+        managed_model_location(managed or {}, tool)
+        if tool in CAN_USE_CACHED_CONFIG_AGENTS
+        else None
+    )
     if explicit_model_location:
-        source = f"provider {managed_provider}" if managed_provider else "Hosted/static models"
+        if managed_provider:
+            source = f"provider {managed_provider}"
+        elif managed_location:
+            source = f"model location {managed_location}"
+        else:
+            source = "Hosted/static models"
         raise RuntimeError(
             f"You cannot launch {display} with --model-location because your admin has "
             f"specified managed {source}."
@@ -2340,6 +2350,11 @@ def _reject_managed_source_override(
             raise RuntimeError(
                 f"You cannot launch {display} with provider {explicit_provider} because your "
                 f"admin has specified managed provider {managed_provider}."
+            )
+        if managed_location:
+            raise RuntimeError(
+                f"You cannot launch {display} with provider {explicit_provider} because your "
+                f"admin has specified managed model location {managed_location}."
             )
         raise RuntimeError(
             f"You cannot launch {display} with provider {explicit_provider} because your admin "
@@ -2422,24 +2437,35 @@ def _launch_tool(
         if target_workspace is not None:
             set_current_workspace(target_workspace)
         if needs_auto_configure:
+            managed_auto_kwargs = {"managed_config": managed} if managed is not None else {}
             if custom_oauth is not None and parent_schema is not None:
                 auto_managed = _auto_configure_tool(
-                    tool, custom_oauth=custom_oauth, model_location=parent_schema
+                    tool,
+                    custom_oauth=custom_oauth,
+                    model_location=parent_schema,
+                    **managed_auto_kwargs,
                 )
             elif custom_oauth is not None and explicit_provider is not None:
                 auto_managed = _auto_configure_tool(
                     tool,
                     custom_oauth=custom_oauth,
                     explicit_provider=explicit_provider,
+                    **managed_auto_kwargs,
                 )
             elif custom_oauth is not None:
-                auto_managed = _auto_configure_tool(tool, custom_oauth=custom_oauth)
+                auto_managed = _auto_configure_tool(
+                    tool, custom_oauth=custom_oauth, **managed_auto_kwargs
+                )
             elif parent_schema is not None:
-                auto_managed = _auto_configure_tool(tool, model_location=parent_schema)
+                auto_managed = _auto_configure_tool(
+                    tool, model_location=parent_schema, **managed_auto_kwargs
+                )
             elif explicit_provider is not None:
-                auto_managed = _auto_configure_tool(tool, explicit_provider=explicit_provider)
+                auto_managed = _auto_configure_tool(
+                    tool, explicit_provider=explicit_provider, **managed_auto_kwargs
+                )
             else:
-                auto_managed = _auto_configure_tool(tool)
+                auto_managed = _auto_configure_tool(tool, **managed_auto_kwargs)
             if not existing.get("workspace"):
                 managed, coding_agent_config_feature_disabled = auto_managed
                 managed_config_checked = True
@@ -2502,11 +2528,19 @@ def _launch_tool(
             print_note("No managed coding agent config found; using your own settings")
         if managed is not None:
             managed_provider = managed_provider_service(managed, tool)
+            managed_location = (
+                managed_model_location(managed, tool)
+                if tool in CAN_USE_CACHED_CONFIG_AGENTS
+                else None
+            )
             if _managed_controls_model_source(managed, tool):
-                # The managed source outranks saved developer preferences. Managed
-                # unity_catalog_location remains intentionally out of scope.
-                provider = managed_provider
-                parent_schema = None
+                # The managed source outranks saved developer preferences.
+                if managed_location is not None:
+                    provider = None
+                    parent_schema = managed_location
+                else:
+                    provider = managed_provider
+                    parent_schema = None
         if provider and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
         # Checked after the managed config settles `provider`: an admin-set provider must trip this

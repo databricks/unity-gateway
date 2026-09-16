@@ -169,14 +169,17 @@ def managed_supplies_models(managed: dict | None, tool: str) -> bool:
     """True when the managed config already says which models ``tool`` should use.
 
     Lets the launch path skip Databricks model discovery, whose whole purpose is to find the models
-    the config has now specified. Any of the four counts: a provider or Unity Catalog location (the
-    agent routes by header and pins no Databricks model), a ``default_model``, or at least one entry
-    in ``models``.
+    the config has now specified. Any of the four counts: a provider, a supported Claude/Codex
+    Unity Catalog location (the agent routes by header and pins no Databricks model), a
+    ``default_model``, or at least one entry in ``models``.
     """
     model_config = _agent_model_config(managed or {}, tool)
+    managed_location = (
+        _str(model_config.get("unity_catalog_location")) if tool in ("claude", "codex") else None
+    )
     if (
         _str(model_config.get("model_provider_service"))
-        or _str(model_config.get("unity_catalog_location"))
+        or managed_location
         or _str(model_config.get("default_model"))
     ):
         return True

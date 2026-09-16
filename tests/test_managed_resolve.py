@@ -14,6 +14,7 @@ from ucode.managed_resolve import (
     managed_default_model,
     managed_enabled_tools,
     managed_launch_model,
+    managed_model_location,
     managed_otel_tracing_enabled,
     managed_provider_service,
     managed_state_overrides,
@@ -174,6 +175,22 @@ class TestManagedProviderService:
 
     def test_none_for_agent_not_in_manifest(self):
         assert managed_provider_service(MANAGED, "gemini") is None
+
+
+class TestManagedModelLocation:
+    def test_returns_only_the_normalized_manifest_value(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"unity_catalog_location": "  main.models  "}}
+            }
+        }
+        before = json.loads(json.dumps(managed))
+
+        assert managed_model_location(managed, "claude") == "main.models"
+        assert managed == before
+
+    def test_does_not_fall_back_to_developer_state(self):
+        assert managed_model_location({}, "claude") is None
 
 
 class TestResolveState:
@@ -402,6 +419,21 @@ class TestManagedSuppliesModels:
             }
         }
         assert managed_supplies_models(managed, "claude") is True
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_true_for_a_supported_managed_model_location(self, tool):
+        managed = {
+            "enabled_agents": {tool: {"model_config": {"unity_catalog_location": "main.models"}}}
+        }
+        assert managed_supplies_models(managed, tool) is True
+
+    def test_false_for_an_unsupported_managed_model_location(self):
+        managed = {
+            "enabled_agents": {
+                "gemini": {"model_config": {"unity_catalog_location": "main.models"}}
+            }
+        }
+        assert managed_supplies_models(managed, "gemini") is False
 
     def test_true_for_a_flat_model_list(self):
         managed = {"enabled_agents": {"opencode": {"model_config": {"models": ["a", "b"]}}}}
