@@ -74,3 +74,27 @@ def test_ug_configure_managed_codex(live_session, workspace):
     with AgentTerminal(session, "codex", [str(session.binary), "codex"], "managed-codex") as tui:
         tui.boot()
         tui.check_input_and_exit()
+
+
+@pytest.mark.managed
+@pytest.mark.claude
+def test_ug_configure_managed_is_idempotent(live_session, workspace):
+    """Scenario: run the managed `ug configure` twice in the same session.
+
+    Expected: each run, with no personal agent selector, applies the admin config to both enabled
+    agents identically, so a repeat configure neither duplicates, drops, nor rewrites any entry.
+    """
+    session = live_session
+    runs = []
+    for _ in range(2):
+        result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+        assert "Select coding agents to configure:" not in result.stdout, result.stdout
+        assert "managed config is published" in result.stdout, result.stdout
+        settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
+        catalog = json.loads((session.home / ".ucode" / "codex-model-catalog.json").read_text())
+        picker = [o.get("model") for o in (settings.get("modelPicker") or {}).get("options", [])]
+        listed = [m.get("slug") for m in catalog.get("models", []) if m.get("visibility") == "list"]
+        runs.append((settings.get("availableModels"), picker, listed))
+
+    expected = (MANAGED_CLAUDE_MODELS, MANAGED_CLAUDE_MODELS, [MANAGED_CODEX_MODEL])
+    assert runs == [expected, expected], runs
