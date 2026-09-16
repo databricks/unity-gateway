@@ -62,9 +62,10 @@ class TestCustomClientToken:
     def test_force_refresh_is_forwarded(self, monkeypatch):
         run = Mock(return_value=self._result(stdout='{"access_token":"fresh"}'))
         monkeypatch.setattr(oauth_mod.subprocess, "run", run)
-        assert get_custom_client_token(
-            WS, "custom-client", scopes=TEST_SCOPES, force_refresh=True
-        ) == "fresh"
+        assert (
+            get_custom_client_token(WS, "custom-client", scopes=TEST_SCOPES, force_refresh=True)
+            == "fresh"
+        )
         assert "--force-refresh" in run.call_args.args[0]
 
     def test_invalid_redirect_fails_before_network(self):
@@ -75,6 +76,7 @@ class TestCustomClientToken:
                 redirect_url="https://example.com/callback",
                 scopes=TEST_SCOPES,
             )
+
     def test_old_cli_is_actionable(self, monkeypatch):
         monkeypatch.setattr(db_mod, "databricks_cli_version", lambda: (1, 16, 1))
         with pytest.raises(RuntimeError, match="v1.17.0 or newer"):
