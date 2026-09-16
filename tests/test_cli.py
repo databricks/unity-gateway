@@ -1188,31 +1188,31 @@ class TestMcpSubcommands:
         assert result.exit_code == 0
         assert "web-search" in result.output
 
-    def test_bare_mcp_lists_configured_servers(self, monkeypatch):
-        # `ug mcp` with no subcommand runs the listing (not the group help).
-        calls: list[set[str] | None] = []
-        monkeypatch.setattr(cli_mod, "list_mcp_command", lambda agents=None: calls.append(agents))
-        result = runner.invoke(app, ["mcp"])
-        assert result.exit_code == 0, result.output
-        assert calls == [None]
-
-    def test_bare_mcp_forwards_agents_option(self, monkeypatch):
-        calls: list[set[str] | None] = []
-        monkeypatch.setattr(cli_mod, "list_mcp_command", lambda agents=None: calls.append(agents))
-        result = runner.invoke(app, ["mcp", "--agents", "claude,codex"])
-        assert result.exit_code == 0, result.output
-        assert calls == [{"claude", "codex"}]
-
-    def test_mcp_subcommand_still_routes_without_listing(self, monkeypatch):
-        # A subcommand must reach its own handler, not the bare-mcp lister.
+    def test_bare_mcp_shows_group_help(self, monkeypatch):
+        # `ug mcp` with no subcommand shows the group help (commands list), not the listing.
         monkeypatch.setattr(
             cli_mod,
             "list_mcp_command",
-            lambda agents=None: pytest.fail("listing ran for subcommand"),
+            lambda agents=None: pytest.fail("listing ran for bare mcp"),
         )
-        result = runner.invoke(app, ["mcp", "remove", "--help"])
-        assert result.exit_code == 0
+        result = runner.invoke(app, ["mcp"])
         assert "Usage:" in result.output
+        assert "list" in result.output
+        assert "add" in result.output
+
+    def test_mcp_list_runs_the_lister(self, monkeypatch):
+        calls: list[set[str] | None] = []
+        monkeypatch.setattr(cli_mod, "list_mcp_command", lambda agents=None: calls.append(agents))
+        result = runner.invoke(app, ["mcp", "list"])
+        assert result.exit_code == 0, result.output
+        assert calls == [None]
+
+    def test_mcp_list_forwards_agents_option(self, monkeypatch):
+        calls: list[set[str] | None] = []
+        monkeypatch.setattr(cli_mod, "list_mcp_command", lambda agents=None: calls.append(agents))
+        result = runner.invoke(app, ["mcp", "list", "--agents", "claude,codex"])
+        assert result.exit_code == 0, result.output
+        assert calls == [{"claude", "codex"}]
 
 
 class TestAuthTokenCommand:
@@ -1356,20 +1356,21 @@ class TestOtelHeadersCommand:
 
 
 class TestStatus:
-    def test_shows_mcp_list_commands(self):
+    def test_points_to_ug_mcp_list_with_counts(self):
+        # status is a high-level overview: it shows a per-agent MCP count and points to the
+        # detail command, rather than surfacing each agent's raw `<agent> mcp list` command.
         with patch("ucode.cli.load_state", return_value=MINIMAL_STATE):
             result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0, result.output
         assert "Managed by Databricks" not in result.output
-        assert "MCP list command:" in result.output
-        assert "claude mcp list" in result.output
-        assert "codex mcp list" in result.output
-        assert "gemini mcp list" in result.output
-        assert "opencode mcp list" in result.output
-        assert "copilot mcp list" not in result.output
+        assert "MCP servers: 0" in result.output
+        assert "ug mcp list" in result.output
+        assert "MCP list command:" not in result.output
+        assert "claude mcp list" not in result.output
+        assert "codex mcp list" not in result.output
 
-    def test_shows_mcp_servers_configured_by_ucode(self):
+    def test_shows_mcp_server_counts_configured_by_ucode(self):
         state = {
             **MINIMAL_STATE,
             "mcp_servers": [
@@ -1391,13 +1392,11 @@ class TestStatus:
             result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0, result.output
-        assert "github-mcp" in result.output
-        assert "MCP servers: github-mcp" in result.output
-        assert "databricks-sql" in result.output
-        assert "MCP servers: databricks-sql" in result.output
-        assert "MCP Servers" not in result.output
-        assert "MCP Server:" not in result.output
-        assert "Configured tools:" not in result.output
+        # Counts, not names: claude, codex, and gemini each carry one server.
+        assert "MCP servers: 1" in result.output
+        assert "github-mcp" not in result.output
+        assert "databricks-sql" not in result.output
+        assert "ug mcp list" in result.output
 
     def test_status_treats_available_tools_as_configured_agents(self):
         state = {
@@ -1420,11 +1419,8 @@ class TestStatus:
             result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0, result.output
-        assert "copilot mcp list" in result.output
-        assert "MCP servers: databricks-sql" in result.output
-        assert "codex mcp list" not in result.output
-        assert "claude mcp list" not in result.output
-        assert "gemini mcp list" not in result.output
+        assert "MCP servers: 1" in result.output
+        assert "databricks-sql" not in result.output
         assert "https://example.databricks.com/ai-gateway/anthropic" not in result.output
         assert "https://example.databricks.com/ai-gateway/gemini" not in result.output
 

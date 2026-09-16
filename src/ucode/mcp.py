@@ -1928,7 +1928,7 @@ def _print_server_live_status(
 
 
 def list_mcp_command(agents: set[str] | None = None) -> int:
-    """`ug mcp` (no subcommand): show the Databricks MCP servers ug has configured and their live
+    """`ug mcp list`: show the Databricks MCP servers ug has configured and their live
     connection status in each coding agent.
 
     Read-only: it reads ug's saved state and each installed agent's own `mcp list`, and needs no

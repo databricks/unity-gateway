@@ -928,18 +928,16 @@ def status() -> int:
             print_kv("Model Provider Service", provider_service)
         print_kv("Base URL", base_url)
         if configured and tool in MCP_CLIENTS:
-            tool_mcp_servers = [
-                str(server.get("name"))
+            # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
+            # the per-server detail and live connection status, so status stays scannable.
+            mcp_count = sum(
+                1
                 for server in mcp_servers
                 if tool in (server.get("clients") or [])
                 and server.get("name")
                 and server.get("kind") != SKILLS_MCP_KIND
-            ]
-            print_kv("MCP list command", str(MCP_CLIENTS[tool]["list_command"]))
-            print_kv(
-                "MCP servers",
-                ", ".join(tool_mcp_servers) if tool_mcp_servers else "none saved by ug",
             )
+            print_kv("MCP servers", str(mcp_count))
         print_kv("Config file", str(config_path) if config_path.exists() else "missing")
         if tool == "claude":
             managed_path, managed_status, backup_status = claude_agent.managed_settings_status(
@@ -984,6 +982,7 @@ def status() -> int:
     print_kv("State file", str(STATE_PATH) if STATE_PATH.exists() else "missing")
     print_note("Use `ug configure` to update workspace settings or configure new tools.")
     print_note("Use `ug configure mcp` to add Databricks MCP servers to configured coding tools.")
+    print_note("Use `ug mcp list` to see configured MCP servers and their connection status.")
     print_note(
         "Use `ug configure skills` to set up Unity Catalog Skills for configured coding tools."
     )
@@ -1043,8 +1042,12 @@ app = typer.Typer(
 )
 configure_app = typer.Typer(add_completion=False, no_args_is_help=False)
 app.add_typer(configure_app, name="configure", help="Configure workspace and tool settings.")
-mcp_app = typer.Typer(add_completion=False, no_args_is_help=False)
-app.add_typer(mcp_app, name="mcp", help="MCP servers exposed by ug.")
+mcp_app = typer.Typer(add_completion=False, no_args_is_help=True)
+app.add_typer(
+    mcp_app,
+    name="mcp",
+    help="Inspect and manage the Databricks MCP servers ug configures for your coding agents.",
+)
 skill_app = typer.Typer(add_completion=False, no_args_is_help=True)
 app.add_typer(skill_app, name="skill", help="Databricks Skills for your coding tools.")
 
@@ -1181,9 +1184,8 @@ def mcp_remove(
         raise typer.Exit(130) from None
 
 
-@mcp_app.callback(invoke_without_command=True)
-def mcp_default(
-    ctx: typer.Context,
+@mcp_app.command("list")
+def mcp_list(
     agents: Annotated[
         str | None,
         typer.Option(
@@ -1195,14 +1197,10 @@ def mcp_default(
 ) -> None:
     """List the Databricks MCP servers ug has configured and their live connection status.
 
-    With no subcommand, `ug mcp` reads ug's saved state and each installed agent's own `mcp list`
-    to show, per agent, whether each server is connected. Read-only; needs no Databricks login.
-    Use the `add`/`remove` subcommands to change what's configured.
+    Reads ug's saved state and each installed agent's own `mcp list` to show, per agent, whether
+    each server is connected. Read-only; needs no Databricks login. Use the `add`/`remove`
+    subcommands to change what's configured.
     """
-    # A subcommand (add/remove/web-search) was given, so this callback only ran to parse group
-    # options; let the subcommand handle it.
-    if ctx.invoked_subcommand is not None:
-        return
     requested_agents = (
         None
         if agents is None
