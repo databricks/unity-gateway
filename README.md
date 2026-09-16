@@ -254,6 +254,24 @@ ug mcp remove --agents codex
 It shows the servers you currently have configured — each with the coding tools it's registered
 on — and removes the ones you select from those tools. It needs no Databricks login.
 
+#### List configured servers and their connection status
+
+To see the Databricks MCP servers `ug` has configured and whether each coding agent is currently
+connected to them, run `ug mcp` with no subcommand:
+
+```bash
+ug mcp
+
+# Limit the report to specific agents.
+ug mcp --agents claude,codex
+```
+
+For every configured server it shows, per agent, whether that agent's own `mcp list` reports it
+connected (Codex reports `enabled`/`disabled`, since its listing does not health-check).
+Workspace-managed servers and the skills connection appear in their own sections, and any servers
+an agent lists that `ug` didn't configure are summarized separately. It reads local state plus each
+installed agent's `mcp list`, so it needs no Databricks login.
+
 ### Skills (optional)
 
 Configure Unity Catalog Skills for your coding tools with `ug configure skills`:
@@ -413,6 +431,8 @@ The output looks like:
 | `ug mcp add --agents claude --services system.ai.slack` | Set up the agent(s) if needed and register the server for them |
 | `ug mcp remove` | Interactively unregister configured MCP servers from your coding tools |
 | `ug mcp remove --agents codex` | Unregister selected servers from specific agents only |
+| `ug mcp` | List configured MCP servers and their live per-agent connection status |
+| `ug mcp --agents claude` | Show the connection-status report for specific agents only |
 | `ug configure skills` | Register the skills MCP connection (utility tools only); no skills download |
 | `ug configure skills --location main.default [--path <dir>]` | Download a schema's skills to disk (under `<dir>`, or your home dir) and register a schema-less skills MCP connection |
 | `ug configure skills --skill main.default.my-skill` | Download named skills by fully-qualified name (comma-separated; may span schemas) |

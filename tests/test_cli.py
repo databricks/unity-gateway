@@ -1188,6 +1188,32 @@ class TestMcpSubcommands:
         assert result.exit_code == 0
         assert "web-search" in result.output
 
+    def test_bare_mcp_lists_configured_servers(self, monkeypatch):
+        # `ug mcp` with no subcommand runs the listing (not the group help).
+        calls: list[set[str] | None] = []
+        monkeypatch.setattr(cli_mod, "list_mcp_command", lambda agents=None: calls.append(agents))
+        result = runner.invoke(app, ["mcp"])
+        assert result.exit_code == 0, result.output
+        assert calls == [None]
+
+    def test_bare_mcp_forwards_agents_option(self, monkeypatch):
+        calls: list[set[str] | None] = []
+        monkeypatch.setattr(cli_mod, "list_mcp_command", lambda agents=None: calls.append(agents))
+        result = runner.invoke(app, ["mcp", "--agents", "claude,codex"])
+        assert result.exit_code == 0, result.output
+        assert calls == [{"claude", "codex"}]
+
+    def test_mcp_subcommand_still_routes_without_listing(self, monkeypatch):
+        # A subcommand must reach its own handler, not the bare-mcp lister.
+        monkeypatch.setattr(
+            cli_mod,
+            "list_mcp_command",
+            lambda agents=None: pytest.fail("listing ran for subcommand"),
+        )
+        result = runner.invoke(app, ["mcp", "remove", "--help"])
+        assert result.exit_code == 0
+        assert "Usage:" in result.output
+
 
 class TestAuthTokenCommand:
     """`ucode auth-token` is the cross-platform apiKeyHelper (#116)."""

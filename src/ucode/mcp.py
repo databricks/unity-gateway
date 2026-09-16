@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -46,6 +47,7 @@ from ucode.ui import (
     _Back,
     console,
     picker_style,
+    print_heading,
     print_kv,
     print_note,
     print_section,
@@ -1711,6 +1713,323 @@ def remove_mcp_command(agents: set[str] | None = None) -> int:
         state["mcp_servers"] = new_servers
         save_state(state)
         print_success(_mcp_change_summary([], sorted(remove_names), clients))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# `ug mcp list`: configured MCP servers + their live per-agent connection status
+# ---------------------------------------------------------------------------
+
+# Per-(server, agent) live states surfaced by `ug mcp list`. Every agent's `mcp list`
+# health-checks its servers and reports connected/failed — except Codex, whose listing
+# reports only whether an entry is enabled/disabled (no probe). NOT_REGISTERED means the
+# agent is installed but doesn't list the server; a server maps to None (rendered
+# "agent not installed") when the agent binary isn't installed at all.
+LIVE_CONNECTED = "connected"
+LIVE_FAILED = "failed"
+LIVE_ENABLED = "enabled"
+LIVE_DISABLED = "disabled"
+LIVE_UNKNOWN = "unknown"
+LIVE_NOT_REGISTERED = "not-registered"
+
+# Some agent CLIs (e.g. cursor-agent) redraw progress with ANSI escapes that otherwise leak into
+# parsed server names; strip them before parsing.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+# Glyphs agent CLIs use for MCP health (claude: ✔/✘; others commonly ✓/✗ or 🟢/🔴).
+_HEALTH_OK_MARKERS = ("✔", "✓", "🟢")
+_HEALTH_FAIL_MARKERS = ("✘", "✗", "🔴")
+_CODEX_STATUS_BY_LABEL = {"enabled": LIVE_ENABLED, "disabled": LIVE_DISABLED}
+
+
+def _classify_health_line(rest: str) -> str:
+    """Map the text trailing a server name in an agent's `mcp list` to a live state."""
+    low = rest.lower()
+    if (
+        any(marker in rest for marker in _HEALTH_FAIL_MARKERS)
+        or "fail" in low
+        or "error" in low
+        or "disconnect" in low
+    ):
+        return LIVE_FAILED
+    if any(marker in rest for marker in _HEALTH_OK_MARKERS) or "connected" in low or "ready" in low:
+        return LIVE_CONNECTED
+    return LIVE_UNKNOWN
+
+
+def _parse_health_mcp_list(output: str) -> dict[str, str]:
+    """Parse a health-checking `mcp list` (claude and, best-effort, the others) into
+    ``{server_name: state}``.
+
+    Claude prints ``<name>: <command|url …> - <glyph> <status>`` per server, so the name is the
+    token before the first colon. Some agents use a colon-less ``<glyph> <name> - <status>`` shape;
+    that is handled as a fallback. Prose and headers (which have spaces in the leading token) are
+    skipped, so an unrecognized line contributes nothing rather than a bogus entry.
+    """
+    statuses: dict[str, str] = {}
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if ":" in line:
+            name, _, rest = line.partition(":")
+            name = name.strip()
+        elif line.startswith(_HEALTH_OK_MARKERS + _HEALTH_FAIL_MARKERS):
+            # Colon-less shape, e.g. `🟢 serverName - Ready`: take the token after the leading
+            # glyph as the name (best-effort for agents beyond claude). Requiring the leading
+            # glyph skips prose like claude's "Checking MCP server health…" header.
+            tokens = line.lstrip(
+                "".join(_HEALTH_OK_MARKERS + _HEALTH_FAIL_MARKERS) + "•*- "
+            ).split()
+            if not tokens:
+                continue
+            name, rest = tokens[0], line
+        else:
+            continue
+        # Registered MCP server names are single tokens; a leading token with spaces is prose.
+        if not name or " " in name:
+            continue
+        statuses[name] = _classify_health_line(rest)
+    return statuses
+
+
+def _parse_codex_mcp_list(output: str) -> dict[str, str]:
+    """Parse `codex mcp list`'s columnar table into ``{server_name: state}``.
+
+    Codex reports config state (``enabled``/``disabled``), not a health probe. Columns are
+    separated by runs of two-plus spaces; the name is the first column and the state column holds
+    ``enabled`` or ``disabled``. The header row (first column ``Name``) is skipped.
+    """
+    statuses: dict[str, str] = {}
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        fields = re.split(r"\s{2,}", line)
+        name = fields[0].strip()
+        if not name or name == "Name":
+            continue
+        state = LIVE_UNKNOWN
+        for field in fields[1:]:
+            mapped = _CODEX_STATUS_BY_LABEL.get(field.strip().lower())
+            if mapped is not None:
+                state = mapped
+                break
+        statuses[name] = state
+    return statuses
+
+
+def parse_mcp_list_output(client: str, output: str) -> dict[str, str]:
+    """Parse an agent's `mcp list` output into ``{server_name: live-state}`` (best-effort)."""
+    if _is_missing_mcp_server_output(output):
+        return {}
+    if client == "codex":
+        return _parse_codex_mcp_list(output)
+    return _parse_health_mcp_list(output)
+
+
+def _run_mcp_list(client: str) -> str | None:
+    """Run an installed agent's `mcp list`, returning combined stdout+stderr, or None on failure.
+
+    Best-effort and read-only: a missing binary, timeout, or non-zero exit yields None so the
+    caller shows configured servers without live status rather than erroring out.
+    """
+    spec = MCP_CLIENTS.get(client)
+    if not spec:
+        return None
+    argv = str(spec["list_command"]).split()
+    # Gemini reads its config from a pinned home dir, matching how ucode registers servers there.
+    env = _gemini_cli_env() if client == "gemini" else None
+    try:
+        result = subprocess.run(
+            argv, check=False, capture_output=True, text=True, timeout=90, env=env
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return _ANSI_ESCAPE_RE.sub("", f"{result.stdout or ''}\n{result.stderr or ''}")
+
+
+def query_live_mcp_status(client: str) -> dict[str, str]:
+    """Live ``{server_name: state}`` for one installed agent (empty if its listing can't be read)."""
+    output = _run_mcp_list(client)
+    if output is None:
+        return {}
+    return parse_mcp_list_output(client, output)
+
+
+def _query_live_statuses(clients: list[str]) -> dict[str, dict[str, str]]:
+    """Query every client's live MCP status concurrently (each `mcp list` is independent)."""
+    if not clients:
+        return {}
+    results: dict[str, dict[str, str]] = {}
+    with spinner("Checking MCP connection status..."):
+        with ThreadPoolExecutor(max_workers=len(clients)) as pool:
+            futures = {pool.submit(query_live_mcp_status, client): client for client in clients}
+            for future in as_completed(futures):
+                results[futures[future]] = future.result()
+    return results
+
+
+def _mcp_server_type_label(server: dict) -> str:
+    """Short human label for a configured MCP server, derived from its Databricks URL shape."""
+    url = str(server.get("url") or "")
+    if AIGW_MCP_SERVICES_PATH in url:
+        return url.split(AIGW_MCP_SERVICES_PATH, 1)[1] or "MCP service"
+    if "/api/2.0/mcp/external/" in url:
+        return f"connection: {url.rstrip('/').rsplit('/', 1)[-1]}"
+    if "/api/2.0/mcp/genie/" in url:
+        return "Genie space"
+    if "/api/2.0/mcp/vector-search/" in url:
+        return "Vector Search"
+    if "/api/2.0/mcp/functions/" in url:
+        return "UC Functions"
+    if url.rstrip("/").endswith("/api/2.0/mcp/sql"):
+        return "Databricks SQL"
+    if _is_app_mcp_server(server):
+        return "Databricks app"
+    return url or "unknown"
+
+
+def _live_status_markup(state: str | None) -> str:
+    """Rich markup for a per-agent live status; ``None`` means the agent isn't installed."""
+    if state is None:
+        return "[dim]agent not installed[/dim]"
+    return {
+        LIVE_CONNECTED: "[green]✔ connected[/green]",
+        LIVE_FAILED: "[red]✘ failed[/red]",
+        LIVE_ENABLED: "[green]• enabled[/green]",
+        LIVE_DISABLED: "[yellow]• disabled[/yellow]",
+        LIVE_UNKNOWN: "[yellow]? status unknown[/yellow]",
+        LIVE_NOT_REGISTERED: "[dim]not registered[/dim]",
+    }.get(state, "[dim]not registered[/dim]")
+
+
+def _resolve_live_status(
+    client: str, name: str, installed: list[str], live: dict[str, dict[str, str]]
+) -> str | None:
+    """The live state of server ``name`` in ``client``: None if the agent isn't installed,
+    NOT_REGISTERED if installed but the server isn't in its listing, else the parsed state."""
+    if client not in installed:
+        return None
+    return live.get(client, {}).get(name, LIVE_NOT_REGISTERED)
+
+
+def _print_server_live_status(
+    name: str,
+    clients: list[str],
+    installed: list[str],
+    live: dict[str, dict[str, str]],
+) -> None:
+    """Print one configured server's per-agent live status rows."""
+    for client in clients:
+        display = str(MCP_CLIENTS[client]["display"])
+        markup = _live_status_markup(_resolve_live_status(client, name, installed, live))
+        console.print(f"      {display}: {markup}")
+
+
+def list_mcp_command(agents: set[str] | None = None) -> int:
+    """`ug mcp` (no subcommand): show the Databricks MCP servers ug has configured and their live
+    connection status in each coding agent.
+
+    Read-only: it reads ug's saved state and each installed agent's own `mcp list`, and needs no
+    Databricks login. For each configured server it reports, per agent, whether that agent currently
+    connects to it (Codex reports enabled/disabled, since its listing does not health-check).
+    Workspace-managed servers and the skills connection are shown in their own sections. ``agents``
+    (from ``--agents``) scopes the whole report to that subset of agents.
+    """
+    if agents is not None:
+        unknown = sorted(agent for agent in agents if agent not in MCP_CLIENTS)
+        if unknown:
+            raise RuntimeError(
+                f"Unknown agent(s): {', '.join(unknown)}. Known: {', '.join(MCP_CLIENTS)}."
+            )
+
+    state = load_state()
+    installed = available_mcp_clients()
+    probe_clients = [client for client in installed if agents is None or client in agents]
+    scope_note = "" if agents is None else f" for {', '.join(sorted(agents))}"
+
+    print_section("MCP servers")
+    print_kv("Workspace", state.get("workspace") or "not configured")
+    if not installed:
+        print_warning(
+            "No supported MCP clients are installed; showing configured servers without live status."
+        )
+
+    live = _query_live_statuses(probe_clients)
+
+    # Merge developer- and workspace-managed servers by registered name, unioning their agents
+    # (skills connections are reported separately). ``--agents`` drops agents outside the scope,
+    # and a server left with no in-scope agent is omitted.
+    configured: dict[str, dict[str, Any]] = {}
+
+    def _collect(server: dict, *, managed: bool) -> None:
+        name = _server_name(server)
+        if not name or server.get("kind") == SKILLS_MCP_KIND:
+            return
+        clients = [
+            client for client in _mcp_server_clients(server) if agents is None or client in agents
+        ]
+        if not clients:
+            return
+        entry = configured.setdefault(name, {"server": server, "clients": [], "managed": managed})
+        entry["clients"] = _merge_clients(entry["clients"], clients)
+        entry["managed"] = entry["managed"] or managed
+
+    for server in state.get("mcp_servers") or []:
+        _collect(server, managed=False)
+    for server in state.get("managed_mcp_servers") or []:
+        _collect(server, managed=True)
+
+    if configured:
+        print_heading("Configured MCP servers")
+        for name in sorted(configured):
+            entry = configured[name]
+            label = _mcp_server_type_label(entry["server"])
+            managed_tag = " [magenta](workspace-managed)[/magenta]" if entry["managed"] else ""
+            console.print(f"  [bold]{name}[/bold]  [dim]{label}[/dim]{managed_tag}")
+            _print_server_live_status(name, entry["clients"], installed, live)
+    else:
+        print_heading("Configured MCP servers")
+        print_note(f"No MCP servers are configured by ug{scope_note}.")
+
+    skills_entry = _skills_entry(list(state.get("mcp_servers") or []))
+    skills_clients = (
+        [
+            client
+            for client in _mcp_server_clients(skills_entry)
+            if agents is None or client in agents
+        ]
+        if skills_entry
+        else []
+    )
+    if skills_clients:
+        print_heading("Skills MCP connection")
+        console.print(f"  [bold]{SKILLS_MCP_SERVER_NAME}[/bold]")
+        _print_server_live_status(SKILLS_MCP_SERVER_NAME, skills_clients, installed, live)
+
+    # Anything an agent lists that ug didn't configure: surface a count + names so the developer
+    # sees connections ug isn't tracking (e.g. hand-added servers) without conflating them with ug's.
+    ug_names = set(configured)
+    if skills_clients:
+        ug_names.add(SKILLS_MCP_SERVER_NAME)
+    other_by_client = {
+        client: sorted(name for name in live.get(client, {}) if name not in ug_names)
+        for client in probe_clients
+    }
+    if any(other_by_client.values()):
+        print_heading("Other MCP servers (not configured by ug)")
+        for client in probe_clients:
+            names = other_by_client[client]
+            if names:
+                print_kv(str(MCP_CLIENTS[client]["display"]), f"{len(names)}: {', '.join(names)}")
+
+    console.print()
+    print_note(
+        "Live status comes from each agent's own `mcp list`; Codex reports enabled/disabled "
+        "(it does not health-check)."
+    )
+    print_note("Use `ug mcp add` / `ug mcp remove` to change the servers ug configures.")
     return 0
 
 

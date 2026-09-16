@@ -100,6 +100,7 @@ from ucode.mcp import (
     configure_skills_mcp_command,
     configure_skills_mcp_picker_command,
     configured_mcp_clients,
+    list_mcp_command,
     purge_cross_workspace_mcp_residue,
     reconcile_managed_mcp_servers,
     remove_mcp_command,
@@ -1042,7 +1043,7 @@ app = typer.Typer(
 )
 configure_app = typer.Typer(add_completion=False, no_args_is_help=False)
 app.add_typer(configure_app, name="configure", help="Configure workspace and tool settings.")
-mcp_app = typer.Typer(add_completion=False, no_args_is_help=True)
+mcp_app = typer.Typer(add_completion=False, no_args_is_help=False)
 app.add_typer(mcp_app, name="mcp", help="MCP servers exposed by ug.")
 skill_app = typer.Typer(add_completion=False, no_args_is_help=True)
 app.add_typer(skill_app, name="skill", help="Databricks Skills for your coding tools.")
@@ -1172,6 +1173,43 @@ def mcp_remove(
     )
     try:
         remove_mcp_command(agents=requested_agents)
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    except KeyboardInterrupt:
+        print_err("Interrupted.")
+        raise typer.Exit(130) from None
+
+
+@mcp_app.callback(invoke_without_command=True)
+def mcp_default(
+    ctx: typer.Context,
+    agents: Annotated[
+        str | None,
+        typer.Option(
+            "--agents",
+            help="Comma-separated coding agents to report on (e.g. claude,codex). Without "
+            "--agents, every installed MCP-capable agent is included.",
+        ),
+    ] = None,
+) -> None:
+    """List the Databricks MCP servers ug has configured and their live connection status.
+
+    With no subcommand, `ug mcp` reads ug's saved state and each installed agent's own `mcp list`
+    to show, per agent, whether each server is connected. Read-only; needs no Databricks login.
+    Use the `add`/`remove` subcommands to change what's configured.
+    """
+    # A subcommand (add/remove/web-search) was given, so this callback only ran to parse group
+    # options; let the subcommand handle it.
+    if ctx.invoked_subcommand is not None:
+        return
+    requested_agents = (
+        None
+        if agents is None
+        else ({a.strip().lower() for a in agents.split(",") if a.strip()} or None)
+    )
+    try:
+        list_mcp_command(agents=requested_agents)
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None

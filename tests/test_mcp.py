@@ -3144,3 +3144,173 @@ class TestDiscoverySkipsPermissionErrors:
         assert mcp._discover_mcp_source("Genie spaces", boom) == []
         out = capsys.readouterr().out
         assert "network down" in out
+
+
+# Real-shaped `claude mcp list` output: `<name>: <cmd|url …> - <glyph> <status>`, health-probed.
+CLAUDE_MCP_LIST = """Checking MCP server health…
+
+github: dbexec repo run mcp start-single github - ✔ Connected
+databricks: python3.10 /home/u/mcp/databricks_deploy.pex - ✘ Failed to connect — CONNECTION_CLOSED: Connection closed
+approval-demo: https://host.databricksapps.com/mcp (HTTP) - ✘ Failed to connect — ENOTFOUND: getaddrinfo
+web_search: /home/u/.cache/ucode mcp web-search - ✔ Connected
+"""
+
+# Real-shaped `codex mcp list` table: columns separated by 2+ spaces; Status is enabled/disabled.
+CODEX_MCP_LIST = """Name             Command     Args                                 Env  Cwd  Status    Auth
+accounts-admin   python3.10  /home/u/mcp/accounts_deploy.pex      -    -    enabled   Unsupported
+chrome-devtools  npx         https://host/chrome.tgz --headless   -    -    disabled  Unsupported
+github           dbexec      repo run mcp start-single github     -    -    enabled   Unsupported
+"""
+
+
+class TestParseMcpListOutput:
+    def test_parses_claude_health_output(self):
+        assert mcp.parse_mcp_list_output("claude", CLAUDE_MCP_LIST) == {
+            "github": mcp.LIVE_CONNECTED,
+            "databricks": mcp.LIVE_FAILED,
+            "approval-demo": mcp.LIVE_FAILED,
+            "web_search": mcp.LIVE_CONNECTED,
+        }
+
+    def test_claude_header_line_is_not_a_server(self):
+        # The "Checking MCP server health…" header must not become a bogus entry.
+        assert "Checking" not in mcp.parse_mcp_list_output("claude", CLAUDE_MCP_LIST)
+
+    def test_parses_codex_enabled_disabled_table(self):
+        assert mcp.parse_mcp_list_output("codex", CODEX_MCP_LIST) == {
+            "accounts-admin": mcp.LIVE_ENABLED,
+            "chrome-devtools": mcp.LIVE_DISABLED,
+            "github": mcp.LIVE_ENABLED,
+        }
+
+    def test_empty_listing_returns_no_servers(self):
+        assert mcp.parse_mcp_list_output("gemini", "No MCP servers configured.") == {}
+
+    def test_colonless_glyph_shape_is_parsed_best_effort(self):
+        parsed = mcp.parse_mcp_list_output(
+            "gemini", "🟢 alpha - Ready (3 tools)\n🔴 beta - Disconnected\n"
+        )
+        assert parsed == {"alpha": mcp.LIVE_CONNECTED, "beta": mcp.LIVE_FAILED}
+
+    def test_ansi_progress_escapes_are_stripped_before_parsing(self, monkeypatch):
+        # cursor-agent redraws progress with ANSI escapes that must not leak into server names.
+        class _Result:
+            stdout = "\x1b[2K\x1b[1A\x1b[Ggithub: cmd - ✔ Connected\n"
+            stderr = ""
+
+        monkeypatch.setattr(mcp.subprocess, "run", lambda *a, **k: _Result())
+        assert mcp.query_live_mcp_status("cursor") == {"github": mcp.LIVE_CONNECTED}
+
+
+class TestListMcpCommand:
+    def _state(self):
+        # A developer-added AI Gateway service on claude+codex, a workspace-managed one, and a
+        # skills connection (which must be reported in its own section, never as a plain server).
+        return {
+            "workspace": WS,
+            "available_tools": ["claude", "codex"],
+            "mcp_servers": [
+                {
+                    "name": "system-ai-github",
+                    "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
+                    "auth": "proxy",
+                    "clients": ["claude", "codex"],
+                },
+                {
+                    "name": mcp.SKILLS_MCP_SERVER_NAME,
+                    "kind": mcp.SKILLS_MCP_KIND,
+                    "url": f"{WS}/ai-gateway/skills/",
+                    "auth": "proxy",
+                    "clients": ["claude"],
+                },
+            ],
+            "managed_mcp_servers": [
+                {
+                    "name": "databricks-genie-abc",
+                    "url": f"{WS}/api/2.0/mcp/genie/abc",
+                    "auth": "proxy",
+                    "clients": ["claude"],
+                }
+            ],
+        }
+
+    def _patch(self, monkeypatch, *, installed=("claude", "codex"), live=None):
+        live = live or {}
+        monkeypatch.setattr(mcp, "load_state", lambda: self._state())
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: list(installed))
+        monkeypatch.setattr(mcp, "query_live_mcp_status", lambda client: live.get(client, {}))
+
+    def test_reports_configured_servers_with_live_status(self, monkeypatch, capsys):
+        self._patch(
+            monkeypatch,
+            live={
+                "claude": {
+                    "system-ai-github": mcp.LIVE_CONNECTED,
+                    "databricks-genie-abc": mcp.LIVE_FAILED,
+                    "databricks-skill-registry": mcp.LIVE_CONNECTED,
+                },
+                "codex": {"system-ai-github": mcp.LIVE_ENABLED},
+            },
+        )
+
+        assert mcp.list_mcp_command() == 0
+
+        out = _unwrap(capsys.readouterr().out)
+        assert "system-ai-github" in out
+        assert "Claude Code: ✔ connected" in out
+        assert "Codex: • enabled" in out
+        # The workspace-managed server is tagged and shows its live status on claude.
+        assert "databricks-genie-abc" in out
+        assert "(workspace-managed)" in out
+        # The skills connection is reported in its own section, not among plain servers.
+        assert "Skills MCP connection" in out
+        assert "databricks-skill-registry" in out
+
+    def test_marks_server_not_registered_when_absent_from_agent_listing(self, monkeypatch, capsys):
+        # claude lists nothing, so the server it's configured on shows "not registered".
+        self._patch(monkeypatch, live={"claude": {}, "codex": {}})
+        assert mcp.list_mcp_command() == 0
+        assert "not registered" in _unwrap(capsys.readouterr().out)
+
+    def test_agent_not_installed_is_flagged(self, monkeypatch, capsys):
+        # Only claude installed; codex-configured rows report "agent not installed".
+        self._patch(monkeypatch, installed=("claude",), live={"claude": {}})
+        assert mcp.list_mcp_command() == 0
+        assert "agent not installed" in _unwrap(capsys.readouterr().out)
+
+    def test_lists_other_servers_not_configured_by_ug(self, monkeypatch, capsys):
+        self._patch(
+            monkeypatch,
+            live={"claude": {"some-other-mcp": mcp.LIVE_CONNECTED}, "codex": {}},
+        )
+        assert mcp.list_mcp_command() == 0
+        out = _unwrap(capsys.readouterr().out)
+        assert "Other MCP servers (not configured by ug)" in out
+        assert "some-other-mcp" in out
+
+    def test_agents_scope_limits_report(self, monkeypatch, capsys):
+        self._patch(
+            monkeypatch,
+            live={
+                "claude": {"system-ai-github": mcp.LIVE_CONNECTED},
+                "codex": {"system-ai-github": mcp.LIVE_ENABLED},
+            },
+        )
+        assert mcp.list_mcp_command(agents={"claude"}) == 0
+        out = _unwrap(capsys.readouterr().out)
+        assert "Claude Code:" in out
+        assert "Codex:" not in out
+
+    def test_unknown_agent_raises(self, monkeypatch):
+        self._patch(monkeypatch)
+        with pytest.raises(RuntimeError, match="Unknown agent"):
+            mcp.list_mcp_command(agents={"bogus"})
+
+    def test_no_configured_servers_still_succeeds(self, monkeypatch, capsys):
+        monkeypatch.setattr(mcp, "load_state", lambda: {"workspace": WS, "available_tools": []})
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: [])
+        monkeypatch.setattr(mcp, "query_live_mcp_status", lambda client: {})
+        assert mcp.list_mcp_command() == 0
+        out = _unwrap(capsys.readouterr().out)
+        assert "No MCP servers are configured by ug" in out
+        assert "No supported MCP clients are installed" in out
