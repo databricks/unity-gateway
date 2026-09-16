@@ -432,8 +432,8 @@ class TestDownloadSelectedSkills:
         assert record["workspace_id"] == "org-42"
 
 
-class TestDownloadManagedSkillsOnLaunch:
-    def test_writes_missing_skills_and_returns_their_bundle_names(self, tmp_path, monkeypatch):
+class TestDownloadManagedSkills:
+    def test_location_writes_missing_skills_and_returns_bundle_names(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             sd, "list_schema_skills", lambda *a, **k: ([ref("triage"), ref("pii")], None)
         )
@@ -443,11 +443,66 @@ class TestDownloadManagedSkillsOnLaunch:
             lambda ws, tok, c, s, leaf: ({"SKILL.md": leaf.encode()}, None),
         )
 
-        written = sd.download_managed_skills_on_launch(WS, "token", ["main.default"], str(tmp_path))
+        written = sd.download_managed_skills(
+            WS, "token", {"unity_catalog_location": "main.default"}, str(tmp_path)
+        )
 
         assert sorted(written) == ["pii", "triage"]
         assert (tmp_path / ".claude/skills/triage/SKILL.md").read_bytes() == b"triage"
         assert (tmp_path / ".agents/skills/pii/SKILL.md").read_bytes() == b"pii"
+
+    def test_names_resolves_each_fqn_and_downloads(self, tmp_path, monkeypatch):
+        resolved = {"main.default.triage": ref("triage"), "ml.prod.pii": ref("pii", schema="prod")}
+        monkeypatch.setattr(sd, "get_skill", lambda ws, tok, fqn: resolved[fqn])
+        monkeypatch.setattr(
+            sd, "list_schema_skills", lambda *a, **k: pytest.fail("names must not list a schema")
+        )
+        monkeypatch.setattr(
+            sd,
+            "fetch_skill_bundle",
+            lambda ws, tok, c, s, leaf: ({"SKILL.md": leaf.encode()}, None),
+        )
+
+        written = sd.download_managed_skills(
+            WS, "token", {"names": ["main.default.triage", "ml.prod.pii"]}, str(tmp_path)
+        )
+
+        assert sorted(written) == ["pii", "triage"]
+
+    def test_duplicate_names_resolve_once_without_collision_warning(self, tmp_path, monkeypatch):
+        calls: list[str] = []
+        monkeypatch.setattr(
+            sd, "get_skill", lambda ws, tok, fqn: calls.append(fqn) or ref("triage")
+        )
+        monkeypatch.setattr(
+            sd, "fetch_skill_bundle", lambda ws, tok, c, s, leaf: ({"SKILL.md": b"x"}, None)
+        )
+        warnings: list[str] = []
+        monkeypatch.setattr(sd, "print_warning", warnings.append)
+
+        written = sd.download_managed_skills(
+            WS, "token", {"names": ["main.default.triage", "main.default.triage"]}, str(tmp_path)
+        )
+
+        assert written == ["triage"]
+        assert calls == ["main.default.triage"]  # resolved once, not twice
+        assert warnings == []  # no self-referential bundle-name collision warning
+
+    def test_location_takes_precedence_over_names(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sd, "list_schema_skills", lambda *a, **k: ([ref("triage")], None))
+        monkeypatch.setattr(sd, "get_skill", lambda *a, **k: pytest.fail("names must be ignored"))
+        monkeypatch.setattr(
+            sd, "fetch_skill_bundle", lambda ws, tok, c, s, leaf: ({"SKILL.md": b"x"}, None)
+        )
+
+        written = sd.download_managed_skills(
+            WS,
+            "token",
+            {"unity_catalog_location": "main.default", "names": ["a.b.c"]},
+            str(tmp_path),
+        )
+
+        assert written == ["triage"]
 
     def test_skips_already_downloaded_skills_without_prompting(self, tmp_path, monkeypatch):
         roots = skill_dir_roots(str(tmp_path))
@@ -463,7 +518,9 @@ class TestDownloadManagedSkillsOnLaunch:
         )
         monkeypatch.setattr(sd, "prompt_yes_no", lambda msg: pytest.fail(f"prompted: {msg}"))
 
-        written = sd.download_managed_skills_on_launch(WS, "token", ["main.default"], str(tmp_path))
+        written = sd.download_managed_skills(
+            WS, "token", {"unity_catalog_location": "main.default"}, str(tmp_path)
+        )
 
         # Only the missing one is fetched; the existing skill is left untouched.
         assert fetched == ["pii"]
@@ -479,17 +536,29 @@ class TestDownloadManagedSkillsOnLaunch:
         )
 
         assert (
-            sd.download_managed_skills_on_launch(WS, "token", ["main.default"], str(tmp_path)) == []
+            sd.download_managed_skills(
+                WS, "token", {"unity_catalog_location": "main.default"}, str(tmp_path)
+            )
+            == []
         )
 
-    def test_list_failure_warns_and_skips_location(self, tmp_path, monkeypatch, capsys):
+    def test_empty_selector_is_a_noop(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sd, "list_schema_skills", lambda *a, **k: pytest.fail("no selector"))
+        monkeypatch.setattr(sd, "get_skill", lambda *a, **k: pytest.fail("no selector"))
+
+        assert sd.download_managed_skills(WS, "token", {}, str(tmp_path)) == []
+
+    def test_list_failure_warns_and_returns_empty(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(sd, "list_schema_skills", lambda *a, **k: ([], "HTTP 404 Not Found"))
         monkeypatch.setattr(
             sd, "fetch_skill_bundle", lambda *a, **k: pytest.fail("should not fetch")
         )
 
         assert (
-            sd.download_managed_skills_on_launch(WS, "token", ["main.default"], str(tmp_path)) == []
+            sd.download_managed_skills(
+                WS, "token", {"unity_catalog_location": "main.default"}, str(tmp_path)
+            )
+            == []
         )
         assert "Could not list workspace skills in `main.default`" in capsys.readouterr().out
 
@@ -505,20 +574,78 @@ class TestDownloadManagedSkillsOnLaunch:
             ),
         )
 
-        written = sd.download_managed_skills_on_launch(WS, "token", ["main.default"], str(tmp_path))
+        written = sd.download_managed_skills(
+            WS, "token", {"unity_catalog_location": "main.default"}, str(tmp_path)
+        )
 
         assert written == ["good"]
         assert (tmp_path / ".claude/skills/good/SKILL.md").read_bytes() == b"ok"
         assert not (tmp_path / ".claude/skills/bad").exists()
 
-    def test_malformed_location_is_skipped(self, tmp_path, monkeypatch):
+    def test_write_failure_skips_that_skill_and_continues(self, tmp_path, monkeypatch, capsys):
+        # A disk failure writing one skill must not abort the download or strand the others.
+        monkeypatch.setattr(
+            sd, "list_schema_skills", lambda *a, **k: ([ref("good"), ref("bad")], None)
+        )
+        monkeypatch.setattr(
+            sd,
+            "fetch_skill_bundle",
+            lambda ws, tok, c, s, leaf: ({"SKILL.md": leaf.encode()}, None),
+        )
+        real_write = sd.write_skill
+
+        def flaky_write(roots, r, files):
+            if r.bundle_name == "bad":
+                raise PermissionError("read-only file system")
+            real_write(roots, r, files)
+
+        monkeypatch.setattr(sd, "write_skill", flaky_write)
+
+        written = sd.download_managed_skills(
+            WS, "token", {"unity_catalog_location": "main.default"}, str(tmp_path)
+        )
+
+        assert written == ["good"]
+        assert (tmp_path / ".claude/skills/good/SKILL.md").read_bytes() == b"good"
+        assert not (tmp_path / ".claude/skills/bad").exists()
+        assert "read-only file system" in capsys.readouterr().out
+
+    def test_malformed_location_is_skipped(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(
             sd, "list_schema_skills", lambda *a, **k: pytest.fail("should not list a bad location")
         )
 
         assert (
-            sd.download_managed_skills_on_launch(WS, "token", ["not-a-schema"], str(tmp_path)) == []
+            sd.download_managed_skills(
+                WS, "token", {"unity_catalog_location": "not-a-schema"}, str(tmp_path)
+            )
+            == []
         )
+        out = capsys.readouterr().out
+        assert "not-a-schema" in out and "expected" in out
+
+    def test_malformed_names_are_skipped_valid_ones_kept(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(sd, "get_skill", lambda ws, tok, fqn: ref("triage"))
+        monkeypatch.setattr(
+            sd, "fetch_skill_bundle", lambda ws, tok, c, s, leaf: ({"SKILL.md": b"x"}, None)
+        )
+
+        written = sd.download_managed_skills(
+            WS, "token", {"names": ["main.default.triage", "bare", "a.b.c.d"]}, str(tmp_path)
+        )
+
+        assert written == ["triage"]
+        out = capsys.readouterr().out
+        assert "bare" in out and "a.b.c.d" in out
+
+    def test_unresolvable_name_is_skipped(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(sd, "get_skill", lambda ws, tok, fqn: None)
+
+        assert (
+            sd.download_managed_skills(WS, "token", {"names": ["main.default.gone"]}, str(tmp_path))
+            == []
+        )
+        assert "not a downloadable skill" in capsys.readouterr().out
 
 
 class TestConfigureLocationSkillsDownloadCommand:

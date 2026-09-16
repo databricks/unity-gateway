@@ -21,11 +21,19 @@ def set_managed_config_stub(session, tmp_path, config: dict | None) -> None:
 
 
 def build_coding_agent_config(
-    default_agent: str, *agents: dict, mcp_names: list[str] | None = None
+    default_agent: str,
+    *agents: dict,
+    mcp_names: list[str] | None = None,
+    skill_names: list[str] | None = None,
+    skills_location: str | None = None,
 ) -> dict:
     config = {"spec_version": 1, "default_agent": default_agent, "enabled_agents": list(agents)}
     if mcp_names is not None:
         config["mcp_servers"] = {"names": mcp_names}
+    if skill_names is not None:
+        config["skills"] = {"names": skill_names}
+    elif skills_location is not None:
+        config["skills"] = {"unity_catalog_location": skills_location}
     return config
 
 

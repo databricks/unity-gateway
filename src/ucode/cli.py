@@ -119,7 +119,7 @@ from ucode.skills_download import (
     configure_location_skills_download_command,
     configure_selected_skills_download_command,
     configure_skills_download_picker_command,
-    download_managed_skills_on_launch,
+    download_managed_skills,
     remove_downloaded_skills_command,
 )
 from ucode.skills_list import list_configured_skills_command
@@ -834,6 +834,7 @@ def configure_workspace_command(
             )
         if not is_dry_run():
             _configure_managed_mcp_servers(managed)
+            _download_managed_skills(managed, state)
         _summarize_managed_config(managed, state["workspace"])
         return 0
 
@@ -2145,31 +2146,23 @@ def _configure_managed_mcp_servers(managed: dict | None) -> None:
         print_note(f"Registered workspace MCP server(s): {names}")
 
 
-def _managed_skill_locations(managed: dict) -> list[str]:
-    """The ``<catalog>.<schema>`` skill locations the admin published, or ``[]``."""
-    return [
-        loc
-        for loc in ((managed.get("skills") or {}).get("names") or [])
-        if isinstance(loc, str) and loc
-    ]
-
-
 def _download_managed_skills(managed: dict, state: dict) -> None:
-    """Download the admin-published skill schemas to disk (user scope).
+    """Download the managed config's skills to disk so they reach each agent's ``/skills`` picker.
 
-    Managed skills are delivered by download only. The agent's ``/skills`` picker reads skill bundles
-    from ``~/.claude/skills`` / ``~/.agents/skills`` on disk, so without this download a
-    workspace-published skill never shows up in ``/skills``. Skills already on disk are left
-    untouched, so a steady-state launch only lists each schema and writes nothing. Best-effort: a
-    failure here never blocks the launch.
+    Resolves the managed ``skills`` selector (``names`` FQNs or a ``unity_catalog_location`` schema)
+    and writes any skill not already on disk into ``~/.claude/skills`` and ``~/.agents/skills``, so
+    Claude Code and Codex both pick them up. Runs at ``ug configure`` when the admin's config is
+    applied, alongside MCP-server registration and never on the launch hot path. Best-effort: a
+    failure warns and never blocks configure, and a developer's own same-named skill is never
+    overwritten.
     """
-    locations = _managed_skill_locations(managed)
-    if not locations:
+    selector = managed.get("skills")
+    if not isinstance(selector, dict) or not selector:
         return
     try:
         token = get_databricks_token(state["workspace"], state.get("profile"))
-        written = download_managed_skills_on_launch(state["workspace"], token, locations)
-    except RuntimeError as exc:
+        written = download_managed_skills(state["workspace"], token, selector)
+    except (RuntimeError, OSError) as exc:
         print_warning(f"Could not download your workspace's skills: {exc}")
         return
     if written:
@@ -2512,11 +2505,8 @@ def _launch_tool(
             )
         if recommendation is not None:
             _print_budget_panel(recommendation, tool, managed)
-        # Download the managed config's skills so they reach the agent's `/skills` picker. MCP
-        # servers are registered at `ug configure`, not here. Skipped on --dry-run, which writes
-        # nothing.
-        if managed is not None and not is_dry_run():
-            _download_managed_skills(managed, state)
+        # The managed config's MCP servers and skills are both applied at `ug configure`, not here,
+        # so the launch hot path makes no per-launch discovery calls for them.
         if tool == "claude":
             if provider:
                 state["_claude_launch_provider"] = provider

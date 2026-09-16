@@ -292,45 +292,87 @@ def download_selected_skills(workspace: str, token: str, fqns: list[str], path: 
     print_success(f"Downloaded {count}/{total} skill(s){skipped} in {roots_display}.")
 
 
-def download_managed_skills_on_launch(
-    workspace: str, token: str, locations: list[str], path: str | None = None
-) -> list[str]:
-    """Download admin-published skills to disk so the agent's ``/skills`` lists them.
+def _resolve_managed_skill_refs(workspace: str, token: str, selector: dict) -> list[SkillRef]:
+    """Resolve a managed ``skills`` selector into the skill refs to download.
 
-    Runs on the managed launch path: the config only registers the skills MCP
-    connection, so nothing else writes the bundles that ``/skills`` reads. Writes
-    only skills not already on disk -- no overwrite prompt, so the launch never
-    blocks on input and a developer's own same-named skill is never clobbered.
-    Best-effort and never raises, so it can't block the launch. Returns the bundle
-    names newly written.
+    ``selector`` is the normalized ``NamesOrLocation`` (``{names?, unity_catalog_location?}``): a
+    ``unity_catalog_location`` lists every finalized skill under that ``<catalog>.<schema>``;
+    ``names`` resolves exactly those skills, each a full ``<catalog>.<schema>.<name>`` FQN. A name
+    (or location) that isn't well formed is skipped with a warning, so one admin typo never blocks
+    the valid entries. Mirrors :func:`ucode.mcp._resolve_managed_mcp_servers`.
     """
-    roots = skill_dir_roots(path)
-    written: list[str] = []
-    for location in locations:
-        if location.count(".") != 1:
-            continue
+    location = selector.get("unity_catalog_location")
+    if isinstance(location, str) and location:
+        if location.count(".") != 1 or not all(part for part in location.split(".")):
+            print_warning(
+                f"Skipping managed skills location `{location}`: expected `<catalog>.<schema>`."
+            )
+            return []
         catalog, schema = location.split(".")
         refs, reason = list_schema_skills(workspace, token, catalog, schema)
         if reason:
             print_warning(f"Could not list workspace skills in `{location}`: {reason}.")
-            continue
-        refs = _reject_bundle_name_collisions(refs)
-        missing = [ref for ref in refs if not existing_skill_on_disk(roots, ref.bundle_name)]
-        if not missing:
-            continue
-        bundles = _fetch_bundles(
-            workspace, token, missing, label=f"Fetching skills from {location}"
+            return []
+        return refs
+    names = [n for n in (selector.get("names") or []) if isinstance(n, str) and n]
+    malformed = sorted(
+        n for n in names if n.count(".") != 2 or not all(part for part in n.split("."))
+    )
+    if malformed:
+        print_warning(
+            "Skipping managed skills name(s) that aren't full "
+            f"`<catalog>.<schema>.<name>` names: {', '.join(malformed)}."
         )
-        installed: list[SkillRef] = []
-        for ref in missing:
-            files, reason = bundles[ref.fqn]
-            if reason or files is None:
-                print_warning(f"Skipping `{ref.fqn}`: {reason}.")
-                continue
+    bad = set(malformed)
+    refs: list[SkillRef] = []
+    seen: set[str] = set()
+    for fqn in names:
+        if fqn in bad or fqn in seen:
+            continue
+        seen.add(fqn)
+        ref = get_skill(workspace, token, fqn)
+        if ref is None:
+            print_warning(f"Skipping `{fqn}`: not a downloadable skill.")
+            continue
+        refs.append(ref)
+    return refs
+
+
+def download_managed_skills(
+    workspace: str, token: str, selector: dict, path: str | None = None
+) -> list[str]:
+    """Download the admin-published skills named by a managed ``skills`` selector to disk.
+
+    Resolves the ``NamesOrLocation`` selector (see :func:`_resolve_managed_skill_refs`), then writes
+    only skills not already on disk -- no overwrite prompt, so ``ug configure`` never blocks on input
+    and a developer's own same-named skill is never clobbered. The bundles land in both
+    ``.claude/skills`` and ``.agents/skills``, so Claude Code and Codex both pick them up.
+    Best-effort per skill; returns the bundle names newly written.
+    """
+    selector = selector if isinstance(selector, dict) else {}
+    refs = _reject_bundle_name_collisions(_resolve_managed_skill_refs(workspace, token, selector))
+    roots = skill_dir_roots(path)
+    missing = [ref for ref in refs if not existing_skill_on_disk(roots, ref.bundle_name)]
+    if not missing:
+        return []
+    bundles = _fetch_bundles(workspace, token, missing, label="Fetching workspace skills")
+    installed: list[SkillRef] = []
+    written: list[str] = []
+    for ref in missing:
+        files, reason = bundles[ref.fqn]
+        if reason or files is None:
+            print_warning(f"Skipping `{ref.fqn}`: {reason}.")
+            continue
+        try:
             write_skill(roots, ref, files)
-            installed.append(ref)
-            written.append(ref.bundle_name)
-        record_downloads(_skill_installs(installed, roots, path, workspace))
+        except OSError as exc:
+            # A disk failure on one skill (permissions, full disk) must not strand the rest or
+            # abort configure; the contract is best-effort per skill.
+            print_warning(f"Skipping `{ref.fqn}`: {exc}.")
+            continue
+        installed.append(ref)
+        written.append(ref.bundle_name)
+    record_downloads(_skill_installs(installed, roots, path, workspace))
     return written
 
 
