@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Iterator
@@ -2063,6 +2064,54 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     return tool == "claude" and tool_args[0].startswith("-")
 
 
+_HTTP_HEADER_NAME_PATTERN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
+_PROTECTED_CUSTOM_HEADER_NAMES = frozenset(
+    {
+        "authorization",
+        "connection",
+        "content-length",
+        "cookie",
+        "databricks-model-provider-service",
+        "databricks-model-service-parent-schema",
+        "host",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "user-agent",
+        "x-api-key",
+        "x-databricks-ai-gateway-token",
+        "x-databricks-use-coding-agent-mode",
+    }
+)
+
+
+def _parse_custom_headers(values: list[str] | None) -> dict[str, str]:
+    """Parse repeatable ``--header 'Name: value'`` options."""
+    parsed: dict[str, tuple[str, str]] = {}
+    for item in values or []:
+        name, separator, value = item.partition(":")
+        name = name.strip()
+        if not separator or _HTTP_HEADER_NAME_PATTERN.fullmatch(name) is None:
+            raise RuntimeError("--header must use the format `Name: value` with a valid name.")
+        value = value.strip()
+        if any(
+            ord(character) < 32 or ord(character) == 127 or character in "\u0085\u2028\u2029"
+            for character in value
+        ):
+            raise RuntimeError(
+                "--header values cannot contain control characters or line separators."
+            )
+        normalized_name = name.casefold()
+        if normalized_name in _PROTECTED_CUSTOM_HEADER_NAMES:
+            raise RuntimeError(f"--header cannot override protected header '{name}'.")
+        parsed[normalized_name] = (name, value)
+    return dict(parsed.values())
+
+
 def _launch_options(
     tool: str,
     tool_args: list[str],
@@ -2071,10 +2120,12 @@ def _launch_options(
     explicit_prompt: bool,
     user_pinned_model: str | None,
     provider: str | None,
+    custom_headers: dict[str, str] | None = None,
 ) -> LaunchOptions:
     return LaunchOptions(
         # Pinned models for providers are resolved above through the provider-specific launch path.
         user_pinned_model=user_pinned_model if provider is None else None,
+        custom_headers=tuple((custom_headers or {}).items()),
         launch_smart_routing=(
             # Smart routing is enabled globally.
             smart_routing_enabled
@@ -2125,9 +2176,11 @@ def _launch_tool(
     model: str | None = None,
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    headers: list[str] | None = None,
 ) -> None:
     try:
         tool = normalize_tool(tool_name)
+        custom_headers = _parse_custom_headers(headers)
         # Before any status print: a stdio-protocol subcommand owns stdout, so
         # every ug line from here on must go to stderr instead.
         if _child_owns_stdout(tool, ctx.args):
@@ -2341,6 +2394,7 @@ def _launch_tool(
             custom_model=None,
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
+            **({"custom_headers": custom_headers} if tool == "claude" and custom_headers else {}),
         )
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
@@ -2392,6 +2446,7 @@ def _launch_tool(
             # initial/fallback model and still participates in a routed session.
             user_pinned_model=model or forwarded_model,
             provider=provider,
+            custom_headers=custom_headers,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _managed_smart_routing_environment(managed, tool):
@@ -2430,6 +2485,15 @@ WorkspaceOption = Annotated[
         "--workspace",
         help="Databricks workspace URL to launch against; sets up and authenticates it "
         "if not already configured.",
+    ),
+]
+
+CustomHeaderOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--header",
+        help="Add an HTTP header to AI Gateway requests as `Name: value`; repeatable. "
+        "Pass before any `--` separator. Credentials and transport headers are not allowed.",
     ),
 ]
 
@@ -2590,6 +2654,7 @@ def codex_cmd(
             help="Discover model services in `<catalog>.<schema>`. Example: main.default",
         ),
     ] = None,
+    header: CustomHeaderOption = None,
     refresh: Annotated[
         bool,
         typer.Option(
@@ -2653,6 +2718,7 @@ def codex_cmd(
                 workspace_url=workspace,
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
+                headers=header,
             )
 
 
@@ -2679,6 +2745,7 @@ def claude_cmd(
             help="Discover model services in `<catalog>.<schema>`. Example: main.default",
         ),
     ] = None,
+    header: CustomHeaderOption = None,
     model: Annotated[
         str | None,
         typer.Option(
@@ -2764,6 +2831,7 @@ def claude_cmd(
                 workspace_url=workspace,
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
+                headers=header,
             )
 
 

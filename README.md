@@ -395,9 +395,11 @@ The output looks like:
 | `ug codex --enable-smart-routing` | Enable AI Gateway routing for Codex sessions and subagents |
 | `ug codex --refresh` | Re-check Databricks, refresh models/configuration, and launch Codex |
 | `ug codex --model-location main.default` | Discover model services in the specified catalog and schema |
+| `ug codex --header 'X-Development-Route: test-target'` | Add a launch-only custom header to Codex gateway requests |
 | `ug claude --enable-smart-routing` | Enable AI Gateway routing for Claude Code sessions and subagents |
 | `ug claude --refresh` | Re-check Databricks, refresh models/configuration, and launch Claude Code |
 | `ug claude --model-location main.default` | Discover model services in the specified catalog and schema |
+| `ug claude --header 'X-Development-Route: test-target'` | Set a temporary global header for Claude Code gateway requests |
 | `ug configure --agents claude,codex,pi` | Configure the requested agents that are available; skip the rest with a warning |
 | `ug configure --agents claude --mcp system.ai.slack` | Configure an agent and register its Databricks MCP server(s) in one command |
 | `ug mcp add --location system.ai` | Register a schema's MCP servers, keeping any already configured (additive; never removes) |
@@ -418,6 +420,10 @@ The output looks like:
 | `ug skill remove` | Pick from every downloaded skill (across all bases) and delete it from disk |
 | `ug skill remove --location main.default [--path <dir>]` | Delete every skill downloaded from a schema (all bases, or one under `<dir>`) |
 | `ug skill remove --skills main.default.my-skill [--path <dir>]` | Delete named downloaded skills by fully-qualified name (comma-separated; may span schemas; `--path` limits to one base) |
+
+`--header` is repeatable and intended for non-secret development routing values. Codex reads the
+values from launch-only environment variables. Claude Code requires them in global settings, so
+they apply to all Claude sessions until the next successful launch or configuration without them.
 
 Databricks AI Tools are installed only by `ug configure`, never by `ug <agent>` launches.
 Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools` with `ug configure` to

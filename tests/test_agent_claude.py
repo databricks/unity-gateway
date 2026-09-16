@@ -801,10 +801,18 @@ FAKE_MANAGED_PATH = Path("/tmp/ucode-test/managed-settings.json")
 class TestWriteToolConfigManagedSettings:
     """Every normal configuration also writes Claude Code's OS-managed settings."""
 
-    def _patch(self, monkeypatch, private_writes, managed_writes, existing_by_path=None):
+    def _patch(
+        self,
+        monkeypatch,
+        private_writes,
+        managed_writes,
+        existing_by_path=None,
+        global_state=None,
+    ):
         existing_by_path = existing_by_path or {}
+        global_state = global_state if global_state is not None else {}
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
-        # Deep-copy the seeded existing content so the compose step can't mutate the fixture.
+
         monkeypatch.setattr(
             claude,
             "read_json_safe",
@@ -816,6 +824,13 @@ class TestWriteToolConfigManagedSettings:
             lambda path, payload: private_writes.append((str(path), payload)),
         )
         monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "load_global_state", lambda: dict(global_state))
+
+        def save_global_state(state):
+            global_state.clear()
+            global_state.update(state)
+
+        monkeypatch.setattr(claude, "save_global_state", save_global_state)
         monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: True)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
         # Deterministic managed path, and a mocked sudo writer so NO real sudo/`/etc` write happens.
@@ -973,6 +988,87 @@ class TestWriteToolConfigManagedSettings:
             "User-Agent: ucode/1.0 claude/2.0",  # From ucode; overwrites existing.
             "x-databricks-use-coding-agent-mode: true",  # Newly added by ucode.
         ]
+
+    def test_writes_custom_header_and_records_it_in_existing_state(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        global_state: dict = {}
+        self._patch(monkeypatch, private_writes, managed_writes, global_state=global_state)
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []},
+            "databricks-claude-sonnet-4",
+            custom_headers={"X-Development-Route": "route://development/test"},
+        )
+
+        private_headers = private_writes[0][1]["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        managed_headers = json.loads(managed_writes[0][1])["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert "X-Development-Route: route://development/test" in private_headers
+        assert "X-Development-Route: route://development/test" in managed_headers
+        assert global_state[claude.CLAUDE_CUSTOM_HEADERS_STATE_KEY] == {
+            "x-development-route": "route://development/test"
+        }
+
+    def test_allows_reusing_recorded_empty_header(self, monkeypatch):
+        settings = {"env": {"ANTHROPIC_CUSTOM_HEADERS": "X-Development-Route:"}}
+        monkeypatch.setattr(claude, "read_json_safe", lambda _path: settings)
+
+        claude._reject_custom_header_collisions(
+            {"x-development-route": ""}, {"x-development-route": ""}
+        )
+
+    @pytest.mark.parametrize(
+        ("route_headers", "remaining"),
+        [
+            ("X-Development-Route: old", None),
+            ("X-Development-Route: old\nx-development-route: admin", "admin"),
+        ],
+    )
+    def test_removes_only_recorded_value_from_previous_launch(
+        self, monkeypatch, route_headers, remaining
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {"env": {"ANTHROPIC_CUSTOM_HEADERS": (f"X-Enterprise: keep\n{route_headers}")}}
+        global_state = {claude.CLAUDE_CUSTOM_HEADERS_STATE_KEY: {"x-development-route": "old"}}
+        self._patch(
+            monkeypatch,
+            private_writes,
+            managed_writes,
+            {
+                str(claude.CLAUDE_SETTINGS_PATH): existing,
+                str(FAKE_MANAGED_PATH): existing,
+            },
+            global_state,
+        )
+        state = {"workspace": WS, "codex_models": []}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        private_headers = private_writes[0][1]["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        managed_headers = json.loads(managed_writes[0][1])["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert "X-Enterprise: keep" in private_headers
+        for headers in (private_headers, managed_headers):
+            assert "X-Development-Route: old" not in headers
+            assert ("x-development-route: admin" in headers) is bool(remaining)
+        assert claude.CLAUDE_CUSTOM_HEADERS_STATE_KEY not in global_state
+
+    @pytest.mark.parametrize("source", ["private", "managed"])
+    def test_rejects_existing_custom_header_without_modifying_settings(self, monkeypatch, source):
+        private_writes: list = []
+        managed_writes: list = []
+        path = claude.CLAUDE_SETTINGS_PATH if source == "private" else FAKE_MANAGED_PATH
+        existing = {"env": {"ANTHROPIC_CUSTOM_HEADERS": "X-Development-Route: user-value"}}
+        self._patch(monkeypatch, private_writes, managed_writes, {str(path): existing})
+
+        with pytest.raises(RuntimeError, match="cannot override existing Claude Code header"):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": []},
+                "databricks-claude-sonnet-4",
+                custom_headers={"x-development-route": "temporary"},
+            )
+
+        assert private_writes == []
+        assert managed_writes == []
 
     def test_managed_file_applies_model_default_precedence(self, monkeypatch):
         managed_defaults = self._write_managed_model_defaults(
