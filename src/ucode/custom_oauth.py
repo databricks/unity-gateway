@@ -5,8 +5,10 @@ from __future__ import annotations
 import platform
 import shlex
 import subprocess
+import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from os import getpid
 from pathlib import Path
 from typing import TypedDict
 from urllib.parse import urlparse
@@ -20,6 +22,13 @@ from ucode.ui import err_console, normalize_workspace_url, print_warning_err
 DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
 # Custom OAuth may need a human to finish browser consent, not just a token fetch.
 CUSTOM_OAUTH_TIMEOUT_MS = 180_000
+# A waiter must never proceed without the lock: doing so would reopen the browser-storm race. Keep
+# this shorter than the harness auth timeout so a blocked helper can report the owning PID.
+CUSTOM_OAUTH_LOCK_TIMEOUT_SECONDS = 30.0
+
+
+class CustomOAuthLockTimeout(RuntimeError):
+    """Another custom-OAuth helper held the shared callback-port lock for too long."""
 
 
 class CustomOAuthConfig(TypedDict):
@@ -94,7 +103,12 @@ def build_custom_auth_shell_command(workspace: str, config: CustomOAuthConfig) -
 
 
 @contextmanager
-def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
+def _custom_oauth_lock(
+    cache_dir: Path,
+    redirect_url: str,
+    *,
+    timeout_seconds: float = CUSTOM_OAUTH_LOCK_TIMEOUT_SECONDS,
+) -> Iterator[None]:
     """Serialize helpers sharing a callback port with a POSIX file lock.
 
     Keep the lock file in place: unlinking it could let waiters lock different
@@ -104,8 +118,29 @@ def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     port = urlparse(redirect_url).port
-    with (cache_dir / f"ug-oauth-{port}.lock").open("a+b") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
+    lock_path = cache_dir / f"ug-oauth-{port}.lock"
+    with lock_path.open("a+b") as lock_file:
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    lock_file.seek(0)
+                    holder = lock_file.read().decode(errors="replace").strip()
+                    holder_detail = f" PID {holder}" if holder.isdigit() else " an unknown process"
+                    raise CustomOAuthLockTimeout(
+                        f"Timed out after {timeout_seconds:g}s waiting for custom OAuth lock "
+                        f"{lock_path}, held by{holder_detail}. If that process is no longer "
+                        "authenticating, inspect it before terminating it."
+                    ) from None
+                time.sleep(min(0.1, remaining))
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(f"{getpid()}\n".encode())
+        lock_file.flush()
         try:
             yield
         finally:
@@ -168,6 +203,8 @@ def get_custom_client_token(
                 raise ValueError("OAuth returned no access token")
             cache.save(credentials)
             return token
+    except CustomOAuthLockTimeout:
+        raise
     except Exception as exc:
         raise RuntimeError(
             "Custom-client OAuth failed. Check the workspace, client ID, and registered "

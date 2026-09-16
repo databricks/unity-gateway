@@ -15,7 +15,7 @@ from typer.testing import CliRunner
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 from ucode.cli import app
-from ucode.custom_oauth import _custom_oauth_lock, get_custom_client_token
+from ucode.custom_oauth import CustomOAuthLockTimeout, _custom_oauth_lock, get_custom_client_token
 
 WS = "https://example.databricks.com"
 TEST_SCOPES = ("offline_access", "catalog.catalogs:read")
@@ -29,6 +29,18 @@ class TestCustomOAuthLock:
                 raise ValueError("login failed")
         with _custom_oauth_lock(tmp_path, "http://127.0.0.1:8020/other-callback"):
             assert len(list(tmp_path.glob("*.lock"))) == 1
+
+    def test_times_out_with_holder_pid_without_entering(self, tmp_path):
+        entered = False
+        with _custom_oauth_lock(tmp_path, "http://localhost:8020/callback"):
+            with pytest.raises(CustomOAuthLockTimeout, match=r"held by PID \d+"):
+                with _custom_oauth_lock(
+                    tmp_path,
+                    "http://localhost:8020/callback",
+                    timeout_seconds=0.01,
+                ):
+                    entered = True
+        assert entered is False
 
 
 class TestCustomClientToken:
