@@ -739,6 +739,7 @@ class TestSubcommandRouting:
         with (
             patch("ucode.cli.ensure_bootstrap_dependencies"),
             patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.load_workspace_state", return_value=state),
             patch("ucode.cli.ensure_provider_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state),
             patch(
@@ -1069,6 +1070,7 @@ class TestClaudeModelFlag:
         with (
             patch("ucode.cli.ensure_bootstrap_dependencies"),
             patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.load_workspace_state", return_value=state),
             patch("ucode.cli.ensure_provider_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state),
             patch(
@@ -2776,6 +2778,7 @@ class TestAutoConfigureOnFirstRun:
                 "ucode.cli.configure_single_tool", return_value=configured_state
             ) as mock_configure,
             patch("ucode.cli.ensure_provider_state", return_value=configured_state),
+            patch("ucode.cli.refresh_managed_config", return_value=(None, False)),
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
             patch("ucode.cli.configure_tool", return_value=configured_state),
             patch("ucode.cli.restore_file") as mock_restore,
@@ -3340,6 +3343,126 @@ class TestConfigureAgentFlag:
             "claude": "main.models",
             "codex": "main.models",
         }
+
+    def test_later_fallback_save_does_not_persist_earlier_managed_agent_overlay(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "default_model": "system.ai.managed-claude",
+                        "model_provider_service": "main.providers.managed-anthropic",
+                    }
+                },
+                "codex": {},
+            }
+        }
+        state = {**MINIMAL_STATE, "available_tools": []}
+        saved_states: list[dict] = []
+
+        def configure_managed(current, *args, **kwargs):
+            return {**current, "available_tools": ["claude"]}
+
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.load_managed_state", return_value=None),
+            patch("ucode.cli._configure_shared_workspace_states", return_value=[state]),
+            patch("ucode.cli.refresh_managed_config", return_value=(managed, False)),
+            patch("ucode.cli.check_gateway_endpoint", return_value=True),
+            patch("ucode.cli.resolve_state", wraps=cli_mod.resolve_state) as mock_resolve,
+            patch(
+                "ucode.cli.configure_selected_tools", side_effect=configure_managed
+            ) as mock_managed,
+            patch("ucode.cli.configure_tool", side_effect=lambda tool, current, **kwargs: current),
+            patch(
+                "ucode.cli.save_state",
+                side_effect=lambda current: saved_states.append(json.loads(json.dumps(current))),
+            ),
+            patch("ucode.cli.install_databricks_ai_tools_for_agents"),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "configure",
+                    "--agents",
+                    "codex",
+                    "--workspace",
+                    MINIMAL_STATE["workspace"],
+                    "--model-location",
+                    "main.models",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_managed.call_args.args[0]["provider_services"]["claude"] == (
+            "main.providers.managed-anthropic"
+        )
+        codex_input = mock_resolve.call_args_list[1].args[1]
+        assert "_managed_overlay" not in codex_input
+        assert "claude_default_model" not in codex_input
+        assert "provider_services" not in codex_input
+        assert saved_states[-1]["model_locations"] == {"codex": "main.models"}
+        assert set(saved_states[-1]["available_tools"]) == {"claude", "codex"}
+        assert "claude_default_model" not in saved_states[-1]
+        assert "provider_services" not in saved_states[-1]
+
+    def test_managed_gemini_provider_does_not_restore_fallback_agent_providers(self):
+        managed = {
+            "enabled_agents": {
+                "gemini": {
+                    "model_config": {"model_provider_service": "main.providers.managed-gemini"}
+                }
+            }
+        }
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": [],
+            "provider_services": {
+                "claude": "main.providers.stale-anthropic",
+                "codex": "main.providers.stale-openai",
+            },
+        }
+        saved_states: list[dict] = []
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.load_managed_state", return_value=None),
+            patch("ucode.cli._configure_shared_workspace_states", return_value=[state]),
+            patch("ucode.cli.refresh_managed_config", return_value=(managed, False)),
+            patch("ucode.cli.check_gateway_endpoint", return_value=True),
+            patch(
+                "ucode.cli.configure_selected_tools",
+                side_effect=lambda current, *args, **kwargs: current,
+            ) as mock_managed,
+            patch("ucode.cli.configure_tool", side_effect=lambda tool, current, **kwargs: current),
+            patch(
+                "ucode.cli.save_state",
+                side_effect=lambda current: saved_states.append(json.loads(json.dumps(current))),
+            ),
+            patch("ucode.cli.install_databricks_ai_tools_for_agents"),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "configure",
+                    "--agents",
+                    "claude,codex",
+                    "--workspace",
+                    MINIMAL_STATE["workspace"],
+                    "--model-location",
+                    "main.models",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_managed.call_args.args[0]["provider_services"]["gemini"] == (
+            "main.providers.managed-gemini"
+        )
+        assert saved_states[-1]["model_locations"] == {
+            "claude": "main.models",
+            "codex": "main.models",
+        }
+        assert "provider_services" not in saved_states[-1]
 
     def test_no_flag_calls_configure_all(self):
         with (

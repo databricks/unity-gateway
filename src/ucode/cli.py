@@ -133,6 +133,7 @@ from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRS
 from ucode.state import (
     STATE_PATH,
     clear_state,
+    developer_state_from_resolved,
     get_model_location,
     get_provider_service,
     load_state,
@@ -845,6 +846,7 @@ def configure_workspace_command(
         _reject_configure_model_location(managed, selected_tools or managed_tools)
     if managed is not None:
         configured_tools: list[str] = []
+        developer_state = state
         location_targets = selected_tools if selected_tools is not None else managed_tools
         fallback_location_tools = [
             tool_name
@@ -857,7 +859,7 @@ def configure_workspace_command(
             tool_name for tool_name in fallback_location_tools if tool_name not in managed_tools
         ]
         for tool_name in tools_to_configure:
-            resolved = resolve_state(managed, state, tool_name)
+            resolved = resolve_state(managed, developer_state, tool_name)
             if tool_name in fallback_location_tools:
                 configured = _configure_tools_with_model_location(
                     resolved,
@@ -865,7 +867,7 @@ def configure_workspace_command(
                     model_location,
                     install_ai_tools=not is_dry_run(),
                 )
-            elif check_gateway_endpoint(state, tool_name):
+            elif check_gateway_endpoint(developer_state, tool_name):
                 if not install_tool_binary(tool_name, strict=False):
                     continue
                 configured = configure_selected_tools(
@@ -873,12 +875,9 @@ def configure_workspace_command(
                 )
             else:
                 continue
-            # Each iteration resolves from `state` and persists a copy, so carry the accumulated
-            # available_tools forward instead of letting the last agent drop earlier entries.
-            state["available_tools"] = configured.get("available_tools") or state.get(
-                "available_tools"
-            )
+            developer_state = developer_state_from_resolved(configured)
             configured_tools.append(tool_name)
+        state = developer_state
         if not configured_tools:
             raise RuntimeError(
                 "None of the coding agents enabled by your workspace configuration "
