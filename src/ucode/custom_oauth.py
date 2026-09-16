@@ -8,19 +8,25 @@ import os
 import platform
 import shlex
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from pathlib import Path
 from typing import TypedDict
 from urllib.parse import urlparse
 
+from databricks.sdk import oauth
+
 from ucode.config_io import APP_DIR
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
-from ucode.databricks import MIN_DATABRICKS_CLI_VERSION, build_auth_token_argv
-from ucode.ui import normalize_workspace_url
+from ucode.databricks import build_auth_token_argv
+from ucode.ui import err_console, normalize_workspace_url, print_warning_err
 
 DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
 # Custom OAuth may need a human to finish browser consent, not just a token fetch.
 CUSTOM_OAUTH_TIMEOUT_MS = 180_000
-CUSTOM_OAUTH_CONFIG_FILE = APP_DIR / "custom-oauth.databrickscfg"
+CUSTOM_OAUTH_CLI_VERSION = (1, 17, 0)
+CUSTOM_OAUTH_CONFIG_FILE = APP_DIR / "ug.databrickscfg"
+ENABLE_CUSTOM_OAUTH_PROFILE = "ENABLE_CUSTOM_OAUTH_PROFILE"
 
 
 class CustomOAuthConfig(TypedDict):
@@ -99,12 +105,26 @@ def _custom_oauth_profile(workspace: str, client_id: str, scopes: Sequence[str])
     return f"ug-custom-oauth-{hashlib.sha256(key).hexdigest()[:12]}"
 
 
+@contextmanager
+def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
+    import fcntl
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    port = urlparse(redirect_url).port
+    with (cache_dir / f"ug-oauth-{port}.lock").open("a+b") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
 def _require_custom_oauth_cli() -> None:
     from ucode.databricks import databricks_cli_version
 
     version = databricks_cli_version()
-    if version is None or version < MIN_DATABRICKS_CLI_VERSION:
-        required = ".".join(map(str, MIN_DATABRICKS_CLI_VERSION))
+    if version is None or version < CUSTOM_OAUTH_CLI_VERSION:
+        required = ".".join(map(str, CUSTOM_OAUTH_CLI_VERSION))
         raise RuntimeError(
             f"Custom-client OAuth requires Databricks CLI v{required} or newer. Upgrade the CLI "
             "and retry."
@@ -134,17 +154,12 @@ def _token_from_cli(workspace: str, profile: str, env: dict[str, str], force: bo
         return ""
 
 
-def get_custom_client_token(
+def _get_custom_client_token_from_cli(
     workspace: str,
-    client_id: str,
-    redirect_url: str = DEFAULT_REDIRECT_URL,
-    *,
-    scopes: Sequence[str],
-    force_refresh: bool = False,
+    config: CustomOAuthConfig,
+    force_refresh: bool,
 ) -> str:
     """Delegate custom-client U2M login, refresh, and caching to Databricks CLI."""
-    config = create_custom_oauth_config(client_id, scopes, redirect_url)
-    workspace = normalize_workspace_url(workspace)
     _require_custom_oauth_cli()
     profile = _custom_oauth_profile(workspace, config["client_id"], config["scopes"])
     CUSTOM_OAUTH_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -190,3 +205,74 @@ def get_custom_client_token(
         "Databricks CLI returned no custom-client OAuth token. Check the workspace, client ID, "
         "and scopes, then retry."
     )
+
+
+def _get_custom_client_token_from_sdk(
+    workspace: str,
+    config: CustomOAuthConfig,
+    force_refresh: bool,
+) -> str:
+    try:
+        endpoints = oauth.get_workspace_endpoints(workspace)
+        cache = oauth.TokenCache(
+            host=workspace,
+            oidc_endpoints=endpoints,
+            client_id=config["client_id"],
+            redirect_url=config["redirect_url"],
+            scopes=config["scopes"],
+        )
+        with _custom_oauth_lock(Path(cache.filename).parent, config["redirect_url"]):
+            credentials = cache.load()
+            if credentials is not None:
+                try:
+                    if force_refresh:
+                        credentials = oauth.SessionCredentials(
+                            token=credentials.refresh(),
+                            token_endpoint=endpoints.token_endpoint,
+                            client_id=config["client_id"],
+                            redirect_url=config["redirect_url"],
+                        )
+                    credentials.token()
+                except Exception:
+                    print_warning_err("Cached OAuth token could not be refreshed. Sign in again.")
+                    credentials = None
+            if credentials is None:
+                client = oauth.OAuthClient(
+                    oidc_endpoints=endpoints,
+                    client_id=config["client_id"],
+                    redirect_url=config["redirect_url"],
+                    scopes=config["scopes"],
+                )
+                consent = client.initiate_consent()
+                err_console.print(
+                    f"Sign in using your browser: {consent.authorization_url}",
+                    markup=False,
+                    soft_wrap=True,
+                )
+                credentials = consent.launch_external_browser()
+            token = credentials.token().access_token
+            if not token:
+                raise ValueError("OAuth returned no access token")
+            cache.save(credentials)
+            return token
+    except Exception as exc:
+        raise RuntimeError(
+            "Custom-client OAuth failed. Check the workspace, client ID, and registered "
+            f"redirect URL ({config['redirect_url']}); ensure its local port is available and "
+            "the SDK token cache is writable, then retry."
+        ) from exc
+
+
+def get_custom_client_token(
+    workspace: str,
+    client_id: str,
+    redirect_url: str = DEFAULT_REDIRECT_URL,
+    *,
+    scopes: Sequence[str],
+    force_refresh: bool = False,
+) -> str:
+    config = create_custom_oauth_config(client_id, scopes, redirect_url)
+    workspace = normalize_workspace_url(workspace)
+    if os.environ.get(ENABLE_CUSTOM_OAUTH_PROFILE) == "1":
+        return _get_custom_client_token_from_cli(workspace, config, force_refresh)
+    return _get_custom_client_token_from_sdk(workspace, config, force_refresh)

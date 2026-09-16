@@ -58,8 +58,8 @@ WINDOWS_DATABRICKS_INSTALL_URL = (
 )
 AI_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-beta"
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
-# v1.17.0 adds custom OAuth client IDs to `databricks auth login` and token refresh.
-MIN_DATABRICKS_CLI_VERSION = (1, 17, 0)
+# v1.0.0 is the release that ships `databricks aitools`.
+MIN_DATABRICKS_CLI_VERSION = (1, 0, 0)
 TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # Substrings the Databricks CLI emits when it loses the token-cache write lock
 # to a concurrent `databricks auth token` (e.g. another ucode helper process or
