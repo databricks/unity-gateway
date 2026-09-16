@@ -443,6 +443,7 @@ def configure_shared_state(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     clear_custom_oauth: bool = False,
+    persist: bool = True,
 ) -> dict:
     """Log into Databricks, verify AI Gateway, fetch model lists, persist state.
 
@@ -461,7 +462,9 @@ def configure_shared_state(
     ``ug configure``. The PAT/bearer is already exported (``apply_pat_environment``
     in ``_launch_tool``) and the gateway was verified by that earlier configure.
     Only the local profile resolution and the shared state assembly still run;
-    the saved model lists are preserved.
+    the saved model lists are preserved. If ``persist`` is false, return the
+    assembled state without changing developer state; first-run explicit source
+    launches use this to check managed policy before writing anything.
     """
     workspace = normalize_workspace_url(workspace)
     prior_state = load_state()
@@ -513,9 +516,10 @@ def configure_shared_state(
             profile = find_profile_name_for_host(workspace)
             if profile:
                 state["profile"] = profile
-        save_state(state)
+        if persist:
+            save_state(state)
         # Scrub MCP entries ucode wrote for a previous workspace.
-        if previous_workspace and previous_workspace != workspace:
+        if persist and previous_workspace and previous_workspace != workspace:
             purge_cross_workspace_mcp_residue(state, workspace)
         # Diagnostic reasons are transient (attached after save_state so they
         # don't land on disk). No discovery ran, so there is nothing to report.
@@ -638,10 +642,11 @@ def configure_shared_state(
             state["oss_models"] = oss_models
         if fetch_all or "opencode" in tools:
             state["opencode_models"] = opencode_models
-    save_state(state)
+    if persist:
+        save_state(state)
     # Scrub MCP entries that ucode wrote for the previous workspace so the new
     # workspace's agent configs aren't stale.
-    if previous_workspace and previous_workspace != workspace:
+    if persist and previous_workspace and previous_workspace != workspace:
         purge_cross_workspace_mcp_residue(state, workspace)
     # Diagnostic reasons are transient — attach after save_state so they don't
     # land on disk but are available to the caller for this run.
@@ -1903,6 +1908,7 @@ def _auto_configure_tool(
     tool: str,
     custom_oauth: CustomOAuthConfig | None = None,
     model_location: str | None = None,
+    explicit_provider: str | None = None,
 ) -> None:
     """Configure a tool for launch without sending a separate validation prompt.
 
@@ -1912,12 +1918,27 @@ def _auto_configure_tool(
     existing = load_state()
     workspace = existing.get("workspace")
     profile = existing.get("profile")
+    check_managed_source = not workspace and (
+        model_location is not None or explicit_provider is not None
+    )
     if not workspace:
         workspace, profile = _prompt_for_configuration(tool)
     configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
     if model_location is not None:
         configure_kwargs["skip_model_discovery"] = True
+    if check_managed_source:
+        configure_kwargs["persist"] = False
     state = configure_shared_state(workspace, profile=profile, tools=[tool], **configure_kwargs)
+
+    if check_managed_source:
+        managed, _ = refresh_managed_config(state)
+        _reject_disabled_agent(managed, tool)
+        _reject_managed_source_override(
+            managed,
+            tool,
+            explicit_provider=explicit_provider,
+            explicit_model_location=model_location is not None,
+        )
 
     if model_location is not None and tool in CAN_USE_CACHED_CONFIG_AGENTS:
         # This is a launch-scoped choice, not an explicit `ug configure` preference.
@@ -2231,6 +2252,8 @@ def _managed_controls_model_source(managed: dict | None, tool: str) -> bool:
 def _reject_configure_model_location(managed: dict | None, tools: list[str]) -> None:
     """Reject a persisted model location when managed config owns a selected source."""
     for tool in tools:
+        if tool not in CAN_USE_CACHED_CONFIG_AGENTS:
+            continue
         _reject_managed_source_override(
             managed,
             tool,
@@ -2330,13 +2353,34 @@ def _launch_tool(
             existing.get("available_tools") or []
         )
         ensure_bootstrap_dependencies(tool)
+        coding_agent_config_feature_disabled = False
+        managed_config_checked = managed is not None
+        if needs_auto_configure and existing.get("workspace"):
+            if not managed_config_checked:
+                managed, coding_agent_config_feature_disabled = _fetch_managed_config(existing)
+                managed_config_checked = True
+            _reject_disabled_agent(managed, tool)
+            _reject_managed_source_override(
+                managed,
+                tool,
+                explicit_provider=explicit_provider,
+                explicit_model_location=explicit_model_location,
+            )
         if needs_auto_configure:
             if custom_oauth is not None and parent_schema is not None:
                 _auto_configure_tool(tool, custom_oauth=custom_oauth, model_location=parent_schema)
+            elif custom_oauth is not None and explicit_provider is not None:
+                _auto_configure_tool(
+                    tool,
+                    custom_oauth=custom_oauth,
+                    explicit_provider=explicit_provider,
+                )
             elif custom_oauth is not None:
                 _auto_configure_tool(tool, custom_oauth=custom_oauth)
             elif parent_schema is not None:
                 _auto_configure_tool(tool, model_location=parent_schema)
+            elif explicit_provider is not None:
+                _auto_configure_tool(tool, explicit_provider=explicit_provider)
             else:
                 _auto_configure_tool(tool)
         state = ensure_provider_state(tool)
@@ -2347,9 +2391,9 @@ def _launch_tool(
         # at all and whether the model discovery below can be skipped.
         # Bare `ucode` already fetched one to choose the agent; refetching would double the
         # control-plane round trip and any fallback warning it printed.
-        coding_agent_config_feature_disabled = False
-        if managed is None:
+        if not managed_config_checked:
             managed, coding_agent_config_feature_disabled = _fetch_managed_config(state)
+            managed_config_checked = True
         # Checked before discovery, which can take tens of seconds, so a blocked launch fails fast.
         _reject_disabled_agent(managed, tool)
         # The environment switch remains a developer override; managed config is the workspace
