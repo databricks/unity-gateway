@@ -307,6 +307,9 @@ ug skills add --location main.default --mcp --agents claude,codex
 # Download a schema's skills to disk, keeping existing downloads.
 ug skills add --location main.default
 
+# Download into a specific project directory instead of your home dir.
+ug skills add --location main.default --path /abs/project/dir
+
 # Download a named set of skills by fully-qualified name (may span schemas).
 ug skills add --skill main.default.my-skill,ml.prod.other-skill
 
@@ -419,7 +422,7 @@ The output looks like:
 | `ug configure skills --location main.default --mcp` | Expose a schema's skills as MCP tools (override-only) instead of downloading |
 | `ug skills add --location main.default --mcp` | Add schemas to the skills MCP scope, keeping any already configured (additive; never replaces) |
 | `ug skills add --location main.default --mcp --agents claude,codex` | Add schemas to specific agents' skills MCP scope (sets up any not yet configured) |
-| `ug skills add --location main.default` | Download a schema's skills to disk without removing existing downloads |
+| `ug skills add --location main.default [--path <dir>]` | Download a schema's skills to disk (under `<dir>`, or your home dir) without removing existing downloads |
 | `ug skills add --skill main.default.my-skill` | Download named skills by fully-qualified name (comma-separated; may span schemas) |
 | `ug skills remove --location main.default --mcp` | Remove specific schemas from the skills MCP scope, or omit `--location` on a TTY for a picker (every agent) |
 | `ug skills remove --location main.default --mcp --agents claude` | Remove schemas from specific agents' skills MCP scope, keeping them on the rest |
