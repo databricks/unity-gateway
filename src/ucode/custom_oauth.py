@@ -115,6 +115,38 @@ def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
+def _get_custom_client_token_from_cli(
+    workspace: str,
+    client_id: str,
+    *,
+    force_refresh: bool = False,
+) -> str:
+    ensure_databricks_cli_version(CUSTOM_OAUTH_CLI_MIN_VERSION)
+    env = os.environ.copy()
+    env["DATABRICKS_CLIENT_ID"] = client_id
+    args = ["databricks", "auth", "token", "--host", workspace]
+    if force_refresh:
+        args.append("--force-refresh")
+    try:
+        result = run(
+            args,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000,
+        )
+        token = json.loads(result.stdout or "{}").get("access_token", "")
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        raise RuntimeError("Custom-client OAuth via Databricks CLI failed.") from exc
+    if result.returncode != 0 or not token:
+        raise RuntimeError(
+            "Custom-client OAuth via Databricks CLI failed. Run "
+            f"`databricks auth login --host {workspace} --client-id {client_id}` and retry."
+        )
+    return token
+
+
 def get_custom_client_token(
     workspace: str,
     client_id: str,
@@ -127,31 +159,11 @@ def get_custom_client_token(
     config = create_custom_oauth_config(client_id, scopes, redirect_url)
     workspace = normalize_workspace_url(workspace)
     if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1":
-        ensure_databricks_cli_version(CUSTOM_OAUTH_CLI_MIN_VERSION)
-        env = os.environ.copy()
-        env["DATABRICKS_CLIENT_ID"] = config["client_id"]
-        args = ["databricks", "auth", "token", "--host", workspace]
-        if force_refresh:
-            args.append("--force-refresh")
-        try:
-            result = run(
-                args,
-                check=False,
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000,
-            )
-            token = json.loads(result.stdout or "{}").get("access_token", "")
-        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-            raise RuntimeError("Custom-client OAuth via Databricks CLI failed.") from exc
-        if result.returncode != 0 or not token:
-            raise RuntimeError(
-                "Custom-client OAuth via Databricks CLI failed. Run "
-                f"`databricks auth login --host {workspace} --client-id {config['client_id']}` "
-                "and retry."
-            )
-        return token
+        return _get_custom_client_token_from_cli(
+            workspace,
+            config["client_id"],
+            force_refresh=force_refresh,
+        )
     try:
         endpoints = oauth.get_workspace_endpoints(workspace)
         cache = oauth.TokenCache(
