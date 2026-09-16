@@ -18,9 +18,11 @@ from ucode.state import (
     hydrate_state,
     load_full_state,
     load_state,
+    load_workspace_state,
     mark_tool_managed,
     save_state,
     set_applied_managed_update_time,
+    set_current_workspace,
     set_model_location,
     set_provider_service,
 )
@@ -143,6 +145,24 @@ class TestSaveLoadRoundTrip:
     def test_load_state_returns_empty_when_no_workspace(self):
         result = load_state()
         assert result == {}
+
+    def test_load_workspace_state_preserves_current_workspace_and_preferences(self):
+        other_workspace = "https://other.databricks.com"
+        save_state({"workspace": FAKE_WS, "available_tools": ["claude"]})
+        save_state(
+            set_model_location(
+                {"workspace": other_workspace, "available_tools": ["codex"]},
+                "codex",
+                "main.models",
+            )
+        )
+        set_current_workspace(FAKE_WS)
+
+        loaded = load_workspace_state(other_workspace)
+
+        assert loaded["available_tools"] == ["codex"]
+        assert get_model_location(loaded, "codex") == "main.models"
+        assert load_full_state()["current_workspace"] == FAKE_WS
 
 
 # ---------------------------------------------------------------------------

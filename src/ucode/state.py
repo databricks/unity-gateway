@@ -47,9 +47,17 @@ def load_state() -> dict:
     workspace = full.get("current_workspace")
     if not workspace:
         return {}
-    ws_state = full.get("workspaces", {}).get(workspace, {})
-    ws_state["workspace"] = workspace
-    return hydrate_state(ws_state)
+    return load_workspace_state(workspace, full_state=full)
+
+
+def load_workspace_state(workspace: str, *, full_state: dict | None = None) -> dict:
+    """Load one workspace's state without changing the current workspace."""
+    full = full_state if full_state is not None else load_full_state()
+    workspaces = full.get("workspaces")
+    raw = workspaces.get(workspace) if isinstance(workspaces, dict) else None
+    state = dict(raw) if isinstance(raw, dict) else {}
+    state["workspace"] = workspace
+    return hydrate_state(state)
 
 
 def save_state(state: dict) -> None:
