@@ -45,6 +45,7 @@ from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import (
     CLAUDE_SCOPED_MODEL_DISCOVERY_STATE_KEY,
+    CODEX_SCOPED_MODEL_DISCOVERY_STATE_KEY,
     scoped_model_discovery_enabled,
 )
 from ucode.databricks import (
@@ -2241,22 +2242,17 @@ def _launch_tool(
                 provider = managed_provider
         if provider and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
-        claude_scoped_model_source = tool == "claude" and bool(provider or parent_schema)
-        claude_scoped_model_discovery = _scoped_model_discovery_enabled(
+        scoped_model_source = bool(provider or parent_schema)
+        scoped_model_discovery = _scoped_model_discovery_enabled(
             managed_config_exists=managed is not None
         )
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
         # guard too, or routing would be persisted as on while a provider is active.
-        if smart_routing_enabled and claude_scoped_model_source:
+        if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and scoped_model_source:
             raise RuntimeError(
                 f"{TOOL_SPECS[tool]['display']} smart routing cannot be used with a Model "
                 "Provider Service or model location. Disable smart routing or remove the scoped "
                 "model source and try again."
-            )
-        if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and provider:
-            raise RuntimeError(
-                f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
-                "--provider. Launch without a Model Provider Service and try again."
             )
         # Validate the provider service before launching — it must exist, be a
         # provider type this tool can route to (e.g. claude can't use an OpenAI
@@ -2395,9 +2391,11 @@ def _launch_tool(
                 state["_claude_launch_provider"] = provider
             elif parent_schema:
                 state["_claude_launch_parent_schema"] = parent_schema
-            if claude_scoped_model_source:
-                state[CLAUDE_SCOPED_MODEL_DISCOVERY_STATE_KEY] = claude_scoped_model_discovery
+            if scoped_model_source:
+                state[CLAUDE_SCOPED_MODEL_DISCOVERY_STATE_KEY] = scoped_model_discovery
         elif tool == "codex":
+            if scoped_model_source:
+                state[CODEX_SCOPED_MODEL_DISCOVERY_STATE_KEY] = scoped_model_discovery
             if provider:
                 state["_codex_launch_provider"] = provider
             elif parent_schema:

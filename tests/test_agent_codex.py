@@ -777,6 +777,78 @@ class TestCodexLaunch:
         )
         assert 'Databricks-Model-Provider-Service = "main.default.openai"' in provider_arg
 
+    @pytest.mark.parametrize(
+        ("scope_state", "expected_header"),
+        [
+            (
+                {"_codex_launch_provider": "main.default.openai"},
+                'Databricks-Model-Provider-Service = "main.default.openai"',
+            ),
+            (
+                {"_codex_launch_parent_schema": "main.default"},
+                'Databricks-Model-Service-Parent-Schema = "main.default"',
+            ),
+        ],
+    )
+    def test_disabled_scoped_discovery_keeps_routing_without_catalog(
+        self, tmp_path, monkeypatch, scope_state, expected_header
+    ):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "0")
+        with codex.CODEX_CONFIG_PATH.open("a", encoding="utf-8") as config:
+            config.write('model_catalog_json = "/persisted/models.json"\n')
+
+        def unexpected(*_args, **_kwargs):
+            raise AssertionError("scoped catalog fetch must be disabled")
+
+        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", unexpected)
+        monkeypatch.setattr(codex, "_reject_managed_model_catalog", unexpected)
+
+        codex.launch(
+            {
+                "workspace": WS,
+                **scope_state,
+            },
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert launches
+        assert not any(arg.startswith("model_catalog_json=") for arg in launches[0])
+        provider_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
+        )
+        assert expected_header in provider_arg
+
+    def test_managed_scoped_override_forces_discovery_when_public_policy_disables_it(
+        self, tmp_path, monkeypatch
+    ):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "0")
+        catalog_path = tmp_path / "managed-models.json"
+        fetch_calls: list[tuple] = []
+
+        def fetch(*args, **kwargs):
+            fetch_calls.append((args, kwargs))
+            return {"models": [{"slug": "managed-gpt"}]}
+
+        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", fetch)
+        monkeypatch.setattr(codex, "_model_catalog_path", lambda *_args: catalog_path)
+
+        codex.launch(
+            {
+                "workspace": WS,
+                "_codex_launch_parent_schema": "managed.models",
+                "_codex_scoped_model_discovery": True,
+            },
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert len(fetch_calls) == 1
+        assert catalog_path.exists()
+        assert f'model_catalog_json="{catalog_path}"' in launches[0]
+
     def test_provider_pins_first_catalog_model(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
         catalog = {"models": [{"slug": "gpt-primary"}, {"slug": "gpt-secondary"}]}

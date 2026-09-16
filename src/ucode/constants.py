@@ -15,6 +15,10 @@ MODEL_DISCOVERY_ENV_VAR = "UG_ENABLE_MODEL_DISCOVERY"
 # true so workspace policy can override a developer's environment variable.
 CLAUDE_SCOPED_MODEL_DISCOVERY_STATE_KEY = "_claude_scoped_model_discovery"
 
+# Launch-only state handed from the CLI to Codex. Routing headers remain active
+# when this is false; only the scoped ``model_catalog_json`` refresh is skipped.
+CODEX_SCOPED_MODEL_DISCOVERY_STATE_KEY = "_codex_scoped_model_discovery"
+
 
 def scoped_model_discovery_enabled(
     *,

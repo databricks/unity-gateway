@@ -32,8 +32,10 @@ from ucode.config_io import (
     write_toml_file,
 )
 from ucode.constants import (
+    CODEX_SCOPED_MODEL_DISCOVERY_STATE_KEY,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
+    scoped_model_discovery_enabled,
 )
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_TIMEOUT_MS,
@@ -747,12 +749,6 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
-    if options.launch_smart_routing:
-        _launch_smart_routing(state, tool_args)
-        return
-    clear_model_preferences(state)
-    binary = SPEC["binary"]
-    workspace = state.get("workspace")
     launch_provider = state.get("_codex_launch_provider")
     provider = (
         launch_provider.strip()
@@ -765,7 +761,23 @@ def launch(
         if isinstance(launch_parent_schema, str) and launch_parent_schema.strip()
         else None
     )
-    if workspace and (provider or parent_schema):
+    scoped_model_source = bool(provider or parent_schema)
+    if options.launch_smart_routing and scoped_model_source:
+        raise RuntimeError(
+            "Codex smart routing cannot be used with a Model Provider Service or model location. "
+            "Disable smart routing or remove the scoped model source and try again."
+        )
+    if options.launch_smart_routing:
+        _launch_smart_routing(state, tool_args)
+        return
+    clear_model_preferences(state)
+    binary = SPEC["binary"]
+    workspace = state.get("workspace")
+    override = state.get(CODEX_SCOPED_MODEL_DISCOVERY_STATE_KEY)
+    scoped_model_discovery = (
+        override if isinstance(override, bool) else scoped_model_discovery_enabled()
+    )
+    if workspace and scoped_model_source and scoped_model_discovery:
         _reject_managed_model_catalog()
     otel_args: list[str] = []
     token = None
@@ -794,7 +806,11 @@ def launch(
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
-    if workspace and token and (provider or parent_schema):
+    if scoped_model_source and not scoped_model_discovery:
+        # A persisted/static catalog must not defeat the native-catalog policy
+        # for this invocation. This changes only the launch overlay, not disk.
+        profile_doc.pop("model_catalog_json", None)
+    if workspace and token and scoped_model_source and scoped_model_discovery:
         try:
             if provider is not None:
                 catalog_source = CodexCatalogSource.PROVIDER

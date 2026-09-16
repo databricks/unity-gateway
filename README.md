@@ -83,10 +83,11 @@ All agents route through Databricks AI Gateway using your workspace credentials 
 
 For a scoped Claude launch, ug enables Claude Code's native gateway discovery; Claude Code owns
 any model-cache update after it starts. ug does not fetch or rewrite Claude's private model cache
-before launch. Set `UG_ENABLE_MODEL_DISCOVERY=0` to keep the routing header while using Claude's
-native picker catalog instead. This switch does not disable normal Databricks `system.ai` model
-discovery. A workspace-managed scoped source still enables discovery because administrator policy
-takes precedence over the developer environment switch.
+before launch. Codex continues to receive a launch-scoped model catalog from ug. Set
+`UG_ENABLE_MODEL_DISCOVERY=0` to keep the routing header while using the agent's native picker
+catalog instead. This switch does not disable normal Databricks `system.ai` model discovery. A
+workspace-managed scoped source still enables discovery because administrator policy takes
+precedence over the developer environment switch.
 
 Codex uses the provider ID `Databricks` while keeping the `ucode` profile name.
 Re-run `ug configure --agents codex` to update existing generated configurations.

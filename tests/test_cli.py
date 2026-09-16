@@ -538,6 +538,24 @@ class TestSubcommandRouting:
         assert "Disable smart routing or remove the scoped model source" in result.output
 
     @pytest.mark.parametrize(
+        "source_args",
+        [
+            ["--provider", "main.default.provider"],
+            ["--model-location", "main.default"],
+        ],
+    )
+    def test_codex_scoped_source_rejects_smart_routing(self, source_args):
+        patches = _patch_launch("codex")
+        with contextlib.ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            result = runner.invoke(app, ["codex", "--enable-smart-routing", *source_args])
+
+        assert result.exit_code == 1
+        assert "smart routing cannot be used" in result.output
+        assert "Disable smart routing or remove the scoped model source" in result.output
+
+    @pytest.mark.parametrize(
         ("args", "forwarded", "has_separator"),
         [
             (["codex", "--", "fix the parser"], ["fix the parser"], True),
@@ -1206,7 +1224,9 @@ class TestClaudeModelFlag:
             result = runner.invoke(app, ["codex", "--provider", "main.default.openai"])
 
         assert result.exit_code == 0, result.output
-        assert mock_launch.call_args.args[1]["_codex_launch_provider"] == "main.default.openai"
+        launch_state = mock_launch.call_args.args[1]
+        assert launch_state["_codex_launch_provider"] == "main.default.openai"
+        assert launch_state["_codex_scoped_model_discovery"] is True
 
     def test_model_location_sets_transient_codex_launch_marker(self):
         state = dict(MINIMAL_STATE)
@@ -1223,7 +1243,9 @@ class TestClaudeModelFlag:
             result = runner.invoke(app, ["codex", "--model-location", "main.default"])
 
         assert result.exit_code == 0, result.output
-        assert mock_launch.call_args.args[1]["_codex_launch_parent_schema"] == "main.default"
+        launch_state = mock_launch.call_args.args[1]
+        assert launch_state["_codex_launch_parent_schema"] == "main.default"
+        assert launch_state["_codex_scoped_model_discovery"] is True
 
     @pytest.mark.parametrize(
         ("tool", "source_args", "expected_marker"),
@@ -1263,6 +1285,46 @@ class TestClaudeModelFlag:
         assert launch_state[expected_marker[0]] == expected_marker[1]
         assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
         assert launch_state["_claude_scoped_model_discovery"] is False
+        if source_args[0] == "--model-location":
+            # The policy flag suppresses only the agent-native scoped catalog;
+            # ordinary system.ai discovery still refreshes for this launch.
+            assert mock_shared.call_args.kwargs["skip_model_discovery"] is False
+
+    @pytest.mark.parametrize(
+        ("source_args", "expected_marker"),
+        [
+            (
+                ["--provider", "main.default.openai"],
+                ("_codex_launch_provider", "main.default.openai"),
+            ),
+            (
+                ["--model-location", "main.default"],
+                ("_codex_launch_parent_schema", "main.default"),
+            ),
+        ],
+    )
+    def test_codex_discovery_disable_keeps_scope_but_suppresses_catalog(
+        self, monkeypatch, source_args, expected_marker
+    ):
+        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "0")
+        state = dict(MINIMAL_STATE)
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state) as mock_shared,
+            patch("ucode.cli.resolve_provider_models", return_value=(None, None, False)),
+            patch("ucode.cli.resolve_launch_model", return_value=(state, "system.ai.model")),
+            patch("ucode.cli.configure_tool", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.launch_agent") as mock_launch,
+        ):
+            result = runner.invoke(app, ["codex", *source_args])
+
+        assert result.exit_code == 0, result.output
+        launch_state = mock_launch.call_args.args[1]
+        assert launch_state[expected_marker[0]] == expected_marker[1]
+        assert launch_state["_codex_scoped_model_discovery"] is False
         if source_args[0] == "--model-location":
             # The policy flag suppresses only the agent-native scoped catalog;
             # ordinary system.ai discovery still refreshes for this launch.

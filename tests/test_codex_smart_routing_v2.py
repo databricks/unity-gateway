@@ -85,6 +85,26 @@ class TestLaunchCodex:
         ]
 
     @pytest.mark.parametrize(
+        "scope_state",
+        [
+            {"_codex_launch_provider": "main.default.openai"},
+            {"_codex_launch_parent_schema": "main.default"},
+        ],
+    )
+    def test_direct_scoped_launch_rejects_smart_routing_before_v2(self, monkeypatch, scope_state):
+        launch_v2 = []
+        monkeypatch.setattr(v2, "launch_codex", lambda *args, **kwargs: launch_v2.append(kwargs))
+
+        with pytest.raises(RuntimeError, match="cannot be used.*model location"):
+            codex.launch(
+                {"workspace": WS, **scope_state},
+                [],
+                options=LaunchOptions(launch_smart_routing=True),
+            )
+
+        assert launch_v2 == []
+
+    @pytest.mark.parametrize(
         "tool_args",
         [
             ["exec", "fix this"],
