@@ -1,6 +1,7 @@
 """Keep the black-box suite independent of application internals and test doubles."""
 
 import ast
+import re
 from pathlib import Path
 
 
@@ -69,6 +70,38 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed", "managed_fixture"}:
                     assert len(marks & {"claude", "codex"}) == 1, node.name
+
+
+def test_model_discovery_cases_match_the_tests_table():
+    root = Path(__file__).parent / "integration"
+    seen = []
+    for path in root.glob("test_ug_*_model_discovery.py"):
+        tree = ast.parse(path.read_text())
+        module_marks = _markers(
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "pytestmark"
+                for target in node.targets
+            )
+        )
+        for node in tree.body:
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            match = re.match(r"test_case_(\d{2})_", node.name)
+            if match is None:
+                continue
+            case = int(match.group(1))
+            seen.append(case)
+            marks = module_marks | _markers(node.decorator_list)
+            expected = {"managed_fixture"} if case <= 12 else {"live"}
+            assert marks & {"managed_fixture", "managed", "live"} == expected, node.name
+            assert not any(arg.arg == "configured" for arg in node.args.args), node.name
+    assert set(seen) == set(range(1, 25))
+    assert len(seen) == 44
+    for case in range(1, 25):
+        assert seen.count(case) == (1 if 13 <= case <= 16 else 2), case
 
 
 def test_smoke_covers_hosted_custom_oauth_and_headless_for_both_agents():
