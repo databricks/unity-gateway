@@ -693,6 +693,10 @@ class TestListModelProviderServices:
                             "native_api_types": ["anthropic/v1/messages"],
                         },
                         {"model": "global.anthropic.claude-opus-4-8"},
+                        {
+                            "model": "meta.llama3-3-70b-instruct-v1:0",
+                            "native_api_types": ["openai/v1/responses"],
+                        },
                     ],
                 },
             },
@@ -700,7 +704,19 @@ class TestListModelProviderServices:
                 "name": "model-provider-services/main.schema2.bedrock-titan-svc",
                 "config": {
                     "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_AMAZON_BEDROCK",
-                    "targets": [{"model": "amazon.titan-text-express-v1"}],
+                    "targets": [
+                        {
+                            "model": "openai.gpt-oss-20b-1:0",
+                            "native_api_types": ["openai/v1/chat/completions"],
+                        }
+                    ],
+                },
+            },
+            {
+                "name": "model-provider-services/main.schema2.bedrock-all-svc",
+                "config": {
+                    "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_AMAZON_BEDROCK",
+                    "allow_all_targets": True,
                 },
             },
         ]
@@ -716,6 +732,7 @@ class TestListModelProviderServices:
             "name": "main.schema1.anthropic-svc",
             "provider_type": "anthropic",
             "targets": [],
+            "target_native_api_types": {},
             "allow_all_targets": False,
             "relayed": False,
         }
@@ -743,7 +760,13 @@ class TestListModelProviderServices:
         assert bedrock["targets"] == [
             "us.anthropic.claude-sonnet-4-6",
             "global.anthropic.claude-opus-4-8",
+            "meta.llama3-3-70b-instruct-v1:0",
         ]
+        assert bedrock["target_native_api_types"] == {
+            "us.anthropic.claude-sonnet-4-6": ["anthropic/v1/messages"],
+            "global.anthropic.claude-opus-4-8": [],
+            "meta.llama3-3-70b-instruct-v1:0": ["openai/v1/responses"],
+        }
 
     def test_returns_reason_on_failure(self, monkeypatch):
         monkeypatch.setattr(
@@ -768,12 +791,23 @@ class TestListModelProviderServices:
             "main.schema2.bedrock-svc",
         ]
 
-    def test_codex_filters_to_openai(self, monkeypatch):
+    def test_codex_includes_openai_and_usable_bedrock(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_http_get_json", lambda url, token, timeout=30: (self._PAYLOAD, None)
         )
         names, _ = db_mod.list_tool_provider_services("codex", WS, "token")
-        assert names == ["main.schema1.openai-svc"]
+        assert names == [
+            "main.schema1.openai-svc",
+            "main.schema2.bedrock-all-svc",
+            "main.schema2.bedrock-svc",
+        ]
+
+    def test_claude_behavior_ignores_allow_all_bedrock_without_pinnable_targets(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=30: (self._PAYLOAD, None)
+        )
+        names, _ = db_mod.list_tool_provider_services("claude", WS, "token")
+        assert "main.schema2.bedrock-all-svc" not in names
 
 
 class TestMapClaudeFamilyModels:
@@ -1018,6 +1052,22 @@ class TestResolveProviderService:
         assert error is None
         assert service["provider_type"] == "amazon_bedrock"
 
+    def test_bedrock_with_openai_model_ok_for_codex(self, monkeypatch):
+        self._patch(monkeypatch)
+        service, error = db_mod.resolve_provider_service(
+            "codex", "main.schema2.bedrock-svc", WS, "token"
+        )
+        assert error is None
+        assert service["provider_type"] == "amazon_bedrock"
+
+    def test_allow_all_bedrock_ok_for_codex(self, monkeypatch):
+        self._patch(monkeypatch)
+        service, error = db_mod.resolve_provider_service(
+            "codex", "main.schema2.bedrock-all-svc", WS, "token"
+        )
+        assert error is None
+        assert service["allow_all_targets"] is True
+
     def test_wrong_type_rejected(self, monkeypatch):
         self._patch(monkeypatch)
         service, error = db_mod.resolve_provider_service(
@@ -1030,6 +1080,24 @@ class TestResolveProviderService:
         self._patch(monkeypatch)
         service, error = db_mod.resolve_provider_service(
             "claude", "main.schema2.bedrock-titan-svc", WS, "token"
+        )
+        assert service is None
+        assert "no Claude models" in error
+
+    def test_bedrock_without_openai_model_rejected_for_codex(self, monkeypatch):
+        self._patch(monkeypatch)
+        service, error = db_mod.resolve_provider_service(
+            "codex", "main.schema2.bedrock-titan-svc", WS, "token"
+        )
+        assert service is None
+        assert "no OpenAI-compatible models" in error
+
+    def test_allow_all_bedrock_still_rejected_for_claude_without_pinnable_targets(
+        self, monkeypatch
+    ):
+        self._patch(monkeypatch)
+        service, error = db_mod.resolve_provider_service(
+            "claude", "main.schema2.bedrock-all-svc", WS, "token"
         )
         assert service is None
         assert "no Claude models" in error
