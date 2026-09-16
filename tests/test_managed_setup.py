@@ -63,6 +63,7 @@ def _full_manifest() -> dict:
         "enabled_agents": {
             "claude": {
                 "http_headers": {"x-databricks-workspace": "eng-ml-inference"},
+                "otel_tracing_enabled": True,
                 "model_config": {
                     "default_model": "system.ai.claude-opus-4-8",
                     "default_models_by_model_family": {
@@ -72,6 +73,7 @@ def _full_manifest() -> dict:
                 },
             },
             "codex": {
+                "otel_tracing_enabled": False,
                 "model_config": {"default_model": "system.ai.gpt-5-6"},
             },
             "opencode": {
@@ -180,6 +182,13 @@ class TestSerialize:
             "default_opus_model": "system.ai.claude-opus-4-8",
             "default_sonnet_model": "system.ai.claude-sonnet-4-6",
         }
+
+    def test_agent_tracing_uses_the_per_agent_wire_field(self):
+        payload = serialize_managed_config(_full_manifest())
+        agents = {entry["agent"]: entry["config"] for entry in payload["enabled_agents"]}
+        assert agents["CODING_AGENT_CLAUDE_CODE"]["tracing"] == {"enabled": True}
+        assert agents["CODING_AGENT_CODEX"]["tracing"] == {"enabled": False}
+        assert "tracing" not in payload
 
     def test_codex_model_config_has_no_model_list(self):
         # Codex carries only default_models, no model_services list.
@@ -412,6 +421,13 @@ class TestClaudeSlots:
             "default_model": "system.ai.claude-opus-4-8",
             "default_opus_model": "system.ai.claude-opus-4-8",
         }
+
+    def test_smart_routing_serializes_into_agent_config(self):
+        manifest = {
+            "enabled_agents": {"codex": {"smart_routing_enabled": True}},
+        }
+        payload = serialize_managed_config(manifest)
+        assert payload["enabled_agents"][0]["config"]["smart_routing"] == {"enabled": True}
 
 
 class TestClaudeFamilyCandidates:

@@ -116,6 +116,10 @@ class TestHelp:
         result = runner.invoke(app, [tool, "--help"])
         assert result.exit_code == 0
         assert "Usage:" in result.output
+        if tool in {"claude", "codex"}:
+            output = _strip_ansi(result.output)
+            assert "--model-location" in output
+            assert "--parent" not in output
 
     def test_configure_help_lists_agents_flag(self):
         result = runner.invoke(app, ["configure", "--help"])
@@ -470,14 +474,14 @@ class TestSubcommandRouting:
         with patch(
             "ucode.cli._launch_tool",
             side_effect=lambda *_args, **_kwargs: enabled_during_launch.append(
-                os.environ.get("ENABLE_SMART_ROUTING_V2")
+                os.environ.get(cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR)
             ),
         ) as mock_launch:
             result = runner.invoke(app, ["codex", "--enable-smart-routing"])
 
         assert result.exit_code == 0, result.output
         assert enabled_during_launch == ["1"]
-        assert "ENABLE_SMART_ROUTING_V2" not in os.environ
+        assert cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR not in os.environ
         assert mock_launch.call_args.args[1].args == []
 
     @pytest.mark.parametrize("tool, subcommand", [("codex", "app"), ("claude", "update")])
@@ -490,20 +494,22 @@ class TestSubcommandRouting:
         with patch(
             "ucode.cli._launch_tool",
             side_effect=lambda *_args, **_kwargs: observed.append(
-                os.environ.get("ENABLE_SMART_ROUTING_V2")
+                os.environ.get(cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR)
             ),
         ):
             result = runner.invoke(app, [tool, subcommand])
 
         assert result.exit_code == 0, result.output
         assert observed == [None]
-        assert os.environ["ENABLE_SMART_ROUTING_V2"] == "1"
+        assert os.environ[cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR] == "1"
 
     def test_claude_enable_smart_routing_forwards_positional_prompt_to_v2(self):
         captured = []
 
         def capture(_tool, ctx, **_kwargs):
-            captured.append((os.environ.get("ENABLE_SMART_ROUTING_V2"), ctx.args))
+            captured.append(
+                (os.environ.get(cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR), ctx.args)
+            )
 
         with patch("ucode.cli._launch_tool", side_effect=capture):
             result = runner.invoke(
@@ -556,7 +562,7 @@ class TestSubcommandRouting:
             tool_args,
             smart_routing_enabled=True,
             explicit_prompt=explicit_prompt,
-            model=model,
+            user_pinned_model=model,
             provider=provider,
         )
 
@@ -580,7 +586,7 @@ class TestSubcommandRouting:
             tool_args,
             smart_routing_enabled=True,
             explicit_prompt=False,
-            model=None,
+            user_pinned_model=None,
             provider=None,
         )
 
@@ -636,38 +642,47 @@ class TestSubcommandRouting:
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
         assert mock_launch.call_args.args[1].args == []
 
-    def test_claude_parent_is_forwarded(self):
+    def test_claude_model_location_is_forwarded(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
-            result = runner.invoke(app, ["claude", "--parent", "main.default"])
+            result = runner.invoke(app, ["claude", "--model-location", "main.default"])
 
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.kwargs["parent_schema"] == "main.default"
+        assert mock_launch.call_args.args[1].args == []
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
-    def test_codex_parent_is_forwarded(self):
+    def test_codex_model_location_is_forwarded(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
-            result = runner.invoke(app, ["codex", "--parent", "main.default"])
+            result = runner.invoke(app, ["codex", "--model-location", "main.default"])
 
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.kwargs["parent_schema"] == "main.default"
+        assert mock_launch.call_args.args[1].args == []
 
-    def test_codex_provider_and_parent_are_mutually_exclusive(self):
+    def test_codex_provider_and_model_location_are_mutually_exclusive(self):
         result = runner.invoke(
             app,
-            ["codex", "--provider", "main.default.provider", "--parent", "main.default"],
+            ["codex", "--provider", "main.default.provider", "--model-location", "main.default"],
         )
 
         assert result.exit_code == 1
-        assert "--provider and --parent cannot be used together" in result.output
+        assert "--provider and --model-location cannot be used together" in result.output
 
-    def test_claude_provider_and_parent_are_mutually_exclusive(self):
+    def test_claude_provider_and_model_location_are_mutually_exclusive(self):
         result = runner.invoke(
             app,
-            ["claude", "--provider", "main.default.provider", "--parent", "main.default"],
+            ["claude", "--provider", "main.default.provider", "--model-location", "main.default"],
         )
 
         assert result.exit_code == 1
-        assert "--provider and --parent cannot be used together" in result.output
+        assert "--provider and --model-location cannot be used together" in result.output
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_invalid_model_location_is_rejected(self, tool):
+        result = runner.invoke(app, [tool, "--model-location", "main"])
+
+        assert result.exit_code == 1
+        assert "--model-location must be `<catalog>.<schema>`." in _strip_ansi(result.output)
 
     def test_claude_enable_model_discovery_is_hidden_from_help(self):
         result = runner.invoke(app, ["claude", "--help"])
@@ -741,7 +756,6 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 0, result.output
         assert mock_configure.call_args.kwargs["route_root_model"] is None
-        assert "_claude_launch_model" not in mock_launch.call_args.args[1]
         assert mock_launch.call_args.kwargs["options"].launch_smart_routing is True
 
     def test_claude_v2_first_prompt_hook_is_disabled_without_flag(self, monkeypatch):
@@ -934,8 +948,7 @@ class TestClaudeModelFlag:
         assert mock_configure.call_args.kwargs["custom_model"] is None
         assert mock_configure.call_args.kwargs["route_root_model"] is None
         assert (
-            mock_launch.call_args.kwargs["options"].claude_launch_model
-            == "cat.schema.claude-opus-5"
+            mock_launch.call_args.kwargs["options"].user_pinned_model == "cat.schema.claude-opus-5"
         )
 
     def test_v2_model_sets_transient_launch_override(self, monkeypatch):
@@ -954,7 +967,7 @@ class TestClaudeModelFlag:
             result = runner.invoke(app, ["claude", "--model", "system.ai.glm-5-2"])
 
         assert result.exit_code == 0, result.output
-        assert mock_launch.call_args.args[1]["_claude_launch_model"] == "system.ai.glm-5-2"
+        assert mock_launch.call_args.kwargs["options"].user_pinned_model == "system.ai.glm-5-2"
         assert mock_launch.call_args.kwargs["options"].launch_smart_routing is False
 
     @staticmethod
@@ -1114,7 +1127,7 @@ class TestClaudeModelFlag:
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.args[1]["_codex_launch_provider"] == "main.default.openai"
 
-    def test_parent_sets_transient_codex_launch_marker(self):
+    def test_model_location_sets_transient_codex_launch_marker(self):
         state = dict(MINIMAL_STATE)
         with (
             patch("ucode.cli.ensure_bootstrap_dependencies"),
@@ -1126,7 +1139,7 @@ class TestClaudeModelFlag:
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
             patch("ucode.cli.launch_agent") as mock_launch,
         ):
-            result = runner.invoke(app, ["codex", "--parent", "main.default"])
+            result = runner.invoke(app, ["codex", "--model-location", "main.default"])
 
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.args[1]["_codex_launch_parent_schema"] == "main.default"
@@ -1294,6 +1307,26 @@ class TestAuthTokenCommand:
             result = runner.invoke(app, ["auth-token", "--use-pat", "--profile", "p"])
         assert result.exit_code == 0
         assert result.stdout == "ci-bearer\n"
+
+
+class TestOtelHeadersCommand:
+    def test_prints_only_the_authorization_header_json(self):
+        with (
+            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
+            patch("ucode.cli.get_databricks_token", return_value="tok-123") as fetch,
+        ):
+            result = runner.invoke(app, ["otel-headers"])
+
+        assert result.exit_code == 0
+        assert result.stdout == '{"Authorization": "Bearer tok-123"}\n'
+        fetch.assert_called_once_with("https://ws", None, force_refresh=False)
+
+    def test_errors_without_workspace(self):
+        with patch("ucode.cli.load_state", return_value={}):
+            result = runner.invoke(app, ["otel-headers"])
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
 
 
 class TestStatus:
@@ -3241,34 +3274,24 @@ class TestConfigureSharedStateUsePat:
         )
         assert state["databricks_ai_tools_enabled"] is True
 
-    def test_ai_tools_disable_inherited_same_workspace(self, monkeypatch):
-        # No flag on a re-configure of the same workspace keeps the prior opt-out.
+    def test_ai_tools_off_by_default_no_flag(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
+        assert state["databricks_ai_tools_enabled"] is False
+
+    def test_ai_tools_prior_enable_not_carried_forward(self, monkeypatch):
+        # A stale True from the opt-out era is not treated as a standing opt-in.
         cli_mod, *_ = self._stub_deps(
             monkeypatch,
             pat_token="dapi-pat",
             existing_state={
                 "workspace": self.WS,
                 "profile": "DEFAULT",
-                "databricks_ai_tools_enabled": False,
+                "databricks_ai_tools_enabled": True,
             },
         )
         state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
         assert state["databricks_ai_tools_enabled"] is False
-
-    def test_ai_tools_disable_does_not_leak_across_workspaces(self, monkeypatch):
-        # A different workspace's opt-out must NOT carry into this one; no flag
-        # here resolves to the default (install=True), matching use_pat scoping.
-        cli_mod, *_ = self._stub_deps(
-            monkeypatch,
-            pat_token="dapi-pat",
-            existing_state={
-                "workspace": "https://other.databricks.com",
-                "profile": "DEFAULT",
-                "databricks_ai_tools_enabled": False,
-            },
-        )
-        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
-        assert state["databricks_ai_tools_enabled"] is True
 
     def test_falls_back_to_legacy_when_uc_empty(self, monkeypatch):
         # No UC model-services: each family falls back to the legacy listing.

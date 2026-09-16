@@ -367,8 +367,10 @@ The output looks like:
 | `ug configure --profile DEFAULT --use-pat` | Authenticate with the profile's personal access token — no browser login |
 | `ug codex --enable-smart-routing` | Enable AI Gateway routing for Codex sessions and subagents |
 | `ug codex --refresh` | Re-check Databricks, refresh models/configuration, and launch Codex |
+| `ug codex --model-location main.default` | Discover model services in the specified catalog and schema |
 | `ug claude --enable-smart-routing` | Enable AI Gateway routing for Claude Code sessions and subagents |
 | `ug claude --refresh` | Re-check Databricks, refresh models/configuration, and launch Claude Code |
+| `ug claude --model-location main.default` | Discover model services in the specified catalog and schema |
 | `ug configure --agents claude,codex,pi` | Configure the requested agents that are available; skip the rest with a warning |
 | `ug configure --agents claude --mcp system.ai.slack` | Configure an agent and register its Databricks MCP server(s) in one command |
 | `ug mcp add --location system.ai` | Register a schema's MCP servers, keeping any already configured (additive; never removes) |

@@ -40,7 +40,7 @@ def test_smart_routing_switch_message_wraps_to_fixed_width():
 
 class TestLaunchCodex:
     def test_rejects_unsupported_codex_version(self, monkeypatch):
-        monkeypatch.setenv(v2.ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.144.0")
         monkeypatch.setattr(v2, "launch_codex", lambda *args, **kwargs: pytest.fail("launched"))
@@ -57,7 +57,7 @@ class TestLaunchCodex:
     )
     def test_codex_smart_routing_launch_dispatches_to_v2(self, monkeypatch, tool_args, options):
         calls = []
-        monkeypatch.setenv(v2.ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: "gpt-start")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
 
@@ -100,7 +100,7 @@ class TestLaunchCodex:
         launches = []
         profile_path = tmp_path / "ucode.config.toml"
         profile_path.write_text('model_provider = "ucode-databricks"\n', encoding="utf-8")
-        monkeypatch.setenv(v2.ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.144.0")
@@ -118,7 +118,7 @@ class TestLaunchCodex:
 
     def test_codex_launch_normalizes_cached_bootstrap_model(self, monkeypatch):
         calls = []
-        monkeypatch.setenv(v2.ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: None)
 
@@ -157,7 +157,7 @@ class TestLaunchCodex:
         managed_path = tmp_path / "managed_config.toml"
         profile_path = config_home / "ucode.config.toml"
         user_path = config_home / "config.toml"
-        monkeypatch.setenv(v2.ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.delenv("CODEX_HOME", raising=False)
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
@@ -496,7 +496,7 @@ class TestCustomCatalogModels:
 
     def test_start_model_comes_from_custom_catalog(self, monkeypatch):
         calls = []
-        monkeypatch.setenv(v2.ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: None)
         monkeypatch.setattr(codex, "custom_catalog_models", lambda: ["gpt-6-astra", "gpt-6-b"])
@@ -826,3 +826,30 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
         "route_selector": {"router_name": codex_routing.routing.ROUTER_NAME},
     }
     assert "same-oauth-token" not in logged[0]
+
+
+def test_routing_request_deduplicates_equivalent_gpt_spellings(monkeypatch):
+    captured = {}
+
+    def select_route(workspace, token, task, route_options, resolve, *, router_name, timeout):
+        captured["route_options"] = list(route_options)
+        return None, "not selected"
+
+    monkeypatch.setattr(codex_routing.routing, "select_route", select_route)
+
+    codex_routing.request_routing_decision(
+        WS,
+        "token",
+        "Fix the parser",
+        [
+            "system.ai.gpt-5-6-sol",
+            "gpt-5.6-sol",
+            "system.ai.gpt-5-6-luna",
+            "gpt-5.6-luna",
+        ],
+    )
+
+    assert captured["route_options"] == [
+        ("gpt-5-6-sol", "codex"),
+        ("gpt-5-6-luna", "codex"),
+    ]

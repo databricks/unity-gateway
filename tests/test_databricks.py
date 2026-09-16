@@ -24,6 +24,9 @@ from ucode.databricks import (
     build_auth_token_argv,
     build_databricks_cli_env,
     build_opencode_base_urls,
+    build_otel_headers_argv,
+    build_otel_headers_shell_command,
+    build_otel_traces_endpoint,
     build_shared_base_urls,
     build_skills_mcp_url,
     build_tool_base_url,
@@ -225,6 +228,14 @@ class TestBuildToolBaseUrl:
     def test_unsupported_tool_raises(self):
         with pytest.raises(RuntimeError, match="Unsupported"):
             build_tool_base_url("unknown", WS)
+
+
+class TestBuildOtelTracesEndpoint:
+    def test_appends_full_traces_path(self):
+        assert build_otel_traces_endpoint(WS) == f"{WS}/ai-gateway/otel/v1/traces"
+
+    def test_strips_trailing_slash(self):
+        assert build_otel_traces_endpoint(WS + "/") == f"{WS}/ai-gateway/otel/v1/traces"
 
 
 class TestBuildOpencodeBaseUrls:
@@ -1653,6 +1664,37 @@ class TestBuildAuthShellCommand:
         cmd = build_auth_shell_command(WS, profile="DEFAULT", use_pat=True)
         assert "--use-pat" in cmd
         assert "--profile DEFAULT" in cmd
+
+
+class TestBuildOtelHeadersArgv:
+    def test_basic_argv(self, monkeypatch):
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: f"/tools/{command}")
+        assert build_otel_headers_argv(WS) == [
+            "/tools/ug",
+            "otel-headers",
+            "--host",
+            WS,
+        ]
+
+    def test_embeds_profile_and_use_pat(self):
+        argv = build_otel_headers_argv(WS + "/", profile="stablebox", use_pat=True)
+        assert argv[argv.index("--host") + 1] == WS
+        assert argv[argv.index("--profile") + 1] == "stablebox"
+        assert "--use-pat" in argv
+
+
+class TestBuildOtelHeadersShellCommand:
+    def test_is_ug_otel_headers_invocation(self):
+        cmd = build_otel_headers_shell_command(WS)
+        assert "otel-headers" in cmd
+        assert "--host" in cmd
+        assert WS in cmd
+        assert "jq" not in cmd
+
+    def test_quotes_profile_shell_metacharacters(self):
+        cmd = build_otel_headers_shell_command(WS, profile="weird name; rm -rf /")
+        if os.name != "nt":
+            assert "'weird name; rm -rf /'" in cmd
 
 
 class TestEnsurePatBearer:

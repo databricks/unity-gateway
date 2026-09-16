@@ -47,6 +47,7 @@ from ucode.databricks import (
     CodexMpsModelCatalogUnavailable,
     _fetch_codex_model_catalog,
     build_auth_token_argv,
+    build_otel_traces_endpoint,
     build_tool_base_url,
     get_databricks_token,
 )
@@ -136,7 +137,7 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
 
 def minimum_version_error() -> str | None:
     """Return the active smart-routing version blocker, if any."""
-    if not smart_routing_v2.enabled():
+    if not smart_routing_v2.smart_routing_enabled():
         return None
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
@@ -461,7 +462,7 @@ def write_tool_config(
         prune_key_paths(base, _MODEL_SERVICE_ROUTING_KEY_PATHS)
         deep_merge_dict(base, copy.deepcopy(overlay))
         # deep_merge can't drop keys, so clear model preferences from an earlier run.
-        if chosen_model is None and not smart_routing_v2.enabled():
+        if chosen_model is None and not smart_routing_v2.smart_routing_enabled():
             for key in ("model", "model_reasoning_effort"):
                 base.pop(key, None)
         if include_catalog:
@@ -589,7 +590,7 @@ def default_model(state: dict) -> str | None:
     """Return a managed Codex model, or leave selection to Codex."""
     if isinstance(state.get("codex_default_model"), str):
         return state["codex_default_model"]
-    if smart_routing_v2.enabled():
+    if smart_routing_v2.smart_routing_enabled():
         return _smart_routing_config_model(state)
     clear_model_preferences(state)
     return None
@@ -618,7 +619,7 @@ def config_precedence_paths() -> tuple[Path, ...]:
 
 def clear_model_preferences(state: dict) -> bool:
     """Remove ucode profile model preferences so Codex selects its default."""
-    if smart_routing_v2.enabled():
+    if smart_routing_v2.smart_routing_enabled():
         return False
     if isinstance(state.get("codex_default_model"), str):
         return False
@@ -725,6 +726,25 @@ def _reject_managed_model_catalog() -> None:
         )
 
 
+def _otel_overlay(workspace: str, token: str) -> dict:
+    """Build Codex's OTLP HTTP trace-export configuration.
+
+    Codex has no headers helper, so this token is visible in argv and can expire mid-session.
+    A fresh token is injected for each launch.
+    """
+    return {
+        "otel": {
+            "trace_exporter": {
+                "otlp-http": {
+                    "endpoint": build_otel_traces_endpoint(workspace),
+                    "protocol": "binary",
+                    "headers": {"Authorization": f"Bearer {token}"},
+                }
+            }
+        }
+    }
+
+
 def launch(
     state: dict,
     tool_args: list[str],
@@ -751,17 +771,20 @@ def launch(
     )
     if workspace and (provider or parent_schema):
         _reject_managed_model_catalog()
+    otel_args: list[str] = []
     token = None
     if workspace:
         token = _launch_token(state, workspace)
         os.environ["OAUTH_TOKEN"] = token
+        if state.get("codex_otel_tracing"):
+            otel_args = codex_config_args(_otel_overlay(workspace, token))
     if _use_legacy_layout():
         print_warning_err(
             f"Codex {agent_version(binary)} is outdated. Upgrade Codex to "
             f"{MINIMUM_CODEX_VERSION_TEXT} or newer, then run `codex --version` to verify "
             "the active installation."
         )
-        exec_or_spawn([binary, "--profile", CODEX_PROFILE_NAME, *tool_args])
+        exec_or_spawn([binary, "--profile", CODEX_PROFILE_NAME, *otel_args, *tool_args])
         return
     # Layer ucode's named profile as ordinary config overrides. Unlike
     # `--profile`, `--config` is accepted by runtime, utility, and server
@@ -807,7 +830,7 @@ def launch(
                 slugs = catalog_slugs(catalog)
                 if slugs:
                     profile_doc["model"] = slugs[0]
-    exec_or_spawn([binary, *codex_config_args(profile_doc), *tool_args])
+    exec_or_spawn([binary, *codex_config_args(profile_doc), *otel_args, *tool_args])
 
 
 def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:

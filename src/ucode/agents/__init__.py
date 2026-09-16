@@ -23,6 +23,7 @@ from ucode.databricks import (
     map_claude_family_models,
     resolve_provider_service,
 )
+from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import managed_write_batch
 from ucode.state import get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
@@ -89,7 +90,11 @@ def install_databricks_ai_tools_for_agents(tools: list[str], state: dict) -> Non
 
     Gemini and Pi have no ``aitools`` support and are dropped.
     """
-    if state.get("databricks_ai_tools_enabled", True) is False:
+    if not state.get("databricks_ai_tools_enabled"):
+        return
+    # An admin's managed config governs the workspace, so ucode does not
+    # self-install AI Tools under one (may become a managed-config option later).
+    if refresh_managed_config(state).manifest is not None:
         return
     agents = [AITOOLS_AGENT_TOKENS[tool] for tool in tools if tool in AITOOLS_AGENT_TOKENS]
     if not agents:

@@ -455,13 +455,9 @@ def configure_shared_state(
     if use_pat is None:
         use_pat = bool(prior_state.get("use_pat")) and previous_workspace == workspace
     if databricks_ai_tools_enabled is None:
-        # Opt-out: on by default. With no flag, keep this workspace's prior
-        # choice but don't inherit another workspace's opt-out.
-        disabled = (
-            prior_state.get("databricks_ai_tools_enabled") is False
-            and previous_workspace == workspace
-        )
-        databricks_ai_tools_enabled = not disabled
+        # Opt-in: a True from an opt-out-era configure is a stale default, not a
+        # standing opt-in, so it is not carried forward.
+        databricks_ai_tools_enabled = False
     fetch_all = tools is None
 
     # Assemble the shared workspace state that doesn't depend on model discovery:
@@ -1520,6 +1516,49 @@ def auth_token_cmd(
     sys.stdout.write(token + "\n")
 
 
+@app.command("otel-headers", hidden=True)
+def otel_headers_cmd(
+    host: Annotated[
+        str | None, typer.Option("--host", help="Workspace URL. Defaults to the saved workspace.")
+    ] = None,
+    profile: Annotated[
+        str | None, typer.Option("--profile", help="Databricks CLI profile.")
+    ] = None,
+    use_pat: Annotated[
+        bool, typer.Option("--use-pat", help="Read the profile's static PAT instead of OAuth.")
+    ] = False,
+    force_refresh: Annotated[
+        bool,
+        typer.Option("--force-refresh", help="Force the Databricks CLI to mint a new token."),
+    ] = False,
+) -> None:
+    """Print fresh OTLP export headers as JSON to stdout, then exit."""
+    import json
+    import sys
+
+    state = load_state()
+    workspace = host or state.get("workspace")
+    if not workspace:
+        print_err("No workspace configured. Run `ug configure` first.")
+        raise typer.Exit(1)
+    profile = profile or state.get("profile")
+    if use_pat or state.get("use_pat"):
+        if not ensure_pat_bearer(profile):
+            print_err(
+                f"--use-pat: no personal access token available for profile "
+                f"'{profile or '<none>'}'. Add a `token = <PAT>` entry under "
+                f"[{profile or 'your-profile'}] in ~/.databrickscfg, or re-run "
+                "`ug configure` without --use-pat to use OAuth."
+            )
+            raise typer.Exit(1)
+    try:
+        token = get_databricks_token(workspace, profile, force_refresh=force_refresh)
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    sys.stdout.write(json.dumps({"Authorization": f"Bearer {token}"}) + "\n")
+
+
 def _oauth_token_is_fresh(token: str, buffer_seconds: float = 120) -> bool:
     import base64
     import binascii
@@ -1547,7 +1586,7 @@ def codex_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.enabled():
+    if not smart_routing_v2.smart_routing_enabled():
         return
 
     from ucode.smart_routing.codex_routing import (
@@ -1626,7 +1665,7 @@ def claude_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.enabled():
+    if not smart_routing_v2.smart_routing_enabled():
         return
 
     from ucode.smart_routing.claude_routing import (
@@ -1652,7 +1691,12 @@ def claude_router_hook_cmd(
             request_first_prompt_route,
         )
 
-        output = first_prompt_hook_output(request_first_prompt_route(Path(socket_path), payload))
+        response = request_first_prompt_route(
+            Path(socket_path),
+            payload,
+            timeout=smart_routing_v2.CLAUDE_ROUTE_SELECTION_TIMEOUT_S + 5.0,
+        )
+        output = first_prompt_hook_output(response)
         if output is not None:
             sys.stdout.write(json.dumps(output))
         return
@@ -1743,15 +1787,11 @@ def _smart_routing_v2_flag(enabled: bool) -> Iterator[None]:
     if not enabled:
         yield
         return
-    previous = os.environ.get(smart_routing_v2.ENV_VAR)
-    os.environ[smart_routing_v2.ENV_VAR] = "1"
+    previous = smart_routing_v2.enable_smart_routing()
     try:
         yield
     finally:
-        if previous is None:
-            os.environ.pop(smart_routing_v2.ENV_VAR, None)
-        else:
-            os.environ[smart_routing_v2.ENV_VAR] = previous
+        smart_routing_v2.restore_smart_routing_env(previous)
 
 
 @contextmanager
@@ -1766,12 +1806,11 @@ def _disable_smart_routing_for_subcommand(tool: str, ctx: Any) -> Iterator[None]
     if _smart_routing_launch_shape(tool, ctx.args, _has_explicit_prompt(ctx)):
         yield
         return
-    previous = os.environ.pop(smart_routing_v2.ENV_VAR, None)
+    previous = smart_routing_v2.disable_smart_routing()
     try:
         yield
     finally:
-        if previous is not None:
-            os.environ[smart_routing_v2.ENV_VAR] = previous
+        smart_routing_v2.restore_smart_routing_env(previous)
 
 
 def _migrate_legacy_smart_routing(state: dict) -> dict:
@@ -1978,11 +2017,12 @@ def _launch_options(
     *,
     smart_routing_enabled: bool,
     explicit_prompt: bool,
-    model: str | None,
+    user_pinned_model: str | None,
     provider: str | None,
 ) -> LaunchOptions:
     return LaunchOptions(
-        claude_launch_model=model if tool == "claude" and provider is None else None,
+        # Pinned models for providers are resolved above through the provider-specific launch path.
+        user_pinned_model=user_pinned_model if provider is None else None,
         launch_smart_routing=(
             # Smart routing is enabled globally.
             smart_routing_enabled
@@ -1995,10 +2035,30 @@ def _launch_options(
                 tool,
                 tool_args,
                 explicit_prompt=explicit_prompt,
-                model=model,
+                model=user_pinned_model,
             )
         ),
     )
+
+
+@contextmanager
+def _managed_smart_routing_environment(managed: dict | None, tool: str) -> Iterator[None]:
+    """Expose an agent's managed smart-routing switch only to its launched session."""
+    if not _managed_smart_routing_enabled(managed, tool):
+        yield
+        return
+
+    previous = smart_routing_v2.enable_smart_routing()
+    try:
+        yield
+    finally:
+        smart_routing_v2.restore_smart_routing_env(previous)
+
+
+def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
+    """Whether the workspace enabled smart routing for this specific agent."""
+    agent_config = ((managed or {}).get("enabled_agents") or {}).get(tool) or {}
+    return agent_config.get("smart_routing_enabled") is True
 
 
 def _launch_tool(
@@ -2021,11 +2081,11 @@ def _launch_tool(
         if _child_owns_stdout(tool, ctx.args):
             redirect_output_to_stderr()
         if provider is not None and parent_schema is not None:
-            raise RuntimeError("--provider and --parent cannot be used together.")
+            raise RuntimeError("--provider and --model-location cannot be used together.")
         if parent_schema is not None and not is_valid_catalog_schema(parent_schema):
-            raise RuntimeError("--parent must be `<catalog>.<schema>`.")
+            raise RuntimeError("--model-location must be `<catalog>.<schema>`.")
         explicit_prompt = _has_explicit_prompt(ctx)
-        smart_routing_enabled = smart_routing_v2.enabled()
+        smart_routing_enabled = smart_routing_v2.smart_routing_enabled()
         # Launchers such as isaac put their harness arguments after `--`, so the harness's own
         # `--model` lands in ctx.args instead of a ucode option. It still determines the effective
         # launch model and should therefore win in the launch summary.
@@ -2071,6 +2131,10 @@ def _launch_tool(
             managed, coding_agent_config_feature_disabled = _fetch_managed_config(state)
         # Checked before discovery, which can take tens of seconds, so a blocked launch fails fast.
         _reject_disabled_agent(managed, tool)
+        # The environment switch remains a developer override; managed config is the workspace
+        # policy equivalent and must take effect before launch options are computed.
+        managed_smart_routing_enabled = _managed_smart_routing_enabled(managed, tool)
+        smart_routing_enabled = smart_routing_enabled or managed_smart_routing_enabled
         # Discovery exists to find models and isn't needed for managed config that already names them.
         managed_models_known = managed_supplies_models(managed, tool)
         # Re-fetch model lists on every launch so newly-added Databricks
@@ -2119,7 +2183,7 @@ def _launch_tool(
             if managed_provider:
                 provider = managed_provider
         if provider and parent_schema is not None:
-            raise RuntimeError("--provider and --parent cannot be used together.")
+            raise RuntimeError("--provider and --model-location cannot be used together.")
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
         # guard too, or routing would be persisted as on while a provider is active.
         if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and provider:
@@ -2166,6 +2230,7 @@ def _launch_tool(
         # The router's per-launch pick for the root session. Codex pins it as the
         # resolved model; claude pins it via ANTHROPIC_MODEL (route_root_model).
         route_root_model = None
+        managed_model = None
         relayed_forward_model = None  # forwarded to Claude Code's --model for a relayed provider
         if provider:
             # Routing through a Model Provider Service pins no Databricks model;
@@ -2260,13 +2325,6 @@ def _launch_tool(
             _register_managed_mcp_servers(managed, tool, state)
             _download_managed_skills(managed, state)
         if tool == "claude":
-            if smart_routing_v2.enabled():
-                # Transient launch precedence for the v2 PTY's initial --model flag.
-                # An explicit choice wins, followed by a routed/managed root pick;
-                # neither value is persisted into workspace state.
-                launch_model = model or route_root_model
-                if launch_model:
-                    state["_claude_launch_model"] = launch_model
             if provider:
                 state["_claude_launch_provider"] = provider
         elif tool == "codex":
@@ -2279,11 +2337,14 @@ def _launch_tool(
             ctx.args,
             smart_routing_enabled=smart_routing_enabled,
             explicit_prompt=explicit_prompt,
-            model=model or (route_root_model if tool == "claude" else None),
+            # Only a developer's explicit model disables routing. A managed default is the
+            # initial/fallback model and still participates in a routed session.
+            user_pinned_model=model or forwarded_model,
             provider=provider,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
-        launch_agent(tool, state, ctx.args, options=launch_options)
+        with _managed_smart_routing_environment(managed, tool):
+            launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -2471,10 +2532,10 @@ def codex_cmd(
             "before any `--` separator.",
         ),
     ] = None,
-    parent: Annotated[
+    model_location: Annotated[
         str | None,
         typer.Option(
-            "--parent",
+            "--model-location",
             help="Discover model services in `<catalog>.<schema>`. Example: main.default",
         ),
     ] = None,
@@ -2539,7 +2600,7 @@ def codex_cmd(
                 refresh=refresh,
                 skip_preflight=skip_preflight,
                 workspace_url=workspace,
-                parent_schema=parent,
+                parent_schema=model_location,
                 custom_oauth=custom_oauth,
             )
 
@@ -2560,10 +2621,10 @@ def claude_cmd(
             "before any `--` separator.",
         ),
     ] = None,
-    parent: Annotated[
+    model_location: Annotated[
         str | None,
         typer.Option(
-            "--parent",
+            "--model-location",
             help="Discover model services in `<catalog>.<schema>`. Example: main.default",
         ),
     ] = None,
@@ -2638,7 +2699,7 @@ def claude_cmd(
         claude_agent.disable_smart_routing(load_state())
         print_success("Claude Code smart routing disabled; ug routing hooks removed")
         return
-    if enable_model_discovery or (parent is not None and provider is None):
+    if enable_model_discovery or (model_location is not None and provider is None):
         os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
     with _smart_routing_v2_flag(enable_smart_routing_flag):
         with _disable_smart_routing_for_subcommand("claude", ctx):
@@ -2650,7 +2711,7 @@ def claude_cmd(
                 refresh=refresh,
                 skip_preflight=skip_preflight,
                 workspace_url=workspace,
-                parent_schema=parent,
+                parent_schema=model_location,
                 custom_oauth=custom_oauth,
             )
 
@@ -2851,8 +2912,9 @@ def configure(
         typer.Option(
             "--enable-databricks-ai-tools/--disable-databricks-ai-tools",
             help="Install Databricks AI Tools (skills + plugins that teach agents to use "
-            "Databricks) for the configured agents. Installation is configure-only; pass "
-            "--disable-databricks-ai-tools to opt out.",
+            "Databricks) for the configured agents. Installation is configure-only and off "
+            "by default; pass --enable-databricks-ai-tools to opt in. Skipped when your "
+            "workspace has an admin-managed config.",
         ),
     ] = None,
     mcp: Annotated[

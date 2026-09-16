@@ -29,14 +29,14 @@ class TestCodexSpec:
 
 class TestMinimumVersion:
     def test_smart_routing_old_version_requires_update(self, monkeypatch):
-        monkeypatch.setenv(codex.smart_routing_v2.ENV_VAR, "1")
+        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.144.0")
 
         expected = "Codex smart routing requires Codex 0.145.0 or newer; found 0.144.0."
         assert codex.minimum_version_error() == expected
 
     def test_old_version_is_not_blocked_without_smart_routing(self, monkeypatch):
-        monkeypatch.delenv(codex.smart_routing_v2.ENV_VAR, raising=False)
+        monkeypatch.delenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.144.0")
 
         assert codex.minimum_version_error() is None
@@ -204,7 +204,7 @@ class TestCodexWriteConfig:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
         monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
         monkeypatch.setattr(codex, "agent_version", lambda _: "0.145.0")
-        monkeypatch.setenv(codex.smart_routing_v2.ENV_VAR, "1")
+        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.delenv("CODEX_HOME", raising=False)
         state = {"workspace": WS}
 
@@ -1057,6 +1057,30 @@ class TestCodexLaunch:
 
         with pytest.raises(RuntimeError, match=str(path)):
             codex._write_model_catalog(path, {"models": [{"slug": "gpt-mps"}]})
+
+    def test_injects_otel_config_when_tracing_enabled(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+
+        codex.launch(
+            {"workspace": WS, "codex_otel_tracing": True},
+            ["exec", "hi"],
+            options=LaunchOptions(),
+        )
+
+        otel = next((arg for arg in launches[0] if arg.startswith("otel=")), None)
+        assert otel is not None
+        assert "otlp-http" in otel
+        assert f"{WS}/ai-gateway/otel/v1/traces" in otel
+        assert 'protocol = "binary"' in otel
+        assert 'Authorization = "Bearer tok"' in otel
+        assert launches[0][-2:] == ["exec", "hi"]
+
+    def test_no_otel_config_when_tracing_disabled(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+
+        codex.launch({"workspace": WS}, ["exec", "hi"], options=LaunchOptions())
+
+        assert not any(arg.startswith("otel=") for arg in launches[0])
 
     @pytest.mark.parametrize(
         "tool_args",
