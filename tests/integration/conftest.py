@@ -126,6 +126,11 @@ def claude_oauth_token():
 
 
 @pytest.fixture(scope="session")
+def claude_provider_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
 def codex_provider():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER"]
 
@@ -138,3 +143,13 @@ def codex_provider_model():
 @pytest.fixture(scope="session")
 def parent_schema():
     return os.environ["UG_INTEGRATION_PARENT_SCHEMA"]
+
+
+@pytest.fixture(scope="session")
+def claude_parent_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_PARENT_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def codex_parent_model():
+    return os.environ["UG_INTEGRATION_CODEX_PARENT_MODEL"]

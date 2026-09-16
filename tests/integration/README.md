@@ -110,6 +110,8 @@ test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across tw
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_claude_managed_model_discovery.py # fetched/reused Claude MPS policy cases
 test_ug_codex_managed_model_discovery.py  # fetched/reused Codex MPS policy cases
+test_ug_claude_model_discovery.py       # Tests-tab cases 13, 15, 17, 19, 21, 23
+test_ug_codex_model_discovery.py        # Tests-tab cases 14, 16, 18, 20, 22, 24
 test_ug_configure_managed.py            # managed workspace: static model list, no agent selector
 test_ug_configure_managed_models.py     # injected model sources, smart-routing banner, Codex fallback metadata
 test_ug_configure_managed_mcp.py        # injected managed MCP list
@@ -168,12 +170,17 @@ MPS CUJs select the existing services already used by e2e:
 - Codex: `main.ucode.ci_openai_mps`, using its allowed `gpt-5-nano` model.
 
 Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` to
-reproduce another existing service. Use `--codex-provider-model` when that OpenAI
-service allows a different model. Those choices are recorded in `versions.json`.
+reproduce another existing service. Use `--claude-provider-model` /
+`--codex-provider-model` when it allows a different model. Those choices are recorded in `versions.json`.
 No service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
 
-There are **46 live cases** (including 6 TUI journeys) and **5 installation
+Scoped discovery additionally requires Model Services
+`main.ucode.ci_e2e_claude` and `main.ucode.ci_e2e_codex`. Override them with
+`--parent-schema`, `--claude-parent-model`, or `--codex-parent-model`. The tests
+consume but never create or modify them.
+
+There are **66 live cases** (including 16 TUI journeys) and **5 installation
 checks** with both agents. A separate **4 managed-workspace cases** (one per agent, an idempotent
 re-configure, and a cache-TTL journey; marker `managed`) run against a workspace that publishes a
 CodingAgentConfig; see "Managed-workspace journeys" below. One **`workspace_switch` case**
@@ -185,14 +192,15 @@ agent's static source with its dedicated MPS, and reuse the result. Twelve exist
 cover focused model, MCP, skills, and lifecycle shapes, including per-agent model reconciliation
 and managed skill cleanup. The two Claude default-model cases launch with injected MPS and Unity
 Catalog sources and verify both generated settings files retain all admin-authored family defaults.
-See the named coverage and gaps matrix in
+The 24 numbered scenarios comprise 44 explicit journeys: 24 managed and 20 unmanaged
+executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
 # Append one of these selections to the runner command:
 -- -m live         # default: all live user journeys
 -- -m smoke        # six Hosted, custom OAuth CLI TUI, and headless journeys
--- -m tui          # six interactive TUI journeys
+-- -m 'live and tui'  # sixteen interactive live configuration/model-discovery journeys
 -- -k test_ug_codex_app_server_client_initializes  # one named journey and its variants
 # Use --installation-only before -- for package checks without credentials.
 ```
@@ -286,20 +294,21 @@ cannot receive those secrets.
 
 The workspace check requires the secret to match
 `https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash
-is accepted). It never changes the secret or switches workspaces. There is no CI
-model-discovery or model-selection job. Real `ug configure` performs its normal
-workspace discovery inside each test; only explicit-model scenarios choose and
-record a discovered `system.ai` model as a test argument.
+is accepted). It never changes the secret or switches workspaces. There is no
+separate CI model-selection job; the full agent lanes include scoped model
+discovery. Real `ug configure` performs its normal workspace discovery inside
+each test; only explicit-model scenarios choose and record a discovered
+`system.ai` model as a test argument.
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 46 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 66 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 19 |
-| Codex | `live and codex` | 27 |
+| Claude | `live and claude` | 29 |
+| Codex | `live and codex` | 37 |
 
 Each lane installs only its agent CLI, once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
@@ -396,7 +405,7 @@ comment removes the label and reruns the gate; manually adding the label does no
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
 and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
 alias for `full`. Manual subsets are explicit: `smoke` runs just the six smoke
-cases; `tui` adds `and tui` to each agent lane's marker and runs all six TUI cases. Installation
+cases; `tui` adds `and tui` to each agent lane's marker and runs all 16 live TUI cases. Installation
 checks always run. Set the ug/agent versions. From the CLI:
 
 ```bash
@@ -567,7 +576,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 46 live cases. For the five installation checks, run the same
+This runs all 66 live cases. For the five installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.
