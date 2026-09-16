@@ -75,7 +75,7 @@ def save_state(state: dict) -> None:
     workspace = state.get("workspace") or full.get("current_workspace")
     if workspace:
         full["current_workspace"] = workspace
-        full["workspaces"][workspace] = hydrate_state(_without_managed_overlay(state))
+        full["workspaces"][workspace] = hydrate_state(developer_state_from_resolved(state))
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
@@ -83,15 +83,17 @@ def save_state(state: dict) -> None:
         raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
 
 
-def _without_managed_overlay(state: dict) -> dict:
+def developer_state_from_resolved(state: dict) -> dict:
     """Return ``state`` with managed-config values swapped back for the developer's own.
 
     Returns a new dict and leaves ``state`` untouched, so the caller keeps the layered values it
-    needs for rendering and repeated saves stay idempotent.
+    needs for rendering and repeated saves stay idempotent. Multi-agent configuration also uses
+    this between agents so one agent's managed overlay cannot become the next agent's developer
+    state.
     """
     overlay = state.get(MANAGED_OVERLAY_KEY)
     if not isinstance(overlay, dict):
-        return state
+        return dict(state)
     persisted = {key: value for key, value in state.items() if key != MANAGED_OVERLAY_KEY}
     for key, value in overlay.items():
         # A key the developer never set is dropped rather than persisted as None.

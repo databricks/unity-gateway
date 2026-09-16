@@ -121,6 +121,7 @@ from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRS
 from ucode.state import (
     STATE_PATH,
     clear_state,
+    developer_state_from_resolved,
     get_model_location,
     get_provider_service,
     load_full_state,
@@ -844,6 +845,7 @@ def configure_workspace_command(
         )
     if managed is not None:
         _announce_managed_config(managed)
+        developer_state = state
         managed_tools = managed_enabled_tools(managed)
         location_targets = selected_tools if selected_tools is not None else managed_tools
         fallback_location_tools = [
@@ -857,7 +859,7 @@ def configure_workspace_command(
             tool_name for tool_name in fallback_location_tools if tool_name not in managed_tools
         ]
         for tool_name in tools_to_configure:
-            resolved = resolve_state(managed, state, tool_name)
+            resolved = resolve_state(managed, developer_state, tool_name)
             if tool_name in fallback_location_tools:
                 configured = _configure_tools_with_model_location(
                     resolved,
@@ -865,14 +867,15 @@ def configure_workspace_command(
                     model_location,
                     install_ai_tools=not is_dry_run(),
                 )
-            elif check_gateway_endpoint(state, tool_name):
+            elif check_gateway_endpoint(developer_state, tool_name):
                 configured = configure_selected_tools(
                     resolved, [tool_name], install_ai_tools=not is_dry_run()
                 )
             else:
                 continue
-            state = configured
             _print_configured_files(tool_name, configured)
+            developer_state = developer_state_from_resolved(configured)
+        state = developer_state
         if not is_dry_run():
             _configure_managed_mcp_servers(managed)
         _summarize_managed_config(managed, state["workspace"])
@@ -2022,6 +2025,25 @@ def _disable_smart_routing_for_subcommand(tool: str, ctx: Any) -> Iterator[None]
         smart_routing_v2.restore_smart_routing_env(previous)
 
 
+@contextmanager
+def _claude_native_model_discovery_environment(enabled: bool) -> Iterator[None]:
+    """Enable Claude's gateway model picker only for the active launch."""
+    if not enabled:
+        yield
+        return
+
+    key = claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR
+    previous = os.environ.get(key)
+    os.environ[key] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
+
+
 def _migrate_legacy_smart_routing(state: dict) -> dict:
     """Remove the former persisted opt-in and its permanent routing hooks."""
     if smart_routing_v2.LEGACY_STATE_KEY not in state:
@@ -2445,9 +2467,7 @@ def _launch_tool(
             state["workspace"],
             profile=state.get("profile"),
             tools=[tool],
-            skip_model_discovery=(
-                bool(provider) or bool(parent_schema) or managed_models_known
-            ),
+            skip_model_discovery=(bool(provider) or bool(parent_schema) or managed_models_known),
             skip_preflight=skip_preflight,
             **configure_kwargs,
         )
@@ -2485,6 +2505,14 @@ def _launch_tool(
                 f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
                 "--provider. Launch without a Model Provider Service and try again."
             )
+        # The initial bootstrap runs before a managed location is applied, and a bare launch's
+        # saved location is not exposed through the command-level environment scope. Recheck the
+        # native picker requirement now that the effective source is known. Supported versions
+        # stop at the cheap checker; only an actual blocker repeats the strict installer path.
+        location_uses_native_claude_discovery = tool == "claude" and parent_schema is not None
+        with _claude_native_model_discovery_environment(location_uses_native_claude_discovery):
+            if location_uses_native_claude_discovery and claude_agent.minimum_version_error():
+                install_tool_binary("claude", strict=True)
         # Validate the provider service before launching — it must exist, be a
         # provider type this tool can route to (e.g. claude can't use an OpenAI
         # or Foundry service), and, for Bedrock, expose Claude models to pin.
@@ -2650,7 +2678,10 @@ def _launch_tool(
             provider=provider,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
-        with _managed_smart_routing_environment(managed, tool):
+        with (
+            _managed_smart_routing_environment(managed, tool),
+            _claude_native_model_discovery_environment(location_uses_native_claude_discovery),
+        ):
             launch_agent(tool, launch_state, ctx.args, options=launch_options)
     except RuntimeError as exc:
         print_err(str(exc))
@@ -3028,9 +3059,12 @@ def claude_cmd(
         claude_agent.disable_smart_routing(load_state())
         print_success("Claude Code smart routing disabled; ug routing hooks removed")
         return
-    if enable_model_discovery or (model_location is not None and provider is None):
-        os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
-    with _smart_routing_v2_flag(enable_smart_routing_flag):
+    with (
+        _claude_native_model_discovery_environment(
+            enable_model_discovery or (model_location is not None and provider is None)
+        ),
+        _smart_routing_v2_flag(enable_smart_routing_flag),
+    ):
         with _disable_smart_routing_for_subcommand("claude", ctx):
             _launch_tool(
                 "claude",

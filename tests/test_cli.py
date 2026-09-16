@@ -679,6 +679,7 @@ class TestSubcommandRouting:
         with (
             patch("ucode.cli.ensure_bootstrap_dependencies"),
             patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.load_workspace_state", return_value=state),
             patch("ucode.cli.ensure_provider_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state),
             patch(
@@ -701,22 +702,36 @@ class TestSubcommandRouting:
         assert "Model: system.ai.gpt-5-6-luna" not in output
         assert mock_launch.call_args.args[2] == forwarded_args
 
-    def test_claude_enable_model_discovery_sets_ucode_env(self):
-        with patch("ucode.cli._launch_tool") as mock_launch:
+    def test_claude_enable_model_discovery_scopes_ucode_env(self, monkeypatch):
+        key = cli_mod.claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR
+        monkeypatch.setenv(key, "caller-value")
+        observed = []
+        with patch(
+            "ucode.cli._launch_tool",
+            side_effect=lambda *_args, **_kwargs: observed.append(os.environ.get(key)),
+        ) as mock_launch:
             result = runner.invoke(app, ["claude", "--enable-model-discovery"])
 
         assert result.exit_code == 0, result.output
-        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert observed == ["1"]
+        assert os.environ[key] == "caller-value"
         assert mock_launch.call_args.args[1].args == []
 
-    def test_claude_model_location_is_forwarded(self):
-        with patch("ucode.cli._launch_tool") as mock_launch:
+    def test_claude_model_location_is_forwarded_with_scoped_discovery(self, monkeypatch):
+        key = cli_mod.claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR
+        monkeypatch.delenv(key, raising=False)
+        observed = []
+        with patch(
+            "ucode.cli._launch_tool",
+            side_effect=lambda *_args, **_kwargs: observed.append(os.environ.get(key)),
+        ) as mock_launch:
             result = runner.invoke(app, ["claude", "--model-location", "main.default"])
 
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.kwargs["parent_schema"] == "main.default"
         assert mock_launch.call_args.args[1].args == []
-        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert observed == ["1"]
+        assert key not in os.environ
 
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     def test_parent_and_model_location_are_mutually_exclusive(self, tool):
@@ -762,14 +777,14 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 1
         assert "--provider and --model-location cannot be used together" in result.output
+
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     def test_invalid_model_location_is_rejected(self, tool):
         result = runner.invoke(app, [tool, "--model-location", "main"])
 
         assert result.exit_code == 1
-        assert (
-            "--model-location must be a literal `<catalog>.<schema>` identifier."
-            in _strip_ansi(result.output)
+        assert "--model-location must be a literal `<catalog>.<schema>` identifier." in _strip_ansi(
+            result.output
         )
 
     def test_claude_enable_model_discovery_is_hidden_from_help(self):
@@ -996,6 +1011,7 @@ class TestClaudeModelFlag:
         with (
             patch("ucode.cli.ensure_bootstrap_dependencies"),
             patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.load_workspace_state", return_value=state),
             patch("ucode.cli.ensure_provider_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state),
             patch(
@@ -1260,6 +1276,80 @@ class TestClaudeModelFlag:
         mock_resolve.assert_not_called()
         assert mock_configure.call_args.args[2] is None
         assert mock_configure.call_args.kwargs["parent_schema"] == "main.saved"
+
+    @pytest.mark.parametrize("launch_error", [None, RuntimeError("launch failed")])
+    def test_saved_claude_location_scopes_native_discovery(self, monkeypatch, launch_error):
+        key = cli_mod.claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR
+        monkeypatch.setenv(key, "caller-value")
+        observed = []
+        state = {
+            **MINIMAL_STATE,
+            "model_locations": {"claude": "main.saved"},
+            "claude_models": {},
+        }
+
+        def launch(*_args, **_kwargs):
+            observed.append(os.environ.get(key))
+            if launch_error is not None:
+                raise launch_error
+
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.cli.configure_tool", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.launch_agent", side_effect=launch),
+        ):
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == (1 if launch_error else 0), result.output
+        assert observed == ["1"]
+        assert os.environ[key] == "caller-value"
+
+    def test_saved_claude_location_upgrades_old_native_discovery_version(self, monkeypatch):
+        key = cli_mod.claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR
+        monkeypatch.delenv(key, raising=False)
+        events = []
+        state = {
+            **MINIMAL_STATE,
+            "model_locations": {"claude": "main.saved"},
+            "claude_models": {},
+        }
+
+        def install(tool, *, strict):
+            events.append(("install", tool, strict, os.environ.get(key)))
+            return True
+
+        def configure(*args, **kwargs):
+            events.append(("configure",))
+            return args[1]
+
+        def launch(*_args, **_kwargs):
+            events.append(("launch",))
+
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.cli.claude_agent.agent_version", return_value="2.1.247"),
+            patch("ucode.cli.install_tool_binary", side_effect=install) as mock_install,
+            patch("ucode.cli.configure_tool", side_effect=configure),
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.launch_agent", side_effect=launch),
+        ):
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        mock_install.assert_called_once_with("claude", strict=True)
+        assert events == [
+            ("install", "claude", True, "1"),
+            ("configure",),
+            ("launch",),
+        ]
+        assert key not in os.environ
 
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     def test_explicit_model_location_overrides_saved_provider_without_mutating_state(self, tool):
@@ -2489,6 +2579,7 @@ class TestAutoConfigureOnFirstRun:
                 "ucode.cli.configure_single_tool", return_value=configured_state
             ) as mock_configure,
             patch("ucode.cli.ensure_provider_state", return_value=configured_state),
+            patch("ucode.cli.refresh_managed_config", return_value=(None, False)),
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
             patch("ucode.cli.configure_tool", return_value=configured_state),
             patch("ucode.cli.restore_file") as mock_restore,
@@ -3053,6 +3144,126 @@ class TestConfigureAgentFlag:
             "claude": "main.models",
             "codex": "main.models",
         }
+
+    def test_later_fallback_save_does_not_persist_earlier_managed_agent_overlay(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "default_model": "system.ai.managed-claude",
+                        "model_provider_service": "main.providers.managed-anthropic",
+                    }
+                },
+                "codex": {},
+            }
+        }
+        state = {**MINIMAL_STATE, "available_tools": []}
+        saved_states: list[dict] = []
+
+        def configure_managed(current, *args, **kwargs):
+            return {**current, "available_tools": ["claude"]}
+
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.load_managed_state", return_value=None),
+            patch("ucode.cli._configure_shared_workspace_states", return_value=[state]),
+            patch("ucode.cli.refresh_managed_config", return_value=(managed, False)),
+            patch("ucode.cli.check_gateway_endpoint", return_value=True),
+            patch("ucode.cli.resolve_state", wraps=cli_mod.resolve_state) as mock_resolve,
+            patch(
+                "ucode.cli.configure_selected_tools", side_effect=configure_managed
+            ) as mock_managed,
+            patch("ucode.cli.configure_tool", side_effect=lambda tool, current, **kwargs: current),
+            patch(
+                "ucode.cli.save_state",
+                side_effect=lambda current: saved_states.append(json.loads(json.dumps(current))),
+            ),
+            patch("ucode.cli.install_databricks_ai_tools_for_agents"),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "configure",
+                    "--agents",
+                    "codex",
+                    "--workspace",
+                    MINIMAL_STATE["workspace"],
+                    "--model-location",
+                    "main.models",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_managed.call_args.args[0]["provider_services"]["claude"] == (
+            "main.providers.managed-anthropic"
+        )
+        codex_input = mock_resolve.call_args_list[1].args[1]
+        assert "_managed_overlay" not in codex_input
+        assert "claude_default_model" not in codex_input
+        assert "provider_services" not in codex_input
+        assert saved_states[-1]["model_locations"] == {"codex": "main.models"}
+        assert set(saved_states[-1]["available_tools"]) == {"claude", "codex"}
+        assert "claude_default_model" not in saved_states[-1]
+        assert "provider_services" not in saved_states[-1]
+
+    def test_managed_gemini_provider_does_not_restore_fallback_agent_providers(self):
+        managed = {
+            "enabled_agents": {
+                "gemini": {
+                    "model_config": {"model_provider_service": "main.providers.managed-gemini"}
+                }
+            }
+        }
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": [],
+            "provider_services": {
+                "claude": "main.providers.stale-anthropic",
+                "codex": "main.providers.stale-openai",
+            },
+        }
+        saved_states: list[dict] = []
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.load_managed_state", return_value=None),
+            patch("ucode.cli._configure_shared_workspace_states", return_value=[state]),
+            patch("ucode.cli.refresh_managed_config", return_value=(managed, False)),
+            patch("ucode.cli.check_gateway_endpoint", return_value=True),
+            patch(
+                "ucode.cli.configure_selected_tools",
+                side_effect=lambda current, *args, **kwargs: current,
+            ) as mock_managed,
+            patch("ucode.cli.configure_tool", side_effect=lambda tool, current, **kwargs: current),
+            patch(
+                "ucode.cli.save_state",
+                side_effect=lambda current: saved_states.append(json.loads(json.dumps(current))),
+            ),
+            patch("ucode.cli.install_databricks_ai_tools_for_agents"),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "configure",
+                    "--agents",
+                    "claude,codex",
+                    "--workspace",
+                    MINIMAL_STATE["workspace"],
+                    "--model-location",
+                    "main.models",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_managed.call_args.args[0]["provider_services"]["gemini"] == (
+            "main.providers.managed-gemini"
+        )
+        assert saved_states[-1]["model_locations"] == {
+            "claude": "main.models",
+            "codex": "main.models",
+        }
+        assert "provider_services" not in saved_states[-1]
 
     def test_no_flag_calls_configure_all(self):
         with (
@@ -3878,10 +4089,14 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(cli_mod, "resolve_state", lambda m, s, tool: dict(s))
         monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
 
+        persisted_states: list[dict] = []
+
         def fake_configure(s, tools, **kwargs):
-            # Mirror configure_selected_tools: merge onto a copy, never the caller's dict.
+            # Mirror configure_selected_tools: merge onto a copy, persist the developer snapshot,
+            # and never mutate the caller's dict.
             merged = dict(s)
             merged["available_tools"] = sorted(set(s.get("available_tools") or []) | set(tools))
+            persisted_states.append(cli_mod.developer_state_from_resolved(merged))
             return merged
 
         monkeypatch.setattr(cli_mod, "configure_selected_tools", fake_configure)
@@ -3889,7 +4104,9 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(
             cli_mod,
             "_configure_managed_mcp_servers",
-            lambda m: seen.update(available=list(state.get("available_tools") or [])),
+            lambda m: seen.update(
+                available=list(persisted_states[-1].get("available_tools") or [])
+            ),
         )
 
         assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
