@@ -2,140 +2,70 @@
 
 from __future__ import annotations
 
-import json
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
+import subprocess
 from unittest.mock import Mock, patch
-from urllib.parse import parse_qs
 
 import pytest
-from databricks.sdk import oauth
 from typer.testing import CliRunner
 
 import ucode.cli as cli_mod
+import ucode.custom_oauth as oauth_mod
 import ucode.databricks as db_mod
 from ucode.cli import app
-from ucode.custom_oauth import _custom_oauth_lock, get_custom_client_token
+from ucode.custom_oauth import get_custom_client_token
 
 WS = "https://example.databricks.com"
 TEST_SCOPES = ("offline_access", "catalog.catalogs:read")
 runner = CliRunner()
 
 
-class TestCustomOAuthLock:
-    def test_releases_lock_when_login_fails(self, tmp_path):
-        with pytest.raises(ValueError, match="login failed"):
-            with _custom_oauth_lock(tmp_path, "http://localhost:8020/callback"):
-                raise ValueError("login failed")
-        with _custom_oauth_lock(tmp_path, "http://127.0.0.1:8020/other-callback"):
-            assert len(list(tmp_path.glob("*.lock"))) == 1
-
-
 class TestCustomClientToken:
     @pytest.fixture(autouse=True)
     def _setup(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(oauth.TokenCache, "BASE_PATH", str(tmp_path / "oauth"))
-        monkeypatch.setenv("DATABRICKS_BEARER", "unrelated-bearer")
-        monkeypatch.setattr(db_mod, "run", Mock(side_effect=AssertionError("CLI not expected")))
-        monkeypatch.setattr(
-            db_mod, "find_profile_name_for_host", Mock(side_effect=AssertionError("No profile"))
-        )
-        self.endpoints = oauth.OidcEndpoints(
-            authorization_endpoint=f"{WS}/oidc/v1/authorize",
-            token_endpoint=f"{WS}/oidc/v1/token",
-        )
-        self.discovery = Mock(return_value=self.endpoints)
-        monkeypatch.setattr(oauth, "get_workspace_endpoints", self.discovery)
-        self.browser = Mock(return_value=self._credentials("browser-token", "browser-refresh"))
-        monkeypatch.setattr(oauth.Consent, "launch_external_browser", self.browser)
-        self.refresh = Mock(return_value=self._credentials("refreshed", "rotated-refresh").token())
-        monkeypatch.setattr(oauth, "retrieve_token", self.refresh)
+        monkeypatch.setattr(db_mod, "databricks_cli_version", lambda: (1, 17, 0))
+        monkeypatch.setattr(oauth_mod, "CUSTOM_OAUTH_CONFIG_FILE", tmp_path / "oauth.cfg")
 
-    def _credentials(self, access_token, refresh_token):
-        return oauth.SessionCredentials(
-            token=oauth.Token(
-                access_token=access_token,
-                token_type="Bearer",
-                refresh_token=refresh_token,
-                expiry=datetime.now(UTC) + timedelta(hours=1),
-            ),
-            token_endpoint=self.endpoints.token_endpoint,
-            client_id="custom-client",
-            redirect_url="http://localhost:8020",
-        )
+    @staticmethod
+    def _result(returncode=0, stdout=""):
+        return subprocess.CompletedProcess([], returncode, stdout, "")
 
-    def _cache(self, workspace=WS, client_id="custom-client"):
-        return oauth.TokenCache(
-            host=workspace,
-            oidc_endpoints=self.endpoints,
-            client_id=client_id,
-            redirect_url="http://localhost:8020",
-            scopes=list(TEST_SCOPES),
-        )
+    def test_reuses_cli_token_without_login(self, monkeypatch):
+        run = Mock(return_value=self._result(stdout='{"access_token":"cached"}'))
+        monkeypatch.setattr(oauth_mod.subprocess, "run", run)
 
-    def test_browser_login_uses_custom_client_and_redirect(self, capsys):
-        redirect_url = "http://localhost:41735/ai-devtools-workspace-oauth"
-        token = get_custom_client_token(
-            WS, client_id="custom-client", redirect_url=redirect_url, scopes=TEST_SCOPES
-        )
-        assert token == "browser-token"
-        cached = self._cache().load().token()
-        assert cached.refresh_token == "browser-refresh"
-        output = capsys.readouterr()
-        assert output.out == ""
-        query = parse_qs(output.err.split("?", 1)[1].strip())
-        assert query["client_id"] == ["custom-client"]
-        assert query["redirect_uri"] == [redirect_url]
-        assert query["scope"][0].split() == list(TEST_SCOPES)
+        assert get_custom_client_token(WS + "/", "custom-client", scopes=TEST_SCOPES) == "cached"
+        command = run.call_args.args[0]
+        assert command[:3] == ["databricks", "auth", "token"]
+        assert run.call_args.kwargs["env"]["DATABRICKS_CONFIG_FILE"].endswith("oauth.cfg")
 
-    def test_reuses_cached_token_without_refresh_or_login(self):
-        self._cache().save(self._credentials("cached", "refresh"))
-        assert (
-            get_custom_client_token(WS + "/", client_id="custom-client", scopes=TEST_SCOPES)
-            == "cached"
+    def test_login_then_retries_token(self, monkeypatch):
+        run = Mock(
+            side_effect=[
+                self._result(1),
+                self._result(),
+                self._result(stdout='{"access_token":"new-token"}'),
+            ]
         )
-        self.browser.assert_not_called()
-        self.refresh.assert_not_called()
+        monkeypatch.setattr(oauth_mod.subprocess, "run", run)
 
-    def test_expired_token_refreshes_with_custom_client_and_saves_rotation(self):
-        cached = self._credentials("expired", "old-refresh")
-        self._cache().save(cached)
-        cache_path = Path(self._cache().filename)
-        payload = json.loads(cache_path.read_text())
-        payload["token"]["expiry"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-        cache_path.write_text(json.dumps(payload))
-        assert (
-            get_custom_client_token(WS, client_id="custom-client", scopes=TEST_SCOPES)
-            == "refreshed"
-        )
-        self.refresh.assert_called_once()
-        self.browser.assert_not_called()
-        assert self._cache().load().token().refresh_token == "rotated-refresh"
+        assert get_custom_client_token(WS, "custom-client", scopes=TEST_SCOPES) == "new-token"
+        first, login, retry = [call.args[0] for call in run.call_args_list]
+        assert first[first.index("--profile") + 1] == retry[retry.index("--profile") + 1]
+        assert login[:3] == ["databricks", "auth", "login"]
+        assert login[login.index("--client-id") + 1] == "custom-client"
+        assert login[login.index("--scopes") + 1] == ",".join(TEST_SCOPES)
+        assert login[login.index("--timeout") + 1] == "3m"
+        assert login[login.index("--profile") + 1] == first[first.index("--profile") + 1]
+        assert login[login.index("--profile") + 1].startswith("ug-custom-oauth-")
+        assert run.call_args_list[1].kwargs["capture_output"] is True
 
-    def test_force_refresh_bypasses_fresh_access_token(self):
-        self._cache().save(self._credentials("cached", "refresh"))
-        assert (
-            get_custom_client_token(
-                WS, client_id="custom-client", scopes=TEST_SCOPES, force_refresh=True
-            )
-            == "refreshed"
-        )
-        self.refresh.assert_called_once()
-        self.browser.assert_not_called()
-
-    def test_refresh_failure_falls_back_to_browser(self, capsys):
-        self._cache().save(self._credentials("cached", "revoked-refresh"))
-        self.refresh.side_effect = ValueError("sensitive server response")
-        assert (
-            get_custom_client_token(
-                WS, client_id="custom-client", scopes=TEST_SCOPES, force_refresh=True
-            )
-            == "browser-token"
-        )
-        self.browser.assert_called_once()
-        output = capsys.readouterr()
-        assert "Sign in again" in output.err
-        assert "sensitive server response" not in output.err
+    def test_force_refresh_is_forwarded(self, monkeypatch):
+        run = Mock(return_value=self._result(stdout='{"access_token":"fresh"}'))
+        monkeypatch.setattr(oauth_mod.subprocess, "run", run)
+        assert get_custom_client_token(
+            WS, "custom-client", scopes=TEST_SCOPES, force_refresh=True
+        ) == "fresh"
+        assert "--force-refresh" in run.call_args.args[0]
 
     def test_invalid_redirect_fails_before_network(self):
         with pytest.raises(RuntimeError, match="--redirect-url must be"):
@@ -145,19 +75,22 @@ class TestCustomClientToken:
                 redirect_url="https://example.com/callback",
                 scopes=TEST_SCOPES,
             )
-        self.discovery.assert_not_called()
+    def test_old_cli_is_actionable(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "databricks_cli_version", lambda: (1, 16, 1))
+        with pytest.raises(RuntimeError, match="v1.17.0 or newer"):
+            get_custom_client_token(WS, "custom-client", scopes=TEST_SCOPES)
 
-    def test_login_failure_is_actionable_and_does_not_expose_response(self):
-        self.browser.side_effect = ValueError("sensitive server response")
-        with pytest.raises(RuntimeError, match="registered redirect URL") as error:
-            get_custom_client_token(WS, client_id="custom-client", scopes=TEST_SCOPES)
+    def test_login_failure_is_actionable_and_sanitized(self, monkeypatch):
+        run = Mock(side_effect=[self._result(1), self._result(1, "sensitive response")])
+        monkeypatch.setattr(oauth_mod.subprocess, "run", run)
+        with pytest.raises(RuntimeError, match="returned no custom-client OAuth token") as error:
+            get_custom_client_token(WS, "custom-client", scopes=TEST_SCOPES)
         assert "sensitive server response" not in str(error.value)
 
     @pytest.mark.parametrize("scopes", [["offline_access"], ["catalog.catalogs:read"]])
     def test_api_scopes_are_required(self, scopes):
         with pytest.raises(RuntimeError, match="OAuth scopes|API OAuth scope"):
             get_custom_client_token(WS, client_id="custom-client", scopes=scopes)
-        self.discovery.assert_not_called()
 
 
 class TestCustomClientCommand:
