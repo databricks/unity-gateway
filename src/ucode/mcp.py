@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import questionary
+from rich.table import Table
 
 from ucode.agents import claude, copilot, cursor, gemini, opencode
 from ucode.config_io import restore_file
@@ -47,7 +48,6 @@ from ucode.ui import (
     _Back,
     console,
     picker_style,
-    print_heading,
     print_kv,
     print_note,
     print_section,
@@ -1870,38 +1870,27 @@ def _query_live_statuses(clients: list[str]) -> dict[str, dict[str, str]]:
     return results
 
 
-def _mcp_server_type_label(server: dict) -> str:
-    """Short human label for a configured MCP server, derived from its Databricks URL shape."""
+def _mcp_server_location(server: dict) -> str:
+    """Concise LOCATION label for a configured MCP server, derived from its Databricks URL shape."""
+    if server.get("kind") == SKILLS_MCP_KIND:
+        return "skills"
     url = str(server.get("url") or "")
+    stripped = url.rstrip("/")
     if AIGW_MCP_SERVICES_PATH in url:
-        return url.split(AIGW_MCP_SERVICES_PATH, 1)[1] or "MCP service"
+        return url.split(AIGW_MCP_SERVICES_PATH, 1)[1] or "mcp-service"
     if "/api/2.0/mcp/external/" in url:
-        return f"connection: {url.rstrip('/').rsplit('/', 1)[-1]}"
+        return f"connection:{stripped.rsplit('/', 1)[-1]}"
     if "/api/2.0/mcp/genie/" in url:
-        return "Genie space"
+        return f"genie:{stripped.rsplit('/', 1)[-1]}"
     if "/api/2.0/mcp/vector-search/" in url:
-        return "Vector Search"
+        return f"vector-search:{'.'.join(stripped.split('/')[-2:])}"
     if "/api/2.0/mcp/functions/" in url:
-        return "UC Functions"
-    if url.rstrip("/").endswith("/api/2.0/mcp/sql"):
-        return "Databricks SQL"
+        return f"uc-functions:{'.'.join(stripped.split('/')[-2:])}"
+    if stripped.endswith("/api/2.0/mcp/sql"):
+        return "databricks-sql"
     if _is_app_mcp_server(server):
-        return "Databricks app"
+        return "app"
     return url or "unknown"
-
-
-def _live_status_markup(state: str | None) -> str:
-    """Rich markup for a per-agent live status; ``None`` means the agent isn't installed."""
-    if state is None:
-        return "[dim]agent not installed[/dim]"
-    return {
-        LIVE_CONNECTED: "[green]✔ connected[/green]",
-        LIVE_FAILED: "[red]✘ failed[/red]",
-        LIVE_ENABLED: "[green]• enabled[/green]",
-        LIVE_DISABLED: "[yellow]• disabled[/yellow]",
-        LIVE_UNKNOWN: "[yellow]? status unknown[/yellow]",
-        LIVE_NOT_REGISTERED: "[dim]not registered[/dim]",
-    }.get(state, "[dim]not registered[/dim]")
 
 
 def _resolve_live_status(
@@ -1914,28 +1903,78 @@ def _resolve_live_status(
     return live.get(client, {}).get(name, LIVE_NOT_REGISTERED)
 
 
-def _print_server_live_status(
-    name: str,
-    clients: list[str],
-    installed: list[str],
-    live: dict[str, dict[str, str]],
-) -> None:
-    """Print one configured server's per-agent live status rows."""
-    for client in clients:
-        display = str(MCP_CLIENTS[client]["display"])
-        markup = _live_status_markup(_resolve_live_status(client, name, installed, live))
-        console.print(f"      {display}: {markup}")
+# Compact one-word label + color per live state for the STATUS column. ``None`` (agent not
+# installed) is handled separately in `_status_token`.
+_LIVE_LABEL = {
+    LIVE_CONNECTED: "connected",
+    LIVE_FAILED: "failed",
+    LIVE_ENABLED: "enabled",
+    LIVE_DISABLED: "disabled",
+    LIVE_UNKNOWN: "unknown",
+    LIVE_NOT_REGISTERED: "missing",
+}
+_LIVE_STYLE = {
+    LIVE_CONNECTED: "green",
+    LIVE_ENABLED: "green",
+    LIVE_FAILED: "red",
+    LIVE_DISABLED: "yellow",
+    LIVE_UNKNOWN: "yellow",
+    LIVE_NOT_REGISTERED: "yellow",
+}
+
+
+# Live states that mean the same thing for the STATUS column, so a server that is `connected` on
+# one agent and `enabled` on Codex (which can't health-check) collapses to a single token instead
+# of splitting the common case. ``None`` (agent not installed) maps to "absent".
+_LIVE_CLASS = {
+    LIVE_CONNECTED: "ok",
+    LIVE_ENABLED: "ok",
+    LIVE_DISABLED: "off",
+    LIVE_FAILED: "bad",
+    LIVE_NOT_REGISTERED: "missing",
+    LIVE_UNKNOWN: "unknown",
+}
+
+
+def _state_class(state: str | None) -> str:
+    return "absent" if state is None else _LIVE_CLASS.get(state, "unknown")
+
+
+def _status_token(state: str | None) -> str:
+    """Colored one-word status token; ``None`` renders as a dim 'not installed'."""
+    if state is None:
+        return "[dim]not installed[/dim]"
+    label = _LIVE_LABEL.get(state, "unknown")
+    style = _LIVE_STYLE.get(state, "yellow")
+    return f"[{style}]{label}[/{style}]"
+
+
+def _row_status(
+    clients: list[str], name: str, installed: list[str], live: dict[str, dict[str, str]]
+) -> str:
+    """STATUS cell for a server: one token when every agent agrees (treating connected/enabled as
+    the same healthy state), else per-agent ``agent:state`` so a divergent failure stands out."""
+    states = [_resolve_live_status(client, name, installed, live) for client in clients]
+    if len({_state_class(state) for state in states}) == 1:
+        # Uniform class. For the healthy class prefer the stronger 'connected' when any agent
+        # actually health-checked it; otherwise any state in the class is representative.
+        if LIVE_CONNECTED in states:
+            return _status_token(LIVE_CONNECTED)
+        return _status_token(states[0])
+    return " ".join(
+        f"{client}:{_status_token(state)}" for client, state in zip(clients, states, strict=True)
+    )
 
 
 def list_mcp_command(agents: set[str] | None = None) -> int:
     """`ug mcp list`: show the Databricks MCP servers ug has configured and their live
-    connection status in each coding agent.
+    connection status in each coding agent, one row per server.
 
     Read-only: it reads ug's saved state and each installed agent's own `mcp list`, and needs no
-    Databricks login. For each configured server it reports, per agent, whether that agent currently
-    connects to it (Codex reports enabled/disabled, since its listing does not health-check).
-    Workspace-managed servers and the skills connection are shown in their own sections. ``agents``
-    (from ``--agents``) scopes the whole report to that subset of agents.
+    Databricks login. Each row's STATUS aggregates the agents the server is registered on
+    (connected/failed; Codex reports enabled/disabled since its listing does not health-check),
+    splitting into ``agent:state`` only when they disagree. ``agents`` (from ``--agents``) scopes
+    the report to that subset of agents.
     """
     if agents is not None:
         unknown = sorted(agent for agent in agents if agent not in MCP_CLIENTS)
@@ -1958,9 +1997,9 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
 
     live = _query_live_statuses(probe_clients)
 
-    # Merge developer- and workspace-managed servers by registered name, unioning their agents
-    # (skills connections are reported separately). ``--agents`` drops agents outside the scope,
-    # and a server left with no in-scope agent is omitted.
+    # Merge developer- and workspace-managed servers by registered name, unioning their agents.
+    # ``--agents`` drops agents outside the scope, and a server left with no in-scope agent is
+    # omitted. The skills connection is appended as a final row so everything is one table.
     configured: dict[str, dict[str, Any]] = {}
 
     def _collect(server: dict, *, managed: bool) -> None:
@@ -1981,18 +2020,6 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
     for server in state.get("managed_mcp_servers") or []:
         _collect(server, managed=True)
 
-    if configured:
-        print_heading("Configured MCP servers")
-        for name in sorted(configured):
-            entry = configured[name]
-            label = _mcp_server_type_label(entry["server"])
-            managed_tag = " [magenta](workspace-managed)[/magenta]" if entry["managed"] else ""
-            console.print(f"  [bold]{name}[/bold]  [dim]{label}[/dim]{managed_tag}")
-            _print_server_live_status(name, entry["clients"], installed, live)
-    else:
-        print_heading("Configured MCP servers")
-        print_note(f"No MCP servers are configured by ug{scope_note}.")
-
     skills_entry = _skills_entry(list(state.get("mcp_servers") or []))
     skills_clients = (
         [
@@ -2003,32 +2030,49 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
         if skills_entry
         else []
     )
-    if skills_clients:
-        print_heading("Skills MCP connection")
-        console.print(f"  [bold]{SKILLS_MCP_SERVER_NAME}[/bold]")
-        _print_server_live_status(SKILLS_MCP_SERVER_NAME, skills_clients, installed, live)
 
-    # Anything an agent lists that ug didn't configure: surface a count + names so the developer
-    # sees connections ug isn't tracking (e.g. hand-added servers) without conflating them with ug's.
+    if configured or skills_clients:
+        table = Table(box=None, pad_edge=False, header_style="bold")
+        table.add_column("NAME", no_wrap=True)
+        table.add_column("LOCATION")
+        table.add_column("AGENTS")
+        table.add_column("STATUS")
+        for name in sorted(configured):
+            entry = configured[name]
+            location = _mcp_server_location(entry["server"])
+            if entry["managed"]:
+                location += " [magenta](managed)[/magenta]"
+            table.add_row(
+                name,
+                location,
+                ", ".join(entry["clients"]),
+                _row_status(entry["clients"], name, installed, live),
+            )
+        if skills_clients:
+            table.add_row(
+                SKILLS_MCP_SERVER_NAME,
+                "skills",
+                ", ".join(skills_clients),
+                _row_status(skills_clients, SKILLS_MCP_SERVER_NAME, installed, live),
+            )
+        console.print(table)
+    else:
+        print_note(f"No MCP servers are configured by ug{scope_note}.")
+
+    # Anything an agent lists that ug didn't configure (e.g. hand-added servers): a one-line count
+    # per agent, so the developer sees them without a long name dump conflated with ug's.
     ug_names = set(configured)
     if skills_clients:
         ug_names.add(SKILLS_MCP_SERVER_NAME)
-    other_by_client = {
-        client: sorted(name for name in live.get(client, {}) if name not in ug_names)
+    other_counts = [
+        (client, sum(1 for name in live.get(client, {}) if name not in ug_names))
         for client in probe_clients
-    }
-    if any(other_by_client.values()):
-        print_heading("Other MCP servers (not configured by ug)")
-        for client in probe_clients:
-            names = other_by_client[client]
-            if names:
-                print_kv(str(MCP_CLIENTS[client]["display"]), f"{len(names)}: {', '.join(names)}")
+    ]
+    other_summary = ", ".join(f"{client}: {count}" for client, count in other_counts if count)
+    if other_summary:
+        print_note(f"Other MCP servers not configured by ug — {other_summary}.")
 
-    console.print()
-    print_note(
-        "Live status comes from each agent's own `mcp list`; Codex reports enabled/disabled "
-        "(it does not health-check)."
-    )
+    print_note("Live status is from each agent's `mcp list`; Codex reports enabled/disabled.")
     print_note("Use `ug mcp add` / `ug mcp remove` to change the servers ug configures.")
     return 0
 

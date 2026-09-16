@@ -3240,7 +3240,7 @@ class TestListMcpCommand:
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: list(installed))
         monkeypatch.setattr(mcp, "query_live_mcp_status", lambda client: live.get(client, {}))
 
-    def test_reports_configured_servers_with_live_status(self, monkeypatch, capsys):
+    def test_reports_configured_servers_as_a_table(self, monkeypatch, capsys):
         self._patch(
             monkeypatch,
             live={
@@ -3256,37 +3256,44 @@ class TestListMcpCommand:
         assert mcp.list_mcp_command() == 0
 
         out = _unwrap(capsys.readouterr().out)
+        # One table with NAME/LOCATION/AGENTS/STATUS columns.
+        assert "NAME" in out and "LOCATION" in out and "AGENTS" in out and "STATUS" in out
         assert "system-ai-github" in out
-        assert "Claude Code: ✔ connected" in out
-        assert "Codex: • enabled" in out
-        # The workspace-managed server is tagged and shows its live status on claude.
+        assert "claude, codex" in out
+        # connected (claude) + enabled (codex) collapse to a single healthy token, not a split.
+        assert "connected" in out
+        assert "claude:connected" not in out
+        # The workspace-managed server is tagged, and its failed status shows.
         assert "databricks-genie-abc" in out
-        assert "(workspace-managed)" in out
-        # The skills connection is reported in its own section, not among plain servers.
-        assert "Skills MCP connection" in out
+        assert "(managed)" in out
+        assert "failed" in out
+        # The skills connection is a row in the same table (LOCATION "skills").
         assert "databricks-skill-registry" in out
+        assert "skills" in out
 
-    def test_marks_server_not_registered_when_absent_from_agent_listing(self, monkeypatch, capsys):
-        # claude lists nothing, so the server it's configured on shows "not registered".
+    def test_marks_server_missing_when_absent_from_agent_listing(self, monkeypatch, capsys):
+        # Agents list nothing, so servers ug configured show STATUS "missing".
         self._patch(monkeypatch, live={"claude": {}, "codex": {}})
         assert mcp.list_mcp_command() == 0
-        assert "not registered" in _unwrap(capsys.readouterr().out)
+        assert "missing" in _unwrap(capsys.readouterr().out)
 
     def test_agent_not_installed_is_flagged(self, monkeypatch, capsys):
-        # Only claude installed; codex-configured rows report "agent not installed".
+        # Only claude installed; codex diverges to "not installed" in the split status cell.
         self._patch(monkeypatch, installed=("claude",), live={"claude": {}})
         assert mcp.list_mcp_command() == 0
-        assert "agent not installed" in _unwrap(capsys.readouterr().out)
+        assert "not installed" in _unwrap(capsys.readouterr().out)
 
-    def test_lists_other_servers_not_configured_by_ug(self, monkeypatch, capsys):
+    def test_summarizes_other_servers_as_a_count(self, monkeypatch, capsys):
+        # Servers ug didn't configure are counted per agent, not dumped by name.
         self._patch(
             monkeypatch,
             live={"claude": {"some-other-mcp": mcp.LIVE_CONNECTED}, "codex": {}},
         )
         assert mcp.list_mcp_command() == 0
         out = _unwrap(capsys.readouterr().out)
-        assert "Other MCP servers (not configured by ug)" in out
-        assert "some-other-mcp" in out
+        assert "Other MCP servers not configured by ug" in out
+        assert "claude: 1" in out
+        assert "some-other-mcp" not in out
 
     def test_agents_scope_limits_report(self, monkeypatch, capsys):
         self._patch(
@@ -3298,8 +3305,9 @@ class TestListMcpCommand:
         )
         assert mcp.list_mcp_command(agents={"claude"}) == 0
         out = _unwrap(capsys.readouterr().out)
-        assert "Claude Code:" in out
-        assert "Codex:" not in out
+        # Only claude appears in the AGENTS column and the other-servers count.
+        assert "claude" in out
+        assert "codex" not in out
 
     def test_unknown_agent_raises(self, monkeypatch):
         self._patch(monkeypatch)

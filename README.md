@@ -266,11 +266,12 @@ ug mcp list
 ug mcp list --agents claude,codex
 ```
 
-For every configured server it shows, per agent, whether that agent's own `mcp list` reports it
-connected (Codex reports `enabled`/`disabled`, since its listing does not health-check).
-Workspace-managed servers and the skills connection appear in their own sections, and any servers
-an agent lists that `ug` didn't configure are summarized separately. It reads local state plus each
-installed agent's `mcp list`, so it needs no Databricks login.
+It prints one row per configured server — `NAME`, `LOCATION`, `AGENTS`, and a `STATUS` aggregated
+from each agent's own `mcp list` (connected/failed; Codex reports `enabled`/`disabled`, since its
+listing does not health-check). When agents disagree, `STATUS` splits into `agent:state`.
+Workspace-managed servers are tagged, the skills connection is shown as a `skills` row, and any
+servers an agent lists that `ug` didn't configure are summarized as a per-agent count. It reads
+local state plus each installed agent's `mcp list`, so it needs no Databricks login.
 
 ### Skills (optional)
 
