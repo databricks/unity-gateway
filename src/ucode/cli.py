@@ -1537,7 +1537,11 @@ def auth_token_cmd(
     if scopes is not None and client_id is None:
         print_err("--scopes requires --client-id.")
         raise typer.Exit(1)
-    if client_id is not None and scopes is None:
+    if (
+        client_id is not None
+        and scopes is None
+        and os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") != "1"
+    ):
         print_err("--scopes is required with --client-id.")
         raise typer.Exit(1)
     state = load_state()
@@ -1561,14 +1565,13 @@ def auth_token_cmd(
             raise typer.Exit(1)
     try:
         if client_id is not None:
-            assert scopes is not None
             token = custom_oauth.get_custom_client_token(
                 workspace,
                 client_id=client_id,
                 redirect_url=(
                     redirect_url if redirect_url is not None else custom_oauth.DEFAULT_REDIRECT_URL
                 ),
-                scopes=scopes.split(","),
+                scopes=scopes.split(",") if scopes is not None else None,
                 profile=profile,
                 force_refresh=force_refresh,
             )

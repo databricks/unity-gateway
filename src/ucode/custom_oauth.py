@@ -16,7 +16,12 @@ from urllib.parse import urlparse
 from databricks.sdk import oauth
 
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
-from ucode.databricks import build_auth_token_argv, ensure_databricks_cli_version, run
+from ucode.databricks import (
+    build_auth_token_argv,
+    ensure_databricks_cli_version,
+    run,
+    ug_binary,
+)
 from ucode.ui import err_console, normalize_workspace_url, print_warning_err
 
 DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
@@ -82,6 +87,9 @@ def build_custom_auth_token_argv(
     normalized = create_custom_oauth_config(
         config["client_id"], config["scopes"], config["redirect_url"]
     )
+    if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1":
+        target = ["--profile", profile] if profile else ["--host", workspace.rstrip("/")]
+        return [ug_binary(), "auth-token", *target, "--client-id", normalized["client_id"]]
     return [
         *build_auth_token_argv(workspace, profile),
         "--client-id",
@@ -162,20 +170,22 @@ def get_custom_client_token(
     client_id: str,
     redirect_url: str = DEFAULT_REDIRECT_URL,
     *,
-    scopes: Sequence[str],
+    scopes: Sequence[str] | None,
     profile: str | None = None,
     force_refresh: bool = False,
 ) -> str:
     """Reuse the SDK's PKCE flow and per-workspace/client token cache."""
-    config = create_custom_oauth_config(client_id, scopes, redirect_url)
     workspace = normalize_workspace_url(workspace)
     if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1":
         return _get_custom_client_token_from_cli(
             workspace,
-            config["client_id"],
+            client_id,
             profile=profile,
             force_refresh=force_refresh,
         )
+    if scopes is None:
+        raise RuntimeError("OAuth scopes are required for custom-client OAuth.")
+    config = create_custom_oauth_config(client_id, scopes, redirect_url)
     try:
         endpoints = oauth.get_workspace_endpoints(workspace)
         cache = oauth.TokenCache(

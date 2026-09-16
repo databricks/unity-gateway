@@ -19,6 +19,7 @@ from ucode.cli import app
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_MIN_VERSION,
     _custom_oauth_lock,
+    build_custom_auth_token_argv,
     get_custom_client_token,
 )
 
@@ -131,6 +132,26 @@ class TestCustomClientToken:
         ]
         assert run_cli.call_args.kwargs["env"]["DATABRICKS_CLIENT_ID"] == "custom-client"
         self.discovery.assert_not_called()
+
+    def test_cli_auth_command_omits_sdk_options(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/tools/{command}")
+        assert build_custom_auth_token_argv(
+            WS,
+            {
+                "client_id": "custom-client",
+                "redirect_url": "http://localhost:8020/callback",
+                "scopes": ["offline_access", "model-serving"],
+            },
+            "custom-profile",
+        ) == [
+            "/tools/ug",
+            "auth-token",
+            "--profile",
+            "custom-profile",
+            "--client-id",
+            "custom-client",
+        ]
 
     def test_cli_auth_is_not_used_when_disabled(self, monkeypatch):
         monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "0")
