@@ -95,8 +95,7 @@ does not depend on a label or a manual request.
 The existing e2e workflow runs seven parallel shards: gateway checks plus one for
 each of Claude, Codex, Gemini, OpenCode, Copilot, and Pi. Each agent shard installs
 its own CLI. Configure-subset checks run in the Claude shard because configuration
-invokes the Claude CLI. The Claude shard also runs the existing tracing test file, whose
-pre-existing skip remains in place. The `All agent tests` check requires every shard to pass.
+invokes the Claude CLI. The `All agent tests` check requires every shard to pass.
 Check names describe the coverage: `Unit tests`, `Gateway API tests`,
 `Agent launch tests · Claude`, `Smoke journeys · Claude`, and
 `Full journeys · Claude` (with the other agents named likewise).
