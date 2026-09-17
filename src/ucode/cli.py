@@ -42,6 +42,11 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
+from ucode.custom_oauth import (
+    CUSTOM_OAUTH_CLI_ENV_VAR,
+    custom_oauth_cli_enabled,
+    ensure_custom_oauth_cli_token,
+)
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     apply_pat_environment,
@@ -308,7 +313,9 @@ def _custom_oauth_config(
     if client_id is None:
         raise RuntimeError("--redirect-url and --scopes require --client-id.")
     if scopes is None:
-        raise RuntimeError("--scopes is required with --client-id.")
+        if not custom_oauth_cli_enabled(client_id):
+            raise RuntimeError("--scopes is required with --client-id.")
+        scopes = ",".join(custom_oauth.DEFAULT_CLI_SCOPES)
 
     return custom_oauth.create_custom_oauth_config(
         client_id,
@@ -482,6 +489,10 @@ def configure_shared_state(
         state.pop("custom_oauth", None)
     state["base_urls"] = build_shared_base_urls(workspace)
 
+    cli_custom_oauth = state.get("custom_oauth") if custom_oauth_cli_enabled(custom_oauth) else None
+    if cli_custom_oauth:
+        token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth)
+
     if skip_preflight:
         # A prior `ug configure` created the profile; resolve it locally (no
         # login needed) and persist it so launches disambiguate.
@@ -500,7 +511,9 @@ def configure_shared_state(
 
     # ── Preflight (bypassed above under --skip-preflight): validate Databricks
     #    auth + the AI Gateway, then discover the available models. ──
-    if use_pat:
+    if cli_custom_oauth:
+        pass  # The dedicated profile was authenticated above.
+    elif use_pat:
         if not profile:
             raise RuntimeError(
                 "--use-pat requires a Databricks CLI profile. Pass one via `--profile <name>`."
@@ -530,7 +543,8 @@ def configure_shared_state(
         if profile:
             state["profile"] = profile
     with spinner("Verifying Unity AI Gateway..."):
-        token = get_databricks_token(workspace, profile)
+        if not cli_custom_oauth:
+            token = get_databricks_token(workspace, profile)
         model_service_probe = probe_unity_gateway_capabilities(workspace, token)
     if model_service_probe.resource_available:
         print_success("Unity Gateway connected")
@@ -1508,11 +1522,13 @@ def auth_token_cmd(
         print_err("--scopes is required with --client-id.")
         raise typer.Exit(1)
     state = load_state()
+    explicit_host = bool(host and host.strip())
     workspace = host or state.get("workspace")
     if not workspace:
         print_err("No workspace configured. Run `ug configure` first.")
         raise typer.Exit(1)
-    profile = profile or state.get("profile")
+    if profile is None and not explicit_host:
+        profile = state.get("profile")
     if client_id is None and (use_pat or state.get("use_pat")):
         # --use-pat explicitly means "serve the profile's static PAT". Fail
         # closed if it can't be read rather than falling through to OAuth —
@@ -1536,6 +1552,7 @@ def auth_token_cmd(
                     redirect_url if redirect_url is not None else custom_oauth.DEFAULT_REDIRECT_URL
                 ),
                 scopes=scopes.split(","),
+                profile=profile,
                 force_refresh=force_refresh,
             )
         else:
@@ -2098,6 +2115,8 @@ def _launch_tool(
 ) -> None:
     try:
         tool = normalize_tool(tool_name)
+        if not custom_oauth_cli_enabled(custom_oauth):
+            os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
         # Before any status print: a stdio-protocol subcommand owns stdout, so
         # every ug line from here on must go to stderr instead.
         if _child_owns_stdout(tool, ctx.args):
@@ -2126,7 +2145,8 @@ def _launch_tool(
         # Workspaces configured with --use-pat export the profile's PAT as
         # DATABRICKS_BEARER up front so every auth check below (and the
         # launched agent itself) uses the static token instead of OAuth.
-        apply_pat_environment(existing)
+        if not custom_oauth_cli_enabled(custom_oauth):
+            apply_pat_environment(existing)
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []
         )

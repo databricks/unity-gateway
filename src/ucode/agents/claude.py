@@ -30,7 +30,11 @@ from ucode.constants import (
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
 )
-from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
+from ucode.custom_oauth import (
+    CustomOAuthConfig,
+    build_custom_auth_shell_command,
+    custom_oauth_cli_enabled,
+)
 from ucode.databricks import (
     build_auth_shell_command,
     build_otel_headers_shell_command,
@@ -1302,7 +1306,7 @@ def launch(
             model_name=_maybe_add_1m_suffix,
         )
         return
-    if workspace:
+    if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
     launch_args = list(tool_args)
