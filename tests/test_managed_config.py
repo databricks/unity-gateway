@@ -122,6 +122,34 @@ class TestNormalize:
             {"tracing": {"enabled": True}}
         )
 
+    def test_tracing_service_principal_id_is_carried(self):
+        raw = {
+            "enabled_agents": [
+                {
+                    "agent": "CODING_AGENT_CODEX",
+                    "config": {"tracing": {"enabled": True, "service_principal_id": "sp-123"}},
+                }
+            ]
+        }
+        codex = normalize_managed_config(raw)["enabled_agents"]["codex"]
+        assert codex["otel_tracing_service_principal_id"] == "sp-123"
+
+    def test_tracing_without_service_principal_id_omits_the_key(self):
+        claude = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["claude"]
+        assert "otel_tracing_service_principal_id" not in claude
+
+    def test_blank_tracing_service_principal_id_omits_the_key(self):
+        raw = {
+            "enabled_agents": [
+                {
+                    "agent": "CODING_AGENT_CODEX",
+                    "config": {"tracing": {"enabled": True, "service_principal_id": "  "}},
+                }
+            ]
+        }
+        codex = normalize_managed_config(raw)["enabled_agents"]["codex"]
+        assert "otel_tracing_service_principal_id" not in codex
+
     def test_static_model_services_are_carried(self):
         claude = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["claude"]
         assert claude["model_config"]["model_services"] == [

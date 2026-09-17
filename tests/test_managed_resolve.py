@@ -85,6 +85,32 @@ class TestOtelTracing:
         managed = {"enabled_agents": {"codex": {"otel_tracing_enabled": True}}}
         assert resolve_state(managed, _state(), "codex")["codex_otel_tracing"] is True
 
+    def test_state_overrides_carry_tracing_service_principal(self):
+        managed = {
+            "enabled_agents": {
+                "codex": {
+                    "otel_tracing_enabled": True,
+                    "otel_tracing_service_principal_id": "sp-123",
+                }
+            }
+        }
+        overrides = managed_state_overrides(managed, "codex")
+        assert overrides["codex_otel_tracing"] is True
+        assert overrides["codex_otel_tracing_service_principal_id"] == "sp-123"
+
+    def test_service_principal_id_requires_tracing_enabled(self):
+        managed = {
+            "enabled_agents": {
+                "codex": {
+                    "otel_tracing_enabled": False,
+                    "otel_tracing_service_principal_id": "sp-123",
+                }
+            }
+        }
+        assert "codex_otel_tracing_service_principal_id" not in managed_state_overrides(
+            managed, "codex"
+        )
+
 
 class TestClaudeModels:
     def test_proto_slots_map_to_families(self):

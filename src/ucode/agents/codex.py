@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import os
 import re
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -50,6 +52,7 @@ from ucode.databricks import (
     build_otel_traces_endpoint,
     build_tool_base_url,
     get_databricks_token,
+    mint_service_principal_token,
 )
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
@@ -727,6 +730,59 @@ def _reject_managed_model_catalog() -> None:
         )
 
 
+# Cache for on-behalf-of telemetry PATs so a 7-day token is reused across launches
+# instead of minted every time. Keyed by workspace + service principal.
+_SP_OTEL_TOKEN_CACHE_PATH = APP_DIR / "sp_otel_tokens.json"
+# Re-mint once the cached token is within a day of expiry so a launched session
+# comfortably outlives its telemetry token.
+_SP_OTEL_TOKEN_REFRESH_BUFFER_MS = 24 * 60 * 60 * 1000
+
+
+def _read_sp_otel_token_cache() -> dict:
+    try:
+        data = json.loads(_SP_OTEL_TOKEN_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_sp_otel_token_cache(cache: dict) -> None:
+    # A cache we can't persist just means we mint again next launch — never fatal.
+    try:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        _SP_OTEL_TOKEN_CACHE_PATH.write_text(json.dumps(cache), encoding="utf-8")
+        os.chmod(_SP_OTEL_TOKEN_CACHE_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def _sp_otel_token(workspace: str, user_token: str, application_id: str) -> str | None:
+    """Return a cached (or freshly minted) on-behalf-of telemetry PAT for ``application_id``.
+
+    Re-mints only when the cache is missing or within a day of expiry, so the
+    multi-day token is reused across launches. Returns None when minting fails,
+    letting the caller fall back to the launching user's own token.
+    """
+    key = f"{workspace}::{application_id}"
+    now_ms = int(time.time() * 1000)
+    cache = _read_sp_otel_token_cache()
+    entry = cache.get(key)
+    if isinstance(entry, dict):
+        token = entry.get("token")
+        expiry_ms = entry.get("expiry_ms")
+        # expiry_ms == 0 means the workspace issued a non-expiring token; keep it.
+        if isinstance(token, str) and token and isinstance(expiry_ms, int):
+            if expiry_ms == 0 or expiry_ms - now_ms > _SP_OTEL_TOKEN_REFRESH_BUFFER_MS:
+                return token
+    minted = mint_service_principal_token(workspace, user_token, application_id)
+    if minted is None:
+        return None
+    token, expiry_ms = minted
+    cache[key] = {"token": token, "expiry_ms": expiry_ms}
+    _write_sp_otel_token_cache(cache)
+    return token
+
+
 def _otel_overlay(workspace: str, token: str) -> dict:
     """Build Codex's OTLP HTTP trace-export configuration.
 
@@ -778,7 +834,22 @@ def launch(
         token = _launch_token(state, workspace)
         os.environ["OAUTH_TOKEN"] = token
         if state.get("codex_otel_tracing"):
-            otel_args = codex_config_args(_otel_overlay(workspace, token))
+            # Default to the launching user's token; when a dedicated telemetry
+            # service principal is configured, export under an on-behalf-of PAT
+            # for it instead so the credential outlives the ~1h user token.
+            otel_token = token
+            sp_id = state.get("codex_otel_tracing_service_principal_id")
+            if isinstance(sp_id, str) and sp_id.strip():
+                sp_token = _sp_otel_token(workspace, token, sp_id.strip())
+                if sp_token is not None:
+                    otel_token = sp_token
+                else:
+                    print_warning_err(
+                        "Could not mint an on-behalf-of telemetry token for service "
+                        f"principal {sp_id.strip()}; check that you are a workspace admin "
+                        "with the token-management entitlement. Falling back to your own token."
+                    )
+            otel_args = codex_config_args(_otel_overlay(workspace, otel_token))
     if _use_legacy_layout():
         print_warning_err(
             f"Codex {agent_version(binary)} is outdated. Upgrade Codex to "

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -1383,3 +1384,61 @@ class TestWriteConfigBackup:
         assert changed is True
         assert "model" not in read_toml_safe(tmp_path / "ucode.config.toml")
         assert not (tmp_path / "backup.toml").exists()
+
+
+class TestServicePrincipalOtelToken:
+    """`_sp_otel_token` mints via the on-behalf-of API and caches across launches."""
+
+    def test_mints_and_caches_when_cache_missing(self, tmp_path, monkeypatch):
+        cache = tmp_path / "sp_otel_tokens.json"
+        monkeypatch.setattr(codex, "_SP_OTEL_TOKEN_CACHE_PATH", cache)
+        calls = []
+
+        def fake_mint(workspace, user_token, application_id):
+            calls.append((workspace, user_token, application_id))
+            return ("dapiSP", 9999999999999)
+
+        monkeypatch.setattr(codex, "mint_service_principal_token", fake_mint)
+
+        token = codex._sp_otel_token(WS, "user-tok", "sp-123")
+
+        assert token == "dapiSP"
+        assert calls == [(WS, "user-tok", "sp-123")]
+        assert json.loads(cache.read_text())[f"{WS}::sp-123"]["token"] == "dapiSP"
+
+    def test_reuses_cached_token_without_minting(self, tmp_path, monkeypatch):
+        cache = tmp_path / "sp_otel_tokens.json"
+        # Expiry far in the future (ms) so it is well outside the refresh buffer.
+        cache.write_text(
+            json.dumps({f"{WS}::sp-123": {"token": "dapiCACHED", "expiry_ms": 9999999999999}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(codex, "_SP_OTEL_TOKEN_CACHE_PATH", cache)
+
+        def fail_mint(*_args, **_kwargs):
+            raise AssertionError("should not mint when a fresh token is cached")
+
+        monkeypatch.setattr(codex, "mint_service_principal_token", fail_mint)
+
+        assert codex._sp_otel_token(WS, "user-tok", "sp-123") == "dapiCACHED"
+
+    def test_remints_when_cached_token_near_expiry(self, tmp_path, monkeypatch):
+        cache = tmp_path / "sp_otel_tokens.json"
+        # Expiry only ~1 minute out — inside the one-day refresh buffer.
+        near = int(time.time() * 1000) + 60_000
+        cache.write_text(
+            json.dumps({f"{WS}::sp-123": {"token": "dapiOLD", "expiry_ms": near}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(codex, "_SP_OTEL_TOKEN_CACHE_PATH", cache)
+        monkeypatch.setattr(
+            codex, "mint_service_principal_token", lambda *_a, **_k: ("dapiNEW", 9999999999999)
+        )
+
+        assert codex._sp_otel_token(WS, "user-tok", "sp-123") == "dapiNEW"
+
+    def test_returns_none_when_mint_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(codex, "_SP_OTEL_TOKEN_CACHE_PATH", tmp_path / "sp_otel_tokens.json")
+        monkeypatch.setattr(codex, "mint_service_principal_token", lambda *_a, **_k: None)
+
+        assert codex._sp_otel_token(WS, "user-tok", "sp-123") is None

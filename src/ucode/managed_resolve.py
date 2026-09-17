@@ -67,6 +67,11 @@ def managed_otel_tracing_enabled(managed: dict, tool: str) -> bool:
     return _agent_entry(managed, tool).get("otel_tracing_enabled") is True
 
 
+def managed_otel_tracing_service_principal_id(managed: dict, tool: str) -> str | None:
+    """The dedicated telemetry service principal ``tool``'s managed OTLP export should use, if any."""
+    return _str(_agent_entry(managed, tool).get("otel_tracing_service_principal_id"))
+
+
 def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
     """The state keys to layer over local state so ``tool``'s writer sees managed settings.
 
@@ -96,6 +101,9 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
         overrides[f"{tool}_default_model"] = default_model
     if tool in OTEL_TRACING_TOOLS and managed_otel_tracing_enabled(managed, tool):
         overrides[f"{tool}_otel_tracing"] = True
+        sp_id = managed_otel_tracing_service_principal_id(managed, tool)
+        if sp_id:
+            overrides[f"{tool}_otel_tracing_service_principal_id"] = sp_id
     return overrides
 
 

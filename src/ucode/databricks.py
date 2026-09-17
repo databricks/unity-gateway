@@ -3006,6 +3006,52 @@ def build_otel_traces_endpoint(workspace: str) -> str:
     return f"{workspace.rstrip('/')}/ai-gateway/otel/v1/traces"
 
 
+# On-behalf-of PAT minting for a dedicated telemetry service principal. Used when
+# a managed tracing config names a `service_principal_id`: OAuth access tokens cap
+# at ~1h, so a Token-Management on-behalf-of PAT is what lets a multi-day tracing
+# credential exist without re-minting every launch. The launching user must be a
+# workspace admin with the token-management entitlement; the minted PAT is issued
+# under the SP identity, so exported spans are attributed to that SP, not the user.
+_ON_BEHALF_OF_TOKENS_API_PATH = "/api/2.0/token-management/on-behalf-of/tokens"
+
+# Default lifetime for the SP telemetry PAT (7 days).
+SP_OTEL_TOKEN_LIFETIME_SECONDS = 7 * 24 * 60 * 60
+
+
+def mint_service_principal_token(
+    workspace: str,
+    user_token: str,
+    application_id: str,
+    *,
+    lifetime_seconds: int = SP_OTEL_TOKEN_LIFETIME_SECONDS,
+    comment: str = "ucode Codex OTLP tracing",
+) -> tuple[str, int] | None:
+    """Mint an on-behalf-of PAT for ``application_id``, or return None on failure.
+
+    Calls the Token Management API with the launching user's credentials (requires
+    workspace-admin plus the token-management entitlement). Returns
+    ``(token_value, expiry_time_ms)`` — ``expiry_time_ms`` is the server's
+    epoch-millisecond expiry, or ``0`` when the workspace issues non-expiring tokens.
+    """
+    hostname = workspace_hostname(workspace)
+    url = f"https://{hostname}{_ON_BEHALF_OF_TOKENS_API_PATH}"
+    payload = {
+        "application_id": application_id,
+        "comment": comment,
+        "lifetime_seconds": lifetime_seconds,
+    }
+    data, reason = _http_post_json(url, user_token, payload, timeout=30)
+    if reason is not None or not isinstance(data, dict):
+        return None
+    token_value = data.get("token_value")
+    if not isinstance(token_value, str) or not token_value:
+        return None
+    token_info = data.get("token_info")
+    expiry = token_info.get("expiry_time") if isinstance(token_info, dict) else None
+    expiry_ms = expiry if isinstance(expiry, int) and not isinstance(expiry, bool) else 0
+    return token_value, expiry_ms
+
+
 def build_tool_base_url(tool: str, workspace: str) -> str:
     if tool == "codex":
         return f"{workspace}/ai-gateway/codex/v1"

@@ -153,6 +153,7 @@ class AgentConfig:
     models: AgentModels | None = None
     smart_routing_enabled: bool = False
     otel_tracing_enabled: bool | None = None
+    otel_tracing_service_principal_id: str | None = None
 
     @classmethod
     def from_wire(cls, config: object) -> AgentConfig:
@@ -168,6 +169,9 @@ class AgentConfig:
             models=agent_models,
             smart_routing_enabled=smart_routing.get("enabled") is True,
             otel_tracing_enabled=_tracing_enabled(config_dict.get("tracing")),
+            otel_tracing_service_principal_id=_tracing_service_principal_id(
+                config_dict.get("tracing")
+            ),
         )
 
     def to_internal(self) -> dict:
@@ -182,6 +186,8 @@ class AgentConfig:
             result["model_config"] = model_config
         if self.otel_tracing_enabled is not None:
             result["otel_tracing_enabled"] = self.otel_tracing_enabled
+        if self.otel_tracing_service_principal_id is not None:
+            result["otel_tracing_service_principal_id"] = self.otel_tracing_service_principal_id
         return result
 
 
@@ -412,6 +418,16 @@ def _tracing_enabled(tracing: object) -> bool | None:
     """Return ``TracingConfig.enabled`` as a tri-state value."""
     value = _as_dict(tracing).get("enabled")
     return value if isinstance(value, bool) else None
+
+
+def _tracing_service_principal_id(tracing: object) -> str | None:
+    """Return ``TracingConfig.service_principal_id`` when set to a non-empty string.
+
+    When present, ucode mints a dedicated on-behalf-of telemetry token for this
+    service principal at launch instead of exporting under the launching user's
+    token, so a longer-lived, admin-provisioned credential carries the OTLP export.
+    """
+    return _str(_as_dict(tracing).get("service_principal_id"))
 
 
 def _resolve_agent_tool(key: object) -> str | None:
