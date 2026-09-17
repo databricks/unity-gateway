@@ -985,7 +985,9 @@ class TestClaudeModelFlag:
         mock_launch = MagicMock()
         monkeypatch.setattr(cli_mod, "launch_agent", mock_launch)
         monkeypatch.setattr(
-            cli_mod, "resolve_provider_models", lambda t, s, p: (provider_models, None, relayed)
+            cli_mod,
+            "resolve_provider_models_and_targets",
+            lambda t, s, p: (provider_models, None, relayed, []),
         )
         mock_configure = MagicMock(return_value=MINIMAL_STATE)
         monkeypatch.setattr(cli_mod, "configure_tool", mock_configure)
@@ -1100,7 +1102,10 @@ class TestClaudeModelFlag:
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.ensure_provider_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state),
-            patch("ucode.cli.resolve_provider_models", return_value=(None, None, False)),
+            patch(
+                "ucode.cli.resolve_provider_models_and_targets",
+                return_value=(None, None, False, []),
+            ),
             patch("ucode.cli.configure_tool", return_value=state),
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
             patch("ucode.cli.launch_agent") as mock_launch,
@@ -1117,7 +1122,10 @@ class TestClaudeModelFlag:
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.ensure_provider_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state),
-            patch("ucode.cli.resolve_provider_models", return_value=(None, None, False)),
+            patch(
+                "ucode.cli.resolve_provider_models_and_targets",
+                return_value=(None, None, False, []),
+            ),
             patch("ucode.cli.configure_tool", return_value=state),
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
             patch("ucode.cli.launch_agent") as mock_launch,
@@ -1154,7 +1162,9 @@ class TestGeminiProviderLaunch:
         monkeypatch.setattr("ucode.cli.ensure_provider_state", lambda t: state)
         monkeypatch.setattr("ucode.cli.configure_shared_state", lambda *a, **k: state)
         monkeypatch.setattr("ucode.cli._fetch_managed_config", lambda s: (None, False))
-        monkeypatch.setattr("ucode.cli.resolve_provider_models", resolve_provider_models)
+        monkeypatch.setattr(
+            "ucode.cli.resolve_provider_models_and_targets", resolve_provider_models
+        )
         monkeypatch.setattr("ucode.cli.configure_tool", lambda *a, **k: state)
         monkeypatch.setattr(
             "ucode.cli.resolve_gemini_provider_model",
@@ -4123,6 +4133,41 @@ class TestManagedModelDiscoveryLaunch:
     STATIC = {
         "enabled_agents": {"claude": {"model_config": {"model_services": ["system.ai.claude"]}}}
     }
+
+    @pytest.mark.parametrize("authored_default", [None, "claude-sonnet-4-6"])
+    def test_managed_mps_keeps_all_picker_targets(self, monkeypatch, authored_default):
+        state = dict(MINIMAL_STATE)
+        managed = json.loads(json.dumps(self.MPS))
+        if authored_default:
+            managed["enabled_agents"]["claude"]["model_config"]["models"] = {
+                "default_sonnet_model": authored_default
+            }
+        targets = ["claude-sonnet-4-6", "claude-sonnet-5", "claude-fable-5-1"]
+        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *args: None)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
+        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda tool: state)
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *args, **kwargs: state)
+        monkeypatch.setattr(cli_mod, "_fetch_budget_recommendation", lambda *args: None)
+        monkeypatch.setattr(cli_mod, "_download_managed_skills", lambda *args: None)
+        with (
+            patch("ucode.cli._fetch_managed_config", return_value=(managed, False)) as fetch,
+            patch("ucode.agents.get_databricks_token", return_value="token"),
+            patch(
+                "ucode.agents.resolve_provider_service",
+                return_value=({"provider_type": "anthropic", "targets": targets}, None),
+            ) as lookup,
+            patch("ucode.cli.configure_tool", return_value=state) as configure,
+            patch("ucode.cli.launch_agent"),
+        ):
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        fetch.assert_called_once()
+        lookup.assert_called_once()
+        assert configure.call_args.kwargs["provider_targets"] == targets
+        assert configure.call_args.kwargs["provider_models"] == {
+            "sonnet": authored_default or "claude-sonnet-5"
+        }
 
     @pytest.mark.parametrize(("managed", "expected"), [(MPS, "1"), (STATIC, "0")])
     def test_sets_literal_value_and_restores_prior(self, monkeypatch, managed, expected):

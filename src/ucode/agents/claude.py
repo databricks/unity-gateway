@@ -10,7 +10,8 @@ import signal
 import socket
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from ucode import gateway_proxy
@@ -26,6 +27,7 @@ from ucode.constants import (
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
+    MODEL_DISCOVERY_ENV_VAR,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
@@ -69,6 +71,7 @@ from ucode.ui import print_note, print_success, print_warning
 from .args import LaunchOptions, has_explicit_model_arg
 
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
+CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
 # If set, Claude Code launches in headless mode instead of the interactive login flow.
 CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
@@ -189,9 +192,12 @@ CLAUDE_DEFAULT_MODEL_ENV_KEYS = {
     "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 }
-# Launch-scoped feature flags that ucode may write into Claude settings. These
-# must be removed again when the corresponding launch flag is absent.
-CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
+# Launch-scoped feature flags must never remain in Claude settings.
+CLAUDE_CONDITIONAL_ENV_KEYS = (
+    MODEL_DISCOVERY_ENV_VAR,
+    GATEWAY_MODEL_DISCOVERY_ENV_VAR,
+    CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR,
+)
 # Env keys ucode used to write but no longer does; stripped from the managed
 # settings file on every launch so stale values never linger.
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
@@ -258,10 +264,7 @@ def managed_settings_are_current(state: dict) -> bool:
 def gateway_model_discovery_setting_is_absent() -> bool:
     """Return whether model discovery is absent from persistent Claude settings."""
     env = read_json_safe(CLAUDE_SETTINGS_PATH).get("env")
-    actual = (
-        env.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY") if isinstance(env, dict) else None
-    )
-    return actual is None
+    return not isinstance(env, dict) or not any(key in env for key in CLAUDE_CONDITIONAL_ENV_KEYS)
 
 
 def managed_settings_status(state: dict) -> tuple[Path | None, str, str]:
@@ -350,6 +353,7 @@ def render_overlay(
     parent_schema: str | None = None,
     static_models: list[str] | None = None,
     otel_tracing: bool = False,
+    provider_targets: list[str] | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
 
@@ -478,6 +482,14 @@ def render_overlay(
             "options": [{"model": m, "label": _picker_label(m)} for m in static_models],
         }
         keys += [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
+    elif provider and provider_targets and not relayed:
+        overlay["modelPicker"] = {
+            "replaceBuiltInOptions": True,
+            "options": [
+                {"model": target, "label": _picker_label(target)} for target in provider_targets
+            ],
+        }
+        keys.append(["modelPicker"])
 
     if otel_tracing:
         otel_env = _otel_trace_env(workspace)
@@ -710,6 +722,7 @@ def write_tool_config(
     custom_model: str | None = None,
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
+    provider_targets: list[str] | None = None,
 ) -> dict:
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
@@ -737,10 +750,16 @@ def write_tool_config(
         parent_schema=parent_schema,
         static_models=state.get("claude_static_models"),
         otel_tracing=bool(state.get("claude_otel_tracing")),
+        provider_targets=provider_targets,
     )
+    previous_keys = (state.get("managed_configs") or {}).get("claude", {}).get("keys", [])
+    stale_picker_keys = [
+        key for key in CLAUDE_MANAGED_PICKER_KEYS if [key] in previous_keys and key not in overlay
+    ]
     managed_file_keys = list(managed_keys)
     for path in (
-        [["env", key] for key in CLAUDE_MANAGED_MODEL_ENV_KEYS]
+        [[key] for key in stale_picker_keys]
+        + [["env", key] for key in CLAUDE_MANAGED_MODEL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_CONDITIONAL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_REMOVED_ENV_KEYS]
         + [["env", key] for key in CLAUDE_OTEL_TRACE_ENV_KEYS]
@@ -785,6 +804,8 @@ def write_tool_config(
                 else:
                     target_env[key] = selected_default_model
         merged = deep_merge_dict(base, overlay_for_merge)
+        for key in stale_picker_keys:
+            merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
         merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
             existing_custom_headers, overlay_custom_headers
@@ -914,8 +935,7 @@ def _reconcile_managed_settings(
     configuration mirrors ucode's settings there. The same compose operation that produced the
     private file is applied to the existing managed file, preserving unrelated IT-authored keys.
 
-    `ug configure` updates gateway-owned fields in this file, but does not generate or modify
-    the `modelPicker` object; an existing picker is retained by the merge.
+    `ug configure` updates gateway-owned fields and manages the picker for explicit model lists.
 
     Relayed launches are skipped: they depend on a per-session loopback refresh proxy that only runs
     during `ucode claude`, so a bare `claude` could not reach the gateway anyway.
@@ -1167,7 +1187,8 @@ def _build_claude_argv(
         merged = _merge_claude_settings(merged, settings_override)
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
-        merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
+        for key in CLAUDE_CONDITIONAL_ENV_KEYS:
+            merged_env.pop(key, None)
     return [
         binary,
         *source_args,
@@ -1267,6 +1288,23 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     raise SystemExit(returncode)
 
 
+@contextmanager
+def _native_model_discovery_environment(enabled: bool) -> Iterator[None]:
+    """Set native discovery for one launch and restore the caller's exact value."""
+    existed = CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR in os.environ
+    previous = os.environ.get(CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR)
+    if enabled:
+        os.environ[CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
+    try:
+        yield
+    finally:
+        if existed:
+            assert previous is not None
+            os.environ[CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR] = previous
+        else:
+            os.environ.pop(CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR, None)
+
+
 def launch(
     state: dict,
     tool_args: list[str],
@@ -1275,12 +1313,16 @@ def launch(
 ) -> None:
     binary = SPEC["binary"]
     workspace = state.get("workspace")
-    if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
-        # Discovery is launch-scoped. Pass it in the process environment rather
-        # than persisting it in Claude's private or OS-managed settings.
-        os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+    discovery_enabled = bool(
+        workspace
+        and (
+            os.environ.get(MODEL_DISCOVERY_ENV_VAR) == "1"
+            or os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1"
+        )
+    )
     if state.get("claude_relayed"):
-        _launch_relayed(state, binary, tool_args)
+        with _native_model_discovery_environment(discovery_enabled):
+            _launch_relayed(state, binary, tool_args)
         return
     # Smart routing needs Unix PTY support, which Windows does not provide.
     if options.launch_smart_routing and os.name == "nt":
@@ -1289,17 +1331,18 @@ def launch(
             "Please use Codex or disable smart routing."
         )
     if options.launch_smart_routing:
-        smart_routing_v2.launch_claude(
-            state,
-            tool_args,
-            binary=binary,
-            user_settings_path=CLAUDE_USER_SETTINGS_PATH,
-            # With no user pin, let Claude resolve its starting model from its own settings.
-            launch_model=options.user_pinned_model,
-            compose_settings=_compose_v2_settings,
-            launch_model_args=_launch_model_args,
-            model_name=_maybe_add_1m_suffix,
-        )
+        with _native_model_discovery_environment(discovery_enabled):
+            smart_routing_v2.launch_claude(
+                state,
+                tool_args,
+                binary=binary,
+                user_settings_path=CLAUDE_USER_SETTINGS_PATH,
+                # With no user pin, let Claude resolve its starting model from its own settings.
+                launch_model=options.user_pinned_model,
+                compose_settings=_compose_v2_settings,
+                launch_model_args=_launch_model_args,
+                model_name=_maybe_add_1m_suffix,
+            )
         return
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
@@ -1312,7 +1355,8 @@ def launch(
             *_launch_model_args(tool_args, options.user_pinned_model),
             *tool_args,
         ]
-    exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
+    with _native_model_discovery_environment(discovery_enabled):
+        exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 
 def validate_cmd(binary: str) -> list[str]:
