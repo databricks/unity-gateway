@@ -38,6 +38,18 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_configure_codex_databricks` | Configure Databricks Hosted; execute the generated auth helper; open Codex TUI and read a file | Generated helper invokes `ug` with clean token stdout; completed assistant answer contains the file value; normal exit and reopen |
 | `test_ug_configure_codex_openai_mps` | Select OpenAI MPS in the real configure picker; launch Codex | Saved provider in status; completed TUI file task; normal exit |
 | `test_ug_claude_custom_oauth_cli_boots`, `test_ug_codex_custom_oauth_cli_boots` | Launch with `ENABLE_CUSTOM_OAUTH_FROM_CLI=1`, `--workspace`, and `--client-id databricks-cli` | Real TUI reaches a usable prompt, accepts keyboard input, exits normally, and saves `client_id = databricks-cli` in its generated CLI profile; Claude also reads the OS-managed settings and requires a profile-only `apiKeyHelper` |
+| `test_case_13_configured_claude_reuses_saved_model_location` | Configure Claude with a model location, then launch without options | The saved parent supplies the discovered catalog |
+| `test_case_14_configured_codex_reuses_saved_model_location` | Configure Codex with a model location, then launch without options | The saved parent supplies the discovered catalog |
+| `test_case_15_fresh_claude_uses_system_models_when_discovery_disabled` | Launch fresh Claude with discovery disabled | Workspace `system.ai` models appear; Claude Code creates no cache after picker launch |
+| `test_case_16_fresh_codex_uses_system_models_when_discovery_disabled` | Launch fresh Codex with discovery disabled | Workspace `system.ai` models appear without a scoped catalog |
+| `test_case_17_*` | Launch configured and fresh Claude with a provider | Automatic discovery supplies exactly the provider catalog |
+| `test_case_18_*` | Launch configured and fresh Codex with a provider | The provider supplies exactly its model catalog |
+| `test_case_19_*` | Launch configured and fresh Claude with a model location | The explicit parent supplies exactly its picker catalog |
+| `test_case_20_*` | Launch configured and fresh Codex with a model location | The explicit parent supplies exactly its model catalog |
+| `test_case_21_*` | Launch configured and fresh Claude with a provider and discovery disabled | Claude uses native families; Claude Code creates no cache after picker launch |
+| `test_case_22_*` | Launch configured and fresh Codex with a provider and discovery disabled | Codex uses its native catalog and ug writes no scoped catalog |
+| `test_case_23_*` | Launch configured and fresh Claude with a parent and discovery disabled | Claude uses native families; Claude Code creates no cache after picker launch |
+| `test_case_24_*` | Launch configured and fresh Codex with a parent and discovery disabled | Codex uses its native catalog and ug writes no scoped catalog |
 | `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` with routing enabled | Real file task completes; no routing wrapper |
@@ -64,16 +76,16 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_and_ucode_auth_helpers_emit_only_the_supplied_bearer` | Run both auth helper commands with the public bearer override, with and without forced refresh | Exact token-only stdout, no warnings or ANSI escapes; no workspace authentication or saved state |
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
-With both agents selected there are **42 live cases** (6 interactive TUI cases),
-**4 managed-workspace cases** (marker `managed`, run against a separate workspace that
-publishes a CodingAgentConfig), **28 managed-fixture cases** (marker `managed_fixture`), and
-**5 installation checks**. The 12 numbered scenarios fetch the published config once per agent,
-replace that agent's static model source with its dedicated test MPS, drop its incompatible static
-defaults, and reuse the result across 24 explicit configured/fresh journeys. The other four
-collected cases, from three test functions, inject focused model and MCP shapes. Parametrization
-varies argument spelling or routing mode, never hides the
-agent/provider in the test name. Duplicate boot-only cases are incorporated into the Databricks
-configuration TUI journeys.
+With both agents selected there are **62 live cases** (16 interactive TUI cases),
+**4 un-stubbed managed-workspace cases** (marker `managed`), **28 managed-config fixture cases**
+(marker `managed_fixture`), and **5 installation checks**. The 24 numbered scenarios comprise
+**44 explicit journeys**, and all groups total **99 executions**. Cases 1–12 fetch the published
+config once per agent, replace that agent's static model source with its dedicated test MPS, drop
+its incompatible static defaults, and reuse the result across 24 configured/fresh journeys. The
+other four managed-fixture executions inject focused model and MCP shapes. The un-stubbed cases
+retain coverage of the config fetch/wire contract. Parametrization varies argument spelling or
+routing mode, never hides the agent/provider in the test name. Duplicate boot-only cases are
+incorporated into the Databricks configuration TUI journeys.
 Generated-file cleanup and strict app-server stdout assertions remain enforced.
 
 ug no longer runs a post-configure agent probe; the deprecated `--skip-validate`
@@ -94,7 +106,7 @@ dependency graph to reproduce a user's combination. Every relevant same-reposito
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
 journeys for both agents, in two parallel jobs. After smoke finishes, the full
-suite runs all 41 cases across two parallel agent jobs: one Claude VM and one
+suite runs all 62 live cases across two parallel agent jobs: one Claude VM and one
 Codex VM, each running its configure, headless, and commands/lifecycle cases
 serially. Each agent is installed once for the full suite, and no two full jobs
 for the same agent overlap within a run.
@@ -126,7 +138,8 @@ pending. The descriptive jobs provide the actual coverage and diagnostics.
 | --- | --- |
 | Live MCP and skills functionality | Deferred; installation tests cover the local web-search MCP handshake and tool listing, not upstream proxying or a real search request |
 | Broad configure flags, tracing, multiple workspaces, and PAT flows | Deferred while focusing on basic CUJs |
-| Provider switching, relayed/subscription MPS | Not covered by the four provider journeys |
+| Relayed/subscription MPS discovery | Not covered by the scoped discovery journeys |
+| Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
 | Claude/Codex interactive smart routing | Deferred at the user's request; routing jobs and live journeys removed. Unit/component routing tests remain, but do not establish live routing behavior. |
