@@ -539,7 +539,7 @@ def _mcp_service_choice(name: str, known_names: set[str], additive: bool) -> que
     Shared by the initial `build_mcp_picker_choices` render and the background walk that
     streams more services in, so a streamed row is built identically to an up-front one
     (and dedupes by value against what's already shown). An already-registered service is
-    a removable toggle under `configure mcp` and a non-toggleable note under `mcp add`
+    a removable toggle in replace mode and a non-toggleable note under `mcp add`
     (additive); an unregistered one is an add-choice."""
     registered_as = name.replace(".", "-")
     display_title = f"MCP: {name}"
@@ -568,7 +568,7 @@ def build_mcp_picker_choices(
     def known_choice(name: str, title: str | None = None) -> questionary.Choice:
         # `ucode mcp add` (additive) never removes an already-configured server, so
         # show it as a non-toggleable note rather than a pre-checked box whose
-        # unchecking would be silently ignored. `configure mcp` (replace) keeps it a
+        # unchecking would be silently ignored. Replace mode keeps it a
         # pre-checked toggle so unchecking removes it.
         if additive:
             return questionary.Choice(
@@ -1344,16 +1344,15 @@ def add_mcp_command(
     """`ucode mcp add`: register Databricks MCP servers WITHOUT removing any that
     are already configured.
 
-    Uses the same discovery and options as `configure mcp` — the interactive
-    picker, or the non-interactive `--location`/`--services` paths — but is purely
-    additive: unlike `configure mcp`, it never removes servers outside the
-    selection.
+    Runs the same discovery — the interactive picker, or the non-interactive
+    `--location`/`--services` paths — as the shared configure flow, but is purely additive: it
+    never removes servers outside the selection (use `ucode mcp remove` for that).
 
     ``agents`` scopes the registration to that subset of configured MCP clients
     (the agents must already be configured — the `--agents` CLI option sets up any
     that aren't before calling this)."""
     if services is not None and not services:
-        # An empty `--services` selects nothing. For `configure mcp` that means
+        # An empty `--services` selects nothing. In replace mode that means
         # "remove all"; for the additive `add` there is simply nothing to register,
         # so it's a no-op (and doesn't need --location the way a real subset does).
         print_note("No MCP services given to add (empty --services); nothing to do.")
@@ -1375,7 +1374,7 @@ def _configure_v2_mcp_selectors(
     enforced upstream at the AI Gateway (which ucode already hits during model setup), not here:
     the listing calls this uses don't reliably signal consumer access (see `PermissionDeniedError`).
     Registration mirrors the interactive add path: additive under ``append`` (`ucode mcp add`), an
-    exact replacement otherwise (`ucode configure mcp`), always preserving the skills connection."""
+    exact replacement otherwise (replace mode), always preserving the skills connection."""
     state = load_state()
     workspace, profile, clients = setup_mcp_clients(
         state, "Add MCP Servers" if append else "MCP Servers", agents=agents
@@ -1607,7 +1606,7 @@ def configure_mcp_command(
 
 
 def _mcp_change_summary(added: list[str], removed: list[str], clients: list[str]) -> str:
-    """Human-readable one-liner describing what `configure mcp` just saved, e.g.
+    """Human-readable one-liner describing what the MCP add/replace flow just saved, e.g.
     `Added 2, removed 1 MCP server across Claude Code, Codex`. Falls back to a
     plain `Saved` when only client bindings changed (no add/remove)."""
     client_names = ", ".join(str(MCP_CLIENTS[c]["display"]) for c in clients if c in MCP_CLIENTS)

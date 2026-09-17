@@ -159,13 +159,15 @@ ug configure --profile DEFAULT --agents claude,codex --use-pat
 ### MCP servers (optional)
 
 ```bash
-ug configure mcp
+ug mcp add
 ```
 
-Add Databricks MCP servers to installed MCP-capable tools: Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, and Cursor Agent.
+Add Databricks MCP servers to installed MCP-capable tools: Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, and Cursor Agent. `ug mcp add` is purely additive: it registers new servers and never removes ones already configured (use `ug mcp remove` to remove).
 
 The interactive picker discovers **MCP services** (the `system.ai.*` and workspace-wide
-`<catalog>.<schema>` Unity Catalog MCP services) and a custom MCP server URL.
+`<catalog>.<schema>` Unity Catalog MCP services) and a custom MCP server URL. Servers you already
+have configured are shown as `(already configured)` and can't be toggled off — you only pick new
+ones to add.
 
 V2 AI Gateway servers — Vector Search, UC Functions, external connections, Genie spaces, and
 Databricks apps — are **not** offered in the picker, because consumer-only identities can't
@@ -192,7 +194,7 @@ The coding tool starts and stops the proxy as a child process; there's nothing e
 **Cursor** is MCP-only: `cursor-agent` runs models on your own Cursor account, so `ug`
 configures no models for it — it only registers Databricks MCP servers in `~/.cursor/mcp.json`
 (via the same proxy). Include it with `ug configure --agents cursor` or pick it in
-`ug configure mcp`, then launch with `ug cursor`.
+`ug mcp add`, then launch with `ug cursor`.
 
 To set up an agent and its MCP server(s) in one command, pass `--mcp` with fully-qualified
 service name(s) to `ug configure`:
@@ -204,27 +206,17 @@ ug configure --agents claude --mcp system.ai.slack
 `--mcp` also works without `--agents` for MCP-only clients (it configures just the workspace,
 then registers the servers); pass a comma-separated list to register several at once.
 
-#### Add servers without replacing existing ones
+#### Non-interactive add
 
-`ug configure mcp` **replaces** the registered MCP servers with your selection — anything
-outside a `--location`/`--services` scope (or left unchecked in the picker) is removed. To
-**add** servers while leaving everything already configured in place, use `ug mcp add`:
+Skip the picker with `--location` (a whole schema) or `--services` (a subset):
 
 ```bash
 # Register a whole schema's services, keeping any servers already configured.
 ug mcp add --location system.ai
 
-# Register just a subset (same name rules as `configure mcp --services`).
+# Register just a subset.
 ug mcp add --services system.ai.slack,system.ai.github
-
-# No arguments launches the same interactive picker, but never removes servers.
-ug mcp add
 ```
-
-`ug mcp add` takes the same `--location` and `--services` options as `ug configure mcp`;
-the only difference is that it never removes servers outside the selection. In the interactive
-picker, servers you already have configured are shown as `(already configured)` and can't be
-toggled off — you only pick new ones to add.
 
 Pass `--agents` to target specific coding agents. Any named agent that isn't set up yet is
 configured first (workspace + models), so this doubles as one-command setup:

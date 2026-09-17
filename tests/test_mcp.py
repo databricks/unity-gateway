@@ -786,7 +786,7 @@ class TestConfigureMcpCommand:
 
     def test_mcp_service_choice_known_vs_unknown(self):
         # Unregistered -> an add-choice; already-registered -> a removable toggle
-        # (configure mcp) or a disabled note (mcp add, additive).
+        # (replace mode) or a disabled note (mcp add, additive).
         add = mcp._mcp_service_choice("mycat.sch.weather", set(), additive=False)
         assert (
             add.value == f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}mycat.sch.weather"
@@ -991,7 +991,7 @@ class TestConfigureMcpCommand:
         assert cleanup_calls == [("claude", "orphan-mcp")]
 
     def test_skips_orphan_warning_when_nothing_was_actually_removed(self, monkeypatch, capsys):
-        """Re-running configure mcp on the same workspace shouldn't repeat the warning
+        """Re-running the MCP configure flow on the same workspace shouldn't repeat the warning
         if the leftover entries were already removed by a previous run."""
         cleanup_calls: list[tuple[str, str]] = []
         other_ws = "https://other-workspace.cloud.databricks.com"
@@ -1390,8 +1390,8 @@ class TestConfigureMcpFromLocation:
         ]
 
     def test_preserves_skills_connection(self, monkeypatch):
-        """A skills connection is owned by `configure skills`, so `configure mcp
-        --location` must leave it registered rather than treating it as a removal."""
+        """A skills connection is owned by `configure skills`, so a replace-mode
+        `--location` run must leave it registered rather than treating it as a removal."""
         saved_states: list[dict] = []
         removed: list[tuple[str, str]] = []
         skills_entry = {
@@ -1473,7 +1473,7 @@ class TestAddMcpCommand:
     """`ucode mcp add` (append) registers new servers without removing existing ones."""
 
     def test_keeps_servers_outside_location(self, monkeypatch):
-        """Unlike `configure mcp --location`, `mcp add --location` preserves any
+        """Unlike a replace-mode `--location` run, `mcp add --location` preserves any
         server outside the location instead of removing it."""
         saved_states: list[dict] = []
         configured: list[tuple[str, str, str]] = []
