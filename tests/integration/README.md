@@ -11,7 +11,7 @@ It is not collected by the default `uv run pytest` command.
 
 ## Run a specific combination
 
-Prerequisites: Python 3.12+, uv, Node/npm, and Databricks CLI >=1.0.0. The runner
+Prerequisites: Python 3.12+, uv, Node/npm, and Databricks CLI 1.17.0. The runner
 installs the requested agents into a new npm prefix and ug into a new virtualenv.
 Pytest and the PTY/screen libraries (pexpect and pyte) live in a different virtualenv, so they cannot accidentally supply a
 missing application dependency. No packages are installed into your existing
@@ -88,6 +88,8 @@ All user journeys are top-level tests. There is no separate regressions category
 ```text
 test_ug_configure_claude.py             # Databricks Hosted and Anthropic MPS
 test_ug_configure_codex.py              # Databricks Hosted and OpenAI MPS
+test_ug_claude_custom_oauth.py           # CLI custom-OAuth launch and profile
+test_ug_codex_custom_oauth.py            # CLI custom-OAuth launch and profile
 test_ug_claude_headless.py              # script prompts, models, caller settings
 test_ug_codex_headless.py               # script prompts and model arguments
 test_ug_claude_commands.py              # command help forwarding

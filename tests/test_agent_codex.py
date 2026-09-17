@@ -989,11 +989,12 @@ class TestCodexLaunch:
             "get_databricks_token",
             lambda *args, **kwargs: pytest.fail("standard token used"),
         )
-        monkeypatch.setattr(
-            codex,
-            "get_custom_client_token",
-            lambda workspace, client_id, redirect_url, *, scopes: "custom-token",
-        )
+
+        def custom_token(workspace, client_id, redirect_url, *, scopes, profile):
+            seen["profile"] = profile
+            return "custom-token"
+
+        monkeypatch.setattr(codex, "get_custom_client_token", custom_token)
 
         def fetch(workspace, token, **kwargs):
             seen.update(workspace=workspace, token=token, provider=kwargs["identifier"])
@@ -1007,6 +1008,7 @@ class TestCodexLaunch:
                 "client_id": "client",
                 "redirect_url": "http://localhost:8020",
                 "scopes": ["all-apis", "offline_access"],
+                "profile": "ug-oauth-client",
             },
         }
 
@@ -1016,6 +1018,7 @@ class TestCodexLaunch:
             "workspace": WS,
             "token": "custom-token",
             "provider": "main.default.openai",
+            "profile": "ug-oauth-client",
         }
         assert os.environ["OAUTH_TOKEN"] == "custom-token"
 
