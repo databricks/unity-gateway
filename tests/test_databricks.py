@@ -186,6 +186,38 @@ class TestWorkspaceHostname:
             workspace_hostname("")
 
 
+class _FakeResponseWithHeaders(_FakeResponse):
+    def __init__(self, payload: dict, headers: dict):
+        super().__init__(payload)
+        self.headers = headers
+
+
+class TestWorkspaceOrgId:
+    def _stub_response(self, monkeypatch, headers: dict) -> None:
+        monkeypatch.setattr(
+            db_mod.urllib_request,
+            "urlopen",
+            lambda request, timeout=None: _FakeResponseWithHeaders({"ok": True}, headers),
+        )
+
+    def test_captures_org_id_header_from_get(self, monkeypatch):
+        self._stub_response(monkeypatch, {"X-Databricks-Org-Id": "1234567890"})
+
+        db_mod._http_get_json(f"{WS}/api/2.1/unity-catalog/skills", "token")
+
+        assert db_mod.workspace_org_id(WS) == "1234567890"
+
+    def test_absent_until_a_response_reveals_it(self):
+        assert db_mod.workspace_org_id(WS) is None
+
+    def test_missing_header_leaves_it_absent(self, monkeypatch):
+        self._stub_response(monkeypatch, {})
+
+        db_mod._http_get_json(f"{WS}/api/x", "token")
+
+        assert db_mod.workspace_org_id(WS) is None
+
+
 class TestBuildDatabricksCliEnv:
     def test_sets_databricks_host(self):
         env = build_databricks_cli_env(WS)
@@ -2542,6 +2574,30 @@ class TestEnsureDatabricksCliVersion:
         monkeypatch.setattr("os.environ", env)
         with pytest.raises(RuntimeError, match="Could not parse"):
             ensure_databricks_cli_version()
+
+    def test_custom_minimum_upgrades_version_below_it(self, tmp_path, monkeypatch):
+        import ucode.databricks as db_mod
+
+        # v1.8.0 clears the default floor but not the skills-MCP floor (1.11.0).
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.8.0")
+        monkeypatch.setattr("os.environ", env)
+        upgraded = []
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda brew_subcommand="install": upgraded.append(brew_subcommand),
+        )
+        call_count = [0]
+        original = db_mod.ensure_databricks_cli_version
+
+        def once(*a, **kw):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                original(*a, **kw)
+
+        monkeypatch.setattr(db_mod, "ensure_databricks_cli_version", once)
+        once(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        assert upgraded == ["upgrade"]
 
 
 class TestDatabricksCliVersion:
