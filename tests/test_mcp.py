@@ -2184,7 +2184,7 @@ class TestUnionLocations:
 
 
 class TestAddSkillsCommand:
-    """`ucode skill add --mcp` unions schemas into the connection scope rather
+    """`ucode skills add --mcp` unions schemas into the connection scope rather
     than replacing it (unlike `configure_skills_mcp_command`)."""
 
     def test_unions_into_existing_scope(self, monkeypatch):
@@ -2530,7 +2530,7 @@ class TestRemoveSkillsCommand:
 
 
 class TestRemoveSkillsLocationsCommand:
-    """`ug skill remove --mcp --location`: non-interactive schema removal from the skills scope."""
+    """`ug skills remove --mcp --location`: non-interactive schema removal from the skills scope."""
 
     def _state(self, by_client=None):
         by_client = by_client or _by_client(["claude", "codex"], ["A.a", "B.b"])

@@ -71,7 +71,7 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
                     assert len(marks & {"claude", "codex"}) == 1, node.name
 
 
-def test_smoke_covers_hosted_configuration_and_headless_for_both_agents():
+def test_smoke_covers_hosted_custom_oauth_and_headless_for_both_agents():
     smoke = set()
     for path in (Path(__file__).parent / "integration").glob("test_*.py"):
         for node in ast.parse(path.read_text()).body:
@@ -80,6 +80,8 @@ def test_smoke_covers_hosted_configuration_and_headless_for_both_agents():
     assert smoke == {
         "test_ug_configure_claude_databricks",
         "test_ug_configure_codex_databricks",
+        "test_ug_claude_custom_oauth_cli_boots",
+        "test_ug_codex_custom_oauth_cli_boots",
         "test_ug_claude_headless_prompt_argument",
         "test_ug_codex_headless_prompt_argument",
     }

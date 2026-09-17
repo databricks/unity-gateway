@@ -42,6 +42,11 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
+from ucode.custom_oauth import (
+    CUSTOM_OAUTH_CLI_ENV_VAR,
+    custom_oauth_cli_enabled,
+    ensure_custom_oauth_cli_token,
+)
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     apply_pat_environment,
@@ -309,7 +314,9 @@ def _custom_oauth_config(
     if client_id is None:
         raise RuntimeError("--redirect-url and --scopes require --client-id.")
     if scopes is None:
-        raise RuntimeError("--scopes is required with --client-id.")
+        if not custom_oauth_cli_enabled(client_id):
+            raise RuntimeError("--scopes is required with --client-id.")
+        scopes = ",".join(custom_oauth.DEFAULT_CLI_SCOPES)
 
     return custom_oauth.create_custom_oauth_config(
         client_id,
@@ -483,6 +490,10 @@ def configure_shared_state(
         state.pop("custom_oauth", None)
     state["base_urls"] = build_shared_base_urls(workspace)
 
+    cli_custom_oauth = state.get("custom_oauth") if custom_oauth_cli_enabled(custom_oauth) else None
+    if cli_custom_oauth:
+        token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth)
+
     if skip_preflight:
         # A prior `ug configure` created the profile; resolve it locally (no
         # login needed) and persist it so launches disambiguate.
@@ -501,7 +512,9 @@ def configure_shared_state(
 
     # ── Preflight (bypassed above under --skip-preflight): validate Databricks
     #    auth + the AI Gateway, then discover the available models. ──
-    if use_pat:
+    if cli_custom_oauth:
+        pass  # The dedicated profile was authenticated above.
+    elif use_pat:
         if not profile:
             raise RuntimeError(
                 "--use-pat requires a Databricks CLI profile. Pass one via `--profile <name>`."
@@ -531,7 +544,8 @@ def configure_shared_state(
         if profile:
             state["profile"] = profile
     with spinner("Verifying Unity AI Gateway..."):
-        token = get_databricks_token(workspace, profile)
+        if not cli_custom_oauth:
+            token = get_databricks_token(workspace, profile)
         model_service_probe = probe_unity_gateway_capabilities(workspace, token)
     if model_service_probe.resource_available:
         print_success("Unity Gateway connected")
@@ -988,7 +1002,7 @@ def status() -> int:
     print_note(
         "Use `ug configure skills` to set up Unity Catalog Skills for configured coding tools."
     )
-    print_note("Use `ug skill add` and `ug skill remove --mcp` to manage UC Skills.")
+    print_note("Use `ug skills add` and `ug skills remove --mcp` to manage UC Skills.")
     print_note("Use `ug revert` to clear managed configs and restore prior files.")
     return 0
 
@@ -1051,7 +1065,7 @@ app.add_typer(
     help="Inspect and manage the Databricks MCP servers ug configures for your coding agents.",
 )
 skill_app = typer.Typer(add_completion=False, no_args_is_help=True)
-app.add_typer(skill_app, name="skill", help="Databricks Skills for your coding tools.")
+app.add_typer(skill_app, name="skills", help="Databricks Skills for your coding tools.")
 
 
 def _version_callback(value: bool) -> None:
@@ -1064,7 +1078,7 @@ def _version_callback(value: bool) -> None:
 
 def _configure_agents_for_mcp(requested: list[str]) -> set[str]:
     """Ensure the named coding agents are set up (workspace + models) so a
-    subsequent `ug mcp add` / `ug skill add --mcp` has them as targets, and
+    subsequent `ug mcp add` / `ug skills add --mcp` has them as targets, and
     return the full canonical name set. Agents already configured are left as-is;
     only the rest are bootstrapped. Model agents go through
     configure_workspace_command (which installs binaries and configures models);
@@ -1258,7 +1272,7 @@ def skills_add(
     skills: Annotated[
         str | None,
         typer.Option(
-            "--skills",
+            "--skill",
             help="(download) Download exactly these comma-separated fully-qualified "
             "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
             "with --mcp or --location.",
@@ -1279,9 +1293,9 @@ def skills_add(
     With ``--mcp``, adds the given schemas to the skills MCP connection's scope.
     Otherwise downloads skills to project-level skill directories under ``--path``, or
     to user-level skill directories when omitted, keeping already-downloaded skills.
-    ``--location`` downloads whole ``<catalog>.<schema>`` schemas; ``--skills``
+    ``--location`` downloads whole ``<catalog>.<schema>`` schemas; ``--skill``
     downloads a named set of fully-qualified skills that may span schemas (and takes
-    no ``--location``). With no ``--location``/``--skills`` on an interactive terminal,
+    no ``--location``). With no ``--location``/``--skill`` on an interactive terminal,
     opens a picker of the workspace's schemas to scope (``--mcp``) or skills to download.
     """
     try:
@@ -1297,9 +1311,9 @@ def skills_add(
         if mcp and path is not None:
             raise RuntimeError("--path is not supported when using --mcp")
         if mcp and requested_skills is not None:
-            raise RuntimeError("--skills is not supported when using --mcp")
+            raise RuntimeError("--skill is not supported when using --mcp")
         if requested_skills is not None and location is not None:
-            raise RuntimeError("--skills takes fully-qualified names; drop --location.")
+            raise RuntimeError("--skill takes fully-qualified names; drop --location.")
         # Downloaded skills use shared directory families, so only MCP scopes can be agent-scoped.
         if not mcp and agents is not None:
             raise RuntimeError("--agents is only supported when using --mcp")
@@ -1307,7 +1321,7 @@ def skills_add(
             invalid = sorted(s for s in requested_skills if not _is_qualified_skill_name(s))
             if invalid:
                 raise RuntimeError(
-                    "--skills entries must be fully-qualified `<catalog>.<schema>.<name>` names "
+                    "--skill entries must be fully-qualified `<catalog>.<schema>.<name>` names "
                     f"(invalid: {', '.join(invalid)})."
                 )
             configure_selected_skills_download_command(sorted(requested_skills), path)
@@ -1325,7 +1339,7 @@ def skills_add(
                 else:
                     configure_skills_download_picker_command(path=path)
                 return
-            raise RuntimeError("--location is required for `ucode skill add`.")
+            raise RuntimeError("--location is required for `ucode skills add`.")
         if mcp:
             configured_agents = (
                 _configure_agents_for_mcp(sorted(requested_agents)) if requested_agents else None
@@ -1369,7 +1383,7 @@ def skills_remove(
     skills: Annotated[
         str | None,
         typer.Option(
-            "--skills",
+            "--skill",
             help="(download) Remove exactly these comma-separated fully-qualified "
             "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
             "with --mcp or --location.",
@@ -1390,7 +1404,7 @@ def skills_remove(
     With ``--mcp``, drops skill schemas from the skills MCP connection: ``--location`` removes the
     named ``<catalog>.<schema>`` schemas, and with none on an interactive terminal a picker lists
     the scoped schemas. Otherwise removes downloaded skill directories: ``--location`` removes every
-    skill downloaded from a ``<catalog>.<schema>``, ``--skills`` removes named fully-qualified skills
+    skill downloaded from a ``<catalog>.<schema>``, ``--skill`` removes named fully-qualified skills
     that may span schemas, and with none of them a picker lists every downloaded skill. ``--path``
     limits either to one download base. Only skills ucode downloaded are removed; a same-named skill
     you authored is left alone.
@@ -1402,7 +1416,7 @@ def skills_remove(
         )
         if mcp:
             if path is not None or requested_skills is not None:
-                raise RuntimeError("--path and --skills are not supported with --mcp.")
+                raise RuntimeError("--path and --skill are not supported with --mcp.")
             requested_agents = (
                 None
                 if agents is None
@@ -1414,26 +1428,26 @@ def skills_remove(
             elif _stdin_is_interactive():
                 remove_skills_command(agents=requested_agents)
             else:
-                raise RuntimeError("--location is required for `ug skill remove --mcp`.")
+                raise RuntimeError("--location is required for `ug skills remove --mcp`.")
             return
         if agents is not None:
             raise RuntimeError("--agents is only supported when using --mcp.")
         if requested_skills is not None and location is not None:
-            raise RuntimeError("--skills takes fully-qualified names; drop --location.")
+            raise RuntimeError("--skill takes fully-qualified names; drop --location.")
         if requested_skills is not None:
             invalid = sorted(s for s in requested_skills if not _is_qualified_skill_name(s))
             if invalid:
                 raise RuntimeError(
-                    "--skills entries must be fully-qualified `<catalog>.<schema>.<name>` names "
+                    "--skill entries must be fully-qualified `<catalog>.<schema>.<name>` names "
                     f"(invalid: {', '.join(invalid)})."
                 )
             remove_downloaded_skills_command([], sorted(requested_skills), path=path)
             return
         locations = _parse_skill_locations(location)
         if path is not None and not locations:
-            raise RuntimeError("--path is only supported with --location or --skills.")
+            raise RuntimeError("--path is only supported with --location or --skill.")
         if not locations and not _stdin_is_interactive():
-            raise RuntimeError("--location or --skills is required for `ug skill remove`.")
+            raise RuntimeError("--location or --skill is required for `ug skills remove`.")
         remove_downloaded_skills_command(locations, path=path)
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
@@ -1546,11 +1560,13 @@ def auth_token_cmd(
         print_err("--scopes is required with --client-id.")
         raise typer.Exit(1)
     state = load_state()
+    explicit_host = bool(host and host.strip())
     workspace = host or state.get("workspace")
     if not workspace:
         print_err("No workspace configured. Run `ug configure` first.")
         raise typer.Exit(1)
-    profile = profile or state.get("profile")
+    if profile is None and not explicit_host:
+        profile = state.get("profile")
     if client_id is None and (use_pat or state.get("use_pat")):
         # --use-pat explicitly means "serve the profile's static PAT". Fail
         # closed if it can't be read rather than falling through to OAuth —
@@ -1574,6 +1590,7 @@ def auth_token_cmd(
                     redirect_url if redirect_url is not None else custom_oauth.DEFAULT_REDIRECT_URL
                 ),
                 scopes=scopes.split(","),
+                profile=profile,
                 force_refresh=force_refresh,
             )
         else:
@@ -2136,6 +2153,8 @@ def _launch_tool(
 ) -> None:
     try:
         tool = normalize_tool(tool_name)
+        if not custom_oauth_cli_enabled(custom_oauth):
+            os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
         # Before any status print: a stdio-protocol subcommand owns stdout, so
         # every ug line from here on must go to stderr instead.
         if _child_owns_stdout(tool, ctx.args):
@@ -2164,7 +2183,8 @@ def _launch_tool(
         # Workspaces configured with --use-pat export the profile's PAT as
         # DATABRICKS_BEARER up front so every auth check below (and the
         # launched agent itself) uses the static token instead of OAuth.
-        apply_pat_environment(existing)
+        if not custom_oauth_cli_enabled(custom_oauth):
+            apply_pat_environment(existing)
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []
         )

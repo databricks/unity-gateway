@@ -312,27 +312,30 @@ you to run `ug <agent>` (existing agent sessions need a restart before the MCP t
 
 #### Add skill scopes without replacing existing ones
 
-`ug skill add` registers skills additively, keeping anything already configured. With `--mcp` it
+`ug skills add` registers skills additively, keeping anything already configured. With `--mcp` it
 adds the schemas to the connection's scope, otherwise it downloads their skills to disk. `--location`
-downloads whole schemas; `--skills` downloads a named set of fully-qualified skills that may span
+downloads whole schemas; `--skill` downloads a named set of fully-qualified skills that may span
 schemas.
 
 ```bash
 # Add schemas to the skills MCP scope, keeping any already configured.
-ug skill add --location main.default,ml.prod --mcp
+ug skills add --location main.default,ml.prod --mcp
 
 # Scope the schemas to specific agents. Any not set up yet are configured first.
-ug skill add --location main.default --mcp --agents claude,codex
+ug skills add --location main.default --mcp --agents claude,codex
 
 # Download a schema's skills to disk, keeping existing downloads.
-ug skill add --location main.default
+ug skills add --location main.default
+
+# Download into a specific project directory instead of your home dir.
+ug skills add --location main.default --path /abs/project/dir
 
 # Download a named set of skills by fully-qualified name (may span schemas).
-ug skill add --skills main.default.my-skill,ml.prod.other-skill
+ug skills add --skill main.default.my-skill,ml.prod.other-skill
 
-# No --location (or --skills) launches an interactive picker of the workspace's
+# No --location (or --skill) launches an interactive picker of the workspace's
 # skills to download; it opens immediately and streams skills in as they're found.
-ug skill add
+ug skills add
 ```
 
 With `--mcp`, `--agents` limits the change to the named agents; without it the schemas go to every
@@ -340,39 +343,39 @@ configured agent. It applies only to `--mcp`, since downloaded skills are shared
 
 #### Remove skill scopes
 
-Remove schemas from the skills MCP connection with `ug skill remove --mcp`. `--location` drops the
+Remove schemas from the skills MCP connection with `ug skills remove --mcp`. `--location` drops the
 named schemas; with no `--location` on an interactive terminal a picker lists the scoped schemas.
 
 ```bash
 # Remove specific schemas from the MCP scope; each is removed from every agent it's on.
-ug skill remove --location main.default,ml.prod --mcp
+ug skills remove --location main.default,ml.prod --mcp
 
 # Remove from specific agents only. A schema scoped to several agents is
 # removed from the named ones and kept on the rest.
-ug skill remove --location main.default --mcp --agents claude
+ug skills remove --location main.default --mcp --agents claude
 
 # No --location launches a picker of the scoped schemas to remove.
-ug skill remove --mcp
+ug skills remove --mcp
 ```
 
 #### Remove downloaded skills
 
-Without `--mcp`, `ug skill remove` deletes downloaded skill directories. Only skills
+Without `--mcp`, `ug skills remove` deletes downloaded skill directories. Only skills
 `ug` downloaded are removed, so a same-named skill you authored is left alone.
 
 ```bash
 # Pick from every skill downloaded to disk, across all download bases.
-ug skill remove
+ug skills remove
 
 # Remove every skill downloaded from a schema (all bases, or one with --path).
-ug skill remove --location main.default
-ug skill remove --location main.default --path /abs/project/dir
+ug skills remove --location main.default
+ug skills remove --location main.default --path /abs/project/dir
 
 # Remove named skills by fully-qualified name (may span schemas).
-ug skill remove --skills main.default.my-skill,ml.prod.other-skill
+ug skills remove --skill main.default.my-skill,ml.prod.other-skill
 ```
 
-`--location` and `--skills` each accept `--path` to limit removal to one download base, and are
+`--location` and `--skill` each accept `--path` to limit removal to one download base, and are
 mutually exclusive with each other.
 
 ### Exporting the config
@@ -439,15 +442,15 @@ The output looks like:
 | `ug configure skills --location main.default [--path <dir>]` | Download a schema's skills to disk (under `<dir>`, or your home dir) and register a schema-less skills MCP connection |
 | `ug configure skills --skill main.default.my-skill` | Download named skills by fully-qualified name (comma-separated; may span schemas) |
 | `ug configure skills --location main.default --mcp` | Expose a schema's skills as MCP tools (override-only) instead of downloading |
-| `ug skill add --location main.default --mcp` | Add schemas to the skills MCP scope, keeping any already configured (additive; never replaces) |
-| `ug skill add --location main.default --mcp --agents claude,codex` | Add schemas to specific agents' skills MCP scope (sets up any not yet configured) |
-| `ug skill add --location main.default` | Download a schema's skills to disk without removing existing downloads |
-| `ug skill add --skills main.default.my-skill` | Download named skills by fully-qualified name (comma-separated; may span schemas) |
-| `ug skill remove --location main.default --mcp` | Remove specific schemas from the skills MCP scope, or omit `--location` on a TTY for a picker (every agent) |
-| `ug skill remove --location main.default --mcp --agents claude` | Remove schemas from specific agents' skills MCP scope, keeping them on the rest |
-| `ug skill remove` | Pick from every downloaded skill (across all bases) and delete it from disk |
-| `ug skill remove --location main.default [--path <dir>]` | Delete every skill downloaded from a schema (all bases, or one under `<dir>`) |
-| `ug skill remove --skills main.default.my-skill [--path <dir>]` | Delete named downloaded skills by fully-qualified name (comma-separated; may span schemas; `--path` limits to one base) |
+| `ug skills add --location main.default --mcp` | Add schemas to the skills MCP scope, keeping any already configured (additive; never replaces) |
+| `ug skills add --location main.default --mcp --agents claude,codex` | Add schemas to specific agents' skills MCP scope (sets up any not yet configured) |
+| `ug skills add --location main.default [--path <dir>]` | Download a schema's skills to disk (under `<dir>`, or your home dir) without removing existing downloads |
+| `ug skills add --skill main.default.my-skill` | Download named skills by fully-qualified name (comma-separated; may span schemas) |
+| `ug skills remove --location main.default --mcp` | Remove specific schemas from the skills MCP scope, or omit `--location` on a TTY for a picker (every agent) |
+| `ug skills remove --location main.default --mcp --agents claude` | Remove schemas from specific agents' skills MCP scope, keeping them on the rest |
+| `ug skills remove` | Pick from every downloaded skill (across all bases) and delete it from disk |
+| `ug skills remove --location main.default [--path <dir>]` | Delete every skill downloaded from a schema (all bases, or one under `<dir>`) |
+| `ug skills remove --skill main.default.my-skill [--path <dir>]` | Delete named downloaded skills by fully-qualified name (comma-separated; may span schemas; `--path` limits to one base) |
 
 Databricks AI Tools are installed only by `ug configure`, never by `ug <agent>` launches.
 Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools` with `ug configure` to
