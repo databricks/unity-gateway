@@ -446,6 +446,32 @@ def _patch_launch(tool: str):
     ]
 
 
+@contextlib.contextmanager
+def _launch_policy_patches(
+    managed: dict | None,
+    *,
+    persisted_provider: str | None = None,
+):
+    with (
+        patch("ucode.cli.ensure_bootstrap_dependencies"),
+        patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+        patch("ucode.cli.ensure_provider_state", return_value=MINIMAL_STATE),
+        patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
+        patch("ucode.cli._fetch_budget_recommendation", return_value=None),
+        patch("ucode.cli.get_provider_service", return_value=persisted_provider),
+        patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
+        patch("ucode.cli.resolve_provider_models", return_value=(None, None, False)),
+        patch("ucode.cli.resolve_gemini_provider_model", return_value=("gemini-2.0-flash", None)),
+        patch(
+            "ucode.cli.resolve_launch_model",
+            return_value=(MINIMAL_STATE, "databricks-claude-sonnet-4"),
+        ),
+        patch("ucode.cli.configure_tool", return_value=MINIMAL_STATE),
+        patch("ucode.cli.launch_agent") as launch,
+    ):
+        yield launch
+
+
 class TestSubcommandRouting:
     @pytest.mark.parametrize("tool", TOOLS)
     def test_subcommand_calls_correct_tool(self, tool):
@@ -710,26 +736,41 @@ class TestSubcommandRouting:
         assert mock_launch.call_args.args[1].args == []
 
     def test_codex_provider_and_model_location_are_mutually_exclusive(self):
-        result = runner.invoke(
-            app,
-            ["codex", "--provider", "main.default.provider", "--model-location", "main.default"],
-        )
+        with _launch_policy_patches(None):
+            result = runner.invoke(
+                app,
+                [
+                    "codex",
+                    "--provider",
+                    "main.default.provider",
+                    "--model-location",
+                    "main.default",
+                ],
+            )
 
         assert result.exit_code == 1
         assert "--provider and --model-location cannot be used together" in result.output
 
     def test_claude_provider_and_model_location_are_mutually_exclusive(self):
-        result = runner.invoke(
-            app,
-            ["claude", "--provider", "main.default.provider", "--model-location", "main.default"],
-        )
+        with _launch_policy_patches(None):
+            result = runner.invoke(
+                app,
+                [
+                    "claude",
+                    "--provider",
+                    "main.default.provider",
+                    "--model-location",
+                    "main.default",
+                ],
+            )
 
         assert result.exit_code == 1
         assert "--provider and --model-location cannot be used together" in result.output
 
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     def test_invalid_model_location_is_rejected(self, tool):
-        result = runner.invoke(app, [tool, "--model-location", "main"])
+        with _launch_policy_patches(None):
+            result = runner.invoke(app, [tool, "--model-location", "main"])
 
         assert result.exit_code == 1
         assert "--model-location must be `<catalog>.<schema>`." in _strip_ansi(result.output)
@@ -924,6 +965,33 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         assert json.loads(result.output) == routed
         mock_v2_route.assert_called_once()
+
+
+class TestManagedConfigLaunchSourceGuard:
+    @pytest.mark.parametrize(
+        ("tool", "option", "value"),
+        [
+            ("claude", "--provider", "main.default.provider"),
+            ("codex", "--provider", "main.default.provider"),
+            ("gemini", "--provider", "main.default.provider"),
+            ("claude", "--model-location", "main.default"),
+            ("codex", "--model-location", "main.default"),
+        ],
+    )
+    def test_managed_config_rejects_launch_source_options(self, tool, option, value):
+        with _launch_policy_patches({}) as launch:
+            result = runner.invoke(app, [tool, option, value])
+
+        assert result.exit_code == 1
+        assert "`--provider` or `--model-location` is not allowed" in _strip_ansi(result.output)
+        launch.assert_not_called()
+
+    def test_persisted_provider_is_not_mistaken_for_an_explicit_option(self):
+        with _launch_policy_patches({}, persisted_provider="main.default.provider") as launch:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        launch.assert_called_once()
 
 
 class TestClaudeModelFlag:

@@ -2046,6 +2046,19 @@ def _reject_disabled_agent(managed: dict | None, tool: str) -> None:
         )
 
 
+def _reject_managed_launch_source_options(
+    managed: dict | None,
+    *,
+    provider: str | None,
+    parent_schema: str | None,
+) -> None:
+    if managed is not None and (provider is not None or parent_schema is not None):
+        raise RuntimeError(
+            "`--provider` or `--model-location` is not allowed when a managed config exists "
+            "for the workspace; the managed config controls the model source."
+        )
+
+
 def _fetch_managed_config(state: dict) -> ManagedConfigResult:
     """The workspace's managed config for this launch, plus whether the feature is disabled.
 
@@ -2267,10 +2280,6 @@ def _launch_tool(
         # every ug line from here on must go to stderr instead.
         if _child_owns_stdout(tool, ctx.args):
             redirect_output_to_stderr()
-        if provider is not None and parent_schema is not None:
-            raise RuntimeError("--provider and --model-location cannot be used together.")
-        if parent_schema is not None and not is_valid_catalog_schema(parent_schema):
-            raise RuntimeError("--model-location must be `<catalog>.<schema>`.")
         explicit_prompt = _has_explicit_prompt(ctx)
         smart_routing_enabled = smart_routing_v2.smart_routing_enabled()
         # Launchers such as isaac put their harness arguments after `--`, so the harness's own
@@ -2317,6 +2326,15 @@ def _launch_tool(
         coding_agent_config_feature_disabled = False
         if managed is None:
             managed, coding_agent_config_feature_disabled = _fetch_managed_config(state)
+        _reject_managed_launch_source_options(
+            managed,
+            provider=explicit_provider,
+            parent_schema=parent_schema,
+        )
+        if explicit_provider is not None and parent_schema is not None:
+            raise RuntimeError("--provider and --model-location cannot be used together.")
+        if parent_schema is not None and not is_valid_catalog_schema(parent_schema):
+            raise RuntimeError("--model-location must be `<catalog>.<schema>`.")
         # Checked before discovery, which can take tens of seconds, so a blocked launch fails fast.
         _reject_disabled_agent(managed, tool)
         # The environment switch remains a developer override; managed config is the workspace
@@ -2358,15 +2376,6 @@ def _launch_tool(
             print_note("No managed coding agent config found; using your own settings")
         if managed is not None:
             managed_provider = managed_provider_service(managed, tool)
-            if explicit_provider and managed_provider and managed_provider != explicit_provider:
-                # An explicit --provider that disagrees with the admin's is a hard error rather
-                # than a silent override: the user asked for something the managed config forbids,
-                # and quietly routing them elsewhere would hide it.
-                raise RuntimeError(
-                    f"You cannot launch {TOOL_SPECS[tool]['display']} with provider "
-                    f"{explicit_provider} because your admin has specified managed provider "
-                    f"{managed_provider}."
-                )
             if managed_provider:
                 provider = managed_provider
         if provider and parent_schema is not None:
