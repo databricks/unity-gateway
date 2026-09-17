@@ -58,7 +58,7 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, tm
     """Scenario: configure Codex from an injected model list containing an unknown GPT model.
 
     Expected: ug creates conservative fallback metadata for the unknown model, warns how to get
-    richer metadata, and the real Codex TUI lists that model in its /models picker both with and
+    richer metadata, and the real Codex TUI lists that model in its /model picker both with and
     without smart routing.
     """
     session = live_session
@@ -90,10 +90,10 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, tm
         session, "codex", [str(session.binary), "codex"], f"managed-fallback-routing-{routing}"
     ) as tui:
         tui.boot()
-        tui.submit("/models")
+        tui.submit("/model")
         tui.wait_for(
             lambda s: "gpt-99" in s,
-            "the /models picker to list the injected custom-catalog model",
+            "the /model picker to list the injected custom-catalog model",
             timeout=60,
         )
         tui.exit_normally()
