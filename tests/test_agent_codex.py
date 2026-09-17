@@ -995,7 +995,9 @@ class TestCodexLaunch:
         monkeypatch.setattr(
             codex,
             "get_custom_client_token",
-            lambda workspace, client_id, redirect_url, *, scopes: "custom-token",
+            lambda workspace, client_id, redirect_url, *, scopes, profile=None: (
+                "custom-token" if profile == "custom-profile" else pytest.fail("wrong profile")
+            ),
         )
 
         def fetch(workspace, token, **kwargs):
@@ -1005,6 +1007,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "_fetch_codex_model_catalog", fetch)
         state = {
             "workspace": WS,
+            "profile": "custom-profile",
             "_codex_launch_provider": "main.default.openai",
             "custom_oauth": {
                 "client_id": "client",

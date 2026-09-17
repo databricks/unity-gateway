@@ -695,6 +695,7 @@ def _launch_token(state: dict, workspace: str) -> str:
             custom_oauth["client_id"],
             custom_oauth["redirect_url"],
             scopes=custom_oauth["scopes"],
+            profile=state.get("profile"),
         )
     return get_databricks_token(workspace, state.get("profile"))
 

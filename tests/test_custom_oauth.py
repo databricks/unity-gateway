@@ -106,7 +106,10 @@ class TestCustomClientToken:
     def test_cli_auth_is_used_when_enabled(self, monkeypatch):
         monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
         with (
-            patch("ucode.custom_oauth.ensure_databricks_cli_version") as ensure_version,
+            patch(
+                "ucode.custom_oauth.databricks_cli_version",
+                return_value=CUSTOM_OAUTH_CLI_MIN_VERSION,
+            ) as cli_version,
             patch("ucode.custom_oauth.run") as run_cli,
         ):
             run_cli.return_value = subprocess.CompletedProcess(
@@ -121,11 +124,13 @@ class TestCustomClientToken:
             )
 
         assert token == "cli-token"
-        ensure_version.assert_called_once_with(CUSTOM_OAUTH_CLI_MIN_VERSION)
+        cli_version.assert_called_once_with()
         assert run_cli.call_args.args[0] == [
             "databricks",
             "auth",
             "token",
+            "--host",
+            WS,
             "--profile",
             "custom-profile",
             "--force-refresh",
@@ -133,10 +138,24 @@ class TestCustomClientToken:
         assert run_cli.call_args.kwargs["env"]["DATABRICKS_CLIENT_ID"] == "custom-client"
         self.discovery.assert_not_called()
 
-    def test_cli_auth_command_omits_sdk_options(self, monkeypatch):
+    def test_custom_auth_command_is_stable_across_backends(self, monkeypatch):
         monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
         monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/tools/{command}")
-        assert build_custom_auth_token_argv(
+        expected = [
+            "/tools/ug",
+            "auth-token",
+            "--host",
+            WS,
+            "--profile",
+            "custom-profile",
+            "--client-id",
+            "custom-client",
+            "--redirect-url",
+            "http://localhost:8020/callback",
+            "--scopes",
+            "offline_access,model-serving",
+        ]
+        enabled = build_custom_auth_token_argv(
             WS,
             {
                 "client_id": "custom-client",
@@ -144,14 +163,18 @@ class TestCustomClientToken:
                 "scopes": ["offline_access", "model-serving"],
             },
             "custom-profile",
-        ) == [
-            "/tools/ug",
-            "auth-token",
-            "--profile",
+        )
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "0")
+        disabled = build_custom_auth_token_argv(
+            WS,
+            {
+                "client_id": "custom-client",
+                "redirect_url": "http://localhost:8020/callback",
+                "scopes": ["offline_access", "model-serving"],
+            },
             "custom-profile",
-            "--client-id",
-            "custom-client",
-        ]
+        )
+        assert enabled == disabled == expected
 
     def test_cli_auth_is_not_used_when_disabled(self, monkeypatch):
         monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "0")
@@ -165,7 +188,10 @@ class TestCustomClientToken:
     def test_cli_auth_failure_is_actionable(self, monkeypatch):
         monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
         with (
-            patch("ucode.custom_oauth.ensure_databricks_cli_version"),
+            patch(
+                "ucode.custom_oauth.databricks_cli_version",
+                return_value=CUSTOM_OAUTH_CLI_MIN_VERSION,
+            ),
             patch(
                 "ucode.custom_oauth.run",
                 return_value=subprocess.CompletedProcess([], 1, stdout="", stderr="secret"),
@@ -281,6 +307,71 @@ class TestCustomClientCommand:
             profile="saved",
             force_refresh=True,
         )
+
+    def test_explicit_host_does_not_inherit_saved_profile(self):
+        with (
+            patch(
+                "ucode.cli.load_state",
+                return_value={"workspace": "https://ws", "profile": "saved"},
+            ),
+            patch(
+                "ucode.custom_oauth.get_custom_client_token", return_value="custom-token"
+            ) as fetch,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "auth-token",
+                    "--host",
+                    "https://other",
+                    "--client-id",
+                    "my-client",
+                    "--redirect-url",
+                    "http://localhost:41735/callback",
+                    "--scopes",
+                    "offline_access,catalog.catalogs:read",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        fetch.assert_called_once_with(
+            "https://other",
+            client_id="my-client",
+            redirect_url="http://localhost:41735/callback",
+            scopes=["offline_access", "catalog.catalogs:read"],
+            profile=None,
+            force_refresh=False,
+        )
+
+    def test_cli_auth_version_failure_is_machine_readable(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        with (
+            patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
+            patch(
+                "ucode.custom_oauth.databricks_cli_version",
+                return_value=(1, 16, 0),
+            ),
+            patch("ucode.custom_oauth.run") as run_cli,
+            patch("ucode.databricks._run_databricks_cli_installer") as installer,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "auth-token",
+                    "--host",
+                    "https://ws",
+                    "--client-id",
+                    "my-client",
+                    "--scopes",
+                    "offline_access,catalog.catalogs:read",
+                ],
+            )
+        required = ".".join(str(part) for part in CUSTOM_OAUTH_CLI_MIN_VERSION)
+        stderr = " ".join(result.stderr.split())
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert f"v{required} or newer" in stderr
+        run_cli.assert_not_called()
+        installer.assert_not_called()
 
     @pytest.mark.parametrize(
         ("options", "message"),

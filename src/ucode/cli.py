@@ -1545,11 +1545,13 @@ def auth_token_cmd(
         print_err("--scopes is required with --client-id.")
         raise typer.Exit(1)
     state = load_state()
+    explicit_host = bool(host and host.strip())
     workspace = host or state.get("workspace")
     if not workspace:
         print_err("No workspace configured. Run `ug configure` first.")
         raise typer.Exit(1)
-    profile = profile or state.get("profile")
+    if profile is None and not explicit_host:
+        profile = state.get("profile")
     if client_id is None and (use_pat or state.get("use_pat")):
         # --use-pat explicitly means "serve the profile's static PAT". Fail
         # closed if it can't be read rather than falling through to OAuth —

@@ -18,9 +18,8 @@ from databricks.sdk import oauth
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
 from ucode.databricks import (
     build_auth_token_argv,
-    ensure_databricks_cli_version,
+    databricks_cli_version,
     run,
-    ug_binary,
 )
 from ucode.ui import err_console, normalize_workspace_url, print_warning_err
 
@@ -87,9 +86,6 @@ def build_custom_auth_token_argv(
     normalized = create_custom_oauth_config(
         config["client_id"], config["scopes"], config["redirect_url"]
     )
-    if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1":
-        target = ["--profile", profile] if profile else ["--host", workspace.rstrip("/")]
-        return [ug_binary(), "auth-token", *target, "--client-id", normalized["client_id"]]
     return [
         *build_auth_token_argv(workspace, profile),
         "--client-id",
@@ -138,11 +134,20 @@ def _get_custom_client_token_from_cli(
     profile: str | None = None,
     force_refresh: bool = False,
 ) -> str:
-    ensure_databricks_cli_version(CUSTOM_OAUTH_CLI_MIN_VERSION)
+    version = databricks_cli_version()
+    if version is None or version < CUSTOM_OAUTH_CLI_MIN_VERSION:
+        current = "an unreadable version" if version is None else ".".join(map(str, version))
+        required = ".".join(map(str, CUSTOM_OAUTH_CLI_MIN_VERSION))
+        raise RuntimeError(
+            "Custom-client OAuth via Databricks CLI requires Databricks CLI "
+            f"v{required} or newer; found {current}. Install or upgrade the CLI, then retry."
+        )
     env = os.environ.copy()
     env["DATABRICKS_CLIENT_ID"] = client_id
     args = ["databricks", "auth", "token"]
-    args.extend(["--profile", profile] if profile else ["--host", workspace])
+    args.extend(["--host", workspace])
+    if profile:
+        args.extend(["--profile", profile])
     if force_refresh:
         args.append("--force-refresh")
     try:
