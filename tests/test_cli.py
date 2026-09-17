@@ -93,6 +93,46 @@ class TestHelp:
         for tool in TOOLS:
             assert tool in result.output
 
+    def test_help_groups_commands_by_workflow(self):
+        result = runner.invoke(app, ["--help"])
+        output = _strip_ansi(result.output)
+
+        assert result.exit_code == 0
+        panels = {
+            name: output.index(f"╭─ {name} ")
+            for name in ("Launch", "Setup", "Tools and Skills", "Manage", "Usage")
+        }
+        assert list(panels.values()) == sorted(panels.values())
+        global_options = output.index("╭─ Global Options ")
+        assert panels["Usage"] < global_options
+        global_options_section = output[global_options:]
+        assert "--version, -V" in global_options_section
+        assert "--workspace <str>" in global_options_section
+
+        sections = {
+            "Launch": output[panels["Launch"] : panels["Setup"]],
+            "Setup": output[panels["Setup"] : panels["Tools and Skills"]],
+            "Tools and Skills": output[panels["Tools and Skills"] : panels["Manage"]],
+            "Manage": output[panels["Manage"] : panels["Usage"]],
+            "Usage": output[panels["Usage"] : global_options],
+        }
+        for command in ("claude", "codex", "copilot", "cursor", "gemini", "opencode", "pi"):
+            assert command in sections["Launch"]
+        assert "configure" in sections["Setup"]
+        for command in ("mcp", "skills"):
+            assert command in sections["Tools and Skills"]
+        for command in ("export", "revert", "status", "upgrade", "doctor"):
+            assert command in sections["Manage"]
+        assert "usage" in sections["Usage"]
+        for command in (
+            "mcp-proxy",
+            "auth-token",
+            "otel-headers",
+            "codex-router-hook",
+            "claude-router-hook",
+        ):
+            assert command not in output
+
     def test_managed_authoring_commands_are_removed(self):
         # Authoring moved to the AI Gateway API/UI, so `ug setup` and `ug publish` no longer exist.
         assert runner.invoke(app, ["setup"]).exit_code != 0
@@ -102,14 +142,15 @@ class TestHelp:
         assert runner.invoke(app, ["export", "--help"]).exit_code == 0
 
     @pytest.mark.parametrize("prog_name", ["ug", "ucode"])
-    def test_help_uses_invoked_name_and_names_ucode_as_an_alias(self, prog_name):
+    def test_help_uses_invoked_name_for_alias(self, prog_name):
         result = runner.invoke(app, ["--help"], prog_name=prog_name)
         output = _strip_ansi(result.output)
 
         assert result.exit_code == 0
         assert f"Usage: {prog_name}" in output
-        assert "primary command is `ug`" in output
-        assert "`ucode` remains supported as an alias" in output
+        assert "primary command is `ug`" not in output
+        assert "`ucode` remains supported as an alias" not in output
+        assert "With no subcommand" not in output
 
     @pytest.mark.parametrize("tool", TOOLS)
     def test_subcommand_help(self, tool):
