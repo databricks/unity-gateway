@@ -1,33 +1,41 @@
 """Claude managed-config CUJs for Tests-table cases 1, 3, 5, 7, 9, and 11.
 
-The admin CodingAgentConfig input is injected through ``UCODE_MANAGED_CONFIG_STUB``. Authentication,
-normalization, config writers, the gateway, and Claude Code remain real. The un-stubbed managed
-configure journey covers the fetch/wire contract.
+The admin CodingAgentConfig is fetched once from the managed workspace, its Claude model source is
+set to the dedicated test MPS, and the result is reused through ``UCODE_MANAGED_CONFIG_STUB`` in
+each isolated session. Normalization, config writers, the gateway, and Claude Code remain real.
 """
 
+import json
+import os
 import re
 
 import pytest
-from utils.constants import MANAGED_FIXTURE_CLAUDE_MODELS
+from utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
 from utils.managed import (
-    build_claude_agent_config,
-    build_coding_agent_config,
+    fetch_managed_config_stub,
     is_managed_config_control_plane_cache,
-    set_managed_config_stub,
+    use_managed_config_stub,
 )
 from utils.terminal import AgentTerminal
 
 pytestmark = [pytest.mark.managed_fixture, pytest.mark.claude]
 
-CLAUDE_MANAGED_CONFIG = build_coding_agent_config(
-    "CODING_AGENT_CLAUDE_CODE",
-    build_claude_agent_config(MANAGED_FIXTURE_CLAUDE_MODELS),
-)
+
+@pytest.fixture(scope="module")
+def _managed_claude_config_stub(workspace, tmp_path_factory):
+    return fetch_managed_config_stub(
+        workspace,
+        os.environ["DATABRICKS_BEARER"],
+        tmp_path_factory.mktemp("managed-config-claude"),
+        "managed-config-claude.json",
+        agent="CODING_AGENT_CLAUDE_CODE",
+        provider_service=MANAGED_CLAUDE_PROVIDER_SERVICE,
+    )
 
 
 @pytest.fixture(autouse=True)
-def _managed_claude_config(live_session, tmp_path):
-    set_managed_config_stub(live_session, tmp_path, CLAUDE_MANAGED_CONFIG)
+def _managed_claude_config(live_session, _managed_claude_config_stub):
+    use_managed_config_stub(live_session, _managed_claude_config_stub)
 
 
 def _claude_state_and_agent_files(session):
@@ -50,25 +58,32 @@ def _assert_rejected_before_claude_started(session, result, requested_source, be
     assert result.returncode == 1
     assert requested_source.lower() in output
     assert "admin has specified managed" in output
+    assert MANAGED_CLAUDE_PROVIDER_SERVICE.lower() in output
     assert _claude_state_and_agent_files(session) == before
 
 
-def _assert_managed_models_in_picker(screen):
-    expected = [
-        (model_id.removeprefix("system.ai."), model_id)
-        for model_id in MANAGED_FIXTURE_CLAUDE_MODELS
-    ]
-    rendered = re.findall(
-        r"(?m)^\s*(?:[❯›>]\s*)?\d+\.\s+(\S+)[^\n]*?"
-        r"Managed by your organization\s+\(([^)\n]+)\)\s*$",
-        screen,
+def _assert_managed_provider_in_picker(session, workspace, screen):
+    settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
+    headers = (settings.get("env") or {}).get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
+    expected_header = f"Databricks-Model-Provider-Service: {MANAGED_CLAUDE_PROVIDER_SERVICE}"
+    assert headers.count(expected_header) == 1, settings
+    # MPS models come from Claude Code's native gateway discovery, not a static managed picker.
+    assert not {"availableModels", "enforceAvailableModels", "modelPicker"} & settings.keys(), (
+        settings
     )
-    assert rendered == expected, screen
+    # Native gateway rows deduplicate against built-ins, so exact cached ids need not be rendered.
+    assert re.search(r"(?m)^\s*(?:[❯›>]\s*)?\d+\.\s+\S", screen), screen
 
-
-def _assert_no_claude_owned_gateway_cache_after_launch(session):
-    """Check Claude Code's own cache only after its picker process has exited."""
-    assert not (session.home / ".claude/cache/gateway-models.json").exists()
+    cache = json.loads((session.home / ".claude/cache/gateway-models.json").read_text())
+    assert cache.get("baseUrl") == workspace.rstrip("/") + "/ai-gateway/anthropic", cache
+    assert isinstance(cache.get("fetchedAt"), int) and cache["fetchedAt"] > 0, cache
+    cached_models = cache.get("models")
+    assert isinstance(cached_models, list) and cached_models, cache
+    cached_ids = [model.get("id") for model in cached_models if isinstance(model, dict)]
+    assert len(cached_ids) == len(cached_models), cache
+    assert cached_ids and all(isinstance(model_id, str) and model_id for model_id in cached_ids), (
+        cache
+    )
 
 
 @pytest.mark.tui
@@ -94,8 +109,7 @@ def test_case_01_managed_claude_uses_admin_discovery_after_configure(live_sessio
         screen = tui.open_model_picker()
         tui.exit_normally()
 
-    _assert_managed_models_in_picker(screen)
-    _assert_no_claude_owned_gateway_cache_after_launch(session)
+    _assert_managed_provider_in_picker(session, workspace, screen)
 
 
 @pytest.mark.tui
@@ -111,8 +125,7 @@ def test_case_01_fresh_managed_claude_uses_admin_discovery(live_session, workspa
         screen = tui.open_model_picker()
         tui.exit_normally()
 
-    _assert_managed_models_in_picker(screen)
-    _assert_no_claude_owned_gateway_cache_after_launch(session)
+    _assert_managed_provider_in_picker(session, workspace, screen)
 
 
 @pytest.mark.tui
@@ -138,8 +151,7 @@ def test_case_03_managed_claude_ignores_discovery_disable_after_configure(live_s
         screen = tui.open_model_picker()
         tui.exit_normally()
 
-    _assert_managed_models_in_picker(screen)
-    _assert_no_claude_owned_gateway_cache_after_launch(session)
+    _assert_managed_provider_in_picker(session, workspace, screen)
 
 
 @pytest.mark.tui
@@ -156,8 +168,7 @@ def test_case_03_fresh_managed_claude_ignores_discovery_disable(live_session, wo
         screen = tui.open_model_picker()
         tui.exit_normally()
 
-    _assert_managed_models_in_picker(screen)
-    _assert_no_claude_owned_gateway_cache_after_launch(session)
+    _assert_managed_provider_in_picker(session, workspace, screen)
 
 
 def test_case_05_managed_claude_rejects_provider_override(live_session, workspace, claude_provider):

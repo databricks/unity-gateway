@@ -1,30 +1,40 @@
 """Codex managed-config CUJs for Tests-table cases 2, 4, 6, 8, 10, and 12.
 
-The admin CodingAgentConfig input is injected through ``UCODE_MANAGED_CONFIG_STUB``. Authentication,
-normalization, config writers, the gateway, and Codex remain real. The un-stubbed managed configure
-journey covers the fetch/wire contract.
+The admin CodingAgentConfig is fetched once from the managed workspace, its Codex model source is
+set to the dedicated test MPS, and the result is reused through ``UCODE_MANAGED_CONFIG_STUB`` in
+each isolated session. Normalization, config writers, the gateway, and Codex remain real.
 """
 
+import json
+import os
+import tomllib
+
 import pytest
-from utils.constants import MANAGED_FIXTURE_CODEX_MODELS
+from utils.constants import MANAGED_CODEX_PROVIDER_SERVICE
 from utils.managed import (
-    build_codex_agent_config,
-    build_coding_agent_config,
+    fetch_managed_config_stub,
     is_managed_config_control_plane_cache,
-    set_managed_config_stub,
+    use_managed_config_stub,
 )
 
 pytestmark = [pytest.mark.managed_fixture, pytest.mark.codex]
 
-CODEX_MANAGED_CONFIG = build_coding_agent_config(
-    "CODING_AGENT_CODEX",
-    build_codex_agent_config(models=MANAGED_FIXTURE_CODEX_MODELS),
-)
+
+@pytest.fixture(scope="module")
+def _managed_codex_config_stub(workspace, tmp_path_factory):
+    return fetch_managed_config_stub(
+        workspace,
+        os.environ["DATABRICKS_BEARER"],
+        tmp_path_factory.mktemp("managed-config-codex"),
+        "managed-config-codex.json",
+        agent="CODING_AGENT_CODEX",
+        provider_service=MANAGED_CODEX_PROVIDER_SERVICE,
+    )
 
 
 @pytest.fixture(autouse=True)
-def _managed_codex_config(live_session, tmp_path):
-    set_managed_config_stub(live_session, tmp_path, CODEX_MANAGED_CONFIG)
+def _managed_codex_config(live_session, _managed_codex_config_stub):
+    use_managed_config_stub(live_session, _managed_codex_config_stub)
 
 
 def _codex_state_and_agent_files(session):
@@ -40,6 +50,27 @@ def _codex_state_and_agent_files(session):
         # override. Exclude only that expected cache; every agent-owned state/file stays compared.
         and not is_managed_config_control_plane_cache(session.home, path)
     }
+
+
+def _assert_managed_provider_catalog(session, models):
+    config = tomllib.loads((session.home / ".codex" / "ucode.config.toml").read_text())
+    provider = config["model_providers"][config["model_provider"]]
+    assert (
+        provider["http_headers"]["Databricks-Model-Provider-Service"]
+        == MANAGED_CODEX_PROVIDER_SERVICE
+    ), config
+    assert "model_catalog_json" not in config, config
+
+    catalog_paths = list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
+    assert len(catalog_paths) == 1, catalog_paths
+    catalog = json.loads(catalog_paths[0].read_text())
+    catalog_ids = [
+        model.get("slug")
+        for model in catalog.get("models", [])
+        if isinstance(model, dict) and model.get("visibility") == "list"
+    ]
+    assert catalog_ids, catalog
+    assert models == catalog_ids, (models, catalog)
 
 
 def test_case_02_managed_codex_uses_admin_discovery_after_configure(live_session, workspace):
@@ -60,7 +91,7 @@ def test_case_02_managed_codex_uses_admin_discovery_after_configure(live_session
 
     models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
 
-    assert models == MANAGED_FIXTURE_CODEX_MODELS
+    _assert_managed_provider_catalog(session, models)
 
 
 def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(live_session, workspace):
@@ -73,7 +104,7 @@ def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(live_sessio
         ["--workspace", workspace, "--", "app-server", "--listen", "stdio://"]
     )
 
-    assert models == MANAGED_FIXTURE_CODEX_MODELS
+    _assert_managed_provider_catalog(session, models)
 
 
 def test_case_04_managed_codex_ignores_discovery_disable_after_configure(live_session, workspace):
@@ -95,7 +126,7 @@ def test_case_04_managed_codex_ignores_discovery_disable_after_configure(live_se
 
     models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
 
-    assert models == MANAGED_FIXTURE_CODEX_MODELS
+    _assert_managed_provider_catalog(session, models)
 
 
 def test_case_04_managed_codex_ignores_discovery_disable_from_fresh_state(live_session, workspace):
@@ -110,7 +141,7 @@ def test_case_04_managed_codex_ignores_discovery_disable_from_fresh_state(live_s
         ["--workspace", workspace, "--", "app-server", "--listen", "stdio://"]
     )
 
-    assert models == MANAGED_FIXTURE_CODEX_MODELS
+    _assert_managed_provider_catalog(session, models)
 
 
 def test_case_06_managed_codex_rejects_provider_override_after_configure(
@@ -146,6 +177,7 @@ def test_case_06_managed_codex_rejects_provider_override_after_configure(
     assert result.returncode == 1
     assert f"provider {codex_provider}".lower() in output
     assert "admin has specified managed" in output
+    assert MANAGED_CODEX_PROVIDER_SERVICE.lower() in output
     assert _codex_state_and_agent_files(session) == before
 
 
@@ -176,6 +208,7 @@ def test_case_06_managed_codex_rejects_provider_override_from_fresh_state(
     assert result.returncode == 1
     assert f"provider {codex_provider}".lower() in output
     assert "admin has specified managed" in output
+    assert MANAGED_CODEX_PROVIDER_SERVICE.lower() in output
     assert _codex_state_and_agent_files(session) == before
 
 
@@ -212,6 +245,7 @@ def test_case_08_managed_codex_rejects_model_location_override_after_configure(
     assert result.returncode == 1
     assert "--model-location" in output
     assert "admin has specified managed" in output
+    assert MANAGED_CODEX_PROVIDER_SERVICE.lower() in output
     assert _codex_state_and_agent_files(session) == before
 
 
@@ -242,6 +276,7 @@ def test_case_08_managed_codex_rejects_model_location_override_from_fresh_state(
     assert result.returncode == 1
     assert "--model-location" in output
     assert "admin has specified managed" in output
+    assert MANAGED_CODEX_PROVIDER_SERVICE.lower() in output
     assert _codex_state_and_agent_files(session) == before
 
 
@@ -279,6 +314,7 @@ def test_case_10_managed_codex_rejects_provider_when_discovery_disabled_after_co
     assert result.returncode == 1
     assert f"provider {codex_provider}".lower() in output
     assert "admin has specified managed" in output
+    assert MANAGED_CODEX_PROVIDER_SERVICE.lower() in output
     assert _codex_state_and_agent_files(session) == before
 
 
@@ -310,6 +346,7 @@ def test_case_10_managed_codex_rejects_provider_when_discovery_disabled_from_fre
     assert result.returncode == 1
     assert f"provider {codex_provider}".lower() in output
     assert "admin has specified managed" in output
+    assert MANAGED_CODEX_PROVIDER_SERVICE.lower() in output
     assert _codex_state_and_agent_files(session) == before
 
 
@@ -347,6 +384,7 @@ def test_case_12_managed_codex_rejects_model_location_when_discovery_disabled_af
     assert result.returncode == 1
     assert "--model-location" in output
     assert "admin has specified managed" in output
+    assert MANAGED_CODEX_PROVIDER_SERVICE.lower() in output
     assert _codex_state_and_agent_files(session) == before
 
 
@@ -378,4 +416,5 @@ def test_case_12_managed_codex_rejects_model_location_when_discovery_disabled_fr
     assert result.returncode == 1
     assert "--model-location" in output
     assert "admin has specified managed" in output
+    assert MANAGED_CODEX_PROVIDER_SERVICE.lower() in output
     assert _codex_state_and_agent_files(session) == before

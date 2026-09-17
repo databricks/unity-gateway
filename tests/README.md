@@ -52,8 +52,8 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure against a workspace that publishes a managed CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch |
 | `test_ug_configure_managed_codex_catalog_fallback` | Configure from an injected managed response containing a GPT model absent from Codex's bundled catalog | Actionable metadata warning; conservative catalog entry for the unknown model; real Codex prompt on the valid default model |
-| `test_case_01_*`, `test_case_02_*` | Launch Claude/Codex after managed configure and from fresh state | Each agent exposes exactly its injected admin catalog |
-| `test_case_03_*`, `test_case_04_*` | Disable personal discovery, then launch managed Claude/Codex after configure and from fresh state | Managed discovery still supplies the admin catalog |
+| `test_case_01_*`, `test_case_02_*` | Launch Claude/Codex after managed configure and from fresh state | Exact admin MPS header; Claude opens its native picker after an MPS-scoped cache refresh, and Codex's app server matches its scoped catalog |
+| `test_case_03_*`, `test_case_04_*` | Disable personal discovery, then launch managed Claude/Codex after configure and from fresh state | The managed MPS still supplies each agent's native catalog |
 | `test_case_05_*`, `test_case_06_*` | Pass a provider override to managed Claude/Codex after configure and from fresh state | ug rejects before agent startup without changing agent-owned state/files |
 | `test_case_07_*`, `test_case_08_*` | Pass a model-location override to managed Claude/Codex after configure and from fresh state | ug rejects before agent startup without changing agent-owned state/files |
 | `test_case_09_*`, `test_case_10_*` | Disable discovery and pass a provider override to managed Claude/Codex | ug still rejects both configured and fresh launches |
@@ -66,10 +66,12 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 
 With both agents selected there are **42 live cases** (6 interactive TUI cases),
 **4 managed-workspace cases** (marker `managed`, run against a separate workspace that
-publishes a CodingAgentConfig), **28 managed-fixture cases** (marker `managed_fixture`, with only
-the CodingAgentConfig input injected), and **5 installation checks**. The 12 numbered scenarios
-have explicit configured and fresh journeys (24 cases); the other four collected cases, from three
-test functions, cover managed model and MCP shapes. Parametrization varies argument spelling or routing mode, never hides the
+publishes a CodingAgentConfig), **28 managed-fixture cases** (marker `managed_fixture`), and
+**5 installation checks**. The 12 numbered scenarios fetch the published config once per agent,
+replace that agent's static model source with its dedicated test MPS, drop its incompatible static
+defaults, and reuse the result across 24 explicit configured/fresh journeys. The other four
+collected cases, from three test functions, inject focused model and MCP shapes. Parametrization
+varies argument spelling or routing mode, never hides the
 agent/provider in the test name. Duplicate boot-only cases are incorporated into the Databricks
 configuration TUI journeys.
 Generated-file cleanup and strict app-server stdout assertions remain enforced.
