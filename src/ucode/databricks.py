@@ -26,6 +26,7 @@ from concurrent.futures import (
 )
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from email.message import Message
 from enum import Enum
 from pathlib import Path
 from typing import Literal, NamedTuple, NoReturn, cast, overload
@@ -59,12 +60,14 @@ AI_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-be
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 # v1.0.0 is the release that ships `databricks aitools`.
 MIN_DATABRICKS_CLI_VERSION = (1, 0, 0)
+# v1.11.0 fixes `fs cp` (create -> finalize), which the skills MCP uploads rely on.
+SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION = (1, 11, 0)
 TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # Substrings the Databricks CLI emits when it loses the token-cache write lock
-# to a concurrent `databricks auth token` (e.g. another ucode helper process or
-# MLflow tracing refreshing the shared ~/.databricks/token-cache.json at the same
-# instant). These are transient — the credential is fine, only the local write
-# raced — so we retry rather than treat them as an expired session.
+# to a concurrent `databricks auth token` (e.g. another ucode helper process
+# refreshing the shared ~/.databricks/token-cache.json at the same instant).
+# These are transient — the credential is fine, only the local write raced — so
+# we retry rather than treat them as an expired session.
 _TOKEN_CACHE_LOCK_MARKERS = ("cache update", "exit status 45")
 _TOKEN_FETCH_MAX_ATTEMPTS = 4
 _HTTP_GET_RETRYABLE_STATUS_CODES = frozenset({429})
@@ -260,6 +263,30 @@ def _http_get_retry_delay(retry_after: str | None, retry_index: int) -> float:
     return backoff + random.uniform(0, min(backoff * 0.25, 0.5))
 
 
+# Databricks stamps every authenticated API response with the caller's numeric workspace (org) id in
+# this header, so any call ucode already makes reveals it with no dedicated lookup. Captured by
+# hostname as responses go by; session-only, like the listing caches below.
+_ORG_ID_HEADER = "X-Databricks-Org-Id"
+_WORKSPACE_ORG_IDS: dict[str, str] = {}
+
+
+def _capture_org_id(url: str, headers: Message | None) -> None:
+    org_id = headers.get(_ORG_ID_HEADER) if headers is not None else None
+    hostname = urlparse(url).hostname
+    if org_id and hostname:
+        _WORKSPACE_ORG_IDS[hostname] = org_id
+
+
+def workspace_org_id(workspace: str) -> str | None:
+    """The numeric workspace (org) id for ``workspace``, or None if no response has revealed it yet."""
+    return _WORKSPACE_ORG_IDS.get(workspace_hostname(workspace))
+
+
+def clear_workspace_org_id_cache() -> None:
+    """Forget captured workspace org ids (used by tests, and after a workspace switch)."""
+    _WORKSPACE_ORG_IDS.clear()
+
+
 def _http_get_json(
     url: str,
     token: str,
@@ -286,6 +313,7 @@ def _http_get_json(
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
                 body = response.read().decode("utf-8")
+                _capture_org_id(url, getattr(response, "headers", None))
             _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
             if _debug_enabled():
                 _debug("body", body[:4000])
@@ -434,6 +462,7 @@ def _http_get_bytes(url: str, token: str, *, timeout: int = 10) -> tuple[bytes |
     try:
         with urllib_request.urlopen(request, timeout=timeout) as response:
             body = response.read()
+            _capture_org_id(url, getattr(response, "headers", None))
         _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
         return body, None
     except urllib_error.HTTPError as exc:
@@ -594,114 +623,6 @@ def get_current_user_name(workspace: str, token: str) -> str | None:
     return None
 
 
-# Experiment tag Databricks sets when an experiment's traces are written to a
-# Unity Catalog table. Its value is the UC destination, e.g.
-# "my_catalog.my_schema.my_table". A plain (file/DBFS-backed) experiment does
-# not carry this tag, so its presence is our signal that traces land in UC.
-UC_TRACE_DESTINATION_TAG = "mlflow.experiment.databricksTraceDestinationPath"
-
-
-def _experiment_tags(experiment: dict) -> dict[str, str | None]:
-    """Flatten an experiment's ``tags`` list ([{key, value}, ...]) into a dict."""
-    out: dict[str, str | None] = {}
-    tags = experiment.get("tags")
-    if isinstance(tags, list):
-        for tag in tags:
-            if isinstance(tag, dict) and isinstance(tag.get("key"), str):
-                out[tag["key"]] = tag.get("value")
-    return out
-
-
-def _uc_trace_destination(experiment: dict) -> str | None:
-    """The Unity Catalog destination (``catalog.schema.table``) an experiment
-    logs traces to, or None when it isn't UC-backed. Any three-part UC name
-    qualifies — the specific catalog/schema/table is not constrained."""
-    value = _experiment_tags(experiment).get(UC_TRACE_DESTINATION_TAG)
-    if isinstance(value, str):
-        parts = value.split(".")
-        if len(parts) == 3 and all(parts):
-            return value
-    return None
-
-
-def find_uc_backed_experiment(
-    workspace: str, token: str, leaf_name: str
-) -> tuple[dict | None, str | None]:
-    """Find an existing experiment whose final path segment is ``leaf_name`` and
-    whose traces are backed by Unity Catalog.
-
-    Returns (experiment, reason). On success ``experiment`` is
-    ``{"experiment_id", "experiment_name", "uc_destination"}`` and reason is
-    None. On failure ``experiment`` is None and reason explains why (no such
-    experiment, or it exists but isn't UC-backed) so the caller can tell the
-    user to create one."""
-    hostname = workspace_hostname(workspace)
-    # Leaf-match in the filter (anything ending in the name), then confirm the
-    # exact leaf segment in Python so "/Users/<me>/ucode-traces" matches but
-    # "team-ucode-traces" does not.
-    safe_leaf = leaf_name.replace("'", "")
-    payload, reason = _http_post_json(
-        f"https://{hostname}/api/2.0/mlflow/experiments/search",
-        token,
-        {"filter": f"name LIKE '%{safe_leaf}'", "max_results": 1000},
-    )
-    if not isinstance(payload, dict):
-        return None, reason or "could not search MLflow experiments"
-
-    experiments = payload.get("experiments")
-    named = [
-        exp
-        for exp in (experiments if isinstance(experiments, list) else [])
-        if isinstance(exp, dict)
-        and str(exp.get("name") or "").rsplit("/", 1)[-1] == leaf_name
-        and exp.get("experiment_id")
-    ]
-    if not named:
-        return None, f"no experiment named '{leaf_name}' exists on this workspace"
-
-    for exp in named:
-        dest = _uc_trace_destination(exp)
-        if dest:
-            return {
-                "experiment_id": str(exp["experiment_id"]),
-                "experiment_name": str(exp.get("name") or leaf_name),
-                "uc_destination": dest,
-            }, None
-
-    return (
-        None,
-        f"experiment '{leaf_name}' exists but its traces are not backed by Unity Catalog",
-    )
-
-
-def resolve_sql_warehouse_id(workspace: str, token: str) -> tuple[str | None, str | None]:
-    """Pick a SQL warehouse for writing traces to a UC-backed experiment.
-
-    Writing traces to a Unity Catalog table requires a SQL warehouse
-    (``MLFLOW_TRACING_SQL_WAREHOUSE_ID``); without one the MLflow exporter
-    silently drops them. We prefer a RUNNING warehouse so the first trace isn't
-    blocked on a cold start, falling back to any existing warehouse (a stopped
-    one auto-starts on first query). Returns (warehouse_id, reason); reason is
-    None on success, else explains why none could be resolved."""
-    hostname = workspace_hostname(workspace)
-    payload, reason = _http_get_json(f"https://{hostname}/api/2.0/sql/warehouses", token)
-    if not isinstance(payload, dict):
-        return None, reason or "could not list SQL warehouses"
-
-    warehouses = payload.get("warehouses")
-    warehouses = (
-        [w for w in warehouses if isinstance(w, dict) and w.get("id")]
-        if isinstance(warehouses, list)
-        else []
-    )
-    if not warehouses:
-        return None, "no SQL warehouse exists on this workspace"
-
-    running = next((w for w in warehouses if str(w.get("state")).upper() == "RUNNING"), None)
-    chosen = running or warehouses[0]
-    return str(chosen["id"]), None
-
-
 @overload
 def run(
     args: list[str] | str,
@@ -788,7 +709,9 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
         raise RuntimeError("Failed to install/upgrade Databricks CLI automatically.") from exc
 
 
-def ensure_databricks_cli_version() -> None:
+def ensure_databricks_cli_version(
+    minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
+) -> None:
     try:
         result = run(
             ["databricks", "--version"],
@@ -807,14 +730,14 @@ def ensure_databricks_cli_version() -> None:
         raise RuntimeError(
             f"Could not parse Databricks CLI version from `databricks --version` output: {output!r}"
         )
-    if version < MIN_DATABRICKS_CLI_VERSION:
+    if version < minimum:
         current = ".".join(str(n) for n in version)
-        required = ".".join(str(n) for n in MIN_DATABRICKS_CLI_VERSION)
+        required = ".".join(str(n) for n in minimum)
         print_warning(
             f"Databricks CLI v{current} is too old (need v{required} or newer). Upgrading..."
         )
         _run_databricks_cli_installer(brew_subcommand="upgrade")
-        ensure_databricks_cli_version()
+        ensure_databricks_cli_version(minimum)
 
 
 def databricks_cli_version() -> tuple[int, int, int] | None:
@@ -849,9 +772,11 @@ def upgrade_databricks_cli() -> bool:
     return True
 
 
-def install_databricks_cli() -> None:
+def install_databricks_cli(
+    minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
+) -> None:
     if shutil.which("databricks"):
-        ensure_databricks_cli_version()
+        ensure_databricks_cli_version(minimum)
         return
 
     print_section("Bootstrap")
@@ -862,7 +787,7 @@ def install_databricks_cli() -> None:
         raise RuntimeError(
             "Databricks CLI install completed, but `databricks` is still not on PATH."
         )
-    ensure_databricks_cli_version()
+    ensure_databricks_cli_version(minimum)
 
 
 def install_ai_tools(agent_tokens: list[str], profile: str | None = None) -> None:
