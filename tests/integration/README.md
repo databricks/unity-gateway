@@ -139,9 +139,12 @@ Those choices are recorded in `versions.json`. No service is created or modified
 A missing service or permission fails the selected CUJ, rather than skipping it.
 
 There are **39 live cases** (including 4 TUI journeys) and **5 installation
-checks** with both agents. A separate **2 managed-workspace cases** (one per agent,
-marker `managed`) run against a workspace that publishes a CodingAgentConfig; see
-"Managed-workspace journeys" below. See the named coverage and gaps matrix in
+checks** with both agents. A separate **3 managed-workspace cases** (one per agent
+plus an idempotent re-configure, marker `managed`) run against a workspace that publishes a CodingAgentConfig; see
+"Managed-workspace journeys" below. A further **4 `managed_fixture` cases** inject the admin config
+locally (via `UCODE_MANAGED_CONFIG_STUB`) to cover shapes the live workspace does not publish; each
+differs from the published config in what it asserts so it proves the injected config drove configure.
+See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -237,8 +240,9 @@ compensate for capacity failures. Both matrices use `fail-fast: false` and uploa
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, workspace validation, smoke, and
 both full lanes to pass. The **Managed config** lanes run for signal but are temporarily
-non-blocking (`continue-on-error`), because the managed e2e workspace is not yet reachable from
-CI runners; they neither fail the workflow nor gate merges until that access is sorted. The
+non-blocking (`continue-on-error`): the managed workspace is now runner-reachable, but the lanes
+stay non-blocking until the managed-config apply path is proven stable. They neither fail the
+workflow nor gate merges until then. The
 existing required `e2e` context also waits for the complete integration workflow, so integration
 cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
 
@@ -251,6 +255,11 @@ end: `ug configure` applies the admin config to every enabled agent with no agen
 each agent's generated config exposes exactly the admin's static `model_services`
 (Claude's `availableModels`/`modelPicker`, Codex's model catalog). The expected model ids live in
 the test and mirror the published config; update them there if the admin list changes.
+
+Treat that published CodingAgentConfig as shared CI fixture state. The managed lanes assert its
+exact model ids and its both-agent enablement, so editing the managed workspace's config (models,
+enabled agents, or defaults) breaks these lanes until the constants in `test_ug_configure_managed.py`
+are updated to match. Do not change it casually.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:
