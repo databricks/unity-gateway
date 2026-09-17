@@ -3620,6 +3620,31 @@ class TestConfigureSharedStateUsePat:
         assert state["codex_models"] == ["system.ai.gpt-5-6-sol"]
         assert state["oss_models"] == ["system.ai.glm-5-2"]
 
+    def test_pi_only_configure_persists_discovered_oss_models(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: (
+                {},
+                [],
+                [],
+                ["system.ai.kimi-k2-7-code", "system.ai.glm-5-2"],
+                None,
+            ),
+        )
+
+        state = cli_mod.configure_shared_state(
+            self.WS,
+            profile="DEFAULT",
+            tools=["pi"],
+        )
+
+        assert state["oss_models"] == [
+            "system.ai.kimi-k2-7-code",
+            "system.ai.glm-5-2",
+        ]
+
     def _stub_with_fable(self, monkeypatch):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         monkeypatch.setattr(

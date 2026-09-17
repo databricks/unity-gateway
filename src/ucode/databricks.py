@@ -3161,6 +3161,7 @@ def build_pi_base_urls(workspace: str) -> dict[str, str]:
         "claude": build_tool_base_url("claude", workspace),
         "openai": build_tool_base_url("codex", workspace),
         "gemini": build_tool_base_url("gemini", workspace) + "/v1beta",
+        "oss": f"{workspace}/ai-gateway/mlflow/v1",
     }
 
 

@@ -103,9 +103,9 @@ def managed_unservable_models(managed: dict, tool: str) -> list[str]:
     """The models the manifest names for ``tool`` when it has no provider to serve any of them.
 
     Only non-empty when *every* named model is unservable, which is when the translation yields
-    nothing and the developer's own models stand — so the caller can say why the admin's list had no
-    effect. opencode has no OpenAI provider and pi has no OSS provider, so each can be handed a
-    valid model FQN it cannot route.
+    nothing and the developer's own models stand, so the caller can say why the admin's list had no
+    effect. OpenCode has no OpenAI provider, and either tool can be handed an unrecognized model FQN
+    it cannot route.
     """
     if tool not in ("opencode", "pi"):
         return []
@@ -118,7 +118,7 @@ def managed_unservable_models(managed: dict, tool: str) -> list[str]:
         else [
             m
             for m in models
-            if classify_model_family(m) in (*ANTHROPIC_FAMILIES, "codex", "gemini")
+            if classify_model_family(m) in (*ANTHROPIC_FAMILIES, "codex", "gemini", "oss")
         ]
     )
     return [] if servable else models

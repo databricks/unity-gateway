@@ -557,11 +557,10 @@ class TestManagedUnservableModels:
     def _managed(tool, models):
         return {"enabled_agents": {tool: {"model_config": {"models": models}}}}
 
-    def test_pi_oss_only_is_unservable(self):
-        # Pi has no OSS provider block.
-        assert managed_unservable_models(
-            self._managed("pi", ["system.ai.kimi-k2-7-code"]), "pi"
-        ) == ["system.ai.kimi-k2-7-code"]
+    def test_pi_oss_only_is_servable(self):
+        assert (
+            managed_unservable_models(self._managed("pi", ["system.ai.kimi-k2-7-code"]), "pi") == []
+        )
 
     def test_opencode_gpt_only_is_unservable(self):
         # OpenCode has no OpenAI provider block.

@@ -1,12 +1,13 @@
 """Pi coding agent: writes a ucode-private models.json with Databricks-backed providers.
 
-Pi (https://pi.dev) is a multi-provider coding agent. We register three
+Pi (https://pi.dev) is a multi-provider coding agent. We register four
 providers in its `models.json`, each speaking the API dialect best suited to
 that family's gateway path:
 
 - `databricks-claude`  (api: anthropic-messages)       → /ai-gateway/anthropic
 - `databricks-openai`  (api: openai-responses)         → /ai-gateway/codex/v1
 - `databricks-gemini`  (api: google-generative-ai)     → /ai-gateway/gemini/v1beta
+- `databricks-oss`     (api: openai-completions)       → /ai-gateway/mlflow/v1
 
 Per-provider `compat` flags work around fields the gateway translators reject:
 
@@ -15,11 +16,10 @@ Per-provider `compat` flags work around fields the gateway translators reject:
   pi uses for every request. With this flag pi omits the per-tool field and
   sends the legacy `anthropic-beta: fine-grained-tool-streaming-...` header
   instead, which the gateway accepts.
-
-OSS / Databricks-foundation models (Llama, Qwen, etc.) are not exposed via
-pi today — they live behind /ai-gateway/mlflow/v1 with per-model
-`max_tokens` caps that pi has no global way to honor without per-model
-config we don't currently maintain.
+- oss: `supportsStore: false` and `supportsStrictMode: false` make Pi omit
+  fields the MLflow chat-completions gateway rejects. Known per-model token
+  limits are written into Pi's model entries so requests stay within the
+  gateway's output caps.
 
 Each provider's `apiKey` is pi's `!command` config value rather than a baked
 bearer, so pi mints one per request via `ug auth-token` and nothing that
@@ -48,6 +48,7 @@ from ucode.databricks import (
     build_pi_base_urls,
     classify_model_family,
     get_databricks_token,
+    model_token_limits,
 )
 from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
@@ -73,13 +74,18 @@ PROVIDER_NAMES = (
     "databricks-claude",
     "databricks-openai",
     "databricks-gemini",
+    "databricks-oss",
 )
 
 PROVIDER_KEYS: list[list[str]] = [["providers", name] for name in PROVIDER_NAMES]
 
 # Old provider names earlier ucode versions wrote; cleaned up on each write so
 # users don't end up with stale entries pointing at routes that 400.
-LEGACY_PROVIDER_NAMES = ("databricks-anthropic", "databricks-codex", "databricks-oss")
+LEGACY_PROVIDER_NAMES = (
+    "databricks-anthropic",
+    "databricks-codex",
+    "databricks-kimi",
+)
 
 
 def _resolve_model_selector(
@@ -87,6 +93,7 @@ def _resolve_model_selector(
     claude_models: dict[str, str],
     codex_models: list[str],
     gemini_models: list[str],
+    oss_models: list[str],
 ) -> str:
     """Return a Pi model selector in `<provider>/<model>` form when possible."""
     for name in PROVIDER_NAMES:
@@ -98,7 +105,19 @@ def _resolve_model_selector(
         return f"databricks-openai/{model}"
     if model in gemini_models:
         return f"databricks-gemini/{model}"
+    if model in oss_models:
+        return f"databricks-oss/{model}"
     return model
+
+
+def _oss_model_entry(model: str) -> dict:
+    """Return a Pi model entry with known MLflow route limits."""
+    entry: dict = {"id": model}
+    limits = model_token_limits(model)
+    if limits is not None:
+        entry["contextWindow"] = limits["context"]
+        entry["maxTokens"] = limits["output"]
+    return entry
 
 
 def render_overlay(
@@ -108,6 +127,7 @@ def render_overlay(
     claude_models: dict[str, str],
     codex_models: list[str],
     gemini_models: list[str],
+    oss_models: list[str],
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Pi's private agent config.
 
@@ -154,8 +174,21 @@ def render_overlay(
             "models": [{"id": m} for m in gemini_models],
         }
         keys.append(["providers", "databricks-gemini"])
+    if oss_models:
+        providers["databricks-oss"] = {
+            "baseUrl": pi_base_urls["oss"],
+            "api": "openai-completions",
+            "apiKey": api_key,
+            "authHeader": True,
+            "compat": {"supportsStore": False, "supportsStrictMode": False},
+            "headers": ua_headers,
+            "models": [_oss_model_entry(m) for m in oss_models],
+        }
+        keys.append(["providers", "databricks-oss"])
     overlay: dict = {
-        "model": _resolve_model_selector(model, claude_models, codex_models, gemini_models),
+        "model": _resolve_model_selector(
+            model, claude_models, codex_models, gemini_models, oss_models
+        ),
     }
     if providers:
         overlay["providers"] = providers
@@ -189,10 +222,11 @@ def write_tool_config(
         token = get_databricks_token(state["workspace"], state.get("profile"))
     pi_base_urls = state.get("base_urls", {}).get("pi") or build_pi_base_urls(state["workspace"])
     managed_families = _managed_model_families(state)
-    claude_models, codex_models, gemini_models = managed_families or (
+    claude_models, codex_models, gemini_models, oss_models = managed_families or (
         state.get("claude_models") or {},
         state.get("codex_models") or [],
         state.get("gemini_models") or [],
+        state.get("oss_models") or [],
     )
     overlay, managed_keys = render_overlay(
         model,
@@ -201,6 +235,7 @@ def write_tool_config(
         claude_models,
         codex_models,
         gemini_models,
+        oss_models,
     )
     existing = read_json_safe(PI_CONFIG_PATH)
     providers = existing.get("providers")
@@ -228,7 +263,9 @@ def _write_settings(model_selector: str) -> None:
     write_json_file(PI_SETTINGS_PATH, merged)
 
 
-def _managed_model_families(state: dict) -> tuple[dict[str, str], list[str], list[str]] | None:
+def _managed_model_families(
+    state: dict,
+) -> tuple[dict[str, str], list[str], list[str], list[str]] | None:
     """Split a managed config's ``pi_models`` into the per-family inputs Pi's providers need.
 
     Pi builds one provider block per family, so a flat list has to be classified back out. Returns
@@ -241,6 +278,7 @@ def _managed_model_families(state: dict) -> tuple[dict[str, str], list[str], lis
     claude: dict[str, str] = {}
     codex: list[str] = []
     gemini: list[str] = []
+    oss: list[str] = []
     for model in managed:
         if not isinstance(model, str) or not model.strip():
             continue
@@ -251,13 +289,15 @@ def _managed_model_families(state: dict) -> tuple[dict[str, str], list[str], lis
             codex.append(model)
         elif family == "gemini":
             gemini.append(model)
-    if not (claude or codex or gemini):
+        elif family == "oss":
+            oss.append(model)
+    if not (claude or codex or gemini or oss):
         return None
-    return claude, codex, gemini
+    return claude, codex, gemini, oss
 
 
 def default_model(state: dict) -> str | None:
-    """Prefer Claude opus → sonnet → haiku; fall back to codex, gemini.
+    """Prefer Claude opus → sonnet → haiku; fall back to codex, gemini, OSS.
 
     A managed config's ``pi_default_model`` and ``pi_models`` both win outright: the former is
     the admin's chosen session start, the latter their allowlist. Workspace-wide discovery falls back.
@@ -275,7 +315,10 @@ def default_model(state: dict) -> str | None:
     if codex_models:
         return codex_models[0]
     gemini_models = state.get("gemini_models") or []
-    return gemini_models[0] if gemini_models else next(iter(claude_models.values()), None)
+    if gemini_models:
+        return gemini_models[0]
+    oss_models = state.get("oss_models") or []
+    return oss_models[0] if oss_models else next(iter(claude_models.values()), None)
 
 
 def _configure_launch(state: dict) -> str:
