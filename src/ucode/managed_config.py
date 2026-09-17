@@ -7,8 +7,9 @@ local file, ``~/.ucode/managed-config.json`` (0600), used on the launch path:
 - fetching the raw manifest (via :func:`ucode.databricks.fetch_managed_coding_agent_configs`),
 - normalizing the proto-JSON into a stable internal dict keyed by ucode's own tool names,
 - persisting it via :func:`save_managed_state` / :func:`load_managed_state` — the launch path pulls
-  the published copy into this file, and
-- re-reading it on each launch, falling back to the persisted copy when the read fails.
+  the published copy into this file, stamped with a ``retrieved_at`` and its outcome, and
+- re-reading it on each launch (reusing a read younger than :data:`MANAGED_CONFIG_TTL` rather than
+  re-fetching), falling back to the persisted copy when the read fails.
 
 There is deliberately one file: the workspace is the source of truth, so the pulled copy lives in
 ``managed-config.json`` and a launch re-reads it from there.
@@ -26,7 +27,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple, cast
 
@@ -63,6 +64,17 @@ AGENT_NAME_TO_TOOL: dict[str, str] = {
 }
 
 MAX_SPEC_VERSION = 1
+
+# Launch-path cache TTL. `ug` / `ug <agent>` reuse a managed-config read younger than this instead of
+# hitting the control plane every launch; `ug configure` forces a fresh read (force_refresh=True).
+MANAGED_CONFIG_TTL = timedelta(minutes=5)
+
+# The last authoritative read's outcome, persisted alongside the config so a cached wrapper can be
+# replayed without a GET. "none" and "feature_disabled" both persist an empty config, so the outcome
+# is what tells them apart.
+_OUTCOME_PUBLISHED = "published"
+_OUTCOME_NONE = "none"
+_OUTCOME_FEATURE_DISABLED = "feature_disabled"
 
 # A per-family default-model key in the `default_models` map, e.g. `default_opus_model`. Matches the
 # server's `default_.+_model` validation so a new Claude family needs no ucode change. The bare
@@ -604,7 +616,12 @@ def _is_unsupported_spec(reason: str) -> bool:
     return "spec_version" in reason.lower()
 
 
-def save_managed_state(workspace: str, config: dict) -> None:
+def _utcnow() -> datetime:
+    """Current UTC time. A seam so the launch-path cache TTL can be exercised deterministically."""
+    return datetime.now(UTC)
+
+
+def save_managed_state(workspace: str, config: dict, *, outcome: str | None = None) -> None:
     """Persist the raw managed config to ``~/.ucode/managed-config.json`` at mode 0600.
 
     ``config`` is stored verbatim as the gateway returned it (byte-identical to the GET), so the file
@@ -615,8 +632,15 @@ def save_managed_state(workspace: str, config: dict) -> None:
     An empty ``config`` records "this workspace has no managed config", which matters because the
     file doubles as the fallback when a later read fails: without it, removing a config server-side
     would leave the old one on disk to be reapplied after a transient outage.
+
+    ``outcome``, when set, stamps the read time and its result (published / none / feature_disabled)
+    so a later launch can reuse this read within :data:`MANAGED_CONFIG_TTL` without a GET. Only an
+    authoritative read passes it; a failed refresh persists nothing and so never advances the stamp.
     """
     payload: dict = {"workspace": workspace, "config": config}
+    if outcome is not None:
+        payload["retrieved_at"] = _utcnow().isoformat()
+        payload["outcome"] = outcome
     if config_io.is_dry_run():
         # Print rather than write, matching how the agent config writers behave under --dry-run.
         console.print(
@@ -681,15 +705,44 @@ def managed_state_workspace() -> str | None:
     return workspace if isinstance(workspace, str) and workspace else None
 
 
-def refresh_managed_config(state: dict) -> ManagedConfigResult:
-    """Fetch the workspace's managed config fresh and persist it as a :class:`ManagedConfigResult`.
+def _cached_result_if_fresh(workspace: str) -> ManagedConfigResult | None:
+    """The persisted read for ``workspace`` replayed as a result, if still within the TTL.
+
+    Returns None (forcing a fresh fetch) when the wrapper is for another workspace, predates this
+    cache format (no ``outcome`` / ``retrieved_at``), or its stamp is missing, unparseable, in the
+    future, or at least :data:`MANAGED_CONFIG_TTL` old.
+    """
+    data = config_io.read_json_safe(MANAGED_CONFIG_PATH)
+    if data.get("workspace") != workspace:
+        return None
+    # Reuses the RFC-3339 parser the update-time watermark uses; None (missing/unparseable) is stale.
+    retrieved_at = _parse_update_time(_str(data.get("retrieved_at")))
+    if retrieved_at is None:
+        return None
+    age = _utcnow() - retrieved_at
+    if age < timedelta(0) or age >= MANAGED_CONFIG_TTL:
+        return None
+    outcome = data.get("outcome")
+    if outcome == _OUTCOME_FEATURE_DISABLED:
+        return ManagedConfigResult(None, True)
+    if outcome == _OUTCOME_NONE:
+        return ManagedConfigResult(None, False)
+    if outcome == _OUTCOME_PUBLISHED and isinstance(data.get("config"), dict):
+        return ManagedConfigResult(normalize_managed_config(data["config"]), False)
+    return None
+
+
+def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> ManagedConfigResult:
+    """Fetch the workspace's managed config and persist it as a :class:`ManagedConfigResult`.
 
     Runs on every launch so a developer picks up an admin's edits without re-running
-    ``ucode configure``. It always hits the control plane; whether the fetched config is *newer* than
-    what was last applied — and so whether the launch re-applies the settings — is the caller's
-    decision, via :func:`managed_config_is_newer` against the persisted applied watermark. The
-    manifest is None when the workspace has no managed config — the normal case for a workspace whose
-    admin hasn't published one.
+    ``ucode configure``. A launch reuses the last read when it is younger than
+    :data:`MANAGED_CONFIG_TTL`, so back-to-back launches don't each hit the control plane;
+    ``force_refresh`` (used by ``ug configure``) skips the cache and always reads fresh. Whether the
+    fetched config is *newer* than what was last applied, and so whether the launch re-applies the
+    settings, is the caller's decision, via :func:`managed_config_is_newer` against the persisted
+    applied watermark. The manifest is None when the workspace has no managed config, the normal
+    case for a workspace whose admin hasn't published one.
 
     A failed fetch never blocks the launch: an unreachable control plane shouldn't stop someone from
     coding. Instead it falls back to the last config persisted for this workspace, so the admin's
@@ -707,6 +760,10 @@ def refresh_managed_config(state: dict) -> ManagedConfigResult:
     workspace = state.get("workspace")
     if not workspace:
         return ManagedConfigResult(None, False)
+    if not force_refresh:
+        cached = _cached_result_if_fresh(workspace)
+        if cached is not None:
+            return cached
     try:
         token = get_databricks_token(workspace, state.get("profile"))
     except RuntimeError as exc:
@@ -714,7 +771,7 @@ def refresh_managed_config(state: dict) -> ManagedConfigResult:
     raw, reason = get_managed_config(workspace, token)
     if reason is not None:
         if _is_feature_disabled(reason):
-            save_managed_state(workspace, {})
+            save_managed_state(workspace, {}, outcome=_OUTCOME_FEATURE_DISABLED)
             return ManagedConfigResult(None, True)
         fallback = _persisted_fallback(workspace, reason, refused=_is_permission_denied(reason))
         return ManagedConfigResult(fallback, False)
@@ -722,10 +779,10 @@ def refresh_managed_config(state: dict) -> ManagedConfigResult:
         # Record that this workspace has no config, rather than leaving an earlier one on disk:
         # the file doubles as the fallback above, so a removed policy would otherwise come back
         # into force after the next transient outage.
-        save_managed_state(workspace, {})
+        save_managed_state(workspace, {}, outcome=_OUTCOME_NONE)
         return ManagedConfigResult(None, False)
     # Persist the raw config verbatim; hand callers the normalized manifest they expect.
-    save_managed_state(workspace, raw)
+    save_managed_state(workspace, raw, outcome=_OUTCOME_PUBLISHED)
     return ManagedConfigResult(normalize_managed_config(raw), False)
 
 

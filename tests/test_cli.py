@@ -2751,7 +2751,7 @@ class TestConfigureAgentsSelection:
         # `ug configure` now fetches the managed config, which shells out to the `databricks` CLI.
         # Default it to absent so these personal-flow tests never hit the CLI (it isn't on CI);
         # the managed-branch test overrides this.
-        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda state: (None, False))
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda state, **_k: (None, False))
 
     @pytest.mark.parametrize(("keys", "expected"), [(" \r", ["codex"]), ("\r", [])])
     def test_interactive_picker_installs_only_checked_agents(self, monkeypatch, keys, expected):
@@ -2863,7 +2863,7 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(
             cli_mod,
             "refresh_managed_config",
-            lambda s: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
+            lambda s, **_k: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
         )
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: True)
         installed: list[str] = []
@@ -2898,7 +2898,7 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(
             cli_mod,
             "refresh_managed_config",
-            lambda s: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
+            lambda s, **_k: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
         )
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: False)
         monkeypatch.setattr(
@@ -2918,7 +2918,7 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(
             cli_mod,
             "refresh_managed_config",
-            lambda s: ({"budget_policy": {"policy_id": "budget"}}, False),
+            lambda s, **_k: ({"budget_policy": {"policy_id": "budget"}}, False),
         )
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: t == "claude")
         monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
@@ -2949,7 +2949,7 @@ class TestConfigureAgentsSelection:
             "enabled_agents": {"claude": {}, "codex": {}},
             "mcp_servers": {"names": ["x.y.z"]},
         }
-        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s: (managed, False))
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s, **_k: (managed, False))
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: True)
         monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
         monkeypatch.setattr(cli_mod, "resolve_state", lambda m, s, tool: s)
@@ -2982,7 +2982,7 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(
             cli_mod,
             "refresh_managed_config",
-            lambda s: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
+            lambda s, **_k: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
         )
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: True)
         monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
@@ -3047,7 +3047,7 @@ class TestConfigureAgentsSelection:
 
         state = {**MINIMAL_STATE, "available_tools": []}
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
-        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s: (None, False))
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s, **_k: (None, False))
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: t == "claude")
         monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
         monkeypatch.setattr(
@@ -3793,7 +3793,7 @@ class TestConfigureSharedStateUsePat:
 class TestConfigureNoLongerValidates:
     @pytest.fixture(autouse=True)
     def _no_managed_config(self, monkeypatch):
-        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda state: (None, False))
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda state, **_k: (None, False))
 
     def test_configure_completes_without_probe(self, monkeypatch):
         import ucode.cli as cli_mod

@@ -36,7 +36,7 @@ def build_claude_agent_config(models: list[str]) -> dict:
     }
 
 
-def build_codex_agent_config(models: list[str]) -> dict:
+def build_codex_agent_config(*, models: list[str]) -> dict:
     return {
         "agent": "CODING_AGENT_CODEX",
         "config": {
