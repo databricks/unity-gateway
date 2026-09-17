@@ -100,6 +100,33 @@ profile. V2 AI Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
 
+Sign in to connection-backed servers with `ug mcp login`:
+
+```bash
+# Show every configured connection-backed MCP service with its sign-in status,
+# and pick which to sign in to.
+ug mcp login
+
+# Sign in to specific services non-interactively (full or short names).
+ug mcp login --services system.ai.github,system.ai.slack
+
+# Scope to specific agents' services.
+ug mcp login --agents claude,codex
+```
+
+Some MCP services (e.g. `system.ai.github`) are backed by a Unity Catalog connection and only vend
+their tools once you've completed a one-time per-user sign-in to the underlying SaaS. `ug mcp login`
+uses the same configured-server set as `ug mcp list` (including servers delivered through the
+agents' OS-managed files), keeping only the connection-backed AI Gateway MCP services, and shows
+each one's sign-in status (`signed in` / `needs sign-in`). Sign-in opens your browser to complete
+the connection's login (via `databricks auth login`), then mints the credential. The credential is
+**per-user and shared across every agent** — signing in once through any agent (or here) unblocks
+that MCP service for Claude Code, Cursor, Codex, and the rest. It works for any connection-backed
+MCP service, not just `system.ai.*`.
+
+> Requires a Databricks CLI that supports `--resource` (databricks/cli#6621); `ug mcp login`
+> reports a clear message if your CLI is too old.
+
 ## Skills
 
 Unity Catalog Skills can be registered as MCP tools or downloaded into local
@@ -130,6 +157,7 @@ ug skills remove --skill main.default.my-skill
 | `ug mcp add` | Add MCP servers without removing existing registrations |
 | `ug mcp remove` | Unregister configured MCP servers |
 | `ug mcp list` | List configured MCP servers and connection status |
+| `ug mcp login` | Sign in to connection-backed MCP services (interactive, or `--services`) |
 | `ug skills list` | List configured skills and how each was configured |
 | `ug skills add` | Add skill MCP scopes or download skills |
 | `ug skills remove` | Remove skill MCP scopes or downloaded skills |

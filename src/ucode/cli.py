@@ -115,6 +115,7 @@ from ucode.mcp import (
     revert_mcp_configs,
     skill_locations_for_client,
 )
+from ucode.mcp_login import login_mcp_command
 from ucode.skills_download import (
     configure_location_skills_download_command,
     configure_selected_skills_download_command,
@@ -1327,6 +1328,49 @@ def mcp_list(
     )
     try:
         list_mcp_command(agents=requested_agents)
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    except KeyboardInterrupt:
+        print_err("Interrupted.")
+        raise typer.Exit(130) from None
+
+
+@mcp_app.command("login")
+def mcp_login(
+    services: Annotated[
+        str | None,
+        typer.Option(
+            "--services",
+            help="Sign in to this comma-separated subset of MCP services non-interactively. "
+            "Full names like `system.ai.github` or bare short names like `github` both work. "
+            "Omit --services to show the interactive picker with each service's sign-in status.",
+        ),
+    ] = None,
+    agents: Annotated[
+        str | None,
+        typer.Option(
+            "--agents",
+            help="Comma-separated coding agents to scope to (e.g. claude,codex). Without "
+            "--agents, considers the MCP services configured for every agent.",
+        ),
+    ] = None,
+) -> None:
+    """Sign in to the connection-backed MCP services your agents use.
+
+    Shows which configured MCP services are already signed in vs. need a
+    connection sign-in, and runs the sign-in for the ones you pick (or all named
+    with --services). Sign-in uses `databricks auth login --resource`, so it
+    works for any connection-backed MCP service (not just `system.ai.*`).
+    """
+    selected = None if services is None else {s.strip() for s in services.split(",") if s.strip()}
+    requested_agents = (
+        None
+        if agents is None
+        else ({a.strip().lower() for a in agents.split(",") if a.strip()} or None)
+    )
+    try:
+        login_mcp_command(services=selected, agents=requested_agents)
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
