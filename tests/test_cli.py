@@ -592,6 +592,142 @@ class TestSubcommandRouting:
 
         assert options.launch_smart_routing is expected
 
+    def test_claude_without_user_pin_leaves_model_to_harness(self):
+        options = cli_mod._launch_options(
+            "claude",
+            [],
+            smart_routing_enabled=True,
+            explicit_prompt=False,
+            user_pinned_model=None,
+            provider=None,
+        )
+
+        assert options.launch_smart_routing is True
+        assert options.user_pinned_model is None
+
+    def test_launch_options_carry_user_pin(self):
+        options = cli_mod.LaunchOptions(user_pinned_model="user-model")
+        assert options.user_pinned_model == "user-model"
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    @pytest.mark.parametrize("smart_routing_enabled", [False, True])
+    @pytest.mark.parametrize("managed_default", [None, "managed-model"])
+    def test_managed_model_and_routing_launch_matrix(
+        self, monkeypatch, tool, smart_routing_enabled, managed_default
+    ):
+        """A managed default selects the starting model without suppressing managed routing."""
+        state = dict(MINIMAL_STATE)
+        agent_config = {"smart_routing_enabled": smart_routing_enabled}
+        if managed_default is not None:
+            agent_config["model_config"] = {"default_model": managed_default}
+        managed = {"enabled_agents": {tool: agent_config}}
+        configured: list[dict] = []
+
+        def capture_configure(_tool, configured_state, model, **kwargs):
+            configured.append({"state": configured_state, "model": model, **kwargs})
+            return configured_state
+
+        monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.apply_pat_environment"),
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.cli.configure_tool", side_effect=capture_configure),
+            patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
+            patch("ucode.cli._fetch_budget_recommendation", return_value=None),
+            patch("ucode.cli._register_managed_mcp_servers"),
+            patch("ucode.cli._download_managed_skills"),
+            patch("ucode.cli.launch_agent") as launch,
+        ):
+            result = runner.invoke(app, [tool])
+
+        assert result.exit_code == 0, result.output
+        options = launch.call_args.kwargs["options"]
+        assert options.user_pinned_model is None
+        assert options.launch_smart_routing is smart_routing_enabled
+        if managed_default is not None:
+            assert configured[0]["model"] == managed_default
+        if tool == "claude":
+            assert configured[0]["route_root_model"] == managed_default
+        else:
+            assert configured[0]["route_root_model"] is None
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    @pytest.mark.parametrize(
+        "pin_args",
+        [
+            pytest.param(["--model", "pinned-model"], id="direct-model"),
+            pytest.param(["--", "--model", "pinned-model"], id="forwarded-model"),
+            pytest.param(["--", "--model=pinned-model"], id="forwarded-model-equals"),
+        ],
+    )
+    def test_user_pinned_model_wins_over_managed_default_and_routing(
+        self, monkeypatch, tool, pin_args
+    ):
+        """Every supported spelling of a user model pin wins and bypasses smart routing."""
+        state = dict(MINIMAL_STATE)
+        managed = {
+            "enabled_agents": {
+                tool: {
+                    "smart_routing_enabled": True,
+                    "model_config": {"default_model": "managed-model"},
+                }
+            }
+        }
+        monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.apply_pat_environment"),
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.cli.configure_tool", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
+            patch("ucode.cli._fetch_budget_recommendation", return_value=None),
+            patch("ucode.cli._register_managed_mcp_servers"),
+            patch("ucode.cli._download_managed_skills"),
+            patch("ucode.cli.launch_agent") as launch,
+        ):
+            result = runner.invoke(app, [tool, *pin_args])
+
+        assert result.exit_code == 0, result.output
+        options = launch.call_args.kwargs["options"]
+        assert options.user_pinned_model == "pinned-model"
+        assert options.launch_smart_routing is False
+
+    def test_codex_short_user_pin_wins_over_managed_default_and_routing(self, monkeypatch):
+        state = dict(MINIMAL_STATE)
+        managed = {
+            "enabled_agents": {
+                "codex": {
+                    "smart_routing_enabled": True,
+                    "model_config": {"default_model": "managed-model"},
+                }
+            }
+        }
+        monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.apply_pat_environment"),
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli.configure_shared_state", return_value=state),
+            patch("ucode.cli.configure_tool", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
+            patch("ucode.cli._fetch_budget_recommendation", return_value=None),
+            patch("ucode.cli._register_managed_mcp_servers"),
+            patch("ucode.cli._download_managed_skills"),
+            patch("ucode.cli.launch_agent") as launch,
+        ):
+            result = runner.invoke(app, ["codex", "--", "-m", "pinned-model"])
+
+        assert result.exit_code == 0, result.output
+        options = launch.call_args.kwargs["options"]
+        assert options.user_pinned_model == "pinned-model"
+        assert options.launch_smart_routing is False
+
     def test_codex_refresh_is_consumed_by_ucode(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
             result = runner.invoke(app, ["codex", "--refresh"])
