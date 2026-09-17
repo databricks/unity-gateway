@@ -27,7 +27,7 @@ from ucode.config_io import backup_existing_file, read_json_safe, write_json_fil
 from ucode.constants import LOOPBACK_HOST, MODEL_PROVIDER_SERVICE_HEADER
 from ucode.databricks import get_databricks_token
 from ucode.managed_files import OS, current_os
-from ucode.telemetry import agent_version, ucode_version
+from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_note, print_success, print_warning
 
 CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
@@ -281,7 +281,7 @@ def launch(
     extra_headers = {
         gateway_proxy.AUTHORIZATION_HEADER: f"Bearer {anthropic_oauth}",
         MODEL_PROVIDER_SERVICE_HEADER: provider,
-        "User-Agent": f"ucode/{ucode_version()} claude-desktop/{agent_version('claude')}",
+        "User-Agent": f"ucode/{ug_version()} claude-desktop/{agent_version('claude')}",
     }
     server, cache, client = gateway_proxy.start_proxy(
         workspace,
