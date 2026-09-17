@@ -300,6 +300,19 @@ class TestManagedConfigStub:
         assert reason is None
         assert cfg == RAW_MANIFEST
 
+    def test_null_stub_reproduces_a_workspace_with_no_managed_config(self, tmp_path, monkeypatch):
+        stub = tmp_path / "managed.json"
+        stub.write_text("null", encoding="utf-8")
+        monkeypatch.setenv("UCODE_MANAGED_CONFIG_STUB", str(stub))
+
+        def _fail(ws, tok):
+            raise AssertionError("stub set: the HTTP read must not run")
+
+        monkeypatch.setattr(mc_mod, "fetch_managed_coding_agent_configs", _fail)
+        cfg, reason = get_managed_config("https://ws", "tok")
+        assert cfg is None
+        assert reason is None
+
 
 class TestUnsupportedSpecFallback:
     def test_unsupported_spec_warns_on_cold_launch(self, monkeypatch):

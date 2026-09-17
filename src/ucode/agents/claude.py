@@ -46,10 +46,12 @@ from ucode.databricks import (
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
     OS,
+    ManagedFileSnapshots,
     ManagedFileWriteUnavailable,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
+    managed_file_snapshots,
     managed_file_status,
     managed_writes_allowed,
     mark_managed_file_verified,
@@ -198,7 +200,6 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 # settings file on every launch so stale values never linger.
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
-CLAUDE_PRUNED_PICKER_KEYS = ("availableModels", "enforceAvailableModels")
 ANTHROPIC_CUSTOM_HEADERS_ENV_KEY = "ANTHROPIC_CUSTOM_HEADERS"
 CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
     {
@@ -495,9 +496,27 @@ def render_overlay(
     return overlay, keys
 
 
+_MODEL_LABEL_ACRONYMS = frozenset({"glm", "gpt"})
+
+
 def _picker_label(model: str) -> str:
-    """A short picker label for a model id — the raw id minus the ``system.ai.`` prefix."""
-    return model.removeprefix("system.ai.")
+    """A human-friendly picker label for a model id (e.g. ``system.ai.claude-haiku-4-5`` ->
+    ``Claude Haiku 4.5``): keep the vendor and name words title-cased, uppercase known acronyms,
+    and join a run of numeric segments into a dotted version."""
+    stem = model.removeprefix("system.ai.")
+    parts: list[str] = []
+    version: list[str] = []
+    for token in stem.split("-"):
+        if token.isdigit():
+            version.append(token)
+            continue
+        if version:
+            parts.append(".".join(version))
+            version = []
+        parts.append(token.upper() if token in _MODEL_LABEL_ACRONYMS else token.title())
+    if version:
+        parts.append(".".join(version))
+    return " ".join(parts) if parts else stem
 
 
 def _maybe_add_1m_suffix(model: str) -> str:
@@ -522,24 +541,29 @@ def _enforce_model_default_hierarchy(
     coding_agent_config_defaults: dict[str, str],
     settings_file_existing_defaults: dict[str, str],
     ucode_defaults: dict[str, str],
+    ucode_last_written_defaults: dict[str, str],
+    enforced_models: list[str] | None,
 ) -> str | None:
-    """Apply managed-file model precedence for one Claude family."""
-    coding_agent_config_default_model = coding_agent_config_defaults.get(family)
-    settings_file_existing_default_model = settings_file_existing_defaults.get(family)
-    ucode_default_model = ucode_defaults.get(family)
+    """Resolve one Claude family's managed-file default model.
 
-    if coding_agent_config_default_model is not None:
-        selected_default_model = coding_agent_config_default_model
-    elif settings_file_existing_default_model is not None:
-        return settings_file_existing_default_model
-    else:
-        selected_default_model = ucode_default_model
-
-    if selected_default_model is None:
+    An existing managed-file default ucode did not write itself (it differs from ucode's last write)
+    is an administrator's, so it is preserved verbatim. Otherwise the value is ucode's own or unset,
+    so ucode re-derives it from the coding-agent config, then discovery, resetting a value carried
+    over from a previous workspace, and drops the result when an enforced model list excludes it.
+    """
+    selected = coding_agent_config_defaults.get(family)
+    if selected is None:
+        existing = settings_file_existing_defaults.get(family)
+        if existing is not None and existing != ucode_last_written_defaults.get(family):
+            return existing
+        selected = ucode_defaults.get(family)
+    if selected is None:
         return None
     if family in ("opus", "sonnet"):
-        return _maybe_add_1m_suffix(selected_default_model)
-    return selected_default_model
+        selected = _maybe_add_1m_suffix(selected)
+    if enforced_models is not None and selected.split("[", 1)[0] not in enforced_models:
+        return None
+    return selected
 
 
 def add_claude_mcp_server(
@@ -757,7 +781,12 @@ def write_tool_config(
 
     # V2 installs routing hooks in a transient per-launch settings file. Persistent settings must
     # contain no ucode routing hooks; surgically strip legacy ones while preserving user hooks.
-    def _compose(base: dict, *, enforce_model_default_hierarchy: bool) -> dict:
+    def _compose(
+        base: dict,
+        *,
+        enforce_model_default_hierarchy: bool,
+        managed_settings_snapshots: ManagedFileSnapshots | None,
+    ) -> dict:
         base_env = base.get("env")
         existing_custom_headers = (
             base_env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(base_env, dict) else None
@@ -778,12 +807,26 @@ def write_tool_config(
                 managed_overlay.get("claude_models") or state.get("claude_models") or {}
             )
 
+            enforced_models = overlay_for_merge.get("availableModels")
+            last_applied_env = {}
+            if (
+                managed_settings_snapshots is not None
+                and managed_settings_snapshots.last_applied_by_ug
+            ):
+                last_applied_env = managed_settings_snapshots.last_applied_by_ug.get("env") or {}
+            ucode_last_written_defaults = {
+                family: last_applied_env[key]
+                for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items()
+                if isinstance(last_applied_env.get(key), str)
+            }
             for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items():
                 selected_default_model = _enforce_model_default_hierarchy(
                     family,
                     coding_agent_config_defaults=configured_defaults,
                     settings_file_existing_defaults=settings_file_existing_defaults,
                     ucode_defaults=ucode_defaults,
+                    ucode_last_written_defaults=ucode_last_written_defaults,
+                    enforced_models=enforced_models,
                 )
                 if selected_default_model is None:
                     target_env.pop(key, None)
@@ -816,19 +859,43 @@ def write_tool_config(
             # longer writes.
             for key in CLAUDE_REMOVED_ENV_KEYS:
                 merged_env.pop(key, None)
+        if not any(key in overlay_for_merge for key in CLAUDE_MANAGED_PICKER_KEYS):
+            if managed_settings_snapshots is None:
+                for key in CLAUDE_MANAGED_PICKER_KEYS:
+                    merged.pop(key, None)
+            elif managed_settings_snapshots.last_applied_by_ug is not None:
+                last_applied = managed_settings_snapshots.last_applied_by_ug
+                live_picker = [merged.get(key) for key in CLAUDE_MANAGED_PICKER_KEYS]
+                ucode_picker = [last_applied.get(key) for key in CLAUDE_MANAGED_PICKER_KEYS]
+                if live_picker == ucode_picker:
+                    baseline = managed_settings_snapshots.original_before_ug or {}
+                    for key in CLAUDE_MANAGED_PICKER_KEYS:
+                        if key in baseline:
+                            merged[key] = baseline[key]
+                        else:
+                            merged.pop(key, None)
         if "otelHeadersHelper" not in overlay_for_merge:
             merged.pop("otelHeadersHelper", None)
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
+    managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
     write_json_file(
         CLAUDE_SETTINGS_PATH,
-        _compose(read_json_safe(CLAUDE_SETTINGS_PATH), enforce_model_default_hierarchy=False),
+        _compose(
+            read_json_safe(CLAUDE_SETTINGS_PATH),
+            enforce_model_default_hierarchy=False,
+            managed_settings_snapshots=None,
+        ),
     )
 
     _reconcile_managed_settings(
         state,
-        lambda base: _compose(base, enforce_model_default_hierarchy=provider is None),
+        lambda base: _compose(
+            base,
+            enforce_model_default_hierarchy=provider is None,
+            managed_settings_snapshots=managed_snapshots,
+        ),
         managed_file_keys,
         relayed,
     )
@@ -919,8 +986,9 @@ def _reconcile_managed_settings(
     configuration mirrors ucode's settings there. The same compose operation that produced the
     private file is applied to the existing managed file, preserving unrelated IT-authored keys.
 
-    `ug configure` updates gateway-owned fields in this file, but does not generate or modify
-    the `modelPicker` object; an existing picker is retained by the merge.
+    `ug configure` updates gateway-owned fields in this file. It writes the picker
+    (`availableModels`/`modelPicker`) for a static managed list and removes the picker keys it
+    previously wrote when it no longer manages one, leaving an administrator's own picker untouched.
 
     Relayed launches are skipped: they depend on a per-session loopback refresh proxy that only runs
     during `ucode claude`, so a bare `claude` could not reach the gateway anyway.
