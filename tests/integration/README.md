@@ -99,6 +99,8 @@ test_ug_codex_app_server.py             # actual client/server initialize exchan
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_configure_managed.py            # managed workspace: static model list, no agent selector
+test_ug_configure_managed_models.py     # injected model lists: picker and Codex fallback metadata
+test_ug_configure_managed_mcp.py        # injected managed MCP list
 test_installation.py                   # fresh installed package
 utils/                                # process/terminal/evidence helpers and Docker files
 ```
@@ -155,7 +157,7 @@ fails the selected CUJ, rather than skipping it.
 There are **42 live cases** (including 6 TUI journeys) and **5 installation
 checks** with both agents. A separate **3 managed-workspace cases** (one per agent
 plus an idempotent re-configure, marker `managed`) run against a workspace that publishes a CodingAgentConfig; see
-"Managed-workspace journeys" below. A further **4 `managed_fixture` cases** inject the admin config
+"Managed-workspace journeys" below. A further **3 `managed_fixture` cases** inject the admin config
 locally (via `UCODE_MANAGED_CONFIG_STUB`) to cover shapes the live workspace does not publish; each
 differs from the published config in what it asserts so it proves the injected config drove configure.
 See the named coverage and gaps matrix in
@@ -267,16 +269,20 @@ cannot still be running when that gate passes. Full coverage on PRs needs no lab
 
 `test_ug_configure_managed.py` (marker `managed`, not `live`) runs in its own per-agent
 **Managed config** jobs against a second workspace that publishes an admin CodingAgentConfig,
-which the shared `live` workspace deliberately does not. This is the only path exercised end to
-end: `ug configure` applies the admin config to every enabled agent with no agent selector, and
-each agent's generated config exposes exactly the admin's static `model_services`
-(Claude's `availableModels`/`modelPicker`, Codex's model catalog). The expected model ids live in
-the test and mirror the published config; update them there if the admin list changes.
+which the shared `live` workspace deliberately does not. `ug configure` applies the admin config
+with no agent selector, and each agent's generated config exposes exactly the admin's static
+`model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog).
 
 Treat that published CodingAgentConfig as shared CI fixture state. The managed lanes assert its
 exact model ids and its both-agent enablement, so editing the managed workspace's config (models,
 enabled agents, or defaults) breaks these lanes until the constants in `test_ug_configure_managed.py`
 are updated to match. Do not change it casually.
+
+The `managed_fixture` journeys use `UCODE_MANAGED_CONFIG_STUB` to short-circuit only the
+managed-config HTTP read for config shapes that workspace does not publish. In particular,
+`test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
+`system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that
+workspace on the valid default model `system.ai.gpt-5-6-sol`.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:

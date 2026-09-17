@@ -1,7 +1,7 @@
 """CUJs: configure against a managed workspace, where an admin publishes the setup.
 
 These run against the managed e2e workspace (`E2E_ADMIN_WORKSPACE`), which publishes a
-CodingAgentConfig. They are the only journeys that exercise the managed path end to end:
+CodingAgentConfig. They are the only journeys that exercise the managed config fetch end to end:
 `ug configure` applies the admin config to every enabled agent without the personal agent
 selector, and each agent's generated config exposes exactly the admin's static
 `model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog). The
