@@ -106,3 +106,41 @@ def test_ug_configure_claude_anthropic_mps(live_session, workspace, claude_provi
         tui.exit_normally()
     task.assert_completed(session, "claude")
     session.assert_not_routed()
+
+
+def test_ug_configure_claude_bedrock_mps(live_session, workspace, claude_bedrock_provider):
+    """Scenario: choose the real AWS Bedrock (amazon_bedrock) Anthropic MPS in the provider picker.
+
+    Expected: ug saves that provider, and launching Claude without --provider completes a
+    file-reading task. This is the live check that the real ug + Claude Code binary resolve a
+    region-prefixed Bedrock slug (us.anthropic.claude-...) into a working launch -- the model-id
+    pinning that unit tests only cover against mocked listings.
+    """
+    session = live_session
+    task = FileTask(session)
+
+    command = [
+        str(session.binary),
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    ]
+    with ConfigureTerminal(session, "claude", command, "configure-bedrock-provider") as configure:
+        configure.select_agent("Claude Code")
+        configure.choose("How should Claude Code get its models?", "External Models")
+        configure.choose("Select a model provider service:", claude_bedrock_provider)
+        configure.finish(timeout=240)
+    assert session.workspace_state()["provider_services"]["claude"] == claude_bedrock_provider
+    assert claude_bedrock_provider in session.run("status").stdout
+
+    with AgentTerminal(
+        session, "claude", [str(session.binary), "claude"], "bedrock-provider-session"
+    ) as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for_task(task, timeout=300)
+        tui.exit_normally()
+    task.assert_completed(session, "claude")
+    session.assert_not_routed()
