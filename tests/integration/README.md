@@ -11,7 +11,7 @@ It is not collected by the default `uv run pytest` command.
 
 ## Run a specific combination
 
-Prerequisites: Python 3.12+, uv, Node/npm, and Databricks CLI >=1.0.0. The runner
+Prerequisites: Python 3.12+, uv, Node/npm, and Databricks CLI 1.17.0. The runner
 installs the requested agents into a new npm prefix and ug into a new virtualenv.
 Pytest and the PTY/screen libraries (pexpect and pyte) live in a different virtualenv, so they cannot accidentally supply a
 missing application dependency. No packages are installed into your existing
@@ -88,6 +88,8 @@ All user journeys are top-level tests. There is no separate regressions category
 ```text
 test_ug_configure_claude.py             # Databricks Hosted and Anthropic MPS
 test_ug_configure_codex.py              # Databricks Hosted and OpenAI MPS
+test_ug_claude_custom_oauth.py           # CLI custom-OAuth launch, profile, and managed helper
+test_ug_codex_custom_oauth.py            # CLI custom-OAuth launch and profile
 test_ug_claude_headless.py              # script prompts, models, caller settings
 test_ug_claude_relayed.py               # relayed session: subscription + Databricks-hosted models
 test_ug_codex_headless.py               # script prompts and model arguments
@@ -97,6 +99,8 @@ test_ug_codex_app_server.py             # actual client/server initialize exchan
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_configure_managed.py            # managed workspace: static model list, no agent selector
+test_ug_configure_managed_models.py     # injected model lists: picker and Codex fallback metadata
+test_ug_configure_managed_mcp.py        # injected managed MCP list
 test_installation.py                   # fresh installed package
 utils/                                # process/terminal/evidence helpers and Docker files
 ```
@@ -150,10 +154,10 @@ service allows a different model. Those choices are recorded in `versions.json`.
 No service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
 
-There are **40 live cases** (including 4 TUI journeys) and **5 installation
+There are **42 live cases** (including 6 TUI journeys) and **5 installation
 checks** with both agents. A separate **3 managed-workspace cases** (one per agent
 plus an idempotent re-configure, marker `managed`) run against a workspace that publishes a CodingAgentConfig; see
-"Managed-workspace journeys" below. A further **4 `managed_fixture` cases** inject the admin config
+"Managed-workspace journeys" below. A further **3 `managed_fixture` cases** inject the admin config
 locally (via `UCODE_MANAGED_CONFIG_STUB`) to cover shapes the live workspace does not publish; each
 differs from the published config in what it asserts so it proves the injected config drove configure.
 See the named coverage and gaps matrix in
@@ -162,8 +166,8 @@ See the named coverage and gaps matrix in
 ```bash
 # Append one of these selections to the runner command:
 -- -m live         # default: all live user journeys
--- -m smoke        # four Hosted configure/TUI and headless argument journeys
--- -m tui          # four complete provider-configuration TUI journeys
+-- -m smoke        # six Hosted, custom OAuth CLI TUI, and headless journeys
+-- -m tui          # six interactive TUI journeys
 -- -k test_ug_codex_app_server_client_initializes  # one named journey and its variants
 # Use --installation-only before -- for package checks without credentials.
 ```
@@ -232,14 +236,15 @@ model-discovery or model-selection job. Real `ug configure` performs its normal
 workspace discovery inside each test; only explicit-model scenarios choose and
 record a discovered `system.ai` model as a test argument.
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
-**Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI and headless
-argument journey for each agent (four cases, two agent jobs). Full runs all 40
-live cases, including those smoke cases, in two disjoint agent lanes:
+**Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
+headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
+two agent jobs). Full runs all 42 live cases, including those smoke cases, in two
+disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 16 |
-| Codex | `live and codex` | 24 |
+| Claude | `live and claude` | 17 |
+| Codex | `live and codex` | 25 |
 
 Each lane installs only its agent CLI, once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
@@ -264,16 +269,20 @@ cannot still be running when that gate passes. Full coverage on PRs needs no lab
 
 `test_ug_configure_managed.py` (marker `managed`, not `live`) runs in its own per-agent
 **Managed config** jobs against a second workspace that publishes an admin CodingAgentConfig,
-which the shared `live` workspace deliberately does not. This is the only path exercised end to
-end: `ug configure` applies the admin config to every enabled agent with no agent selector, and
-each agent's generated config exposes exactly the admin's static `model_services`
-(Claude's `availableModels`/`modelPicker`, Codex's model catalog). The expected model ids live in
-the test and mirror the published config; update them there if the admin list changes.
+which the shared `live` workspace deliberately does not. `ug configure` applies the admin config
+with no agent selector, and each agent's generated config exposes exactly the admin's static
+`model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog).
 
 Treat that published CodingAgentConfig as shared CI fixture state. The managed lanes assert its
 exact model ids and its both-agent enablement, so editing the managed workspace's config (models,
 enabled agents, or defaults) breaks these lanes until the constants in `test_ug_configure_managed.py`
 are updated to match. Do not change it casually.
+
+The `managed_fixture` journeys use `UCODE_MANAGED_CONFIG_STUB` to short-circuit only the
+managed-config HTTP read for config shapes that workspace does not publish. In particular,
+`test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
+`system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that
+workspace on the valid default model `system.ai.gpt-5-6-sol`.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:
@@ -301,8 +310,8 @@ The workflow consumes the stored bearer; it does not mint or refresh credentials
 
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
 and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
-alias for `full`. Manual subsets are explicit: `smoke` runs just the four smoke
-cases; `tui` adds `and tui` to each agent lane's marker and runs all four TUI cases. Installation
+alias for `full`. Manual subsets are explicit: `smoke` runs just the six smoke
+cases; `tui` adds `and tui` to each agent lane's marker and runs all six TUI cases. Installation
 checks always run. Set the ug/agent versions. From the CLI:
 
 ```bash
@@ -363,7 +372,7 @@ use the same OS/architecture as the original run; add `--platform linux/amd64`
 to both `docker build` and `docker run` on an ARM Mac to match GitHub's Ubuntu runner. Changing platforms or
 resolving a fresh npm lock is a new comparison, not an exact dependency replay.
 
-Use `-- -m tui` for the four interactive journeys or
+Use `-- -m tui` for the six interactive journeys or
 `-- -k test_ug_configure_codex_databricks` to narrow a failure. Each rerun needs a new output directory. Inspect:
 
 - `junit.xml` for the failing case and assertion.
@@ -473,7 +482,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 40 live cases. For the five installation checks, run the same
+This runs all 42 live cases. For the five installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

@@ -42,6 +42,11 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
+from ucode.custom_oauth import (
+    CUSTOM_OAUTH_CLI_ENV_VAR,
+    custom_oauth_cli_enabled,
+    ensure_custom_oauth_cli_token,
+)
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     apply_pat_environment,
@@ -100,6 +105,7 @@ from ucode.mcp import (
     configure_skills_mcp_command,
     configure_skills_mcp_picker_command,
     configured_mcp_clients,
+    list_mcp_command,
     purge_cross_workspace_mcp_residue,
     reconcile_managed_mcp_servers,
     remove_mcp_command,
@@ -121,14 +127,12 @@ from ucode.state import (
     STATE_PATH,
     clear_state,
     get_provider_service,
-    load_full_state,
     load_state,
     save_state,
     set_current_workspace,
     set_provider_service,
 )
 from ucode.string_utils import is_valid_catalog_schema
-from ucode.tracing import configure_tracing_command
 from ucode.ui import (
     console,
     heading,
@@ -310,7 +314,9 @@ def _custom_oauth_config(
     if client_id is None:
         raise RuntimeError("--redirect-url and --scopes require --client-id.")
     if scopes is None:
-        raise RuntimeError("--scopes is required with --client-id.")
+        if not custom_oauth_cli_enabled(client_id):
+            raise RuntimeError("--scopes is required with --client-id.")
+        scopes = ",".join(custom_oauth.DEFAULT_CLI_SCOPES)
 
     return custom_oauth.create_custom_oauth_config(
         client_id,
@@ -484,6 +490,10 @@ def configure_shared_state(
         state.pop("custom_oauth", None)
     state["base_urls"] = build_shared_base_urls(workspace)
 
+    cli_custom_oauth = state.get("custom_oauth") if custom_oauth_cli_enabled(custom_oauth) else None
+    if cli_custom_oauth:
+        token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth)
+
     if skip_preflight:
         # A prior `ug configure` created the profile; resolve it locally (no
         # login needed) and persist it so launches disambiguate.
@@ -502,7 +512,9 @@ def configure_shared_state(
 
     # ── Preflight (bypassed above under --skip-preflight): validate Databricks
     #    auth + the AI Gateway, then discover the available models. ──
-    if use_pat:
+    if cli_custom_oauth:
+        pass  # The dedicated profile was authenticated above.
+    elif use_pat:
         if not profile:
             raise RuntimeError(
                 "--use-pat requires a Databricks CLI profile. Pass one via `--profile <name>`."
@@ -532,7 +544,8 @@ def configure_shared_state(
         if profile:
             state["profile"] = profile
     with spinner("Verifying Unity AI Gateway..."):
-        token = get_databricks_token(workspace, profile)
+        if not cli_custom_oauth:
+            token = get_databricks_token(workspace, profile)
         model_service_probe = probe_unity_gateway_capabilities(workspace, token)
     if model_service_probe.resource_available:
         print_success("Unity Gateway connected")
@@ -897,7 +910,8 @@ def status() -> int:
     state = load_state()
     workspace = state.get("workspace")
     managed_configs = state.get("managed_configs") or {}
-    mcp_servers = state.get("mcp_servers") or []
+    # Both developer- and workspace-managed servers, so the count agrees with `ug mcp list`.
+    mcp_servers = (state.get("mcp_servers") or []) + (state.get("managed_mcp_servers") or [])
     configured_tools = set(state.get("available_tools") or managed_configs.keys())
 
     console.print(heading("ug status"))
@@ -932,18 +946,17 @@ def status() -> int:
             print_kv("Model Provider Service", provider_service)
         print_kv("Base URL", base_url)
         if configured and tool in MCP_CLIENTS:
-            tool_mcp_servers = [
-                str(server.get("name"))
+            # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
+            # the per-server detail and live connection status, so status stays scannable. Dedupe by
+            # name so a server present in both mcp_servers and managed_mcp_servers isn't double-counted.
+            mcp_names = {
+                server.get("name")
                 for server in mcp_servers
                 if tool in (server.get("clients") or [])
                 and server.get("name")
                 and server.get("kind") != SKILLS_MCP_KIND
-            ]
-            print_kv("MCP list command", str(MCP_CLIENTS[tool]["list_command"]))
-            print_kv(
-                "MCP servers",
-                ", ".join(tool_mcp_servers) if tool_mcp_servers else "none saved by ug",
-            )
+            }
+            print_kv("MCP servers", str(len(mcp_names)))
         print_kv("Config file", str(config_path) if config_path.exists() else "missing")
         if tool == "claude":
             managed_path, managed_status, backup_status = claude_agent.managed_settings_status(
@@ -984,33 +997,15 @@ def status() -> int:
                     ", ".join(locations) if locations else "none — utility tools only",
                 )
 
-    print_heading("Tracing")
-    tracing = state.get("tracing") or {}
-    if tracing.get("enabled"):
-        print_kv("MLflow tracing", "enabled")
-        print_kv("Tracking URI", str(tracing.get("tracking_uri") or "unknown"))
-        print_kv(
-            "Experiment",
-            f"{tracing.get('experiment_name')} (id {tracing.get('experiment_id')})",
-        )
-        uc_destination = tracing.get("uc_destination")
-        if uc_destination:
-            print_kv("Unity Catalog", str(uc_destination))
-        sql_warehouse_id = tracing.get("sql_warehouse_id")
-        if sql_warehouse_id:
-            print_kv("SQL warehouse", str(sql_warehouse_id))
-    else:
-        print_kv("MLflow tracing", "disabled")
-
     print_heading("State")
     print_kv("State file", str(STATE_PATH) if STATE_PATH.exists() else "missing")
     print_note("Use `ug configure` to update workspace settings or configure new tools.")
     print_note("Use `ug configure mcp` to add Databricks MCP servers to configured coding tools.")
+    print_note("Use `ug mcp list` to see configured MCP servers and their connection status.")
     print_note(
         "Use `ug configure skills` to set up Unity Catalog Skills for configured coding tools."
     )
-    print_note("Use `ug skill add` and `ug skill remove --mcp` to manage UC Skills.")
-    print_note("Use `ug configure tracing` to log coding sessions to an MLflow experiment.")
+    print_note("Use `ug skills add` and `ug skills remove --mcp` to manage UC Skills.")
     print_note("Use `ug revert` to clear managed configs and restore prior files.")
     return 0
 
@@ -1067,9 +1062,13 @@ app = typer.Typer(
 configure_app = typer.Typer(add_completion=False, no_args_is_help=False)
 app.add_typer(configure_app, name="configure", help="Configure workspace and tool settings.")
 mcp_app = typer.Typer(add_completion=False, no_args_is_help=True)
-app.add_typer(mcp_app, name="mcp", help="MCP servers exposed by ug.")
+app.add_typer(
+    mcp_app,
+    name="mcp",
+    help="Inspect and manage the Databricks MCP servers ug configures for your coding agents.",
+)
 skill_app = typer.Typer(add_completion=False, no_args_is_help=True)
-app.add_typer(skill_app, name="skill", help="Databricks Skills for your coding tools.")
+app.add_typer(skill_app, name="skills", help="Databricks Skills for your coding tools.")
 
 
 def _version_callback(value: bool) -> None:
@@ -1082,7 +1081,7 @@ def _version_callback(value: bool) -> None:
 
 def _configure_agents_for_mcp(requested: list[str]) -> set[str]:
     """Ensure the named coding agents are set up (workspace + models) so a
-    subsequent `ug mcp add` / `ug skill add --mcp` has them as targets, and
+    subsequent `ug mcp add` / `ug skills add --mcp` has them as targets, and
     return the full canonical name set. Agents already configured are left as-is;
     only the rest are bootstrapped. Model agents go through
     configure_workspace_command (which installs binaries and configures models);
@@ -1204,6 +1203,38 @@ def mcp_remove(
         raise typer.Exit(130) from None
 
 
+@mcp_app.command("list")
+def mcp_list(
+    agents: Annotated[
+        str | None,
+        typer.Option(
+            "--agents",
+            help="Comma-separated coding agents to report on (e.g. claude,codex). Without "
+            "--agents, every installed MCP-capable agent is included.",
+        ),
+    ] = None,
+) -> None:
+    """List the Databricks MCP servers ug has configured and their live connection status.
+
+    Reads ug's saved state and each installed agent's own `mcp list` to show, per agent, whether
+    each server is connected. Read-only; needs no Databricks login. Use the `add`/`remove`
+    subcommands to change what's configured.
+    """
+    requested_agents = (
+        None
+        if agents is None
+        else ({a.strip().lower() for a in agents.split(",") if a.strip()} or None)
+    )
+    try:
+        list_mcp_command(agents=requested_agents)
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    except KeyboardInterrupt:
+        print_err("Interrupted.")
+        raise typer.Exit(130) from None
+
+
 @mcp_app.command("web-search")
 def mcp_web_search_cmd() -> None:
     """Run the web_search MCP server over stdio. Invoked as a subprocess by Claude Code."""
@@ -1244,7 +1275,7 @@ def skills_add(
     skills: Annotated[
         str | None,
         typer.Option(
-            "--skills",
+            "--skill",
             help="(download) Download exactly these comma-separated fully-qualified "
             "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
             "with --mcp or --location.",
@@ -1265,9 +1296,9 @@ def skills_add(
     With ``--mcp``, adds the given schemas to the skills MCP connection's scope.
     Otherwise downloads skills to project-level skill directories under ``--path``, or
     to user-level skill directories when omitted, keeping already-downloaded skills.
-    ``--location`` downloads whole ``<catalog>.<schema>`` schemas; ``--skills``
+    ``--location`` downloads whole ``<catalog>.<schema>`` schemas; ``--skill``
     downloads a named set of fully-qualified skills that may span schemas (and takes
-    no ``--location``). With no ``--location``/``--skills`` on an interactive terminal,
+    no ``--location``). With no ``--location``/``--skill`` on an interactive terminal,
     opens a picker of the workspace's schemas to scope (``--mcp``) or skills to download.
     """
     try:
@@ -1283,9 +1314,9 @@ def skills_add(
         if mcp and path is not None:
             raise RuntimeError("--path is not supported when using --mcp")
         if mcp and requested_skills is not None:
-            raise RuntimeError("--skills is not supported when using --mcp")
+            raise RuntimeError("--skill is not supported when using --mcp")
         if requested_skills is not None and location is not None:
-            raise RuntimeError("--skills takes fully-qualified names; drop --location.")
+            raise RuntimeError("--skill takes fully-qualified names; drop --location.")
         # Downloaded skills use shared directory families, so only MCP scopes can be agent-scoped.
         if not mcp and agents is not None:
             raise RuntimeError("--agents is only supported when using --mcp")
@@ -1293,7 +1324,7 @@ def skills_add(
             invalid = sorted(s for s in requested_skills if not _is_qualified_skill_name(s))
             if invalid:
                 raise RuntimeError(
-                    "--skills entries must be fully-qualified `<catalog>.<schema>.<name>` names "
+                    "--skill entries must be fully-qualified `<catalog>.<schema>.<name>` names "
                     f"(invalid: {', '.join(invalid)})."
                 )
             configure_selected_skills_download_command(sorted(requested_skills), path)
@@ -1311,7 +1342,7 @@ def skills_add(
                 else:
                     configure_skills_download_picker_command(path=path)
                 return
-            raise RuntimeError("--location is required for `ucode skill add`.")
+            raise RuntimeError("--location is required for `ucode skills add`.")
         if mcp:
             configured_agents = (
                 _configure_agents_for_mcp(sorted(requested_agents)) if requested_agents else None
@@ -1355,7 +1386,7 @@ def skills_remove(
     skills: Annotated[
         str | None,
         typer.Option(
-            "--skills",
+            "--skill",
             help="(download) Remove exactly these comma-separated fully-qualified "
             "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
             "with --mcp or --location.",
@@ -1376,7 +1407,7 @@ def skills_remove(
     With ``--mcp``, drops skill schemas from the skills MCP connection: ``--location`` removes the
     named ``<catalog>.<schema>`` schemas, and with none on an interactive terminal a picker lists
     the scoped schemas. Otherwise removes downloaded skill directories: ``--location`` removes every
-    skill downloaded from a ``<catalog>.<schema>``, ``--skills`` removes named fully-qualified skills
+    skill downloaded from a ``<catalog>.<schema>``, ``--skill`` removes named fully-qualified skills
     that may span schemas, and with none of them a picker lists every downloaded skill. ``--path``
     limits either to one download base. Only skills ucode downloaded are removed; a same-named skill
     you authored is left alone.
@@ -1388,7 +1419,7 @@ def skills_remove(
         )
         if mcp:
             if path is not None or requested_skills is not None:
-                raise RuntimeError("--path and --skills are not supported with --mcp.")
+                raise RuntimeError("--path and --skill are not supported with --mcp.")
             requested_agents = (
                 None
                 if agents is None
@@ -1400,26 +1431,26 @@ def skills_remove(
             elif _stdin_is_interactive():
                 remove_skills_command(agents=requested_agents)
             else:
-                raise RuntimeError("--location is required for `ug skill remove --mcp`.")
+                raise RuntimeError("--location is required for `ug skills remove --mcp`.")
             return
         if agents is not None:
             raise RuntimeError("--agents is only supported when using --mcp.")
         if requested_skills is not None and location is not None:
-            raise RuntimeError("--skills takes fully-qualified names; drop --location.")
+            raise RuntimeError("--skill takes fully-qualified names; drop --location.")
         if requested_skills is not None:
             invalid = sorted(s for s in requested_skills if not _is_qualified_skill_name(s))
             if invalid:
                 raise RuntimeError(
-                    "--skills entries must be fully-qualified `<catalog>.<schema>.<name>` names "
+                    "--skill entries must be fully-qualified `<catalog>.<schema>.<name>` names "
                     f"(invalid: {', '.join(invalid)})."
                 )
             remove_downloaded_skills_command([], sorted(requested_skills), path=path)
             return
         locations = _parse_skill_locations(location)
         if path is not None and not locations:
-            raise RuntimeError("--path is only supported with --location or --skills.")
+            raise RuntimeError("--path is only supported with --location or --skill.")
         if not locations and not _stdin_is_interactive():
-            raise RuntimeError("--location or --skills is required for `ug skill remove`.")
+            raise RuntimeError("--location or --skill is required for `ug skills remove`.")
         remove_downloaded_skills_command(locations, path=path)
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
@@ -1532,11 +1563,13 @@ def auth_token_cmd(
         print_err("--scopes is required with --client-id.")
         raise typer.Exit(1)
     state = load_state()
+    explicit_host = bool(host and host.strip())
     workspace = host or state.get("workspace")
     if not workspace:
         print_err("No workspace configured. Run `ug configure` first.")
         raise typer.Exit(1)
-    profile = profile or state.get("profile")
+    if profile is None and not explicit_host:
+        profile = state.get("profile")
     if client_id is None and (use_pat or state.get("use_pat")):
         # --use-pat explicitly means "serve the profile's static PAT". Fail
         # closed if it can't be read rather than falling through to OAuth —
@@ -1560,6 +1593,7 @@ def auth_token_cmd(
                     redirect_url if redirect_url is not None else custom_oauth.DEFAULT_REDIRECT_URL
                 ),
                 scopes=scopes.split(","),
+                profile=profile,
                 force_refresh=force_refresh,
             )
         else:
@@ -2122,6 +2156,8 @@ def _launch_tool(
 ) -> None:
     try:
         tool = normalize_tool(tool_name)
+        if not custom_oauth_cli_enabled(custom_oauth):
+            os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
         # Before any status print: a stdio-protocol subcommand owns stdout, so
         # every ug line from here on must go to stderr instead.
         if _child_owns_stdout(tool, ctx.args):
@@ -2150,7 +2186,8 @@ def _launch_tool(
         # Workspaces configured with --use-pat export the profile's PAT as
         # DATABRICKS_BEARER up front so every auth check below (and the
         # launched agent itself) uses the static token instead of OAuth.
-        apply_pat_environment(existing)
+        if not custom_oauth_cli_enabled(custom_oauth):
+            apply_pat_environment(existing)
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []
         )
@@ -2971,13 +3008,6 @@ def configure(
             "--agents for MCP-only clients such as Cursor.",
         ),
     ] = None,
-    tracing: Annotated[
-        bool,
-        typer.Option(
-            "--tracing",
-            help="Also enable MLflow tracing for the configured workspace(s).",
-        ),
-    ] = False,
     skip_upgrade: Annotated[
         bool,
         typer.Option(
@@ -3127,18 +3157,6 @@ def configure(
             # picked agents/workspace via prompts); that's where we offer the MCP
             # step below. Flag-driven runs stay scriptable.
             fully_interactive = not flag_driven_workspace
-        if tracing:
-            # The workspaces were just configured, so enable tracing for them
-            # directly instead of re-prompting. Fall back to the workspace that
-            # `configure_workspace_command` made current (the interactive pick).
-            tracing_workspaces: list[tuple[str, str | None]] | None = workspace_entries
-            if tracing_workspaces is None:
-                current = load_full_state().get("current_workspace")
-                tracing_workspaces = (
-                    [(current, None)] if isinstance(current, str) and current else None
-                )
-            if tracing_workspaces:
-                configure_tracing_command(workspaces=tracing_workspaces)
         if mcp is not None:
             # The workspace + agents were just configured above, so the current
             # workspace state now lists the agents whose MCP configs we should
@@ -3290,24 +3308,6 @@ def configure_skills(
         else:
             configure_location_skills_download_command(locations, path=path)
     except (RuntimeError, ValueError) as exc:
-        print_err(str(exc))
-        raise typer.Exit(1) from None
-    except KeyboardInterrupt:
-        print_err("Interrupted.")
-        raise typer.Exit(130) from None
-
-
-@configure_app.command("tracing")
-def configure_tracing(
-    disable: Annotated[
-        bool, typer.Option("--disable", help="Turn off MLflow tracing for configured agents.")
-    ] = False,
-) -> None:
-    """Send coding-session traces to an MLflow experiment in your workspace."""
-    try:
-        install_databricks_cli()
-        configure_tracing_command(disable=disable)
-    except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:

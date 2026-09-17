@@ -4,7 +4,7 @@ FROM ghcr.io/astral-sh/uv:0.9.8 AS uv
 FROM node:22.19.0-bookworm-slim AS node
 FROM python:3.12.10-slim-bookworm
 
-ARG DATABRICKS_VERSION=1.9.0
+ARG DATABRICKS_VERSION=1.17.0
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip git libstdc++6 \
     && curl -fL "https://github.com/databricks/cli/releases/download/v${DATABRICKS_VERSION}/databricks_cli_${DATABRICKS_VERSION}_linux_${TARGETARCH:-$(dpkg --print-architecture)}.zip" -o /tmp/databricks.zip \
