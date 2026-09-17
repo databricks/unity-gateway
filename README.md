@@ -159,13 +159,15 @@ ug configure --profile DEFAULT --agents claude,codex --use-pat
 ### MCP servers (optional)
 
 ```bash
-ug configure mcp
+ug mcp add
 ```
 
-Add Databricks MCP servers to installed MCP-capable tools: Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, and Cursor Agent.
+Add Databricks MCP servers to installed MCP-capable tools: Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, and Cursor Agent. `ug mcp add` is purely additive: it registers new servers and never removes ones already configured (use `ug mcp remove` to remove).
 
 The interactive picker discovers **MCP services** (the `system.ai.*` and workspace-wide
-`<catalog>.<schema>` Unity Catalog MCP services) and a custom MCP server URL.
+`<catalog>.<schema>` Unity Catalog MCP services) and a custom MCP server URL. Servers you already
+have configured are shown as `(already configured)` and can't be toggled off — you only pick new
+ones to add.
 
 V2 AI Gateway servers — Vector Search, UC Functions, external connections, Genie spaces, and
 Databricks apps — are **not** offered in the picker, because consumer-only identities can't
@@ -192,7 +194,7 @@ The coding tool starts and stops the proxy as a child process; there's nothing e
 **Cursor** is MCP-only: `cursor-agent` runs models on your own Cursor account, so `ug`
 configures no models for it — it only registers Databricks MCP servers in `~/.cursor/mcp.json`
 (via the same proxy). Include it with `ug configure --agents cursor` or pick it in
-`ug configure mcp`, then launch with `ug cursor`.
+`ug mcp add`, then launch with `ug cursor`.
 
 To set up an agent and its MCP server(s) in one command, pass `--mcp` with fully-qualified
 service name(s) to `ug configure`:
@@ -204,27 +206,17 @@ ug configure --agents claude --mcp system.ai.slack
 `--mcp` also works without `--agents` for MCP-only clients (it configures just the workspace,
 then registers the servers); pass a comma-separated list to register several at once.
 
-#### Add servers without replacing existing ones
+#### Non-interactive add
 
-`ug configure mcp` **replaces** the registered MCP servers with your selection — anything
-outside a `--location`/`--services` scope (or left unchecked in the picker) is removed. To
-**add** servers while leaving everything already configured in place, use `ug mcp add`:
+Skip the picker with `--location` (a whole schema) or `--services` (a subset):
 
 ```bash
 # Register a whole schema's services, keeping any servers already configured.
 ug mcp add --location system.ai
 
-# Register just a subset (same name rules as `configure mcp --services`).
+# Register just a subset.
 ug mcp add --services system.ai.slack,system.ai.github
-
-# No arguments launches the same interactive picker, but never removes servers.
-ug mcp add
 ```
-
-`ug mcp add` takes the same `--location` and `--services` options as `ug configure mcp`;
-the only difference is that it never removes servers outside the selection. In the interactive
-picker, servers you already have configured are shown as `(already configured)` and can't be
-toggled off — you only pick new ones to add.
 
 Pass `--agents` to target specific coding agents. Any named agent that isn't set up yet is
 configured first (workspace + models), so this doubles as one-command setup:
@@ -253,6 +245,26 @@ ug mcp remove --agents codex
 
 It shows the servers you currently have configured — each with the coding tools it's registered
 on — and removes the ones you select from those tools. It needs no Databricks login.
+
+#### List configured servers and their connection status
+
+To see the Databricks MCP servers `ug` has configured and whether each coding agent is currently
+connected to them, use `ug mcp list`:
+
+```bash
+ug mcp list
+
+# Limit the report to specific agents.
+ug mcp list --agents claude,codex
+```
+
+It prints one row per configured server — `NAME`, `LOCATION`, `AGENTS`, and a `STATUS` aggregated
+from each agent's own `mcp list` (connected/failed; Codex reports `enabled`/`disabled`, since its
+listing does not health-check). When agents disagree, `STATUS` splits into `agent:state`.
+Workspace-managed servers are tagged, and any servers an agent lists that `ug` didn't configure are
+summarized as a per-agent count. Skills connections are managed separately (via `ug skill` /
+`ug configure skills`) and aren't listed here. It reads local state plus each installed agent's
+`mcp list`, so it needs no Databricks login.
 
 ### Skills (optional)
 
@@ -292,27 +304,30 @@ you to run `ug <agent>` (existing agent sessions need a restart before the MCP t
 
 #### Add skill scopes without replacing existing ones
 
-`ug skill add` registers skills additively, keeping anything already configured. With `--mcp` it
+`ug skills add` registers skills additively, keeping anything already configured. With `--mcp` it
 adds the schemas to the connection's scope, otherwise it downloads their skills to disk. `--location`
-downloads whole schemas; `--skills` downloads a named set of fully-qualified skills that may span
+downloads whole schemas; `--skill` downloads a named set of fully-qualified skills that may span
 schemas.
 
 ```bash
 # Add schemas to the skills MCP scope, keeping any already configured.
-ug skill add --location main.default,ml.prod --mcp
+ug skills add --location main.default,ml.prod --mcp
 
 # Scope the schemas to specific agents. Any not set up yet are configured first.
-ug skill add --location main.default --mcp --agents claude,codex
+ug skills add --location main.default --mcp --agents claude,codex
 
 # Download a schema's skills to disk, keeping existing downloads.
-ug skill add --location main.default
+ug skills add --location main.default
+
+# Download into a specific project directory instead of your home dir.
+ug skills add --location main.default --path /abs/project/dir
 
 # Download a named set of skills by fully-qualified name (may span schemas).
-ug skill add --skills main.default.my-skill,ml.prod.other-skill
+ug skills add --skill main.default.my-skill,ml.prod.other-skill
 
-# No --location (or --skills) launches an interactive picker of the workspace's
+# No --location (or --skill) launches an interactive picker of the workspace's
 # skills to download; it opens immediately and streams skills in as they're found.
-ug skill add
+ug skills add
 ```
 
 With `--mcp`, `--agents` limits the change to the named agents; without it the schemas go to every
@@ -320,39 +335,39 @@ configured agent. It applies only to `--mcp`, since downloaded skills are shared
 
 #### Remove skill scopes
 
-Remove schemas from the skills MCP connection with `ug skill remove --mcp`. `--location` drops the
+Remove schemas from the skills MCP connection with `ug skills remove --mcp`. `--location` drops the
 named schemas; with no `--location` on an interactive terminal a picker lists the scoped schemas.
 
 ```bash
 # Remove specific schemas from the MCP scope; each is removed from every agent it's on.
-ug skill remove --location main.default,ml.prod --mcp
+ug skills remove --location main.default,ml.prod --mcp
 
 # Remove from specific agents only. A schema scoped to several agents is
 # removed from the named ones and kept on the rest.
-ug skill remove --location main.default --mcp --agents claude
+ug skills remove --location main.default --mcp --agents claude
 
 # No --location launches a picker of the scoped schemas to remove.
-ug skill remove --mcp
+ug skills remove --mcp
 ```
 
 #### Remove downloaded skills
 
-Without `--mcp`, `ug skill remove` deletes downloaded skill directories. Only skills
+Without `--mcp`, `ug skills remove` deletes downloaded skill directories. Only skills
 `ug` downloaded are removed, so a same-named skill you authored is left alone.
 
 ```bash
 # Pick from every skill downloaded to disk, across all download bases.
-ug skill remove
+ug skills remove
 
 # Remove every skill downloaded from a schema (all bases, or one with --path).
-ug skill remove --location main.default
-ug skill remove --location main.default --path /abs/project/dir
+ug skills remove --location main.default
+ug skills remove --location main.default --path /abs/project/dir
 
 # Remove named skills by fully-qualified name (may span schemas).
-ug skill remove --skills main.default.my-skill,ml.prod.other-skill
+ug skills remove --skill main.default.my-skill,ml.prod.other-skill
 ```
 
-`--location` and `--skills` each accept `--path` to limit removal to one download base, and are
+`--location` and `--skill` each accept `--path` to limit removal to one download base, and are
 mutually exclusive with each other.
 
 ### Exporting the config
@@ -413,19 +428,21 @@ The output looks like:
 | `ug mcp add --agents claude --services system.ai.slack` | Set up the agent(s) if needed and register the server for them |
 | `ug mcp remove` | Interactively unregister configured MCP servers from your coding tools |
 | `ug mcp remove --agents codex` | Unregister selected servers from specific agents only |
+| `ug mcp list` | List configured MCP servers and their live per-agent connection status |
+| `ug mcp list --agents claude` | Show the connection-status report for specific agents only |
 | `ug configure skills` | Register the skills MCP connection (utility tools only); no skills download |
 | `ug configure skills --location main.default [--path <dir>]` | Download a schema's skills to disk (under `<dir>`, or your home dir) and register a schema-less skills MCP connection |
 | `ug configure skills --skill main.default.my-skill` | Download named skills by fully-qualified name (comma-separated; may span schemas) |
 | `ug configure skills --location main.default --mcp` | Expose a schema's skills as MCP tools (override-only) instead of downloading |
-| `ug skill add --location main.default --mcp` | Add schemas to the skills MCP scope, keeping any already configured (additive; never replaces) |
-| `ug skill add --location main.default --mcp --agents claude,codex` | Add schemas to specific agents' skills MCP scope (sets up any not yet configured) |
-| `ug skill add --location main.default` | Download a schema's skills to disk without removing existing downloads |
-| `ug skill add --skills main.default.my-skill` | Download named skills by fully-qualified name (comma-separated; may span schemas) |
-| `ug skill remove --location main.default --mcp` | Remove specific schemas from the skills MCP scope, or omit `--location` on a TTY for a picker (every agent) |
-| `ug skill remove --location main.default --mcp --agents claude` | Remove schemas from specific agents' skills MCP scope, keeping them on the rest |
-| `ug skill remove` | Pick from every downloaded skill (across all bases) and delete it from disk |
-| `ug skill remove --location main.default [--path <dir>]` | Delete every skill downloaded from a schema (all bases, or one under `<dir>`) |
-| `ug skill remove --skills main.default.my-skill [--path <dir>]` | Delete named downloaded skills by fully-qualified name (comma-separated; may span schemas; `--path` limits to one base) |
+| `ug skills add --location main.default --mcp` | Add schemas to the skills MCP scope, keeping any already configured (additive; never replaces) |
+| `ug skills add --location main.default --mcp --agents claude,codex` | Add schemas to specific agents' skills MCP scope (sets up any not yet configured) |
+| `ug skills add --location main.default [--path <dir>]` | Download a schema's skills to disk (under `<dir>`, or your home dir) without removing existing downloads |
+| `ug skills add --skill main.default.my-skill` | Download named skills by fully-qualified name (comma-separated; may span schemas) |
+| `ug skills remove --location main.default --mcp` | Remove specific schemas from the skills MCP scope, or omit `--location` on a TTY for a picker (every agent) |
+| `ug skills remove --location main.default --mcp --agents claude` | Remove schemas from specific agents' skills MCP scope, keeping them on the rest |
+| `ug skills remove` | Pick from every downloaded skill (across all bases) and delete it from disk |
+| `ug skills remove --location main.default [--path <dir>]` | Delete every skill downloaded from a schema (all bases, or one under `<dir>`) |
+| `ug skills remove --skill main.default.my-skill [--path <dir>]` | Delete named downloaded skills by fully-qualified name (comma-separated; may span schemas; `--path` limits to one base) |
 
 Databricks AI Tools are installed only by `ug configure`, never by `ug <agent>` launches.
 Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools` with `ug configure` to

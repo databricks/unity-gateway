@@ -786,7 +786,7 @@ class TestConfigureMcpCommand:
 
     def test_mcp_service_choice_known_vs_unknown(self):
         # Unregistered -> an add-choice; already-registered -> a removable toggle
-        # (configure mcp) or a disabled note (mcp add, additive).
+        # (replace mode) or a disabled note (mcp add, additive).
         add = mcp._mcp_service_choice("mycat.sch.weather", set(), additive=False)
         assert (
             add.value == f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}mycat.sch.weather"
@@ -991,7 +991,7 @@ class TestConfigureMcpCommand:
         assert cleanup_calls == [("claude", "orphan-mcp")]
 
     def test_skips_orphan_warning_when_nothing_was_actually_removed(self, monkeypatch, capsys):
-        """Re-running configure mcp on the same workspace shouldn't repeat the warning
+        """Re-running the MCP configure flow on the same workspace shouldn't repeat the warning
         if the leftover entries were already removed by a previous run."""
         cleanup_calls: list[tuple[str, str]] = []
         other_ws = "https://other-workspace.cloud.databricks.com"
@@ -1390,8 +1390,8 @@ class TestConfigureMcpFromLocation:
         ]
 
     def test_preserves_skills_connection(self, monkeypatch):
-        """A skills connection is owned by `configure skills`, so `configure mcp
-        --location` must leave it registered rather than treating it as a removal."""
+        """A skills connection is owned by `configure skills`, so a replace-mode
+        `--location` run must leave it registered rather than treating it as a removal."""
         saved_states: list[dict] = []
         removed: list[tuple[str, str]] = []
         skills_entry = {
@@ -1473,7 +1473,7 @@ class TestAddMcpCommand:
     """`ucode mcp add` (append) registers new servers without removing existing ones."""
 
     def test_keeps_servers_outside_location(self, monkeypatch):
-        """Unlike `configure mcp --location`, `mcp add --location` preserves any
+        """Unlike a replace-mode `--location` run, `mcp add --location` preserves any
         server outside the location instead of removing it."""
         saved_states: list[dict] = []
         configured: list[tuple[str, str, str]] = []
@@ -2184,7 +2184,7 @@ class TestUnionLocations:
 
 
 class TestAddSkillsCommand:
-    """`ucode skill add --mcp` unions schemas into the connection scope rather
+    """`ucode skills add --mcp` unions schemas into the connection scope rather
     than replacing it (unlike `configure_skills_mcp_command`)."""
 
     def test_unions_into_existing_scope(self, monkeypatch):
@@ -2530,7 +2530,7 @@ class TestRemoveSkillsCommand:
 
 
 class TestRemoveSkillsLocationsCommand:
-    """`ug skill remove --mcp --location`: non-interactive schema removal from the skills scope."""
+    """`ug skills remove --mcp --location`: non-interactive schema removal from the skills scope."""
 
     def _state(self, by_client=None):
         by_client = by_client or _by_client(["claude", "codex"], ["A.a", "B.b"])
@@ -3144,3 +3144,203 @@ class TestDiscoverySkipsPermissionErrors:
         assert mcp._discover_mcp_source("Genie spaces", boom) == []
         out = capsys.readouterr().out
         assert "network down" in out
+
+
+# Real-shaped `claude mcp list` output: `<name>: <cmd|url …> - <glyph> <status>`, health-probed.
+CLAUDE_MCP_LIST = """Checking MCP server health…
+
+github: dbexec repo run mcp start-single github - ✔ Connected
+databricks: python3.10 /home/u/mcp/databricks_deploy.pex - ✘ Failed to connect — CONNECTION_CLOSED: Connection closed
+approval-demo: https://host.databricksapps.com/mcp (HTTP) - ✘ Failed to connect — ENOTFOUND: getaddrinfo
+web_search: /home/u/.cache/ucode mcp web-search - ✔ Connected
+"""
+
+# Real-shaped `codex mcp list` table: columns separated by 2+ spaces; Status is enabled/disabled.
+CODEX_MCP_LIST = """Name             Command     Args                                 Env  Cwd  Status    Auth
+accounts-admin   python3.10  /home/u/mcp/accounts_deploy.pex      -    -    enabled   Unsupported
+chrome-devtools  npx         https://host/chrome.tgz --headless   -    -    disabled  Unsupported
+github           dbexec      repo run mcp start-single github     -    -    enabled   Unsupported
+"""
+
+
+class TestParseMcpListOutput:
+    def test_parses_claude_health_output(self):
+        assert mcp.parse_mcp_list_output("claude", CLAUDE_MCP_LIST) == {
+            "github": mcp.LIVE_CONNECTED,
+            "databricks": mcp.LIVE_FAILED,
+            "approval-demo": mcp.LIVE_FAILED,
+            "web_search": mcp.LIVE_CONNECTED,
+        }
+
+    def test_claude_header_line_is_not_a_server(self):
+        # The "Checking MCP server health…" header must not become a bogus entry.
+        assert "Checking" not in mcp.parse_mcp_list_output("claude", CLAUDE_MCP_LIST)
+
+    def test_parses_codex_enabled_disabled_table(self):
+        assert mcp.parse_mcp_list_output("codex", CODEX_MCP_LIST) == {
+            "accounts-admin": mcp.LIVE_ENABLED,
+            "chrome-devtools": mcp.LIVE_DISABLED,
+            "github": mcp.LIVE_ENABLED,
+        }
+
+    def test_empty_listing_returns_no_servers(self):
+        assert mcp.parse_mcp_list_output("gemini", "No MCP servers configured.") == {}
+
+    def test_colonless_glyph_shape_is_parsed_best_effort(self):
+        parsed = mcp.parse_mcp_list_output(
+            "gemini", "🟢 alpha - Ready (3 tools)\n🔴 beta - Disconnected\n"
+        )
+        assert parsed == {"alpha": mcp.LIVE_CONNECTED, "beta": mcp.LIVE_FAILED}
+
+    def test_ansi_progress_escapes_are_stripped_before_parsing(self, monkeypatch):
+        # cursor-agent redraws progress with ANSI escapes that must not leak into server names.
+        class _Result:
+            stdout = "\x1b[2K\x1b[1A\x1b[Ggithub: cmd - ✔ Connected\n"
+            stderr = ""
+
+        monkeypatch.setattr(mcp.subprocess, "run", lambda *a, **k: _Result())
+        assert mcp.query_live_mcp_status("cursor") == {"github": mcp.LIVE_CONNECTED}
+
+    def test_health_glyph_wins_over_keyword_in_command(self):
+        # A healthy server whose name/command contains "error" must not be misread as failed:
+        # the ✔ glyph is authoritative.
+        out = "error-mcp: /opt/error-runner start - ✔ Connected\n"
+        assert mcp.parse_mcp_list_output("claude", out) == {"error-mcp": mcp.LIVE_CONNECTED}
+
+    def test_keyword_fallback_used_when_no_glyph(self):
+        assert mcp.parse_mcp_list_output("claude", "foo: bar - Failed to connect\n") == {
+            "foo": mcp.LIVE_FAILED
+        }
+
+
+class TestListMcpCommand:
+    def _state(self):
+        # A developer-added AI Gateway service on claude+codex, a workspace-managed one, and a
+        # skills connection (which must be reported in its own section, never as a plain server).
+        return {
+            "workspace": WS,
+            "available_tools": ["claude", "codex"],
+            "mcp_servers": [
+                {
+                    "name": "system-ai-github",
+                    "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
+                    "auth": "proxy",
+                    "clients": ["claude", "codex"],
+                },
+                {
+                    "name": mcp.SKILLS_MCP_SERVER_NAME,
+                    "kind": mcp.SKILLS_MCP_KIND,
+                    "url": f"{WS}/ai-gateway/skills/",
+                    "auth": "proxy",
+                    "clients": ["claude"],
+                },
+            ],
+            "managed_mcp_servers": [
+                {
+                    "name": "databricks-genie-abc",
+                    "url": f"{WS}/api/2.0/mcp/genie/abc",
+                    "auth": "proxy",
+                    "clients": ["claude"],
+                }
+            ],
+        }
+
+    def _patch(self, monkeypatch, *, installed=("claude", "codex"), live=None):
+        live = live or {}
+        monkeypatch.setattr(mcp, "load_state", lambda: self._state())
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: list(installed))
+        monkeypatch.setattr(mcp, "query_live_mcp_status", lambda client: live.get(client, {}))
+
+    def test_reports_configured_servers_as_a_table(self, monkeypatch, capsys):
+        self._patch(
+            monkeypatch,
+            live={
+                "claude": {
+                    "system-ai-github": mcp.LIVE_CONNECTED,
+                    "databricks-genie-abc": mcp.LIVE_FAILED,
+                    "databricks-skill-registry": mcp.LIVE_CONNECTED,
+                },
+                "codex": {"system-ai-github": mcp.LIVE_ENABLED},
+            },
+        )
+
+        assert mcp.list_mcp_command() == 0
+
+        out = _unwrap(capsys.readouterr().out)
+        # One table with NAME/LOCATION/AGENTS/STATUS columns.
+        assert "NAME" in out and "LOCATION" in out and "AGENTS" in out and "STATUS" in out
+        assert "system-ai-github" in out
+        assert "claude, codex" in out
+        # connected (claude) + enabled (codex) collapse to a single healthy token, not a split.
+        assert "connected" in out
+        assert "claude:connected" not in out
+        # The workspace-managed server is tagged, and its failed status shows.
+        assert "databricks-genie-abc" in out
+        assert "(managed)" in out
+        assert "failed" in out
+        # The skills connection is NOT listed here — it's reported by the skill commands.
+        assert "databricks-skill-registry" not in out
+
+    def test_marks_server_missing_when_absent_from_agent_listing(self, monkeypatch, capsys):
+        # Agents list nothing, so servers ug configured show STATUS "missing".
+        self._patch(monkeypatch, live={"claude": {}, "codex": {}})
+        assert mcp.list_mcp_command() == 0
+        assert "missing" in _unwrap(capsys.readouterr().out)
+
+    def test_agent_not_installed_is_flagged(self, monkeypatch, capsys):
+        # Only claude installed; codex diverges to "not installed" in the split status cell.
+        self._patch(monkeypatch, installed=("claude",), live={"claude": {}})
+        assert mcp.list_mcp_command() == 0
+        assert "not installed" in _unwrap(capsys.readouterr().out)
+
+    def test_summarizes_other_servers_as_a_count(self, monkeypatch, capsys):
+        # Servers ug didn't configure are counted per agent, not dumped by name.
+        self._patch(
+            monkeypatch,
+            live={"claude": {"some-other-mcp": mcp.LIVE_CONNECTED}, "codex": {}},
+        )
+        assert mcp.list_mcp_command() == 0
+        out = _unwrap(capsys.readouterr().out)
+        assert "Other MCP servers not configured by ug" in out
+        assert "claude: 1" in out
+        assert "some-other-mcp" not in out
+
+    def test_agents_scope_limits_report(self, monkeypatch, capsys):
+        self._patch(
+            monkeypatch,
+            live={
+                "claude": {"system-ai-github": mcp.LIVE_CONNECTED},
+                "codex": {"system-ai-github": mcp.LIVE_ENABLED},
+            },
+        )
+        assert mcp.list_mcp_command(agents={"claude"}) == 0
+        out = _unwrap(capsys.readouterr().out)
+        # Only claude appears in the AGENTS column and the other-servers count.
+        assert "claude" in out
+        assert "codex" not in out
+
+    def test_codex_caveat_shown_only_when_codex_reported(self, monkeypatch, capsys):
+        # With Codex in scope the note carries its enabled/disabled caveat.
+        self._patch(monkeypatch, live={"claude": {}, "codex": {}})
+        assert mcp.list_mcp_command() == 0
+        assert "Codex reports enabled/disabled" in _unwrap(capsys.readouterr().out)
+
+    def test_codex_caveat_omitted_when_scoped_out(self, monkeypatch, capsys):
+        # Scoping Codex out drops the Codex clause from the note.
+        self._patch(monkeypatch, live={"claude": {}, "codex": {}})
+        assert mcp.list_mcp_command(agents={"claude"}) == 0
+        assert "Codex reports enabled/disabled" not in _unwrap(capsys.readouterr().out)
+
+    def test_unknown_agent_raises(self, monkeypatch):
+        self._patch(monkeypatch)
+        with pytest.raises(RuntimeError, match="Unknown agent"):
+            mcp.list_mcp_command(agents={"bogus"})
+
+    def test_no_configured_servers_still_succeeds(self, monkeypatch, capsys):
+        monkeypatch.setattr(mcp, "load_state", lambda: {"workspace": WS, "available_tools": []})
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: [])
+        monkeypatch.setattr(mcp, "query_live_mcp_status", lambda client: {})
+        assert mcp.list_mcp_command() == 0
+        out = _unwrap(capsys.readouterr().out)
+        assert "No MCP servers are configured by ug" in out
+        assert "No supported MCP clients are installed" in out
