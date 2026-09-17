@@ -31,7 +31,7 @@ from ucode.agents import (
     normalize_tool,
     resolve_gemini_provider_model,
     resolve_launch_model,
-    resolve_provider_models,
+    resolve_provider_models_and_targets,
 )
 from ucode.agents import claude as claude_agent
 from ucode.agents import codex as codex_agent
@@ -2261,6 +2261,7 @@ def _launch_tool(
         # Gemini is exempt: it validates the service and resolves its target in a single
         # lookup via resolve_gemini_provider_model (below), and uses no family model map.
         provider_models = None
+        provider_targets = None
         relayed = False
         coding_agent_config_defaults = (
             managed_claude_family_models(managed) or {}
@@ -2268,7 +2269,9 @@ def _launch_tool(
             else {}
         )
         if provider and tool != "gemini":
-            provider_models, error, relayed = resolve_provider_models(tool, state, provider)
+            provider_models, error, relayed, provider_targets = resolve_provider_models_and_targets(
+                tool, state, provider
+            )
             if error:
                 if managed is not None and provider == managed_provider_service(managed, tool):
                     # Clear error if the admin has Unity Catalog grants the developer doesn't.
@@ -2347,6 +2350,7 @@ def _launch_tool(
             resolved_model,
             provider=provider,
             provider_models=provider_models,
+            provider_targets=provider_targets,
             relayed=relayed,
             route_root_model=route_root_model,
             # Claude's explicit model is launch-scoped and is passed through LaunchOptions below.

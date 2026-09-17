@@ -138,6 +138,10 @@ re-routes to gateway auth (`route=databricks`) — one relayed session reaching 
 It needs a subscription OAuth token (see below). Interactive model-picker selection
 remains uncovered.
 
+The non-relayed MPS replacement picker has component coverage in
+`../test_agent_claude.py`, `../test_agents_init.py`, and `../test_cli.py`.
+Live `/model` replacement is not covered by this suite.
+
 MPS CUJs select the existing services already used by e2e:
 
 - Claude: `main.ucode.ci_e2e_anthropic_nonrelay_mps`.

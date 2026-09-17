@@ -418,12 +418,13 @@ class TestResolveProviderModels:
         }
         self._patch(monkeypatch, service, None)
 
-        models, error, relayed = agents_mod.resolve_provider_models(
+        models, error, relayed, picker_targets = agents_mod.resolve_provider_models_and_targets(
             "claude", self._STATE, "main.b.mixed"
         )
 
         assert error is None
         assert models == {"opus": "global.anthropic.claude-opus-4-8"}
+        assert picker_targets == ["global.anthropic.claude-opus-4-8"]
         assert relayed is False
 
     def test_invalid_provider_returns_error(self, monkeypatch):
@@ -434,6 +435,43 @@ class TestResolveProviderModels:
         assert models is None
         assert error == "boom"
         assert relayed is False
+
+    @pytest.mark.parametrize("allow_all_targets", [False, True])
+    def test_picker_targets_reuse_provider_lookup(self, monkeypatch, allow_all_targets):
+        from unittest.mock import Mock
+
+        targets = ["claude-sonnet-4-6", "claude-sonnet-5", "claude-fable-5-1"]
+        service = {
+            "provider_type": "anthropic",
+            "targets": [*targets, targets[0]],
+            "allow_all_targets": allow_all_targets,
+        }
+        self._patch(monkeypatch, service, None)
+        lookup = Mock(return_value=(service, None))
+        monkeypatch.setattr(agents_mod, "resolve_provider_service", lookup)
+
+        models, error, relayed, picker_targets = agents_mod.resolve_provider_models_and_targets(
+            "claude", self._STATE, "main.a.svc"
+        )
+
+        assert error is None
+        assert relayed is False
+        assert models == {"sonnet": "claude-sonnet-5"}
+        assert picker_targets == ([] if allow_all_targets else targets)
+        lookup.assert_called_once_with("claude", "main.a.svc", self._STATE["workspace"], "token")
+
+    def test_configure_passes_full_targets_to_claude(self, monkeypatch):
+        from unittest.mock import Mock
+
+        targets = ["claude-sonnet-4-6", "claude-sonnet-5"]
+        self._patch(monkeypatch, {"provider_type": "anthropic", "targets": targets}, None)
+        writer = Mock(return_value=dict(self._STATE))
+        monkeypatch.setattr(agents_mod.claude, "write_tool_config", writer)
+
+        agents_mod._configure_one("claude", dict(self._STATE), "main.a.svc")
+
+        assert writer.call_args.kwargs["provider_targets"] == targets
+        assert writer.call_args.kwargs["provider_models"] == {"sonnet": "claude-sonnet-5"}
 
     @pytest.mark.parametrize("tool", ["gemini", "codex"])
     def test_non_claude_pins_no_family_map(self, monkeypatch, tool):

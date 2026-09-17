@@ -517,6 +517,37 @@ class TestRenderOverlay:
         assert "availableModels" not in overlay
         assert "modelPicker" not in overlay
 
+    def test_provider_targets_replace_picker_without_enforcing_allowlist(self):
+        targets = ["claude-sonnet-4-6", "claude-sonnet-5", "claude-fable-5-1"]
+        overlay, keys = claude.render_overlay(
+            WS,
+            None,
+            provider="main.x.mps",
+            provider_models={"sonnet": "claude-sonnet-5"},
+            provider_targets=targets,
+            static_models=["system.ai.claude-opus-4-8"],
+        )
+
+        assert overlay["modelPicker"] == {
+            "replaceBuiltInOptions": True,
+            "options": [{"model": target, "label": target} for target in targets],
+        }
+        assert ["modelPicker"] in keys
+        assert "availableModels" not in overlay
+        assert "enforceAvailableModels" not in overlay
+
+    def test_relayed_provider_targets_do_not_replace_picker(self):
+        overlay, _ = claude.render_overlay(
+            WS,
+            None,
+            provider="main.x.relay",
+            provider_targets=["claude-sonnet-5"],
+            relayed=True,
+            relayed_base_url="http://localhost:8000",
+        )
+
+        assert "modelPicker" not in overlay
+
     def test_static_models_label_strips_system_ai_prefix(self):
         # Picker labels show the model id without the ``system.ai.`` prefix.
         static = ["system.ai.claude-opus-4-8", "databricks-custom-model"]
@@ -1248,6 +1279,76 @@ class TestWriteToolConfigManagedSettings:
         managed_content = json.loads(managed_writes[0][1])
         assert "availableModels" not in managed_content
         assert "modelPicker" not in managed_content
+
+    def test_provider_picker_updates_both_settings_files(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing_picker = {
+            "replaceBuiltInOptions": False,
+            "options": [{"model": "system.ai.claude-opus-4-8"}],
+        }
+        existing = {
+            str(path): {
+                "modelPicker": existing_picker,
+                "availableModels": ["system.ai.claude-opus-4-8"],
+                "enforceAvailableModels": True,
+                "theme": "light",
+            }
+            for path in (claude.CLAUDE_SETTINGS_PATH, FAKE_MANAGED_PATH)
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "managed_configs": {
+                "claude": {"keys": [[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS]}
+            },
+        }
+        targets = ["claude-sonnet-4-6", "claude-sonnet-5"]
+
+        updated = claude.write_tool_config(
+            state, None, provider="main.x.mps", provider_targets=targets
+        )
+
+        for written in (private_writes[0][1], json.loads(managed_writes[0][1])):
+            assert written["modelPicker"] == {
+                "replaceBuiltInOptions": True,
+                "options": [{"model": target, "label": target} for target in targets],
+            }
+            assert "availableModels" not in written
+            assert "enforceAvailableModels" not in written
+            assert written["theme"] == "light"
+        assert ["modelPicker"] in updated["managed_configs"]["claude"]["keys"]
+
+    @pytest.mark.parametrize("provider", [None, "main.x.allow_all"])
+    @pytest.mark.parametrize("owned", [False, True])
+    def test_removes_only_ug_owned_picker_without_provider_targets(
+        self, monkeypatch, provider, owned
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        picker = {
+            "replaceBuiltInOptions": True,
+            "options": [{"model": "claude-sonnet-4-6"}],
+        }
+        existing = {
+            str(path): {"modelPicker": picker}
+            for path in (claude.CLAUDE_SETTINGS_PATH, FAKE_MANAGED_PATH)
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "managed_configs": {"claude": {"keys": [["modelPicker"]] if owned else []}},
+        }
+
+        claude.write_tool_config(state, "system.ai.claude-sonnet-4-6", provider=provider)
+
+        for written in (private_writes[0][1], json.loads(managed_writes[0][1])):
+            if owned:
+                assert "modelPicker" not in written
+            else:
+                assert written["modelPicker"] == picker
 
 
 class TestAddClaudeMcpServer:

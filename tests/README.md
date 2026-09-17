@@ -18,6 +18,11 @@ the distribution rename with mocked installer calls, including failure recovery 
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
+Claude MPS picker component tests cover full target lists, reuse of provider validation,
+managed defaults, and removal of stale ug-owned picker settings. Non-relayed MPSes with
+explicit targets replace built-in rows; `allow_all_targets` keeps native discovery.
+These checks do not establish live `/model` coverage.
+
 Agent-picker regression coverage in `test_ui.py` and `test_cli.py` drives actual
 keyboard selection: nothing is selected by default, selecting Codex installs only
 Codex, and submitting an empty selection installs nothing. Rendering checks cover

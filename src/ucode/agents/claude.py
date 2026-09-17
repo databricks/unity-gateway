@@ -353,6 +353,7 @@ def render_overlay(
     parent_schema: str | None = None,
     static_models: list[str] | None = None,
     otel_tracing: bool = False,
+    provider_targets: list[str] | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
 
@@ -481,6 +482,14 @@ def render_overlay(
             "options": [{"model": m, "label": _picker_label(m)} for m in static_models],
         }
         keys += [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
+    elif provider and provider_targets and not relayed:
+        overlay["modelPicker"] = {
+            "replaceBuiltInOptions": True,
+            "options": [
+                {"model": target, "label": _picker_label(target)} for target in provider_targets
+            ],
+        }
+        keys.append(["modelPicker"])
 
     if otel_tracing:
         otel_env = _otel_trace_env(workspace)
@@ -713,6 +722,7 @@ def write_tool_config(
     custom_model: str | None = None,
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
+    provider_targets: list[str] | None = None,
 ) -> dict:
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
@@ -740,10 +750,16 @@ def write_tool_config(
         parent_schema=parent_schema,
         static_models=state.get("claude_static_models"),
         otel_tracing=bool(state.get("claude_otel_tracing")),
+        provider_targets=provider_targets,
     )
+    previous_keys = (state.get("managed_configs") or {}).get("claude", {}).get("keys", [])
+    stale_picker_keys = [
+        key for key in CLAUDE_MANAGED_PICKER_KEYS if [key] in previous_keys and key not in overlay
+    ]
     managed_file_keys = list(managed_keys)
     for path in (
-        [["env", key] for key in CLAUDE_MANAGED_MODEL_ENV_KEYS]
+        [[key] for key in stale_picker_keys]
+        + [["env", key] for key in CLAUDE_MANAGED_MODEL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_CONDITIONAL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_REMOVED_ENV_KEYS]
         + [["env", key] for key in CLAUDE_OTEL_TRACE_ENV_KEYS]
@@ -788,6 +804,8 @@ def write_tool_config(
                 else:
                     target_env[key] = selected_default_model
         merged = deep_merge_dict(base, overlay_for_merge)
+        for key in stale_picker_keys:
+            merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
         merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
             existing_custom_headers, overlay_custom_headers
@@ -917,8 +935,7 @@ def _reconcile_managed_settings(
     configuration mirrors ucode's settings there. The same compose operation that produced the
     private file is applied to the existing managed file, preserving unrelated IT-authored keys.
 
-    `ug configure` updates gateway-owned fields in this file, but does not generate or modify
-    the `modelPicker` object; an existing picker is retained by the merge.
+    `ug configure` updates gateway-owned fields and manages the picker for explicit model lists.
 
     Relayed launches are skipped: they depend on a per-session loopback refresh proxy that only runs
     during `ucode claude`, so a bare `claude` could not reach the gateway anyway.

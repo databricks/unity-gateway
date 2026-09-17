@@ -17,6 +17,7 @@ from pathlib import Path
 
 from ucode.config_io import ToolSpec
 from ucode.databricks import (
+    BEDROCK_PROVIDER_TYPES,
     get_databricks_token,
     install_ai_tools,
     install_databricks_cli,
@@ -286,9 +287,19 @@ def resolve_launch_model(
 def resolve_provider_models(
     tool: str, state: dict, provider: str | None
 ) -> tuple[dict | None, str | None, bool]:
+    """Return provider family defaults while preserving the existing API."""
+    models, error, relayed, _targets = resolve_provider_models_and_targets(tool, state, provider)
+    return models, error, relayed
+
+
+def resolve_provider_models_and_targets(
+    tool: str, state: dict, provider: str | None
+) -> tuple[dict | None, str | None, bool, list[str]]:
     """Validate ``provider`` for ``tool`` and return the model ids to pin.
 
-    Returns ``(provider_models, error, relayed)``. ``provider_models`` is a ``{family: model_id}``
+    Returns ``(provider_models, error, relayed, provider_targets)``.
+    ``provider_targets`` contains explicit picker targets; allow-all services return an empty list.
+    ``provider_models`` is a ``{family: model_id}``
     dict re-derived from the service's declared targets — Bedrock (provider-side slugs), API-key
     Anthropic, and relayed Anthropic that declares a curated allowlist alike — so the client uses the
     ids the MPS allows rather than Claude Code's defaults. It is None when ``provider`` is None, when
@@ -303,11 +314,11 @@ def resolve_provider_models(
     versions win rather than being re-derived here.
     """
     if not provider:
-        return None, None, False
+        return None, None, False, []
     token = get_databricks_token(state["workspace"], state.get("profile"))
     service, error = resolve_provider_service(tool, provider, state["workspace"], token)
     if error or service is None:
-        return None, error, False
+        return None, error, False, []
     relayed = bool(service.get("relayed"))
     # Relayed services enforce their declared targets too, so map them like any Anthropic service
     # (allow_all declares none). relayed gates auth, not model reconciliation.
@@ -315,8 +326,12 @@ def resolve_provider_models(
     # its target through resolve_gemini_provider_model instead — so mapping their targets
     # through Claude-family logic would be meaningless (see docstring).
     if tool != "claude":
-        return None, None, relayed
-    return map_claude_family_models(service.get("targets") or []) or None, None, relayed
+        return None, None, relayed, []
+    targets = list(dict.fromkeys(service.get("targets") or []))
+    if service.get("provider_type") in BEDROCK_PROVIDER_TYPES:
+        targets = [target for target in targets if "claude" in target.casefold()]
+    picker_targets = [] if service.get("allow_all_targets") else targets
+    return map_claude_family_models(targets) or None, None, relayed, picker_targets
 
 
 def resolve_gemini_provider_model(
@@ -379,6 +394,7 @@ def configure_tool(
     custom_model: str | None = None,
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
+    provider_targets: list[str] | None = None,
 ) -> dict:
     result: dict | tuple[dict, str]
     if tool == "codex":
@@ -400,6 +416,7 @@ def configure_tool(
             custom_model=custom_model,
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
+            provider_targets=provider_targets,
         )
     else:
         # Every tool in this branch needs a model — including gemini under a provider,
@@ -523,11 +540,19 @@ def _configure_one(tool: str, state: dict, provider: str | None) -> dict:
             if error:
                 raise RuntimeError(error)
             return configure_tool(tool, state, model, provider=provider)
-        provider_models, error, relayed = resolve_provider_models(tool, state, provider)
+        provider_models, error, relayed, provider_targets = resolve_provider_models_and_targets(
+            tool, state, provider
+        )
         if error:
             raise RuntimeError(error)
         return configure_tool(
-            tool, state, None, provider=provider, provider_models=provider_models, relayed=relayed
+            tool,
+            state,
+            None,
+            provider=provider,
+            provider_models=provider_models,
+            relayed=relayed,
+            provider_targets=provider_targets,
         )
     if tool == "codex":
         return configure_tool("codex", state)
