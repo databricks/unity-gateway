@@ -2194,16 +2194,18 @@ def _launch_tool(
         # Checked before discovery, which can take tens of seconds, so a blocked launch fails fast.
         _reject_disabled_agent(managed, tool)
         managed_provider = managed_provider_service(managed or {}, tool)
-        if managed_provider and explicit_provider is not None:
-            raise RuntimeError(
-                f"--provider cannot be used for {TOOL_SPECS[tool]['display']} because your admin "
-                f"has configured managed provider {managed_provider}."
-            )
-        if managed_provider and parent_schema is not None:
-            raise RuntimeError(
-                f"--model-location cannot be used for {TOOL_SPECS[tool]['display']} because your "
-                f"admin has configured managed provider {managed_provider}."
-            )
+        if managed_provider:
+            if explicit_provider is not None:
+                raise RuntimeError(
+                    f"--provider cannot be used for {TOOL_SPECS[tool]['display']} because your admin "
+                    f"has configured managed provider {managed_provider}."
+                )
+            if parent_schema is not None:
+                raise RuntimeError(
+                    f"--model-location cannot be used for {TOOL_SPECS[tool]['display']} because your "
+                    f"admin has configured managed provider {managed_provider}."
+                )
+        # Admin config cannot contain both model sources; this only clears local state.
         if parent_schema is not None:
             provider = None
         # The environment switch remains a developer override; managed config is the workspace
