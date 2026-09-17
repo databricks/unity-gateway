@@ -167,6 +167,12 @@ def codex_model_id(model: str) -> str:
     Codex's bundled GPT catalog owns the model metadata for these aliases,
     while the AI Gateway resolves them back to the matching ``system.ai`` service.
     Leave non-GPT models unchanged because their metadata comes from the gateway catalog.
+
+    The router's arm vocabulary and the per-workspace MPS catalog both use the
+    bare hyphenated form (gpt-5-6-luna).  Translate those too — not just the
+    system.ai./databricks- prefixed ids — so the routed and starting
+    model is always the dotted alias the gateway resolves, regardless of
+    whether the model list came from the custom catalog or cached discovery.
     """
     tail = model.rsplit("/", 1)[-1]
     if tail in {"databricks-gpt-5-2-codex", "databricks-gpt-5-4-nano"}:
@@ -176,7 +182,7 @@ def codex_model_id(model: str) -> str:
     elif tail.startswith("databricks-"):
         bare = tail.removeprefix("databricks-")
     else:
-        return model
+        bare = tail
     match = _GPT_RE.fullmatch(bare)
     if not match:
         return model
