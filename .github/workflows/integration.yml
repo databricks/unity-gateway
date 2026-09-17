@@ -181,6 +181,7 @@ jobs:
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: ${{ inputs.suite == 'tui' && 'live and tui' || 'live' }} and ${{ matrix.agent }}

@@ -52,6 +52,9 @@ from ucode.ui import normalize_workspace_url
 # happened to list first. Hardcoded on purpose.
 CI_ANTHROPIC_MPS = "main.ucode.ci_e2e_anthropic_nonrelay_mps"  # api-key Anthropic (for claude)
 CI_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+CI_ANTHROPIC_RELAY_MPS = (
+    "main.ucode.ci_e2e_anthropic_relay_mps"  # subscription-relay Anthropic (for claude)
+)
 CI_OPENAI_MPS = "main.ucode.ci_openai_mps"  # api-key OpenAI (for codex)
 CI_OPENAI_MODEL = "gpt-5-nano"
 
@@ -572,20 +575,6 @@ class TestModelProviderLaunch:
     """
 
     @staticmethod
-    def _first_relayed_service(tool: str, workspace: str, token: str) -> str:
-        services, reason = list_model_provider_services(workspace, token)
-        if is_model_provider_feature_unavailable(reason):
-            pytest.skip("Model Provider Service feature not enabled on this workspace")
-        if reason is not None:
-            pytest.skip(f"could not list provider services: {reason}")
-        names = [
-            s["name"] for s in services if service_usable_for_tool(tool, s) and s.get("relayed")
-        ]
-        if not names:
-            pytest.skip(f"no relayed {tool} model provider services available on this workspace")
-        return names[0]
-
-    @staticmethod
     def _skip_if_provider_unusable(combined: str, provider: str) -> None:
         # Environmental provider-account conditions, not ucode bugs: the test only proves routing
         # reaches the provider, so skip (rather than fail) when the account lacks a grant on the
@@ -708,7 +697,14 @@ class TestModelProviderLaunch:
             pytest.skip(
                 "set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) to run the relayed launch"
             )
-        provider = self._first_relayed_service("claude", e2e_workspace, e2e_token)
+        provider = CI_ANTHROPIC_RELAY_MPS
+        _, error, _relayed = resolve_provider_models(
+            "claude", {**e2e_state, "workspace": e2e_workspace}, provider
+        )
+        if error is not None:
+            pytest.skip(
+                f"CI relayed Anthropic MPS {provider} unavailable on this workspace: {error}"
+            )
 
         config_dir = tmp_path / "claude_config"
         config_dir.mkdir()

@@ -89,6 +89,24 @@ def claude_provider():
 
 
 @pytest.fixture(scope="session")
+def claude_relayed_provider():
+    return os.environ["UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def claude_oauth_token():
+    # Real subscription OAuth token (`claude setup-token`); the relayed launch needs it to run
+    # headless. Missing means the launch would fall back to a browser login, so fail rather than
+    # silently pass a degraded run — the suite has no capability skips.
+    token = os.environ.get("UG_INTEGRATION_CLAUDE_OAUTH_TOKEN", "").strip()
+    if not token:
+        pytest.fail(
+            "Set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) to run the relayed CUJ."
+        )
+    return token
+
+
+@pytest.fixture(scope="session")
 def codex_provider():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER"]
 
