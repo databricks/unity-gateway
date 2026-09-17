@@ -62,7 +62,7 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, tm
     session = live_session
     config = build_coding_agent_config(
         "CODING_AGENT_CODEX",
-        build_codex_agent_config([CODEX_DEFAULT, CODEX_WITHOUT_BUNDLED_METADATA]),
+        build_codex_agent_config(models=[CODEX_DEFAULT, CODEX_WITHOUT_BUNDLED_METADATA]),
     )
     set_managed_config_stub(session, tmp_path, config)
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
