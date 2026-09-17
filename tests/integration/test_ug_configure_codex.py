@@ -97,3 +97,43 @@ def test_ug_configure_codex_openai_mps(
         tui.exit_normally()
     task.assert_completed(session, "codex")
     session.assert_not_routed()
+
+
+def test_ug_configure_codex_azure_openai_mps(
+    live_session, workspace, codex_azure_provider, codex_azure_provider_model
+):
+    """Scenario: route Codex through an Azure OpenAI MPS backed by a reasoning model.
+
+    Expected: ug saves the Azure provider, and launching Codex with one of its allowed
+    models completes a file-reading task. Codex always sends `reasoning.effort`, so a
+    completed task also proves two things a plain routing check would miss: the provider-type
+    allowlist accepts `azure_openai` for Codex, and the backing deployment is reasoning-capable
+    (a non-reasoning Azure model 400s the request `reasoning.effort`).
+    """
+    session = live_session
+    task = FileTask(session)
+
+    command = [
+        str(session.binary),
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    ]
+    with ConfigureTerminal(session, "codex", command, "configure-azure-provider") as configure:
+        configure.select_agent("Codex")
+        configure.choose("How should Codex get its models?", "External Models")
+        configure.choose("Select a model provider service:", codex_azure_provider)
+        configure.finish(timeout=240)
+    assert session.workspace_state()["provider_services"]["codex"] == codex_azure_provider
+    assert codex_azure_provider in session.run("status").stdout
+
+    command = [str(session.binary), "codex", "--", "--model", codex_azure_provider_model]
+    with AgentTerminal(session, "codex", command, "azure-provider-session") as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for_task(task, timeout=300)
+        tui.exit_normally()
+    task.assert_completed(session, "codex")
+    session.assert_not_routed()
