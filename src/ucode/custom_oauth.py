@@ -15,12 +15,19 @@ from urllib.parse import urlparse
 from databricks.sdk import oauth
 
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
-from ucode.databricks import build_auth_token_argv, get_databricks_token, run
+from ucode.databricks import (
+    build_auth_token_argv,
+    ensure_databricks_cli_version,
+    get_databricks_token,
+    has_valid_databricks_auth,
+    run,
+)
 from ucode.ui import err_console, normalize_workspace_url, print_warning_err
 
 DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
 # Custom OAuth may need a human to finish browser consent, not just a token fetch.
 CUSTOM_OAUTH_TIMEOUT_MS = 180_000
+CUSTOM_OAUTH_CLI_MIN_VERSION = (1, 17, 0)
 
 
 class CustomOAuthConfig(TypedDict):
@@ -123,13 +130,12 @@ def ensure_custom_oauth_cli_token(
     config: CustomOAuthConfig,
 ) -> str:
     """Create/reuse the custom-client CLI profile and return its access token."""
+    ensure_databricks_cli_version(CUSTOM_OAUTH_CLI_MIN_VERSION)
     workspace = normalize_workspace_url(workspace)
     profile = config.get("profile") or _custom_cli_profile(workspace, config["client_id"])
     config["profile"] = profile
-    try:
+    if has_valid_databricks_auth(workspace, profile):
         return get_databricks_token(workspace, profile)
-    except RuntimeError:
-        pass
     login_args = [
         "databricks",
         "auth",
