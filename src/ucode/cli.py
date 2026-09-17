@@ -43,7 +43,11 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
-from ucode.custom_oauth import ensure_custom_oauth_cli_token
+from ucode.custom_oauth import (
+    CUSTOM_OAUTH_CLI_ENV_VAR,
+    custom_oauth_cli_enabled,
+    ensure_custom_oauth_cli_token,
+)
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     apply_pat_environment,
@@ -505,11 +509,7 @@ def configure_shared_state(
         state.pop("custom_oauth", None)
     state["base_urls"] = build_shared_base_urls(workspace)
 
-    cli_custom_oauth = (
-        state.get("custom_oauth")
-        if custom_oauth is not None and os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1"
-        else None
-    )
+    cli_custom_oauth = state.get("custom_oauth") if custom_oauth_cli_enabled(custom_oauth) else None
     if cli_custom_oauth:
         token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth)
 
@@ -2146,8 +2146,8 @@ def _launch_tool(
 ) -> None:
     try:
         tool = normalize_tool(tool_name)
-        if custom_oauth is None:
-            os.environ.pop("ENABLE_CUSTOM_OAUTH_FROM_CLI", None)
+        if not custom_oauth_cli_enabled(custom_oauth):
+            os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
         # Before any status print: a stdio-protocol subcommand owns stdout, so
         # every ug line from here on must go to stderr instead.
         if _child_owns_stdout(tool, ctx.args):
@@ -2176,10 +2176,7 @@ def _launch_tool(
         # Workspaces configured with --use-pat export the profile's PAT as
         # DATABRICKS_BEARER up front so every auth check below (and the
         # launched agent itself) uses the static token instead of OAuth.
-        if not (
-            os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1"
-            and (custom_oauth or existing.get("custom_oauth"))
-        ):
+        if not custom_oauth_cli_enabled(custom_oauth):
             apply_pat_environment(existing)
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []

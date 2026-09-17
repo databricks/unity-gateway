@@ -20,7 +20,7 @@ from ucode.codex_config import (
 )
 from ucode.config_io import APP_DIR, read_json_safe, read_toml_safe, write_json_file
 from ucode.constants import LOOPBACK_HOST
-from ucode.custom_oauth import get_custom_client_token
+from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
 from ucode.databricks import (
     AnthropicModelCatalog,
     build_auth_token_argv,
@@ -60,7 +60,7 @@ CLAUDE_ROUTED_AGENT_PROMPT = (
 
 def _launch_token(state: dict, workspace: str) -> str:
     custom_oauth = state.get("custom_oauth")
-    if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1" and isinstance(custom_oauth, dict):
+    if custom_oauth_cli_enabled(custom_oauth) and isinstance(custom_oauth, dict):
         return get_custom_client_token(
             workspace,
             custom_oauth["client_id"],
@@ -550,16 +550,13 @@ def launch_codex(
             "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
             "Run `ucode configure codex` to enable routing."
         )
+    custom_oauth = state.get("custom_oauth")
     overlay = render_overlay(
         workspace,
         start_model,
         state.get("profile"),
         use_pat=bool(state.get("use_pat")),
-        custom_oauth=(
-            state.get("custom_oauth")
-            if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1"
-            else None
-        ),
+        custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
     )
     overlay["hooks"] = {
         "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),

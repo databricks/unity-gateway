@@ -28,6 +28,7 @@ DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
 # Custom OAuth may need a human to finish browser consent, not just a token fetch.
 CUSTOM_OAUTH_TIMEOUT_MS = 180_000
 CUSTOM_OAUTH_CLI_MIN_VERSION = (1, 17, 0)
+CUSTOM_OAUTH_CLI_ENV_VAR = "ENABLE_CUSTOM_OAUTH_FROM_CLI"
 
 
 class CustomOAuthConfig(TypedDict):
@@ -35,6 +36,10 @@ class CustomOAuthConfig(TypedDict):
     redirect_url: str
     scopes: list[str]
     profile: NotRequired[str]
+
+
+def custom_oauth_cli_enabled(config: CustomOAuthConfig | None) -> bool:
+    return config is not None and os.environ.get(CUSTOM_OAUTH_CLI_ENV_VAR) == "1"
 
 
 def _normalize_scopes(scopes: Sequence[str]) -> list[str]:
@@ -165,7 +170,7 @@ def get_custom_client_token(
     """Fetch a custom-client token through the selected SDK or CLI backend."""
     config = create_custom_oauth_config(client_id, scopes, redirect_url)
     workspace = normalize_workspace_url(workspace)
-    if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1":
+    if custom_oauth_cli_enabled(config):
         profile = profile or _custom_cli_profile(workspace, config["client_id"])
         return get_databricks_token(workspace, profile, force_refresh=force_refresh)
     try:
