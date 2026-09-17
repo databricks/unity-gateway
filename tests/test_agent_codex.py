@@ -145,7 +145,7 @@ class TestRenderOverlay:
         )
         overlay = render(WS, custom_oauth=config)
         auth = overlay["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]["auth"]
-        assert auth["timeout_ms"] == (180_000 if custom else 5000)
+        assert auth["timeout_ms"] == (365_000 if custom else 5000)
 
     def test_provider_adds_routing_header(self):
         overlay = codex.render_overlay(WS, provider="main.aarushi.aarushi-openai")

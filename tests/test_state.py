@@ -307,7 +307,7 @@ class TestBuildAgentState:
 
         assert "--client-id custom-client" in result["claude"]["auth_command"]
         assert result["codex"]["auth"]["args"][-1] == "offline_access,model-serving"
-        assert result["codex"]["auth"]["timeout_ms"] == 180_000
+        assert result["codex"]["auth"]["timeout_ms"] == 365_000
 
 
 # ---------------------------------------------------------------------------
