@@ -434,6 +434,14 @@ class TestCustomCatalogModels:
 
         assert codex_config.custom_catalog_models() == expected
 
+    def test_catalog_path_uses_config_precedence(self, tmp_path, monkeypatch):
+        managed = self._catalog(tmp_path / "managed.json", ["gpt-managed"])
+        cli = self._catalog(tmp_path / "cli.json", ["gpt-cli"])
+        default = self._catalog(tmp_path / "default.json", ["gpt-default"])
+        self._settings(tmp_path, monkeypatch, managed=managed, cli=cli, default=default)
+
+        assert codex_config.custom_catalog_path() == managed
+
     def test_unreadable_catalog_warns_and_falls_back(self, tmp_path, monkeypatch):
         self._settings(tmp_path, monkeypatch, cli=tmp_path / "missing.json")
         warnings = []
@@ -488,6 +496,8 @@ class TestCustomCatalogModels:
             )
 
         assert interposer_kwargs["available_models"] == ["gpt-6-astra", "gpt-6-b"]
+        catalog_override = next(arg for arg in launched[0] if arg.startswith("model_catalog_json="))
+        assert catalog_override == f'model_catalog_json="{tmp_path / "cli.json"}"'
         hook_override = next(arg for arg in launched[0] if arg.startswith("hooks.PreToolUse="))
         assert "--model gpt-6-astra" in hook_override
         assert "--model gpt-6-b" in hook_override
