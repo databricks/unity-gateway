@@ -1,49 +1,38 @@
-"""Managed-config CUJs driven by an injected admin config (UCODE_MANAGED_CONFIG_STUB).
+"""Managed-config CUJs that drive the real agent TUI under an injected admin config.
 
-These exercise the real installed `ug configure` against a real workspace, but the admin
-CodingAgentConfig is injected locally so we can cover shapes the live workspace does not publish.
-Only the config INPUT is stubbed; auth, normalization, and the config writers stay real. See
-tests/AGENTS.md rule 4.
-
-Each case deliberately differs from ca-central's published config in the dimension it asserts
-(agent count, model list, or tracing), so a pass proves the injected config drove configure rather
-than a live fetch. Model ids are real ca-central model services so configure does not reject them.
+The admin CodingAgentConfig is injected via UCODE_MANAGED_CONFIG_STUB so we can exercise shapes the
+live workspace does not publish; only that INPUT is stubbed (auth, the config writers, and the agent
+binaries stay real). These assert what the launched agent actually presents in its TUI, the /model
+picker and the /mcp list, not the generated config files (asserting the files is unit tests' job).
+See tests/AGENTS.md rule 4.
 """
 
 import json
 
 import pytest
+from utils.terminal import AgentTerminal
 
-CLAUDE_MODELS = [
-    "system.ai.claude-opus-4-8",
-    "system.ai.claude-sonnet-4-6",
-    "system.ai.claude-haiku-4-5",
-]
-CODEX_MODEL = "system.ai.gpt-5-6-sol"
-
-
-def _claude_agent(models: list[str], *, tracing: bool | None = None) -> dict:
-    config = {
-        "models": {"model_services": models},
-        "default_models": {"default_model": models[0]},
-    }
-    if tracing is not None:
-        config["tracing"] = {"enabled": tracing}
-    return {"agent": "CODING_AGENT_CLAUDE_CODE", "config": config}
+CLAUDE_OPUS = "system.ai.claude-opus-4-8"
+CLAUDE_SONNET = "system.ai.claude-sonnet-4-6"
+CLAUDE_HAIKU = "system.ai.claude-haiku-4-5"
+MCP_SERVICE = "system.ai.github"
 
 
-def _codex_agent() -> dict:
+def _claude_agent(models: list[str]) -> dict:
     return {
-        "agent": "CODING_AGENT_CODEX",
+        "agent": "CODING_AGENT_CLAUDE_CODE",
         "config": {
-            "models": {"model_services": [CODEX_MODEL]},
-            "default_models": {"default_model": CODEX_MODEL},
+            "models": {"model_services": models},
+            "default_models": {"default_model": models[0]},
         },
     }
 
 
-def _config(default_agent: str, *agents: dict) -> dict:
-    return {"spec_version": 1, "default_agent": default_agent, "enabled_agents": list(agents)}
+def _config(default_agent: str, *agents: dict, mcp_names: list[str] | None = None) -> dict:
+    cfg = {"spec_version": 1, "default_agent": default_agent, "enabled_agents": list(agents)}
+    if mcp_names is not None:
+        cfg["mcp_servers"] = {"names": mcp_names}
+    return cfg
 
 
 def _apply(session, tmp_path, workspace, config: dict):
@@ -52,80 +41,51 @@ def _apply(session, tmp_path, workspace, config: dict):
     session.env["UCODE_MANAGED_CONFIG_STUB"] = str(stub)
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "managed config is published" in result.stdout, result.stdout
-    return result
-
-
-def _workspace_state(session) -> dict:
-    state = json.loads((session.home / ".ucode" / "state.json").read_text())
-    return state["workspaces"][state["current_workspace"]]
-
-
-def _claude_settings(session) -> dict:
-    return json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
 
 
 @pytest.mark.managed_fixture
 @pytest.mark.claude
-def test_managed_fixture_single_agent_claude_is_an_allowlist(live_session, workspace, tmp_path):
-    """Scenario: an injected config enables only Claude, though both agent CLIs are installed.
+def test_managed_fixture_claude_model_picker_lists_managed_models(
+    live_session, workspace, tmp_path
+):
+    """Scenario: launch Claude under a managed config and open the /model picker.
 
-    Expected: configure applies Claude alone. enabled_agents is an allowlist, and ["claude"] can
-    only come from the injected config (the live workspace enables both agents).
+    Expected: the picker offers the admin's managed models and not a model outside that list.
     """
     session = live_session
-    _apply(
-        session,
-        tmp_path,
-        workspace,
-        _config("CODING_AGENT_CLAUDE_CODE", _claude_agent(CLAUDE_MODELS)),
-    )
-    assert _workspace_state(session).get("available_tools") == ["claude"], _workspace_state(session)
-
-
-@pytest.mark.managed_fixture
-@pytest.mark.codex
-def test_managed_fixture_single_agent_codex_is_an_allowlist(live_session, workspace, tmp_path):
-    """Scenario: an injected config enables only Codex, though both agent CLIs are installed.
-
-    Expected: configure applies Codex alone (the live workspace enables both agents).
-    """
-    session = live_session
-    _apply(session, tmp_path, workspace, _config("CODING_AGENT_CODEX", _codex_agent()))
-    assert _workspace_state(session).get("available_tools") == ["codex"], _workspace_state(session)
-
-
-@pytest.mark.managed_fixture
-@pytest.mark.claude
-def test_managed_fixture_static_model_list_comes_from_the_config(live_session, workspace, tmp_path):
-    """Scenario: an injected config pins a Claude model list distinct from the live workspace's.
-
-    Expected: Claude's availableModels and picker equal exactly the injected two-model list, proving
-    the model allow-list is driven by the config (the live workspace publishes three Claude models).
-    """
-    session = live_session
-    models = [CLAUDE_MODELS[0], CLAUDE_MODELS[2]]
+    models = [CLAUDE_OPUS, CLAUDE_HAIKU]  # distinct from the live config's three models
     _apply(session, tmp_path, workspace, _config("CODING_AGENT_CLAUDE_CODE", _claude_agent(models)))
-
-    settings = _claude_settings(session)
-    assert settings.get("availableModels") == models, settings
-    options = (settings.get("modelPicker") or {}).get("options", [])
-    assert [option.get("model") for option in options] == models, settings
+    with AgentTerminal(
+        session, "claude", [str(session.binary), "claude"], "managed-fixture-model"
+    ) as tui:
+        tui.boot()
+        tui.send("/model", "type the /model command")
+        tui.send("\r", "open the model picker")
+        tui.wait_for(
+            lambda s: "opus-4-8" in s and "haiku-4-5" in s,
+            "the /model picker to list the managed models",
+        )
+        assert "sonnet-4-6" not in tui.visible, tui.visible
 
 
 @pytest.mark.managed_fixture
 @pytest.mark.claude
-def test_managed_fixture_tracing_enabled_writes_otel(live_session, workspace, tmp_path):
-    """Scenario: an injected config enables tracing for Claude (the live workspace does not).
+def test_managed_fixture_claude_mcp_lists_configured_server(live_session, workspace, tmp_path):
+    """Scenario: launch Claude under a managed config with an MCP server and open /mcp.
 
-    Expected: configure writes the OTLP telemetry env pointing at the workspace gateway endpoint.
+    Expected: the managed MCP server is listed in the agent's /mcp view.
     """
     session = live_session
-    config = _config("CODING_AGENT_CLAUDE_CODE", _claude_agent(CLAUDE_MODELS, tracing=True))
+    config = _config(
+        "CODING_AGENT_CLAUDE_CODE", _claude_agent([CLAUDE_OPUS]), mcp_names=[MCP_SERVICE]
+    )
     _apply(session, tmp_path, workspace, config)
-
-    env = _claude_settings(session).get("env") or {}
-    assert env.get("CLAUDE_CODE_ENABLE_TELEMETRY") == "1", env
-    assert env.get("OTEL_TRACES_EXPORTER") == "otlp", env
-    assert (
-        env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") == f"{workspace}/ai-gateway/otel/v1/traces"
-    ), env
+    with AgentTerminal(
+        session, "claude", [str(session.binary), "claude"], "managed-fixture-mcp"
+    ) as tui:
+        tui.boot()
+        tui.send("/mcp", "type the /mcp command")
+        tui.send("\r", "open the MCP list")
+        tui.wait_for(
+            lambda s: "github" in s.lower(), "the /mcp view to list the managed MCP server"
+        )
