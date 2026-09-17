@@ -51,13 +51,6 @@ On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
 
-Refresh config before launch:
-
-```bash
-ug codex --refresh
-ug claude --refresh
-```
-
 ## Configure
 
 ```bash
@@ -67,7 +60,7 @@ ug configure --workspace https://first.databricks.com
 ug configure --profile DEFAULT --agents claude,codex
 ```
 
-Available model-agent names are `codex`, `claude`, `gemini`, `opencode`,
+Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `copilot`, and `pi`. `cursor` can be included in `--agents` for MCP-only setup;
 Cursor models still run through your Cursor account.
 
@@ -78,10 +71,6 @@ Cursor models still run through your Cursor account.
 
 Register Databricks MCP servers for configured MCP-capable agents. Cursor Agent
 is MCP-only and is included when `cursor-agent` is installed:
-
-```bash
-ug configure --agents claude --mcp system.ai.slack
-```
 
 Use `ug mcp add` to add servers without removing existing registrations:
 
@@ -110,15 +99,6 @@ Unity Catalog Skills can be registered as MCP tools or downloaded into local
 agent skill directories.
 
 ```bash
-# Download every skill in a schema.
-ug configure skills --location main.default --path /abs/project/dir
-
-# Download named skills.
-ug configure skills --skill main.default.my-skill,ml.prod.other-skill
-
-# Expose schemas as MCP tools instead of downloading.
-ug configure skills --location main.default,ml.prod --mcp
-
 # Add to existing MCP scope or downloads.
 ug skill add --location main.default --mcp
 ug skill add --location main.default
