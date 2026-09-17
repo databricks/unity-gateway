@@ -893,7 +893,8 @@ def status() -> int:
     state = load_state()
     workspace = state.get("workspace")
     managed_configs = state.get("managed_configs") or {}
-    mcp_servers = state.get("mcp_servers") or []
+    # Both developer- and workspace-managed servers, so the count agrees with `ug mcp list`.
+    mcp_servers = (state.get("mcp_servers") or []) + (state.get("managed_mcp_servers") or [])
     configured_tools = set(state.get("available_tools") or managed_configs.keys())
 
     console.print(heading("ug status"))
@@ -929,15 +930,16 @@ def status() -> int:
         print_kv("Base URL", base_url)
         if configured and tool in MCP_CLIENTS:
             # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
-            # the per-server detail and live connection status, so status stays scannable.
-            mcp_count = sum(
-                1
+            # the per-server detail and live connection status, so status stays scannable. Dedupe by
+            # name so a server present in both mcp_servers and managed_mcp_servers isn't double-counted.
+            mcp_names = {
+                server.get("name")
                 for server in mcp_servers
                 if tool in (server.get("clients") or [])
                 and server.get("name")
                 and server.get("kind") != SKILLS_MCP_KIND
-            )
-            print_kv("MCP servers", str(mcp_count))
+            }
+            print_kv("MCP servers", str(len(mcp_names)))
         print_kv("Config file", str(config_path) if config_path.exists() else "missing")
         if tool == "claude":
             managed_path, managed_status, backup_status = claude_agent.managed_settings_status(

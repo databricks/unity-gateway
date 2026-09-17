@@ -61,6 +61,14 @@ from ucode.ui import (
 # connection-backed services that need a per-user connection login.
 AIGW_MCP_SERVICES_PATH = "/ai-gateway/mcp-services/"
 
+# Workspace-relative path fragments for the V2 AI Gateway MCP endpoints, shared by the URL-shape
+# checks (`_is_app_mcp_server`, `_mcp_server_location`) so the set stays in one place.
+MCP_EXTERNAL_PATH = "/api/2.0/mcp/external/"
+MCP_GENIE_PATH = "/api/2.0/mcp/genie/"
+MCP_VECTOR_SEARCH_PATH = "/api/2.0/mcp/vector-search/"
+MCP_FUNCTIONS_PATH = "/api/2.0/mcp/functions/"
+MCP_SQL_PATH = "/api/2.0/mcp/sql"
+
 # Per-agent published OAuth app used for the direct-HTTP MCP connection login.
 # These agents can pin a pre-registered OAuth client and drive the `/oidc` login
 # themselves (so `/mcp` shows "needs authentication" / Cursor shows a login), which
@@ -730,15 +738,15 @@ def _is_app_mcp_server(server: dict) -> bool:
         return False
     stripped = url.rstrip("/")
     known = (
-        "/ai-gateway/mcp-services/",
-        "/api/2.0/mcp/external/",
-        "/api/2.0/mcp/genie/",
-        "/api/2.0/mcp/vector-search/",
-        "/api/2.0/mcp/functions/",
+        AIGW_MCP_SERVICES_PATH,
+        MCP_EXTERNAL_PATH,
+        MCP_GENIE_PATH,
+        MCP_VECTOR_SEARCH_PATH,
+        MCP_FUNCTIONS_PATH,
     )
     if any(fragment in url for fragment in known):
         return False
-    if stripped.endswith("/api/2.0/mcp/sql"):
+    if stripped.endswith(MCP_SQL_PATH):
         return False
     return stripped.endswith("/mcp")
 
@@ -1743,16 +1751,19 @@ _CODEX_STATUS_BY_LABEL = {"enabled": LIVE_ENABLED, "disabled": LIVE_DISABLED}
 
 
 def _classify_health_line(rest: str) -> str:
-    """Map the text trailing a server name in an agent's `mcp list` to a live state."""
-    low = rest.lower()
-    if (
-        any(marker in rest for marker in _HEALTH_FAIL_MARKERS)
-        or "fail" in low
-        or "error" in low
-        or "disconnect" in low
-    ):
+    """Map the text trailing a server name in an agent's `mcp list` to a live state.
+
+    Prefer the explicit health glyph (✔/✘); only fall back to keyword text when no glyph is present,
+    so a healthy server whose name or URL happens to contain "fail"/"error" isn't misread as failed.
+    """
+    if any(marker in rest for marker in _HEALTH_FAIL_MARKERS):
         return LIVE_FAILED
-    if any(marker in rest for marker in _HEALTH_OK_MARKERS) or "connected" in low or "ready" in low:
+    if any(marker in rest for marker in _HEALTH_OK_MARKERS):
+        return LIVE_CONNECTED
+    low = rest.lower()
+    if "fail" in low or "error" in low or "disconnect" in low:
+        return LIVE_FAILED
+    if "connected" in low or "ready" in low:
         return LIVE_CONNECTED
     return LIVE_UNKNOWN
 
@@ -1878,15 +1889,15 @@ def _mcp_server_location(server: dict) -> str:
     stripped = url.rstrip("/")
     if AIGW_MCP_SERVICES_PATH in url:
         return url.split(AIGW_MCP_SERVICES_PATH, 1)[1] or "mcp-service"
-    if "/api/2.0/mcp/external/" in url:
+    if MCP_EXTERNAL_PATH in url:
         return f"connection:{stripped.rsplit('/', 1)[-1]}"
-    if "/api/2.0/mcp/genie/" in url:
+    if MCP_GENIE_PATH in url:
         return f"genie:{stripped.rsplit('/', 1)[-1]}"
-    if "/api/2.0/mcp/vector-search/" in url:
+    if MCP_VECTOR_SEARCH_PATH in url:
         return f"vector-search:{'.'.join(stripped.split('/')[-2:])}"
-    if "/api/2.0/mcp/functions/" in url:
+    if MCP_FUNCTIONS_PATH in url:
         return f"uc-functions:{'.'.join(stripped.split('/')[-2:])}"
-    if stripped.endswith("/api/2.0/mcp/sql"):
+    if stripped.endswith(MCP_SQL_PATH):
         return "databricks-sql"
     if _is_app_mcp_server(server):
         return "app"
@@ -2053,7 +2064,11 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
     if other_summary:
         print_note(f"Other MCP servers not configured by ug — {other_summary}.")
 
-    print_note("Live status is from each agent's `mcp list`; Codex reports enabled/disabled.")
+    live_note = "Live status is from each agent's `mcp list`"
+    if "codex" in probe_clients:
+        # Only mention Codex's enabled/disabled caveat when Codex is actually in the reported set.
+        live_note += "; Codex reports enabled/disabled"
+    print_note(f"{live_note}.")
     print_note("Use `ug mcp add` / `ug mcp remove` to change the servers ug configures.")
     return 0
 

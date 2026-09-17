@@ -3201,6 +3201,17 @@ class TestParseMcpListOutput:
         monkeypatch.setattr(mcp.subprocess, "run", lambda *a, **k: _Result())
         assert mcp.query_live_mcp_status("cursor") == {"github": mcp.LIVE_CONNECTED}
 
+    def test_health_glyph_wins_over_keyword_in_command(self):
+        # A healthy server whose name/command contains "error" must not be misread as failed:
+        # the ✔ glyph is authoritative.
+        out = "error-mcp: /opt/error-runner start - ✔ Connected\n"
+        assert mcp.parse_mcp_list_output("claude", out) == {"error-mcp": mcp.LIVE_CONNECTED}
+
+    def test_keyword_fallback_used_when_no_glyph(self):
+        assert mcp.parse_mcp_list_output("claude", "foo: bar - Failed to connect\n") == {
+            "foo": mcp.LIVE_FAILED
+        }
+
 
 class TestListMcpCommand:
     def _state(self):
@@ -3307,6 +3318,18 @@ class TestListMcpCommand:
         # Only claude appears in the AGENTS column and the other-servers count.
         assert "claude" in out
         assert "codex" not in out
+
+    def test_codex_caveat_shown_only_when_codex_reported(self, monkeypatch, capsys):
+        # With Codex in scope the note carries its enabled/disabled caveat.
+        self._patch(monkeypatch, live={"claude": {}, "codex": {}})
+        assert mcp.list_mcp_command() == 0
+        assert "Codex reports enabled/disabled" in _unwrap(capsys.readouterr().out)
+
+    def test_codex_caveat_omitted_when_scoped_out(self, monkeypatch, capsys):
+        # Scoping Codex out drops the Codex clause from the note.
+        self._patch(monkeypatch, live={"claude": {}, "codex": {}})
+        assert mcp.list_mcp_command(agents={"claude"}) == 0
+        assert "Codex reports enabled/disabled" not in _unwrap(capsys.readouterr().out)
 
     def test_unknown_agent_raises(self, monkeypatch):
         self._patch(monkeypatch)

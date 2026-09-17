@@ -1398,6 +1398,43 @@ class TestStatus:
         assert "databricks-sql" not in result.output
         assert "ug mcp list" in result.output
 
+    def test_mcp_count_includes_managed_servers_and_dedupes(self):
+        # The count folds in workspace-managed servers (matching `ug mcp list`) and dedupes a
+        # server present in both lists by name, so it isn't counted twice.
+        state = {
+            **MINIMAL_STATE,
+            "mcp_servers": [
+                {
+                    "name": "dev-mcp",
+                    "url": "https://example.databricks.com/api/2.0/mcp/external/dev-mcp",
+                    "clients": ["claude"],
+                },
+                {
+                    "name": "shared-mcp",
+                    "url": "https://example.databricks.com/api/2.0/mcp/external/shared-mcp",
+                    "clients": ["claude"],
+                },
+            ],
+            "managed_mcp_servers": [
+                {
+                    "name": "managed-mcp",
+                    "url": "https://example.databricks.com/ai-gateway/mcp-services/system.ai.x",
+                    "clients": ["claude"],
+                },
+                {
+                    "name": "shared-mcp",
+                    "url": "https://example.databricks.com/api/2.0/mcp/external/shared-mcp",
+                    "clients": ["claude"],
+                },
+            ],
+        }
+        with patch("ucode.cli.load_state", return_value=state):
+            result = runner.invoke(app, ["status"])
+
+        assert result.exit_code == 0, result.output
+        # claude: dev-mcp, shared-mcp, managed-mcp = 3 distinct (shared-mcp not double-counted).
+        assert "MCP servers: 3" in result.output
+
     def test_status_treats_available_tools_as_configured_agents(self):
         state = {
             **MINIMAL_STATE,
