@@ -293,8 +293,8 @@ and reuses the resulting stub across every isolated scenario:
 
 The real agent then performs its native MPS-scoped model discovery. Claude must write a nonempty
 gateway-model cache for the exact Anthropic base URL and open its native picker; Codex's app server
-must match the generated scoped catalog, and both generated configs must carry the exact provider
-header. The existing
+must match the generated scoped catalog. The persisted managed input names the exact provider for
+both agents, and Claude's generated config carries its exact provider header. The existing
 `test_ug_configure_managed_codex_catalog_fallback` also injects the intentionally nonexistent
 `system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that
 workspace on the valid default model `system.ai.gpt-5-6-sol`. With smart routing enabled, it opens

@@ -54,12 +54,26 @@ def _codex_state_and_agent_files(session):
 
 def _assert_managed_provider_catalog(session, models):
     config = tomllib.loads((session.home / ".codex" / "ucode.config.toml").read_text())
-    provider = config["model_providers"][config["model_provider"]]
-    assert (
-        provider["http_headers"]["Databricks-Model-Provider-Service"]
-        == MANAGED_CODEX_PROVIDER_SERVICE
-    ), config
+    # The provider header is a launch-only overlay; neither it nor the scoped catalog is persisted
+    # in Codex's generated profile.
     assert "model_catalog_json" not in config, config
+
+    managed_cache = json.loads((session.home / ".ucode/managed-config.json").read_text())
+    raw_config = managed_cache.get("config")
+    enabled_agents = raw_config.get("enabled_agents") if isinstance(raw_config, dict) else None
+    assert isinstance(enabled_agents, list), "persisted managed config had no enabled_agents list"
+    codex_entries = [
+        entry
+        for entry in enabled_agents
+        if isinstance(entry, dict) and entry.get("agent") == "CODING_AGENT_CODEX"
+    ]
+    assert len(codex_entries) == 1, "persisted managed config did not contain one Codex entry"
+    managed_codex = codex_entries[0].get("config")
+    assert isinstance(managed_codex, dict), "persisted managed Codex config was not an object"
+    assert managed_codex.get("models") == {
+        "model_provider_service": MANAGED_CODEX_PROVIDER_SERVICE
+    }, "persisted managed Codex config did not select the dedicated MPS"
+    assert "default_models" not in managed_codex, "static Codex defaults survived the MPS variant"
 
     catalog_paths = list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
     assert len(catalog_paths) == 1, catalog_paths
