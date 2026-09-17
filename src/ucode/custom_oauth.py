@@ -89,6 +89,12 @@ def create_custom_oauth_config(
 
 
 def build_custom_auth_token_argv(workspace: str, config: CustomOAuthConfig) -> list[str]:
+    # The CLI flow authenticates and persists a dedicated profile before the
+    # agent starts. Token refresh only needs that profile; client metadata,
+    # redirect URL, and scopes are setup-time inputs and should not be copied
+    # into every persisted agent helper command.
+    if profile := config.get("profile"):
+        return build_auth_token_argv(workspace, profile)
     normalized = create_custom_oauth_config(
         config["client_id"], config["scopes"], config["redirect_url"]
     )

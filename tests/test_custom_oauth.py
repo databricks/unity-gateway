@@ -15,7 +15,11 @@ from typer.testing import CliRunner
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 from ucode.cli import app
-from ucode.custom_oauth import _custom_oauth_lock, get_custom_client_token
+from ucode.custom_oauth import (
+    _custom_oauth_lock,
+    build_custom_auth_token_argv,
+    get_custom_client_token,
+)
 
 WS = "https://example.databricks.com"
 TEST_SCOPES = ("offline_access", "catalog.catalogs:read")
@@ -72,6 +76,26 @@ class TestCustomClientToken:
             redirect_url="http://localhost:8020",
             scopes=list(TEST_SCOPES),
         )
+
+    def test_saved_cli_profile_helper_omits_setup_options(self, monkeypatch):
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/tools/ug")
+
+        assert build_custom_auth_token_argv(
+            WS,
+            {
+                "client_id": "custom-client",
+                "redirect_url": "http://localhost:8020/callback",
+                "scopes": ["offline_access", "model-serving"],
+                "profile": "custom-profile",
+            },
+        ) == [
+            "/tools/ug",
+            "auth-token",
+            "--host",
+            WS,
+            "--profile",
+            "custom-profile",
+        ]
 
     def test_browser_login_uses_custom_client_and_redirect(self, capsys):
         redirect_url = "http://localhost:41735/ai-devtools-workspace-oauth"
