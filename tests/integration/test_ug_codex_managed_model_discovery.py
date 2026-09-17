@@ -1,9 +1,29 @@
-"""Codex managed-config CUJs for Tests-table cases 2, 4, 6, 8, 10, and 12."""
+"""Codex managed-config CUJs for Tests-table cases 2, 4, 6, 8, 10, and 12.
+
+The admin CodingAgentConfig input is injected through ``UCODE_MANAGED_CONFIG_STUB``. Authentication,
+normalization, config writers, the gateway, and Codex remain real. The un-stubbed managed configure
+journey covers the fetch/wire contract.
+"""
 
 import pytest
-from utils.constants import MANAGED_CODEX_MODELS
+from utils.constants import MANAGED_FIXTURE_CODEX_MODELS
+from utils.managed import (
+    build_codex_agent_config,
+    build_coding_agent_config,
+    set_managed_config_stub,
+)
 
-pytestmark = [pytest.mark.managed, pytest.mark.codex]
+pytestmark = [pytest.mark.managed_fixture, pytest.mark.codex]
+
+CODEX_MANAGED_CONFIG = build_coding_agent_config(
+    "CODING_AGENT_CODEX",
+    build_codex_agent_config(MANAGED_FIXTURE_CODEX_MODELS),
+)
+
+
+@pytest.fixture(autouse=True)
+def _managed_codex_config(live_session, tmp_path):
+    set_managed_config_stub(live_session, tmp_path, CODEX_MANAGED_CONFIG)
 
 
 def _codex_state_and_agent_files(session):
@@ -55,7 +75,7 @@ def test_case_02_managed_codex_uses_admin_discovery_after_configure(
     )
     models = session.codex_model_ids(args)
 
-    assert models == MANAGED_CODEX_MODELS
+    assert models == MANAGED_FIXTURE_CODEX_MODELS
 
 
 @pytest.mark.parametrize("configured", [True, False], ids=["configured", "fresh"])
@@ -75,7 +95,7 @@ def test_case_04_managed_codex_ignores_discovery_disable(live_session, workspace
     )
     models = session.codex_model_ids(args)
 
-    assert models == MANAGED_CODEX_MODELS
+    assert models == MANAGED_FIXTURE_CODEX_MODELS
 
 
 @pytest.mark.parametrize("configured", [True, False], ids=["configured", "fresh"])

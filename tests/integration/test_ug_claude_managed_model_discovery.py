@@ -1,12 +1,32 @@
-"""Claude managed-config CUJs for Tests-table cases 1, 3, 5, 7, 9, and 11."""
+"""Claude managed-config CUJs for Tests-table cases 1, 3, 5, 7, 9, and 11.
+
+The admin CodingAgentConfig input is injected through ``UCODE_MANAGED_CONFIG_STUB``. Authentication,
+normalization, config writers, the gateway, and Claude Code remain real. The un-stubbed managed
+configure journey covers the fetch/wire contract.
+"""
 
 import re
 
 import pytest
-from utils.constants import MANAGED_CLAUDE_MODELS
+from utils.constants import MANAGED_FIXTURE_CLAUDE_MODELS
+from utils.managed import (
+    build_claude_agent_config,
+    build_coding_agent_config,
+    set_managed_config_stub,
+)
 from utils.terminal import AgentTerminal
 
-pytestmark = [pytest.mark.managed, pytest.mark.claude]
+pytestmark = [pytest.mark.managed_fixture, pytest.mark.claude]
+
+CLAUDE_MANAGED_CONFIG = build_coding_agent_config(
+    "CODING_AGENT_CLAUDE_CODE",
+    build_claude_agent_config(MANAGED_FIXTURE_CLAUDE_MODELS),
+)
+
+
+@pytest.fixture(autouse=True)
+def _managed_claude_config(live_session, tmp_path):
+    set_managed_config_stub(live_session, tmp_path, CLAUDE_MANAGED_CONFIG)
 
 
 def _claude_state_and_agent_files(session):
@@ -40,7 +60,7 @@ def _assert_rejected_before_claude_started(session, result, requested_source, be
 
 
 def _assert_managed_models_in_picker(screen):
-    expected = [model_id.removeprefix("system.ai.") for model_id in MANAGED_CLAUDE_MODELS]
+    expected = [model_id.removeprefix("system.ai.") for model_id in MANAGED_FIXTURE_CLAUDE_MODELS]
     rendered = re.findall(r"(?m)^\s*(?:[❯›>]\s*)?\d+\.\s+(\S+)", screen)
     assert rendered == expected, screen
 
