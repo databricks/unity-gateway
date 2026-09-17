@@ -30,13 +30,6 @@ dependencies = [
   "websockets>=13",
 ]
 
-[project.optional-dependencies]
-# Only the Claude Code tracing path needs the Python MLflow runtime; OpenCode
-# and Codex trace via JS plugins. Kept out of the core deps so a plain install
-# stays lean. Enable with:
-# uv tool install "unity-gateway[tracing] @ git+https://github.com/databricks/unity-gateway"
-tracing = ["mlflow[databricks]>=3.4"]
-
 [project.scripts]
 ug = "ucode.cli:main"
 ucode = "ucode.cli:main"

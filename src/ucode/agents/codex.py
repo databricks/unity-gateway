@@ -34,6 +34,7 @@ from ucode.config_io import (
 from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
+    SMART_ROUTER_RECIPE_HEADER,
 )
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_TIMEOUT_MS,
@@ -69,6 +70,7 @@ from ucode.smart_routing.codex_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_routing import codex_model_id
+from ucode.smart_routing.routing import configured_router_name
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_warning_err
@@ -197,6 +199,8 @@ def _provider_block(
         http_headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
     elif parent_schema:
         http_headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
+    if smart_routing_v2.smart_routing_enabled():
+        http_headers[SMART_ROUTER_RECIPE_HEADER] = configured_router_name()
     return {
         "name": "Databricks AI Gateway",
         "base_url": base_url,
@@ -695,6 +699,7 @@ def _launch_token(state: dict, workspace: str) -> str:
             custom_oauth["client_id"],
             custom_oauth["redirect_url"],
             scopes=custom_oauth["scopes"],
+            profile=custom_oauth.get("profile"),
         )
     return get_databricks_token(workspace, state.get("profile"))
 

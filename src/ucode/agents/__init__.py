@@ -85,16 +85,22 @@ AITOOLS_AGENT_TOKENS = {
 }
 
 
-def install_databricks_ai_tools_for_agents(tools: list[str], state: dict) -> None:
+def install_databricks_ai_tools_for_agents(
+    tools: list[str], state: dict, *, force_refresh: bool = False
+) -> None:
     """Install Databricks AI Tools for supported agents.
 
     Gemini and Pi have no ``aitools`` support and are dropped.
+
+    This runs only during ``ug configure``. ``force_refresh`` reads the managed config fresh; a
+    caller that already refreshed this launch (the main configure path) leaves it False so the gate
+    reuses that read instead of adding another control-plane round trip.
     """
     if not state.get("databricks_ai_tools_enabled"):
         return
     # An admin's managed config governs the workspace, so ucode does not
     # self-install AI Tools under one (may become a managed-config option later).
-    if refresh_managed_config(state).manifest is not None:
+    if refresh_managed_config(state, force_refresh=force_refresh).manifest is not None:
         return
     agents = [AITOOLS_AGENT_TOKENS[tool] for tool in tools if tool in AITOOLS_AGENT_TOKENS]
     if not agents:
@@ -255,21 +261,6 @@ def update_tool_binary(tool: str) -> bool:
 def tool_version_error(tool: str) -> str | None:
     """Return an active minimum-version blocker for a configured agent."""
     return _minimum_version_error(tool)
-
-
-def tracing_mlflow_ok() -> bool:
-    """True when the `mlflow` CLI that Claude tracing needs is installed and in
-    the supported version range. Read-only — for ``ucode doctor``."""
-    current = claude._installed_mlflow_version()
-    return bool(
-        current and claude.MINIMUM_MLFLOW_VERSION <= current < claude.MAXIMUM_MLFLOW_VERSION
-    )
-
-
-def ensure_tracing_mlflow_cli() -> bool:
-    """Install/repair the pinned `mlflow` CLI for Claude tracing, returning True
-    on success. Public entry point so ``ucode doctor`` can apply the fix."""
-    return claude._ensure_mlflow_cli()
 
 
 def ensure_bootstrap_dependencies(tool: str) -> None:

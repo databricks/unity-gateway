@@ -87,6 +87,13 @@ ug mcp remove
 ug mcp remove --agents codex
 ```
 
+List configured servers and their connection status:
+
+```bash
+ug mcp list
+ug mcp list --agents claude,codex
+```
+
 Every Databricks MCP server is registered as a local stdio server that runs
 `ug mcp-proxy`; the proxy refreshes Databricks OAuth tokens from your CLI
 profile. V2 AI Gateway servers can be added with typed selectors such as
@@ -100,14 +107,14 @@ agent skill directories.
 
 ```bash
 # Add to existing MCP scope or downloads.
-ug skill add --location main.default --mcp
-ug skill add --location main.default
-ug skill add --skills main.default.my-skill,ml.prod.other-skill
+ug skills add --location main.default --mcp
+ug skills add --location main.default
+ug skills add --skill main.default.my-skill,ml.prod.other-skill
 
 # Remove MCP scopes or downloaded skill files.
-ug skill remove --location main.default --mcp
-ug skill remove
-ug skill remove --skills main.default.my-skill
+ug skills remove --location main.default --mcp
+ug skills remove
+ug skills remove --skill main.default.my-skill
 ```
 
 ## Commands
@@ -119,8 +126,9 @@ ug skill remove --skills main.default.my-skill
 | `ug configure --dry-run` | Preview config changes without writing files |
 | `ug mcp add` | Add MCP servers without removing existing registrations |
 | `ug mcp remove` | Unregister configured MCP servers |
-| `ug skill add` | Add skill MCP scopes or download skills |
-| `ug skill remove` | Remove skill MCP scopes or downloaded skills |
+| `ug mcp list` | List configured MCP servers and connection status |
+| `ug skills add` | Add skill MCP scopes or download skills |
+| `ug skills remove` | Remove skill MCP scopes or downloaded skills |
 | `ug export` | Print or write portable managed config JSON |
 | `ug doctor` | Diagnose local setup and offer fixes |
 | `ug usage` | Show AI Gateway spend and budget |
