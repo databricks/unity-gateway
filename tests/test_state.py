@@ -301,13 +301,11 @@ class TestBuildAgentState:
                     "client_id": "custom-client",
                     "redirect_url": "http://localhost:8020/callback",
                     "scopes": ["offline_access", "model-serving"],
-                    "profile": "custom-profile",
                 },
             }
         )
 
         assert "--client-id custom-client" in result["claude"]["auth_command"]
-        assert "--profile custom-profile" in result["claude"]["auth_command"]
         assert result["codex"]["auth"]["args"][-1] == "offline_access,model-serving"
         assert result["codex"]["auth"]["timeout_ms"] == 180_000
 

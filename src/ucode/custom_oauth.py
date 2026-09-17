@@ -1,8 +1,7 @@
-"""Custom-client OAuth via the SDK cache or dedicated Databricks CLI profiles."""
+"""Custom-client OAuth, separate from production Databricks CLI auth."""
 
 from __future__ import annotations
 
-import json
 import os
 import platform
 import shlex
@@ -16,17 +15,12 @@ from urllib.parse import urlparse
 from databricks.sdk import oauth
 
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
-from ucode.databricks import (
-    build_auth_token_argv,
-    databricks_cli_version,
-    run,
-)
+from ucode.databricks import build_auth_token_argv, get_databricks_token, run
 from ucode.ui import err_console, normalize_workspace_url, print_warning_err
 
 DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
 # Custom OAuth may need a human to finish browser consent, not just a token fetch.
 CUSTOM_OAUTH_TIMEOUT_MS = 180_000
-CUSTOM_OAUTH_CLI_MIN_VERSION = (1, 17, 0)
 
 
 class CustomOAuthConfig(TypedDict):
@@ -79,10 +73,7 @@ def create_custom_oauth_config(
     }
 
 
-def build_custom_auth_token_argv(
-    workspace: str,
-    config: CustomOAuthConfig,
-) -> list[str]:
+def build_custom_auth_token_argv(workspace: str, config: CustomOAuthConfig) -> list[str]:
     normalized = create_custom_oauth_config(
         config["client_id"], config["scopes"], config["redirect_url"]
     )
@@ -97,10 +88,7 @@ def build_custom_auth_token_argv(
     ]
 
 
-def build_custom_auth_shell_command(
-    workspace: str,
-    config: CustomOAuthConfig,
-) -> str:
+def build_custom_auth_shell_command(workspace: str, config: CustomOAuthConfig) -> str:
     argv = build_custom_auth_token_argv(workspace, config)
     if platform.system() == "Windows":
         return subprocess.list2cmdline(argv)
@@ -126,44 +114,22 @@ def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
-def _require_custom_oauth_cli() -> None:
-    version = databricks_cli_version()
-    if version is None or version < CUSTOM_OAUTH_CLI_MIN_VERSION:
-        current = "an unreadable version" if version is None else ".".join(map(str, version))
-        required = ".".join(map(str, CUSTOM_OAUTH_CLI_MIN_VERSION))
-        raise RuntimeError(
-            "Custom-client OAuth via Databricks CLI requires Databricks CLI "
-            f"v{required} or newer; found {current}. Install or upgrade the CLI, then retry."
-        )
-
-
 def _custom_cli_profile(workspace: str, client_id: str) -> str:
-    hostname = urlparse(workspace).hostname
-    if not hostname:
-        raise RuntimeError(f"Unable to derive hostname from workspace URL: {workspace}")
-    return f"ug-oauth-{hostname}-{client_id}"
+    return f"ug-oauth-{urlparse(workspace).hostname}-{client_id}"
 
 
 def ensure_custom_oauth_cli_token(
     workspace: str,
     config: CustomOAuthConfig,
-    *,
-    force_login: bool = False,
 ) -> str:
     """Create/reuse the custom-client CLI profile and return its access token."""
-    _require_custom_oauth_cli()
     workspace = normalize_workspace_url(workspace)
-    normalized = create_custom_oauth_config(
-        config["client_id"], config["scopes"], config["redirect_url"]
-    )
-    config.update(normalized)
     profile = config.get("profile") or _custom_cli_profile(workspace, config["client_id"])
     config["profile"] = profile
-    if not force_login:
-        try:
-            return _custom_oauth_cli_token(workspace, profile)
-        except RuntimeError:
-            pass
+    try:
+        return get_databricks_token(workspace, profile)
+    except RuntimeError:
+        pass
     login_args = [
         "databricks",
         "auth",
@@ -177,47 +143,8 @@ def ensure_custom_oauth_cli_token(
         "--scopes",
         ",".join(scope for scope in config["scopes"] if scope != "offline_access"),
     ]
-    try:
-        run(login_args, timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000)
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError("Custom-client OAuth login via Databricks CLI failed.") from exc
-    return _custom_oauth_cli_token(workspace, profile)
-
-
-def _custom_oauth_cli_token(
-    workspace: str,
-    profile: str,
-    *,
-    force_refresh: bool = False,
-) -> str:
-    args = [
-        "databricks",
-        "auth",
-        "token",
-        "--host",
-        workspace,
-        "--profile",
-        profile,
-        "--output",
-        "json",
-    ]
-    if force_refresh:
-        args.append("--force-refresh")
-    try:
-        result = run(
-            args,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000,
-        )
-        payload = json.loads(result.stdout or "{}")
-        token = payload.get("access_token", "") if isinstance(payload, dict) else ""
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-        raise RuntimeError("Custom-client OAuth token via Databricks CLI failed.") from exc
-    if result.returncode != 0 or not isinstance(token, str) or not token.strip():
-        raise RuntimeError("Custom-client OAuth token via Databricks CLI failed.")
-    return token
+    run(login_args, timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000)
+    return get_databricks_token(workspace, profile)
 
 
 def get_custom_client_token(
@@ -225,26 +152,16 @@ def get_custom_client_token(
     client_id: str,
     redirect_url: str = DEFAULT_REDIRECT_URL,
     *,
-    scopes: Sequence[str] | None,
+    scopes: Sequence[str],
     profile: str | None = None,
     force_refresh: bool = False,
 ) -> str:
     """Fetch a custom-client token through the selected SDK or CLI backend."""
-    workspace = normalize_workspace_url(workspace)
-    client_id = client_id.strip()
-    if not client_id:
-        raise RuntimeError("--client-id must not be empty.")
-    if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1":
-        _require_custom_oauth_cli()
-        profile = profile or _custom_cli_profile(workspace, client_id)
-        return _custom_oauth_cli_token(
-            workspace,
-            profile=profile,
-            force_refresh=force_refresh,
-        )
-    if scopes is None:
-        raise RuntimeError("OAuth scopes are required for custom-client OAuth.")
     config = create_custom_oauth_config(client_id, scopes, redirect_url)
+    workspace = normalize_workspace_url(workspace)
+    if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1":
+        profile = profile or _custom_cli_profile(workspace, config["client_id"])
+        return get_databricks_token(workspace, profile, force_refresh=force_refresh)
     try:
         endpoints = oauth.get_workspace_endpoints(workspace)
         cache = oauth.TokenCache(

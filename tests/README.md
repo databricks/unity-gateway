@@ -18,13 +18,6 @@ the distribution rename with mocked installer calls, including failure recovery 
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
-Custom OAuth component tests in `test_custom_oauth.py` cover the SDK token cache,
-browser consent, refresh rotation, option validation, stable helper arguments,
-and configuration plumbing. Agent tests check that an explicitly configured
-profile reaches Claude and Codex helpers. Dedicated Databricks CLI profile
-creation, persisted `client_id`, and profile-bound token refresh are not covered
-by automated tests.
-
 Agent-picker regression coverage in `test_ui.py` and `test_cli.py` drives actual
 keyboard selection: nothing is selected by default, selecting Codex installs only
 Codex, and submitting an empty selection installs nothing. Rendering checks cover

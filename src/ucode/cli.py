@@ -48,7 +48,6 @@ from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     apply_pat_environment,
     build_shared_base_urls,
-    databricks_cli_version,
     discover_claude_models,
     discover_codex_models,
     discover_gemini_models,
@@ -509,11 +508,8 @@ def configure_shared_state(
     cli_custom_oauth = (
         state.get("custom_oauth") if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1" else None
     )
-    cli_custom_token = None
     if cli_custom_oauth:
-        cli_custom_token = ensure_custom_oauth_cli_token(
-            workspace, cli_custom_oauth, force_login=force_login
-        )
+        token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth)
 
     if skip_preflight:
         # A prior `ug configure` created the profile; resolve it locally (no
@@ -565,9 +561,7 @@ def configure_shared_state(
         if profile:
             state["profile"] = profile
     with spinner("Verifying Unity AI Gateway..."):
-        if cli_custom_oauth:
-            token = cli_custom_token
-        else:
+        if not cli_custom_oauth:
             token = get_databricks_token(workspace, profile)
         model_service_probe = probe_unity_gateway_capabilities(workspace, token)
     if model_service_probe.resource_available:
@@ -1553,11 +1547,7 @@ def auth_token_cmd(
     if scopes is not None and client_id is None:
         print_err("--scopes requires --client-id.")
         raise typer.Exit(1)
-    if (
-        client_id is not None
-        and scopes is None
-        and os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") != "1"
-    ):
+    if client_id is not None and scopes is None:
         print_err("--scopes is required with --client-id.")
         raise typer.Exit(1)
     state = load_state()
@@ -1583,13 +1573,14 @@ def auth_token_cmd(
             raise typer.Exit(1)
     try:
         if client_id is not None:
+            assert scopes is not None
             token = custom_oauth.get_custom_client_token(
                 workspace,
                 client_id=client_id,
                 redirect_url=(
                     redirect_url if redirect_url is not None else custom_oauth.DEFAULT_REDIRECT_URL
                 ),
-                scopes=scopes.split(",") if scopes is not None else None,
+                scopes=scopes.split(","),
                 profile=profile,
                 force_refresh=force_refresh,
             )
@@ -2138,31 +2129,6 @@ def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
     return agent_config.get("smart_routing_enabled") is True
 
 
-def _ensure_custom_oauth_cli_for_launch(
-    tool: str, config: CustomOAuthConfig | None
-) -> None:
-    if (
-        tool not in {"claude", "codex"}
-        or config is None
-        or os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") != "1"
-    ):
-        return
-    minimum = custom_oauth.CUSTOM_OAUTH_CLI_MIN_VERSION
-    version = databricks_cli_version()
-    if version is not None and version >= minimum:
-        return
-    required = ".".join(map(str, minimum))
-    current = ".".join(map(str, version)) if version is not None else "missing or unreadable"
-    message = (
-        f"Custom OAuth requires Databricks CLI v{required} or newer; "
-        f"your current version is {current}."
-    )
-    print_warning(message)
-    if not prompt_yes_no("Install or update Databricks CLI now?"):
-        raise RuntimeError(f"{message} Update Databricks CLI before launching again.")
-    install_databricks_cli(minimum)
-
-
 def _launch_tool(
     tool_name: str,
     ctx: typer.Context,
@@ -2203,9 +2169,6 @@ def _launch_tool(
         if workspace_url:
             set_current_workspace(normalize_workspace_url(workspace_url))
         existing = load_state()
-        _ensure_custom_oauth_cli_for_launch(
-            tool, custom_oauth or existing.get("custom_oauth")
-        )
         # Workspaces configured with --use-pat export the profile's PAT as
         # DATABRICKS_BEARER up front so every auth check below (and the
         # launched agent itself) uses the static token instead of OAuth.

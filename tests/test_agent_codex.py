@@ -111,7 +111,6 @@ class TestRenderOverlay:
                 "client_id": "custom-client",
                 "redirect_url": "http://localhost:8020/callback",
                 "scopes": ["offline_access", "model-serving"],
-                "profile": "custom-profile",
             },
         )
         auth = overlay["model_providers"]["Databricks"]["auth"]
@@ -119,8 +118,6 @@ class TestRenderOverlay:
             "auth-token",
             "--host",
             WS,
-            "--profile",
-            "custom-profile",
             "--client-id",
             "custom-client",
             "--redirect-url",
@@ -995,9 +992,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(
             codex,
             "get_custom_client_token",
-            lambda workspace, client_id, redirect_url, *, scopes, profile=None: (
-                "custom-token" if profile == "custom-profile" else pytest.fail("wrong profile")
-            ),
+            lambda workspace, client_id, redirect_url, *, scopes: "custom-token",
         )
 
         def fetch(workspace, token, **kwargs):
@@ -1012,7 +1007,6 @@ class TestCodexLaunch:
                 "client_id": "client",
                 "redirect_url": "http://localhost:8020",
                 "scopes": ["all-apis", "offline_access"],
-                "profile": "custom-profile",
             },
         }
 

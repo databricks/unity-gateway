@@ -244,7 +244,6 @@ class TestRenderOverlay:
                 "client_id": "custom-client",
                 "redirect_url": "http://localhost:8020/callback",
                 "scopes": ["offline_access", "model-serving"],
-                "profile": "custom-profile",
             },
         )
         assert shlex.split(overlay["apiKeyHelper"]) == [
@@ -252,8 +251,6 @@ class TestRenderOverlay:
             "auth-token",
             "--host",
             WS,
-            "--profile",
-            "custom-profile",
             "--client-id",
             "custom-client",
             "--redirect-url",

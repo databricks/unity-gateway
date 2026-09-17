@@ -15,11 +15,7 @@ from typer.testing import CliRunner
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 from ucode.cli import app
-from ucode.custom_oauth import (
-    _custom_oauth_lock,
-    build_custom_auth_token_argv,
-    get_custom_client_token,
-)
+from ucode.custom_oauth import _custom_oauth_lock, get_custom_client_token
 
 WS = "https://example.databricks.com"
 TEST_SCOPES = ("offline_access", "catalog.catalogs:read")
@@ -100,53 +96,6 @@ class TestCustomClientToken:
         )
         self.browser.assert_not_called()
         self.refresh.assert_not_called()
-
-    def test_custom_auth_command_is_stable_across_backends(self, monkeypatch):
-        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
-        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/tools/{command}")
-        expected = [
-            "/tools/ug",
-            "auth-token",
-            "--host",
-            WS,
-            "--profile",
-            "custom-profile",
-            "--client-id",
-            "custom-client",
-            "--redirect-url",
-            "http://localhost:8020/callback",
-            "--scopes",
-            "offline_access,model-serving",
-        ]
-        enabled = build_custom_auth_token_argv(
-            WS,
-            {
-                "client_id": "custom-client",
-                "redirect_url": "http://localhost:8020/callback",
-                "scopes": ["offline_access", "model-serving"],
-                "profile": "custom-profile",
-            },
-        )
-        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "0")
-        disabled = build_custom_auth_token_argv(
-            WS,
-            {
-                "client_id": "custom-client",
-                "redirect_url": "http://localhost:8020/callback",
-                "scopes": ["offline_access", "model-serving"],
-                "profile": "custom-profile",
-            },
-        )
-        assert enabled == disabled == expected
-
-    def test_cli_auth_is_not_used_when_disabled(self, monkeypatch):
-        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "0")
-        with patch("ucode.custom_oauth.run") as run_cli:
-            assert (
-                get_custom_client_token(WS, client_id="custom-client", scopes=TEST_SCOPES)
-                == "browser-token"
-            )
-        run_cli.assert_not_called()
 
     def test_expired_token_refreshes_with_custom_client_and_saves_rotation(self):
         cached = self._credentials("expired", "old-refresh")
@@ -251,42 +200,7 @@ class TestCustomClientCommand:
             client_id="my-client",
             redirect_url="http://localhost:41735/callback",
             scopes=["offline_access", "catalog.catalogs:read"],
-            profile="saved",
             force_refresh=True,
-        )
-
-    def test_explicit_host_does_not_inherit_saved_profile(self):
-        with (
-            patch(
-                "ucode.cli.load_state",
-                return_value={"workspace": "https://ws", "profile": "saved"},
-            ),
-            patch(
-                "ucode.custom_oauth.get_custom_client_token", return_value="custom-token"
-            ) as fetch,
-        ):
-            result = runner.invoke(
-                app,
-                [
-                    "auth-token",
-                    "--host",
-                    "https://other",
-                    "--client-id",
-                    "my-client",
-                    "--redirect-url",
-                    "http://localhost:41735/callback",
-                    "--scopes",
-                    "offline_access,catalog.catalogs:read",
-                ],
-            )
-        assert result.exit_code == 0, result.output
-        fetch.assert_called_once_with(
-            "https://other",
-            client_id="my-client",
-            redirect_url="http://localhost:41735/callback",
-            scopes=["offline_access", "catalog.catalogs:read"],
-            profile=None,
-            force_refresh=False,
         )
 
     @pytest.mark.parametrize(

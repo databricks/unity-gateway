@@ -9,11 +9,6 @@ The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
 
-Custom OAuth SDK behavior and option/configuration plumbing are covered by
-component tests in `../test_custom_oauth.py`. Dedicated Databricks CLI profile
-creation and live custom OAuth refresh are not covered by automated tests; see
-the coverage limits in [../README.md](../README.md).
-
 ## Run a specific combination
 
 Prerequisites: Python 3.12+, uv, Node/npm, and Databricks CLI >=1.0.0. The runner
