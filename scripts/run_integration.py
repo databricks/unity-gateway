@@ -883,6 +883,9 @@ def main() -> int:
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
                 "DATABRICKS_SECOND_BEARER": second_bearer,
                 "UG_INTEGRATION_WAREHOUSE_ID": args.warehouse_id or "",
+                # Durable SP-minted PAT for the managed `--use-pat` (MDM) journeys; the
+                # runner's own bearer is hourly M2M, so these tests need a real PAT.
+                "E2E_ADMIN_SP_PAT": os.environ.get("E2E_ADMIN_SP_PAT", ""),
             }
         )
         for agent in agents:
