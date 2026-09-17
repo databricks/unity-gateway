@@ -13,6 +13,8 @@ from typing import Annotated, Any
 
 import typer
 from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
@@ -79,8 +81,10 @@ from ucode.managed_budget import (
 )
 from ucode.managed_config import (
     ManagedConfigResult,
+    get_managed_config,
     get_model_recommendation,
     load_managed_state,
+    normalize_managed_config,
     refresh_managed_config,
 )
 from ucode.managed_resolve import (
@@ -100,7 +104,6 @@ from ucode.mcp import (
     SKILLS_MCP_KIND,
     add_mcp_command,
     add_skills_command,
-    agents_share_one_scope,
     available_mcp_clients,
     configure_mcp_command,
     configure_skills_mcp_command,
@@ -122,10 +125,10 @@ from ucode.skills_download import (
     download_managed_skills_on_launch,
     remove_downloaded_skills_command,
 )
+from ucode.skills_state import list_downloaded
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
 from ucode.state import (
-    STATE_PATH,
     clear_state,
     get_provider_service,
     load_state,
@@ -907,46 +910,233 @@ def configure_workspace_command(
     return 0
 
 
+def _print_status_panel(title: str, rows: list[tuple[str, str]]) -> None:
+    """Render a compact two-column status card with values that wrap safely."""
+    table = Table.grid(padding=(0, 2))
+    table.add_column(no_wrap=True)
+    table.add_column()
+    for key, value in rows:
+        table.add_row(Text(f"{key}:", style="bold"), Text(value, style="cyan"))
+    console.print(
+        Panel(
+            table,
+            title=title,
+            border_style="blue",
+            width=min(console.width, 120),
+        )
+    )
+
+
+def _model_values(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item]
+    if isinstance(value, dict):
+        return [model for models in value.values() for model in _model_values(models)]
+    return []
+
+
+def _status_models(tool: str, state: dict) -> list[str]:
+    """Return the effective model allow-list for one configured agent."""
+    static_models = _model_values(state.get(f"{tool}_static_models"))
+    if static_models:
+        models = static_models
+    elif tool in ("claude", "codex", "gemini", "opencode"):
+        models = _model_values(state.get(f"{tool}_models"))
+    elif tool == "copilot":
+        models = _model_values(state.get("copilot_models")) or (
+            _model_values(state.get("claude_models")) + _model_values(state.get("codex_models"))
+        )
+    elif tool == "pi":
+        models = _model_values(state.get("pi_models")) or (
+            _model_values(state.get("claude_models"))
+            + _model_values(state.get("codex_models"))
+            + _model_values(state.get("gemini_models"))
+        )
+    else:
+        models = []
+    return list(dict.fromkeys(models))
+
+
+def _status_default_model(tool: str, state: dict, models: list[str]) -> str | None:
+    explicit = state.get(f"{tool}_default_model")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    # Claude and Codex deliberately leave the starting model to the agent unless a managed
+    # config pins one. The other clients write the first resolved model into their ug config.
+    return models[0] if models and tool in ("gemini", "opencode", "copilot", "pi") else None
+
+
+def _status_skill_scope(state: dict, tool: str) -> str:
+    entries = (state.get("mcp_servers") or []) + (state.get("managed_mcp_servers") or [])
+    entry = next(
+        (
+            server
+            for server in entries
+            if server.get("kind") == SKILLS_MCP_KIND and tool in (server.get("clients") or [])
+        ),
+        None,
+    )
+    if entry is None:
+        return "not configured"
+    locations = skill_locations_for_client(entry, tool)
+    return ", ".join(locations) if locations else "utility tools only"
+
+
+def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
+    """Return a fresh, read-only model inventory and its freshness label."""
+    workspace = state.get("workspace")
+    if not workspace or not tools:
+        return state, "cached"
+    profile = state.get("profile")
+    if not profile and not external_bearer_configured():
+        print_warning("Live model discovery needs the CLI profile saved by ug configure.")
+        return state, "cached"
+
+    try:
+        if state.get("use_pat"):
+            apply_pat_environment(state)
+        with spinner("Refreshing live workspace models..."):
+            token = get_databricks_token(workspace, profile)
+            claude_models, codex_models, gemini_models, oss_models, shared_reason = (
+                discover_model_services(workspace, token)
+            )
+            reasons: dict[str, str | None] = {}
+            if not claude_models:
+                claude_models, reasons["claude"] = discover_claude_models(workspace, token)
+            if not codex_models:
+                codex_models, reasons["codex"] = discover_codex_models(workspace, token)
+            if not gemini_models:
+                gemini_models, reasons["gemini"] = discover_gemini_models(workspace, token)
+    except RuntimeError as exc:
+        print_warning(f"Live model discovery failed ({exc}); showing cached models.")
+        return state, "cached"
+
+    live = dict(state)
+    live["claude_models"] = claude_models
+    live["codex_models"] = codex_models
+    live["gemini_models"] = gemini_models
+    live["oss_models"] = oss_models
+    opencode_models: dict[str, list[str]] = {}
+    if claude_models:
+        opencode_models["anthropic"] = list(claude_models.values())
+    if gemini_models:
+        opencode_models["gemini"] = gemini_models
+    if oss_models:
+        opencode_models["oss"] = oss_models
+    live["opencode_models"] = opencode_models
+    live["_status_model_reasons"] = {
+        family: reason or shared_reason for family, reason in reasons.items()
+    }
+    return live, "live"
+
+
+def _live_status_managed_state(state: dict, cached: dict | None) -> tuple[dict | None, str]:
+    """Return the current managed policy without updating the on-disk cache."""
+    workspace = state.get("workspace")
+    if not workspace:
+        return cached, "cached"
+    profile = state.get("profile")
+    if not profile and not external_bearer_configured():
+        print_warning("Live managed configuration needs the CLI profile saved by ug configure.")
+        return cached, "cached"
+
+    try:
+        if state.get("use_pat"):
+            apply_pat_environment(state)
+        with spinner("Refreshing live managed configuration..."):
+            token = get_databricks_token(workspace, profile)
+            raw, reason = get_managed_config(workspace, token)
+    except RuntimeError as exc:
+        print_warning(f"Live managed configuration failed ({exc}); showing cached configuration.")
+        return cached, "cached"
+
+    if reason is not None:
+        if "feature_disabled" in reason.lower():
+            return None, "live"
+        print_warning(
+            f"Live managed configuration failed ({reason}); showing cached configuration."
+        )
+        return cached, "cached"
+    return (normalize_managed_config(raw) if raw is not None else None), "live"
+
+
 def status() -> int:
     state = load_state()
     workspace = state.get("workspace")
     managed_configs = state.get("managed_configs") or {}
     # Both developer- and workspace-managed servers, so the count agrees with `ug mcp list`.
     mcp_servers = (state.get("mcp_servers") or []) + (state.get("managed_mcp_servers") or [])
-    configured_tools = set(state.get("available_tools") or managed_configs.keys())
+    cached_managed = load_managed_state(workspace) if workspace else None
+    managed, managed_freshness = _live_status_managed_state(state, cached_managed)
+    configured_tools = (
+        set(state.get("available_tools") or [])
+        | set(managed_configs)
+        | set((managed or {}).get("enabled_agents") or {})
+    )
 
     console.print(heading("ug status"))
     console.print(
         f"  {status_badge('Configured', 'ok') if workspace else status_badge('Not Configured', 'warn')}"
     )
 
-    print_heading("Provider")
-    print_kv("Workspace URL", workspace or "not configured")
+    provider_rows = [("Workspace URL", workspace or "not configured")]
     profile = state.get("profile")
     if profile:
-        print_kv("CLI profile", profile)
+        provider_rows.append(("CLI profile", profile))
+    provider_rows.append(
+        (
+            "Configuration",
+            f"Workspace-managed ({managed_freshness})" if managed else "Self-configured",
+        )
+    )
+    policy = (managed or {}).get("budget_policy")
+    if isinstance(policy, dict):
+        provider_rows.append(("Policy", str(policy.get("display_name") or "coding-agents-default")))
+    _print_status_panel("Provider", provider_rows)
 
-    if workspace:
-        managed = load_managed_state(workspace)
-        if managed:
-            _print_managed_summary(managed, state, None)
-
+    model_state, model_freshness = _live_status_model_state(state, configured_tools)
     print_heading("Coding Agents")
     for tool, spec in TOOL_SPECS.items():
-        configured = tool in configured_tools
-        base_url = (
-            state.get("base_urls", {}).get(tool, "not configured")
-            if configured
-            else "not configured"
+        if tool not in configured_tools:
+            continue
+        effective_state = resolve_state(managed, model_state, tool) if managed else model_state
+        agent_managed = tool in ((managed or {}).get("enabled_agents") or {})
+        provider_service = get_provider_service(effective_state, tool)
+        rows = [
+            (
+                "Configuration",
+                f"Workspace-managed ({managed_freshness})" if agent_managed else "Self-configured",
+            ),
+            (
+                "Model provider",
+                provider_service or "Databricks AI Gateway",
+            ),
+        ]
+        models = (
+            []
+            if provider_service and not effective_state.get(f"{tool}_static_models")
+            else _status_models(tool, effective_state)
         )
-        config_path = spec["config_path"]
-        print_kv("Coding Agent", spec["display"])
-        print_kv("Configured", "yes" if configured else "no")
-        provider_service = get_provider_service(state, tool)
-        if configured and provider_service:
-            print_kv("Model Provider Service", provider_service)
-        print_kv("Base URL", base_url)
-        if configured and tool in MCP_CLIENTS:
+        model_source = "managed" if agent_managed and models else model_freshness
+        if models:
+            rows.append((f"Models ({len(models)}, {model_source})", ", ".join(models)))
+        elif provider_service:
+            rows.append(("Models", "Defined by provider service"))
+        else:
+            rows.append((f"Models ({model_source})", "none available"))
+        default_model = _status_default_model(tool, effective_state, models)
+        if default_model:
+            rows.append(("Default model", default_model))
+        if tool in ("claude", "codex"):
+            rows.append(
+                (
+                    "Tracing",
+                    "enabled" if effective_state.get(f"{tool}_otel_tracing") else "disabled",
+                )
+            )
+        if tool in MCP_CLIENTS:
             # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
             # the per-server detail and live connection status, so status stays scannable. Dedupe by
             # name so a server present in both mcp_servers and managed_mcp_servers isn't double-counted.
@@ -957,57 +1147,16 @@ def status() -> int:
                 and server.get("name")
                 and server.get("kind") != SKILLS_MCP_KIND
             }
-            print_kv("MCP servers", str(len(mcp_names)))
-        print_kv("Config file", str(config_path) if config_path.exists() else "missing")
-        if tool == "claude":
-            managed_path, managed_status, backup_status = claude_agent.managed_settings_status(
-                state
-            )
-            print_kv("OS-managed settings", managed_status)
-            print_kv("Managed settings file", str(managed_path) if managed_path else "unsupported")
-            print_kv("Managed settings backup", backup_status)
-        elif tool == "codex":
-            managed_path, managed_status, backup_status = codex_agent.managed_config_status(state)
-            print_kv("OS-managed settings", managed_status)
-            print_kv("Managed settings file", str(managed_path) if managed_path else "unsupported")
-            print_kv("Managed settings backup", backup_status)
-        console.print()
+            rows.append(("MCP servers", str(len(mcp_names))))
+            rows.append(("Skills MCP", _status_skill_scope(state, tool)))
+        base_url = state.get("base_urls", {}).get(tool)
+        if isinstance(base_url, dict):
+            base_url = ", ".join(str(url) for url in base_url.values())
+        rows.append(("Endpoint", str(base_url or "not configured")))
+        _print_status_panel(str(spec["display"]), rows)
 
-    print_heading("Skills")
-    skill_mcp_entry = next((s for s in mcp_servers if s.get("kind") == SKILLS_MCP_KIND), None)
-    if not skill_mcp_entry:
-        print_kv("Skills", "not configured")
-    else:
-        scopes = {
-            client: skill_locations_for_client(skill_mcp_entry, client)
-            for client in (skill_mcp_entry.get("clients") or [])
-            if client in MCP_CLIENTS
-        }
-        if agents_share_one_scope(scopes):
-            locations = next(iter(scopes.values()), [])
-            print_kv(
-                "Skill MCP Locations",
-                ", ".join(locations) if locations else "none — utility tools only",
-            )
-            configured_agents = [str(MCP_CLIENTS[client]["display"]) for client in scopes]
-            print_kv("Configured", ", ".join(configured_agents) if configured_agents else "none")
-        else:
-            for client, locations in scopes.items():
-                print_kv(
-                    f"{MCP_CLIENTS[client]['display']} skill MCP locations",
-                    ", ".join(locations) if locations else "none — utility tools only",
-                )
-
-    print_heading("State")
-    print_kv("State file", str(STATE_PATH) if STATE_PATH.exists() else "missing")
-    print_note("Use `ug configure` to update workspace settings or configure new tools.")
-    print_note("Use `ug mcp add` to add Databricks MCP servers to configured coding tools.")
-    print_note("Use `ug mcp list` to see configured MCP servers and their connection status.")
-    print_note(
-        "Use `ug configure skills` to set up Unity Catalog Skills for configured coding tools."
-    )
-    print_note("Use `ug skills add` and `ug skills remove --mcp` to manage UC Skills.")
-    print_note("Use `ug revert` to clear managed configs and restore prior files.")
+    if not configured_tools:
+        print_note("No coding agents are configured.")
     return 0
 
 
@@ -1341,6 +1490,90 @@ def _stdin_is_interactive() -> bool:
     import sys
 
     return sys.stdin.isatty()
+
+
+@skill_app.command("list")
+def skills_list() -> None:
+    """List workspace-managed, MCP-scoped, and downloaded Skills."""
+    state = load_state()
+    workspace = state.get("workspace")
+    managed = load_managed_state(workspace) if workspace else None
+    downloads = list_downloaded()
+    skill_entries = [
+        server
+        for server in (state.get("mcp_servers") or []) + (state.get("managed_mcp_servers") or [])
+        if server.get("kind") == SKILLS_MCP_KIND
+    ]
+
+    console.print(heading("ug skills list"))
+    _print_status_panel("Skills", [("Workspace", workspace or "not configured")])
+
+    managed_skills = (managed or {}).get("skills") or {}
+    managed_names = [str(name) for name in managed_skills.get("names") or [] if name]
+    managed_location = managed_skills.get("unity_catalog_location")
+    if managed_names or managed_location:
+        values = managed_names or [str(managed_location)]
+        table = Table(box=None, pad_edge=False, header_style="bold")
+        table.add_column("SKILL OR LOCATION")
+        for value in values:
+            table.add_row(value)
+        console.print(
+            Panel(
+                table,
+                title="Workspace-managed",
+                border_style="magenta",
+                width=min(console.width, 120),
+            )
+        )
+
+    if skill_entries:
+        table = Table(box=None, pad_edge=False, header_style="bold")
+        table.add_column("AGENT", no_wrap=True)
+        table.add_column("MCP SCOPE")
+        for entry in skill_entries:
+            for client in entry.get("clients") or []:
+                if client not in MCP_CLIENTS:
+                    continue
+                locations = skill_locations_for_client(entry, client)
+                table.add_row(
+                    str(MCP_CLIENTS[client]["display"]),
+                    ", ".join(locations) if locations else "utility tools only",
+                )
+        console.print(
+            Panel(
+                table,
+                title="Skills MCP",
+                border_style="blue",
+                width=min(console.width, 120),
+            )
+        )
+
+    if downloads:
+        table = Table(box=None, pad_edge=False, header_style="bold")
+        table.add_column("SKILL")
+        table.add_column("SCOPE", no_wrap=True)
+        table.add_column("LOCATION")
+        table.add_column("STATUS", no_wrap=True)
+        for record in downloads:
+            directories = [str(path) for path in record.get("dirs") or []]
+            available = all(os.path.exists(path) for path in directories)
+            table.add_row(
+                str(record.get("fqn") or "unknown"),
+                str(record.get("scope") or "unknown"),
+                str(record.get("base") or "unknown"),
+                "available" if available else "missing files",
+            )
+        console.print(
+            Panel(
+                table,
+                title="Downloaded",
+                border_style="blue",
+                width=min(console.width, 120),
+            )
+        )
+
+    if not (managed_names or managed_location or skill_entries or downloads):
+        print_note("No Skills are configured.")
 
 
 @skill_app.command("add")
@@ -3413,7 +3646,7 @@ def export_cmd(
 
 @app.command("status", rich_help_panel="Manage")
 def status_cmd() -> None:
-    """Show current workspace, tool configs, and saved model selections."""
+    """Show current workspace, tool configs, and live model availability."""
     try:
         status()
     except RuntimeError as exc:
