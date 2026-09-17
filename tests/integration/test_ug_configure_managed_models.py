@@ -96,4 +96,6 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, tm
             "the /model picker to list the injected custom-catalog model",
             timeout=60,
         )
+        tui.send("\x1b", "close the model picker")
+        tui.wait_for(lambda s: "Select Model and Effort" not in s, "the model picker to close")
         tui.exit_normally()
