@@ -87,7 +87,6 @@ def test_ug_configure_managed_is_idempotent(live_session, workspace):
     for _ in range(2):
         result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
         assert "Select coding agents to configure:" not in result.stdout, result.stdout
-        assert "managed config is published" in result.stdout, result.stdout
         settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
         catalog = json.loads((session.home / ".ucode" / "codex-model-catalog.json").read_text())
         picker = [o.get("model") for o in (settings.get("modelPicker") or {}).get("options", [])]

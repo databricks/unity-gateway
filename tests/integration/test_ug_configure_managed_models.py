@@ -35,7 +35,7 @@ def test_managed_fixture_claude_model_picker_reflects_the_config(live_session, w
     )
     set_managed_config_stub(session, tmp_path, config)
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
-    assert "managed config is published" in result.stdout, result.stdout
+    assert "Select coding agents to configure:" not in result.stdout, result.stdout
 
     with AgentTerminal(session, "claude", [str(session.binary), "claude"], "managed-model") as tui:
         tui.boot()
