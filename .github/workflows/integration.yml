@@ -225,10 +225,9 @@ jobs:
           DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
           DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
         run: |
-          case "$AGENT" in
-            claude) args=(--claude-version "$CLAUDE_VERSION") ;;
-            codex) args=(--codex-version "$CODEX_VERSION") ;;
-          esac
+          # Bare managed configure applies both enabled agents, so both binaries must be
+          # available even though each matrix lane launches and asserts only one agent.
+          args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION")
           if [[ -n "$DEPENDENCY" ]]; then
             args+=(--dependency "$DEPENDENCY")
           fi

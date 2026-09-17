@@ -18,7 +18,10 @@ MANAGED_CLAUDE_MODELS = [
     "system.ai.claude-sonnet-4-6",
     "system.ai.claude-haiku-4-5",
 ]
-MANAGED_CODEX_MODEL = "system.ai.gpt-5-6-sol"
+MANAGED_CODEX_MODELS = [
+    "system.ai.gpt-5-6-sol",
+    "system.ai.gpt-99",
+]
 
 
 @pytest.mark.managed
@@ -55,21 +58,26 @@ def test_ug_configure_managed_codex(live_session, workspace):
 
     Expected: ug applies the admin config to every enabled agent without showing the
     personal agent selector, Codex's generated model catalog lists exactly the admin's static
-    model_services, and launching Codex reaches a real gateway prompt rather than the
-    account-login flow.
+    model_services, a model missing bundled metadata uses the generic fallback, and launching
+    Codex reaches a real gateway prompt rather than the account-login flow.
     """
     session = live_session
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
     assert "managed config is published" in result.stdout, result.stdout
+    assert "Codex is missing metadata for managed GPT model" in result.stdout, result.stdout
+    assert "system.ai.gpt-99" in result.stdout, result.stdout
+    assert "`ug codex update`" in result.stdout, result.stdout
 
     catalog = json.loads((session.home / ".ucode" / "codex-model-catalog.json").read_text())
-    listed = [
-        model.get("slug")
-        for model in catalog.get("models", [])
-        if model.get("visibility") == "list"
-    ]
-    assert listed == [MANAGED_CODEX_MODEL], catalog
+    models = catalog.get("models", [])
+    listed = [model.get("slug") for model in models if model.get("visibility") == "list"]
+    assert listed == MANAGED_CODEX_MODELS, catalog
+    fallback = next(model for model in models if model.get("slug") == "system.ai.gpt-99")
+    assert fallback.get("tool_mode") is None, fallback
+    assert fallback.get("input_modalities") == ["text"], fallback
+    assert fallback.get("context_window") == 32768, fallback
+    assert fallback.get("default_reasoning_level") == "none", fallback
 
     with AgentTerminal(session, "codex", [str(session.binary), "codex"], "managed-codex") as tui:
         tui.boot()
