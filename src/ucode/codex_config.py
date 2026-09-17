@@ -41,8 +41,8 @@ def codex_config_precedence_paths(
     return tuple(path for path in (managed_config, cli_config, default_config) if path is not None)
 
 
-def custom_catalog_models() -> list[str] | None:
-    """Read model slugs from the configured model_catalog_json, if present."""
+def custom_catalog_path() -> Path | None:
+    """Resolve the configured model catalog using Codex config precedence."""
     try:
         paths = codex_config_precedence_paths(
             codex_managed_config_path(),
@@ -57,12 +57,20 @@ def custom_catalog_models() -> list[str] | None:
         catalog_ref = settings.get("model_catalog_json")
         if not isinstance(catalog_ref, str) or not catalog_ref.strip():
             continue
-        slugs = catalog_slugs(read_json_safe(Path(catalog_ref).expanduser()))
+        return Path(catalog_ref).expanduser()
+    return None
+
+
+def custom_catalog_models() -> list[str] | None:
+    """Read model slugs from the configured model_catalog_json, if present."""
+    catalog_path = custom_catalog_path()
+    if catalog_path is not None:
+        slugs = catalog_slugs(read_json_safe(catalog_path))
         if slugs:
             return slugs
         print_warning(
-            f"Codex smart routing could not read models from the custom catalog {catalog_ref} "
-            f"referenced by {path}; falling back to the cached model services."
+            f"Codex smart routing could not read models from the custom catalog {catalog_path}; "
+            "falling back to the cached model services."
         )
         return None
     return None

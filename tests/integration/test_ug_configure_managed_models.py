@@ -57,7 +57,7 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, tm
     """Scenario: configure Codex from an injected model list containing an unknown GPT model.
 
     Expected: ug creates conservative fallback metadata for the unknown model, warns how to get
-    richer metadata, and launches the real Codex TUI on the list's valid default model.
+    richer metadata, and the smart-routed real Codex TUI lists that model in its /models picker.
     """
     session = live_session
     config = build_coding_agent_config(
@@ -83,6 +83,13 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, tm
     assert fallback.get("context_window") == 32768, fallback
     assert fallback.get("default_reasoning_level") == "none", fallback
 
+    session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     with AgentTerminal(session, "codex", [str(session.binary), "codex"], "managed-fallback") as tui:
         tui.boot()
-        tui.check_input_and_exit()
+        tui.submit("/models")
+        tui.wait_for(
+            lambda s: "gpt-99" in s,
+            "the /models picker to list the injected custom-catalog model",
+            timeout=60,
+        )
+        tui.exit_normally()
