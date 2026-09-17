@@ -203,8 +203,10 @@ class TestRenderOverlay:
 
     def test_does_not_persist_gateway_model_discovery(self, monkeypatch):
         monkeypatch.setenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", "1")
+        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "1")
+        monkeypatch.setenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "1")
         overlay, _ = claude.render_overlay(WS, "s4")
-        assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in overlay["env"]
+        assert not set(claude.CLAUDE_CONDITIONAL_ENV_KEYS) & overlay["env"].keys()
 
     def test_smart_routing_does_not_persist_gateway_model_discovery(self, monkeypatch):
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
@@ -223,6 +225,15 @@ class TestRenderOverlay:
             claude,
             "read_json_safe",
             lambda path: {"env": {"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"}},
+        )
+
+        assert claude.gateway_model_discovery_setting_is_absent() is False
+
+    def test_gateway_model_discovery_setting_detects_stale_shared_opt_in(self, monkeypatch):
+        monkeypatch.setattr(
+            claude,
+            "read_json_safe",
+            lambda path: {"env": {"UG_ENABLE_MODEL_DISCOVERY": "1"}},
         )
 
         assert claude.gateway_model_discovery_setting_is_absent() is False
@@ -775,14 +786,19 @@ class TestWriteToolConfigStripsRemovedEnvKeys:
         assert written[0]["env"]["CLAUDE_CODE_USE_GATEWAY"] == "1"
 
     def test_strips_stale_gateway_model_discovery(self, monkeypatch):
-        existing = {"env": {"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"}}
+        existing = {
+            "env": {
+                "UG_ENABLE_MODEL_DISCOVERY": "1",
+                "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
+            }
+        }
         written: list = []
         self._patch(monkeypatch, existing, written)
         state = {"workspace": WS, "codex_models": []}
 
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
 
-        assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in written[0]["env"]
+        assert not set(claude.CLAUDE_CONDITIONAL_ENV_KEYS) & written[0]["env"].keys()
 
     def test_writes_otel_tracing_when_enabled(self, monkeypatch):
         written: list = []
@@ -958,7 +974,12 @@ class TestWriteToolConfigManagedSettings:
     def test_managed_file_strips_stale_gateway_model_discovery(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []
-        stale = {"env": {"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"}}
+        stale = {
+            "env": {
+                "UG_ENABLE_MODEL_DISCOVERY": "1",
+                "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
+            }
+        }
         existing = {
             str(claude.CLAUDE_SETTINGS_PATH): stale,
             str(FAKE_MANAGED_PATH): stale,
@@ -969,10 +990,10 @@ class TestWriteToolConfigManagedSettings:
 
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
 
-        assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in private_writes[0][1]["env"]
+        assert not set(claude.CLAUDE_CONDITIONAL_ENV_KEYS) & private_writes[0][1]["env"].keys()
         assert (
-            "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
-            not in json.loads(managed_writes[0][1])["env"]
+            not set(claude.CLAUDE_CONDITIONAL_ENV_KEYS)
+            & json.loads(managed_writes[0][1])["env"].keys()
         )
 
     def test_managed_file_merges_anthropic_custom_headers(self, monkeypatch):
@@ -1462,20 +1483,27 @@ class TestRegisterWebSearchMcp:
 
 class TestClaudeLaunch:
     def test_gateway_discovery_enabled_for_relayed_provider(self, monkeypatch):
-        calls: list[tuple[dict, str, list[str]]] = []
+        calls: list[tuple[dict, str, list[str], str | None]] = []
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
-        monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        monkeypatch.delenv(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
         monkeypatch.setattr(
             claude,
             "_launch_relayed",
-            lambda state, binary, tool_args: calls.append((state, binary, tool_args)),
+            lambda state, binary, tool_args: calls.append(
+                (
+                    state,
+                    binary,
+                    tool_args,
+                    os.environ.get(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR),
+                )
+            ),
         )
         state = {"workspace": WS, "claude_relayed": True}
 
         claude.launch(state, ["--debug"], options=LaunchOptions())
 
-        assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
-        assert calls == [(state, "claude", ["--debug"])]
+        assert claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR not in os.environ
+        assert calls == [(state, "claude", ["--debug"], "1")]
 
     def test_relayed_launch_uses_refresh_proxy(self, monkeypatch):
         calls: list[tuple] = []
@@ -1631,27 +1659,52 @@ class TestClaudeLaunch:
             model_name=claude._maybe_add_1m_suffix,
         )
 
-    def test_gateway_discovery_uses_direct_gateway(self, monkeypatch):
+    def test_legacy_gateway_discovery_uses_direct_gateway(self, monkeypatch):
         calls: list[list[str]] = []
+        child_discovery: list[str | None] = []
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(claude.MODEL_DISCOVERY_ENV_VAR, "0")
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
+        monkeypatch.delenv(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(
+            claude,
+            "exec_or_spawn",
+            lambda argv: (
+                calls.append(argv),
+                child_discovery.append(
+                    os.environ.get(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR)
+                ),
+            ),
+        )
 
         claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
 
         assert os.environ["OAUTH_TOKEN"] == "token"
-        assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert child_discovery == ["1"]
+        assert claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR not in os.environ
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
 
-    def test_gateway_discovery_enabled_under_provider(self, monkeypatch):
+    def test_shared_gateway_discovery_enabled_under_provider(self, monkeypatch):
         calls: list[list[str]] = []
+        child_discovery: list[str | None] = []
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
-        monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
+        monkeypatch.setenv(claude.MODEL_DISCOVERY_ENV_VAR, "1")
+        monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
+        monkeypatch.delenv(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(
+            claude,
+            "exec_or_spawn",
+            lambda argv: (
+                calls.append(argv),
+                child_discovery.append(
+                    os.environ.get(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR)
+                ),
+            ),
+        )
 
         claude.launch(
             {
@@ -1663,8 +1716,60 @@ class TestClaudeLaunch:
             options=LaunchOptions(),
         )
 
-        assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert child_discovery == ["1"]
+        assert claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR not in os.environ
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
+
+    def test_shared_gateway_discovery_zero_does_not_enable_native(self, monkeypatch):
+        child_discovery: list[str | None] = []
+        monkeypatch.setenv(claude.MODEL_DISCOVERY_ENV_VAR, "0")
+        monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
+        monkeypatch.delenv(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(
+            claude,
+            "exec_or_spawn",
+            lambda _argv: child_discovery.append(
+                os.environ.get(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR)
+            ),
+        )
+
+        claude.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        assert child_discovery == [None]
+        assert claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR not in os.environ
+
+    def test_shared_gateway_discovery_restores_exact_native_value(self, monkeypatch):
+        child_discovery: list[str | None] = []
+        monkeypatch.setenv(claude.MODEL_DISCOVERY_ENV_VAR, "1")
+        monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
+        monkeypatch.setenv(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR, "caller-value")
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(
+            claude,
+            "exec_or_spawn",
+            lambda _argv: child_discovery.append(
+                os.environ.get(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR)
+            ),
+        )
+
+        claude.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        assert child_discovery == ["1"]
+        assert os.environ[claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR] == "caller-value"
+
+    def test_launch_error_restores_exact_native_value(self, monkeypatch):
+        monkeypatch.setenv(claude.MODEL_DISCOVERY_ENV_VAR, "1")
+        monkeypatch.setenv(claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR, "caller-value")
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", Mock(side_effect=RuntimeError("launch failed"))
+        )
+
+        with pytest.raises(RuntimeError, match="launch failed"):
+            claude.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        assert os.environ[claude.CLAUDE_GATEWAY_MODEL_DISCOVERY_ENV_VAR] == "caller-value"
 
 
 class TestWriteToolConfigPrunesStaleModelEnv:
