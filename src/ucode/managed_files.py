@@ -132,6 +132,18 @@ def mark_managed_file_verified(
     state["managed_file_fingerprints"] = records
 
 
+def managed_file_scope(state: dict, tool: str) -> str:
+    """Return the scope recorded for ``tool``'s last managed-file verification, else ``"managed"``.
+
+    Lets a second writer to the same file (the MCP reconcile, which runs after the model reconcile)
+    refresh the fingerprint without discarding the first writer's ``relay-compatible`` or
+    ``local-compatible`` scope."""
+    records = state.get("managed_file_fingerprints")
+    record = records.get(tool) if isinstance(records, dict) else None
+    scope = record.get("scope") if isinstance(record, dict) else None
+    return scope if isinstance(scope, str) else "managed"
+
+
 def managed_writes_allowed() -> bool:
     """Managed writes are interactive setup work; scripts and CI use local settings."""
     return sys.stdin.isatty()

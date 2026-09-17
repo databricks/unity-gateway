@@ -2245,3 +2245,137 @@ class TestWriteToolConfigBackup:
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
 
         assert not (tmp_path / "backup.json").exists()
+
+
+class TestManagedMcpUsesManagedFile:
+    def _wire(
+        self, monkeypatch, *, supported=True, interactive=True, version="2.1.259", oauth=True
+    ):
+        monkeypatch.setattr(claude, "managed_files_supported", lambda: supported)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: interactive)
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: version)
+        monkeypatch.setattr(claude, "oauth_client_available", lambda ws, client_id: oauth)
+
+    def test_true_when_all_conditions_hold(self, monkeypatch):
+        self._wire(monkeypatch)
+        assert claude.managed_mcp_uses_managed_file(WS, use_pat=False) is True
+
+    def test_false_on_old_claude(self, monkeypatch):
+        self._wire(monkeypatch, version="2.1.258")
+        assert claude.managed_mcp_uses_managed_file(WS, use_pat=False) is False
+
+    def test_false_under_pat(self, monkeypatch):
+        self._wire(monkeypatch)
+        assert claude.managed_mcp_uses_managed_file(WS, use_pat=True) is False
+
+    def test_false_without_oauth_client(self, monkeypatch):
+        self._wire(monkeypatch, oauth=False)
+        assert claude.managed_mcp_uses_managed_file(WS, use_pat=False) is False
+
+    def test_false_when_non_interactive(self, monkeypatch):
+        self._wire(monkeypatch, interactive=False)
+        assert claude.managed_mcp_uses_managed_file(WS, use_pat=False) is False
+
+
+class TestClaudeReconcileManagedMcp:
+    def _wire(self, monkeypatch, existing_text, captured):
+        monkeypatch.setattr(
+            claude, "_managed_settings_path", lambda: Path("/etc/claude-code/managed-settings.json")
+        )
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(claude, "read_managed_file", lambda path: existing_text)
+        monkeypatch.setattr(claude, "mark_managed_file_verified", lambda *a, **k: None)
+
+        def fake_reconcile(path, desired_text, *, tool, display, owned_paths):
+            captured.update(text=desired_text, tool=tool, owned_paths=owned_paths)
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", fake_reconcile)
+
+    def test_writes_managed_mcp_servers_preserving_other_keys(self, monkeypatch):
+        captured: dict = {}
+        existing = json.dumps({"env": {"X": "1"}, "apiKeyHelper": "ug auth-token"})
+        self._wire(monkeypatch, existing, captured)
+        used = claude.reconcile_managed_mcp(
+            {}, {"system-ai-github": claude.managed_mcp_entry(GH_URL)}
+        )
+        assert used is True
+        doc = json.loads(captured["text"])
+        assert doc["managedMcpServers"]["system-ai-github"]["url"] == GH_URL
+        assert doc["managedMcpServers"]["system-ai-github"]["type"] == "http"
+        assert doc["managedMcpServers"]["system-ai-github"]["oauth"]["clientId"] == "claude-code"
+        assert doc["env"] == {"X": "1"}
+        assert doc["apiKeyHelper"] == "ug auth-token"
+        assert captured["owned_paths"] == [["managedMcpServers"]]
+        assert captured["tool"] == "claude"
+
+    def test_empty_map_clears_key_preserving_other_keys(self, monkeypatch):
+        captured: dict = {}
+        existing = json.dumps(
+            {"managedMcpServers": {"old": {"type": "http", "url": "u"}}, "env": {"X": "1"}}
+        )
+        self._wire(monkeypatch, existing, captured)
+        used = claude.reconcile_managed_mcp({}, {})
+        assert used is True
+        doc = json.loads(captured["text"])
+        assert "managedMcpServers" not in doc
+        assert doc["env"] == {"X": "1"}
+
+    def test_clearing_an_absent_key_never_writes(self, monkeypatch):
+        # No managedMcpServers to clear (and possibly no file): must not create or rewrite anything.
+        monkeypatch.setattr(
+            claude, "_managed_settings_path", lambda: Path("/etc/claude-code/managed-settings.json")
+        )
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(claude, "read_managed_file", lambda path: None)
+        monkeypatch.setattr(claude, "mark_managed_file_verified", lambda *a, **k: None)
+        monkeypatch.setattr(
+            claude, "reconcile_managed_file", lambda *a, **k: pytest.fail("must not write")
+        )
+        assert claude.reconcile_managed_mcp({}, {}) is True
+
+    def test_non_interactive_returns_false_without_writing(self, monkeypatch):
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: Path("/etc/x.json"))
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+        monkeypatch.setattr(
+            claude, "reconcile_managed_file", lambda *a, **k: pytest.fail("must not write")
+        )
+        assert claude.reconcile_managed_mcp({}, {"s": claude.managed_mcp_entry(GH_URL)}) is False
+
+    def test_preserves_prior_verification_scope(self, monkeypatch):
+        # An MCP-only write must refresh the fingerprint without downgrading the model reconcile's
+        # scope (e.g. relay-compatible), or a relayed launch would re-reconcile and status would drift.
+        captured: dict = {}
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: Path("/etc/x.json"))
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(claude, "read_managed_file", lambda path: json.dumps({"env": {}}))
+        monkeypatch.setattr(claude, "reconcile_managed_file", lambda *a, **k: None)
+
+        def fake_mark(state, tool, path, *, scope="managed"):
+            captured["scope"] = scope
+
+        monkeypatch.setattr(claude, "mark_managed_file_verified", fake_mark)
+        state = {"managed_file_fingerprints": {"claude": {"scope": "relay-compatible"}}}
+        claude.reconcile_managed_mcp(state, {"gh": claude.managed_mcp_entry(GH_URL)})
+        assert captured["scope"] == "relay-compatible"
+
+
+class TestClaudeReadManagedMcpUrls:
+    def test_reads_urls_from_managed_file(self, monkeypatch):
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: Path("/etc/x.json"))
+        text = json.dumps({"managedMcpServers": {"gh": {"type": "http", "url": GH_URL}}, "env": {}})
+        monkeypatch.setattr(claude, "read_managed_file", lambda path: text)
+        assert claude.read_managed_mcp_urls() == {"gh": GH_URL}
+
+    def test_empty_when_key_absent(self, monkeypatch):
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: Path("/etc/x.json"))
+        monkeypatch.setattr(claude, "read_managed_file", lambda path: json.dumps({"env": {}}))
+        assert claude.read_managed_mcp_urls() == {}
+
+    def test_empty_when_file_unreadable(self, monkeypatch):
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: Path("/etc/x.json"))
+
+        def boom(path):
+            raise RuntimeError("permission denied")
+
+        monkeypatch.setattr(claude, "read_managed_file", boom)
+        assert claude.read_managed_mcp_urls() == {}

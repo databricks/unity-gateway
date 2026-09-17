@@ -958,6 +958,11 @@ def status() -> int:
                 and server.get("name")
                 and server.get("kind") != SKILLS_MCP_KIND
             }
+            # Managed servers ug delivers through an OS-managed file live in that file, not state.
+            if tool == "claude":
+                mcp_names |= claude_agent.read_managed_mcp_urls().keys()
+            elif tool == "codex":
+                mcp_names |= codex_agent.read_managed_mcp_urls().keys()
             print_kv("MCP servers", str(len(mcp_names)))
         print_kv("Config file", str(config_path) if config_path.exists() else "missing")
         if tool == "claude":

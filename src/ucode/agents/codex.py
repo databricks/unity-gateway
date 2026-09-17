@@ -56,7 +56,9 @@ from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     managed_file_conflicts,
     managed_file_is_verified,
+    managed_file_scope,
     managed_file_status,
+    managed_files_supported,
     managed_writes_allowed,
     mark_managed_file_verified,
     read_managed_file,
@@ -584,6 +586,105 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
     mark_managed_file_verified(state, "codex", path)
+
+
+MANAGED_MCP_CONFIG_KEY = "mcp_servers"
+
+
+def managed_mcp_uses_managed_file() -> bool:
+    """Whether Codex's managed MCP servers belong in the OS-managed file rather than user scope.
+
+    Codex reads ``/etc/codex/managed_config.toml`` natively and merges its ``[mcp_servers]`` table
+    with the developer's own ``~/.codex/config.toml`` servers, so a managed entry never hides a
+    personal one. It fits whenever the platform supports the sudo reconcile and the run is
+    interactive; otherwise the caller falls back to the user-scope registration."""
+    return managed_files_supported() and managed_writes_allowed()
+
+
+def managed_mcp_entry(argv: list[str]) -> dict:
+    """A ``[mcp_servers.<name>]`` stdio entry from the ``ug mcp-proxy`` argv (same as user scope)."""
+    return {"command": argv[0], "args": list(argv[1:])}
+
+
+def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
+    """Overwrite ug's ``[mcp_servers]`` table in Codex's OS-managed file with ``servers``.
+
+    ``servers`` is the freshly resolved managed set keyed by name; an empty map clears the table.
+    The managed file is the source of truth, so this is a wipe-and-rewrite, not a diff. Every other
+    managed key is preserved, including the model configuration ug wrote earlier this run. Returns
+    True when the managed file is the delivery mechanism, False when it cannot be used (unsupported
+    platform or a non-interactive run), so the caller routes those servers to the user-scope
+    registration instead."""
+    path = codex_managed_config_path()
+    if path is None or not managed_writes_allowed():
+        return False
+    if path.is_symlink():
+        raise RuntimeError(
+            f"Refusing to use Codex managed settings through symlink {path}. Replace it with a "
+            "regular file or contact your administrator."
+        )
+    current_text = read_managed_file(path)
+    try:
+        existing = (
+            _parse_managed_config(current_text) if current_text is not None else tomlkit.document()
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Cannot safely update Codex managed settings at {path}: {exc}. ucode did not modify "
+            "the file. Repair it or contact your administrator."
+        ) from exc
+    # Nothing managed to clear: never create or rewrite the file just to remove an absent key.
+    if not servers and MANAGED_MCP_CONFIG_KEY not in existing:
+        return True
+    if servers:
+        table = tomlkit.table()
+        for name, entry in servers.items():
+            server = tomlkit.table()
+            server.update(entry)
+            table[name] = server
+        existing[MANAGED_MCP_CONFIG_KEY] = table
+    else:
+        del existing[MANAGED_MCP_CONFIG_KEY]
+    try:
+        reconcile_managed_file(
+            path,
+            tomlkit.dumps(existing),
+            tool="codex",
+            display="Codex",
+            owned_paths=[[MANAGED_MCP_CONFIG_KEY]],
+        )
+    except ManagedFileWriteUnavailable:
+        return False
+    # Preserve the scope the model reconcile recorded (e.g. relay-compatible); an MCP-only write only
+    # refreshes the fingerprint, it does not change how the file relates to the model settings.
+    mark_managed_file_verified(state, "codex", path, scope=managed_file_scope(state, "codex"))
+    return True
+
+
+def read_managed_mcp_urls() -> dict[str, str]:
+    """``{name: url}`` for ug's managed MCP servers in Codex's OS-managed file (empty if none).
+
+    Read-only, for ``ug mcp list`` to tag managed servers now that the managed file is their source
+    of truth rather than ug state. The gateway URL is the ``--url`` argument of the proxy command."""
+    path = codex_managed_config_path()
+    if path is None:
+        return {}
+    try:
+        text = read_managed_file(path)
+        doc = _parse_managed_config(text) if text else {}
+    except RuntimeError:
+        return {}
+    servers = doc.get(MANAGED_MCP_CONFIG_KEY)
+    if not isinstance(servers, dict):
+        return {}
+    urls: dict[str, str] = {}
+    for name, entry in servers.items():
+        args = entry.get("args") if isinstance(entry, dict) else None
+        if isinstance(args, list) and "--url" in args:
+            index = args.index("--url")
+            if index + 1 < len(args):
+                urls[name] = str(args[index + 1])
+    return urls
 
 
 def default_model(state: dict) -> str | None:

@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 import questionary
 from rich.table import Table
 
-from ucode.agents import claude, copilot, cursor, gemini, opencode
+from ucode.agents import claude, codex, copilot, cursor, gemini, opencode
 from ucode.config_io import restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
@@ -800,19 +800,77 @@ def _resolve_managed_mcp_servers(
     return working
 
 
+# Agents whose managed MCP goes to an OS-managed file (name -> module); drives the guard and loop.
+_MANAGED_FILE_AGENTS = {"claude": claude, "codex": codex}
+
+
+def _servers_without_clients(servers: list[dict], drop: set[tuple[str, str]]) -> list[dict]:
+    """Copy ``servers`` dropping each ``(name, client)`` in ``drop`` from that server's ``clients``.
+
+    Keyed on ``(name, client)`` pairs so one agent can keep some servers on the fallback while others
+    go to its managed file: only the servers actually delivered to the managed file are dropped, and a
+    server left with no clients is omitted."""
+    scoped: list[dict] = []
+    for server in servers:
+        name = _server_name(server)
+        clients = [c for c in (server.get("clients") or []) if (name, c) not in drop]
+        if clients:
+            scoped.append({**server, "clients": clients})
+    return scoped
+
+
+def _agent_managed_file_entries(
+    agent: str,
+    servers: list[dict],
+    workspace: str,
+    profile: str | None,
+    use_pat: bool,
+) -> dict[str, dict]:
+    """Build the OS-managed-file entry map (name -> entry) for ``agent`` from the resolved set.
+
+    Claude gets a direct HTTP + OAuth entry, but only for a connection-backed mcp-services URL; its
+    other URLs fall back to the proxy (like ``configure_client_mcp_server``). Codex gets the same
+    ``ug mcp-proxy`` stdio command it would register at user scope, for any URL. Only servers that
+    name ``agent`` in their ``clients`` are included.
+    """
+    entries: dict[str, dict] = {}
+    for server in servers:
+        name = _server_name(server)
+        url = server.get("url")
+        if not name or not isinstance(url, str) or agent not in (server.get("clients") or []):
+            continue
+        if agent == "claude":
+            # A native HTTP+OAuth entry is only valid for a connection-backed mcp-services URL;
+            # anything else stays on the stdio proxy so both delivery paths resolve identically.
+            if AIGW_MCP_SERVICES_PATH not in url:
+                continue
+            entries[name] = claude.managed_mcp_entry(url)
+        elif agent == "codex":
+            entries[name] = codex.managed_mcp_entry(
+                build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
+            )
+    return entries
+
+
 def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]:
     """Register the managed config's ``mcp_servers`` for ``agents`` and reconcile removals.
 
     Called from ``ug configure`` once the enabled agents are configured. Resolves the managed
-    ``mcp_servers`` selector (see :func:`_resolve_managed_mcp_servers`) into server entries for the
-    MCP-client ``agents`` that are installed and configured, diffs them against the managed set a
-    prior configure registered (persisted under ``managed_mcp_servers``), and applies the change so
-    a server the admin later drops is unregistered rather than left behind. Returns the servers now
-    registered — an empty list when the config names none, which clears any prior managed set.
+    ``mcp_servers`` selector (see :func:`_resolve_managed_mcp_servers`) into server entries, then
+    delivers each server through one of two mechanisms per agent:
 
-    The managed set is tracked separately from the developer's own ``mcp_servers`` so reconciling
-    never touches a server they configured themselves. Raises ``RuntimeError`` on a discovery or
-    registration failure; the caller keeps it best-effort.
+    - **OS-managed file** (Claude ``managedMcpServers``, Codex ``[mcp_servers]``): the additive,
+      admin-owned files that never touch the developer's own servers. The managed file is the source
+      of truth, so ug overwrites its own entries from the freshly resolved set every run (a dropped
+      server disappears, a switch to an unmanaged workspace clears them). Used when the agent
+      qualifies (see :func:`claude.managed_mcp_uses_managed_file` / :func:`codex...`).
+    - **User-scope registration** (today's model, diffed against ``managed_mcp_servers`` state): the
+      fallback for agents that can't use the managed file this run (a non-interactive run, an old
+      Claude CLI, PAT auth, or a workspace without the OAuth client), plus every non-Claude/Codex
+      MCP client, which keeps its existing behavior.
+
+    Returns the servers resolved this run. Raises ``RuntimeError`` on a discovery failure; the caller
+    keeps it best-effort.
     """
     selector = managed.get("mcp_servers")
     selector = selector if isinstance(selector, dict) else {}
@@ -820,26 +878,93 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
     previous = [
         server for server in (state.get("managed_mcp_servers") or []) if isinstance(server, dict)
     ]
-    if not selector and not previous:
-        return []
     configured = set(configured_mcp_clients(state, available_mcp_clients()))
     scope = {agent for agent in agents if agent in configured}
+    # A managed file can hold a prior workspace's entries even when the fallback state is empty, so
+    # reconcile whenever claude/codex is configured (to clear on a switch), not only on selector/scope.
+    if not (selector or previous or scope or (configured & _MANAGED_FILE_AGENTS.keys())):
+        return []
     if scope:
         workspace, profile, clients = setup_mcp_clients(
             state, "Managed MCP Servers", agents=scope, action_note="Registering for"
         )
         working = _resolve_managed_mcp_servers(selector, workspace, profile, clients)
     else:
-        # No enabled MCP client is installed and configured, so there is nothing to register — but
-        # still unregister any servers a prior configure registered (removal is a local no-auth op).
+        # No MCP client configured: nothing to register, but still clear what a prior configure left.
         workspace = state.get("workspace")
         if not workspace:
-            raise RuntimeError("Workspace is not configured. Run `ucode configure` first.")
+            return []
         profile, clients, working = state.get("profile"), [], []
+    use_pat = bool(state.get("use_pat"))
+
+    eligible = set()
+    if "claude" in scope and claude.managed_mcp_uses_managed_file(workspace, use_pat=use_pat):
+        eligible.add("claude")
+    if "codex" in scope and codex.managed_mcp_uses_managed_file():
+        eligible.add("codex")
+
+    # Write each configured agent's managed file (resolved entries when eligible, else empty to clear
+    # a prior run). Only a successful write counts as delivered; a failure leaves it on the fallback.
+    # Tracked per (name, client) so Claude can keep native mcp-services entries here while its other
+    # servers fall back to the proxy.
+    delivered: set[tuple[str, str]] = set()
+    for agent, module in _MANAGED_FILE_AGENTS.items():
+        if agent not in configured:
+            continue
+        is_eligible = agent in eligible
+        entries = (
+            _agent_managed_file_entries(agent, working, workspace, profile, use_pat)
+            if is_eligible
+            else {}
+        )
+        try:
+            written = module.reconcile_managed_mcp(state, entries)
+        except RuntimeError as exc:
+            print_warning(f"Could not update {MCP_CLIENTS[agent]['display']} managed MCP: {exc}")
+            written = False
+        if is_eligible and written:
+            delivered.update((name, agent) for name in entries)
+
+    # Drop prior user-scope registrations for servers now on a managed file, but keep a (name,
+    # client) the developer also owns in their own mcp_servers (managed precedence covers it).
+    developer_owned = {
+        (_server_name(server), client)
+        for server in (state.get("mcp_servers") or [])
+        if _server_name(server)
+        for client in (server.get("clients") or [])
+    }
+    for server in previous:
+        name = _server_name(server)
+        if not name:
+            continue
+        for client in server.get("clients") or []:
+            if (name, client) not in delivered or (name, client) in developer_owned:
+                continue
+            try:
+                remove_client_mcp_server(client, name)
+            except RuntimeError as exc:
+                print_warning(
+                    f"Failed to unregister managed `{name}` from "
+                    f"{MCP_CLIENTS[client]['display']}: {exc}"
+                )
+
+    # User-scope path for what the managed files don't deliver, diffed so drops apply. Removals key on
+    # each server's own clients, so a client that is no longer configured is still unregistered.
+    previous_fallback = _servers_without_clients(previous, delivered)
+    working_fallback = _servers_without_clients(working, delivered)
+    # A managed-file agent stays a fallback target only while it still has an undelivered server here
+    # (e.g. a non-mcp-services Claude server on the proxy); a fully-delivered agent drops out.
+    fallback_agents = {
+        client
+        for server in working_fallback
+        for client in _mcp_server_clients(server)
+        if client in _MANAGED_FILE_AGENTS
+    }
+    fallback_clients = [c for c in clients if c not in _MANAGED_FILE_AGENTS or c in fallback_agents]
     apply_mcp_server_changes(
-        previous, working, clients, workspace, profile, use_pat=bool(state.get("use_pat"))
+        previous_fallback, working_fallback, fallback_clients, workspace, profile, use_pat=use_pat
     )
-    state["managed_mcp_servers"] = working
+    state["managed_mcp_servers"] = working_fallback
     save_state(state)
     return working
 
@@ -2027,8 +2152,15 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
 
     for server in state.get("mcp_servers") or []:
         _collect(server, managed=False)
+    # Managed servers also live in the OS-managed files (source of truth), not just fallback state.
     for server in state.get("managed_mcp_servers") or []:
         _collect(server, managed=True)
+    if agents is None or "claude" in agents:
+        for name, url in claude.read_managed_mcp_urls().items():
+            _collect({"name": name, "url": url, "clients": ["claude"]}, managed=True)
+    if agents is None or "codex" in agents:
+        for name, url in codex.read_managed_mcp_urls().items():
+            _collect({"name": name, "url": url, "clients": ["codex"]}, managed=True)
 
     if configured:
         table = Table(box=None, pad_edge=False, header_style="bold")

@@ -51,15 +51,21 @@ from ucode.managed_files import (
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
+    managed_file_scope,
     managed_file_snapshots,
     managed_file_status,
+    managed_files_supported,
     managed_writes_allowed,
     mark_managed_file_verified,
     read_managed_file,
     reconcile_managed_file,
     revert_managed_file,
 )
-from ucode.mcp_oauth import CLAUDE_CODE_OAUTH_CLIENT_ID, MCP_OAUTH_CALLBACK_PORT
+from ucode.mcp_oauth import (
+    CLAUDE_CODE_OAUTH_CLIENT_ID,
+    MCP_OAUTH_CALLBACK_PORT,
+    oauth_client_available,
+)
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
@@ -84,6 +90,10 @@ CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
 WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
 MINIMUM_CLAUDE_VERSION = (2, 1, 248)
 MINIMUM_CLAUDE_VERSION_TEXT = "2.1.248"
+# managedMcpServers needs Claude Code 2.1.259+; older versions ignore it and fall back to user scope.
+MANAGED_MCP_MIN_VERSION = (2, 1, 259)
+MANAGED_MCP_MIN_VERSION_TEXT = "2.1.259"
+MANAGED_MCP_SETTINGS_KEY = "managedMcpServers"
 
 SPEC: ToolSpec = {
     "binary": "claude",
@@ -664,6 +674,116 @@ def remove_claude_mcp_server(name: str, scope: str) -> bool:
         if _is_missing_mcp_server_output(output):
             return False
         raise RuntimeError(f"Failed to remove MCP server '{name}' via claude CLI.") from exc
+
+
+def _version_supports_managed_mcp() -> bool:
+    parsed = _parse_version(agent_version(SPEC["binary"]))
+    return parsed is not None and parsed >= MANAGED_MCP_MIN_VERSION
+
+
+def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
+    """Whether Claude's managed MCP servers belong in the OS-managed file rather than user scope.
+
+    The OS-managed ``managedMcpServers`` key is additive (it never touches the developer's own
+    servers) but Claude Code reads it only from a real managed source, only since 2.1.259, and only
+    as a remote HTTP server it can drive OAuth against itself. So it fits only when the platform
+    supports the sudo reconcile, the run is interactive, the CLI is new enough, the developer is not
+    on PAT auth (which needs the stdio proxy), and the workspace publishes the ``claude-code`` OAuth
+    client. Every other case falls back to the user-scope registration."""
+    return (
+        managed_files_supported()
+        and managed_writes_allowed()
+        and _version_supports_managed_mcp()
+        and not use_pat
+        and oauth_client_available(workspace, CLAUDE_CODE_OAUTH_CLIENT_ID)
+    )
+
+
+def managed_mcp_entry(url: str) -> dict:
+    """A ``managedMcpServers`` entry: a direct HTTP server Claude Code drives OAuth against itself.
+
+    Mirrors :func:`add_claude_http_mcp_server`: the published ``claude-code`` OAuth client and an
+    arbitrary loopback callback port, which ``/oidc`` ignores for loopback redirects."""
+    return {
+        "type": "http",
+        "url": url,
+        "oauth": {
+            "clientId": CLAUDE_CODE_OAUTH_CLIENT_ID,
+            "callbackPort": MCP_OAUTH_CALLBACK_PORT,
+        },
+    }
+
+
+def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
+    """Overwrite ug's ``managedMcpServers`` in Claude's OS-managed file with ``servers``.
+
+    ``servers`` is the freshly resolved managed set keyed by name; an empty map clears the key. The
+    managed file is the source of truth, so this is a wipe-and-rewrite, not a diff. Every other
+    managed key is preserved, including the model configuration ug wrote earlier this run and any
+    admin-authored policy. Returns True when the managed file is the delivery mechanism (written or
+    already current), False when it cannot be used (unsupported platform or a non-interactive run),
+    so the caller routes those servers to the user-scope registration instead."""
+    path = _managed_settings_path()
+    if path is None or not managed_writes_allowed():
+        return False
+    if path.is_symlink():
+        raise RuntimeError(
+            f"Refusing to use Claude Code managed settings through symlink {path}. Replace it "
+            "with a regular file or contact your administrator."
+        )
+    current_text = read_managed_file(path)
+    try:
+        existing = _parse_managed_settings(current_text) if current_text is not None else {}
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Cannot safely update Claude Code managed settings at {path}: {exc}. ucode did not "
+            "modify the file. Repair it or contact your administrator."
+        ) from exc
+    # Nothing managed to clear: never create or rewrite the file just to remove an absent key.
+    if not servers and MANAGED_MCP_SETTINGS_KEY not in existing:
+        return True
+    desired = copy.deepcopy(existing)
+    if servers:
+        desired[MANAGED_MCP_SETTINGS_KEY] = servers
+    else:
+        desired.pop(MANAGED_MCP_SETTINGS_KEY, None)
+    try:
+        reconcile_managed_file(
+            path,
+            _dump_managed_settings(desired),
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[[MANAGED_MCP_SETTINGS_KEY]],
+        )
+    except ManagedFileWriteUnavailable:
+        return False
+    # Preserve the scope the model reconcile recorded (e.g. relay-compatible); an MCP-only write only
+    # refreshes the fingerprint, it does not change how the file relates to the model settings.
+    mark_managed_file_verified(state, "claude", path, scope=managed_file_scope(state, "claude"))
+    return True
+
+
+def read_managed_mcp_urls() -> dict[str, str]:
+    """``{name: url}`` for ug's managed MCP servers in Claude's OS-managed file (empty if none).
+
+    Read-only, for ``ug mcp list`` to tag managed servers now that the managed file is their source
+    of truth rather than ug state."""
+    path = _managed_settings_path()
+    if path is None:
+        return {}
+    try:
+        text = read_managed_file(path)
+        settings = _parse_managed_settings(text) if text else {}
+    except RuntimeError:
+        return {}
+    servers = settings.get(MANAGED_MCP_SETTINGS_KEY)
+    if not isinstance(servers, dict):
+        return {}
+    return {
+        name: entry["url"]
+        for name, entry in servers.items()
+        if isinstance(entry, dict) and isinstance(entry.get("url"), str)
+    }
 
 
 def _register_web_search_mcp(workspace: str, search_model: str, profile: str | None = None) -> bool:

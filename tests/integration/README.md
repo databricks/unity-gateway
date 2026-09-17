@@ -158,8 +158,11 @@ fails the selected CUJ, rather than skipping it.
 There are **42 live cases** (including 6 TUI journeys) and **5 installation
 checks** with both agents. A separate **3 managed-workspace cases** (one per agent
 plus an idempotent re-configure, marker `managed`) run against a workspace that publishes a CodingAgentConfig; see
-"Managed-workspace journeys" below. A further **5 `managed_fixture` cases** inject the admin config
-locally (via `UCODE_MANAGED_CONFIG_STUB`) to cover shapes the live workspace does not publish; each
+"Managed-workspace journeys" below. A further **6 `managed_fixture` cases** inject the admin config
+locally (via `UCODE_MANAGED_CONFIG_STUB`) to cover shapes the live workspace does not publish,
+including a managed MCP server landing in Codex's OS-managed `[mcp_servers]` (interactive configure)
+while the developer's own config stays untouched, and reaching Claude's `/mcp` view via the
+user-scope fallback (non-interactive configure); each
 differs from the published config in what it asserts so it proves the injected config drove configure.
 Two of those are per-agent lifecycle journeys (no config -> static A -> static B -> MPS -> no config):
 they assert the generated model files reconcile to each static config, are cleared when switching to
