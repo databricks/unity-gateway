@@ -532,6 +532,9 @@ def main() -> int:
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
                 "DATABRICKS_BEARER": bearer,
+                # Durable SP-minted PAT for the managed `--use-pat` (MDM) journeys; the
+                # runner's own bearer is hourly M2M, so these tests need a real PAT.
+                "E2E_ADMIN_SP_PAT": os.environ.get("E2E_ADMIN_SP_PAT", ""),
             }
         )
         for agent in agents:
