@@ -88,7 +88,7 @@ All user journeys are top-level tests. There is no separate regressions category
 ```text
 test_ug_configure_claude.py             # Databricks Hosted and Anthropic MPS
 test_ug_configure_codex.py              # Databricks Hosted and OpenAI MPS
-test_ug_claude_custom_oauth.py           # CLI custom-OAuth launch and profile
+test_ug_claude_custom_oauth.py           # CLI custom-OAuth launch, profile, and managed helper
 test_ug_codex_custom_oauth.py            # CLI custom-OAuth launch and profile
 test_ug_claude_headless.py              # script prompts, models, caller settings
 test_ug_claude_relayed.py               # relayed session: subscription + Databricks-hosted models
