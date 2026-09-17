@@ -43,15 +43,15 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
-from ucode.custom_oauth import (
-    CUSTOM_OAUTH_CLI_ENV_VAR,
-    custom_oauth_cli_enabled,
-    ensure_custom_oauth_cli_token,
-)
 from ucode.constants import (
     CLAUDE_SCOPED_MODEL_DISCOVERY_STATE_KEY,
     CODEX_SCOPED_MODEL_DISCOVERY_STATE_KEY,
     scoped_model_discovery_enabled,
+)
+from ucode.custom_oauth import (
+    CUSTOM_OAUTH_CLI_ENV_VAR,
+    custom_oauth_cli_enabled,
+    ensure_custom_oauth_cli_token,
 )
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
@@ -798,7 +798,7 @@ def configure_workspace_command(
             clear_custom_oauth=custom_oauth is None,
         )
         state = states[0]
-        managed, _ = refresh_managed_config(state)
+        managed, _ = refresh_managed_config(state, force_refresh=True)
         if model_location is not None:
             _reject_configure_model_location(managed, [tool])
         admin_location = managed_model_location(managed or {}, tool)
@@ -815,9 +815,8 @@ def configure_workspace_command(
         else:
             candidate = _state_with_model_location(state, tool, model_location)
             state = configure_single_tool(tool, candidate)
-        # No managed refresh precedes this branch, so read fresh here: `ug configure` never decides
-        # from a stale cache.
-        install_databricks_ai_tools_for_agents([tool], state, force_refresh=True)
+        # The managed-policy read above was forced, so AI tools can reuse that fresh cache.
+        install_databricks_ai_tools_for_agents([tool], state)
         spec = TOOL_SPECS[tool]
         console.print(
             Panel(
@@ -849,17 +848,17 @@ def configure_workspace_command(
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if model_location is not None:
         _reject_configure_model_location(managed, selected_tools or managed_tools)
-    if managed is not None:
+    location_targets = selected_tools if selected_tools is not None else managed_tools
+    fallback_location_tools = [
+        tool_name
+        for tool_name in location_targets
+        if model_location is not None
+        and tool_name in CAN_USE_CACHED_CONFIG_AGENTS
+        and not _managed_controls_model_source(managed, tool_name)
+    ]
+    if managed is not None and (managed_tools or fallback_location_tools):
         configured_tools: list[str] = []
         developer_state = state
-        location_targets = selected_tools if selected_tools is not None else managed_tools
-        fallback_location_tools = [
-            tool_name
-            for tool_name in location_targets
-            if model_location is not None
-            and tool_name in CAN_USE_CACHED_CONFIG_AGENTS
-            and not _managed_controls_model_source(managed, tool_name)
-        ]
         tools_to_configure = managed_tools + [
             tool_name for tool_name in fallback_location_tools if tool_name not in managed_tools
         ]

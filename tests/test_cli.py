@@ -837,14 +837,14 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 1
         assert "--provider and --model-location cannot be used together" in result.output
+
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     def test_invalid_model_location_is_rejected(self, tool):
         result = runner.invoke(app, [tool, "--model-location", "main"])
 
         assert result.exit_code == 1
-        assert (
-            "--model-location must be a literal `<catalog>.<schema>` identifier."
-            in _strip_ansi(result.output)
+        assert "--model-location must be a literal `<catalog>.<schema>` identifier." in _strip_ansi(
+            result.output
         )
 
     def test_claude_enable_model_discovery_is_hidden_from_help(self):
@@ -3212,7 +3212,8 @@ class TestAutoConfigureOnFirstRun:
             patch("ucode.cli._fetch_budget_recommendation", return_value=None),
             patch("ucode.cli.resolve_launch_model") as mock_resolve,
             patch(
-                "ucode.cli.configure_tool", side_effect=lambda *args, **kwargs: args[1]
+                "ucode.cli.configure_tool",
+                side_effect=lambda *args, **kwargs: cli_mod.save_state(args[1]) or args[1],
             ) as mock_configure,
             patch(
                 "ucode.cli.save_state",
@@ -3490,7 +3491,9 @@ class TestConfigureAgentFlag:
             patch(
                 "ucode.cli._configure_shared_workspace_states", return_value=[state]
             ) as mock_shared,
-            patch("ucode.cli.refresh_managed_config", return_value=(managed, False)),
+            patch(
+                "ucode.cli.refresh_managed_config", return_value=(managed, False)
+            ) as mock_refresh,
             patch("ucode.cli.configure_tool") as mock_configure,
             patch("ucode.cli.configure_selected_tools") as mock_configure_selected,
             patch("ucode.cli.save_state") as mock_save,
@@ -3511,6 +3514,7 @@ class TestConfigureAgentFlag:
         assert result.exit_code == 1
         assert "--model-location" in _strip_ansi(result.output)
         mock_shared.assert_called_once()
+        mock_refresh.assert_called_once_with(state, force_refresh=True)
         mock_configure.assert_not_called()
         mock_configure_selected.assert_not_called()
         mock_save.assert_not_called()
@@ -4441,13 +4445,14 @@ class TestConfigureAgentsSelection:
             }
         }
         monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
-        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda current: (managed, False))
+        monkeypatch.setattr(
+            cli_mod, "refresh_managed_config", lambda current, **_kwargs: (managed, False)
+        )
         monkeypatch.setattr(
             cli_mod,
             "check_gateway_endpoint",
             lambda *a, **k: pytest.fail("global availability must not gate a managed location"),
         )
-        monkeypatch.setattr(cli_mod, "_announce_managed_config", lambda *a, **k: None)
         monkeypatch.setattr(cli_mod, "_summarize_managed_config", lambda *a, **k: None)
         monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
         configure_calls = []
@@ -4488,7 +4493,9 @@ class TestConfigureAgentsSelection:
             }
         }
         monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
-        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda current: (managed, False))
+        monkeypatch.setattr(
+            cli_mod, "refresh_managed_config", lambda current, **_kwargs: (managed, False)
+        )
         monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
         configure_calls = []
         monkeypatch.setattr(
@@ -4519,8 +4526,14 @@ class TestConfigureAgentsSelection:
             "model_locations": {"claude": "main.models"},
         }
         managed = {"enabled_agents": {}}
-        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
-        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s: (managed, False))
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(
+            cli_mod, "refresh_managed_config", lambda s, **_kwargs: (managed, False)
+        )
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "configure_selected_tools", lambda s, *a, **k: s)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *a, **k: None)
         monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
 
         assert (
@@ -4721,11 +4734,8 @@ class TestConfigureAgentsSelection:
         assert order == ["configure:claude", "configure:codex", "mcp"]
 
     def test_managed_configure_accumulates_available_tools_for_all_agents(self, monkeypatch):
-        # Regression: each agent is configured from a fresh copy of `state`, and
-        # configure_selected_tools persists available_tools from that copy. Without carrying the
-        # accumulated set forward, the last agent's save drops the earlier agents, so the MCP
-        # reconcile would only see the final agent. Every enabled agent must survive in
-        # available_tools by the time MCP registration runs.
+        # Regression: each agent is configured from a fresh resolved copy. The ordinary developer
+        # state passed to the next agent must retain the agents configured earlier in the loop.
         import ucode.cli as cli_mod
 
         state = {**MINIMAL_STATE, "available_tools": []}
@@ -4741,22 +4751,20 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(cli_mod, "resolve_state", lambda m, s, tool: dict(s))
         monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
 
+        configure_inputs: list[list[str]] = []
+
         def fake_configure(s, tools, **kwargs):
             # Mirror configure_selected_tools: merge onto a copy, never the caller's dict.
+            configure_inputs.append(list(s.get("available_tools") or []))
             merged = dict(s)
             merged["available_tools"] = sorted(set(s.get("available_tools") or []) | set(tools))
             return merged
 
         monkeypatch.setattr(cli_mod, "configure_selected_tools", fake_configure)
-        seen: dict = {}
-        monkeypatch.setattr(
-            cli_mod,
-            "_configure_managed_mcp_servers",
-            lambda m: seen.update(available=list(state.get("available_tools") or [])),
-        )
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda m: None)
 
         assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
-        assert seen["available"] == ["claude", "codex"]
+        assert configure_inputs == [[], ["claude"]]
 
     def test_configure_managed_mcp_servers_scopes_to_enabled_mcp_clients(self, monkeypatch):
         import ucode.cli as cli_mod
