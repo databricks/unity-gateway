@@ -26,6 +26,7 @@ from concurrent.futures import (
 )
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from email.message import Message
 from enum import Enum
 from pathlib import Path
 from typing import Literal, NamedTuple, NoReturn, cast, overload
@@ -59,6 +60,8 @@ AI_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-be
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 # v1.0.0 is the release that ships `databricks aitools`.
 MIN_DATABRICKS_CLI_VERSION = (1, 0, 0)
+# v1.11.0 fixes `fs cp` (create -> finalize), which the skills MCP uploads rely on.
+SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION = (1, 11, 0)
 TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # Substrings the Databricks CLI emits when it loses the token-cache write lock
 # to a concurrent `databricks auth token` (e.g. another ucode helper process
@@ -260,6 +263,30 @@ def _http_get_retry_delay(retry_after: str | None, retry_index: int) -> float:
     return backoff + random.uniform(0, min(backoff * 0.25, 0.5))
 
 
+# Databricks stamps every authenticated API response with the caller's numeric workspace (org) id in
+# this header, so any call ucode already makes reveals it with no dedicated lookup. Captured by
+# hostname as responses go by; session-only, like the listing caches below.
+_ORG_ID_HEADER = "X-Databricks-Org-Id"
+_WORKSPACE_ORG_IDS: dict[str, str] = {}
+
+
+def _capture_org_id(url: str, headers: Message | None) -> None:
+    org_id = headers.get(_ORG_ID_HEADER) if headers is not None else None
+    hostname = urlparse(url).hostname
+    if org_id and hostname:
+        _WORKSPACE_ORG_IDS[hostname] = org_id
+
+
+def workspace_org_id(workspace: str) -> str | None:
+    """The numeric workspace (org) id for ``workspace``, or None if no response has revealed it yet."""
+    return _WORKSPACE_ORG_IDS.get(workspace_hostname(workspace))
+
+
+def clear_workspace_org_id_cache() -> None:
+    """Forget captured workspace org ids (used by tests, and after a workspace switch)."""
+    _WORKSPACE_ORG_IDS.clear()
+
+
 def _http_get_json(
     url: str,
     token: str,
@@ -286,6 +313,7 @@ def _http_get_json(
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
                 body = response.read().decode("utf-8")
+                _capture_org_id(url, getattr(response, "headers", None))
             _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
             if _debug_enabled():
                 _debug("body", body[:4000])
@@ -434,6 +462,7 @@ def _http_get_bytes(url: str, token: str, *, timeout: int = 10) -> tuple[bytes |
     try:
         with urllib_request.urlopen(request, timeout=timeout) as response:
             body = response.read()
+            _capture_org_id(url, getattr(response, "headers", None))
         _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
         return body, None
     except urllib_error.HTTPError as exc:
@@ -680,7 +709,9 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
         raise RuntimeError("Failed to install/upgrade Databricks CLI automatically.") from exc
 
 
-def ensure_databricks_cli_version() -> None:
+def ensure_databricks_cli_version(
+    minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
+) -> None:
     try:
         result = run(
             ["databricks", "--version"],
@@ -699,14 +730,14 @@ def ensure_databricks_cli_version() -> None:
         raise RuntimeError(
             f"Could not parse Databricks CLI version from `databricks --version` output: {output!r}"
         )
-    if version < MIN_DATABRICKS_CLI_VERSION:
+    if version < minimum:
         current = ".".join(str(n) for n in version)
-        required = ".".join(str(n) for n in MIN_DATABRICKS_CLI_VERSION)
+        required = ".".join(str(n) for n in minimum)
         print_warning(
             f"Databricks CLI v{current} is too old (need v{required} or newer). Upgrading..."
         )
         _run_databricks_cli_installer(brew_subcommand="upgrade")
-        ensure_databricks_cli_version()
+        ensure_databricks_cli_version(minimum)
 
 
 def databricks_cli_version() -> tuple[int, int, int] | None:
@@ -741,9 +772,11 @@ def upgrade_databricks_cli() -> bool:
     return True
 
 
-def install_databricks_cli() -> None:
+def install_databricks_cli(
+    minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
+) -> None:
     if shutil.which("databricks"):
-        ensure_databricks_cli_version()
+        ensure_databricks_cli_version(minimum)
         return
 
     print_section("Bootstrap")
@@ -754,7 +787,7 @@ def install_databricks_cli() -> None:
         raise RuntimeError(
             "Databricks CLI install completed, but `databricks` is still not on PATH."
         )
-    ensure_databricks_cli_version()
+    ensure_databricks_cli_version(minimum)
 
 
 def install_ai_tools(agent_tokens: list[str], profile: str | None = None) -> None:
