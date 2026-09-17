@@ -87,7 +87,7 @@ def test_ug_configure_managed_is_idempotent(live_session, workspace):
         listed = [m.get("slug") for m in catalog.get("models", []) if m.get("visibility") == "list"]
         runs.append((settings.get("availableModels"), picker, listed))
 
-    expected = (MANAGED_CLAUDE_MODELS, MANAGED_CLAUDE_MODELS, [MANAGED_CODEX_MODEL])
+    expected = (MANAGED_CLAUDE_MODELS, MANAGED_CLAUDE_MODELS, MANAGED_CODEX_MODELS)
     assert runs == [expected, expected], runs
 
 

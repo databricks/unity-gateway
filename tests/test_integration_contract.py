@@ -67,7 +67,7 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
         for node in tree.body:
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 marks = module_marks | _markers(node.decorator_list)
-                if marks & {"live", "managed"}:
+                if marks & {"live", "managed", "managed_fixture"}:
                     assert len(marks & {"claude", "codex"}) == 1, node.name
 
 

@@ -17,6 +17,11 @@ def set_managed_config_stub(session, tmp_path, config: dict) -> None:
     session.env["UCODE_MANAGED_CONFIG_STUB"] = str(stub)
 
 
+def is_managed_config_control_plane_cache(home: Path, path: Path) -> bool:
+    """Whether ``path`` is ug's expected fetched-config cache, not agent-owned state."""
+    return path == home / ".ucode" / "managed-config.json"
+
+
 def build_coding_agent_config(
     default_agent: str, *agents: dict, mcp_names: list[str] | None = None
 ) -> dict:
