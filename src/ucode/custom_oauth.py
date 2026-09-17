@@ -303,10 +303,6 @@ def _get_custom_client_token_from_cli(
     ]
     if force_refresh:
         args.append("--force-refresh")
-    err_console.print(
-        f"Fetching custom OAuth token via Databricks CLI (profile: {profile}, client ID: {client_id})...",
-        markup=False,
-    )
     _trace_custom_oauth_cli(f"Running {shlex.join(args)}")
     try:
         result = run(
