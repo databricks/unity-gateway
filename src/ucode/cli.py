@@ -23,7 +23,6 @@ from ucode.agents import (
     configure_selected_tools,
     configure_single_tool,
     configure_tool,
-    configured_paths,
     ensure_bootstrap_dependencies,
     ensure_provider_state,
     explicit_model_arg_value,
@@ -212,7 +211,7 @@ def _print_managed_summary(
     enabled = [t for t in (managed.get("enabled_agents") or {}) if t in TOOL_SPECS]
     if enabled:
         lines.append(
-            f"[bold]Enabled agents:[/bold] {', '.join(TOOL_SPECS[t]['display'] for t in enabled)}"
+            f"[bold]Coding Agents:[/bold] {', '.join(TOOL_SPECS[t]['display'] for t in enabled)}"
         )
     if tool is not None:
         provider = managed_provider_service(managed, tool)
@@ -239,9 +238,7 @@ def _print_managed_summary(
     else:
         lines.append("[bold]Skills:[/bold] [dim]none configured[/dim]")
     lines.extend(_policy_summary_lines(managed))
-    console.print(
-        Panel("\n".join(lines), title="Workspace-managed config", style="green", expand=False)
-    )
+    console.print(Panel("\n".join(lines), title="Configuration", style="green", expand=False))
 
 
 def _print_managed_summary_abridged(managed: dict, state: dict, tool: str | None) -> None:
@@ -265,27 +262,10 @@ def _print_managed_summary_abridged(managed: dict, state: dict, tool: str | None
     )
 
 
-def _announce_managed_config(managed: dict) -> None:
-    """Tell the developer, before configuring, that the admin's config drives this setup.
-
-    Printed up front so the skipped agent selector reads as intended, not as a surprise."""
-    print_success("A managed config is published for your workspace.")
-    enabled = [TOOL_SPECS[t]["display"] for t in managed_enabled_tools(managed) if t in TOOL_SPECS]
-    if enabled:
-        print_note(f"Applying it to the agents your admin enabled: {', '.join(enabled)}.")
-
-
-def _print_configured_files(tool: str, state: dict) -> None:
-    """Name the config file(s) ug just wrote for ``tool``, so the developer sees what changed."""
-    paths = configured_paths(tool, state)
-    if paths:
-        print_note(f"Updated {TOOL_SPECS[tool]['display']}: {', '.join(paths)}")
-
-
 def _summarize_managed_config(managed: dict, workspace: str) -> None:
     """Show the resulting managed setup once every enabled agent has been configured."""
     _print_managed_summary(managed, {"workspace": workspace}, tool=None)
-    print_note("You're all set — run `ug` to launch with your managed settings.")
+    print_success("Configuration complete — launch with [bold cyan]ug[/bold cyan].")
 
 
 def _print_discovery_diagnostics(state: dict) -> None:
@@ -584,7 +564,7 @@ def configure_shared_state(
         # search (claude only) still needs one Responses-capable model, so fetch
         # just that with a single call.
         if want_claude:
-            with spinner("Fetching web search model..."):
+            with spinner("Fetching available models..."):
                 ws_models, _ = discover_codex_models(workspace, token)
             if ws_models:
                 web_search_model = ws_models[0]
@@ -810,10 +790,13 @@ def configure_workspace_command(
     # A published managed config means the admin dictates the setup: apply it to every enabled agent
     # now rather than prompting the developer to pick.
     managed, _ = refresh_managed_config(state)
-    if managed is not None:
-        _announce_managed_config(managed)
-        for tool_name in managed_enabled_tools(managed):
+    managed_tools = managed_enabled_tools(managed) if managed is not None else []
+    if managed is not None and managed_tools:
+        configured_tools: list[str] = []
+        for tool_name in managed_tools:
             if check_gateway_endpoint(state, tool_name):
+                if not install_tool_binary(tool_name, strict=False):
+                    continue
                 configured = configure_selected_tools(
                     resolve_state(managed, state, tool_name),
                     [tool_name],
@@ -825,7 +808,12 @@ def configure_workspace_command(
                 state["available_tools"] = configured.get("available_tools") or state.get(
                     "available_tools"
                 )
-                _print_configured_files(tool_name, configured)
+                configured_tools.append(tool_name)
+        if not configured_tools:
+            raise RuntimeError(
+                "None of the coding agents enabled by your workspace configuration "
+                "are available on this workspace."
+            )
         if not is_dry_run():
             _configure_managed_mcp_servers(managed)
         _summarize_managed_config(managed, state["workspace"])
@@ -2215,7 +2203,6 @@ def _launch_tool(
         _note_recommended_agent(recommendation, tool)
         if managed is not None:
             state = resolve_state(managed, state, tool)
-            print_note("Applying your workspace's managed coding agent config...")
             unservable = managed_unservable_models(managed, tool)
             if unservable:
                 print_warning(
@@ -2357,8 +2344,6 @@ def _launch_tool(
             ctx.args = ["--model", relayed_forward_model, *ctx.args]
             forwarded_model = relayed_forward_model
         print_section(_launch_title(tool))
-        if managed is not None:
-            print_kv("Config", "workspace-managed")
         if provider:
             print_kv("Provider", provider)
         if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and not provider:
@@ -2882,7 +2867,8 @@ def configure(
         str | None,
         typer.Option(
             "--workspace",
-            help="Configure a single workspace without prompting.",
+            help="Configure a single workspace without prompting. "
+            "Defaults to the UG_WORKSPACE environment variable when set.",
         ),
     ] = None,
     workspaces: Annotated[
@@ -3029,6 +3015,8 @@ def configure(
             raise RuntimeError("Use either --profile or --profiles, not both.")
         workspace = workspace if workspace is not None else workspaces
         profile = profile if profile is not None else profiles
+        if workspace is None and profile is None:
+            workspace = os.environ.get("UG_WORKSPACE") or None
         if workspace is not None and profile is not None:
             raise RuntimeError("Use either --workspace or --profile, not both.")
         if use_pat and profile is None:

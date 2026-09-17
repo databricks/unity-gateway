@@ -20,18 +20,9 @@ uv tool install git+https://github.com/databricks/unity-gateway
 ug --version
 ```
 
-Between releases, versions include the source commit, for example
-`0.1.0+14.g93986a8`. Include the full version when reporting issues.
-
 ### Migrating from ucode
 
-If your existing install already has the `ug` alias:
-
-```bash
-ucode upgrade
-```
-
-Otherwise reinstall under the new distribution name:
+Reinstall under the new distribution name:
 
 ```bash
 uv tool uninstall ucode
@@ -67,19 +58,6 @@ ug codex --refresh
 ug claude --refresh
 ```
 
-Pass unknown flags through to the underlying agent:
-
-```bash
-ug claude -r
-ug codex --full-auto
-```
-
-Configured model-backed agents use Databricks AI Gateway with your workspace
-credentials; no provider API keys are required.
-
-`ug cursor` is a thin wrapper around `cursor-agent`. Cursor uses your Cursor
-account for models; `ug` only manages its Databricks MCP server entries.
-
 ## Configure
 
 ```bash
@@ -87,7 +65,6 @@ ug configure
 ug configure --agents claude,codex
 ug configure --workspace https://first.databricks.com
 ug configure --profile DEFAULT --agents claude,codex
-ug configure --profile DEFAULT --agents claude,codex --use-pat
 ```
 
 Available model-agent names are `codex`, `claude`, `gemini`, `opencode`,
@@ -95,19 +72,7 @@ Available model-agent names are `codex`, `claude`, `gemini`, `opencode`,
 Cursor models still run through your Cursor account.
 
 `UG_WORKSPACE` can provide the default workspace. An explicit `--workspace` or
-`--profile` takes precedence. PAT authentication must be requested with
-`--use-pat`; `ug` never picks it up implicitly.
-
-Smart routing is opt-in for Codex and Claude Code:
-
-```bash
-ug codex --enable-smart-routing
-ug claude --enable-smart-routing
-SMART_ROUTER_NAME=task_v1 ug codex --enable-smart-routing
-```
-
-The flag applies only to that launch. Without `SMART_ROUTER_NAME`, `ug` uses the
-`task_v3` router.
+`--profile` takes precedence.
 
 ## MCP Servers
 
@@ -115,12 +80,10 @@ Register Databricks MCP servers for configured MCP-capable agents. Cursor Agent
 is MCP-only and is included when `cursor-agent` is installed:
 
 ```bash
-ug configure mcp
 ug configure --agents claude --mcp system.ai.slack
 ```
 
-`ug configure mcp` replaces the configured MCP set with your selection. Use
-`ug mcp add` to add servers without removing existing registrations:
+Use `ug mcp add` to add servers without removing existing registrations:
 
 ```bash
 ug mcp add --location system.ai
@@ -147,9 +110,6 @@ Unity Catalog Skills can be registered as MCP tools or downloaded into local
 agent skill directories.
 
 ```bash
-# Register utility tools only; download nothing.
-ug configure skills
-
 # Download every skill in a schema.
 ug configure skills --location main.default --path /abs/project/dir
 
@@ -170,17 +130,6 @@ ug skill remove
 ug skill remove --skills main.default.my-skill
 ```
 
-## Export Config
-
-```bash
-ug export
-ug export --file ./managed-config.json
-```
-
-The export is portable JSON for the workspace managed config. It includes the
-source workspace and spec version, and omits credentials and server-assigned
-fields.
-
 ## Commands
 
 | Command | Description |
@@ -188,8 +137,6 @@ fields.
 | `ug status` | Show workspace, generated files, models, and skill MCP scope |
 | `ug configure` | Configure workspace, models, agent files, and optional Databricks AI tools |
 | `ug configure --dry-run` | Preview config changes without writing files |
-| `ug configure mcp` | Replace configured MCP servers with a selected set |
-| `ug configure skills` | Register the schema-less skills MCP connection |
 | `ug mcp add` | Add MCP servers without removing existing registrations |
 | `ug mcp remove` | Unregister configured MCP servers |
 | `ug skill add` | Add skill MCP scopes or download skills |
@@ -210,8 +157,8 @@ with `ug configure` to control installation.
 
 | Tool | Managed files |
 |------|---------------|
-| Codex | `~/.codex/ucode.config.toml`, legacy `~/.codex/config.toml`, OS managed settings |
-| Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, OS managed settings |
+| Codex | `~/.codex/ucode.config.toml`, legacy `~/.codex/config.toml`, `/etc/codex/managed_config.toml` (Linux and macOS) |
+| Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |
 | GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |
