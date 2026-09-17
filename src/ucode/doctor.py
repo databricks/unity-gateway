@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -19,8 +18,6 @@ from ucode.agents import (
     TOOL_SPECS,
     ensure_tracing_mlflow_cli,
     tool_binary_installed,
-    tool_update_available,
-    tool_uses_native_updater,
     tool_version_error,
     tracing_mlflow_ok,
     update_tool_binary,
@@ -34,7 +31,7 @@ from ucode.databricks import (
     upgrade_databricks_cli,
 )
 from ucode.state import load_state
-from ucode.telemetry import ucode_version
+from ucode.telemetry import ug_version
 from ucode.tracing import tracing_config
 from ucode.ui import (
     console,
@@ -52,10 +49,9 @@ from ucode.ui import (
 # warns when its own token and one of these are both set, so we surface them.
 _CLAUDE_TOKEN_ENV_VARS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
 
-UCODE_GIT_URL = "git+https://github.com/databricks/unity-gateway"
 
 # status -> (glyph, status_badge kind). "info" is a healthy line that still
-# carries an optional suggestion (e.g. the ucode self-upgrade).
+# carries an optional suggestion (e.g. installing a missing dependency).
 _BADGES = {
     "ok": ("✓", "ok"),
     "warn": ("!", "warn"),
@@ -152,7 +148,7 @@ def _check_workspace() -> Check:
 
 
 def _check_agent_clis() -> list[Check]:
-    """One check per configured coding agent: installed and up to date?"""
+    """One check per configured coding agent: installed and compatible?"""
     tools = load_state().get("available_tools") or []
     checks: list[Check] = []
     for tool in tools:
@@ -170,39 +166,21 @@ def _check_agent_clis() -> list[Check]:
                 )
             )
             continue
-        if tool_uses_native_updater(tool):
-            blocker = tool_version_error(tool)
-            if blocker:
-                checks.append(
-                    Check(
-                        display,
-                        "warn",
-                        blocker,
-                        Suggestion(
-                            f"Upgrade {display} if available?",
-                            lambda t=tool: update_tool_binary(t),
-                        ),
-                    )
-                )
-            else:
-                checks.append(Check(display, "ok", "installed; upgrades managed by agent CLI"))
-            continue
-        with spinner(f"Checking {display} for updates..."):
-            update = tool_update_available(tool)
-        if update:
-            current, latest = update
+        blocker = tool_version_error(tool)
+        if blocker:
             checks.append(
                 Check(
                     display,
                     "warn",
-                    f"{current} installed; {latest} available",
+                    blocker,
                     Suggestion(
-                        f"Update {display} to {latest}?", lambda t=tool: update_tool_binary(t)
+                        f"Upgrade {display} to meet the required version?",
+                        lambda t=tool: update_tool_binary(t),
                     ),
                 )
             )
         else:
-            checks.append(Check(display, "ok", "installed and up to date"))
+            checks.append(Check(display, "ok", "installed; no required update"))
     return checks
 
 
@@ -277,28 +255,10 @@ def _check_tracing_mlflow() -> Check | None:
     )
 
 
-def _upgrade_ucode() -> bool:
-    if not shutil.which("uv"):
-        print_warning("`uv` is not on PATH; cannot upgrade ucode.")
-        return False
-    try:
-        subprocess.run(["uv", "tool", "install", "--reinstall", UCODE_GIT_URL], check=True)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return False
-    return True
-
-
 def _check_ucode() -> Check:
-    """ucode installs from GitHub (no release tags), so there's no version to
-    diff against. Report the installed build and offer a reinstall-to-latest as
-    an optional maintenance action rather than claiming it's out of date."""
-    version = ucode_version()
-    suggestion = (
-        Suggestion("Reinstall ucode from GitHub to pick up the latest changes?", _upgrade_ucode)
-        if shutil.which("uv")
-        else None
-    )
-    return Check("ucode", "info", f"v{version} (installed from GitHub)", suggestion)
+    """Report the installed build. Explicit updates are available via `ug upgrade`."""
+    version = ug_version()
+    return Check("ucode", "info", f"v{version} (installed from GitHub)")
 
 
 # ── orchestration ──────────────────────────────────────────────────────────

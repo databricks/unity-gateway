@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import signal
 import socket
 import subprocess
@@ -11,7 +10,7 @@ import sys
 import time
 import urllib.request
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from pathlib import Path
 from typing import NoReturn, TextIO
 
@@ -37,7 +36,7 @@ from ucode.smart_routing.claude_hooks import (
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
 from ucode.ui import print_warning
 
-ENV_VAR = "ENABLE_SMART_ROUTING_V2"
+ENABLE_SMART_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_V2"
 LEGACY_STATE_KEY = "smart_routing_enabled"
 
 CODEX_INTERPOSER_LOG = APP_DIR / "codex-v2-interposer.log"
@@ -56,10 +55,6 @@ CLAUDE_ROUTED_AGENT_PROMPT = (
     "Complete the delegated task exactly as requested. Follow the parent agent's instructions and "
     "return a concise report of your findings or changes."
 )
-# Keep this pattern in sync with the server-side Anthropic model prefixing logic. The prefix is
-# needed because Anthropic omits models from its catalog unless the model id contains "anthropic"
-# or "claude".
-_ANTHROPIC_AIGW_MODEL_RE = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{8}-(.+)$")
 
 
 def _model_picker_catalog() -> AnthropicModelCatalog | None:
@@ -103,8 +98,34 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
     return None
 
 
-def enabled() -> bool:
-    return os.environ.get(ENV_VAR) == "1"
+def smart_routing_enabled(env: MutableMapping[str, str] | None = None) -> bool:
+    source = os.environ if env is None else env
+    return source.get(ENABLE_SMART_ROUTING_ENV_VAR) == "1"
+
+
+def enable_smart_routing(env: MutableMapping[str, str] | None = None) -> str | None:
+    """Set the only supported smart-routing env var and return its prior value."""
+    target = os.environ if env is None else env
+    previous = target.get(ENABLE_SMART_ROUTING_ENV_VAR)
+    target[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
+    return previous
+
+
+def restore_smart_routing_env(
+    previous: str | None, env: MutableMapping[str, str] | None = None
+) -> None:
+    """Restore the env state captured when smart routing was enabled or disabled."""
+    target = os.environ if env is None else env
+    if previous is None:
+        target.pop(ENABLE_SMART_ROUTING_ENV_VAR, None)
+    else:
+        target[ENABLE_SMART_ROUTING_ENV_VAR] = previous
+
+
+def disable_smart_routing(env: MutableMapping[str, str] | None = None) -> str | None:
+    """Temporarily remove the smart-routing env var and return its prior value."""
+    target = os.environ if env is None else env
+    return target.pop(ENABLE_SMART_ROUTING_ENV_VAR, None)
 
 
 def _loopback_websocket_url(port: int) -> str:
@@ -160,9 +181,7 @@ def _canonical_claude_models(model_ids: list[str]) -> list[str]:
 
 def _unwrapped_claude_model_id(model: str) -> str:
     """Strip the Anthropic gateway wrapper, preserving the embedded model id."""
-    if match := _ANTHROPIC_AIGW_MODEL_RE.fullmatch(model):
-        return match.group(1)
-    return model
+    return routing.unwrap_anthropic_gateway_model(model)
 
 
 def _claude_router_model_id(model: str) -> str:
@@ -310,9 +329,10 @@ def route_claude_pre_tool_use(
             route.decision,
             route.routed_model,
         )
-    routing_message = routing.format_subagent_message(
+    routing_message = claude_routing.SUBAGENT_NOTICE_CONFIG.message(
+        route.decision,
         route.routed_model,
-        route.decision.rationale,
+        route.tool_input,
     )
     updated_input = {
         **{key: value for key, value in route.tool_input.items() if key != "model"},
@@ -422,6 +442,7 @@ def launch_claude(
     if not isinstance(env, dict):
         raise RuntimeError("Claude settings 'env' must be an object for smart routing.")
     env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
+    env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
     env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
     model_overrides = settings.setdefault("modelOverrides", {})
     if not isinstance(model_overrides, dict):

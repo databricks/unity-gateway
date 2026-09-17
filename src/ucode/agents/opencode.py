@@ -8,7 +8,6 @@ import re
 import signal
 import subprocess
 
-from ucode.agent_updates import available_npm_package_update
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -25,7 +24,7 @@ from ucode.databricks import (
     model_token_limits,
 )
 from ucode.state import mark_tool_managed, save_state
-from ucode.telemetry import agent_version, ucode_version
+from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions
 
@@ -88,7 +87,7 @@ async function mintToken() {
     cacheToken(token)
   } catch (error) {
     const detail = String(error.stderr || error.message || "").trim()
-    throw new Error("ucode auth-token failed" + (detail ? ": " + detail : ""))
+    throw new Error("ug auth-token failed" + (detail ? ": " + detail : ""))
   }
 }
 
@@ -152,18 +151,6 @@ def minimum_version_error() -> str | None:
     if message is None:
         return None
     return f"{message} Update it with `npm install -g {SPEC['package']}`."
-
-
-def is_update_available() -> tuple[str, str] | None:
-    """Offer only stable OpenCode v1 updates, never npm's beta `latest` tag."""
-    update = available_npm_package_update(OPENCODE_NPM_PACKAGE)
-    if update is None:
-        return None
-    _, target = update
-    parsed = _parse_version(target)
-    if "-" in target or parsed is None or parsed[0] != 1:
-        return None
-    return update
 
 
 def render_auth_plugin(state: dict) -> str:
@@ -232,7 +219,7 @@ def render_overlay(
     # `headers` are clobbered by that injection, but per-model `headers` are
     # merged AFTER and win — so the UA must live on each model entry.
     ua_header = {
-        "User-Agent": f"ucode/{ucode_version()} opencode/{agent_version('opencode')}",
+        "User-Agent": f"ucode/{ug_version()} opencode/{agent_version('opencode')}",
     }
 
     anthropic_models = opencode_models.get("anthropic") or []
@@ -327,7 +314,7 @@ def write_tool_config(
 
 def build_mcp_server_entry(argv: list[str]) -> dict:
     # A `local` MCP server runs a command over stdio; `command` is the full
-    # argv. ucode registers the `ucode mcp-proxy ...` bridge here so OpenCode
+    # argv. ug registers the `ug mcp-proxy ...` bridge here so OpenCode
     # never speaks HTTP+bearer directly — the proxy mints fresh tokens itself.
     return {
         "type": "local",

@@ -13,6 +13,8 @@ import threading
 import time
 from pathlib import Path
 
+from .constants import CODEX_TEST_MODEL
+
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
@@ -85,11 +87,13 @@ class UserSession:
         self.artifacts.mkdir(parents=True, exist_ok=True)
         self.commands = 0
 
-    def redact(self, text: str) -> str:
-        for token in (os.environ.get("DATABRICKS_BEARER"), self.env.get("DATABRICKS_BEARER")):
-            if token:
-                text = text.replace(token, "<redacted>")
-        return ANSI.sub("", text)
+    def redact(self, text: str, *, strip_ansi: bool = True) -> str:
+        # Also scrub the relayed launch's subscription OAuth token, not just the bearer.
+        for name in ("DATABRICKS_BEARER", "CLAUDE_CODE_OAUTH_TOKEN"):
+            for token in (os.environ.get(name), self.env.get(name)):
+                if token:
+                    text = text.replace(token, "<redacted>")
+        return ANSI.sub("", text) if strip_ansi else text
 
     def run(
         self,
@@ -98,6 +102,7 @@ class UserSession:
         ok: bool = True,
         binary=None,
         input_text: str | None = None,
+        strip_ansi: bool = True,
     ):
         command = [str(binary or self.binary), *args]
         proc = subprocess.Popen(
@@ -120,7 +125,10 @@ class UserSession:
         finally:
             stop_process(proc)
         result = subprocess.CompletedProcess(
-            command, proc.returncode, self.redact(stdout), self.redact(stderr)
+            command,
+            proc.returncode,
+            self.redact(stdout, strip_ansi=strip_ansi),
+            self.redact(stderr, strip_ansi=strip_ansi),
         )
         self.commands += 1
         self.record(
@@ -168,7 +176,10 @@ class UserSession:
             models = workspace[f"{agent}_models"]
             values = models.values() if isinstance(models, dict) else models
             prefix = "system.ai.claude-" if agent == "claude" else "system.ai.gpt-"
-            model = next((value for value in values if value.startswith(prefix)), "")
+            usable = [
+                value for value in values if value.startswith(prefix) and "astra" not in value
+            ]
+            model = CODEX_TEST_MODEL if CODEX_TEST_MODEL in usable else next(iter(usable), "")
             source = "ug configure discovery"
         assert model, (
             f"ug configure found no system.ai model for {agent}; use --{agent}-model to reproduce a specific model."

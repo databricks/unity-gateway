@@ -33,24 +33,6 @@ class TestOpencodeSpec:
             opencode.OPENCODE_XDG_CONFIG_HOME / "opencode" / "opencode.json"
         )
 
-    def test_update_check_uses_latest_stable_v1(self, monkeypatch):
-        monkeypatch.setattr(
-            opencode,
-            "available_npm_package_update",
-            lambda _package: ("1.18.15", "1.18.16"),
-        )
-
-        assert opencode.is_update_available() == ("1.18.15", "1.18.16")
-
-    def test_update_check_ignores_npm_beta(self, monkeypatch):
-        monkeypatch.setattr(
-            opencode,
-            "available_npm_package_update",
-            lambda _package: ("1.18.16", "0.0.0-beta-202605152242"),
-        )
-
-        assert opencode.is_update_available() is None
-
     def test_requires_version_with_custom_provider_fetch(self, monkeypatch):
         monkeypatch.setattr(opencode, "agent_version", lambda _binary: "1.0.219")
 
@@ -68,23 +50,12 @@ class TestOpencodeSpec:
 
 class TestAuthPlugin:
     def test_calls_cross_platform_auth_token_helper_only_when_refreshing(self, monkeypatch):
-        monkeypatch.setattr(
-            opencode,
-            "build_auth_token_argv",
-            lambda workspace, profile, use_pat=False: [
-                "/opt/ucode",
-                "auth-token",
-                "--host",
-                workspace,
-                "--profile",
-                profile,
-            ],
-        )
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/opt/{command}")
 
         plugin = opencode.render_auth_plugin({"workspace": WS, "profile": "my profile"})
 
         assert (
-            'const AUTH_COMMAND = ["/opt/ucode", "auth-token", "--host", '
+            'const AUTH_COMMAND = ["/opt/ug", "auth-token", "--host", '
             f'"{WS}", "--profile", "my profile", "--force-refresh"]'
         ) in plugin
         assert "run(AUTH_COMMAND[0], AUTH_COMMAND.slice(1)" in plugin
@@ -213,7 +184,7 @@ class TestRenderOverlay:
     def test_user_agent_header_anthropic(self, monkeypatch):
         # UA must live at the per-model level — OpenCode clobbers
         # provider-level `headers["User-Agent"]` in session/llm.ts.
-        monkeypatch.setattr(opencode, "ucode_version", lambda: "0.1.0")
+        monkeypatch.setattr(opencode, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(opencode, "agent_version", lambda binary: "0.74.0")
         models = {"anthropic": ["claude-sonnet"]}
         overlay, _ = opencode.render_overlay("claude-sonnet", "tok", _base_urls(), models)
@@ -223,7 +194,7 @@ class TestRenderOverlay:
         assert model_headers["User-Agent"] == "ucode/0.1.0 opencode/0.74.0"
 
     def test_user_agent_header_gemini(self, monkeypatch):
-        monkeypatch.setattr(opencode, "ucode_version", lambda: "0.1.0")
+        monkeypatch.setattr(opencode, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(opencode, "agent_version", lambda binary: "0.74.0")
         models = {"gemini": ["gemini-2"]}
         overlay, _ = opencode.render_overlay("gemini-2", "tok", _base_urls(), models)

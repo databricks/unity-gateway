@@ -34,6 +34,9 @@ _CLAUDE_FAMILY_SLOTS = {
     "default_fable_model": "fable",
 }
 
+# Agents whose writers support the per-agent managed OTLP tracing flag.
+OTEL_TRACING_TOOLS = ("claude", "codex")
+
 
 def _as_dict(value: object) -> dict[str, object]:
     """Return ``value`` as a ``dict[str, object]`` when it is a dict, else an empty dict."""
@@ -59,13 +62,16 @@ def _agent_model_config(managed: dict, tool: str) -> dict[str, object]:
     return _as_dict(_agent_entry(managed, tool).get("model_config"))
 
 
-def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
-    """The state keys to layer over local state so ``tool``'s writer sees the admin's models.
+def managed_otel_tracing_enabled(managed: dict, tool: str) -> bool:
+    """Whether managed config enables OTLP trace export for ``tool``."""
+    return _agent_entry(managed, tool).get("otel_tracing_enabled") is True
 
-    Each agent reads its models from a different shape, so the manifest's list has to be translated
-    rather than dropped into one key: opencode wants provider-bucketed lists, and pi/copilot compose
-    from their own per-agent keys. Returns ``{state_key: value}`` — empty when the manifest names
-    nothing for ``tool``, in which case the developer's own state stands.
+
+def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
+    """The state keys to layer over local state so ``tool``'s writer sees managed settings.
+
+    Each agent reads models from a different shape, so the manifest's list has to be translated.
+    Supported tracing flags are also mapped to the state key each writer consumes.
     """
     overrides: dict[str, object] = {}
     models = _manifest_models(managed, tool)
@@ -81,9 +87,15 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
                 overrides["opencode_models"] = buckets
         else:
             overrides[f"{tool}_models"] = models
+    if tool in ("claude", "codex"):
+        static_models = managed_static_models(managed, tool)
+        if static_models:
+            overrides[f"{tool}_static_models"] = static_models
     default_model = _str(_agent_model_config(managed, tool).get("default_model"))
     if default_model:
         overrides[f"{tool}_default_model"] = default_model
+    if tool in OTEL_TRACING_TOOLS and managed_otel_tracing_enabled(managed, tool):
+        overrides[f"{tool}_otel_tracing"] = True
     return overrides
 
 
@@ -174,6 +186,20 @@ def managed_supplies_models(managed: dict | None, tool: str) -> bool:
 def managed_provider_service(managed: dict, tool: str) -> str | None:
     """Return only the provider the managed config specifies for ``tool``, ignoring local state."""
     return _str(_agent_model_config(managed, tool).get("model_provider_service"))
+
+
+def managed_static_models(managed: dict, tool: str) -> list[str] | None:
+    """The explicit model allow-list (``model_config.model_services``) the config sets for ``tool``.
+
+    Static curation: the launch path writes exactly these into the agent's picker allow-list
+    (Claude's ``availableModels``/``modelPicker``, Codex's ``model_catalog_json``) instead of
+    discovering the workspace's models. The order is the admin's; empty and non-string entries are
+    dropped. None when unset."""
+    model_services = _agent_model_config(managed, tool).get("model_services")
+    if isinstance(model_services, list):
+        listed = [model for model in (_str(item) for item in model_services) if model]
+        return listed or None
+    return None
 
 
 def managed_default_model(managed: dict, tool: str) -> str | None:

@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from pathlib import Path
 
-from ucode.agent_updates import available_npm_package_update
 from ucode.config_io import ToolSpec
 from ucode.databricks import (
     get_databricks_token,
@@ -23,6 +23,7 @@ from ucode.databricks import (
     map_claude_family_models,
     resolve_provider_service,
 )
+from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import managed_write_batch
 from ucode.state import get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
@@ -89,7 +90,11 @@ def install_databricks_ai_tools_for_agents(tools: list[str], state: dict) -> Non
 
     Gemini and Pi have no ``aitools`` support and are dropped.
     """
-    if state.get("databricks_ai_tools_enabled", True) is False:
+    if not state.get("databricks_ai_tools_enabled"):
+        return
+    # An admin's managed config governs the workspace, so ucode does not
+    # self-install AI Tools under one (may become a managed-config option later).
+    if refresh_managed_config(state).manifest is not None:
         return
     agents = [AITOOLS_AGENT_TOKENS[tool] for tool in tools if tool in AITOOLS_AGENT_TOKENS]
     if not agents:
@@ -148,14 +153,14 @@ def _too_new_downgrade(tool: str) -> tuple[str, str] | None:
     return checker()
 
 
-def _maybe_downgrade_too_new_tool(tool: str, *, prompt: bool) -> bool:
+def _maybe_downgrade_too_new_tool(tool: str) -> bool:
     """Warn when the installed tool exceeds its supported version and offer to
     downgrade to the latest working release. Returns True when the tool was too
     new (regardless of whether the client accepted the downgrade).
 
     Unlike a required *upgrade*, a too-new build may still launch (it just
-    misbehaves), so we never force the change — we warn and, when prompting is
-    enabled, let the client press `y` to downgrade.
+    misbehaves), so we never force the change — we warn and let the client
+    press `y` to downgrade.
     """
     downgrade = _too_new_downgrade(tool)
     if not downgrade:
@@ -166,7 +171,7 @@ def _maybe_downgrade_too_new_tool(tool: str, *, prompt: bool) -> bool:
         f"{spec['display']} {installed} is newer than the latest version known to work "
         f"with the Databricks AI Gateway ({target})."
     )
-    if prompt and prompt_yes_no(f"Downgrade {spec['display']} from {installed} to {target}?"):
+    if prompt_yes_no(f"Downgrade {spec['display']} from {installed} to {target}?"):
         _update_installed_tool_binary(tool, version=target)
     return True
 
@@ -175,8 +180,6 @@ def install_tool_binary(
     tool: str,
     *,
     strict: bool = True,
-    update_existing: bool = False,
-    prompt_optional_updates: bool = True,
 ) -> bool:
     spec = TOOL_SPECS[tool]
     binary = spec["binary"]
@@ -186,18 +189,11 @@ def install_tool_binary(
         # A too-new build is a correctness blocker (the tool runs but misbehaves
         # against the gateway), so check it on every launch — not just when
         # auto-configuring — mirroring the minimum-version gate below.
-        too_new = _maybe_downgrade_too_new_tool(tool, prompt=prompt_optional_updates)
+        too_new = _maybe_downgrade_too_new_tool(tool)
         version_error = _minimum_version_error(tool)
 
-        should_update = update_existing or tool in _NATIVE_UPGRADE_COMMANDS
-        if should_update and not too_new and version_error:
+        if not too_new and version_error:
             print_warning(version_error)
-            if (
-                tool in _NATIVE_UPGRADE_COMMANDS
-                and prompt_optional_updates
-                and not prompt_yes_no(f"Upgrade {spec['display']} if available?")
-            ):
-                raise RuntimeError(version_error)
             if not _update_installed_tool_binary(tool):
                 raise RuntimeError(version_error)
             version_error = _minimum_version_error(tool)
@@ -250,26 +246,10 @@ def tool_binary_installed(tool: str) -> bool:
     return bool(shutil.which(TOOL_SPECS[tool]["binary"]))
 
 
-def tool_update_available(tool: str) -> tuple[str, str] | None:
-    """Return ``(current, latest)`` when a newer agent CLI is published, else None.
-    Read-only wrapper over the npm update check — for ``ucode doctor``."""
-    if tool in _NATIVE_UPGRADE_COMMANDS:
-        return None
-    checker = getattr(_MODULES[tool], "is_update_available", None)
-    if callable(checker):
-        return checker()
-    return available_npm_package_update(TOOL_SPECS[tool]["package"])
-
-
 def update_tool_binary(tool: str) -> bool:
     """Install the latest agent CLI, returning True on success. Public entry
     point over the internal updater so ``ucode doctor`` can apply the fix."""
     return _update_installed_tool_binary(tool)
-
-
-def tool_uses_native_updater(tool: str) -> bool:
-    """Whether upgrades are resolved and installed entirely by the agent CLI."""
-    return tool in _NATIVE_UPGRADE_COMMANDS
 
 
 def tool_version_error(tool: str) -> str | None:
@@ -292,18 +272,11 @@ def ensure_tracing_mlflow_cli() -> bool:
     return claude._ensure_mlflow_cli()
 
 
-def ensure_bootstrap_dependencies(
-    tool: str,
-    *,
-    update_existing: bool = False,
-    prompt_optional_updates: bool = True,
-) -> None:
+def ensure_bootstrap_dependencies(tool: str) -> None:
     install_databricks_cli()
     install_tool_binary(
         tool,
         strict=True,
-        update_existing=update_existing,
-        prompt_optional_updates=prompt_optional_updates,
     )
 
 
@@ -460,6 +433,25 @@ def configure_tool(
     if isinstance(result, tuple):
         return result[0]
     return result
+
+
+def configured_paths(tool: str, state: dict) -> list[str]:
+    """The config files ug wrote for ``tool``, home-abbreviated, for the post-configure summary.
+
+    Each agent module reports its own settings files; the OS-managed file, when one was written, is
+    recorded per tool in ``state`` and appended here so every agent surfaces it uniformly."""
+    module = _MODULES.get(tool)
+    paths = list(module.configured_paths(state)) if hasattr(module, "configured_paths") else []
+    record = (state.get("managed_file_fingerprints") or {}).get(tool)
+    if isinstance(record, dict) and record.get("path"):
+        paths.append(str(record["path"]))
+    home = str(Path.home())
+    shown: list[str] = []
+    for path in paths:
+        label = f"~{path[len(home) :]}" if path.startswith(home) else path
+        if label not in shown:
+            shown.append(label)
+    return shown
 
 
 def launch(

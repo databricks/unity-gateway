@@ -26,6 +26,7 @@ from concurrent.futures import (
 )
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from email.message import Message
 from enum import Enum
 from pathlib import Path
 from typing import Literal, NamedTuple, NoReturn, cast, overload
@@ -59,6 +60,8 @@ AI_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-be
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 # v1.0.0 is the release that ships `databricks aitools`.
 MIN_DATABRICKS_CLI_VERSION = (1, 0, 0)
+# v1.11.0 fixes `fs cp` (create -> finalize), which the skills MCP uploads rely on.
+SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION = (1, 11, 0)
 TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # Substrings the Databricks CLI emits when it loses the token-cache write lock
 # to a concurrent `databricks auth token` (e.g. another ucode helper process or
@@ -260,6 +263,30 @@ def _http_get_retry_delay(retry_after: str | None, retry_index: int) -> float:
     return backoff + random.uniform(0, min(backoff * 0.25, 0.5))
 
 
+# Databricks stamps every authenticated API response with the caller's numeric workspace (org) id in
+# this header, so any call ucode already makes reveals it with no dedicated lookup. Captured by
+# hostname as responses go by; session-only, like the listing caches below.
+_ORG_ID_HEADER = "X-Databricks-Org-Id"
+_WORKSPACE_ORG_IDS: dict[str, str] = {}
+
+
+def _capture_org_id(url: str, headers: Message | None) -> None:
+    org_id = headers.get(_ORG_ID_HEADER) if headers is not None else None
+    hostname = urlparse(url).hostname
+    if org_id and hostname:
+        _WORKSPACE_ORG_IDS[hostname] = org_id
+
+
+def workspace_org_id(workspace: str) -> str | None:
+    """The numeric workspace (org) id for ``workspace``, or None if no response has revealed it yet."""
+    return _WORKSPACE_ORG_IDS.get(workspace_hostname(workspace))
+
+
+def clear_workspace_org_id_cache() -> None:
+    """Forget captured workspace org ids (used by tests, and after a workspace switch)."""
+    _WORKSPACE_ORG_IDS.clear()
+
+
 def _http_get_json(
     url: str,
     token: str,
@@ -286,6 +313,7 @@ def _http_get_json(
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
                 body = response.read().decode("utf-8")
+                _capture_org_id(url, getattr(response, "headers", None))
             _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
             if _debug_enabled():
                 _debug("body", body[:4000])
@@ -434,6 +462,7 @@ def _http_get_bytes(url: str, token: str, *, timeout: int = 10) -> tuple[bytes |
     try:
         with urllib_request.urlopen(request, timeout=timeout) as response:
             body = response.read()
+            _capture_org_id(url, getattr(response, "headers", None))
         _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
         return body, None
     except urllib_error.HTTPError as exc:
@@ -788,7 +817,9 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
         raise RuntimeError("Failed to install/upgrade Databricks CLI automatically.") from exc
 
 
-def ensure_databricks_cli_version() -> None:
+def ensure_databricks_cli_version(
+    minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
+) -> None:
     try:
         result = run(
             ["databricks", "--version"],
@@ -807,14 +838,14 @@ def ensure_databricks_cli_version() -> None:
         raise RuntimeError(
             f"Could not parse Databricks CLI version from `databricks --version` output: {output!r}"
         )
-    if version < MIN_DATABRICKS_CLI_VERSION:
+    if version < minimum:
         current = ".".join(str(n) for n in version)
-        required = ".".join(str(n) for n in MIN_DATABRICKS_CLI_VERSION)
+        required = ".".join(str(n) for n in minimum)
         print_warning(
             f"Databricks CLI v{current} is too old (need v{required} or newer). Upgrading..."
         )
         _run_databricks_cli_installer(brew_subcommand="upgrade")
-        ensure_databricks_cli_version()
+        ensure_databricks_cli_version(minimum)
 
 
 def databricks_cli_version() -> tuple[int, int, int] | None:
@@ -849,9 +880,11 @@ def upgrade_databricks_cli() -> bool:
     return True
 
 
-def install_databricks_cli() -> None:
+def install_databricks_cli(
+    minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
+) -> None:
     if shutil.which("databricks"):
-        ensure_databricks_cli_version()
+        ensure_databricks_cli_version(minimum)
         return
 
     print_section("Bootstrap")
@@ -862,7 +895,7 @@ def install_databricks_cli() -> None:
         raise RuntimeError(
             "Databricks CLI install completed, but `databricks` is still not on PATH."
         )
-    ensure_databricks_cli_version()
+    ensure_databricks_cli_version(minimum)
 
 
 def install_ai_tools(agent_tokens: list[str], profile: str | None = None) -> None:
@@ -1065,7 +1098,7 @@ def resolve_pat_token(profile: str | None) -> str | None:
     """Return the static PAT of a PAT-type Databricks CLI profile, or None.
 
     Only consulted when the user explicitly opted in via
-    ``ucode configure --profiles <name> --use-pat`` — ucode never picks up a
+    ``ucode configure --profile <name> --use-pat`` — ucode never picks up a
     PAT implicitly."""
     if profile and profile_auth_type(profile) == "pat":
         return _read_databrickscfg_token(profile)
@@ -1394,27 +1427,27 @@ def list_databricks_apps(workspace: str, profile: str | None = None) -> list[dic
         raise RuntimeError("Databricks apps listing returned invalid JSON.") from exc
 
 
-def _ucode_binary() -> str:
-    """Resolve the absolute path to the running `ucode` executable.
+def ug_binary() -> str:
+    """Resolve the absolute path to the canonical `ug` executable.
 
     Agents persist the auth command into config files and re-run it on every
     token refresh, possibly from launchers without a full PATH (desktop GUIs).
     An absolute path keeps the helper working regardless of PATH. Falls back to
     the bare name when resolution fails."""
-    return shutil.which("ucode") or "ucode"
+    return shutil.which("ug") or "ug"
 
 
 def build_auth_token_argv(
     workspace: str, profile: str | None = None, *, use_pat: bool = False
 ) -> list[str]:
-    """Argv for the cross-platform token helper: `ucode auth-token ...`.
+    """Argv for the cross-platform token helper: `ug auth-token ...`.
 
     Unlike the previous POSIX `databricks ... | jq` pipeline, this is a single
     executable with plain arguments — no `sh`, no `jq`, no shell quoting — so it
     runs identically on macOS, Linux, and Windows (issue #116). The DATABRICKS_BEARER
     short-circuit, its DATABRICKS_BEARER_COMMAND counterpart, and the PAT path all
     live inside `auth-token` itself."""
-    argv = [_ucode_binary(), "auth-token", "--host", workspace.rstrip("/")]
+    argv = [ug_binary(), "auth-token", "--host", workspace.rstrip("/")]
     if profile:
         argv += ["--profile", profile]
     if use_pat:
@@ -1425,17 +1458,17 @@ def build_auth_token_argv(
 def build_mcp_proxy_argv(
     url: str, workspace: str, profile: str | None = None, *, use_pat: bool = False
 ) -> list[str]:
-    """Argv for the stdio MCP bridge: `ucode mcp-proxy --url ... --host ...`.
+    """Argv for the stdio MCP bridge: `ug mcp-proxy --url ... --host ...`.
 
     Every coding agent registers this single command as a local stdio MCP
     server instead of a per-client HTTP endpoint with a bearer header. The proxy
     forwards to ``url`` and mints a fresh OAuth token on each upstream request,
     so tokens never expire mid-session — the client only ever spawns a process,
     which keeps registration uniform across CLIs that disagree on HTTP-auth
-    syntax. Like `build_auth_token_argv`, this resolves the absolute `ucode`
+    syntax. Like `build_auth_token_argv`, this resolves the absolute `ug`
     path and passes plain arguments (no shell), so it runs identically on every
     platform."""
-    argv = [_ucode_binary(), "mcp-proxy", "--url", url, "--host", workspace.rstrip("/")]
+    argv = [ug_binary(), "mcp-proxy", "--url", url, "--host", workspace.rstrip("/")]
     if profile:
         argv += ["--profile", profile]
     if use_pat:
@@ -1449,9 +1482,31 @@ def build_auth_shell_command(
     """Single-line, shell-quoted form of :func:`build_auth_token_argv`.
 
     Used where a tool wants the helper as one command *string* (Claude Code's
-    `apiKeyHelper`). On every platform this resolves to the `ucode auth-token`
+    `apiKeyHelper`). On every platform this resolves to the `ug auth-token`
     executable rather than a POSIX shell pipeline, so no `sh`/`jq` is required."""
     argv = build_auth_token_argv(workspace, profile, use_pat=use_pat)
+    if platform.system() == "Windows":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
+
+
+def build_otel_headers_argv(
+    workspace: str, profile: str | None = None, *, use_pat: bool = False
+) -> list[str]:
+    """Argv for Claude Code's refreshing OTLP headers helper."""
+    argv = [ug_binary(), "otel-headers", "--host", workspace.rstrip("/")]
+    if profile:
+        argv += ["--profile", profile]
+    if use_pat:
+        argv.append("--use-pat")
+    return argv
+
+
+def build_otel_headers_shell_command(
+    workspace: str, profile: str | None = None, *, use_pat: bool = False
+) -> str:
+    """Shell-quoted form of :func:`build_otel_headers_argv`."""
+    argv = build_otel_headers_argv(workspace, profile, use_pat=use_pat)
     if platform.system() == "Windows":
         return subprocess.list2cmdline(argv)
     return shlex.join(argv)
@@ -2439,7 +2494,7 @@ def resolve_provider_launch_model(model: str | None, provider_models: dict[str, 
 
 _UC_LIST_PAGE_SIZE = 200
 _UC_LIST_MAX_PAGES = 50
-_UC_FUNCTION_PROBE_WORKERS = 16
+_SCHEMA_PROBE_WORKERS = 16
 _UC_LIST_HTTP_TIMEOUT = 10
 # Most MCP services live outside `system.ai`, so this workspace-wide walk needs
 # enough time to enumerate them; a slow workspace still degrades to partial
@@ -2513,30 +2568,30 @@ def _paginated_json_items(
     return items, last_reason
 
 
-def list_all_mcp_services(
+def walk_catalog_schemas[T](
     workspace: str,
     token: str,
     *,
-    deadline_seconds: float = _MCP_SERVICES_WALK_DEADLINE_SECONDS,
-    on_progress: Callable[[int, int, int], None] | None = None,
-    on_services: Callable[[list[str]], None] | None = None,
-) -> tuple[list[str], str | None]:
-    """Return sorted unique MCP-service full names across every `<catalog>.<schema>`
-    in the workspace. The mcp-services API is one-schema-per-call, so this walks
-    catalogs -> schemas -> mcp-services in parallel under a wall-clock budget,
-    returning partial results once `deadline_seconds` is exceeded.
+    deadline: float,
+    probe: Callable[[str, str], T],
+    collect: Callable[[T, int, int], None],
+    skip_catalogs: frozenset[str] = _UC_FUNCTIONS_SKIP_CATALOGS,
+    max_workers: int = _SCHEMA_PROBE_WORKERS,
+) -> str | None:
+    """Discover every user `<catalog>.<schema>` in the workspace and probe each one in parallel.
 
-    `on_progress`, if given, is called as each schema's listing completes with
-    `(schemas_done, schemas_total, services_found)` so callers can render a live
-    count. `on_services`, if given, is called with each schema's newly-found service
-    names (deduped against everything emitted so far) so callers can stream results
-    into a picker as the walk progresses instead of waiting for the full result. Both
-    are invoked serially from the draining thread (not the workers).
+    Catalogs and their schemas are listed (skipping `skip_catalogs` and `information_schema`), then
+    each schema is probed concurrently until `deadline` (an absolute `time.monotonic()` value)
+    passes, so a slow workspace returns partial results instead of hanging. The caller supplies two
+    callables and owns whatever they accumulate:
 
-    This walk is the slow, workspace-wide counterpart to `list_mcp_services`
-    (single schema)."""
+      - `probe(catalog, schema) -> result`: fetch one schema's data (e.g. its MCP services).
+      - `collect(result, done, total)`: handle each probe result as it lands — accumulating,
+        de-duping, streaming — where `done`/`total` are the completed and total schema counts.
+
+    Returns None once the probes run, or a short reason string if there are no catalogs or schemas
+    to probe."""
     hostname = workspace_hostname(workspace)
-    deadline = time.monotonic() + deadline_seconds
 
     catalogs, catalogs_reason = _paginated_json_items(
         f"https://{hostname}/api/2.1/unity-catalog/catalogs",
@@ -2545,23 +2600,20 @@ def list_all_mcp_services(
         timeout=_UC_LIST_HTTP_TIMEOUT,
     )
     if not catalogs:
-        return [], catalogs_reason or "no UC catalogs found"
+        return catalogs_reason or "no UC catalogs found"
 
     catalog_names = [
         c["name"]
         for c in catalogs
-        if isinstance(c.get("name"), str)
-        and c["name"]
-        and c["name"] not in _UC_FUNCTIONS_SKIP_CATALOGS
+        if isinstance(c.get("name"), str) and c["name"] and c["name"] not in skip_catalogs
     ]
     if not catalog_names:
-        return [], "no user UC catalogs found"
+        return "no user UC catalogs found"
     if time.monotonic() > deadline:
-        return [], "deadline exceeded while listing UC catalogs"
+        return "deadline exceeded while listing UC catalogs"
 
-    # Parallel per-catalog schema listing.
-    schema_refs: list[str] = []
-    schema_workers = max(1, min(_UC_FUNCTION_PROBE_WORKERS, len(catalog_names)))
+    schema_refs: list[tuple[str, str]] = []
+    schema_workers = max(1, min(max_workers, len(catalog_names)))
     with ThreadPoolExecutor(max_workers=schema_workers) as pool:
         schema_futures = {
             pool.submit(
@@ -2584,40 +2636,76 @@ def list_all_mcp_services(
                     and schema_name
                     and schema_name != "information_schema"
                 ):
-                    schema_refs.append(f"{catalog}.{schema_name}")
+                    schema_refs.append((catalog, schema_name))
 
         _drain_with_deadline(schema_futures, deadline, collect_schemas)
         pool.shutdown(wait=False, cancel_futures=True)
 
     if not schema_refs:
         if time.monotonic() > deadline:
-            return [], "deadline exceeded while listing UC schemas"
-        return [], "no UC schemas found"
+            return "deadline exceeded while listing UC schemas"
+        return "no UC schemas found"
 
-    # Parallel per-schema mcp-services listing.
-    names: set[str] = set()
     schemas_total = len(schema_refs)
     schemas_done = 0
-    probe_workers = max(1, min(_UC_FUNCTION_PROBE_WORKERS, schemas_total))
+    probe_workers = max(1, min(max_workers, schemas_total))
     with ThreadPoolExecutor(max_workers=probe_workers) as pool:
-        service_futures = {
-            pool.submit(list_mcp_services, workspace, token, ref): ref for ref in schema_refs
+        probe_futures = {
+            pool.submit(probe, catalog, schema): (catalog, schema)
+            for catalog, schema in schema_refs
         }
 
-        def collect_services(result, _ref):
+        def collect_probe(result, _ref):
             nonlocal schemas_done
-            found, _ = result
-            new = [n for n in found if n not in names]
-            names.update(found)
             schemas_done += 1
-            if on_progress is not None:
-                on_progress(schemas_done, schemas_total, len(names))
-            if on_services is not None and new:
-                on_services(sorted(new))
+            collect(result, schemas_done, schemas_total)
 
-        _drain_with_deadline(service_futures, deadline, collect_services)
+        _drain_with_deadline(probe_futures, deadline, collect_probe)
         pool.shutdown(wait=False, cancel_futures=True)
 
+    return None
+
+
+def list_all_mcp_services(
+    workspace: str,
+    token: str,
+    *,
+    deadline_seconds: float = _MCP_SERVICES_WALK_DEADLINE_SECONDS,
+    on_progress: Callable[[int, int, int], None] | None = None,
+    on_services: Callable[[list[str]], None] | None = None,
+) -> tuple[list[str], str | None]:
+    """Return sorted unique MCP-service full names across every `<catalog>.<schema>`
+    in the workspace. The mcp-services API is one-schema-per-call, so this walks
+    catalogs -> schemas -> mcp-services in parallel under a wall-clock budget,
+    returning partial results once `deadline_seconds` is exceeded.
+
+    `on_progress`, if given, is called as each schema's listing completes with
+    `(schemas_done, schemas_total, services_found)` so callers can render a live
+    count. `on_services`, if given, is called with each schema's newly-found service
+    names (deduped against everything emitted so far) so callers can stream results
+    into a picker as the walk progresses instead of waiting for the full result. Both
+    are invoked serially from the draining thread (not the workers).
+
+    This walk is the slow, workspace-wide counterpart to `list_mcp_services`
+    (single schema)."""
+    deadline = time.monotonic() + deadline_seconds
+    names: set[str] = set()
+
+    def probe(catalog, schema):
+        return list_mcp_services(workspace, token, f"{catalog}.{schema}")
+
+    def collect(result, schemas_done, schemas_total):
+        found, _ = result
+        new = [n for n in found if n not in names]
+        names.update(found)
+        if on_progress is not None:
+            on_progress(schemas_done, schemas_total, len(names))
+        if on_services is not None and new:
+            on_services(sorted(new))
+
+    reason = walk_catalog_schemas(workspace, token, deadline=deadline, probe=probe, collect=collect)
+    if reason is not None:
+        return [], reason
     if not names:
         if time.monotonic() > deadline:
             return [], "deadline exceeded while listing MCP services"
@@ -2996,6 +3084,11 @@ def _parse_decimal(value: object) -> Decimal | None:
 # ---------------------------------------------------------------------------
 # URL builders (AI Gateway v2 only — no fallback to /serving-endpoints)
 # ---------------------------------------------------------------------------
+
+
+def build_otel_traces_endpoint(workspace: str) -> str:
+    """Return the AI Gateway OTLP HTTP trace endpoint for ``workspace``."""
+    return f"{workspace.rstrip('/')}/ai-gateway/otel/v1/traces"
 
 
 def build_tool_base_url(tool: str, workspace: str) -> str:

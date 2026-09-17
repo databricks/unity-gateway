@@ -7,6 +7,7 @@ or the developer's installed agents. Only the live workspace is shared with e2e.
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import datetime as dt
 import hashlib
@@ -18,11 +19,39 @@ import shutil
 import signal
 import subprocess
 import sys
+import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_PACKAGES = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}
+
+
+def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
+    """Mint a short-lived workspace token for a service principal via OAuth client credentials.
+
+    The managed e2e workspace authenticates as a service principal, whose M2M tokens expire
+    hourly, so CI mints one per run from `DATABRICKS_CLIENT_ID`/`DATABRICKS_CLIENT_SECRET` rather
+    than storing a long-lived bearer.
+    """
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    body = urllib.parse.urlencode(
+        {"grant_type": "client_credentials", "scope": "all-apis"}
+    ).encode()
+    request = urllib.request.Request(
+        f"{workspace.rstrip('/')}/oidc/v1/token",
+        data=body,
+        headers={
+            "Authorization": f"Basic {basic}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 (https workspace URL)
+        token = json.load(response).get("access_token", "")
+    if not token:
+        raise RuntimeError("Service-principal client credentials returned no access token.")
+    return token
 
 
 @contextlib.contextmanager
@@ -70,6 +99,11 @@ def arguments():
         "--claude-provider",
         default="main.ucode.ci_e2e_anthropic_nonrelay_mps",
         help="Existing Anthropic MPS selected in the configure CUJ.",
+    )
+    parser.add_argument(
+        "--claude-relayed-provider",
+        default="main.ucode.ci_e2e_anthropic_relay_mps",
+        help="Existing relayed (subscription-relay) Anthropic MPS for the hybrid-routing CUJ.",
     )
     parser.add_argument(
         "--codex-provider",
@@ -133,8 +167,17 @@ def arguments():
             parser.error(
                 "Set UCODE_TEST_WORKSPACE to the existing e2e workspace, or use --workspace."
             )
-        if not (args.profile or os.environ.get("DATABRICKS_BEARER", "").strip()):
-            parser.error("Provide the e2e DATABRICKS_BEARER or select --profile explicitly.")
+        has_client_creds = bool(
+            os.environ.get("DATABRICKS_CLIENT_ID", "").strip()
+            and os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
+        )
+        if not (
+            args.profile or os.environ.get("DATABRICKS_BEARER", "").strip() or has_client_creds
+        ):
+            parser.error(
+                "Provide the e2e DATABRICKS_BEARER, service-principal "
+                "DATABRICKS_CLIENT_ID/DATABRICKS_CLIENT_SECRET, or select --profile explicitly."
+            )
     return args
 
 
@@ -202,9 +245,13 @@ def main() -> int:
     base_env["UV_CACHE_DIR"] = str(output / "cache")
     base_env["UV_DEFAULT_INDEX"] = args.default_index
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
+    oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
 
     def redact(value: str) -> str:
-        return value.replace(bearer, "<redacted>") if bearer else value
+        for secret in (bearer, oauth_token):
+            if secret:
+                value = value.replace(secret, "<redacted>")
+        return value
 
     def run(command, *, cwd=output, env=base_env, timeout=600) -> str:
         timed_out = False
@@ -240,6 +287,7 @@ def main() -> int:
             "claude_model": args.claude_model,
             "codex_model": args.codex_model,
             "claude_provider": args.claude_provider,
+            "claude_relayed_provider": args.claude_relayed_provider,
             "codex_provider": args.codex_provider,
             "codex_provider_model": args.codex_provider_model,
             "dependencies": args.dependency,
@@ -285,7 +333,8 @@ def main() -> int:
 
         if wheel:
             report["wheel_sha256"] = hashlib.sha256(wheel.read_bytes()).hexdigest()
-        package = str(wheel) if wheel else f"ucode=={args.ug_version}"
+        # File URIs preserve spaces in paths parsed by uv's requirement options.
+        package = wheel.as_uri() if wheel else f"unity-gateway=={args.ug_version}"
         constraints = output / "requested-constraints.txt"
         constraints.write_text(
             (args.constraints.read_text() if args.constraints else "")
@@ -302,7 +351,7 @@ def main() -> int:
                 "--default-index",
                 args.default_index,
                 "--constraint",
-                constraints,
+                constraints.as_uri(),
                 package,
             ]
         )
@@ -311,7 +360,9 @@ def main() -> int:
         (output / "installed.txt").write_text(freeze + "\n")
         (output / "dependencies.txt").write_text(
             "\n".join(
-                line for line in freeze.splitlines() if not re.match(r"ucode(?:==|\s*@)", line)
+                line
+                for line in freeze.splitlines()
+                if not re.match(r"(?:unity-gateway|ucode)(?:==|\s*@)", line)
             )
             + "\n"
         )
@@ -322,8 +373,13 @@ def main() -> int:
                     python,
                     "-c",
                     (
-                        "import importlib.metadata as m, json, ucode; "
-                        "print(json.dumps({'version': m.version('ucode'), 'path': ucode.__file__}))"
+                        "import importlib.metadata as m, json, ucode\n"
+                        "try:\n"
+                        "    dist = m.distribution('unity-gateway')\n"
+                        "except m.PackageNotFoundError:\n"
+                        "    dist = m.distribution('ucode')\n"
+                        "print(json.dumps({'distribution': dist.metadata['Name'], "
+                        "'version': dist.version, 'path': ucode.__file__}))"
                     ),
                 ]
             )
@@ -441,6 +497,12 @@ def main() -> int:
             if not bearer:
                 raise RuntimeError("Selected profile returned no access token.")
 
+        if not bearer and not args.profile and not args.installation_only:
+            client_id = os.environ.get("DATABRICKS_CLIENT_ID", "").strip()
+            client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
+            if client_id and client_secret:
+                bearer = mint_m2m_token(args.workspace, client_id, client_secret)
+
         run(
             [
                 uv,
@@ -464,6 +526,8 @@ def main() -> int:
                 "UG_INTEGRATION_RUN_DIR": str(output),
                 "UG_INTEGRATION_AGENTS": ",".join(agents),
                 "UG_INTEGRATION_CLAUDE_PROVIDER": args.claude_provider,
+                "UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER": args.claude_relayed_provider,
+                "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN": oauth_token,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",

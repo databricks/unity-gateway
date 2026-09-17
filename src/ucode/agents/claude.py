@@ -34,8 +34,11 @@ from ucode.constants import (
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
 from ucode.databricks import (
     build_auth_shell_command,
+    build_otel_headers_shell_command,
+    build_otel_traces_endpoint,
     build_tool_base_url,
     get_databricks_token,
+    ug_binary,
 )
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
@@ -58,7 +61,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
-from ucode.telemetry import agent_version, ucode_version
+from ucode.telemetry import agent_version, ug_version
 from ucode.tracing import tracing_env
 from ucode.ui import print_note, print_success, print_warning
 
@@ -98,7 +101,7 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
 
 
 def _minimum_version_requirement_message(version: str) -> str:
-    feature = "Smart routing" if smart_routing_v2.enabled() else "Model discovery"
+    feature = "Smart routing" if smart_routing_v2.smart_routing_enabled() else "Model discovery"
     return (
         f"{feature} requires Claude Code {MINIMUM_CLAUDE_VERSION_TEXT} or newer. "
         f"Your current version is Claude Code {version}."
@@ -106,7 +109,10 @@ def _minimum_version_requirement_message(version: str) -> str:
 
 
 def minimum_version_error() -> str | None:
-    if os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) != "1" and not smart_routing_v2.enabled():
+    if (
+        os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) != "1"
+        and not smart_routing_v2.smart_routing_enabled()
+    ):
         return None
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
@@ -146,6 +152,31 @@ CLAUDE_TRACING_ENV_KEYS = (
     "MLFLOW_EXPERIMENT_ID",
     "MLFLOW_TRACING_SQL_WAREHOUSE_ID",
 )
+# OTLP trace-export keys owned by the managed configuration path.
+CLAUDE_OTEL_TRACE_ENV_KEYS = (
+    "CLAUDE_CODE_ENABLE_TELEMETRY",
+    "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+    "OTEL_TRACES_EXPORTER",
+    "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS",
+    "CLAUDE_CODE_PROPAGATE_TRACEPARENT",
+)
+
+
+def _otel_trace_env(workspace: str) -> dict[str, str]:
+    """Build Claude Code's client-side OTLP trace configuration."""
+    return {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
+        "OTEL_TRACES_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": build_otel_traces_endpoint(workspace),
+        "CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS": "900000",
+        "CLAUDE_CODE_PROPAGATE_TRACEPARENT": "1",
+    }
+
+
 # Model-selection env keys ucode manages. Existing family defaults in the enterprise-managed file
 # are preserved unless Coding Agent Config explicitly supplies that family.
 CLAUDE_MANAGED_MODEL_ENV_KEYS = (
@@ -171,6 +202,8 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 # Env keys ucode used to write but no longer does; stripped from the managed
 # settings file on every launch so stale values never linger.
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
+CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
+CLAUDE_PRUNED_PICKER_KEYS = ("availableModels", "enforceAvailableModels")
 ANTHROPIC_CUSTOM_HEADERS_ENV_KEY = "ANTHROPIC_CUSTOM_HEADERS"
 CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
     {
@@ -197,6 +230,11 @@ MAXIMUM_MLFLOW_VERSION = (3, 12)
 # Relayed drops the user scope to deliberately omit the stale apiKeyHelper. Only applied to relayed
 # launches — normal launches keep loading user settings (hooks/permissions) as before.
 _RELAYED_SETTING_SOURCES = "project,local"
+
+
+def configured_paths(state: dict) -> list[str]:
+    """The Claude config file ug writes; the OS-managed file is added by the dispatcher."""
+    return [str(CLAUDE_SETTINGS_PATH)]
 
 
 def _managed_settings_path() -> Path | None:
@@ -299,10 +337,9 @@ def relayed_proxy_base_url(state: dict) -> str:
 
 
 def _web_search_mcp_entry(workspace: str, search_model: str, profile: str | None = None) -> dict:
-    """Stdio MCP server entry pointing at `ucode mcp web-search`. Resolves
-    the absolute path to the `ucode` binary so launchers without the right
+    """Stdio MCP server entry pointing at `ug mcp web-search`. Resolves
+    the absolute path to the `ug` binary so launchers without the right
     PATH (e.g. desktop GUI launchers) still find it."""
-    ucode_binary = shutil.which("ucode") or "ucode"
     env: dict[str, str] = {
         "DATABRICKS_HOST": workspace,
         "UCODE_WEB_SEARCH_MODEL": search_model,
@@ -311,7 +348,7 @@ def _web_search_mcp_entry(workspace: str, search_model: str, profile: str | None
         env["DATABRICKS_CONFIG_PROFILE"] = profile
     return {
         "type": "stdio",
-        "command": ucode_binary,
+        "command": ug_binary(),
         "args": ["mcp", "web-search"],
         "env": env,
     }
@@ -327,12 +364,13 @@ def render_overlay(
     custom_oauth: CustomOAuthConfig | None = None,
     provider: str | None = None,
     provider_models: dict[str, str] | None = None,
-    fable_enabled: bool = False,
     relayed: bool = False,
     relayed_base_url: str | None = None,
     route_root_model: str | None = None,
     custom_model: str | None = None,
     parent_schema: str | None = None,
+    static_models: list[str] | None = None,
+    otel_tracing: bool = False,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
 
@@ -366,7 +404,7 @@ def render_overlay(
     # traffic to ucode.
     header_lines = [
         "x-databricks-use-coding-agent-mode: true",
-        f"User-Agent: ucode/{ucode_version()} claude/{agent_version('claude')}",
+        f"User-Agent: ucode/{ug_version()} claude/{agent_version('claude')}",
     ]
     if provider:
         header_lines.append(f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}")
@@ -419,20 +457,13 @@ def render_overlay(
         # so users can see which gateway-routable model is behind each shortcut.
         # We deliberately don't set the `_NAME` companion env vars — the raw id
         # is more useful than a friendly label for debugging gateway routing.
-        #
-        # Fable is opt-in only (`ucode configure --enable-fable`): it's a premium
-        # model, so we don't pin the family alias unless the user asked for it.
-        # When off, ANTHROPIC_DEFAULT_FABLE_MODEL is simply never written — and
-        # since it's in CLAUDE_MANAGED_MODEL_ENV_KEYS, any stale value from a
-        # prior `--enable-fable` run is pruned from settings.json on next launch.
-        if fable_enabled and claude_models.get("fable"):
-            env["ANTHROPIC_DEFAULT_FABLE_MODEL"] = claude_models["fable"]
-        if claude_models.get("opus"):
-            env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = _maybe_add_1m_suffix(claude_models["opus"])
-        if claude_models.get("sonnet"):
-            env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = _maybe_add_1m_suffix(claude_models["sonnet"])
-        if claude_models.get("haiku"):
-            env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = claude_models["haiku"]
+        for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items():
+            if family_model := claude_models.get(family):
+                env[key] = (
+                    _maybe_add_1m_suffix(family_model)
+                    if family in ("opus", "sonnet")
+                    else family_model
+                )
     # Relayed omits apiKeyHelper so Claude Code's subscription OAuth stays the
     # Authorization credential; every other path uses it as the gateway auth.
     overlay: dict = {"env": env}
@@ -460,7 +491,29 @@ def render_overlay(
         overlay["permissions"] = {"deny": ["WebSearch"]}
         keys.append(["permissions", "deny"])
 
+    if static_models and not provider and not relayed:
+        overlay["availableModels"] = list(static_models)
+        overlay["enforceAvailableModels"] = True
+        overlay["modelPicker"] = {
+            "replaceBuiltInOptions": True,
+            "options": [{"model": m, "label": _picker_label(m)} for m in static_models],
+        }
+        keys += [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
+
+    if otel_tracing:
+        otel_env = _otel_trace_env(workspace)
+        env.update(otel_env)
+        overlay["otelHeadersHelper"] = build_otel_headers_shell_command(
+            workspace, profile, use_pat=use_pat
+        )
+        keys += [["env", key] for key in otel_env] + [["otelHeadersHelper"]]
+
     return overlay, keys
+
+
+def _picker_label(model: str) -> str:
+    """A short picker label for a model id — the raw id minus the ``system.ai.`` prefix."""
+    return model.removeprefix("system.ai.")
 
 
 def _maybe_add_1m_suffix(model: str) -> str:
@@ -513,7 +566,7 @@ def add_claude_mcp_server(
     always_load: bool = False,
 ) -> None:
     # Three registration shapes share this helper. The plain proxy path passes an
-    # argv list (`ucode mcp-proxy ...`), registered via `claude mcp add ... -- <argv>`
+    # argv list (`ug mcp-proxy ...`), registered via `claude mcp add ... -- <argv>`
     # where `--` fences the proxy's own flags off from claude's parser. The
     # web_search server passes a full stdio entry dict with its own env, which only
     # `add-json` can express — so a dict routes there. Finally, `always_load` (the
@@ -698,12 +751,13 @@ def write_tool_config(
         custom_oauth=state.get("custom_oauth"),
         provider=provider,
         provider_models=provider_models,
-        fable_enabled=bool(state.get("fable_enabled")),
         relayed=relayed,
         relayed_base_url=relayed_base_url,
         route_root_model=route_root_model,
         custom_model=custom_model,
         parent_schema=parent_schema,
+        static_models=state.get("claude_static_models"),
+        otel_tracing=bool(state.get("claude_otel_tracing")),
     )
     tracing_env_vars = tracing_env(state, "claude")
     stop_hook_command = claude_tracing_stop_hook_command() if tracing_env_vars else None
@@ -725,6 +779,8 @@ def write_tool_config(
         + [["env", key] for key in CLAUDE_CONDITIONAL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_REMOVED_ENV_KEYS]
         + [["env", key] for key in CLAUDE_TRACING_ENV_KEYS]
+        + [["env", key] for key in CLAUDE_OTEL_TRACE_ENV_KEYS]
+        + [["otelHeadersHelper"]]
         + [["hooks", "Stop"]]
         + [["hooks", event] for event in ("PreToolUse", "SessionStart", "SubagentStart")]
     ):
@@ -755,10 +811,6 @@ def write_tool_config(
             )
 
             for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items():
-                if family == "fable" and not state.get("fable_enabled"):
-                    target_env.pop(key, None)
-                    continue
-
                 selected_default_model = _enforce_model_default_hierarchy(
                     family,
                     coding_agent_config_defaults=configured_defaults,
@@ -798,10 +850,15 @@ def write_tool_config(
             for key in CLAUDE_CONDITIONAL_ENV_KEYS:
                 if key not in overlay_env:
                     merged_env.pop(key, None)
+            for key in CLAUDE_OTEL_TRACE_ENV_KEYS:
+                if key not in overlay_env:
+                    merged_env.pop(key, None)
             # deep_merge_dict keeps keys already in the file, so drop the ones ucode no
             # longer writes.
             for key in CLAUDE_REMOVED_ENV_KEYS:
                 merged_env.pop(key, None)
+        if "otelHeadersHelper" not in overlay_for_merge:
+            merged.pop("otelHeadersHelper", None)
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
@@ -1152,7 +1209,12 @@ def _ensure_mlflow_cli() -> bool:
 
 def default_model(state: dict) -> str | None:
     claude_models = state.get("claude_models") or {}
-    return claude_models.get("opus") or claude_models.get("sonnet") or claude_models.get("haiku")
+    return (
+        claude_models.get("opus")
+        or claude_models.get("sonnet")
+        or claude_models.get("haiku")
+        or next(iter(claude_models.values()), None)
+    )
 
 
 def _extract_caller_settings(tool_args: list[str]) -> tuple[list[str], list[str]]:
@@ -1260,16 +1322,6 @@ def _compose_v2_settings(tool_args: list[str]) -> tuple[dict, list[str]]:
     for value in caller_values:
         settings = _merge_claude_settings(settings, _load_caller_settings(value))
     return _merge_claude_settings(settings, read_json_safe(CLAUDE_SETTINGS_PATH)), remaining
-
-
-def _original_launch_model(state: dict) -> str | None:
-    override = state.get("_claude_launch_model")
-    if isinstance(override, str) and override.strip():
-        return override.strip()
-    value = read_json_safe(CLAUDE_USER_SETTINGS_PATH).get("model")
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return default_model(state)
 
 
 def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[str]:
@@ -1447,7 +1499,8 @@ def launch(
             tool_args,
             binary=binary,
             user_settings_path=CLAUDE_USER_SETTINGS_PATH,
-            launch_model=_original_launch_model(state),
+            # With no user pin, let Claude resolve its starting model from its own settings.
+            launch_model=options.user_pinned_model,
             compose_settings=_compose_v2_settings,
             launch_model_args=_launch_model_args,
             model_name=_maybe_add_1m_suffix,
@@ -1455,9 +1508,16 @@ def launch(
         return
     if workspace:
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
-    if options.claude_launch_model:
-        os.environ["ANTHROPIC_MODEL"] = options.claude_launch_model
-    exec_or_spawn(_build_claude_argv(binary, tool_args))
+    settings_override = None
+    launch_args = list(tool_args)
+    if options.user_pinned_model:
+        os.environ["ANTHROPIC_MODEL"] = options.user_pinned_model
+        settings_override = {"env": {"ANTHROPIC_MODEL": options.user_pinned_model}}
+        launch_args = [
+            *_launch_model_args(tool_args, options.user_pinned_model),
+            *tool_args,
+        ]
+    exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 
 def validate_cmd(binary: str) -> list[str]:

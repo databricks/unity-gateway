@@ -10,7 +10,7 @@ WS = "https://example.databricks.com"
 
 class TestCodexConfigArgs:
     def test_layers_provider_overrides_without_replacing_user_config(self, monkeypatch):
-        monkeypatch.setattr(codex, "ucode_version", lambda: "0.1.0")
+        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
 
         overlay = codex.render_overlay(

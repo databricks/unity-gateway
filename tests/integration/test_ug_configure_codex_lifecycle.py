@@ -3,6 +3,7 @@
 import tomllib
 
 import pytest
+from utils.constants import CODEX_TEST_MODEL
 from utils.evidence import FileTask
 from utils.terminal import TerminalProcess
 
@@ -28,7 +29,7 @@ def test_ug_configure_codex_repeat_and_revert(live_session, workspace):
         "configure",
         "--agents",
         "codex",
-        "--workspaces",
+        "--workspace",
         workspace,
         "--skip-validate",
         "--skip-upgrade",
@@ -41,7 +42,7 @@ def test_ug_configure_codex_repeat_and_revert(live_session, workspace):
         "configure",
         "--agents",
         "codex",
-        "--workspaces",
+        "--workspace",
         workspace,
         "--skip-validate",
         "--skip-upgrade",
@@ -59,7 +60,15 @@ def test_ug_configure_codex_repeat_and_revert(live_session, workspace):
     assert not bearer_was_saved, "The workspace bearer was saved in ug state"
 
     result = session.run(
-        "codex", "--", "exec", "--skip-git-repo-check", "--json", task.prompt, timeout=180
+        "codex",
+        "--",
+        "exec",
+        "--skip-git-repo-check",
+        "--json",
+        "--model",
+        CODEX_TEST_MODEL,
+        task.prompt,
+        timeout=180,
     )
     task.assert_headless_answer("codex", result)
     with TerminalProcess(session, "ug", [str(session.binary), "revert"], "revert") as terminal:
@@ -84,7 +93,7 @@ def test_ug_configure_codex_rejects_invalid_credentials(live_session, workspace)
         "configure",
         "--agents",
         "codex",
-        "--workspaces",
+        "--workspace",
         workspace,
         "--skip-validate",
         "--skip-upgrade",
