@@ -13,7 +13,8 @@ from typing import Annotated, Any
 
 import typer
 from rich.panel import Panel
-from typer.core import HAS_RICH, TyperCommand, TyperGroup
+from typer import _click
+from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
 from ucode import custom_oauth
 from ucode.agents import (
@@ -1077,12 +1078,12 @@ _HELP_COMMAND_ORDER = (
 class _HelpOrderedGroup(TyperGroup):
     """Keep top-level help organized across commands and nested Typer apps."""
 
-    def list_commands(self, ctx: typer.Context) -> list[str]:
+    def list_commands(self, ctx: _click.Context) -> list[str]:
         commands = super().list_commands(ctx)
         order = {name: index for index, name in enumerate(_HELP_COMMAND_ORDER)}
         return sorted(commands, key=lambda name: order.get(name, len(order)))
 
-    def format_options(self, ctx: typer.Context, formatter: Any) -> None:
+    def format_options(self, ctx: _click.Context, formatter: _click.HelpFormatter) -> None:
         self.format_commands(ctx, formatter)
         options = []
         for param in self.get_params(ctx):
@@ -1093,7 +1094,7 @@ class _HelpOrderedGroup(TyperGroup):
             with formatter.section("Global Options"):
                 formatter.write_dl(options)
 
-    def format_help(self, ctx: typer.Context, formatter: Any) -> None:
+    def format_help(self, ctx: _click.Context, formatter: _click.HelpFormatter) -> None:
         if not HAS_RICH or self.rich_markup_mode is None:
             return super().format_help(ctx, formatter)
 
@@ -1102,7 +1103,7 @@ class _HelpOrderedGroup(TyperGroup):
         options = [
             param
             for param in self.get_params(ctx)
-            if param.param_type_name == "option" and not getattr(param, "hidden", False)
+            if isinstance(param, TyperOption) and not param.hidden
         ]
         for option in options:
             option.hidden = True
@@ -1111,7 +1112,7 @@ class _HelpOrderedGroup(TyperGroup):
         finally:
             for option in options:
                 option.hidden = False
-        option_rows = []
+        option_rows: list[_click.Command] = []
         for option in options:
             signature = ", ".join(option.opts)
             if option.secondary_opts:
