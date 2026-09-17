@@ -95,3 +95,45 @@ def test_ug_configure_managed_is_idempotent(live_session, workspace):
 
     expected = (MANAGED_CLAUDE_MODELS, MANAGED_CLAUDE_MODELS, [MANAGED_CODEX_MODEL])
     assert runs == [expected, expected], runs
+
+
+@pytest.mark.managed
+@pytest.mark.claude
+def test_ug_configure_managed_via_pat(live_session, workspace, admin_sp_pat):
+    """Scenario: MDM/JAMF headless provisioning — configure a managed workspace through a
+    ``[ug-mdm]`` PAT profile plus ``ug configure --profile ug-mdm --use-pat``, exactly as
+    scripts/mdm-bootstrap.sh does, rather than the ``--workspace`` journeys above.
+
+    Expected: the managed config applies to every enabled agent with no selector — Claude's
+    static model_services become its picker allow-list and Codex's catalog lists exactly the
+    admin's models — reached through the PAT-profile auth path, with ``use_pat`` in state, and
+    a real launch reaches the gateway prompt rather than an account-login flow.
+    """
+    session = live_session
+    # Headless MDM auth: a ``[ug-mdm]`` PAT profile (token = the SP-minted PAT) plus
+    # ``ug configure --profile ug-mdm --use-pat``, exactly as scripts/mdm-bootstrap.sh does.
+    config = session.home / ".databrickscfg"
+    config.write_text(f"[ug-mdm]\nhost = {workspace}\ntoken = {admin_sp_pat}\nauth_type = pat\n")
+    config.chmod(0o600)
+    result = session.run(
+        "configure", "--profile", "ug-mdm", "--use-pat", "--skip-upgrade", timeout=240
+    )
+    assert "Select coding agents to configure:" not in result.stdout, result.stdout
+    assert session.workspace_state().get("use_pat") is True, session.state()
+
+    settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
+    assert settings.get("availableModels") == MANAGED_CLAUDE_MODELS, settings
+    options = (settings.get("modelPicker") or {}).get("options", [])
+    assert [option.get("model") for option in options] == MANAGED_CLAUDE_MODELS, settings
+
+    catalog = json.loads((session.home / ".ucode" / "codex-model-catalog.json").read_text())
+    listed = [
+        model.get("slug")
+        for model in catalog.get("models", [])
+        if model.get("visibility") == "list"
+    ]
+    assert listed == [MANAGED_CODEX_MODEL], catalog
+
+    with AgentTerminal(session, "claude", [str(session.binary), "claude"], "managed-pat") as tui:
+        tui.boot()
+        tui.check_input_and_exit()

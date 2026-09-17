@@ -44,6 +44,18 @@ def workspace():
     return value
 
 
+@pytest.fixture(scope="session")
+def admin_sp_pat():
+    """The SP-minted PAT for the managed workspace, from the ``E2E_ADMIN_SP_PAT`` CI secret.
+    Unlike the runner's hourly M2M ``DATABRICKS_BEARER``, it is a durable PAT, so the MDM
+    ``--use-pat`` journey exercises a real ``auth_type = pat`` profile. Required, like the
+    workspace and bearer."""
+    value = os.environ.get("E2E_ADMIN_SP_PAT", "").strip()
+    if not value:
+        pytest.fail("Live MDM --use-pat requires E2E_ADMIN_SP_PAT (the SP-minted PAT).")
+    return value
+
+
 @pytest.fixture
 def session(request, installed_binary):
     # Codex rejects helper installation beneath /tmp. Keep the disposable home
