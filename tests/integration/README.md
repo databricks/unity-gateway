@@ -9,6 +9,9 @@ The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
 
+Claude's independent `--model-location` and `--enable-model-discovery` behavior is
+covered by unit/component tests; these integration journeys do not exercise it.
+
 ## Run a specific combination
 
 Prerequisites: Python 3.12+, uv, Node/npm, and Databricks CLI 1.17.0. The runner

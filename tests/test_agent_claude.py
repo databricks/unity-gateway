@@ -395,12 +395,14 @@ class TestRenderOverlay:
         overlay, _ = claude.render_overlay(WS, "s4")
         assert "Databricks-Model-Provider-Service" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
-    def test_parent_adds_discovery_header(self):
+    def test_parent_adds_header_without_enabling_discovery(self):
         overlay, _ = claude.render_overlay(WS, "s4", parent_schema="main.default")
         assert (
             "Databricks-Model-Service-Parent-Schema: main.default"
             in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
         )
+        assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in overlay["env"]
+        assert claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR not in os.environ
 
     def test_bedrock_provider_pins_model_ids(self):
         provider_models = {

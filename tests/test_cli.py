@@ -642,14 +642,25 @@ class TestSubcommandRouting:
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
         assert mock_launch.call_args.args[1].args == []
 
-    def test_claude_model_location_is_forwarded(self):
+    @pytest.mark.parametrize("model_location", [None, "main.default"])
+    @pytest.mark.parametrize("enable_model_discovery", [False, True])
+    def test_claude_model_location_and_discovery_are_independent(
+        self, model_location, enable_model_discovery
+    ):
+        args = ["claude"]
+        if model_location is not None:
+            args.extend(["--model-location", model_location])
+        if enable_model_discovery:
+            args.append("--enable-model-discovery")
         with patch("ucode.cli._launch_tool") as mock_launch:
-            result = runner.invoke(app, ["claude", "--model-location", "main.default"])
+            result = runner.invoke(app, args)
 
         assert result.exit_code == 0, result.output
-        assert mock_launch.call_args.kwargs["parent_schema"] == "main.default"
+        assert mock_launch.call_args.kwargs["parent_schema"] == model_location
         assert mock_launch.call_args.args[1].args == []
-        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert os.environ.get("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY") == (
+            "1" if enable_model_discovery else None
+        )
 
     def test_codex_model_location_is_forwarded(self):
         with patch("ucode.cli._launch_tool") as mock_launch:

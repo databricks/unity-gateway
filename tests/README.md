@@ -23,6 +23,10 @@ keyboard selection: nothing is selected by default, selecting Codex installs onl
 Codex, and submitting an empty selection installs nothing. Rendering checks cover
 the selected and empty checkboxes. These are local component checks, not live gateway tests.
 
+Claude flag tests cover all combinations of `--model-location` and
+`--enable-model-discovery`: the location adds the schema header, while discovery
+requires a separate opt-in. These are unit/component checks, not live discovery coverage.
+
 ## CUJ coverage matrix
 
 These are **implemented assertions**, not a claim that every version passes.
