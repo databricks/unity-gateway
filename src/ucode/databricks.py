@@ -1074,29 +1074,6 @@ def profile_auth_type(profile: str) -> str | None:
     return None
 
 
-def read_databricks_oauth_profile(profile: str) -> dict[str, str] | None:
-    """Read non-secret OAuth profile fields without inheriting DEFAULT values."""
-    cfg_path = Path(os.environ.get("DATABRICKS_CONFIG_FILE") or "~/.databrickscfg").expanduser()
-    parser = configparser.ConfigParser(default_section="@ucode-no-defaults@", interpolation=None)
-    try:
-        with cfg_path.open(encoding="utf-8") as cfg_file:
-            parser.read_file(cfg_file)
-    except FileNotFoundError:
-        return None
-    except (configparser.Error, OSError) as exc:
-        raise RuntimeError(f"Could not read Databricks profiles from {cfg_path}.") from exc
-    if not parser.has_section(profile):
-        return None
-    fields = {
-        key: parser.get(profile, key, fallback="").strip()
-        for key in ("host", "client_id", "auth_type", "scopes")
-    }
-    # Never treat a PAT/M2M profile as a reusable U2M profile.
-    if any(parser.get(profile, key, fallback="").strip() for key in ("token", "client_secret")):
-        fields["auth_type"] = "incompatible"
-    return fields
-
-
 def _read_databrickscfg_token(profile: str) -> str | None:
     """Read the static ``token`` value for a profile from ``~/.databrickscfg``.
 
@@ -1163,19 +1140,12 @@ def apply_pat_environment(state: dict) -> None:
     ensure_pat_bearer(state.get("profile"))
 
 
-def run_databricks_login(
-    workspace: str,
-    profile: str | None = None,
-    *,
-    client_id: str | None = None,
-    scopes: list[str] | None = None,
-) -> None:
+def run_databricks_login(workspace: str, profile: str | None = None) -> None:
     """Run databricks auth login unconditionally.
 
     When ``profile`` is provided, it is passed via ``--profile``. Otherwise we
     fall back to looking up an existing profile by host so a stored session is
-    refreshed in place rather than overwriting another profile's tokens.
-    ``client_id`` and ``scopes`` are passed to the CLI and saved in that profile."""
+    refreshed in place rather than overwriting another profile's tokens."""
     print_section("Databricks Login")
     print_kv("Workspace", workspace)
     print_note("A browser may open for `databricks auth login`.")
@@ -1189,12 +1159,6 @@ def run_databricks_login(
             workspace,
             *_profile_args(profile_name),
         ]
-        if client_id is not None:
-            cmd.extend(["--client-id", client_id])
-            print_kv("Profile", profile_name or workspace)
-            print_kv("OAuth client ID", client_id)
-        if scopes:
-            cmd.extend(["--scopes", ",".join(scopes)])
         run(cmd, env=build_databricks_cli_env(workspace, profile_name), timeout=300)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError("`databricks auth login` failed.") from exc

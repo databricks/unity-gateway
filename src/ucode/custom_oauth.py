@@ -18,11 +18,8 @@ from databricks.sdk import oauth
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
 from ucode.databricks import (
     build_auth_token_argv,
-    build_databricks_cli_env,
     databricks_cli_version,
-    read_databricks_oauth_profile,
     run,
-    run_databricks_login,
 )
 from ucode.ui import err_console, normalize_workspace_url, print_warning_err
 
@@ -140,122 +137,33 @@ def _require_custom_oauth_cli() -> None:
         )
 
 
-def _profile_matches_client(fields: dict[str, str] | None, workspace: str, client_id: str) -> bool:
-    return bool(
-        fields
-        and fields["host"].rstrip("/") == workspace
-        and fields["client_id"] == client_id
-        and fields["auth_type"] == "databricks-cli"
-    )
-
-
-def _custom_cli_profile(workspace: str, client_id: str, profile: str | None) -> str:
-    """Reuse an explicitly selected custom-client profile, or derive an isolated one."""
-    if profile and _profile_matches_client(
-        read_databricks_oauth_profile(profile), workspace, client_id
-    ):
-        return profile
+def _custom_cli_profile(workspace: str, client_id: str) -> str:
     hostname = urlparse(workspace).hostname
     if not hostname:
         raise RuntimeError(f"Unable to derive hostname from workspace URL: {workspace}")
-    dedicated = f"ug-oauth-{hostname}-{client_id}"
-    fields = read_databricks_oauth_profile(dedicated)
-    if fields is not None and not _profile_matches_client(fields, workspace, client_id):
-        raise RuntimeError(
-            f"Databricks profile '{dedicated}' exists with different authentication settings. "
-            "Rename that profile before retrying; UG will not overwrite it."
-        )
-    return dedicated
+    return f"ug-oauth-{hostname}-{client_id}"
 
 
-def _profile_has_scopes(fields: dict[str, str], scopes: Sequence[str]) -> bool:
-    # The CLI adds offline_access automatically, even when it isn't saved in the profile.
-    saved = {scope.strip() for scope in fields["scopes"].split(",") if scope.strip()}
-    return (set(scopes) - {"offline_access"}).issubset(saved or {"all-apis"})
-
-
-def ensure_custom_oauth_cli_profile(
+def ensure_custom_oauth_cli_token(
     workspace: str,
     config: CustomOAuthConfig,
     *,
     force_login: bool = False,
-) -> CustomOAuthConfig:
-    """Authenticate a workspace/client-specific CLI profile before the agent starts."""
+) -> str:
+    """Create/reuse the custom-client CLI profile and return its access token."""
     _require_custom_oauth_cli()
     workspace = normalize_workspace_url(workspace)
-    configured_profile = config.get("profile")
-    config = create_custom_oauth_config(
+    normalized = create_custom_oauth_config(
         config["client_id"], config["scopes"], config["redirect_url"]
     )
-    profile = _custom_cli_profile(workspace, config["client_id"], configured_profile)
-    fields = read_databricks_oauth_profile(profile)
-    if fields is not None and _profile_has_scopes(fields, config["scopes"]) and not force_login:
-        try:
-            _get_custom_client_token_from_cli(
-                workspace, config["client_id"], profile=profile, scopes=config["scopes"]
-            )
-            config["profile"] = profile
-            return config
-        except RuntimeError:
-            pass  # Expired/revoked credentials: reauthenticate while the terminal is available.
-    if config["redirect_url"] != DEFAULT_REDIRECT_URL:
-        print_warning_err(
-            "Databricks CLI does not support --redirect-url; its callback is "
-            f"{DEFAULT_REDIRECT_URL} (or a higher port if busy). Register the CLI callback "
-            "on your OAuth application before signing in. The supplied redirect URL "
-            "is only used by the SDK path."
-        )
-    run_databricks_login(
-        workspace,
-        profile,
-        client_id=config["client_id"],
-        scopes=[scope for scope in config["scopes"] if scope != "offline_access"],
-    )
-    # Verify both the saved client_id and its token; never fall back to workspace-only auth.
-    _get_custom_client_token_from_cli(
-        workspace, config["client_id"], profile=profile, scopes=config["scopes"]
-    )
+    config.update(normalized)
+    profile = config.get("profile") or _custom_cli_profile(workspace, config["client_id"])
     config["profile"] = profile
-    return config
-
-
-@contextmanager
-def custom_oauth_cli_environment(workspace: str, config: CustomOAuthConfig) -> Iterator[None]:
-    """Pin generic token consumers and their children to this session's custom helper."""
-    profile = config.get("profile")
-    if not profile:
-        raise RuntimeError("Custom OAuth CLI profile has not been configured.")
-    values = {
-        "DATABRICKS_BEARER": None,
-        "DATABRICKS_BEARER_COMMAND": build_custom_auth_shell_command(workspace, config),
-        "DATABRICKS_CONFIG_PROFILE": profile,
-    }
-    previous = {key: os.environ.get(key) for key in values}
-    try:
-        for key, value in values.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-        yield
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
-
-def _get_custom_client_token_from_cli(
-    workspace: str,
-    client_id: str,
-    *,
-    profile: str | None = None,
-    scopes: Sequence[str] | None = None,
-    force_refresh: bool = False,
-) -> str:
-    _require_custom_oauth_cli()
-    profile = _custom_cli_profile(workspace, client_id, profile)
+    if not force_login:
+        try:
+            return _custom_oauth_cli_token(workspace, profile)
+        except RuntimeError:
+            pass
     login_args = [
         "databricks",
         "auth",
@@ -265,20 +173,23 @@ def _get_custom_client_token_from_cli(
         "--profile",
         profile,
         "--client-id",
-        client_id,
+        config["client_id"],
+        "--scopes",
+        ",".join(scope for scope in config["scopes"] if scope != "offline_access"),
     ]
-    if scopes is not None:
-        login_args.extend(["--scopes", ",".join(s for s in scopes if s != "offline_access")])
-    hint = f"Run `{shlex.join(login_args)}` or relaunch UG with --client-id to sign in."
-    fields = read_databricks_oauth_profile(profile)
-    if not _profile_matches_client(fields, workspace, client_id):
-        raise RuntimeError(f"Custom OAuth profile '{profile}' is not configured. {hint}")
-    if scopes is not None and fields is not None and not _profile_has_scopes(fields, scopes):
-        raise RuntimeError(f"Custom OAuth profile '{profile}' needs the requested scopes. {hint}")
-    env = build_databricks_cli_env(workspace, profile)
-    # auth token reads client_id from the named profile, not this environment variable.
-    env.pop("DATABRICKS_CLIENT_ID", None)
-    env["DATABRICKS_CONFIG_PROFILE"] = profile
+    try:
+        run(login_args, timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("Custom-client OAuth login via Databricks CLI failed.") from exc
+    return _custom_oauth_cli_token(workspace, profile)
+
+
+def _custom_oauth_cli_token(
+    workspace: str,
+    profile: str,
+    *,
+    force_refresh: bool = False,
+) -> str:
     args = [
         "databricks",
         "auth",
@@ -298,15 +209,14 @@ def _get_custom_client_token_from_cli(
             check=False,
             capture_output=True,
             text=True,
-            env=env,
             timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000,
         )
         payload = json.loads(result.stdout or "{}")
         token = payload.get("access_token", "") if isinstance(payload, dict) else ""
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Custom-client OAuth via Databricks CLI failed. {hint}") from exc
+        raise RuntimeError("Custom-client OAuth token via Databricks CLI failed.") from exc
     if result.returncode != 0 or not isinstance(token, str) or not token.strip():
-        raise RuntimeError(f"Custom-client OAuth via Databricks CLI failed. {hint}")
+        raise RuntimeError("Custom-client OAuth token via Databricks CLI failed.")
     return token
 
 
@@ -325,11 +235,11 @@ def get_custom_client_token(
     if not client_id:
         raise RuntimeError("--client-id must not be empty.")
     if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1":
-        return _get_custom_client_token_from_cli(
+        _require_custom_oauth_cli()
+        profile = profile or _custom_cli_profile(workspace, client_id)
+        return _custom_oauth_cli_token(
             workspace,
-            client_id,
             profile=profile,
-            scopes=_normalize_scopes(scopes) if scopes is not None else None,
             force_refresh=force_refresh,
         )
     if scopes is None:
