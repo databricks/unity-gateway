@@ -506,7 +506,9 @@ def configure_shared_state(
     state["base_urls"] = build_shared_base_urls(workspace)
 
     cli_custom_oauth = (
-        state.get("custom_oauth") if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1" else None
+        state.get("custom_oauth")
+        if custom_oauth is not None and os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1"
+        else None
     )
     if cli_custom_oauth:
         token = ensure_custom_oauth_cli_token(workspace, cli_custom_oauth)
@@ -2144,6 +2146,8 @@ def _launch_tool(
 ) -> None:
     try:
         tool = normalize_tool(tool_name)
+        if custom_oauth is None:
+            os.environ.pop("ENABLE_CUSTOM_OAUTH_FROM_CLI", None)
         # Before any status print: a stdio-protocol subcommand owns stdout, so
         # every ug line from here on must go to stderr instead.
         if _child_owns_stdout(tool, ctx.args):

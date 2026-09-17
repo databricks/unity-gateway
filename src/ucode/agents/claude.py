@@ -1506,7 +1506,9 @@ def launch(
             model_name=_maybe_add_1m_suffix,
         )
         return
-    if workspace and not state.get("custom_oauth"):
+    if workspace and not (
+        os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1" and state.get("custom_oauth")
+    ):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
     launch_args = list(tool_args)

@@ -60,7 +60,7 @@ CLAUDE_ROUTED_AGENT_PROMPT = (
 
 def _launch_token(state: dict, workspace: str) -> str:
     custom_oauth = state.get("custom_oauth")
-    if isinstance(custom_oauth, dict):
+    if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1" and isinstance(custom_oauth, dict):
         return get_custom_client_token(
             workspace,
             custom_oauth["client_id"],
@@ -555,7 +555,11 @@ def launch_codex(
         start_model,
         state.get("profile"),
         use_pat=bool(state.get("use_pat")),
-        custom_oauth=state.get("custom_oauth"),
+        custom_oauth=(
+            state.get("custom_oauth")
+            if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1"
+            else None
+        ),
     )
     overlay["hooks"] = {
         "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
