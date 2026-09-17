@@ -88,9 +88,11 @@ class UserSession:
         self.commands = 0
 
     def redact(self, text: str, *, strip_ansi: bool = True) -> str:
-        for token in (os.environ.get("DATABRICKS_BEARER"), self.env.get("DATABRICKS_BEARER")):
-            if token:
-                text = text.replace(token, "<redacted>")
+        # Also scrub the relayed launch's subscription OAuth token, not just the bearer.
+        for name in ("DATABRICKS_BEARER", "CLAUDE_CODE_OAUTH_TOKEN"):
+            for token in (os.environ.get(name), self.env.get(name)):
+                if token:
+                    text = text.replace(token, "<redacted>")
         return ANSI.sub("", text) if strip_ansi else text
 
     def run(
