@@ -1,14 +1,12 @@
 """CUJs: configure against a managed workspace, where an admin publishes the setup.
 
-These run against the managed e2e workspace (`E2E_ADMIN_WORKSPACE`), which publishes a
-CodingAgentConfig. They are the only journeys that exercise the managed path end to end:
-`ug configure` applies the admin config to every enabled agent without the personal agent
-selector, and each agent's generated config exposes exactly the admin's static
-`model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog). The
-expected model ids mirror the published config; update them here if the admin list changes.
+These run against the managed e2e workspace (`E2E_ADMIN_WORKSPACE`). The Claude journey reads
+the CodingAgentConfig published there. The Codex journey injects a wire-format response fixture
+so it can cover missing GPT metadata without publishing a fake model in the real workspace.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 from utils.terminal import AgentTerminal
@@ -22,6 +20,9 @@ MANAGED_CODEX_MODELS = [
     "system.ai.gpt-5-6-sol",
     "system.ai.gpt-99",
 ]
+MANAGED_CODEX_CONFIG_STUB = (
+    Path(__file__).with_name("fixtures") / "managed_codex_catalog_fallback.json"
+)
 
 
 @pytest.mark.managed
@@ -62,6 +63,7 @@ def test_ug_configure_managed_codex(live_session, workspace):
     Codex reaches a real gateway prompt rather than the account-login flow.
     """
     session = live_session
+    session.env["UCODE_MANAGED_CONFIG_STUB"] = str(MANAGED_CODEX_CONFIG_STUB)
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
     assert "managed config is published" in result.stdout, result.stdout

@@ -246,11 +246,16 @@ cannot still be running when that gate passes. Full coverage on PRs needs no lab
 
 `test_ug_configure_managed.py` (marker `managed`, not `live`) runs in its own per-agent
 **Managed config** jobs against a second workspace that publishes an admin CodingAgentConfig,
-which the shared `live` workspace deliberately does not. This is the only path exercised end to
-end: `ug configure` applies the admin config to every enabled agent with no agent selector, and
-each agent's generated config exposes exactly the admin's static `model_services`
-(Claude's `availableModels`/`modelPicker`, Codex's model catalog). The expected model ids live in
-the test and mirror the published config; update them there if the admin list changes.
+which the shared `live` workspace deliberately does not. `ug configure` applies the admin config
+with no agent selector, and each agent's generated config exposes exactly the admin's static
+`model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog).
+
+The Claude journey reads the workspace's published config. The Codex catalog-fallback journey sets
+`UCODE_MANAGED_CONFIG_STUB` to
+`tests/integration/fixtures/managed_codex_catalog_fallback.json`, which short-circuits only the
+managed-config HTTP read. This keeps the intentionally nonexistent `system.ai.gpt-99` out of the
+real workspace while still using that workspace to launch Codex with the fixture's real default
+model, `system.ai.gpt-5-6-sol`.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:
