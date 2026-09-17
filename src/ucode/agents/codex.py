@@ -14,6 +14,7 @@ import tomlkit
 from tomlkit.exceptions import ParseError
 
 from ucode.codex_config import (
+    catalog_slugs,
     codex_config_args,
     codex_config_precedence_paths,
     codex_managed_config_path,
@@ -24,6 +25,7 @@ from ucode.config_io import (
     ToolSpec,
     backup_existing_file,
     deep_merge_dict,
+    is_dry_run,
     prune_key_paths,
     read_toml_safe,
     write_json_file,
@@ -34,15 +36,18 @@ from ucode.constants import (
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
 from ucode.custom_oauth import (
+    CUSTOM_OAUTH_TIMEOUT_MS,
     CustomOAuthConfig,
     build_custom_auth_token_argv,
     get_custom_client_token,
 )
 from ucode.databricks import (
+    CodexCatalogSource,
     CodexMpsModelCatalogUnavailable,
+    _fetch_codex_model_catalog,
     build_auth_token_argv,
+    build_otel_traces_endpoint,
     build_tool_base_url,
-    fetch_codex_mps_model_catalog,
     get_databricks_token,
 )
 from ucode.launcher import exec_or_spawn
@@ -65,19 +70,21 @@ from ucode.smart_routing.codex_hooks import (
 )
 from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
-from ucode.telemetry import agent_version, ucode_version
+from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
+from .codex_catalog import prepare_codex_catalog
 
 CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"
 CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / f"{CODEX_PROFILE_NAME}.config.toml"
 CODEX_BACKUP_PATH = APP_DIR / "codex-ucode-config.backup.toml"
-CODEX_MPS_MODEL_CATALOG_PATH = APP_DIR / "codex-mps-model-catalog.json"
+CODEX_MODEL_CATALOG_PATH = APP_DIR / "codex-model-catalog.json"
 LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
-CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
+CODEX_MODEL_PROVIDER_NAME = "Databricks"
+LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
 _MODEL_SERVICE_ROUTING_KEY_PATHS = [
     ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers", MODEL_PROVIDER_SERVICE_HEADER],
     [
@@ -128,7 +135,7 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
 
 def minimum_version_error() -> str | None:
     """Return the active smart-routing version blocker, if any."""
-    if not smart_routing_v2.enabled():
+    if not smart_routing_v2.smart_routing_enabled():
         return None
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
@@ -184,7 +191,7 @@ def _provider_block(
         auth_argv = build_auth_token_argv(workspace, databricks_profile, use_pat=use_pat)
     base_url = build_tool_base_url("codex", workspace)
     http_headers = {
-        "User-Agent": f"ucode/{ucode_version()} codex/{agent_version('codex')}",
+        "User-Agent": f"ucode/{ug_version()} codex/{agent_version('codex')}",
     }
     if provider:
         http_headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
@@ -195,12 +202,12 @@ def _provider_block(
         "base_url": base_url,
         "wire_api": "responses",
         "http_headers": http_headers,
-        # Run the `ucode auth-token` executable directly (not via `sh -c`) so the
+        # Run the `ug auth-token` executable directly (not via `sh -c`) so the
         # helper works on Windows, where there is no POSIX shell (issue #116).
         "auth": {
             "command": auth_argv[0],
             "args": auth_argv[1:],
-            "timeout_ms": 5000,
+            "timeout_ms": CUSTOM_OAUTH_TIMEOUT_MS if custom_oauth else 5000,
             "refresh_interval_ms": 900000,
         },
     }
@@ -243,7 +250,7 @@ def render_legacy_overlay(
     """Overlay for Codex CLI < 0.134.0, which only reads `~/.codex/config.toml`.
 
     The shared file uses `profile = "ucode"` to select `[profiles.ucode]`, which
-    points at the shared `[model_providers.ucode-databricks]` block.
+    points at the shared `[model_providers.Databricks]` block.
     """
     profile_block: dict = {"model_provider": CODEX_MODEL_PROVIDER_NAME}
     if model:
@@ -278,7 +285,7 @@ def _has_legacy_ucode_entries(doc: dict) -> bool:
     return (
         doc.get("profile") == CODEX_PROFILE_NAME
         or (isinstance(profiles, dict) and CODEX_PROFILE_NAME in profiles)
-        or (isinstance(providers, dict) and CODEX_MODEL_PROVIDER_NAME in providers)
+        or (isinstance(providers, dict) and LEGACY_CODEX_MODEL_PROVIDER_NAME in providers)
     )
 
 
@@ -311,8 +318,8 @@ def _strip_legacy_ucode_entries(path: Path) -> bool:
         changed = True
 
     providers = doc.get("model_providers")
-    if isinstance(providers, dict) and CODEX_MODEL_PROVIDER_NAME in providers:
-        providers.pop(CODEX_MODEL_PROVIDER_NAME, None)
+    if isinstance(providers, dict) and LEGACY_CODEX_MODEL_PROVIDER_NAME in providers:
+        providers.pop(LEGACY_CODEX_MODEL_PROVIDER_NAME, None)
         if not providers:
             doc.pop("model_providers", None)
         changed = True
@@ -352,6 +359,22 @@ def revert_legacy_shared_config() -> bool:
     return _strip_legacy_ucode_entries(_legacy_config_path())
 
 
+def configured_paths(state: dict) -> list[str]:
+    """The Codex config files ug writes; the OS-managed file is added by the dispatcher.
+
+    Includes the model catalog only when a managed static list drives it (same condition as
+    :func:`write_tool_config`), so the summary names it exactly when it was written."""
+    paths = [str(CODEX_CONFIG_PATH)]
+    static_models = state.get("codex_static_models")
+    if (
+        isinstance(static_models, list)
+        and static_models
+        and not get_provider_service(state, "codex")
+    ):
+        paths.append(str(CODEX_MODEL_CATALOG_PATH))
+    return paths
+
+
 def write_tool_config(
     state: dict,
     model: str | None = None,
@@ -365,10 +388,17 @@ def write_tool_config(
     managed_model = state.get("codex_default_model")
     chosen_model = managed_model if isinstance(managed_model, str) else None
     databricks_profile = state.get("profile")
+    static_models = state.get("codex_static_models")
+    static_models = static_models if isinstance(static_models, list) and static_models else None
 
     if _use_legacy_layout():
+        if static_models and not provider:
+            raise RuntimeError(
+                "This Codex version cannot use the managed static model catalog. "
+                "Upgrade Codex and verify `codex debug models --bundled` works, then retry."
+            )
         # Codex < 0.134.0 only reads ~/.codex/config.toml. Write the shared
-        # config with [profiles.ucode] + shared [model_providers.ucode-databricks]
+        # config with [profiles.ucode] + shared [model_providers.Databricks]
         # and skip the per-profile-file cleanup that would normally strip
         # ucode's entry from the shared file.
         backup_existing_file(LEGACY_CODEX_CONFIG_PATH, LEGACY_CODEX_BACKUP_PATH)
@@ -399,6 +429,15 @@ def write_tool_config(
         save_state(state)
         return state
 
+    catalog_path = str(CODEX_MODEL_CATALOG_PATH) if static_models and not provider else None
+    # Build and validate before modifying config so failure cannot leave a stale
+    # catalog enabled or partially rewrite the user's configuration.
+    catalog = (
+        prepare_codex_catalog(SPEC["binary"], static_models)
+        if static_models and not provider
+        else None
+    )
+
     _remove_legacy_ucode_profile()
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
@@ -415,15 +454,25 @@ def write_tool_config(
         custom_oauth=state.get("custom_oauth"),
     )
 
-    def compose(base: dict) -> dict:
+    def compose(base: dict, *, include_catalog: bool = True) -> dict:
         prune_key_paths(base, _MODEL_SERVICE_ROUTING_KEY_PATHS)
         deep_merge_dict(base, copy.deepcopy(overlay))
         # deep_merge can't drop keys, so clear model preferences from an earlier run.
-        if chosen_model is None and not smart_routing_v2.enabled():
+        if chosen_model is None and not smart_routing_v2.smart_routing_enabled():
             for key in ("model", "model_reasoning_effort"):
                 base.pop(key, None)
+        if include_catalog:
+            if catalog_path:
+                base["model_catalog_json"] = catalog_path
+            else:
+                base.pop("model_catalog_json", None)
         _set_provider_header(base, None)
         return base
+
+    if catalog is not None:
+        write_json_file(CODEX_MODEL_CATALOG_PATH, catalog)
+    elif CODEX_MODEL_CATALOG_PATH.exists() and not is_dry_run():
+        CODEX_MODEL_CATALOG_PATH.unlink()
 
     doc = read_toml_safe(CODEX_CONFIG_PATH)
     compose(doc)
@@ -433,7 +482,7 @@ def write_tool_config(
         enabled=False,
     )
     write_toml_file(CODEX_CONFIG_PATH, doc)
-    _reconcile_managed_config(state, compose)
+    _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     return state
@@ -537,7 +586,7 @@ def default_model(state: dict) -> str | None:
     """Return a managed Codex model, or leave selection to Codex."""
     if isinstance(state.get("codex_default_model"), str):
         return state["codex_default_model"]
-    if smart_routing_v2.enabled():
+    if smart_routing_v2.smart_routing_enabled():
         return _smart_routing_config_model(state)
     clear_model_preferences(state)
     return None
@@ -566,7 +615,7 @@ def config_precedence_paths() -> tuple[Path, ...]:
 
 def clear_model_preferences(state: dict) -> bool:
     """Remove ucode profile model preferences so Codex selects its default."""
-    if smart_routing_v2.enabled():
+    if smart_routing_v2.smart_routing_enabled():
         return False
     if isinstance(state.get("codex_default_model"), str):
         return False
@@ -586,6 +635,14 @@ def clear_model_preferences(state: dict) -> bool:
 
 
 def _set_provider_header(config: dict, provider: str | None) -> None:
+    _set_routing_header(config, MODEL_PROVIDER_SERVICE_HEADER, provider)
+
+
+def _set_parent_schema_header(config: dict, parent_schema: str | None) -> None:
+    _set_routing_header(config, MODEL_SERVICE_PARENT_SCHEMA_HEADER, parent_schema)
+
+
+def _set_routing_header(config: dict, header: str, value: str | None) -> None:
     model_providers = config.get("model_providers")
     if not isinstance(model_providers, dict):
         return
@@ -596,16 +653,16 @@ def _set_provider_header(config: dict, provider: str | None) -> None:
     if not isinstance(headers, dict):
         provider_block["http_headers"] = {}
         headers = provider_block["http_headers"]
-    if provider:
-        headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
+    if value:
+        headers[header] = value
     else:
-        headers.pop(MODEL_PROVIDER_SERVICE_HEADER, None)
+        headers.pop(header, None)
 
 
-def _model_catalog_path(workspace: str, provider: str) -> Path:
-    key = f"{workspace.rstrip('/')}\0{provider}".encode()
+def _model_catalog_path(workspace: str, scope: str) -> Path:
+    key = f"{workspace.rstrip('/')}\0{scope}".encode()
     digest = hashlib.sha256(key).hexdigest()[:16]
-    base = CODEX_MPS_MODEL_CATALOG_PATH
+    base = CODEX_MODEL_CATALOG_PATH
     return base.with_name(f"{base.stem}-{digest}{base.suffix}")
 
 
@@ -638,11 +695,17 @@ def _launch_token(state: dict, workspace: str) -> str:
             custom_oauth["client_id"],
             custom_oauth["redirect_url"],
             scopes=custom_oauth["scopes"],
+            profile=custom_oauth.get("profile"),
         )
     return get_databricks_token(workspace, state.get("profile"))
 
 
-def _reject_managed_mps_catalog() -> None:
+def _tool_args_select_model(tool_args: list[str]) -> bool:
+    """Whether the passthrough args already pin a model via ``-m``/``--model``."""
+    return any(arg in ("-m", "--model") or arg.startswith(("--model=", "-m=")) for arg in tool_args)
+
+
+def _reject_managed_model_catalog() -> None:
     path = codex_managed_config_path()
     if path is None:
         return
@@ -655,9 +718,28 @@ def _reject_managed_mps_catalog() -> None:
         raise RuntimeError(f"Cannot read Codex managed settings at {path}: {exc}") from exc
     if "model_catalog_json" in managed:
         raise RuntimeError(
-            f"Codex managed settings at {path} define model_catalog_json, which overrides MPS "
-            "discovery. Remove it or contact your administrator."
+            f"Codex managed settings at {path} define model_catalog_json, which overrides "
+            "model discovery. Remove it or contact your administrator."
         )
+
+
+def _otel_overlay(workspace: str, token: str) -> dict:
+    """Build Codex's OTLP HTTP trace-export configuration.
+
+    Codex has no headers helper, so this token is visible in argv and can expire mid-session.
+    A fresh token is injected for each launch.
+    """
+    return {
+        "otel": {
+            "trace_exporter": {
+                "otlp-http": {
+                    "endpoint": build_otel_traces_endpoint(workspace),
+                    "protocol": "binary",
+                    "headers": {"Authorization": f"Bearer {token}"},
+                }
+            }
+        }
+    }
 
 
 def launch(
@@ -678,19 +760,28 @@ def launch(
         if isinstance(launch_provider, str) and launch_provider.strip()
         else get_provider_service(state, "codex")
     )
-    if workspace and provider:
-        _reject_managed_mps_catalog()
+    launch_parent_schema = state.get("_codex_launch_parent_schema")
+    parent_schema = (
+        launch_parent_schema.strip()
+        if isinstance(launch_parent_schema, str) and launch_parent_schema.strip()
+        else None
+    )
+    if workspace and (provider or parent_schema):
+        _reject_managed_model_catalog()
+    otel_args: list[str] = []
     token = None
     if workspace:
         token = _launch_token(state, workspace)
         os.environ["OAUTH_TOKEN"] = token
+        if state.get("codex_otel_tracing"):
+            otel_args = codex_config_args(_otel_overlay(workspace, token))
     if _use_legacy_layout():
         print_warning_err(
             f"Codex {agent_version(binary)} is outdated. Upgrade Codex to "
             f"{MINIMUM_CODEX_VERSION_TEXT} or newer, then run `codex --version` to verify "
             "the active installation."
         )
-        exec_or_spawn([binary, "--profile", CODEX_PROFILE_NAME, *tool_args])
+        exec_or_spawn([binary, "--profile", CODEX_PROFILE_NAME, *otel_args, *tool_args])
         return
     # Layer ucode's named profile as ordinary config overrides. Unlike
     # `--profile`, `--config` is accepted by runtime, utility, and server
@@ -703,16 +794,40 @@ def launch(
             "is missing or empty. Run `ucode configure --agents codex` first."
         )
     _set_provider_header(profile_doc, provider)
-    if workspace and token and provider:
+    _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
+    if workspace and token and (provider or parent_schema):
         try:
-            catalog = fetch_codex_mps_model_catalog(workspace, token, provider)
+            if provider is not None:
+                catalog_source = CodexCatalogSource.PROVIDER
+                catalog_identifier = provider
+                catalog_scope = f"provider:{provider}"
+            elif parent_schema is not None:
+                catalog_source = CodexCatalogSource.PARENT_SCHEMA
+                catalog_identifier = parent_schema
+                catalog_scope = f"parent:{parent_schema}"
+            else:
+                raise RuntimeError("Codex model discovery requires a provider or parent schema.")
+            catalog = _fetch_codex_model_catalog(
+                workspace,
+                token,
+                source=catalog_source,
+                identifier=catalog_identifier,
+            )
         except CodexMpsModelCatalogUnavailable:
             pass
         else:
-            catalog_path = _model_catalog_path(workspace, provider)
+            catalog_path = _model_catalog_path(workspace, catalog_scope)
             _write_model_catalog(catalog_path, catalog)
             profile_doc["model_catalog_json"] = str(catalog_path)
-    exec_or_spawn([binary, *codex_config_args(profile_doc), *tool_args])
+            # Codex otherwise boots on its bundled default model (e.g. gpt-5.6-sol),
+            # which an MPS's allowlist doesn't route, so the first request 403s. Pin
+            # the MPS's primary (first) target unless the user chose a model or a
+            # managed default already applies.
+            if not profile_doc.get("model") and not _tool_args_select_model(tool_args):
+                slugs = catalog_slugs(catalog)
+                if slugs:
+                    profile_doc["model"] = slugs[0]
+    exec_or_spawn([binary, *codex_config_args(profile_doc), *otel_args, *tool_args])
 
 
 def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:

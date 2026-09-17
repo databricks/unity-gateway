@@ -14,7 +14,6 @@ from ucode.doctor import (
     _check_databricks_auth,
     _check_databricks_cli,
     _check_npm,
-    _check_tracing_mlflow,
     _check_uv,
     _check_workspace,
     doctor,
@@ -110,47 +109,33 @@ class TestAgentCliChecks:
         assert checks[0].status == "warn"
         assert checks[0].suggestion is not None
 
-    def test_outdated_offers_update(self):
-        state = {"available_tools": ["opencode"]}
-        with (
-            patch.object(doctor_mod, "load_state", return_value=state),
-            patch.object(doctor_mod, "tool_binary_installed", return_value=True),
-            patch.object(doctor_mod, "tool_update_available", return_value=("1.0.0", "1.2.0")),
-        ):
-            checks = _check_agent_clis()
-        assert checks[0].status == "warn"
-        assert "1.2.0" in checks[0].detail
-        assert checks[0].suggestion is not None
-
-    def test_up_to_date_is_ok(self):
-        state = {"available_tools": ["claude"]}
+    def test_compatible_agents_are_ok_without_registry_checks(self):
+        state = {"available_tools": ["claude", "codex", "opencode", "gemini", "pi", "copilot"]}
         with (
             patch.object(doctor_mod, "load_state", return_value=state),
             patch.object(doctor_mod, "tool_binary_installed", return_value=True),
             patch.object(doctor_mod, "tool_version_error", return_value=None),
-            patch.object(
-                doctor_mod,
-                "tool_update_available",
-                side_effect=AssertionError("native updater must not use npm detection"),
-            ),
+            patch("subprocess.run", side_effect=AssertionError("must not query npm")),
         ):
             checks = _check_agent_clis()
-        assert checks[0].status == "ok"
-        assert "agent CLI" in checks[0].detail
-        assert checks[0].suggestion is None
+        assert len(checks) == 6
+        assert all(check.status == "ok" and check.suggestion is None for check in checks)
 
-    def test_blocked_native_agent_offers_native_upgrade(self):
-        state = {"available_tools": ["claude"]}
+    def test_only_below_minimum_agent_offers_upgrade(self):
+        state = {"available_tools": ["claude", "opencode"]}
         with (
             patch.object(doctor_mod, "load_state", return_value=state),
             patch.object(doctor_mod, "tool_binary_installed", return_value=True),
-            patch.object(doctor_mod, "tool_version_error", return_value="version too old"),
+            patch.object(doctor_mod, "tool_version_error", side_effect=[None, "version too old"]),
+            patch.object(doctor_mod, "update_tool_binary", return_value=True) as update,
         ):
             checks = _check_agent_clis()
-        assert checks[0].status == "warn"
-        assert checks[0].detail == "version too old"
-        assert checks[0].suggestion is not None
-        assert checks[0].suggestion.prompt == "Upgrade Claude Code if available?"
+            assert checks[0].suggestion is None
+            assert checks[1].status == "warn"
+            assert checks[1].detail == "version too old"
+            assert checks[1].suggestion.prompt == "Upgrade OpenCode to meet the required version?"
+            assert checks[1].suggestion.apply() is True
+        update.assert_called_once_with("opencode")
 
     def test_unknown_tool_is_skipped(self):
         state = {"available_tools": ["not-a-real-tool"]}
@@ -226,48 +211,12 @@ class TestAnthropicEnvCollision:
         assert _check_anthropic_env_collision() is None
 
 
-class TestTracingMlflowCheck:
-    def test_none_when_tracing_disabled(self):
-        with patch.object(doctor_mod, "tracing_config", return_value=None):
-            assert _check_tracing_mlflow() is None
-
-    def test_ok_when_mlflow_present(self):
-        with (
-            patch.object(doctor_mod, "tracing_config", return_value={"enabled": True}),
-            patch.object(doctor_mod, "tracing_mlflow_ok", return_value=True),
-        ):
-            check = _check_tracing_mlflow()
-        assert check.status == "ok"
-        assert check.suggestion is None
-
-    def test_warn_and_install_suggestion_when_missing(self):
-        with (
-            patch.object(doctor_mod, "tracing_config", return_value={"enabled": True}),
-            patch.object(doctor_mod, "tracing_mlflow_ok", return_value=False),
-        ):
-            check = _check_tracing_mlflow()
-        assert check.status == "warn"
-        assert check.suggestion is not None
-
-
 class TestUcodeCheck:
-    def test_upgrade_uses_renamed_repository(self):
-        with (
-            patch.object(doctor_mod.shutil, "which", return_value="/usr/bin/uv"),
-            patch.object(doctor_mod.subprocess, "run") as run,
-        ):
-            assert doctor_mod._upgrade_ucode()
-
-        run.assert_called_once_with(
-            [
-                "uv",
-                "tool",
-                "install",
-                "--reinstall",
-                "git+https://github.com/databricks/unity-gateway",
-            ],
-            check=True,
-        )
+    def test_reports_version_without_optional_reinstall(self):
+        with patch.object(doctor_mod, "ug_version", return_value="1.2.3"):
+            check = doctor_mod._check_ucode()
+        assert "1.2.3" in check.detail
+        assert check.suggestion is None
 
 
 class TestDoctorFlow:

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import textwrap
 import time
 import urllib.error
 import urllib.request
@@ -28,6 +30,9 @@ REQUEST_TIMEOUT_S = 30.0
 SUBAGENT_ROUTING_DISCLAIMER = (
     "Spawned subagents are routed independently based on their own complexity."
 )
+ROUTING_BOX_WIDTH = 73
+_ANTHROPIC_AIGW_MODEL_RE = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{8}-(.+)$")
+_FERNET_TOKEN_RE = re.compile(r"^gAAAAA[A-Za-z0-9_-]+={0,2}$")
 
 
 def format_switch_message(model: str, reason: str | None) -> str:
@@ -41,10 +46,23 @@ def format_switch_message(model: str, reason: str | None) -> str:
     return _format_box(lines)
 
 
-def format_subagent_message(model: str, reason: str | None) -> str:
+def format_subagent_message(
+    model: str,
+    reason: str | None,
+    *,
+    subagent_name: str | None = None,
+    prompt: str | None = None,
+) -> str:
     """Format a routed-subagent notice without the first-prompt disclaimer."""
     lines = [
         "Using Unity Gateway Smart Router - Subagent",
+        *(
+            [f"Subagent : {subagent_name}"]
+            if subagent_name
+            else [f"Prompt : {prompt}"]
+            if prompt
+            else []
+        ),
         f"Selected Model : {model}",
         *([f"Reason : {reason}"] if reason else []),
     ]
@@ -52,9 +70,19 @@ def format_subagent_message(model: str, reason: str | None) -> str:
 
 
 def _format_box(lines: list[str]) -> str:
-    width = max(len(line) for line in lines)
-    border = "─" * (width + 2)
-    return "\n".join([f"┌{border}┐", *(f"│ {line:<{width}} │" for line in lines), f"└{border}┘"])
+    wrapped_lines = [
+        wrapped
+        for line in lines
+        for wrapped in (textwrap.wrap(line, width=ROUTING_BOX_WIDTH) or [""])
+    ]
+    border = "─" * (ROUTING_BOX_WIDTH + 2)
+    return "\n".join(
+        [
+            f"┌{border}┐",
+            *(f"│ {line:<{ROUTING_BOX_WIDTH}} │" for line in wrapped_lines),
+            f"└{border}┘",
+        ]
+    )
 
 
 @dataclass(frozen=True)
@@ -65,7 +93,14 @@ class RoutingDecision:
     raw_model: str
     rationale: str = ""
 
-    def display_message(self, model_label: str | None = None, *, subagent: bool = False) -> str:
+    def display_message(
+        self,
+        model_label: str | None = None,
+        *,
+        is_subagent: bool = False,
+        subagent_name: str | None = None,
+        prompt: str | None = None,
+    ) -> str:
         """Return the boxed smart-routing notice with the router's rationale.
 
         Used by both the launch-time notice and the subagent-routing hook so the
@@ -73,8 +108,14 @@ class RoutingDecision:
         ``model_label`` overrides the shown model id (e.g. a harness-translated
         id); defaults to ``model``.
         """
-        formatter = format_subagent_message if subagent else format_switch_message
-        return formatter(model_label or self.model, self.rationale)
+        if is_subagent:
+            return format_subagent_message(
+                model_label or self.model,
+                self.rationale,
+                subagent_name=subagent_name,
+                prompt=prompt,
+            )
+        return format_switch_message(model_label or self.model, self.rationale)
 
 
 @dataclass(frozen=True)
@@ -83,6 +124,53 @@ class SpawnRoute:
     task: str
     decision: RoutingDecision
     routed_model: str
+
+
+@dataclass(frozen=True)
+class SubagentNoticeConfig:
+    """Harness-specific fields and model formatting for subagent notices."""
+
+    name_field: str
+    prompt_field: str
+    display_model_mapper: Callable[[str], str] | None = None
+    leading_newline: bool = False
+
+    def name(self, tool_input: dict[str, Any]) -> str | None:
+        return _nonempty_string(tool_input.get(self.name_field))
+
+    def prompt(self, tool_input: dict[str, Any]) -> str | None:
+        return _nonempty_string(tool_input.get(self.prompt_field))
+
+    def display_model(self, decision_model: str, routed_model: str) -> str:
+        if self.display_model_mapper is None:
+            return routed_model
+        display_model = self.display_model_mapper(decision_model)
+        return display_model if display_model != decision_model else routed_model
+
+    def message(
+        self,
+        decision: RoutingDecision,
+        routed_model: str,
+        tool_input: dict[str, Any],
+    ) -> str:
+        message = decision.display_message(
+            model_label=self.display_model(decision.model, routed_model),
+            is_subagent=True,
+            subagent_name=self.name(tool_input),
+            prompt=self.prompt(tool_input),
+        )
+        return f"\n{message}" if self.leading_newline else message
+
+
+def _nonempty_string(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _plaintext_string(value: Any) -> str | None:
+    text = _nonempty_string(value)
+    if text is None or _FERNET_TOKEN_RE.fullmatch(text):
+        return None
+    return text
 
 
 def normalize_model(model: str) -> str:
@@ -97,6 +185,13 @@ def normalize_model(model: str) -> str:
             tail = tail[len(prefix) :]
             break
     return tail.lower()
+
+
+def unwrap_anthropic_gateway_model(model: str) -> str:
+    """Strip Claude's synthetic Anthropic gateway prefix from a model id."""
+    if match := _ANTHROPIC_AIGW_MODEL_RE.fullmatch(model):
+        return match.group(1)
+    return model
 
 
 def configured_router_name() -> str:
@@ -193,7 +288,7 @@ def resolve_spawn_route(
         (
             value
             for field in ("prompt", "description", "message", "task_name", "agent_name")
-            if isinstance(value := tool_input.get(field), str) and value
+            if (value := _plaintext_string(tool_input.get(field))) is not None
         ),
         default_task_label,
     )
@@ -211,6 +306,7 @@ def route_spawn_tool(
     decision_fn: Callable[[str], tuple[RoutingDecision | None, str | None]],
     default_task_label: str,
     model_id_mapper: Callable[[str], str],
+    notice_config: SubagentNoticeConfig,
     skip_arms: dict[str, str] | None = None,
     record_decision: Callable[[dict[str, Any], str, RoutingDecision, str], None] | None = None,
 ) -> dict[str, Any] | None:
@@ -228,12 +324,13 @@ def route_spawn_tool(
         return {"systemMessage": skip_arms[route.decision.raw_model]}
     if record_decision is not None:
         record_decision(payload, route.task, route.decision, route.routed_model)
-    # Surface the router's rationale in BOTH the systemMessage (the line the
-    # harness shows the user) and permissionDecisionReason — the "why", not just
-    # the "what". The shown model is the harness-translated id (routed_model).
-    routing_message = route.decision.display_message(
-        model_label=route.routed_model,
-        subagent=True,
+    # Include the same routing notice in both hook response fields.
+    # Claude launches OSS models with an `anthropic-aigw-...` alias, but the notice
+    # displays the shorter `system.ai...` model ID.
+    routing_message = notice_config.message(
+        route.decision,
+        route.routed_model,
+        route.tool_input,
     )
     output: dict[str, Any] = {
         "hookEventName": "PreToolUse",

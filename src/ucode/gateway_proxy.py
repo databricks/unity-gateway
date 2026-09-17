@@ -7,6 +7,11 @@ header. Native gateway discovery instead carries the Databricks credential in
 `Authorization`. The proxy refreshes the applicable header and streams responses
 back verbatim.
 
+With relayed OSS-routing on, the proxy picks per request by the requested model:
+Databricks-hosted ids (system.ai / OSS) take the gateway-auth path while relayed
+subscription models keep the OAuth passthrough, so one Claude Code session can use
+both.
+
 Security invariants (mirroring `databricks.py` token handling):
   - Binds 127.0.0.1 only; never exposed off-host.
   - Never logs header values or bodies. The Databricks token lives in memory,
@@ -34,6 +39,9 @@ from ucode.databricks import get_databricks_token
 # client-supplied value is replaced, so a stale settings.json value can't leak.
 AI_GATEWAY_TOKEN_HEADER = "X-Databricks-AI-Gateway-Token"
 AUTHORIZATION_HEADER = "Authorization"
+# Header that routes a request to a specific Model Provider Service. Dropped when a
+# request is re-routed to a Databricks-hosted model so the gateway serves it directly.
+MODEL_PROVIDER_SERVICE_HEADER = "Databricks-Model-Provider-Service"
 # Hop-by-hop headers must not be forwarded across a proxy.
 HOP_BY_HOP_HEADERS = frozenset(
     h.lower()
@@ -220,6 +228,38 @@ def forwarded_request_headers(
     return headers
 
 
+# On the Databricks-hosted path the gateway credential goes in `Authorization` (so the
+# caller's Anthropic OAuth is replaced), and the swap + MPS headers are dropped so the
+# gateway serves the model directly instead of relaying to the subscription MPS.
+_DATABRICKS_ROUTE_STRIP = frozenset(
+    {AI_GATEWAY_TOKEN_HEADER.lower(), MODEL_PROVIDER_SERVICE_HEADER.lower()}
+)
+
+
+def is_databricks_routed_model(model: str | None) -> bool:
+    """True when ``model`` is a Databricks-hosted (gateway-served) id rather than a model
+    the relayed Anthropic subscription serves.
+
+    Databricks ids are namespace-qualified (``system.ai.*``, ``catalog.schema.model``,
+    ``databricks-*``); the relayed subscription uses Anthropic's bare canonical names
+    (``claude-opus-4-1``, ``claude-sonnet-4-5``, ...), which never carry a dot."""
+    if not model:
+        return False
+    return "." in model or model.startswith("databricks-")
+
+
+def _request_model(body: bytes | None) -> str | None:
+    """The ``model`` field of a JSON request body, or None when absent/unparseable."""
+    if not body:
+        return None
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    model = payload.get("model") if isinstance(payload, dict) else None
+    return model if isinstance(model, str) else None
+
+
 class _ProxyHandler(BaseHTTPRequestHandler):
     # Set by the server factory.
     cache: TokenCache
@@ -249,21 +289,40 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else None
         url = self.path.lstrip("/")
+        # Databricks-hosted models authenticate with the gateway token in `Authorization`;
+        # everything else keeps the relay path to the Anthropic subscription.
+        route_databricks = is_databricks_routed_model(_request_model(body))
         log_proxy_diagnostic(
             "request_start",
             request_id=diagnostic_id,
             method=self.command,
             path=self.path.split("?", 1)[0],
+            route="databricks" if route_databricks else "relay",
         )
-        try:
-            # First attempt with the current token.
-            headers = forwarded_request_headers(
+
+        def request_headers() -> dict[str, str]:
+            if route_databricks:
+                # Gateway-served model: dbx token in Authorization, relay swap + MPS headers
+                # dropped. Also honor any client headers the relay owner strips (e.g. a Claude
+                # Desktop x-api-key), so a proxy-owned credential never leaks on this route either.
+                return forwarded_request_headers(
+                    self,
+                    self.cache.token,
+                    AUTHORIZATION_HEADER,
+                    strip_client_headers=_DATABRICKS_ROUTE_STRIP
+                    | (self.strip_client_headers or frozenset()),
+                )
+            return forwarded_request_headers(
                 self,
                 self.cache.token,
                 self.token_header,
-                self.extra_headers,
-                self.strip_client_headers,
+                extra_headers=self.extra_headers,
+                strip_client_headers=self.strip_client_headers,
             )
+
+        try:
+            # First attempt with the current token.
+            headers = request_headers()
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
@@ -293,9 +352,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 # which otherwise reads as an Anthropic `/login` prompt and sends the
                 # user to the wrong re-auth. Still retry + relay with the existing token.
                 log_token_refresh_failure(exc)
-            headers = forwarded_request_headers(
-                self, self.cache.token, self.token_header, self.extra_headers
-            )
+            headers = request_headers()
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",

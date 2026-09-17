@@ -52,6 +52,9 @@ from ucode.ui import normalize_workspace_url
 # happened to list first. Hardcoded on purpose.
 CI_ANTHROPIC_MPS = "main.ucode.ci_e2e_anthropic_nonrelay_mps"  # api-key Anthropic (for claude)
 CI_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+CI_ANTHROPIC_RELAY_MPS = (
+    "main.ucode.ci_e2e_anthropic_relay_mps"  # subscription-relay Anthropic (for claude)
+)
 CI_OPENAI_MPS = "main.ucode.ci_openai_mps"  # api-key OpenAI (for codex)
 CI_OPENAI_MODEL = "gpt-5-nano"
 
@@ -317,10 +320,8 @@ class TestConfigureSubset:
             cli_mod, "_prompt_for_configuration", lambda tool=None: (e2e_workspace, None)
         )
         monkeypatch.setattr(cli_mod, "prompt_for_tools", lambda available: ["codex"])
-        # Skip binary install + post-config validation; we're testing the
-        # selection plumbing, not the agent binaries themselves.
+        # Skip binary install; we're testing the selection plumbing, not the agent binaries themselves.
         monkeypatch.setattr(cli_mod, "install_tool_binary", lambda tool, **kwargs: True)
-        monkeypatch.setattr(cli_mod, "validate_all_tools", lambda state: None)
         # Answer the provider picker; "databricks" keeps the Databricks path.
         monkeypatch.setattr(cli_mod, "prompt_for_selection", lambda prompt, options: "databricks")
 
@@ -353,7 +354,6 @@ class TestConfigureSubset:
             cli_mod, "_prompt_for_configuration", lambda tool=None: (e2e_workspace, None)
         )
         monkeypatch.setattr(cli_mod, "install_tool_binary", lambda tool, **kwargs: True)
-        monkeypatch.setattr(cli_mod, "validate_all_tools", lambda state: None)
         # Answer the provider picker; "databricks" keeps the Databricks path.
         monkeypatch.setattr(cli_mod, "prompt_for_selection", lambda prompt, options: "databricks")
 
@@ -394,7 +394,6 @@ class TestConfigureSubset:
             "install_tool_binary",
             lambda tool, **kwargs: install_calls.append(tool) or True,
         )
-        monkeypatch.setattr(cli_mod, "validate_all_tools", lambda state: None)
 
         rc = cli_mod.configure_workspace_command()
         assert rc == 0
@@ -429,8 +428,8 @@ E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     "-codex": frozenset({"copilot"}),
     "gpt-5-5": frozenset({"copilot"}),
     "gpt-5-6": frozenset({"copilot"}),
-    # Astra currently fails through these paths in prod-aws-us-east-1.
-    "astra": frozenset({"copilot", "pi", "web_search"}),
+    # Astra has limited allowance in production and will hit 429s if tested.
+    "astra": frozenset({"codex", "copilot", "pi", "web_search"}),
 }
 
 
@@ -460,11 +459,6 @@ class TestCodexLaunch:
             pytest.skip("No Codex models available on this workspace")
         return models
 
-    def test_astra_is_not_skipped(self):
-        assert self._codex_models({"codex_models": ["databricks-gpt-6-astra"]}) == [
-            "databricks-gpt-6-astra"
-        ]
-
     def test_launch_codex_per_model(self, tmp_path, monkeypatch, e2e_state, e2e_workspace):
         """Parametrized inline — iterates over all codex models and asserts each works."""
         import ucode.config_io as config_io_mod
@@ -490,6 +484,9 @@ class TestCodexLaunch:
                 codex.write_tool_config(state, model)
 
             cmd = codex.validate_cmd("codex")
+            # By default, ug uses the default model of the harness.
+            # Instead, pin Codex to use the specified model.
+            cmd[1:1] = ["--model", codex.codex_model_id(model)]
             try:
                 result = _run_agent(
                     cmd,
@@ -500,7 +497,11 @@ class TestCodexLaunch:
                 failures.append(f"model={model} timed out after {timeout_seconds}s")
                 continue
 
-            if result.returncode != 0 or not (result.stdout or result.stderr).strip():
+            if (
+                result.returncode != 0
+                or not result.stdout.strip()
+                or f"model: {codex.codex_model_id(model)}\n" not in result.stderr
+            ):
                 # Keep a generous tail of stderr. codex-cli logs a non-fatal model-listing error
                 # first and the actual cause last, so a short prefix reports the wrong problem —
                 # at 200 chars the geography failure above read as a `/v1/models` routing error.
@@ -572,20 +573,6 @@ class TestModelProviderLaunch:
     gateway deterministically. Skips when the MPS is absent or the caller lacks
     permission on the backing connection.
     """
-
-    @staticmethod
-    def _first_relayed_service(tool: str, workspace: str, token: str) -> str:
-        services, reason = list_model_provider_services(workspace, token)
-        if is_model_provider_feature_unavailable(reason):
-            pytest.skip("Model Provider Service feature not enabled on this workspace")
-        if reason is not None:
-            pytest.skip(f"could not list provider services: {reason}")
-        names = [
-            s["name"] for s in services if service_usable_for_tool(tool, s) and s.get("relayed")
-        ]
-        if not names:
-            pytest.skip(f"no relayed {tool} model provider services available on this workspace")
-        return names[0]
 
     @staticmethod
     def _skip_if_provider_unusable(combined: str, provider: str) -> None:
@@ -710,7 +697,14 @@ class TestModelProviderLaunch:
             pytest.skip(
                 "set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) to run the relayed launch"
             )
-        provider = self._first_relayed_service("claude", e2e_workspace, e2e_token)
+        provider = CI_ANTHROPIC_RELAY_MPS
+        _, error, _relayed = resolve_provider_models(
+            "claude", {**e2e_state, "workspace": e2e_workspace}, provider
+        )
+        if error is not None:
+            pytest.skip(
+                f"CI relayed Anthropic MPS {provider} unavailable on this workspace: {error}"
+            )
 
         config_dir = tmp_path / "claude_config"
         config_dir.mkdir()
@@ -864,13 +858,13 @@ class TestAnthropicNonRelayMps:
 
 
 class TestGeminiLaunch:
-    """Run gemini against every available gemini model."""
+    """Run the real Gemini CLI against every available gemini model."""
 
     def test_launch_gemini_per_model(
         self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
     ):
         import ucode.config_io as config_io_mod
-        from ucode.agents import gemini, validate_tool
+        from ucode.agents import gemini
 
         _require_binary("gemini")
         # Gemini CLI >= 0.45 rewrites forced flash model ids (e.g.
@@ -897,9 +891,10 @@ class TestGeminiLaunch:
         )
         # Run from tmp_path so Gemini sees an untrusted folder — that mirrors
         # what users hit on a fresh checkout and exercises the trust + .env
-        # discovery code paths that previously broke validation.
+        # discovery code paths.
         monkeypatch.chdir(tmp_path)
 
+        timeout_seconds = int(os.environ.get("UCODE_E2E_AGENT_TIMEOUT", "60"))
         failures = []
         for model in gemini_models:
             with pytest.MonkeyPatch().context() as mp:
@@ -910,13 +905,20 @@ class TestGeminiLaunch:
                 )
                 state = {**e2e_state, "workspace": e2e_workspace}
                 gemini.write_tool_config(state, model, token=e2e_token)
-                # Exercise the real production validate flow — same code path
-                # that `ucode configure` invokes after writing the config.
-                captured_state = state
-                mp.setattr("ucode.agents.load_state", lambda s=captured_state: s)
-                ok, err = validate_tool("gemini")
-            if not ok:
-                failures.append(f"model={model} err={err}")
+            # Launch the real Gemini CLI with the exact command ucode uses,
+            # against the just-written config, to keep actual CLI smoke coverage
+            # without bringing a validation probe back into `ucode configure`.
+            env = gemini.build_runtime_env(e2e_workspace, model, e2e_token)
+            try:
+                result = _run_agent(gemini.validate_cmd("gemini"), env=env, timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                failures.append(f"model={model} timed out after {timeout_seconds}s")
+                continue
+            if result.returncode != 0 or not result.stdout.strip():
+                failures.append(
+                    f"model={model} rc={result.returncode} "
+                    f"stdout={result.stdout[-500:]!r} stderr={result.stderr[-1500:]!r}"
+                )
 
         assert not failures, "Gemini launch failures:\n" + "\n".join(failures)
 

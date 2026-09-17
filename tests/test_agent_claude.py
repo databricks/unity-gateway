@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import subprocess
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -16,6 +17,15 @@ from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
 
 WS = "https://example.databricks.com"
+# A connection MCP proxy argv, used by the Claude MCP-registration helper tests.
+# The leading element is the resolved `ug` binary path, so tests assert the tail.
+GH_URL = f"{WS}/api/2.0/mcp/external/github"
+
+
+def _proxy_argv() -> list[str]:
+    from ucode.databricks import build_mcp_proxy_argv
+
+    return build_mcp_proxy_argv(GH_URL, WS, "p")
 
 
 @pytest.fixture(autouse=True)
@@ -37,13 +47,13 @@ class TestClaudeSpec:
 class TestMinimumVersion:
     @pytest.mark.parametrize("version", ["2.1.248", "2.1.250", "3.0.0"])
     def test_supported_version(self, monkeypatch, version):
-        monkeypatch.setenv(v2.ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(claude, "agent_version", lambda _binary: version)
 
         assert claude.minimum_version_error() is None
 
     def test_older_version_requires_update(self, monkeypatch):
-        monkeypatch.setenv(v2.ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.247")
 
         assert claude.minimum_version_error() == (
@@ -62,20 +72,20 @@ class TestMinimumVersion:
         assert claude.minimum_version_error() == expected
 
     def test_smart_routing_message_wins_when_both_features_are_enabled(self, monkeypatch):
-        monkeypatch.setenv(v2.ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.247")
 
         assert claude.minimum_version_error().startswith("Smart routing requires")
 
     def test_unknown_version_does_not_block(self, monkeypatch):
-        monkeypatch.setenv(v2.ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "unknown")
 
         assert claude.minimum_version_error() is None
 
     def test_older_version_is_not_validated_without_discovery_features(self, monkeypatch):
-        monkeypatch.delenv(v2.ENV_VAR, raising=False)
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.247")
 
@@ -153,15 +163,11 @@ class TestRenderOverlay:
         assert "main.aarushi.claude-opus-5" not in env.values()
 
     def test_custom_model_does_not_persist_fable_selection(self):
-        without = claude.render_overlay(WS, "s4", claude_models={}, custom_model="main.x.m")[0][
-            "env"
-        ]
-        assert "ANTHROPIC_MODEL" not in without
-        with_fable = claude.render_overlay(
-            WS, "s4", claude_models={}, custom_model="main.x.m", fable_enabled=True
-        )[0]["env"]
-        assert "ANTHROPIC_MODEL" not in with_fable
-        assert "ANTHROPIC_DEFAULT_FABLE_MODEL" not in with_fable
+        overlay, _ = claude.render_overlay(
+            WS, "s4", claude_models={}, custom_model="system.ai.claude-fable-5"
+        )
+        assert "ANTHROPIC_MODEL" not in overlay["env"]
+        assert "ANTHROPIC_DEFAULT_FABLE_MODEL" not in overlay["env"]
 
     def test_sets_anthropic_base_url(self):
         overlay, _ = claude.render_overlay(WS, "s4")
@@ -201,7 +207,7 @@ class TestRenderOverlay:
         assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in overlay["env"]
 
     def test_smart_routing_does_not_persist_gateway_model_discovery(self, monkeypatch):
-        monkeypatch.setenv(v2.ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
         overlay, _ = claude.render_overlay(WS, "s4")
         assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in overlay["env"]
@@ -221,15 +227,15 @@ class TestRenderOverlay:
 
         assert claude.gateway_model_discovery_setting_is_absent() is False
 
-    def test_sets_api_key_helper(self):
+    def test_sets_api_key_helper(self, monkeypatch):
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/my tools/{command}")
         overlay, _ = claude.render_overlay(WS, "s4")
-        assert "apiKeyHelper" in overlay
-        assert WS in overlay["apiKeyHelper"]
+        assert shlex.split(overlay["apiKeyHelper"]) == ["/my tools/ug", "auth-token", "--host", WS]
 
     def test_sets_custom_oauth_api_key_helper(self, monkeypatch):
         from ucode import custom_oauth
 
-        monkeypatch.setattr("ucode.databricks._ucode_binary", lambda: "/opt/ucode")
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/opt/ug")
         monkeypatch.setattr(custom_oauth.platform, "system", lambda: "Linux")
         overlay, _ = claude.render_overlay(
             WS,
@@ -241,7 +247,7 @@ class TestRenderOverlay:
             },
         )
         assert shlex.split(overlay["apiKeyHelper"]) == [
-            "/opt/ucode",
+            "/opt/ug",
             "auth-token",
             "--host",
             WS,
@@ -251,6 +257,30 @@ class TestRenderOverlay:
             "http://localhost:8020/callback",
             "--scopes",
             "offline_access,model-serving",
+        ]
+
+    def test_saved_custom_oauth_profile_uses_minimal_api_key_helper(self, monkeypatch):
+        from ucode import custom_oauth
+
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/opt/ug")
+        monkeypatch.setattr(custom_oauth.platform, "system", lambda: "Linux")
+        overlay, _ = claude.render_overlay(
+            WS,
+            "s4",
+            custom_oauth={
+                "client_id": "custom-client",
+                "redirect_url": "http://localhost:8020/callback",
+                "scopes": ["offline_access", "model-serving"],
+                "profile": "custom-profile",
+            },
+        )
+        assert shlex.split(overlay["apiKeyHelper"]) == [
+            "/opt/ug",
+            "auth-token",
+            "--host",
+            WS,
+            "--profile",
+            "custom-profile",
         ]
 
     def test_relayed_omits_api_key_helper(self):
@@ -313,34 +343,30 @@ class TestRenderOverlay:
         env = overlay["env"]
         assert "ANTHROPIC_DEFAULT_SONNET_MODEL" not in env
 
-    def test_fable_not_pinned_by_default(self):
-        # Fable is opt-in: even when the workspace advertises it, the env var is
-        # absent unless fable_enabled is passed.
+    def test_fable_pinned_by_default_when_discovered(self):
         models = {"fable": "databricks-claude-fable-5", "opus": "databricks-claude-opus-4-8"}
         overlay, _ = claude.render_overlay(WS, "s4", claude_models=models)
         env = overlay["env"]
-        assert "ANTHROPIC_DEFAULT_FABLE_MODEL" not in env
+        assert env["ANTHROPIC_DEFAULT_FABLE_MODEL"] == "databricks-claude-fable-5"
         assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "databricks-claude-opus-4-8[1m]"
 
-    def test_fable_pinned_when_enabled_and_discovered(self):
+    def test_discovered_fable_uses_unsuffixed_model_id(self):
         models = {"fable": "system.ai.claude-fable-5"}
-        overlay, _ = claude.render_overlay(WS, "s4", claude_models=models, fable_enabled=True)
+        overlay, _ = claude.render_overlay(WS, "s4", claude_models=models)
         env = overlay["env"]
         # Fable 5 is 1M-context by default, so no `[1m]` suffix is appended.
         assert env["ANTHROPIC_DEFAULT_FABLE_MODEL"] == "system.ai.claude-fable-5"
 
-    def test_fable_not_pinned_when_enabled_but_not_discovered(self):
-        # --enable-fable is a no-op when the workspace advertises no fable model,
-        # mirroring the opus/sonnet/haiku "only if discovered" behavior.
+    def test_fable_not_pinned_when_not_discovered(self):
         models = {"opus": "databricks-claude-opus-4-8"}
-        overlay, _ = claude.render_overlay(WS, "s4", claude_models=models, fable_enabled=True)
+        overlay, _ = claude.render_overlay(WS, "s4", claude_models=models)
         assert "ANTHROPIC_DEFAULT_FABLE_MODEL" not in overlay["env"]
 
     def test_fable_not_pinned_under_provider(self):
         # A Model Provider Service routes by header and pins no Databricks model.
         models = {"fable": "databricks-claude-fable-5"}
         overlay, _ = claude.render_overlay(
-            WS, "s4", claude_models=models, fable_enabled=True, provider="main.x.claude-svc"
+            WS, "s4", claude_models=models, provider="main.x.claude-svc"
         )
         assert "ANTHROPIC_DEFAULT_FABLE_MODEL" not in overlay["env"]
 
@@ -445,10 +471,79 @@ class TestRenderOverlay:
         env_keys = [k for k in keys if len(k) == 2 and k[0] == "env"]
         assert len(env_keys) > 0
 
+    def test_static_models_populates_picker(self):
+        # Static models are written into the picker allow-list.
+        static = ["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-4-6"]
+        overlay, keys = claude.render_overlay(WS, "s4", static_models=static)
+        assert overlay["availableModels"] == static
+        assert overlay["enforceAvailableModels"] is True
+        assert overlay["modelPicker"]["replaceBuiltInOptions"] is True
+        assert len(overlay["modelPicker"]["options"]) == 2
+        assert overlay["modelPicker"]["options"][0]["model"] == "system.ai.claude-opus-4-8"
+        assert overlay["modelPicker"]["options"][0]["label"] == "claude-opus-4-8"
+
+    def test_static_models_keys_tracked(self):
+        # The picker keys are added to managed_keys so they're tracked in the managed file.
+        static = ["system.ai.claude-opus-4-8"]
+        _, keys = claude.render_overlay(WS, "s4", static_models=static)
+        assert ["availableModels"] in keys
+        assert ["enforceAvailableModels"] in keys
+        assert ["modelPicker"] in keys
+
+    def test_static_models_skipped_when_provider_set(self):
+        # When routing through an MPS provider, static models are ignored.
+        static = ["system.ai.claude-opus-4-8"]
+        overlay, _ = claude.render_overlay(WS, "s4", provider="main.x.mps", static_models=static)
+        assert "availableModels" not in overlay
+        assert "modelPicker" not in overlay
+
+    def test_static_models_skipped_when_relayed(self):
+        # When using relayed inference, static models are ignored.
+        static = ["system.ai.claude-opus-4-8"]
+        overlay, _ = claude.render_overlay(
+            WS, "s4", relayed=True, relayed_base_url="http://localhost:8000", static_models=static
+        )
+        assert "availableModels" not in overlay
+        assert "modelPicker" not in overlay
+
+    def test_static_models_label_strips_system_ai_prefix(self):
+        # Picker labels show the model id without the ``system.ai.`` prefix.
+        static = ["system.ai.claude-opus-4-8", "databricks-custom-model"]
+        overlay, _ = claude.render_overlay(WS, "s4", static_models=static)
+        labels = [opt["label"] for opt in overlay["modelPicker"]["options"]]
+        assert labels == ["claude-opus-4-8", "databricks-custom-model"]
+
+
+class TestRenderOverlayOtelTracing:
+    def test_otel_tracing_off_by_default(self):
+        overlay, _ = claude.render_overlay(WS, "s4", claude_models={"opus": "system.ai.x"})
+        assert "otelHeadersHelper" not in overlay
+        assert "CLAUDE_CODE_ENABLE_TELEMETRY" not in overlay["env"]
+        assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in overlay["env"]
+
+    def test_otel_tracing_writes_env_and_refreshing_headers_helper(self):
+        overlay, _ = claude.render_overlay(WS, "s4", otel_tracing=True)
+        env = overlay["env"]
+        assert env["CLAUDE_CODE_ENABLE_TELEMETRY"] == "1"
+        assert env["CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"] == "1"
+        assert env["OTEL_TRACES_EXPORTER"] == "otlp"
+        assert env["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"] == "http/protobuf"
+        assert env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == f"{WS}/ai-gateway/otel/v1/traces"
+        assert env["CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS"] == "900000"
+        assert env["CLAUDE_CODE_PROPAGATE_TRACEPARENT"] == "1"
+        assert "otel-headers" in overlay["otelHeadersHelper"]
+        assert "OTEL_EXPORTER_OTLP_TRACES_HEADERS" not in env
+
+    def test_otel_tracing_keys_are_managed(self):
+        _, keys = claude.render_overlay(WS, "s4", otel_tracing=True)
+        assert ["otelHeadersHelper"] in keys
+        assert ["env", "CLAUDE_CODE_ENABLE_TELEMETRY"] in keys
+        assert ["env", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] in keys
+
 
 class TestRenderOverlayUserAgent:
     def _ua(self, monkeypatch) -> str:
-        monkeypatch.setattr(claude, "ucode_version", lambda: "0.1.0")
+        monkeypatch.setattr(claude, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(claude, "agent_version", lambda binary: "2.1.136")
         overlay, _ = claude.render_overlay(WS, "s4")
         return overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
@@ -549,13 +644,14 @@ class TestRenderOverlayWebSearchDisable:
 
 
 class TestWebSearchMcpEntry:
-    def test_entry_shape(self):
+    def test_entry_shape(self, monkeypatch):
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/tools/{command}")
         entry = claude._web_search_mcp_entry(WS, "databricks-gpt-5")
         assert entry["type"] == "stdio"
         assert entry["args"] == ["mcp", "web-search"]
         assert entry["env"]["DATABRICKS_HOST"] == WS
         assert entry["env"]["UCODE_WEB_SEARCH_MODEL"] == "databricks-gpt-5"
-        assert isinstance(entry["command"], str) and entry["command"]
+        assert entry["command"] == "/tools/ug"
 
 
 class TestResolveWebSearchModel:
@@ -577,7 +673,7 @@ class TestResolveWebSearchModel:
 
 class TestClaudeDefaultModel:
     def test_prefers_opus(self):
-        state = {"claude_models": {"sonnet": "s4", "opus": "o4", "haiku": "h4"}}
+        state = {"claude_models": {"fable": "f5", "sonnet": "s4", "opus": "o4", "haiku": "h4"}}
         assert claude.default_model(state) == "o4"
 
     def test_falls_back_to_sonnet(self):
@@ -585,8 +681,11 @@ class TestClaudeDefaultModel:
         assert claude.default_model(state) == "s4"
 
     def test_falls_back_to_haiku(self):
-        state = {"claude_models": {"haiku": "h4"}}
+        state = {"claude_models": {"fable": "f5", "haiku": "h4"}}
         assert claude.default_model(state) == "h4"
+
+    def test_fable_only_workspace_has_a_default(self):
+        assert claude.default_model({"claude_models": {"fable": "f5"}}) == "f5"
 
     def test_returns_none_when_no_models(self):
         assert claude.default_model({}) is None
@@ -685,6 +784,40 @@ class TestWriteToolConfigStripsRemovedEnvKeys:
 
         assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in written[0]["env"]
 
+    def test_writes_otel_tracing_when_enabled(self, monkeypatch):
+        written: list = []
+        self._patch(monkeypatch, {}, written)
+        state = {"workspace": WS, "codex_models": [], "claude_otel_tracing": True}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        env = written[0]["env"]
+        assert env["CLAUDE_CODE_ENABLE_TELEMETRY"] == "1"
+        assert env["CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"] == "1"
+        assert env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == f"{WS}/ai-gateway/otel/v1/traces"
+        assert "otel-headers" in written[0]["otelHeadersHelper"]
+
+    def test_strips_stale_otel_tracing_when_disabled(self, monkeypatch):
+        existing = {
+            "env": {
+                "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+                "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
+                "OTEL_TRACES_EXPORTER": "otlp",
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": f"{WS}/ai-gateway/otel/v1/traces",
+            },
+            "otelHeadersHelper": f"ug otel-headers --host {WS}",
+        }
+        written: list = []
+        self._patch(monkeypatch, existing, written)
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        assert "otelHeadersHelper" not in written[0]
+        for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS:
+            assert key not in written[0]["env"]
+
 
 FAKE_MANAGED_PATH = Path("/tmp/ucode-test/managed-settings.json")
 
@@ -733,7 +866,6 @@ class TestWriteToolConfigManagedSettings:
         coding_agent_config_defaults: dict[str, str],
         managed_settings_defaults: dict[str, str],
         ucode_defaults: dict[str, str],
-        fable_enabled: bool,
     ) -> dict[str, str]:
         private_writes: list = []
         managed_writes: list = []
@@ -752,7 +884,6 @@ class TestWriteToolConfigManagedSettings:
             "workspace": WS,
             "codex_models": [],
             "claude_models": resolved_defaults,
-            "fable_enabled": fable_enabled,
         }
         if coding_agent_config_defaults:
             state[MANAGED_OVERLAY_KEY] = {"claude_models": ucode_defaults}
@@ -853,7 +984,7 @@ class TestWriteToolConfigManagedSettings:
             }
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing_managed_settings)
-        monkeypatch.setattr(claude, "ucode_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
         state = {"workspace": WS, "codex_models": []}
 
@@ -880,7 +1011,6 @@ class TestWriteToolConfigManagedSettings:
                 "sonnet": "system.ai.claude-sonnet-5",
                 "haiku": "system.ai.claude-haiku-5",
             },
-            fable_enabled=False,
         )
 
         assert managed_defaults == {
@@ -927,16 +1057,15 @@ class TestWriteToolConfigManagedSettings:
         env = json.loads(managed_writes[0][1])["env"]
         assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "us.anthropic.claude-opus-4-6"
 
-    def test_managed_file_removes_fable_default_when_fable_is_disabled(self, monkeypatch):
+    def test_managed_file_applies_fable_default_precedence_without_opt_in(self, monkeypatch):
         managed_defaults = self._write_managed_model_defaults(
             monkeypatch,
             coding_agent_config_defaults={"fable": "coding-agent-config-fable"},
             managed_settings_defaults={"fable": "managed-settings-fable"},
             ucode_defaults={"fable": "ucode-fable"},
-            fable_enabled=False,
         )
 
-        assert "fable" not in managed_defaults
+        assert managed_defaults["fable"] == "coding-agent-config-fable"
 
     def test_managed_file_preserves_enterprise_permission_denies(self, monkeypatch):
         private_writes: list = []
@@ -1066,8 +1195,178 @@ class TestWriteToolConfigManagedSettings:
                 {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
             )
 
+    def test_static_models_written_to_picker(self, monkeypatch):
+        # Static models from state are rendered into the managed settings picker.
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        static_models = ["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-4-6"]
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_static_models": static_models,
+        }
+        claude.write_tool_config(state, "system.ai.claude-opus-4-8")
+        # Managed file should have the picker.
+        assert len(managed_writes) > 0
+        managed_content = json.loads(managed_writes[0][1])
+        assert managed_content["availableModels"] == static_models
+        assert managed_content["enforceAvailableModels"] is True
+        assert "modelPicker" in managed_content
+        assert len(managed_content["modelPicker"]["options"]) == 2
+
+    def test_static_models_not_written_when_absent(self, monkeypatch):
+        # When claude_static_models is not in state, picker fields are not written.
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        state = {"workspace": WS, "codex_models": []}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        # Managed file should not have the picker.
+        assert len(managed_writes) > 0
+        managed_content = json.loads(managed_writes[0][1])
+        assert "availableModels" not in managed_content
+        assert "modelPicker" not in managed_content
+
+
+class TestAddClaudeMcpServer:
+    def test_registers_stdio_proxy_command(self, monkeypatch):
+        calls: list[dict] = []
+
+        def fake_run(args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        claude.add_claude_mcp_server("github", _proxy_argv())
+
+        args = calls[0]["args"]
+        assert args[:4] == ["claude", "mcp", "add", "github"]
+        assert args[4:6] == ["-s", "user"]
+        # `--` fences the proxy argv; everything after it is the stdio command.
+        assert args[6] == "--"
+        assert args[7:] == _proxy_argv()
+
+    def test_always_load_routes_through_add_json_stdio_entry(self, monkeypatch):
+        # The skills registry needs `alwaysLoad: true`, which plain `mcp add`
+        # can't set — so the proxy argv is wrapped in a stdio entry dict and
+        # registered via add-json instead.
+        calls: list[dict] = []
+
+        def fake_run(args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        claude.add_claude_mcp_server("skills", _proxy_argv(), always_load=True)
+
+        args = calls[0]["args"]
+        assert args[:4] == ["claude", "mcp", "add-json", "skills"]
+        entry = json.loads(args[4])
+        assert entry == {
+            "type": "stdio",
+            "command": _proxy_argv()[0],
+            "args": _proxy_argv()[1:],
+            "alwaysLoad": True,
+        }
+        assert args[5:] == ["-s", "user"]
+
+    def test_dict_entry_routes_through_add_json(self, monkeypatch):
+        # The web_search server registers a full stdio entry dict with its own
+        # env, which only `add-json` can express — a dict must route there rather
+        # than through the proxy `mcp add -- <argv>` path.
+        calls: list[dict] = []
+
+        def fake_run(args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        entry = {"type": "stdio", "command": "ucode", "args": ["mcp", "web-search"]}
+        claude.add_claude_mcp_server("web_search", entry)
+
+        args = calls[0]["args"]
+        assert args[:4] == ["claude", "mcp", "add-json", "web_search"]
+        assert json.loads(args[4]) == entry
+        assert args[5:] == ["-s", "user"]
+
+
+class TestRemoveClaudeMcpServer:
+    def test_returns_true_when_server_removed(self, monkeypatch):
+        calls: list[list[str]] = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        assert claude.remove_claude_mcp_server("github", "user") is True
+        assert calls == [["claude", "mcp", "remove", "github", "-s", "user"]]
+
+    def test_returns_false_when_server_missing(self, monkeypatch):
+        def fake_run(args, **kwargs):
+            raise subprocess.CalledProcessError(1, args, stderr="No MCP server named github found")
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        assert claude.remove_claude_mcp_server("github", "user") is False
+
+    def test_returns_false_when_project_local_server_missing(self, monkeypatch):
+        def fake_run(args, **kwargs):
+            raise subprocess.CalledProcessError(
+                1,
+                args,
+                stderr="No project-local MCP server found with name: github",
+            )
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        assert claude.remove_claude_mcp_server("github", "project") is False
+
+    def test_returns_false_when_user_scoped_server_missing(self, monkeypatch):
+        def fake_run(args, **kwargs):
+            raise subprocess.CalledProcessError(
+                1,
+                args,
+                stderr="No user-scoped MCP server found with name: github",
+            )
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        assert claude.remove_claude_mcp_server("github", "user") is False
+
+    def test_unexpected_failure_raises(self, monkeypatch):
+        def fake_run(args, **kwargs):
+            raise subprocess.CalledProcessError(1, args, stderr="permission denied")
+
+        monkeypatch.setattr(claude.subprocess, "run", fake_run)
+
+        try:
+            claude.remove_claude_mcp_server("github", "user")
+        except RuntimeError as exc:
+            assert "Failed to remove MCP server 'github'" in str(exc)
+        else:
+            raise AssertionError("expected RuntimeError")
+
 
 class TestRegisterWebSearchMcp:
+    def test_legacy_ucode_command_requires_reregistration(self, monkeypatch):
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/tools/{command}")
+        entry = claude._web_search_mcp_entry(WS, "m", "profile")
+        legacy_entry = {**entry, "command": "/tools/ucode"}
+        state = {claude.WEB_SEARCH_MCP_STATE_KEY: legacy_entry}
+        monkeypatch.setattr(
+            claude,
+            "read_json_safe",
+            lambda path: {"mcpServers": {claude.WEB_SEARCH_MCP_NAME: legacy_entry}},
+        )
+
+        assert claude._web_search_mcp_is_current(state, entry) is False
+
     def test_skips_registration_when_entry_is_current(self, monkeypatch):
         entry = claude._web_search_mcp_entry(WS, "m", "profile")
         state = {claude.WEB_SEARCH_MCP_STATE_KEY: entry}
@@ -1085,37 +1384,33 @@ class TestRegisterWebSearchMcp:
         assert claude._web_search_mcp_is_current(state, entry) is False
 
     def test_clears_existing_then_adds(self, monkeypatch):
-        import ucode.mcp as mcp_mod
-
         removed: list[str] = []
         added: list = []
         monkeypatch.setattr(
-            mcp_mod, "remove_claude_mcp_server", lambda name, scope: removed.append(scope) or True
+            claude, "remove_claude_mcp_server", lambda name, scope: removed.append(scope) or True
         )
         monkeypatch.setattr(
-            mcp_mod,
+            claude,
             "add_claude_mcp_server",
-            lambda name, entry, scope=mcp_mod.MCP_USER_SCOPE: added.append((name, entry, scope)),
+            lambda name, entry, scope=claude.MCP_USER_SCOPE: added.append((name, entry, scope)),
         )
         claude._register_web_search_mcp(WS, "databricks-gpt-5")
-        assert removed == list(mcp_mod.MCP_CLEANUP_SCOPES)
+        assert removed == list(claude.MCP_CLEANUP_SCOPES)
         assert len(added) == 1
         name, entry, _ = added[0]
         assert name == "web_search"
         assert entry["env"]["UCODE_WEB_SEARCH_MODEL"] == "databricks-gpt-5"
 
     def test_remove_failures_are_swallowed(self, monkeypatch):
-        import ucode.mcp as mcp_mod
-
         def boom(name, scope):
             raise RuntimeError("nope")
 
         added: list = []
-        monkeypatch.setattr(mcp_mod, "remove_claude_mcp_server", boom)
+        monkeypatch.setattr(claude, "remove_claude_mcp_server", boom)
         monkeypatch.setattr(
-            mcp_mod,
+            claude,
             "add_claude_mcp_server",
-            lambda name, entry, scope=mcp_mod.MCP_USER_SCOPE: added.append(name),
+            lambda name, entry, scope=claude.MCP_USER_SCOPE: added.append(name),
         )
         claude._register_web_search_mcp(WS, "m")
         assert added == ["web_search"]
@@ -1123,27 +1418,23 @@ class TestRegisterWebSearchMcp:
     def test_add_failure_is_non_blocking_and_warns(self, monkeypatch, capsys):
         # Regression: a failing `claude mcp add-json` used to abort the whole
         # `ucode claude` setup. It must now warn and return False instead.
-        import ucode.mcp as mcp_mod
+        monkeypatch.setattr(claude, "remove_claude_mcp_server", lambda name, scope: False)
 
-        monkeypatch.setattr(mcp_mod, "remove_claude_mcp_server", lambda name, scope: False)
-
-        def boom(name, entry, scope=mcp_mod.MCP_USER_SCOPE):
+        def boom(name, entry, scope=claude.MCP_USER_SCOPE):
             raise RuntimeError("Failed to add MCP server 'web_search' via claude CLI.")
 
-        monkeypatch.setattr(mcp_mod, "add_claude_mcp_server", boom)
+        monkeypatch.setattr(claude, "add_claude_mcp_server", boom)
         result = claude._register_web_search_mcp(WS, "m")
         assert result is False
         captured = capsys.readouterr()
         assert "web_search" in captured.out.lower() or "web search" in captured.out.lower()
 
     def test_add_success_returns_true(self, monkeypatch):
-        import ucode.mcp as mcp_mod
-
-        monkeypatch.setattr(mcp_mod, "remove_claude_mcp_server", lambda name, scope: False)
+        monkeypatch.setattr(claude, "remove_claude_mcp_server", lambda name, scope: False)
         monkeypatch.setattr(
-            mcp_mod,
+            claude,
             "add_claude_mcp_server",
-            lambda name, entry, scope=mcp_mod.MCP_USER_SCOPE: None,
+            lambda name, entry, scope=claude.MCP_USER_SCOPE: None,
         )
         assert claude._register_web_search_mcp(WS, "m") is True
 
@@ -1151,19 +1442,17 @@ class TestRegisterWebSearchMcp:
         # Regression for issue #100: a `claude mcp add-json` failure must not
         # block the rest of `ucode claude` setup (state save, managed-key
         # marking, etc.) from completing.
-        import ucode.mcp as mcp_mod
-
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
         monkeypatch.setattr(claude, "read_json_safe", lambda path: {})
         monkeypatch.setattr(claude, "write_json_file", lambda path, payload: None)
         saved: list[dict] = []
         monkeypatch.setattr(claude, "save_state", lambda state: saved.append(state))
-        monkeypatch.setattr(mcp_mod, "remove_claude_mcp_server", lambda name, scope: False)
+        monkeypatch.setattr(claude, "remove_claude_mcp_server", lambda name, scope: False)
 
-        def boom(name, entry, scope=mcp_mod.MCP_USER_SCOPE):
+        def boom(name, entry, scope=claude.MCP_USER_SCOPE):
             raise RuntimeError("Failed to add MCP server 'web_search' via claude CLI.")
 
-        monkeypatch.setattr(mcp_mod, "add_claude_mcp_server", boom)
+        monkeypatch.setattr(claude, "add_claude_mcp_server", boom)
 
         state = {"workspace": WS, "codex_models": ["databricks-gpt-5"]}
         result = claude.write_tool_config(state, "databricks-claude-sonnet-4")
@@ -1257,7 +1546,7 @@ class TestClaudeLaunch:
         assert calls[-3:] == [("stop",), ("shutdown",), ("close",)]
 
     def test_smart_routing_on_windows_is_not_supported(self, monkeypatch):
-        monkeypatch.setenv(v2.ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(claude.os, "name", "nt")
 
         with pytest.raises(
@@ -1272,7 +1561,7 @@ class TestClaudeLaunch:
 
     def test_default_launch_keeps_existing_auth_path(self, monkeypatch):
         calls: list[list[str]] = []
-        monkeypatch.delenv(v2.ENV_VAR, raising=False)
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
@@ -1292,11 +1581,13 @@ class TestClaudeLaunch:
         claude.launch(
             {"workspace": WS, "profile": "test"},
             [],
-            options=LaunchOptions(claude_launch_model="cat.schema.model"),
+            options=LaunchOptions(user_pinned_model="cat.schema.model"),
         )
 
         assert os.environ["ANTHROPIC_MODEL"] == "cat.schema.model"
-        assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH)]]
+        assert calls[0][:2] == ["claude", "--settings"]
+        settings = json.loads(calls[0][2])
+        assert settings["env"]["ANTHROPIC_MODEL"] == "cat.schema.model"
 
     @pytest.mark.parametrize(
         "tool_args",
@@ -1307,7 +1598,7 @@ class TestClaudeLaunch:
     )
     def test_v2_noninteractive_launch_bypasses_first_prompt_routing(self, monkeypatch, tool_args):
         calls: list[list[str]] = []
-        monkeypatch.setenv(v2.ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "launch_claude", Mock())
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
@@ -1319,9 +1610,8 @@ class TestClaudeLaunch:
 
     @pytest.mark.parametrize("tool_args", [["fix this bug"], ["--", "fix this bug"]])
     def test_v2_positional_prompt_uses_first_prompt_routing(self, monkeypatch, tool_args):
-        monkeypatch.setenv(v2.ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         launch_v2 = Mock()
-        monkeypatch.setattr(claude, "_original_launch_model", lambda _state: None)
         monkeypatch.setattr(v2, "launch_claude", launch_v2)
 
         claude.launch(
@@ -1343,7 +1633,7 @@ class TestClaudeLaunch:
 
     def test_gateway_discovery_uses_direct_gateway(self, monkeypatch):
         calls: list[list[str]] = []
-        monkeypatch.delenv(v2.ENV_VAR, raising=False)
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
@@ -1357,7 +1647,7 @@ class TestClaudeLaunch:
 
     def test_gateway_discovery_enabled_under_provider(self, monkeypatch):
         calls: list[list[str]] = []
-        monkeypatch.delenv(v2.ENV_VAR, raising=False)
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")

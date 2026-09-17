@@ -22,7 +22,7 @@ pi today — they live behind /ai-gateway/mlflow/v1 with per-model
 config we don't currently maintain.
 
 Each provider's `apiKey` is pi's `!command` config value rather than a baked
-bearer, so pi mints one per request via `ucode auth-token` and nothing that
+bearer, so pi mints one per request via `ug auth-token` and nothing that
 expires is written to `models.json` (the on-demand model OpenCode's auth plugin
 already uses). A token still reaches the process environment: `launch` exports
 `OAUTH_TOKEN` as before.
@@ -50,7 +50,7 @@ from ucode.databricks import (
     get_databricks_token,
 )
 from ucode.state import mark_tool_managed, save_state
-from ucode.telemetry import agent_version, ucode_version
+from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions
 
@@ -117,7 +117,7 @@ def render_overlay(
     keys: list[list[str]] = [["model"]]
     # Pi expands header values that match an env var name. Our UA contains
     # `/` and a space so it can never collide — safe to pass as a literal.
-    ua_headers = {"User-Agent": f"ucode/{ucode_version()} pi/{agent_version('pi')}"}
+    ua_headers = {"User-Agent": f"ucode/{ug_version()} pi/{agent_version('pi')}"}
 
     claude_ids = sorted(set(claude_models.values()))
     if claude_ids:
@@ -275,7 +275,7 @@ def default_model(state: dict) -> str | None:
     if codex_models:
         return codex_models[0]
     gemini_models = state.get("gemini_models") or []
-    return gemini_models[0] if gemini_models else None
+    return gemini_models[0] if gemini_models else next(iter(claude_models.values()), None)
 
 
 def _configure_launch(state: dict) -> str:
@@ -310,10 +310,3 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
 
 def validate_cmd(binary: str) -> list[str]:
     return [binary, "--print", "say hi in 5 words or less"]
-
-
-def validate_env(state: dict) -> dict[str, str]:
-    workspace = state.get("workspace")
-    if not workspace:
-        raise RuntimeError("No workspace configured.")
-    return build_runtime_env(get_databricks_token(workspace, state.get("profile")))

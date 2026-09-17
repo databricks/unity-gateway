@@ -15,11 +15,24 @@ from typer.testing import CliRunner
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 from ucode.cli import app
-from ucode.custom_oauth import get_custom_client_token
+from ucode.custom_oauth import (
+    _custom_oauth_lock,
+    build_custom_auth_token_argv,
+    get_custom_client_token,
+)
 
 WS = "https://example.databricks.com"
 TEST_SCOPES = ("offline_access", "catalog.catalogs:read")
 runner = CliRunner()
+
+
+class TestCustomOAuthLock:
+    def test_releases_lock_when_login_fails(self, tmp_path):
+        with pytest.raises(ValueError, match="login failed"):
+            with _custom_oauth_lock(tmp_path, "http://localhost:8020/callback"):
+                raise ValueError("login failed")
+        with _custom_oauth_lock(tmp_path, "http://127.0.0.1:8020/other-callback"):
+            assert len(list(tmp_path.glob("*.lock"))) == 1
 
 
 class TestCustomClientToken:
@@ -63,6 +76,26 @@ class TestCustomClientToken:
             redirect_url="http://localhost:8020",
             scopes=list(TEST_SCOPES),
         )
+
+    def test_saved_cli_profile_helper_omits_setup_options(self, monkeypatch):
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/tools/ug")
+
+        assert build_custom_auth_token_argv(
+            WS,
+            {
+                "client_id": "custom-client",
+                "redirect_url": "http://localhost:8020/callback",
+                "scopes": ["offline_access", "model-serving"],
+                "profile": "custom-profile",
+            },
+        ) == [
+            "/tools/ug",
+            "auth-token",
+            "--host",
+            WS,
+            "--profile",
+            "custom-profile",
+        ]
 
     def test_browser_login_uses_custom_client_and_redirect(self, capsys):
         redirect_url = "http://localhost:41735/ai-devtools-workspace-oauth"
@@ -191,6 +224,7 @@ class TestCustomClientCommand:
             client_id="my-client",
             redirect_url="http://localhost:41735/callback",
             scopes=["offline_access", "catalog.catalogs:read"],
+            profile="saved",
             force_refresh=True,
         )
 
@@ -224,7 +258,7 @@ class TestConfigureCustomOAuth:
                     "configure",
                     "--agent",
                     "claude",
-                    "--workspaces",
+                    "--workspace",
                     WS,
                     "--client-id",
                     "custom-client",
@@ -255,7 +289,6 @@ class TestConfigureCustomOAuth:
             result = cli_mod.configure_workspace_command(
                 "claude",
                 workspaces=[(WS, None)],
-                skip_validate=True,
             )
 
         assert result == 0
@@ -346,7 +379,6 @@ class TestLaunchCustomOAuth:
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state) as configure_shared,
             patch("ucode.cli.configure_single_tool", return_value=state),
-            patch("ucode.cli.validate_tool", return_value=(True, None)),
         ):
             cli_mod._auto_configure_tool("codex", custom_oauth=custom_oauth)
 
@@ -363,7 +395,6 @@ class TestLaunchCustomOAuth:
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state) as configure_shared,
             patch("ucode.cli.configure_single_tool", return_value=state),
-            patch("ucode.cli.validate_tool", return_value=(True, None)),
         ):
             cli_mod._auto_configure_tool("claude")
 

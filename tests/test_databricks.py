@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from decimal import Decimal
 from urllib.parse import parse_qs
 
@@ -23,6 +24,9 @@ from ucode.databricks import (
     build_auth_token_argv,
     build_databricks_cli_env,
     build_opencode_base_urls,
+    build_otel_headers_argv,
+    build_otel_headers_shell_command,
+    build_otel_traces_endpoint,
     build_shared_base_urls,
     build_skills_mcp_url,
     build_tool_base_url,
@@ -70,7 +74,12 @@ class TestFetchCodexMpsModelCatalog:
 
         monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
 
-        result = db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
+        result = db_mod._fetch_codex_model_catalog(
+            WS,
+            "tok",
+            source=db_mod.CodexCatalogSource.PROVIDER,
+            identifier="main.default.openai",
+        )
 
         assert result["models"][0]["slug"] == "gpt-mps"
         assert seen["url"] == f"{WS}/ai-gateway/codex/v1/models"
@@ -82,7 +91,49 @@ class TestFetchCodexMpsModelCatalog:
         )
 
         with pytest.raises(RuntimeError, match="returned no Codex models"):
-            db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
+            db_mod._fetch_codex_model_catalog(
+                WS,
+                "tok",
+                source=db_mod.CodexCatalogSource.PROVIDER,
+                identifier="main.default.openai",
+            )
+
+
+class TestFetchCodexParentModelCatalog:
+    def test_sends_parent_header(self, monkeypatch):
+        seen = {}
+
+        def fake_get(url, token, **kwargs):
+            seen.update(url=url, token=token, **kwargs)
+            return {"models": [{"slug": "gpt-parent"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        result = db_mod._fetch_codex_model_catalog(
+            WS,
+            "tok",
+            source=db_mod.CodexCatalogSource.PARENT_SCHEMA,
+            identifier="main.default",
+        )
+
+        assert result["models"][0]["slug"] == "gpt-parent"
+        assert seen["url"] == f"{WS}/ai-gateway/codex/v1/models"
+        assert seen["headers"] == {"Databricks-Model-Service-Parent-Schema": "main.default"}
+
+    def test_rejects_empty_catalog(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda *args, **kwargs: ({"models": []}, None)
+        )
+
+        with pytest.raises(
+            RuntimeError, match="Parent schema main.default returned no Codex models"
+        ):
+            db_mod._fetch_codex_model_catalog(
+                WS,
+                "tok",
+                source=db_mod.CodexCatalogSource.PARENT_SCHEMA,
+                identifier="main.default",
+            )
 
     def test_reports_disabled_route_as_unavailable(self, monkeypatch):
         monkeypatch.setattr(
@@ -95,7 +146,12 @@ class TestFetchCodexMpsModelCatalog:
         )
 
         with pytest.raises(db_mod.CodexMpsModelCatalogUnavailable):
-            db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
+            db_mod._fetch_codex_model_catalog(
+                WS,
+                "tok",
+                source=db_mod.CodexCatalogSource.PROVIDER,
+                identifier="main.default.openai",
+            )
 
     def test_keeps_other_discovery_errors_fatal(self, monkeypatch):
         monkeypatch.setattr(
@@ -105,7 +161,12 @@ class TestFetchCodexMpsModelCatalog:
         )
 
         with pytest.raises(RuntimeError, match="HTTP 403 Forbidden") as exc_info:
-            db_mod.fetch_codex_mps_model_catalog(WS, "tok", "main.default.openai")
+            db_mod._fetch_codex_model_catalog(
+                WS,
+                "tok",
+                source=db_mod.CodexCatalogSource.PROVIDER,
+                identifier="main.default.openai",
+            )
 
         assert not isinstance(exc_info.value, db_mod.CodexMpsModelCatalogUnavailable)
 
@@ -123,6 +184,38 @@ class TestWorkspaceHostname:
     def test_invalid_url_raises(self):
         with pytest.raises((RuntimeError, ValueError)):
             workspace_hostname("")
+
+
+class _FakeResponseWithHeaders(_FakeResponse):
+    def __init__(self, payload: dict, headers: dict):
+        super().__init__(payload)
+        self.headers = headers
+
+
+class TestWorkspaceOrgId:
+    def _stub_response(self, monkeypatch, headers: dict) -> None:
+        monkeypatch.setattr(
+            db_mod.urllib_request,
+            "urlopen",
+            lambda request, timeout=None: _FakeResponseWithHeaders({"ok": True}, headers),
+        )
+
+    def test_captures_org_id_header_from_get(self, monkeypatch):
+        self._stub_response(monkeypatch, {"X-Databricks-Org-Id": "1234567890"})
+
+        db_mod._http_get_json(f"{WS}/api/2.1/unity-catalog/skills", "token")
+
+        assert db_mod.workspace_org_id(WS) == "1234567890"
+
+    def test_absent_until_a_response_reveals_it(self):
+        assert db_mod.workspace_org_id(WS) is None
+
+    def test_missing_header_leaves_it_absent(self, monkeypatch):
+        self._stub_response(monkeypatch, {})
+
+        db_mod._http_get_json(f"{WS}/api/x", "token")
+
+        assert db_mod.workspace_org_id(WS) is None
 
 
 class TestBuildDatabricksCliEnv:
@@ -167,6 +260,14 @@ class TestBuildToolBaseUrl:
     def test_unsupported_tool_raises(self):
         with pytest.raises(RuntimeError, match="Unsupported"):
             build_tool_base_url("unknown", WS)
+
+
+class TestBuildOtelTracesEndpoint:
+    def test_appends_full_traces_path(self):
+        assert build_otel_traces_endpoint(WS) == f"{WS}/ai-gateway/otel/v1/traces"
+
+    def test_strips_trailing_slash(self):
+        assert build_otel_traces_endpoint(WS + "/") == f"{WS}/ai-gateway/otel/v1/traces"
 
 
 class TestBuildOpencodeBaseUrls:
@@ -271,6 +372,20 @@ class TestDiscoverClaudeModels:
 
         assert reason is None
         assert models["opus"] == "databricks-claude-opus-4-8"
+
+    def test_preserves_opus_5_when_opus_4_8_is_also_available(self, monkeypatch):
+        payload = {
+            "data": [
+                {"id": "system.ai.claude-opus-5"},
+                {"id": "system.ai.claude-opus-4-8"},
+            ]
+        }
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (payload, None))
+
+        models, reason = db_mod.discover_claude_models(WS, "token")
+
+        assert reason is None
+        assert models["opus"] == "system.ai.claude-opus-5"
 
     def test_buckets_system_ai_claude_models(self, monkeypatch):
         payload = {
@@ -1149,6 +1264,71 @@ class TestListMcpServices:
         assert reason and reason.startswith("HTTP 404")
 
 
+class TestWalkCatalogSchemas:
+    """The generic catalogs -> schemas -> per-schema probe scaffold, independent of any probe."""
+
+    def _fake_catalog_http(self, catalogs, schemas_by_catalog):
+        def fake_get(url, token, timeout=30):
+            if "unity-catalog/catalogs" in url:
+                return {"catalogs": [{"name": c} for c in catalogs]}, None
+            if "unity-catalog/schemas" in url:
+                cat = url.split("catalog_name=")[1].split("&")[0]
+                return {"schemas": [{"name": s} for s in schemas_by_catalog.get(cat, [])]}, None
+            return None, "unexpected url"
+
+        return fake_get
+
+    def test_probes_each_user_schema_and_reports_progress(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            self._fake_catalog_http(
+                catalogs=["mycat", "system"],
+                schemas_by_catalog={"mycat": ["a", "b", "information_schema"]},
+            ),
+        )
+        probed: list[tuple[str, str]] = []
+        collected: list[tuple[str, int, int]] = []
+
+        def probe(catalog, schema):
+            probed.append((catalog, schema))
+            return f"{catalog}.{schema}"
+
+        def collect(result, done, total):
+            collected.append((result, done, total))
+
+        reason = db_mod.walk_catalog_schemas(
+            WS, "token", deadline=time.monotonic() + 30, probe=probe, collect=collect
+        )
+
+        assert reason is None
+        # system is skipped and information_schema is dropped; only user schemas are probed.
+        assert sorted(probed) == [("mycat", "a"), ("mycat", "b")]
+        assert sorted(r for r, _, _ in collected) == ["mycat.a", "mycat.b"]
+        # One collect per probed schema; total is fixed and done climbs to it.
+        assert [total for _, _, total in collected] == [2, 2]
+        assert sorted(done for _, done, _ in collected) == [1, 2]
+
+    def test_returns_reason_when_all_catalogs_skipped(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            self._fake_catalog_http(catalogs=["system", "samples"], schemas_by_catalog={}),
+        )
+        probed: list[tuple[str, str]] = []
+
+        reason = db_mod.walk_catalog_schemas(
+            WS,
+            "token",
+            deadline=time.monotonic() + 30,
+            probe=lambda catalog, schema: probed.append((catalog, schema)),
+            collect=lambda *args: None,
+        )
+
+        assert reason == "no user UC catalogs found"
+        assert probed == []
+
+
 class TestListAllMcpServices:
     """Workspace-wide walk: catalogs -> schemas -> per-schema mcp-services."""
 
@@ -1425,12 +1605,33 @@ class TestApplyPatEnvironment:
         assert os.environ["DATABRICKS_BEARER"] == "explicit-bearer"
 
 
+class TestUgBinary:
+    @pytest.mark.parametrize("resolved", ["/tools with spaces/ug", r"C:\Tools with spaces\ug.exe"])
+    def test_resolves_canonical_command_even_when_invoked_as_ucode(self, monkeypatch, resolved):
+        requested = []
+
+        def which(command):
+            requested.append(command)
+            return resolved
+
+        monkeypatch.setattr(db_mod.shutil, "which", which)
+        monkeypatch.setattr("sys.argv", ["ucode", "configure"])
+
+        assert db_mod.ug_binary() == resolved
+        assert requested == ["ug"]
+
+    def test_falls_back_to_ug_without_path_entry(self, monkeypatch):
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: None)
+        assert db_mod.ug_binary() == "ug"
+
+
 class TestBuildAuthTokenArgv:
-    def test_basic_argv(self):
+    def test_basic_argv(self, monkeypatch):
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: f"/tools/{command}")
         argv = build_auth_token_argv(WS)
-        # First element resolves to the ucode executable; the rest is the
+        # First element resolves to the ug executable; the rest is the
         # cross-platform helper invocation — no `sh`, no `jq`, no shell syntax.
-        assert argv[0].endswith("ucode") or argv[0] == "ucode"
+        assert argv[0] == "/tools/ug"
         assert argv[1:] == ["auth-token", "--host", WS]
 
     def test_strips_trailing_slash_from_host(self):
@@ -1461,8 +1662,8 @@ class TestBuildAuthShellCommand:
         cmd = build_auth_shell_command(WS)
         assert WS in cmd
 
-    def test_is_ucode_auth_token_invocation(self):
-        # The persisted helper now points at the `ucode auth-token` executable
+    def test_is_ug_auth_token_invocation(self):
+        # The persisted helper points at the `ug auth-token` executable
         # on every platform — not a POSIX `databricks ... | jq` pipeline.
         cmd = build_auth_shell_command(WS)
         assert "auth-token" in cmd
@@ -1470,6 +1671,15 @@ class TestBuildAuthShellCommand:
         # POSIX-only constructs that broke Windows (#116) must be gone.
         assert "jq" not in cmd
         assert "if [ -n" not in cmd
+
+    def test_windows_quotes_ug_path_with_spaces(self, monkeypatch):
+        executable = r"C:\Program Files\Unity Gateway\ug.exe"
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: executable)
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+
+        assert build_auth_shell_command(WS, "my profile") == (
+            f'"{executable}" auth-token --host {WS} --profile "my profile"'
+        )
 
     def test_embeds_profile_when_provided(self):
         cmd = build_auth_shell_command(WS, profile="stablebox")
@@ -1486,6 +1696,37 @@ class TestBuildAuthShellCommand:
         cmd = build_auth_shell_command(WS, profile="DEFAULT", use_pat=True)
         assert "--use-pat" in cmd
         assert "--profile DEFAULT" in cmd
+
+
+class TestBuildOtelHeadersArgv:
+    def test_basic_argv(self, monkeypatch):
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: f"/tools/{command}")
+        assert build_otel_headers_argv(WS) == [
+            "/tools/ug",
+            "otel-headers",
+            "--host",
+            WS,
+        ]
+
+    def test_embeds_profile_and_use_pat(self):
+        argv = build_otel_headers_argv(WS + "/", profile="stablebox", use_pat=True)
+        assert argv[argv.index("--host") + 1] == WS
+        assert argv[argv.index("--profile") + 1] == "stablebox"
+        assert "--use-pat" in argv
+
+
+class TestBuildOtelHeadersShellCommand:
+    def test_is_ug_otel_headers_invocation(self):
+        cmd = build_otel_headers_shell_command(WS)
+        assert "otel-headers" in cmd
+        assert "--host" in cmd
+        assert WS in cmd
+        assert "jq" not in cmd
+
+    def test_quotes_profile_shell_metacharacters(self):
+        cmd = build_otel_headers_shell_command(WS, profile="weird name; rm -rf /")
+        if os.name != "nt":
+            assert "'weird name; rm -rf /'" in cmd
 
 
 class TestEnsurePatBearer:
@@ -2334,6 +2575,30 @@ class TestEnsureDatabricksCliVersion:
         with pytest.raises(RuntimeError, match="Could not parse"):
             ensure_databricks_cli_version()
 
+    def test_custom_minimum_upgrades_version_below_it(self, tmp_path, monkeypatch):
+        import ucode.databricks as db_mod
+
+        # v1.8.0 clears the default floor but not the skills-MCP floor (1.11.0).
+        env = self._fake_databricks(tmp_path, "Databricks CLI v1.8.0")
+        monkeypatch.setattr("os.environ", env)
+        upgraded = []
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda brew_subcommand="install": upgraded.append(brew_subcommand),
+        )
+        call_count = [0]
+        original = db_mod.ensure_databricks_cli_version
+
+        def once(*a, **kw):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                original(*a, **kw)
+
+        monkeypatch.setattr(db_mod, "ensure_databricks_cli_version", once)
+        once(db_mod.SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        assert upgraded == ["upgrade"]
+
 
 class TestDatabricksCliVersion:
     def test_none_when_absent(self, monkeypatch):
@@ -2553,9 +2818,8 @@ class TestModelServicesCache:
         claude, _codex, _gemini, _oss, _reason = db_mod.discover_model_services(WS, "tok")
         unbucketed, _ = db_mod.discover_claude_models_unbucketed(WS, "tok")
         assert calls["n"] == 1
-        # Both views still come back intact: newest-per-family (pinned to opus-4-8
-        # for smart-routing compatibility by _prefer_opus_4_8), and the full list.
-        assert claude["opus"] == "system.ai.claude-opus-4-8"
+        # Both views retain the newest-per-family choice and the full list.
+        assert claude["opus"] == "system.ai.claude-opus-5"
         assert unbucketed == ["system.ai.claude-opus-4-8", "system.ai.claude-opus-5"]
 
     def test_use_cache_false_forces_a_fresh_walk(self, monkeypatch):
@@ -2888,15 +3152,13 @@ class TestCodingAgentConfigCrudClients:
         emitted = set(
             serialize_managed_config(
                 {
-                    "display_name": "org config",
                     "default_agent": "claude",
                     "enabled_agents": {
                         "claude": {"model_config": {"default_model": "system.ai.claude-opus-5"}}
                     },
-                    "mcp_servers": [{"name": "databricks-sql", "type": "sql"}],
-                    "skills": {"names": ["main.default"]},
-                    "tracing_table": "main.default.traces",
-                    "budget_policy": {
+                    "mcp_servers": {"names": ["main.default.databricks_sql"]},
+                    "skills": {"names": ["main.default.triage"]},
+                    "spend_tiers": {
                         "budget_id": "11111111-1111-1111-1111-111111111111",
                         "tiers": [],
                     },

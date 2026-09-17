@@ -7,6 +7,7 @@ from typing import cast
 
 from ucode.config_io import APP_DIR, is_dry_run
 from ucode.custom_oauth import (
+    CUSTOM_OAUTH_TIMEOUT_MS,
     CustomOAuthConfig,
     build_custom_auth_shell_command,
     build_custom_auth_token_argv,
@@ -96,9 +97,8 @@ def _without_managed_overlay(state: dict) -> dict:
 def set_current_workspace(workspace: str | None) -> None:
     """Set ``current_workspace`` without touching the per-workspace blocks.
 
-    Used by flows like ``configure tracing`` that operate on a non-current
-    workspace and must not silently change which workspace ``ucode launch``
-    targets afterwards."""
+    Used by flows that operate on a non-current workspace and must not silently
+    change which workspace ``ucode launch`` targets afterwards."""
     if is_dry_run():
         return
     full = load_full_state()
@@ -172,12 +172,14 @@ def build_agent_state(state: dict) -> dict[str, dict]:
     claude_auth_command = auth_command
     codex_auth_command = auth_command
     codex_auth_argv = auth_argv
+    codex_auth_timeout_ms = AUTH_COMMAND_TIMEOUT_MS
     custom_oauth = state.get("custom_oauth")
     if isinstance(custom_oauth, dict):
         typed_custom_oauth = cast(CustomOAuthConfig, custom_oauth)
         claude_auth_command = build_custom_auth_shell_command(workspace, typed_custom_oauth)
         codex_auth_command = claude_auth_command
         codex_auth_argv = build_custom_auth_token_argv(workspace, typed_custom_oauth)
+        codex_auth_timeout_ms = CUSTOM_OAUTH_TIMEOUT_MS
     claude_models_value = state.get("claude_models")
     claude_models: dict = claude_models_value if isinstance(claude_models_value, dict) else {}
     codex_models_value = state.get("codex_models")
@@ -220,7 +222,7 @@ def build_agent_state(state: dict) -> dict[str, dict]:
             "auth": {
                 "command": codex_auth_argv[0],
                 "args": codex_auth_argv[1:],
-                "timeout_ms": AUTH_COMMAND_TIMEOUT_MS,
+                "timeout_ms": codex_auth_timeout_ms,
                 "refresh_interval_ms": AUTH_REFRESH_INTERVAL_MS,
             },
         },
@@ -294,4 +296,25 @@ def set_provider_service(state: dict, tool: str, full_name: str | None) -> dict:
         state["provider_services"] = providers
     else:
         state.pop("provider_services", None)
+    return state
+
+
+# The managed configuration's ``update_time`` last applied to this workspace's agents. A launch
+# compares a freshly fetched config against it to decide whether to re-apply, so it is written only
+# after an apply succeeds — never on a plain fetch.
+APPLIED_MANAGED_UPDATE_TIME_KEY = "applied_managed_update_time"
+
+
+def get_applied_managed_update_time(state: dict) -> str | None:
+    """The ``update_time`` of the managed configuration last applied to this workspace, if any."""
+    value = state.get(APPLIED_MANAGED_UPDATE_TIME_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+def set_applied_managed_update_time(state: dict, update_time: str | None) -> dict:
+    """Record (or clear) the applied managed configuration watermark for this workspace."""
+    if update_time:
+        state[APPLIED_MANAGED_UPDATE_TIME_KEY] = update_time
+    else:
+        state.pop(APPLIED_MANAGED_UPDATE_TIME_KEY, None)
     return state
