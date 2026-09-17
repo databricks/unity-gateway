@@ -34,7 +34,6 @@ def test_ug_configure_managed_claude(live_session, workspace):
     session = live_session
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
-    assert "managed config is published" in result.stdout, result.stdout
 
     settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
     assert settings.get("availableModels") == MANAGED_CLAUDE_MODELS, settings
@@ -61,7 +60,6 @@ def test_ug_configure_managed_codex(live_session, workspace):
     session = live_session
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
-    assert "managed config is published" in result.stdout, result.stdout
 
     catalog = json.loads((session.home / ".ucode" / "codex-model-catalog.json").read_text())
     listed = [

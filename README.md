@@ -134,6 +134,14 @@ ug configure --workspace https://first.databricks.com
 
 `ug` logs into and saves state for that workspace.
 
+Set `UG_WORKSPACE` to use the same workspace without repeating `--workspace`. An explicit
+`--workspace` or `--profile` takes precedence over the environment variable.
+
+```bash
+export UG_WORKSPACE=https://first.databricks.com
+ug configure
+```
+
 Alternatively, pass an existing Databricks CLI profile (from `~/.databrickscfg`) instead of a workspace URL — the profile's host supplies the workspace URL:
 
 ```bash
