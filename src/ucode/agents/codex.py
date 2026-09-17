@@ -758,7 +758,7 @@ def launch(
     provider = (
         launch_provider.strip()
         if isinstance(launch_provider, str) and launch_provider.strip()
-        else get_provider_service(state, "codex")
+        else None
     )
     launch_parent_schema = state.get("_codex_launch_parent_schema")
     parent_schema = (
@@ -766,6 +766,8 @@ def launch(
         if isinstance(launch_parent_schema, str) and launch_parent_schema.strip()
         else None
     )
+    if provider is None and parent_schema is None:
+        provider = get_provider_service(state, "codex")
     if workspace and (provider or parent_schema):
         _reject_managed_model_catalog()
     otel_args: list[str] = []

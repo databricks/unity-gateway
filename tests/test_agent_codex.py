@@ -11,6 +11,7 @@ import pytest
 from ucode import managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
+from ucode.constants import MODEL_DISCOVERY_ENV_VAR
 from ucode.smart_routing import codex_routing
 
 WS = "https://example.databricks.com"
@@ -745,6 +746,107 @@ class TestCodexLaunch:
         assert os.environ["OAUTH_TOKEN"] == "fresh-token"
         assert launches[0][-1] == "--search"
 
+    @pytest.mark.parametrize("discovery_value", ["0", "1"])
+    @pytest.mark.parametrize(
+        ("route_state", "catalog_source", "catalog_identifier", "header"),
+        [
+            ({}, None, None, None),
+            (
+                {"_codex_launch_provider": "main.default.openai"},
+                codex.CodexCatalogSource.PROVIDER,
+                "main.default.openai",
+                'Databricks-Model-Provider-Service = "main.default.openai"',
+            ),
+            (
+                {"_codex_launch_parent_schema": "main.default"},
+                codex.CodexCatalogSource.PARENT_SCHEMA,
+                "main.default",
+                'Databricks-Model-Service-Parent-Schema = "main.default"',
+            ),
+        ],
+        ids=["normal", "provider", "parent-schema"],
+    )
+    def test_exec_inherits_model_discovery_and_preserves_catalog_behavior(
+        self,
+        tmp_path,
+        monkeypatch,
+        discovery_value,
+        route_state,
+        catalog_source,
+        catalog_identifier,
+        header,
+    ):
+        self._patch(tmp_path, monkeypatch)
+        existing_catalog_path = tmp_path / "existing-models.json"
+        fetched_catalog_path = tmp_path / "fetched-models.json"
+        profile_path = tmp_path / "ucode.config.toml"
+        profile_path.write_text(
+            profile_path.read_text(encoding="utf-8").replace(
+                'model_provider = "Databricks"\n',
+                f'model_provider = "Databricks"\nmodel_catalog_json = "{existing_catalog_path}"\n',
+            ),
+            encoding="utf-8",
+        )
+        fetches = []
+
+        def fetch(workspace, token, **kwargs):
+            fetches.append((workspace, token, kwargs))
+            return {"models": [{"slug": "gpt-routed"}]}
+
+        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", fetch)
+        monkeypatch.setattr(
+            codex, "_model_catalog_path", lambda workspace, scope: fetched_catalog_path
+        )
+        monkeypatch.setenv(MODEL_DISCOVERY_ENV_VAR, discovery_value)
+        launches = []
+        monkeypatch.setattr(
+            codex,
+            "exec_or_spawn",
+            lambda argv: launches.append((argv, os.environ.get(MODEL_DISCOVERY_ENV_VAR))),
+        )
+
+        codex.launch(
+            {"workspace": WS, **route_state},
+            ["exec", "hi"],
+            options=LaunchOptions(),
+        )
+
+        argv, inherited_value = launches[0]
+        assert inherited_value == discovery_value
+        assert argv[-2:] == ["exec", "hi"]
+        expected_catalog_path = fetched_catalog_path if route_state else existing_catalog_path
+        assert f'model_catalog_json="{expected_catalog_path}"' in argv
+        if route_state:
+            assert fetches == [
+                (
+                    WS,
+                    "tok",
+                    {"source": catalog_source, "identifier": catalog_identifier},
+                )
+            ]
+            provider_arg = next(
+                arg for arg in argv if arg.startswith("model_providers.Databricks=")
+            )
+            assert header in provider_arg
+        else:
+            assert fetches == []
+
+    @pytest.mark.parametrize("discovery_value", ["0", "1"])
+    def test_legacy_exec_inherits_model_discovery(self, tmp_path, monkeypatch, discovery_value):
+        self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.133.0")
+        monkeypatch.setenv(MODEL_DISCOVERY_ENV_VAR, discovery_value)
+        launches = []
+        monkeypatch.setattr(
+            codex,
+            "exec_or_spawn",
+            lambda argv: launches.append((argv, os.environ.get(MODEL_DISCOVERY_ENV_VAR))),
+        )
+
+        codex.launch({"workspace": WS}, ["exec", "hi"], options=LaunchOptions())
+
+        assert launches == [(["codex", "--profile", "ucode", "exec", "hi"], discovery_value)]
+
     def test_provider_discovery_uses_authoritative_catalog(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
         catalog_path = tmp_path / "models.json"
@@ -874,6 +976,40 @@ class TestCodexLaunch:
             arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
         )
         assert 'Databricks-Model-Service-Parent-Schema = "main.default"' in parent_arg
+
+    def test_parent_discovery_overrides_persisted_provider(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        catalog_path = tmp_path / "models.json"
+        fetch_kwargs = {}
+        monkeypatch.setattr(codex, "_model_catalog_path", lambda workspace, scope: catalog_path)
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda workspace, token, **kwargs: (
+                fetch_kwargs.update(kwargs) or {"models": [{"slug": "gpt-parent"}]}
+            ),
+        )
+
+        codex.launch(
+            {
+                "workspace": WS,
+                "provider_services": {"codex": "main.default.persisted"},
+                "_codex_launch_parent_schema": "main.location",
+            },
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert f'model_catalog_json="{catalog_path}"' in launches[0]
+        assert fetch_kwargs == {
+            "source": codex.CodexCatalogSource.PARENT_SCHEMA,
+            "identifier": "main.location",
+        }
+        provider_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
+        )
+        assert 'Databricks-Model-Service-Parent-Schema = "main.location"' in provider_arg
+        assert "Databricks-Model-Provider-Service" not in provider_arg
 
     def test_parent_discovery_refreshes_when_parent_changes(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
