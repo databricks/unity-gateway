@@ -542,6 +542,7 @@ def launch_codex(
         start_model,
         state.get("profile"),
         use_pat=bool(state.get("use_pat")),
+        custom_oauth=state.get("custom_oauth"),
     )
     overlay["hooks"] = {
         "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),

@@ -7,7 +7,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from importlib import metadata
 from typing import Annotated, Any
 
@@ -43,6 +43,11 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
+from ucode.custom_oauth import (
+    custom_oauth_cli_environment,
+    ensure_custom_oauth_cli_profile,
+    get_custom_client_token,
+)
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     apply_pat_environment,
@@ -505,6 +510,19 @@ def configure_shared_state(
         state.pop("custom_oauth", None)
     state["base_urls"] = build_shared_base_urls(workspace)
 
+    cli_custom_oauth = (
+        state.get("custom_oauth") if os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1" else None
+    )
+    if cli_custom_oauth:
+        # Authenticate the supplied OAuth application, not a workspace-only profile.
+        # Even --skip-preflight must establish this identity before a TUI can start.
+        profile = ensure_custom_oauth_cli_profile(
+            workspace, cli_custom_oauth, profile, force_login=force_login
+        )
+        state["profile"] = profile
+        state.pop("use_pat", None)
+        use_pat = False
+
     if skip_preflight:
         # A prior `ug configure` created the profile; resolve it locally (no
         # login needed) and persist it so launches disambiguate.
@@ -523,7 +541,9 @@ def configure_shared_state(
 
     # ── Preflight (bypassed above under --skip-preflight): validate Databricks
     #    auth + the AI Gateway, then discover the available models. ──
-    if use_pat:
+    if cli_custom_oauth:
+        pass  # The dedicated profile was authenticated above.
+    elif use_pat:
         if not profile:
             raise RuntimeError(
                 "--use-pat requires a Databricks CLI profile. Pass one via `--profile <name>`."
@@ -553,7 +573,16 @@ def configure_shared_state(
         if profile:
             state["profile"] = profile
     with spinner("Verifying Unity AI Gateway..."):
-        token = get_databricks_token(workspace, profile)
+        if cli_custom_oauth:
+            token = get_custom_client_token(
+                workspace,
+                cli_custom_oauth["client_id"],
+                cli_custom_oauth["redirect_url"],
+                scopes=cli_custom_oauth["scopes"],
+                profile=profile,
+            )
+        else:
+            token = get_databricks_token(workspace, profile)
         model_service_probe = probe_unity_gateway_capabilities(workspace, token)
     if model_service_probe.resource_available:
         print_success("Unity Gateway connected")
@@ -2155,6 +2184,7 @@ def _launch_tool(
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
 ) -> None:
+    auth_context = ExitStack()
     try:
         tool = normalize_tool(tool_name)
         # Before any status print: a stdio-protocol subcommand owns stdout, so
@@ -2186,7 +2216,11 @@ def _launch_tool(
         # Workspaces configured with --use-pat export the profile's PAT as
         # DATABRICKS_BEARER up front so every auth check below (and the
         # launched agent itself) uses the static token instead of OAuth.
-        apply_pat_environment(existing)
+        if not (
+            os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1"
+            and (custom_oauth or existing.get("custom_oauth"))
+        ):
+            apply_pat_environment(existing)
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []
         )
@@ -2197,6 +2231,23 @@ def _launch_tool(
             else:
                 _auto_configure_tool(tool, custom_oauth=custom_oauth)
         state = ensure_provider_state(tool)
+        launch_custom_oauth = custom_oauth or state.get("custom_oauth")
+        if (
+            tool in {"claude", "codex"}
+            and os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1"
+            and launch_custom_oauth
+        ):
+            profile = ensure_custom_oauth_cli_profile(
+                state["workspace"], launch_custom_oauth, state.get("profile")
+            )
+            state["profile"] = profile
+            state["custom_oauth"] = dict(launch_custom_oauth)
+            state.pop("use_pat", None)
+            # Existing generic token consumers (MCP, telemetry, routing, relays)
+            # and their child processes must use the same custom application.
+            auth_context.enter_context(
+                custom_oauth_cli_environment(state["workspace"], launch_custom_oauth, profile)
+            )
         # Remembered before the fallback below collapses the two cases: a managed config may not
         # silently override a provider the user typed on the command line (it errors instead).
         explicit_provider = provider
@@ -2432,6 +2483,8 @@ def _launch_tool(
     except KeyboardInterrupt:
         print_err("Interrupted.")
         raise typer.Exit(130) from None
+    finally:
+        auth_context.close()
 
 
 # Launch-only escape hatch for managed/headless launchers (e.g. omnigent) that
