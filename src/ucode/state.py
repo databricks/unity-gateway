@@ -177,11 +177,9 @@ def build_agent_state(state: dict) -> dict[str, dict]:
     custom_oauth = state.get("custom_oauth")
     if isinstance(custom_oauth, dict):
         typed_custom_oauth = cast(CustomOAuthConfig, custom_oauth)
-        claude_auth_command = build_custom_auth_shell_command(
-            workspace, typed_custom_oauth, profile
-        )
+        claude_auth_command = build_custom_auth_shell_command(workspace, typed_custom_oauth)
         codex_auth_command = claude_auth_command
-        codex_auth_argv = build_custom_auth_token_argv(workspace, typed_custom_oauth, profile)
+        codex_auth_argv = build_custom_auth_token_argv(workspace, typed_custom_oauth)
         codex_auth_timeout_ms = CUSTOM_OAUTH_TIMEOUT_MS
     claude_models_value = state.get("claude_models")
     claude_models: dict = claude_models_value if isinstance(claude_models_value, dict) else {}

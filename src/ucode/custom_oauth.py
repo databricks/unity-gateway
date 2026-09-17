@@ -2,23 +2,19 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import platform
-import re
 import shlex
 import subprocess
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 from urllib.parse import urlparse
 
 from databricks.sdk import oauth
 
-from ucode import config_io
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
 from ucode.databricks import (
     build_auth_token_argv,
@@ -40,6 +36,7 @@ class CustomOAuthConfig(TypedDict):
     client_id: str
     redirect_url: str
     scopes: list[str]
+    profile: NotRequired[str]
 
 
 def _normalize_scopes(scopes: Sequence[str]) -> list[str]:
@@ -88,13 +85,12 @@ def create_custom_oauth_config(
 def build_custom_auth_token_argv(
     workspace: str,
     config: CustomOAuthConfig,
-    profile: str | None = None,
 ) -> list[str]:
     normalized = create_custom_oauth_config(
         config["client_id"], config["scopes"], config["redirect_url"]
     )
     return [
-        *build_auth_token_argv(workspace, profile),
+        *build_auth_token_argv(workspace, config.get("profile")),
         "--client-id",
         normalized["client_id"],
         "--redirect-url",
@@ -107,9 +103,8 @@ def build_custom_auth_token_argv(
 def build_custom_auth_shell_command(
     workspace: str,
     config: CustomOAuthConfig,
-    profile: str | None = None,
 ) -> str:
-    argv = build_custom_auth_token_argv(workspace, config, profile)
+    argv = build_custom_auth_token_argv(workspace, config)
     if platform.system() == "Windows":
         return subprocess.list2cmdline(argv)
     return shlex.join(argv)
@@ -132,16 +127,6 @@ def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
-
-
-def _trace_custom_oauth_cli(message: str) -> None:
-    log_path = config_io.APP_DIR / "custom-oauth-cli.log"
-    try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as log_file:
-            log_file.write(f"{datetime.now(UTC).isoformat()} pid={os.getpid()} {message}\n")
-    except OSError as exc:
-        print_warning_err(f"Could not write custom OAuth CLI trace: {exc}")
 
 
 def _require_custom_oauth_cli() -> None:
@@ -170,9 +155,10 @@ def _custom_cli_profile(workspace: str, client_id: str, profile: str | None) -> 
         read_databricks_oauth_profile(profile), workspace, client_id
     ):
         return profile
-    key = hashlib.sha256(f"{workspace}\0{client_id}".encode()).hexdigest()[:16]
-    label = re.sub(r"[^a-zA-Z0-9_-]", "-", client_id)[:36]
-    dedicated = f"ug-oauth-{label}-{key}"
+    hostname = urlparse(workspace).hostname
+    if not hostname:
+        raise RuntimeError(f"Unable to derive hostname from workspace URL: {workspace}")
+    dedicated = f"ug-oauth-{hostname}-{client_id}"
     fields = read_databricks_oauth_profile(dedicated)
     if fields is not None and not _profile_matches_client(fields, workspace, client_id):
         raise RuntimeError(
@@ -191,24 +177,25 @@ def _profile_has_scopes(fields: dict[str, str], scopes: Sequence[str]) -> bool:
 def ensure_custom_oauth_cli_profile(
     workspace: str,
     config: CustomOAuthConfig,
-    profile: str | None = None,
     *,
     force_login: bool = False,
-) -> str:
+) -> CustomOAuthConfig:
     """Authenticate a workspace/client-specific CLI profile before the agent starts."""
     _require_custom_oauth_cli()
     workspace = normalize_workspace_url(workspace)
+    configured_profile = config.get("profile")
     config = create_custom_oauth_config(
         config["client_id"], config["scopes"], config["redirect_url"]
     )
-    profile = _custom_cli_profile(workspace, config["client_id"], profile)
+    profile = _custom_cli_profile(workspace, config["client_id"], configured_profile)
     fields = read_databricks_oauth_profile(profile)
     if fields is not None and _profile_has_scopes(fields, config["scopes"]) and not force_login:
         try:
             _get_custom_client_token_from_cli(
                 workspace, config["client_id"], profile=profile, scopes=config["scopes"]
             )
-            return profile
+            config["profile"] = profile
+            return config
         except RuntimeError:
             pass  # Expired/revoked credentials: reauthenticate while the terminal is available.
     if config["redirect_url"] != DEFAULT_REDIRECT_URL:
@@ -228,17 +215,19 @@ def ensure_custom_oauth_cli_profile(
     _get_custom_client_token_from_cli(
         workspace, config["client_id"], profile=profile, scopes=config["scopes"]
     )
-    return profile
+    config["profile"] = profile
+    return config
 
 
 @contextmanager
-def custom_oauth_cli_environment(
-    workspace: str, config: CustomOAuthConfig, profile: str
-) -> Iterator[None]:
+def custom_oauth_cli_environment(workspace: str, config: CustomOAuthConfig) -> Iterator[None]:
     """Pin generic token consumers and their children to this session's custom helper."""
+    profile = config.get("profile")
+    if not profile:
+        raise RuntimeError("Custom OAuth CLI profile has not been configured.")
     values = {
         "DATABRICKS_BEARER": None,
-        "DATABRICKS_BEARER_COMMAND": build_custom_auth_shell_command(workspace, config, profile),
+        "DATABRICKS_BEARER_COMMAND": build_custom_auth_shell_command(workspace, config),
         "DATABRICKS_CONFIG_PROFILE": profile,
     }
     previous = {key: os.environ.get(key) for key in values}
@@ -303,7 +292,6 @@ def _get_custom_client_token_from_cli(
     ]
     if force_refresh:
         args.append("--force-refresh")
-    _trace_custom_oauth_cli(f"Running {shlex.join(args)}")
     try:
         result = run(
             args,
@@ -316,12 +304,9 @@ def _get_custom_client_token_from_cli(
         payload = json.loads(result.stdout or "{}")
         token = payload.get("access_token", "") if isinstance(payload, dict) else ""
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-        _trace_custom_oauth_cli(f"CLI token fetch failed: {type(exc).__name__}")
         raise RuntimeError(f"Custom-client OAuth via Databricks CLI failed. {hint}") from exc
     if result.returncode != 0 or not isinstance(token, str) or not token.strip():
-        _trace_custom_oauth_cli(f"CLI token fetch failed (exit code {result.returncode}).")
         raise RuntimeError(f"Custom-client OAuth via Databricks CLI failed. {hint}")
-    _trace_custom_oauth_cli("CLI token fetch succeeded.")
     return token
 
 

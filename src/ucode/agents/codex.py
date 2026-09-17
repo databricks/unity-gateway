@@ -186,7 +186,7 @@ def _provider_block(
     custom_oauth: CustomOAuthConfig | None = None,
 ) -> dict:
     if custom_oauth:
-        auth_argv = build_custom_auth_token_argv(workspace, custom_oauth, databricks_profile)
+        auth_argv = build_custom_auth_token_argv(workspace, custom_oauth)
     else:
         auth_argv = build_auth_token_argv(workspace, databricks_profile, use_pat=use_pat)
     base_url = build_tool_base_url("codex", workspace)
@@ -695,7 +695,7 @@ def _launch_token(state: dict, workspace: str) -> str:
             custom_oauth["client_id"],
             custom_oauth["redirect_url"],
             scopes=custom_oauth["scopes"],
-            profile=state.get("profile"),
+            profile=custom_oauth.get("profile"),
         )
     return get_databricks_token(workspace, state.get("profile"))
 

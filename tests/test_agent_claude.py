@@ -240,11 +240,11 @@ class TestRenderOverlay:
         overlay, _ = claude.render_overlay(
             WS,
             "s4",
-            profile="custom-profile",
             custom_oauth={
                 "client_id": "custom-client",
                 "redirect_url": "http://localhost:8020/callback",
                 "scopes": ["offline_access", "model-serving"],
+                "profile": "custom-profile",
             },
         )
         assert shlex.split(overlay["apiKeyHelper"]) == [

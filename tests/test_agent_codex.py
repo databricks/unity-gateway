@@ -107,11 +107,11 @@ class TestRenderOverlay:
     def test_auth_uses_custom_oauth_options(self):
         overlay = codex.render_overlay(
             WS,
-            databricks_profile="custom-profile",
             custom_oauth={
                 "client_id": "custom-client",
                 "redirect_url": "http://localhost:8020/callback",
                 "scopes": ["offline_access", "model-serving"],
+                "profile": "custom-profile",
             },
         )
         auth = overlay["model_providers"]["Databricks"]["auth"]
@@ -1007,12 +1007,12 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "_fetch_codex_model_catalog", fetch)
         state = {
             "workspace": WS,
-            "profile": "custom-profile",
             "_codex_launch_provider": "main.default.openai",
             "custom_oauth": {
                 "client_id": "client",
                 "redirect_url": "http://localhost:8020",
                 "scopes": ["all-apis", "offline_access"],
+                "profile": "custom-profile",
             },
         }
 

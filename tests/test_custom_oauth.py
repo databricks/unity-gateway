@@ -124,8 +124,8 @@ class TestCustomClientToken:
                 "client_id": "custom-client",
                 "redirect_url": "http://localhost:8020/callback",
                 "scopes": ["offline_access", "model-serving"],
+                "profile": "custom-profile",
             },
-            "custom-profile",
         )
         monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "0")
         disabled = build_custom_auth_token_argv(
@@ -134,8 +134,8 @@ class TestCustomClientToken:
                 "client_id": "custom-client",
                 "redirect_url": "http://localhost:8020/callback",
                 "scopes": ["offline_access", "model-serving"],
+                "profile": "custom-profile",
             },
-            "custom-profile",
         )
         assert enabled == disabled == expected
 

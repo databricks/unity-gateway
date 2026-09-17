@@ -296,12 +296,12 @@ class TestBuildAgentState:
         result = build_agent_state(
             {
                 "workspace": "https://example.databricks.com",
-                "profile": "custom-profile",
                 "base_urls": FAKE_URLS,
                 "custom_oauth": {
                     "client_id": "custom-client",
                     "redirect_url": "http://localhost:8020/callback",
                     "scopes": ["offline_access", "model-serving"],
+                    "profile": "custom-profile",
                 },
             }
         )

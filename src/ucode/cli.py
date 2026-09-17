@@ -516,12 +516,10 @@ def configure_shared_state(
     if cli_custom_oauth:
         # Authenticate the supplied OAuth application, not a workspace-only profile.
         # Even --skip-preflight must establish this identity before a TUI can start.
-        profile = ensure_custom_oauth_cli_profile(
-            workspace, cli_custom_oauth, profile, force_login=force_login
+        cli_custom_oauth = ensure_custom_oauth_cli_profile(
+            workspace, cli_custom_oauth, force_login=force_login
         )
-        state["profile"] = profile
-        state.pop("use_pat", None)
-        use_pat = False
+        state["custom_oauth"] = cli_custom_oauth
 
     if skip_preflight:
         # A prior `ug configure` created the profile; resolve it locally (no
@@ -579,7 +577,7 @@ def configure_shared_state(
                 cli_custom_oauth["client_id"],
                 cli_custom_oauth["redirect_url"],
                 scopes=cli_custom_oauth["scopes"],
-                profile=profile,
+                profile=cli_custom_oauth["profile"],
             )
         else:
             token = get_databricks_token(workspace, profile)
@@ -2237,16 +2235,14 @@ def _launch_tool(
             and os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") == "1"
             and launch_custom_oauth
         ):
-            profile = ensure_custom_oauth_cli_profile(
-                state["workspace"], launch_custom_oauth, state.get("profile")
+            launch_custom_oauth = ensure_custom_oauth_cli_profile(
+                state["workspace"], launch_custom_oauth
             )
-            state["profile"] = profile
-            state["custom_oauth"] = dict(launch_custom_oauth)
-            state.pop("use_pat", None)
+            state["custom_oauth"] = launch_custom_oauth
             # Existing generic token consumers (MCP, telemetry, routing, relays)
             # and their child processes must use the same custom application.
             auth_context.enter_context(
-                custom_oauth_cli_environment(state["workspace"], launch_custom_oauth, profile)
+                custom_oauth_cli_environment(state["workspace"], launch_custom_oauth)
             )
         # Remembered before the fallback below collapses the two cases: a managed config may not
         # silently override a provider the user typed on the command line (it errors instead).

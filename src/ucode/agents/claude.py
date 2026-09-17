@@ -471,9 +471,7 @@ def render_overlay(
         keys = [["env", k] for k in env]
     else:
         if custom_oauth:
-            overlay["apiKeyHelper"] = build_custom_auth_shell_command(
-                workspace, custom_oauth, profile
-            )
+            overlay["apiKeyHelper"] = build_custom_auth_shell_command(workspace, custom_oauth)
         else:
             overlay["apiKeyHelper"] = build_auth_shell_command(workspace, profile, use_pat=use_pat)
         keys = [["apiKeyHelper"]] + [["env", k] for k in env]
