@@ -1188,6 +1188,32 @@ class TestMcpSubcommands:
         assert result.exit_code == 0
         assert "web-search" in result.output
 
+    def test_bare_mcp_shows_group_help(self, monkeypatch):
+        # `ug mcp` with no subcommand shows the group help (commands list), not the listing.
+        monkeypatch.setattr(
+            cli_mod,
+            "list_mcp_command",
+            lambda agents=None: pytest.fail("listing ran for bare mcp"),
+        )
+        result = runner.invoke(app, ["mcp"])
+        assert "Usage:" in result.output
+        assert "list" in result.output
+        assert "add" in result.output
+
+    def test_mcp_list_runs_the_lister(self, monkeypatch):
+        calls: list[set[str] | None] = []
+        monkeypatch.setattr(cli_mod, "list_mcp_command", lambda agents=None: calls.append(agents))
+        result = runner.invoke(app, ["mcp", "list"])
+        assert result.exit_code == 0, result.output
+        assert calls == [None]
+
+    def test_mcp_list_forwards_agents_option(self, monkeypatch):
+        calls: list[set[str] | None] = []
+        monkeypatch.setattr(cli_mod, "list_mcp_command", lambda agents=None: calls.append(agents))
+        result = runner.invoke(app, ["mcp", "list", "--agents", "claude,codex"])
+        assert result.exit_code == 0, result.output
+        assert calls == [{"claude", "codex"}]
+
 
 class TestAuthTokenCommand:
     """`ucode auth-token` is the cross-platform apiKeyHelper (#116)."""
@@ -1330,20 +1356,21 @@ class TestOtelHeadersCommand:
 
 
 class TestStatus:
-    def test_shows_mcp_list_commands(self):
+    def test_points_to_ug_mcp_list_with_counts(self):
+        # status is a high-level overview: it shows a per-agent MCP count and points to the
+        # detail command, rather than surfacing each agent's raw `<agent> mcp list` command.
         with patch("ucode.cli.load_state", return_value=MINIMAL_STATE):
             result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0, result.output
         assert "Managed by Databricks" not in result.output
-        assert "MCP list command:" in result.output
-        assert "claude mcp list" in result.output
-        assert "codex mcp list" in result.output
-        assert "gemini mcp list" in result.output
-        assert "opencode mcp list" in result.output
-        assert "copilot mcp list" not in result.output
+        assert "MCP servers: 0" in result.output
+        assert "ug mcp list" in result.output
+        assert "MCP list command:" not in result.output
+        assert "claude mcp list" not in result.output
+        assert "codex mcp list" not in result.output
 
-    def test_shows_mcp_servers_configured_by_ucode(self):
+    def test_shows_mcp_server_counts_configured_by_ucode(self):
         state = {
             **MINIMAL_STATE,
             "mcp_servers": [
@@ -1365,13 +1392,48 @@ class TestStatus:
             result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0, result.output
-        assert "github-mcp" in result.output
-        assert "MCP servers: github-mcp" in result.output
-        assert "databricks-sql" in result.output
-        assert "MCP servers: databricks-sql" in result.output
-        assert "MCP Servers" not in result.output
-        assert "MCP Server:" not in result.output
-        assert "Configured tools:" not in result.output
+        # Counts, not names: claude, codex, and gemini each carry one server.
+        assert "MCP servers: 1" in result.output
+        assert "github-mcp" not in result.output
+        assert "databricks-sql" not in result.output
+        assert "ug mcp list" in result.output
+
+    def test_mcp_count_includes_managed_servers_and_dedupes(self):
+        # The count folds in workspace-managed servers (matching `ug mcp list`) and dedupes a
+        # server present in both lists by name, so it isn't counted twice.
+        state = {
+            **MINIMAL_STATE,
+            "mcp_servers": [
+                {
+                    "name": "dev-mcp",
+                    "url": "https://example.databricks.com/api/2.0/mcp/external/dev-mcp",
+                    "clients": ["claude"],
+                },
+                {
+                    "name": "shared-mcp",
+                    "url": "https://example.databricks.com/api/2.0/mcp/external/shared-mcp",
+                    "clients": ["claude"],
+                },
+            ],
+            "managed_mcp_servers": [
+                {
+                    "name": "managed-mcp",
+                    "url": "https://example.databricks.com/ai-gateway/mcp-services/system.ai.x",
+                    "clients": ["claude"],
+                },
+                {
+                    "name": "shared-mcp",
+                    "url": "https://example.databricks.com/api/2.0/mcp/external/shared-mcp",
+                    "clients": ["claude"],
+                },
+            ],
+        }
+        with patch("ucode.cli.load_state", return_value=state):
+            result = runner.invoke(app, ["status"])
+
+        assert result.exit_code == 0, result.output
+        # claude: dev-mcp, shared-mcp, managed-mcp = 3 distinct (shared-mcp not double-counted).
+        assert "MCP servers: 3" in result.output
 
     def test_status_treats_available_tools_as_configured_agents(self):
         state = {
@@ -1394,11 +1456,8 @@ class TestStatus:
             result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0, result.output
-        assert "copilot mcp list" in result.output
-        assert "MCP servers: databricks-sql" in result.output
-        assert "codex mcp list" not in result.output
-        assert "claude mcp list" not in result.output
-        assert "gemini mcp list" not in result.output
+        assert "MCP servers: 1" in result.output
+        assert "databricks-sql" not in result.output
         assert "https://example.databricks.com/ai-gateway/anthropic" not in result.output
         assert "https://example.databricks.com/ai-gateway/gemini" not in result.output
 
@@ -1563,7 +1622,7 @@ class TestConfigureSkillsCommand:
 
 
 class TestSkillsAddCommand:
-    """`ucode skill add` is the additive sibling of `configure skills`: `--mcp`
+    """`ucode skills add` is the additive sibling of `configure skills`: `--mcp`
     unions schemas into the connection scope, the default mode downloads."""
 
     @pytest.fixture(autouse=True)
@@ -1575,51 +1634,51 @@ class TestSkillsAddCommand:
         from ucode.databricks import SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
 
         with patch("ucode.cli.add_skills_command"):
-            result = runner.invoke(app, ["skill", "add", "--location", "a.b", "--mcp"])
+            result = runner.invoke(app, ["skills", "add", "--location", "a.b", "--mcp"])
         assert result.exit_code == 0, result.output
         _stub_install_cli.assert_called_once_with(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
 
     def test_mcp_flag_unions_locations(self):
         with patch("ucode.cli.add_skills_command") as mock_add:
-            result = runner.invoke(app, ["skill", "add", "--location", "a.b", "--mcp"])
+            result = runner.invoke(app, ["skills", "add", "--location", "a.b", "--mcp"])
         assert result.exit_code == 0, result.output
         mock_add.assert_called_once_with(["a.b"], agents=None)
 
     def test_comma_location_yields_multiple_schemas(self):
         with patch("ucode.cli.add_skills_command") as mock_add:
-            result = runner.invoke(app, ["skill", "add", "--location", "a.b, c.d", "--mcp"])
+            result = runner.invoke(app, ["skills", "add", "--location", "a.b, c.d", "--mcp"])
         assert result.exit_code == 0, result.output
         mock_add.assert_called_once_with(["a.b", "c.d"], agents=None)
 
     def test_default_mode_dispatches_download(self):
         with patch("ucode.cli.configure_location_skills_download_command") as mock_download:
-            result = runner.invoke(app, ["skill", "add", "--location", "a.b", "--path", "/tmp/s"])
+            result = runner.invoke(app, ["skills", "add", "--location", "a.b", "--path", "/tmp/s"])
         assert result.exit_code == 0, result.output
         mock_download.assert_called_once_with(["a.b"], path="/tmp/s")
 
     def test_skills_download_fully_qualified_across_schemas(self):
         with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
-            result = runner.invoke(app, ["skill", "add", "--skills", "a.b.s1, c.d.s2"])
+            result = runner.invoke(app, ["skills", "add", "--skill", "a.b.s1, c.d.s2"])
         assert result.exit_code == 0, result.output
         mock_download.assert_called_once_with(["a.b.s1", "c.d.s2"], None)
 
     def test_skills_thread_path_through(self):
         with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
-            result = runner.invoke(app, ["skill", "add", "--skills", "a.b.s1", "--path", "/tmp/s"])
+            result = runner.invoke(app, ["skills", "add", "--skill", "a.b.s1", "--path", "/tmp/s"])
         assert result.exit_code == 0, result.output
         mock_download.assert_called_once_with(["a.b.s1"], "/tmp/s")
 
     def test_skills_with_location_exit_1(self):
         with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
-            result = runner.invoke(app, ["skill", "add", "--location", "a.b", "--skills", "a.b.s1"])
+            result = runner.invoke(app, ["skills", "add", "--location", "a.b", "--skill", "a.b.s1"])
         assert result.exit_code == 1
-        assert "--skills takes fully-qualified names; drop --location" in _strip_ansi(result.output)
+        assert "--skill takes fully-qualified names; drop --location" in _strip_ansi(result.output)
         mock_download.assert_not_called()
 
     @pytest.mark.parametrize("skill", ["a.b", "a..s1", "a.b.c.d", "leaf"])
     def test_non_fully_qualified_skill_exit_1(self, skill):
         with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
-            result = runner.invoke(app, ["skill", "add", "--skills", skill])
+            result = runner.invoke(app, ["skills", "add", "--skill", skill])
         assert result.exit_code == 1
         assert "must be fully-qualified" in _strip_ansi(result.output)
         mock_download.assert_not_called()
@@ -1631,7 +1690,7 @@ class TestSkillsAddCommand:
             patch("ucode.cli.configure_location_skills_download_command") as mock_download,
             patch("ucode.cli.configure_skills_download_picker_command") as mock_picker,
         ):
-            result = runner.invoke(app, ["skill", "add"])
+            result = runner.invoke(app, ["skills", "add"])
         assert result.exit_code == 1
         assert "--location is required" in _strip_ansi(result.output)
         mock_add.assert_not_called()
@@ -1643,7 +1702,7 @@ class TestSkillsAddCommand:
             patch("ucode.cli._stdin_is_interactive", return_value=True),
             patch("ucode.cli.configure_skills_download_picker_command") as mock_picker,
         ):
-            result = runner.invoke(app, ["skill", "add"])
+            result = runner.invoke(app, ["skills", "add"])
         assert result.exit_code == 0, result.output
         mock_picker.assert_called_once_with(path=None)
 
@@ -1652,7 +1711,7 @@ class TestSkillsAddCommand:
             patch("ucode.cli._stdin_is_interactive", return_value=True),
             patch("ucode.cli.configure_skills_download_picker_command") as mock_picker,
         ):
-            result = runner.invoke(app, ["skill", "add", "--path", "/tmp/s"])
+            result = runner.invoke(app, ["skills", "add", "--path", "/tmp/s"])
         assert result.exit_code == 0, result.output
         mock_picker.assert_called_once_with(path="/tmp/s")
 
@@ -1662,7 +1721,7 @@ class TestSkillsAddCommand:
             patch("ucode.cli.configure_skills_mcp_picker_command") as mock_picker,
             patch("ucode.cli.configure_skills_download_picker_command") as mock_download,
         ):
-            result = runner.invoke(app, ["skill", "add", "--mcp"])
+            result = runner.invoke(app, ["skills", "add", "--mcp"])
         assert result.exit_code == 0, result.output
         mock_picker.assert_called_once_with(agents=None)
         mock_download.assert_not_called()
@@ -1672,7 +1731,7 @@ class TestSkillsAddCommand:
             patch("ucode.cli._stdin_is_interactive", return_value=False),
             patch("ucode.cli.configure_skills_mcp_picker_command") as mock_picker,
         ):
-            result = runner.invoke(app, ["skill", "add", "--mcp"])
+            result = runner.invoke(app, ["skills", "add", "--mcp"])
         assert result.exit_code == 1
         assert "--location is required" in _strip_ansi(result.output)
         mock_picker.assert_not_called()
@@ -1685,7 +1744,7 @@ class TestSkillsAddCommand:
             ) as configure,
             patch("ucode.cli.configure_skills_mcp_picker_command") as mock_picker,
         ):
-            result = runner.invoke(app, ["skill", "add", "--mcp", "--agents", "codex,claude"])
+            result = runner.invoke(app, ["skills", "add", "--mcp", "--agents", "codex,claude"])
         assert result.exit_code == 0, result.output
         configure.assert_called_once_with(["claude", "codex"])
         mock_picker.assert_called_once_with(agents={"claude", "codex"})
@@ -1696,7 +1755,7 @@ class TestSkillsAddCommand:
             patch("ucode.cli.configure_skills_download_picker_command") as mock_picker,
             patch("ucode.cli.configure_selected_skills_download_command") as mock_download,
         ):
-            result = runner.invoke(app, ["skill", "add", "--skills", "a.b.s1"])
+            result = runner.invoke(app, ["skills", "add", "--skill", "a.b.s1"])
         assert result.exit_code == 0, result.output
         mock_picker.assert_not_called()
         mock_download.assert_called_once_with(["a.b.s1"], None)
@@ -1706,16 +1765,16 @@ class TestSkillsAddCommand:
             patch("ucode.cli.add_skills_command") as mock_add,
             patch("ucode.cli.configure_selected_skills_download_command") as mock_download,
         ):
-            result = runner.invoke(app, ["skill", "add", "--mcp", "--skills", "a.b.s1"])
+            result = runner.invoke(app, ["skills", "add", "--mcp", "--skill", "a.b.s1"])
         assert result.exit_code == 1
-        assert "--skills" in _strip_ansi(result.output)
+        assert "--skill" in _strip_ansi(result.output)
         mock_add.assert_not_called()
         mock_download.assert_not_called()
 
     def test_path_with_mcp_exit_1(self):
         with patch("ucode.cli.add_skills_command") as mock_add:
             result = runner.invoke(
-                app, ["skill", "add", "--location", "a.b", "--mcp", "--path", "/tmp/s"]
+                app, ["skills", "add", "--location", "a.b", "--mcp", "--path", "/tmp/s"]
             )
         assert result.exit_code == 1
         assert "--path" in _strip_ansi(result.output)
@@ -1723,7 +1782,7 @@ class TestSkillsAddCommand:
 
     def test_malformed_location_exit_1(self):
         with patch("ucode.cli.add_skills_command") as mock_add:
-            result = runner.invoke(app, ["skill", "add", "--location", "a.b.c", "--mcp"])
+            result = runner.invoke(app, ["skills", "add", "--location", "a.b.c", "--mcp"])
         assert result.exit_code == 1
         assert "--location" in _strip_ansi(result.output)
         mock_add.assert_not_called()
@@ -1737,7 +1796,7 @@ class TestSkillsAddCommand:
         ):
             result = runner.invoke(
                 app,
-                ["skill", "add", "--location", "a.b", "--mcp", "--agents", "codex,claude"],
+                ["skills", "add", "--location", "a.b", "--mcp", "--agents", "codex,claude"],
             )
 
         assert result.exit_code == 0, result.output
@@ -1751,7 +1810,7 @@ class TestSkillsAddCommand:
         ):
             result = runner.invoke(
                 app,
-                ["skill", "add", "--location", "a.b", "--mcp", "--agents", ","],
+                ["skills", "add", "--location", "a.b", "--mcp", "--agents", ","],
             )
 
         assert result.exit_code == 0, result.output
@@ -1760,7 +1819,9 @@ class TestSkillsAddCommand:
 
     def test_agents_is_rejected_for_download_mode(self):
         with patch("ucode.cli.configure_location_skills_download_command") as mock_download:
-            result = runner.invoke(app, ["skill", "add", "--location", "a.b", "--agents", "claude"])
+            result = runner.invoke(
+                app, ["skills", "add", "--location", "a.b", "--agents", "claude"]
+            )
 
         assert result.exit_code == 1
         assert "--agents is only supported when using --mcp" in _strip_ansi(result.output)
@@ -1794,7 +1855,7 @@ class TestConfigureAgentsForMcp:
 
 
 class TestSkillsRemoveCommand:
-    """`ug skill remove`: `--mcp` drops MCP scopes, the default mode deletes downloads."""
+    """`ug skills remove`: `--mcp` drops MCP scopes, the default mode deletes downloads."""
 
     @pytest.fixture(autouse=True)
     def _stub_install_cli(self):
@@ -1805,7 +1866,7 @@ class TestSkillsRemoveCommand:
         from ucode.databricks import SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
 
         with patch("ucode.cli.remove_downloaded_skills_command"):
-            result = runner.invoke(app, ["skill", "remove", "--location", "a.b"])
+            result = runner.invoke(app, ["skills", "remove", "--location", "a.b"])
         assert result.exit_code == 0, result.output
         _stub_install_cli.assert_called_once_with(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
 
@@ -1814,7 +1875,7 @@ class TestSkillsRemoveCommand:
             patch("ucode.cli._stdin_is_interactive", return_value=True),
             patch("ucode.cli.remove_skills_command") as remove,
         ):
-            result = runner.invoke(app, ["skill", "remove", "--mcp"])
+            result = runner.invoke(app, ["skills", "remove", "--mcp"])
 
         assert result.exit_code == 0, result.output
         remove.assert_called_once_with(agents=None)
@@ -1824,48 +1885,48 @@ class TestSkillsRemoveCommand:
             patch("ucode.cli._stdin_is_interactive", return_value=True),
             patch("ucode.cli.remove_skills_command") as remove,
         ):
-            result = runner.invoke(app, ["skill", "remove", "--mcp", "--agents", "claude, codex"])
+            result = runner.invoke(app, ["skills", "remove", "--mcp", "--agents", "claude, codex"])
 
         assert result.exit_code == 0, result.output
         remove.assert_called_once_with(agents={"claude", "codex"})
 
     def test_location_routes_to_download_remove(self):
         with patch("ucode.cli.remove_downloaded_skills_command") as mock_remove:
-            result = runner.invoke(app, ["skill", "remove", "--location", "a.b, c.d"])
+            result = runner.invoke(app, ["skills", "remove", "--location", "a.b, c.d"])
         assert result.exit_code == 0, result.output
         mock_remove.assert_called_once_with(["a.b", "c.d"], path=None)
 
     def test_location_with_path_narrows_base(self):
         with patch("ucode.cli.remove_downloaded_skills_command") as mock_remove:
-            result = runner.invoke(app, ["skill", "remove", "--location", "a.b", "--path", "/abs"])
+            result = runner.invoke(app, ["skills", "remove", "--location", "a.b", "--path", "/abs"])
         assert result.exit_code == 0, result.output
         mock_remove.assert_called_once_with(["a.b"], path="/abs")
 
     def test_skills_routes_to_download_remove_by_name(self):
         with patch("ucode.cli.remove_downloaded_skills_command") as mock_remove:
-            result = runner.invoke(app, ["skill", "remove", "--skills", "a.b.s1, c.d.s2"])
+            result = runner.invoke(app, ["skills", "remove", "--skill", "a.b.s1, c.d.s2"])
         assert result.exit_code == 0, result.output
         mock_remove.assert_called_once_with([], ["a.b.s1", "c.d.s2"], path=None)
 
     def test_skills_with_path(self):
         with patch("ucode.cli.remove_downloaded_skills_command") as mock_remove:
-            result = runner.invoke(app, ["skill", "remove", "--skills", "a.b.s1", "--path", "/abs"])
+            result = runner.invoke(app, ["skills", "remove", "--skill", "a.b.s1", "--path", "/abs"])
         assert result.exit_code == 0, result.output
         mock_remove.assert_called_once_with([], ["a.b.s1"], path="/abs")
 
     def test_skills_with_location_exit_1(self):
         with patch("ucode.cli.remove_downloaded_skills_command") as mock_remove:
             result = runner.invoke(
-                app, ["skill", "remove", "--skills", "a.b.s1", "--location", "a.b"]
+                app, ["skills", "remove", "--skill", "a.b.s1", "--location", "a.b"]
             )
         assert result.exit_code == 1
-        assert "--skills takes fully-qualified names; drop --location" in _strip_ansi(result.output)
+        assert "--skill takes fully-qualified names; drop --location" in _strip_ansi(result.output)
         mock_remove.assert_not_called()
 
     @pytest.mark.parametrize("skill", ["a.b", "a..s1", "a.b.c.d", "leaf"])
     def test_non_fully_qualified_skill_exit_1(self, skill):
         with patch("ucode.cli.remove_downloaded_skills_command") as mock_remove:
-            result = runner.invoke(app, ["skill", "remove", "--skills", skill])
+            result = runner.invoke(app, ["skills", "remove", "--skill", skill])
         assert result.exit_code == 1
         assert "must be fully-qualified" in _strip_ansi(result.output)
         mock_remove.assert_not_called()
@@ -1875,7 +1936,7 @@ class TestSkillsRemoveCommand:
             patch("ucode.cli._stdin_is_interactive", return_value=True),
             patch("ucode.cli.remove_downloaded_skills_command") as mock_remove,
         ):
-            result = runner.invoke(app, ["skill", "remove"])
+            result = runner.invoke(app, ["skills", "remove"])
         assert result.exit_code == 0, result.output
         mock_remove.assert_called_once_with([], path=None)
 
@@ -1884,28 +1945,28 @@ class TestSkillsRemoveCommand:
             patch("ucode.cli._stdin_is_interactive", return_value=False),
             patch("ucode.cli.remove_downloaded_skills_command") as mock_remove,
         ):
-            result = runner.invoke(app, ["skill", "remove"])
+            result = runner.invoke(app, ["skills", "remove"])
         assert result.exit_code == 1
-        assert "--location or --skills is required" in _strip_ansi(result.output)
+        assert "--location or --skill is required" in _strip_ansi(result.output)
         mock_remove.assert_not_called()
 
     def test_path_without_location_exit_1(self):
         with patch("ucode.cli.remove_downloaded_skills_command") as mock_remove:
-            result = runner.invoke(app, ["skill", "remove", "--path", "/abs"])
+            result = runner.invoke(app, ["skills", "remove", "--path", "/abs"])
         assert result.exit_code == 1
-        assert "--path is only supported with --location or --skills" in _strip_ansi(result.output)
+        assert "--path is only supported with --location or --skill" in _strip_ansi(result.output)
         mock_remove.assert_not_called()
 
     def test_agents_without_mcp_exit_1(self):
         with patch("ucode.cli.remove_downloaded_skills_command") as mock_remove:
-            result = runner.invoke(app, ["skill", "remove", "--agents", "claude"])
+            result = runner.invoke(app, ["skills", "remove", "--agents", "claude"])
         assert result.exit_code == 1
         assert "--agents is only supported when using --mcp" in _strip_ansi(result.output)
         mock_remove.assert_not_called()
 
     def test_mcp_with_location_routes_to_location_removal(self):
         with patch("ucode.cli.remove_skills_locations_command") as remove:
-            result = runner.invoke(app, ["skill", "remove", "--mcp", "--location", "a.b, c.d"])
+            result = runner.invoke(app, ["skills", "remove", "--mcp", "--location", "a.b, c.d"])
         assert result.exit_code == 0, result.output
         remove.assert_called_once_with(["a.b", "c.d"], agents=None)
 
@@ -1913,7 +1974,7 @@ class TestSkillsRemoveCommand:
         with patch("ucode.cli.remove_skills_locations_command") as remove:
             result = runner.invoke(
                 app,
-                ["skill", "remove", "--mcp", "--location", "a.b", "--agents", "claude, codex"],
+                ["skills", "remove", "--mcp", "--location", "a.b", "--agents", "claude, codex"],
             )
         assert result.exit_code == 0, result.output
         remove.assert_called_once_with(["a.b"], agents={"claude", "codex"})
@@ -1924,7 +1985,7 @@ class TestSkillsRemoveCommand:
             patch("ucode.cli.remove_skills_command") as remove,
             patch("ucode.cli.remove_skills_locations_command") as remove_locations,
         ):
-            result = runner.invoke(app, ["skill", "remove", "--mcp"])
+            result = runner.invoke(app, ["skills", "remove", "--mcp"])
         assert result.exit_code == 1
         assert "--location is required" in _strip_ansi(result.output)
         remove.assert_not_called()
@@ -1932,29 +1993,29 @@ class TestSkillsRemoveCommand:
 
     def test_mcp_malformed_location_exit_1(self):
         with patch("ucode.cli.remove_skills_locations_command") as remove:
-            result = runner.invoke(app, ["skill", "remove", "--mcp", "--location", "a.b.c"])
+            result = runner.invoke(app, ["skills", "remove", "--mcp", "--location", "a.b.c"])
         assert result.exit_code == 1
         assert "--location" in _strip_ansi(result.output)
         remove.assert_not_called()
 
     def test_mcp_with_path_exit_1(self):
         with patch("ucode.cli.remove_skills_locations_command") as remove:
-            result = runner.invoke(app, ["skill", "remove", "--mcp", "--path", "/abs"])
+            result = runner.invoke(app, ["skills", "remove", "--mcp", "--path", "/abs"])
         assert result.exit_code == 1
         assert "--path" in _strip_ansi(result.output)
         remove.assert_not_called()
 
     def test_mcp_with_skills_exit_1(self):
         with patch("ucode.cli.remove_skills_locations_command") as remove:
-            result = runner.invoke(app, ["skill", "remove", "--mcp", "--skills", "a.b.s1"])
+            result = runner.invoke(app, ["skills", "remove", "--mcp", "--skill", "a.b.s1"])
         assert result.exit_code == 1
-        assert "--skills" in _strip_ansi(result.output)
+        assert "--skill" in _strip_ansi(result.output)
         remove.assert_not_called()
 
 
 class TestManagedSkillsOnLaunch:
     """Managed skills are delivered by download only: the launch path downloads them and never
-    registers them on the skills MCP connection (only a developer's own `skill add --mcp` schemas
+    registers them on the skills MCP connection (only a developer's own `skills add --mcp` schemas
     live there)."""
 
     def _state(self):

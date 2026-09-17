@@ -483,7 +483,7 @@ def _prompt_for_downloaded_skill_removal(records: list[dict]) -> list[dict] | No
 def remove_downloaded_skills_command(
     locations: list[str], fqns: list[str] | None = None, *, path: str | None
 ) -> int:
-    """`ug skill remove` (download side): delete downloaded skills and forget them.
+    """`ug skills remove` (download side): delete downloaded skills and forget them.
 
     With ``fqns``, removes those fully-qualified skills; with ``locations``, every skill
     downloaded from those ``<catalog>.<schema>`` schemas; with neither, opens a picker over
