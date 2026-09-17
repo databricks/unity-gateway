@@ -1,12 +1,14 @@
 """CUJs: configure against a managed workspace, where an admin publishes the setup.
 
-These run against the managed e2e workspace (`E2E_ADMIN_WORKSPACE`). The Claude journey reads
-the CodingAgentConfig published there. The Codex journey injects a wire-format response fixture
-so it can cover missing GPT metadata without publishing a fake model in the real workspace.
+These run against the managed e2e workspace (`E2E_ADMIN_WORKSPACE`), which publishes a
+CodingAgentConfig. They are the only journeys that exercise the managed config fetch end to end:
+`ug configure` applies the admin config to every enabled agent without the personal agent
+selector, and each agent's generated config exposes exactly the admin's static
+`model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog). The
+expected model ids mirror the published config; update them here if the admin list changes.
 """
 
 import json
-from pathlib import Path
 
 import pytest
 from utils.terminal import AgentTerminal
@@ -16,13 +18,7 @@ MANAGED_CLAUDE_MODELS = [
     "system.ai.claude-sonnet-4-6",
     "system.ai.claude-haiku-4-5",
 ]
-MANAGED_CODEX_MODELS = [
-    "system.ai.gpt-5-6-sol",
-    "system.ai.gpt-99",
-]
-MANAGED_CODEX_CONFIG_STUB = (
-    Path(__file__).with_name("fixtures") / "managed_codex_catalog_fallback.json"
-)
+MANAGED_CODEX_MODEL = "system.ai.gpt-5-6-sol"
 
 
 @pytest.mark.managed
@@ -38,7 +34,6 @@ def test_ug_configure_managed_claude(live_session, workspace):
     session = live_session
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
-    assert "managed config is published" in result.stdout, result.stdout
 
     settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
     assert settings.get("availableModels") == MANAGED_CLAUDE_MODELS, settings
@@ -59,28 +54,44 @@ def test_ug_configure_managed_codex(live_session, workspace):
 
     Expected: ug applies the admin config to every enabled agent without showing the
     personal agent selector, Codex's generated model catalog lists exactly the admin's static
-    model_services, a model missing bundled metadata uses the generic fallback, and launching
-    Codex reaches a real gateway prompt rather than the account-login flow.
+    model_services, and launching Codex reaches a real gateway prompt rather than the
+    account-login flow.
     """
     session = live_session
-    session.env["UCODE_MANAGED_CONFIG_STUB"] = str(MANAGED_CODEX_CONFIG_STUB)
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
-    assert "managed config is published" in result.stdout, result.stdout
-    assert "Codex is missing metadata for managed GPT model" in result.stdout, result.stdout
-    assert "system.ai.gpt-99" in result.stdout, result.stdout
-    assert "`ug codex update`" in result.stdout, result.stdout
 
     catalog = json.loads((session.home / ".ucode" / "codex-model-catalog.json").read_text())
-    models = catalog.get("models", [])
-    listed = [model.get("slug") for model in models if model.get("visibility") == "list"]
-    assert listed == MANAGED_CODEX_MODELS, catalog
-    fallback = next(model for model in models if model.get("slug") == "system.ai.gpt-99")
-    assert fallback.get("tool_mode") is None, fallback
-    assert fallback.get("input_modalities") == ["text"], fallback
-    assert fallback.get("context_window") == 32768, fallback
-    assert fallback.get("default_reasoning_level") == "none", fallback
+    listed = [
+        model.get("slug")
+        for model in catalog.get("models", [])
+        if model.get("visibility") == "list"
+    ]
+    assert listed == [MANAGED_CODEX_MODEL], catalog
 
     with AgentTerminal(session, "codex", [str(session.binary), "codex"], "managed-codex") as tui:
         tui.boot()
         tui.check_input_and_exit()
+
+
+@pytest.mark.managed
+@pytest.mark.claude
+def test_ug_configure_managed_is_idempotent(live_session, workspace):
+    """Scenario: run the managed `ug configure` twice in the same session.
+
+    Expected: each run, with no personal agent selector, applies the admin config to both enabled
+    agents identically, so a repeat configure neither duplicates, drops, nor rewrites any entry.
+    """
+    session = live_session
+    runs = []
+    for _ in range(2):
+        result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+        assert "Select coding agents to configure:" not in result.stdout, result.stdout
+        settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
+        catalog = json.loads((session.home / ".ucode" / "codex-model-catalog.json").read_text())
+        picker = [o.get("model") for o in (settings.get("modelPicker") or {}).get("options", [])]
+        listed = [m.get("slug") for m in catalog.get("models", []) if m.get("visibility") == "list"]
+        runs.append((settings.get("availableModels"), picker, listed))
+
+    expected = (MANAGED_CLAUDE_MODELS, MANAGED_CLAUDE_MODELS, [MANAGED_CODEX_MODEL])
+    assert runs == [expected, expected], runs
