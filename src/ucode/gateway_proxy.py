@@ -23,17 +23,22 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import json
 import os
 import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 
-from ucode.databricks import get_databricks_token
+# The auth target a request forwards to: (token_header, headers to strip, diagnostic label),
+# computed from the request body and the proxy's default token header.
+ForwardTarget = Callable[[bytes | None, str], "tuple[str, frozenset[str], str]"]
 
 # Header we overwrite with the freshly-minted Databricks credential. Any
 # client-supplied value is replaced, so a stale settings.json value can't leak.
@@ -124,13 +129,14 @@ class TokenCache:
 
     def __init__(
         self,
-        workspace: str,
-        profile: str | None,
+        token_provider: Callable[[bool], str],
         *,
         force_refresh_near_expiry: bool = False,
     ) -> None:
-        self._workspace = workspace
-        self._profile = profile
+        # token_provider(force_refresh) mints a fresh token from the same source the
+        # client agent uses, so the proxy authenticates as the same principal (e.g.
+        # a per-user custom-OAuth token, not the default CLI profile).
+        self._token_provider = token_provider
         self._force_refresh_near_expiry = force_refresh_near_expiry
         self._state_lock = threading.Lock()  # guards _token / _expiry (brief)
         self._refresh_lock = threading.Lock()  # single-flights the CLI refresh
@@ -143,7 +149,7 @@ class TokenCache:
 
     def _refresh(self, *, force: bool) -> None:
         """Mint a token and record its expiry."""
-        token = get_databricks_token(self._workspace, self._profile, force_refresh=force)
+        token = self._token_provider(force)
         expiry = _jwt_exp(token) or (time.time() + _DEFAULT_TTL_S)
         with self._state_lock:
             self._token = token
@@ -236,11 +242,46 @@ def _request_model(body: bytes | None) -> str | None:
     return model if isinstance(model, str) else None
 
 
+def plain_forward_target(
+    body: bytes | None, default_token_header: str
+) -> tuple[str, frozenset[str], str]:
+    """A plain forward: the fresh token goes in the default header, nothing is stripped."""
+    return default_token_header, frozenset(), "forward"
+
+
+def relay_forward_target(
+    body: bytes | None, default_token_header: str
+) -> tuple[str, frozenset[str], str]:
+    """The Anthropic subscription relay: a Databricks-hosted model authenticates with the
+    gateway token in ``Authorization`` (relay + MPS headers dropped so the gateway serves
+    it directly); a subscription model keeps the caller's own OAuth passthrough."""
+    if is_databricks_routed_model(_request_model(body)):
+        return AUTHORIZATION_HEADER, _DATABRICKS_ROUTE_STRIP, "databricks"
+    return default_token_header, frozenset(), "relay"
+
+
+@dataclass(frozen=True)
+class ProxySpec:
+    """A proxy seam: where requests forward to, which header carries the fresh token,
+    and how each request's auth target is resolved."""
+
+    upstream_path: str
+    token_header: str
+    forward_target: ForwardTarget
+
+
+# The two seams as data. RELAY_SPEC serves relayed Claude inference; OTEL_SPEC is the
+# plain forwarder for Codex OTLP trace ingest.
+RELAY_SPEC = ProxySpec("ai-gateway/anthropic/", AI_GATEWAY_TOKEN_HEADER, relay_forward_target)
+OTEL_SPEC = ProxySpec("ai-gateway/otel/", AUTHORIZATION_HEADER, plain_forward_target)
+
+
 class _ProxyHandler(BaseHTTPRequestHandler):
-    # Set by the server factory.
+    # Set by the server factory (bound per proxy from the ProxySpec).
     cache: TokenCache
     client: httpx.Client
     token_header = AI_GATEWAY_TOKEN_HEADER
+    forward_target: ForwardTarget = staticmethod(plain_forward_target)
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -259,26 +300,21 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else None
         url = self.path.lstrip("/")
-        # Databricks-hosted models authenticate with the gateway token in `Authorization`;
-        # everything else keeps the relay path to the Anthropic subscription.
-        route_databricks = is_databricks_routed_model(_request_model(body))
+        # Resolve the auth target once (parses the body once); the token itself is read
+        # fresh per attempt below, since a 401 retry re-mints it.
+        token_header, extra_strip, route_label = self.forward_target(body, self.token_header)
         log_proxy_diagnostic(
             "request_start",
             request_id=diagnostic_id,
             method=self.command,
             path=self.path.split("?", 1)[0],
-            route="databricks" if route_databricks else "relay",
+            route=route_label,
         )
 
         def request_headers() -> dict[str, str]:
-            if route_databricks:
-                return forwarded_request_headers(
-                    self,
-                    self.cache.token,
-                    AUTHORIZATION_HEADER,
-                    extra_strip=_DATABRICKS_ROUTE_STRIP,
-                )
-            return forwarded_request_headers(self, self.cache.token, self.token_header)
+            return forwarded_request_headers(
+                self, self.cache.token, token_header, extra_strip=extra_strip
+            )
 
         try:
             # First attempt with the current token.
@@ -426,27 +462,29 @@ class _ProxyHandler(BaseHTTPRequestHandler):
 
 def start_proxy(
     workspace: str,
-    profile: str | None,
+    token_provider: Callable[[bool], str],
     port: int,
-    token_header: str,
+    spec: ProxySpec,
+    *,
     force_refresh_near_expiry: bool,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start the loopback refresh proxy + its background token refresher.
 
-    Binds ``port``, falling back to a fresh OS-assigned port when it is already
-    in use (e.g. a prior session's proxy that was killed before its teardown ran
-    still holds the socket). The caller reads ``server.server_address[1]`` for the
-    actual port and points Claude Code at it.
+    Binds ``port`` (pass 0 for an OS-assigned free port), falling back to a fresh
+    OS-assigned port when a specific one is already in use (e.g. a prior session's
+    proxy killed before teardown). The caller reads ``server.server_address[1]`` for
+    the actual port and points the client agent at it.
+
+    ``token_provider(force_refresh)`` mints the token — pass the same source the
+    client agent authenticates with. ``spec`` selects the seam (upstream path, token
+    header, per-request auth routing). Prefer :func:`running_proxy` for a managed
+    start + guaranteed teardown; this is the lower-level primitive.
 
     Returns (server, cache, client); the caller runs the server (e.g. in a
-    thread) and calls shutdown()/cache.stop()/client.close() on exit.
+    thread) and calls shutdown()/server_close()/cache.stop()/client.close() on exit.
     """
-    upstream_base = f"{workspace.rstrip('/')}/ai-gateway/anthropic/"
-    cache = TokenCache(
-        workspace,
-        profile,
-        force_refresh_near_expiry=force_refresh_near_expiry,
-    )
+    upstream_base = f"{workspace.rstrip('/')}/{spec.upstream_path.lstrip('/')}"
+    cache = TokenCache(token_provider, force_refresh_near_expiry=force_refresh_near_expiry)
     # One pooled, keep-alive client shared across handler threads: reuses TCP+TLS
     # to the gateway instead of a fresh handshake per request. Don't follow
     # redirects — a proxy relays 3xx verbatim.
@@ -458,7 +496,8 @@ def start_proxy(
         {
             "cache": cache,
             "client": client,
-            "token_header": token_header,
+            "token_header": spec.token_header,
+            "forward_target": staticmethod(spec.forward_target),
         },
     )
     try:
@@ -471,3 +510,33 @@ def start_proxy(
     refresher = threading.Thread(target=cache.run_refresher, daemon=True)
     refresher.start()
     return server, cache, client
+
+
+@contextlib.contextmanager
+def running_proxy(
+    workspace: str,
+    token_provider: Callable[[bool], str],
+    port: int,
+    spec: ProxySpec,
+    *,
+    force_refresh_near_expiry: bool,
+) -> Iterator[ThreadingHTTPServer]:
+    """Start the proxy, serve it on a background thread, and guarantee full teardown.
+
+    Yields the running server (read ``server.server_address[1]`` for the bound port).
+    Everything the proxy owns — the serve loop, the token-refresher thread, the pooled
+    client — is torn down on exit, including when the ``with`` body raises before it
+    ever uses the server (so a failed agent spawn cannot leak the proxy)."""
+    server, cache, client = start_proxy(
+        workspace, token_provider, port, spec, force_refresh_near_expiry=force_refresh_near_expiry
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        cache.stop()
+        server.shutdown()
+        server.server_close()
+        client.close()
+        thread.join(timeout=5)

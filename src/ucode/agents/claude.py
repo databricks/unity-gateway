@@ -9,7 +9,6 @@ import re
 import signal
 import socket
 import subprocess
-import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -1430,33 +1429,31 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     if not isinstance(port, int):
         raise RuntimeError("Relayed proxy port was not configured; re-run `ucode claude`.")
 
-    server, cache, client = gateway_proxy.start_proxy(
+    profile = state.get("profile")
+
+    def token_provider(force_refresh: bool) -> str:
+        return get_databricks_token(workspace, profile, force_refresh=force_refresh)
+
+    with gateway_proxy.running_proxy(
         workspace,
-        state.get("profile"),
+        token_provider,
         port,
-        token_header=gateway_proxy.AI_GATEWAY_TOKEN_HEADER,
+        gateway_proxy.RELAY_SPEC,
         force_refresh_near_expiry=False,
-    )
-    # start_proxy falls back to an OS-assigned port when the cached one is taken
-    # (stale proxy from a killed session). Reconcile settings + state to whatever
-    # it actually bound, so Claude Code connects to the live port.
-    bound_port = server.server_address[1]
-    if bound_port != port:
-        _rewrite_relayed_port(state, bound_port)
+    ) as server:
+        # running_proxy may bind an OS-assigned port when the cached one is taken
+        # (stale proxy from a killed session). Reconcile settings + state to whatever
+        # it actually bound, so Claude Code connects to the live port.
+        bound_port = server.server_address[1]
+        if bound_port != port:
+            _rewrite_relayed_port(state, bound_port)
 
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
-
-    proc = subprocess.Popen(_build_claude_argv(binary, tool_args, relayed=True))
-    try:
-        returncode = proc.wait()
-    except KeyboardInterrupt:
-        proc.send_signal(signal.SIGINT)
-        returncode = proc.wait()
-    finally:
-        cache.stop()
-        server.shutdown()
-        client.close()
+        proc = subprocess.Popen(_build_claude_argv(binary, tool_args, relayed=True))
+        try:
+            returncode = proc.wait()
+        except KeyboardInterrupt:
+            proc.send_signal(signal.SIGINT)
+            returncode = proc.wait()
     raise SystemExit(returncode)
 
 

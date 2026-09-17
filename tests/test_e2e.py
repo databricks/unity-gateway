@@ -16,7 +16,6 @@ import os
 import shutil
 import subprocess
 import tempfile
-import threading
 from pathlib import Path
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -711,24 +710,17 @@ class TestModelProviderLaunch:
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", config_dir / "settings.json")
         monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "claude-settings.backup.json")
-        # The proxy mints the Databricks swap token; feed it the e2e bearer rather
-        # than shelling out to the CLI, matching the other launch tests.
-        monkeypatch.setattr(
-            gateway_proxy, "get_databricks_token", lambda ws, profile=None, **kwargs: e2e_token
-        )
-
-        # Start the real loopback refresh proxy exactly as `_launch_relayed` does,
-        # so the request is credential-swapped and relayed like a live session.
-        server, cache, client = gateway_proxy.start_proxy(
+        # Start the real loopback refresh proxy exactly as `_launch_relayed` does, so
+        # the request is credential-swapped and relayed like a live session. The token
+        # provider feeds the e2e bearer rather than shelling out to the CLI.
+        with gateway_proxy.running_proxy(
             e2e_workspace,
-            None,
+            lambda _force: e2e_token,
             0,
-            token_header=gateway_proxy.AI_GATEWAY_TOKEN_HEADER,
+            gateway_proxy.RELAY_SPEC,
             force_refresh_near_expiry=False,
-        )
-        port = server.server_address[1]
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        try:
+        ) as server:
+            port = server.server_address[1]
             state = {**e2e_state, "workspace": e2e_workspace, "relayed_proxy_port": port}
             with pytest.MonkeyPatch().context() as mp:
                 mp.setattr("ucode.state.save_state", lambda s: None)
@@ -739,10 +731,6 @@ class TestModelProviderLaunch:
                 "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{port}",
             }
             result = _run_agent(claude.validate_cmd("claude"), env=env, timeout=90)
-        finally:
-            cache.stop()
-            server.shutdown()
-            client.close()
         combined = (result.stdout + result.stderr).strip()
         self._skip_if_provider_unusable(combined, provider)
         assert result.returncode == 0 and combined, (
