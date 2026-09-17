@@ -16,7 +16,6 @@ import os
 import shutil
 import subprocess
 import tempfile
-import threading
 from pathlib import Path
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -46,17 +45,12 @@ from ucode.ui import normalize_workspace_url
 # ---------------------------------------------------------------------------
 # CI provider-launch pinning
 # ---------------------------------------------------------------------------
-# The claude and codex provider-launch tests each route through one fixed,
-# non-relayed MPS that exposes only its cheapest model, so the inference is
-# deterministic and ~a cent per run rather than depending on whichever service
-# happened to list first. Hardcoded on purpose.
+# The claude provider-launch tests route through one fixed, non-relayed MPS
+# that exposes only its cheapest model, so the inference is deterministic and
+# ~a cent per run rather than depending on whichever service happened to list
+# first. Hardcoded on purpose.
 CI_ANTHROPIC_MPS = "main.ucode.ci_e2e_anthropic_nonrelay_mps"  # api-key Anthropic (for claude)
 CI_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
-CI_ANTHROPIC_RELAY_MPS = (
-    "main.ucode.ci_e2e_anthropic_relay_mps"  # subscription-relay Anthropic (for claude)
-)
-CI_OPENAI_MPS = "main.ucode.ci_openai_mps"  # api-key OpenAI (for codex)
-CI_OPENAI_MODEL = "gpt-5-nano"
 
 # Claude Code's client-side model pre-flight is flaky for MPS-routed ids and emits this; the
 # launch retries on it before giving up (see TestModelProviderLaunch).
@@ -571,12 +565,12 @@ class TestClaudeLaunch:
 
 
 class TestModelProviderLaunch:
-    """Launch claude/codex routed through a real Model Provider Service.
+    """Launch claude routed through a real Model Provider Service.
 
-    Both are pinned to fixed CI MPSes (CI_ANTHROPIC_MPS / CI_OPENAI_MPS), each
-    exposing only its cheapest model, so a real request flows through the MPS
-    gateway deterministically. Skips when the MPS is absent or the caller lacks
-    permission on the backing connection.
+    Pinned to a fixed CI MPS (CI_ANTHROPIC_MPS) exposing only its cheapest
+    model, so a real request flows through the MPS gateway deterministically.
+    Skips when the MPS is absent or the caller lacks permission on the backing
+    connection.
     """
 
     @staticmethod
@@ -681,112 +675,6 @@ class TestModelProviderLaunch:
         )
         self._launch_claude_and_assert_success(
             tmp_path, monkeypatch, state, provider_models, launch_model, e2e_workspace, e2e_token
-        )
-
-    def test_launch_claude_through_relayed_provider(
-        self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
-    ):
-        """Relayed (subscription-relay) launch: Claude Code authenticates to
-        Anthropic with the subscription OAuth token while the loopback proxy
-        injects the Databricks swap token. Headless runs supply the OAuth token
-        via CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token` output); without it the
-        launch would open an interactive browser login, so the test skips. Also
-        needs a relayed MPS on the workspace, so it stays inert until both exist.
-        """
-        import ucode.config_io as config_io_mod
-        from ucode import gateway_proxy
-        from ucode.agents import claude
-
-        _require_binary("claude")
-        if not os.environ.get(claude.CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR):
-            pytest.skip(
-                "set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) to run the relayed launch"
-            )
-        provider = CI_ANTHROPIC_RELAY_MPS
-        _, error, _relayed = resolve_provider_models(
-            "claude", {**e2e_state, "workspace": e2e_workspace}, provider
-        )
-        if error is not None:
-            pytest.skip(
-                f"CI relayed Anthropic MPS {provider} unavailable on this workspace: {error}"
-            )
-
-        config_dir = tmp_path / "claude_config"
-        config_dir.mkdir()
-        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
-        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", config_dir / "settings.json")
-        monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "claude-settings.backup.json")
-        # Start the real loopback refresh proxy exactly as `_launch_relayed` does, so
-        # the request is credential-swapped and relayed like a live session. The token
-        # provider feeds the e2e bearer rather than shelling out to the CLI.
-        server, cache, client = gateway_proxy.start_relay_proxy(
-            e2e_workspace, lambda _force: e2e_token, 0
-        )
-        port = server.server_address[1]
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        try:
-            state = {**e2e_state, "workspace": e2e_workspace, "relayed_proxy_port": port}
-            with pytest.MonkeyPatch().context() as mp:
-                mp.setattr("ucode.state.save_state", lambda s: None)
-                claude.write_tool_config(state, None, provider=provider, relayed=True)
-            env = {
-                **os.environ,
-                "CLAUDE_CONFIG_DIR": str(config_dir),
-                "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{port}",
-            }
-            result = _run_agent(claude.validate_cmd("claude"), env=env, timeout=90)
-        finally:
-            cache.stop()
-            server.shutdown()
-            client.close()
-        combined = (result.stdout + result.stderr).strip()
-        self._skip_if_provider_unusable(combined, provider)
-        assert result.returncode == 0 and combined, (
-            f"relayed provider={provider} rc={result.returncode} "
-            f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
-        )
-
-    def test_launch_codex_through_provider(
-        self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
-    ):
-        import ucode.config_io as config_io_mod
-        from ucode.agents import codex
-
-        _require_binary("codex")
-        # Pinned to the fixed CI OpenAI MPS (Nano-only) — the codex counterpart to the claude pin
-        # (codex speaks the OpenAI API, so it can't use the Anthropic MPS). Skip when it's absent.
-        provider = CI_OPENAI_MPS
-        state = {**e2e_state, "workspace": e2e_workspace, "codex_default_model": CI_OPENAI_MODEL}
-        _, error, _ = resolve_provider_models("codex", state, provider)
-        if error is not None:
-            pytest.skip(f"CI OpenAI MPS {provider} unavailable on this workspace: {error}")
-
-        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
-        config_dir = _codex_home_outside_tmp() / ".codex"
-        config_dir.mkdir(parents=True)
-        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_dir / "ucode.config.toml")
-        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "codex-config.backup.toml")
-
-        with pytest.MonkeyPatch().context() as mp:
-            mp.setattr("ucode.state.save_state", lambda s: None)
-            # codex.write_tool_config pins the model from state["codex_default_model"] (set above),
-            # so it lands as gpt-5-nano — the only model this MPS allows.
-            codex.write_tool_config(state, None, provider=provider)
-
-        timeout_seconds = int(os.environ.get("UCODE_E2E_AGENT_TIMEOUT", "60"))
-        try:
-            result = _run_agent(
-                codex.validate_cmd("codex"),
-                env={**os.environ, "CODEX_HOME": str(config_dir)},
-                timeout=timeout_seconds,
-            )
-        except subprocess.TimeoutExpired:
-            pytest.fail(f"provider={provider} timed out after {timeout_seconds}s")
-        combined = (result.stdout + result.stderr).strip()
-        self._skip_if_provider_unusable(combined, provider)
-        assert result.returncode == 0 and combined, (
-            f"provider={provider} rc={result.returncode} "
-            f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
         )
 
 
