@@ -157,11 +157,12 @@ No service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
 
 There are **42 live cases** (including 6 TUI journeys) and **5 installation
-checks** with both agents. A separate **3 managed-workspace cases** (one per agent
-plus an idempotent re-configure, marker `managed`) run against a workspace that publishes a CodingAgentConfig; see
-"Managed-workspace journeys" below. A further **27 `managed_fixture` cases** inject the admin
-config locally (via `UCODE_MANAGED_CONFIG_STUB`): 24 explicit configured/fresh managed-discovery
-journeys plus three model/MCP shape cases. Each injected catalog differs from the published config
+checks** with both agents. A separate **4 managed-workspace cases** (one per agent,
+an idempotent re-configure, and cache reuse within the TTL; marker `managed`) run against a
+workspace that publishes a CodingAgentConfig; see "Managed-workspace journeys" below. A further
+**28 `managed_fixture` cases** inject the admin config locally (via
+`UCODE_MANAGED_CONFIG_STUB`): 24 explicit configured/fresh managed-discovery journeys plus four
+collected model/MCP shape cases from three test functions. Each injected catalog differs from the published config
 in what it asserts, proving that the injected config drove the behavior.
 See the named coverage and gaps matrix in
 [../README.md](../README.md).

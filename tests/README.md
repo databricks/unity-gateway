@@ -64,12 +64,12 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_and_ucode_auth_helpers_emit_only_the_supplied_bearer` | Run both auth helper commands with the public bearer override, with and without forced refresh | Exact token-only stdout, no warnings or ANSI escapes; no workspace authentication or saved state |
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
-With both agents selected there are **41 live cases** (6 interactive TUI cases),
-**3 managed-workspace cases** (marker `managed`, run against a separate workspace that
-publishes a CodingAgentConfig), **27 managed-fixture cases** (marker `managed_fixture`, with only
+With both agents selected there are **42 live cases** (6 interactive TUI cases),
+**4 managed-workspace cases** (marker `managed`, run against a separate workspace that
+publishes a CodingAgentConfig), **28 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected), and **5 installation checks**. The 12 numbered scenarios
-have explicit configured and fresh journeys (24 cases); the other three cover managed model and
-MCP shapes. Parametrization varies argument spelling or routing mode, never hides the
+have explicit configured and fresh journeys (24 cases); the other four collected cases, from three
+test functions, cover managed model and MCP shapes. Parametrization varies argument spelling or routing mode, never hides the
 agent/provider in the test name. Duplicate boot-only cases are incorporated into the Databricks
 configuration TUI journeys.
 Generated-file cleanup and strict app-server stdout assertions remain enforced.
