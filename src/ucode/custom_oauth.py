@@ -11,12 +11,14 @@ import shlex
 import subprocess
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypedDict
 from urllib.parse import urlparse
 
 from databricks.sdk import oauth
 
+from ucode import config_io
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
 from ucode.databricks import (
     build_auth_token_argv,
@@ -130,6 +132,16 @@ def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def _trace_custom_oauth_cli(message: str) -> None:
+    log_path = config_io.APP_DIR / "custom-oauth-cli.log"
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write(f"{datetime.now(UTC).isoformat()} pid={os.getpid()} {message}\n")
+    except OSError as exc:
+        print_warning_err(f"Could not write custom OAuth CLI trace: {exc}")
 
 
 def _require_custom_oauth_cli() -> None:
@@ -291,6 +303,11 @@ def _get_custom_client_token_from_cli(
     ]
     if force_refresh:
         args.append("--force-refresh")
+    err_console.print(
+        f"Fetching custom OAuth token via Databricks CLI (profile: {profile}, client ID: {client_id})...",
+        markup=False,
+    )
+    _trace_custom_oauth_cli(f"Running {shlex.join(args)}")
     try:
         result = run(
             args,
@@ -303,9 +320,12 @@ def _get_custom_client_token_from_cli(
         payload = json.loads(result.stdout or "{}")
         token = payload.get("access_token", "") if isinstance(payload, dict) else ""
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        _trace_custom_oauth_cli(f"CLI token fetch failed: {type(exc).__name__}")
         raise RuntimeError(f"Custom-client OAuth via Databricks CLI failed. {hint}") from exc
     if result.returncode != 0 or not isinstance(token, str) or not token.strip():
+        _trace_custom_oauth_cli(f"CLI token fetch failed (exit code {result.returncode}).")
         raise RuntimeError(f"Custom-client OAuth via Databricks CLI failed. {hint}")
+    _trace_custom_oauth_cli("CLI token fetch succeeded.")
     return token
 
 
