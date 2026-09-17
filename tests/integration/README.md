@@ -99,7 +99,7 @@ test_ug_codex_app_server.py             # actual client/server initialize exchan
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_configure_managed.py            # managed workspace: static model list, no agent selector
-test_ug_configure_managed_models.py     # injected model lists: picker and Codex fallback metadata
+test_ug_configure_managed_models.py     # injected model lists: pickers and Codex fallback metadata
 test_ug_configure_managed_mcp.py        # injected managed MCP list
 test_installation.py                   # fresh installed package
 utils/                                # process/terminal/evidence helpers and Docker files
@@ -282,7 +282,9 @@ The `managed_fixture` journeys use `UCODE_MANAGED_CONFIG_STUB` to short-circuit 
 managed-config HTTP read for config shapes that workspace does not publish. In particular,
 `test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
 `system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that
-workspace on the valid default model `system.ai.gpt-5-6-sol`.
+workspace on the valid default model `system.ai.gpt-5-6-sol`. With smart routing enabled, it opens
+the real Codex `/models` picker and requires that injected custom-catalog model to be listed. The
+same picker assertion also runs with smart routing disabled to cover both launch paths.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:
