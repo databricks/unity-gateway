@@ -1415,8 +1415,8 @@ class TestStatus:
             result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0, result.output
-        assert "Workspace-managed config" in result.output
-        assert "Enabled agents:" in result.output
+        assert "Configuration" in result.output
+        assert "Coding Agents:" in result.output
         assert "github-mcp" in result.output
         assert "debug-ci" in result.output
 
@@ -1428,7 +1428,7 @@ class TestStatus:
             result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0, result.output
-        assert "Workspace-managed config" not in result.output
+        assert "Configuration" not in result.output
 
 
 class TestConfigureSkillsCommand:
@@ -2805,6 +2805,12 @@ class TestConfigureAgentsSelection:
             lambda s: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
         )
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: True)
+        installed: list[str] = []
+        monkeypatch.setattr(
+            cli_mod,
+            "install_tool_binary",
+            lambda tool, **kwargs: installed.append(tool) or True,
+        )
         monkeypatch.setattr(cli_mod, "resolve_state", lambda managed, s, tool: s)
         monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
         configured: list[str] = []
@@ -2820,7 +2826,56 @@ class TestConfigureAgentsSelection:
         )
 
         assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
+        assert installed == ["claude", "codex"]
         assert configured == ["claude", "codex"]
+
+    def test_managed_config_fails_when_no_enabled_agent_is_available(self, monkeypatch):
+        import ucode.cli as cli_mod
+
+        state = {**MINIMAL_STATE, "available_tools": []}
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(
+            cli_mod,
+            "refresh_managed_config",
+            lambda s: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
+        )
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: False)
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda *args, **kwargs: pytest.fail("must not configure unavailable agents"),
+        )
+
+        with pytest.raises(RuntimeError, match="None of the coding agents enabled"):
+            cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)])
+
+    def test_budget_only_managed_config_uses_requested_agents(self, monkeypatch):
+        import ucode.cli as cli_mod
+
+        state = {**MINIMAL_STATE, "available_tools": []}
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(
+            cli_mod,
+            "refresh_managed_config",
+            lambda s: ({"budget_policy": {"policy_id": "budget"}}, False),
+        )
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: t == "claude")
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda managed: None)
+        configured: list[str] = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda s, tools, **kwargs: configured.extend(tools) or s,
+        )
+
+        assert (
+            cli_mod.configure_workspace_command(
+                selected_tools=["claude"], workspaces=[("https://w.com", None)]
+            )
+            == 0
+        )
+        assert configured == ["claude"]
 
     def test_managed_config_registers_mcp_servers_after_configuring_agents(self, monkeypatch):
         # The managed branch registers the config's MCP servers for the enabled agents once they are
@@ -2835,6 +2890,7 @@ class TestConfigureAgentsSelection:
         }
         monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s: (managed, False))
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: True)
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
         monkeypatch.setattr(cli_mod, "resolve_state", lambda m, s, tool: s)
         monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
         order: list[str] = []
@@ -2868,6 +2924,7 @@ class TestConfigureAgentsSelection:
             lambda s: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
         )
         monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: True)
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
         # Mirror production: resolve_state hands each iteration a fresh copy of `state`.
         monkeypatch.setattr(cli_mod, "resolve_state", lambda m, s, tool: dict(s))
         monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
@@ -3118,6 +3175,52 @@ class TestConfigureProfilesFlag:
         # default forced OAuth login applies.
         mock_cfg.assert_called_once_with(
             workspaces=[("https://first.databricks.com", "DEFAULT")],
+        )
+
+    def test_ug_workspace_env_skips_workspace_prompt(self):
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(
+                app,
+                ["configure"],
+                env={"UG_WORKSPACE": "https://env.databricks.com"},
+            )
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_called_once_with(
+            workspaces=[("https://env.databricks.com", None)],
+        )
+
+    def test_explicit_profile_overrides_ug_workspace_env(self):
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.list_profile_entries", return_value=self.PROFILE_ENTRIES),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(
+                app,
+                ["configure", "--profile", "DEFAULT"],
+                env={"UG_WORKSPACE": "https://env.databricks.com"},
+            )
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_called_once_with(
+            workspaces=[("https://first.databricks.com", "DEFAULT")],
+        )
+
+    def test_explicit_workspace_overrides_ug_workspace_env(self):
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(
+                app,
+                ["configure", "--workspace", "https://explicit.databricks.com"],
+                env={"UG_WORKSPACE": "https://env.databricks.com"},
+            )
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_called_once_with(
+            workspaces=[("https://explicit.databricks.com", None)],
         )
 
     def test_deprecated_profiles_alias_resolves_single_profile(self):
@@ -4008,7 +4111,7 @@ class TestBareUcode:
         assert "launching Claude Code as the default agent" in result.output
         assert "system.ai.opus" in result.output
         # The full box's per-config enumeration is left to `ucode status`.
-        assert "Enabled agents:" not in result.output
+        assert "Coding Agents:" not in result.output
         assert "system.ai.slack" not in result.output
         assert "main.default.my_skill" not in result.output
 
