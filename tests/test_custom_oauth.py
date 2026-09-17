@@ -176,6 +176,66 @@ class TestCustomClientToken:
         )
         assert enabled == disabled == expected
 
+    @pytest.mark.parametrize("runtime_flag", ["1", "0", None])
+    def test_generated_helper_runs_without_state_after_backend_change(
+        self, monkeypatch, runtime_flag
+    ):
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        monkeypatch.setattr(db_mod, "ug_binary", lambda: "/tools/ug")
+        redirect_url = "http://localhost:41735/callback"
+        argv = build_custom_auth_token_argv(
+            WS,
+            {
+                "client_id": "custom-client",
+                "redirect_url": redirect_url,
+                "scopes": list(TEST_SCOPES),
+            },
+            "custom-profile",
+        )
+        if runtime_flag is None:
+            monkeypatch.delenv("ENABLE_CUSTOM_OAUTH_FROM_CLI")
+        else:
+            monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", runtime_flag)
+        assert cli_mod.load_state() == {}
+        with (
+            patch(
+                "ucode.custom_oauth.databricks_cli_version",
+                return_value=CUSTOM_OAUTH_CLI_MIN_VERSION,
+            ),
+            patch(
+                "ucode.custom_oauth.run",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, stdout='{"access_token": "cli-token"}', stderr=""
+                ),
+            ) as run_cli,
+        ):
+            result = runner.invoke(app, [*argv[1:], "--force-refresh"])
+
+        assert result.exit_code == 0, result.output
+        if runtime_flag == "1":
+            assert result.stdout == "cli-token\n"
+            run_cli.assert_called_once()
+            assert run_cli.call_args.args[0] == [
+                "databricks",
+                "auth",
+                "token",
+                "--host",
+                WS,
+                "--profile",
+                "custom-profile",
+                "--force-refresh",
+            ]
+            assert run_cli.call_args.kwargs["env"]["DATABRICKS_CLIENT_ID"] == "custom-client"
+            self.discovery.assert_not_called()
+            self.browser.assert_not_called()
+        else:
+            assert result.stdout == "browser-token\n"
+            run_cli.assert_not_called()
+            self.browser.assert_called_once()
+            query = parse_qs(result.stderr.split("?", 1)[1].strip())
+            assert query["redirect_uri"] == [redirect_url]
+            assert query["scope"][0].split() == list(TEST_SCOPES)
+
     def test_cli_auth_is_not_used_when_disabled(self, monkeypatch):
         monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "0")
         with patch("ucode.custom_oauth.run") as run_cli:
@@ -342,13 +402,14 @@ class TestCustomClientCommand:
             force_refresh=False,
         )
 
-    def test_cli_auth_version_failure_is_machine_readable(self, monkeypatch):
+    @pytest.mark.parametrize("version", [(1, 16, 0), None])
+    def test_cli_auth_version_failure_is_machine_readable(self, monkeypatch, version):
         monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
         with (
             patch("ucode.cli.load_state", return_value={"workspace": "https://ws"}),
             patch(
                 "ucode.custom_oauth.databricks_cli_version",
-                return_value=(1, 16, 0),
+                return_value=version,
             ),
             patch("ucode.custom_oauth.run") as run_cli,
             patch("ucode.databricks._run_databricks_cli_installer") as installer,

@@ -47,6 +47,7 @@ from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     apply_pat_environment,
     build_shared_base_urls,
+    databricks_cli_version,
     discover_claude_models,
     discover_codex_models,
     discover_gemini_models,
@@ -2122,6 +2123,25 @@ def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
     return agent_config.get("smart_routing_enabled") is True
 
 
+def _ensure_custom_oauth_cli_for_launch(tool: str) -> None:
+    if tool not in {"claude", "codex"} or os.environ.get("ENABLE_CUSTOM_OAUTH_FROM_CLI") != "1":
+        return
+    minimum = custom_oauth.CUSTOM_OAUTH_CLI_MIN_VERSION
+    version = databricks_cli_version()
+    if version is not None and version >= minimum:
+        return
+    required = ".".join(map(str, minimum))
+    current = ".".join(map(str, version)) if version is not None else "missing or unreadable"
+    message = (
+        f"Custom OAuth requires Databricks CLI v{required} or newer; "
+        f"your current version is {current}."
+    )
+    print_warning(message)
+    if not prompt_yes_no("Install or update Databricks CLI now?"):
+        raise RuntimeError(f"{message} Update Databricks CLI before launching again.")
+    install_databricks_cli(minimum)
+
+
 def _launch_tool(
     tool_name: str,
     ctx: typer.Context,
@@ -2145,6 +2165,7 @@ def _launch_tool(
             raise RuntimeError("--provider and --model-location cannot be used together.")
         if parent_schema is not None and not is_valid_catalog_schema(parent_schema):
             raise RuntimeError("--model-location must be `<catalog>.<schema>`.")
+        _ensure_custom_oauth_cli_for_launch(tool)
         explicit_prompt = _has_explicit_prompt(ctx)
         smart_routing_enabled = smart_routing_v2.smart_routing_enabled()
         # Launchers such as isaac put their harness arguments after `--`, so the harness's own
