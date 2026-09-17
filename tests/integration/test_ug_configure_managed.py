@@ -95,3 +95,37 @@ def test_ug_configure_managed_is_idempotent(live_session, workspace):
 
     expected = (MANAGED_CLAUDE_MODELS, MANAGED_CLAUDE_MODELS, [MANAGED_CODEX_MODEL])
     assert runs == [expected, expected], runs
+
+
+@pytest.mark.managed
+@pytest.mark.claude
+def test_ug_managed_config_launch_reuses_cache_within_ttl(live_session, workspace):
+    """Scenario: after a managed `ug configure`, launch Claude within the cache TTL, then again
+    after the cached read is backdated past it.
+
+    Expected: configure stamps managed-config.json with a `published` outcome and a `retrieved_at`;
+    a launch within the TTL is served from that cache and leaves the stamp untouched (no
+    control-plane re-read), and once the stamp is backdated past the TTL the next launch reads fresh
+    and advances it.
+    """
+    session = live_session
+    cache = session.home / ".ucode" / "managed-config.json"
+
+    session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+    fresh = json.loads(cache.read_text())
+    assert fresh["outcome"] == "published", fresh
+    stamped = fresh["retrieved_at"]
+
+    # A launch within the TTL reuses the cached read: the stamp must not move.
+    with AgentTerminal(session, "claude", [str(session.binary), "claude"], "ttl-cache-hit") as tui:
+        tui.boot()
+        tui.check_input_and_exit()
+    assert json.loads(cache.read_text())["retrieved_at"] == stamped
+
+    # Backdate the stamp past the TTL; the next launch reads fresh and advances it.
+    backdated = "2000-01-01T00:00:00+00:00"
+    cache.write_text(json.dumps({**json.loads(cache.read_text()), "retrieved_at": backdated}))
+    with AgentTerminal(session, "claude", [str(session.binary), "claude"], "ttl-expired") as tui:
+        tui.boot()
+        tui.check_input_and_exit()
+    assert json.loads(cache.read_text())["retrieved_at"] != backdated

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -366,6 +367,19 @@ class TestPersistence:
     def test_workspace_is_none_when_absent(self, _managed_path):
         assert managed_state_workspace() is None
 
+    def test_outcome_stamps_retrieved_at_and_outcome(self, _managed_path, monkeypatch):
+        # A read's outcome carries a retrieved_at stamp so the launch path can reuse it within the
+        # TTL; without an outcome the wrapper stays the bare {workspace, config} shape.
+        monkeypatch.setattr(mc_mod, "_utcnow", lambda: NOW)
+        save_managed_state("https://ws.example.com", RAW_MANIFEST, outcome="published")
+        stored = json.loads(_managed_path.read_text(encoding="utf-8"))
+        assert stored["outcome"] == "published"
+        assert stored["retrieved_at"] == NOW.isoformat()
+        save_managed_state("https://ws.example.com", {"default_agent": "claude"})
+        bare = json.loads(_managed_path.read_text(encoding="utf-8"))
+        assert "retrieved_at" not in bare
+        assert "outcome" not in bare
+
     def test_dry_run_writes_nothing(self, _managed_path, monkeypatch):
         # Under --dry-run the config writers print instead of touching disk, so a launch that
         # dry-runs an admin's authored draft never overwrites it.
@@ -639,17 +653,17 @@ class TestRefreshManagedConfig:
         assert flag is False
 
 
-class TestRefreshAlwaysFetches:
-    """The launch-time refresh always hits the control plane; the 30-minute TTL is gone.
+NOW = datetime(2026, 9, 16, 12, 0, 0, tzinfo=UTC)
 
-    Whether to re-apply the fetched config is decided separately by the caller via
-    ``managed_config_is_newer`` against the persisted applied watermark, so refresh never short-
-    circuits on a cached copy.
-    """
+
+class TestRefreshTTL:
+    """A launch reuses a read younger than ``MANAGED_CONFIG_TTL``; ``ug configure`` (force_refresh)
+    and a stale/absent/foreign cache re-read the control plane."""
 
     @pytest.fixture(autouse=True)
-    def _stub_token(self, monkeypatch):
+    def _stub_token_and_clock(self, monkeypatch):
         monkeypatch.setattr(mc_mod, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mc_mod, "_utcnow", lambda: NOW)
 
     @staticmethod
     def _counting_fetch(monkeypatch, result=(RAW_MANIFEST, None)):
@@ -662,27 +676,158 @@ class TestRefreshAlwaysFetches:
         monkeypatch.setattr(mc_mod, "get_managed_config", fetch)
         return calls
 
-    def test_fetches_even_with_a_persisted_config(self, monkeypatch):
-        # A previously-persisted config no longer short-circuits: every launch re-reads the workspace.
-        save_managed_state(WORKSPACE, RAW_MANIFEST)
+    @staticmethod
+    def _write_cache(*, config, outcome, retrieved_at, workspace=WORKSPACE):
+        payload = {
+            "workspace": workspace,
+            "config": config,
+            "outcome": outcome,
+            "retrieved_at": retrieved_at.isoformat(),
+        }
+        mc_mod.MANAGED_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        mc_mod.MANAGED_CONFIG_PATH.write_text(json.dumps(payload), encoding="utf-8")
+
+    @staticmethod
+    def _no_fetch(monkeypatch):
+        monkeypatch.setattr(
+            mc_mod,
+            "get_managed_config",
+            lambda ws, tok: pytest.fail("fresh cache must not hit the control plane"),
+        )
+
+    def test_fresh_published_cache_short_circuits(self, monkeypatch):
+        self._write_cache(
+            config=RAW_MANIFEST, outcome="published", retrieved_at=NOW - timedelta(minutes=1)
+        )
+        self._no_fetch(monkeypatch)
+        assert refresh_managed_config(_state()) == (normalize_managed_config(RAW_MANIFEST), False)
+
+    def test_fresh_no_config_cache_short_circuits(self, monkeypatch):
+        self._write_cache(config={}, outcome="none", retrieved_at=NOW - timedelta(minutes=1))
+        self._no_fetch(monkeypatch)
+        assert refresh_managed_config(_state()) == (None, False)
+
+    def test_fresh_feature_disabled_cache_short_circuits(self, monkeypatch):
+        self._write_cache(
+            config={}, outcome="feature_disabled", retrieved_at=NOW - timedelta(minutes=1)
+        )
+        self._no_fetch(monkeypatch)
+        assert refresh_managed_config(_state()) == (None, True)
+
+    def test_stale_cache_refetches(self, monkeypatch):
+        # A read at or past the TTL is stale: re-read rather than reuse it.
+        self._write_cache(
+            config=RAW_MANIFEST, outcome="published", retrieved_at=NOW - timedelta(minutes=5)
+        )
         calls = self._counting_fetch(monkeypatch)
-        result, flag = refresh_managed_config(_state())
-        assert result == normalize_managed_config(RAW_MANIFEST)
-        assert flag is False
+        refresh_managed_config(_state())
         assert calls["n"] == 1
 
-    def test_persists_the_fetched_config_raw_without_a_timestamp(self, monkeypatch):
-        self._counting_fetch(monkeypatch)
+    def test_future_dated_cache_refetches(self, monkeypatch):
+        # A future stamp (clock skew or a tampered file) is not trusted as fresh.
+        self._write_cache(
+            config=RAW_MANIFEST, outcome="published", retrieved_at=NOW + timedelta(minutes=1)
+        )
+        calls = self._counting_fetch(monkeypatch)
         refresh_managed_config(_state())
-        # The on-disk payload is the raw config verbatim and carries no retrieved_at field.
-        stored = json.loads(mc_mod.MANAGED_CONFIG_PATH.read_text(encoding="utf-8"))
-        assert "retrieved_at" not in stored
-        assert stored["config"] == RAW_MANIFEST
+        assert calls["n"] == 1
+
+    def test_missing_timestamp_refetches(self, monkeypatch):
+        # An old-format file (no retrieved_at) is never treated as a fresh cache.
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        calls = self._counting_fetch(monkeypatch)
+        refresh_managed_config(_state())
+        assert calls["n"] == 1
+
+    def test_invalid_timestamp_refetches(self, monkeypatch):
+        mc_mod.MANAGED_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        mc_mod.MANAGED_CONFIG_PATH.write_text(
+            json.dumps(
+                {
+                    "workspace": WORKSPACE,
+                    "config": RAW_MANIFEST,
+                    "outcome": "published",
+                    "retrieved_at": "not-a-timestamp",
+                }
+            ),
+            encoding="utf-8",
+        )
+        calls = self._counting_fetch(monkeypatch)
+        refresh_managed_config(_state())
+        assert calls["n"] == 1
+
+    def test_other_workspace_cache_refetches(self, monkeypatch):
+        self._write_cache(
+            config=RAW_MANIFEST,
+            outcome="published",
+            retrieved_at=NOW - timedelta(minutes=1),
+            workspace="https://other.example.com",
+        )
+        calls = self._counting_fetch(monkeypatch)
+        refresh_managed_config(_state())
+        assert calls["n"] == 1
+
+    def test_force_refresh_bypasses_a_fresh_cache(self, monkeypatch):
+        # `ug configure` passes force_refresh=True so it never applies a since-changed config.
+        self._write_cache(
+            config=RAW_MANIFEST, outcome="published", retrieved_at=NOW - timedelta(minutes=1)
+        )
+        calls = self._counting_fetch(monkeypatch)
+        refresh_managed_config(_state(), force_refresh=True)
+        assert calls["n"] == 1
 
     def test_first_launch_with_no_cache_fetches(self, monkeypatch):
         calls = self._counting_fetch(monkeypatch)
         refresh_managed_config(_state())
         assert calls["n"] == 1
+
+    def test_non_utf8_cache_file_refetches(self, monkeypatch):
+        # A corrupted (non-UTF-8) file read on every launch must not crash: it reads as absent, so
+        # the launch falls through to a fresh fetch rather than raising UnicodeDecodeError.
+        mc_mod.MANAGED_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        mc_mod.MANAGED_CONFIG_PATH.write_bytes(b"\xff\xfe not utf-8")
+        calls = self._counting_fetch(monkeypatch)
+        refresh_managed_config(_state())
+        assert calls["n"] == 1
+
+    def test_successful_read_stamps_retrieved_at_and_outcome(self, monkeypatch):
+        self._counting_fetch(monkeypatch)
+        refresh_managed_config(_state())
+        stored = json.loads(mc_mod.MANAGED_CONFIG_PATH.read_text(encoding="utf-8"))
+        assert stored["config"] == RAW_MANIFEST
+        assert stored["outcome"] == "published"
+        assert stored["retrieved_at"] == NOW.isoformat()
+
+    def test_no_config_read_caches_none_outcome(self, monkeypatch):
+        self._counting_fetch(monkeypatch, result=(None, None))
+        refresh_managed_config(_state())
+        stored = json.loads(mc_mod.MANAGED_CONFIG_PATH.read_text(encoding="utf-8"))
+        assert stored["config"] == {}
+        assert stored["outcome"] == "none"
+        assert stored["retrieved_at"] == NOW.isoformat()
+
+    def test_feature_disabled_read_caches_feature_disabled_outcome(self, monkeypatch):
+        reason = 'HTTP 400 Bad Request: {"error_code":"FEATURE_DISABLED"}'
+        self._counting_fetch(monkeypatch, result=(None, reason))
+        monkeypatch.setattr(mc_mod, "print_warning", lambda msg: None)
+        refresh_managed_config(_state())
+        stored = json.loads(mc_mod.MANAGED_CONFIG_PATH.read_text(encoding="utf-8"))
+        assert stored["config"] == {}
+        assert stored["outcome"] == "feature_disabled"
+        assert stored["retrieved_at"] == NOW.isoformat()
+
+    def test_failed_read_does_not_advance_retrieved_at(self, monkeypatch):
+        # A transient failure falls back to the last good config and must leave the stamp untouched,
+        # so the stale read cannot masquerade as fresh on the next launch.
+        stamped = NOW - timedelta(minutes=10)
+        self._write_cache(config=RAW_MANIFEST, outcome="published", retrieved_at=stamped)
+        self._counting_fetch(monkeypatch, result=(None, "HTTP 500"))
+        monkeypatch.setattr(mc_mod, "print_warning", lambda msg: None)
+        result, flag = refresh_managed_config(_state())
+        assert result == normalize_managed_config(RAW_MANIFEST)
+        assert flag is False
+        stored = json.loads(mc_mod.MANAGED_CONFIG_PATH.read_text(encoding="utf-8"))
+        assert stored["retrieved_at"] == stamped.isoformat()
 
 
 class TestManagedUpdateTime:
