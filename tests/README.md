@@ -37,6 +37,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task; normal exit |
 | `test_ug_configure_codex_databricks` | Configure Databricks Hosted; execute the generated auth helper; open Codex TUI and read a file | Generated helper invokes `ug` with clean token stdout; completed assistant answer contains the file value; normal exit and reopen |
 | `test_ug_configure_codex_openai_mps` | Select OpenAI MPS in the real configure picker; launch Codex | Saved provider in status; completed TUI file task; normal exit |
+| `test_ug_claude_custom_oauth_cli_boots`, `test_ug_codex_custom_oauth_cli_boots` | Launch with `ENABLE_CUSTOM_OAUTH_FROM_CLI=1`, `--workspace`, and `--client-id databricks-cli` | Real TUI reaches a usable prompt, accepts keyboard input, exits normally, and saves `client_id = databricks-cli` in its generated CLI profile |
 | `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` with routing enabled | Real file task completes; no routing wrapper |
@@ -56,7 +57,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_and_ucode_auth_helpers_emit_only_the_supplied_bearer` | Run both auth helper commands with the public bearer override, with and without forced refresh | Exact token-only stdout, no warnings or ANSI escapes; no workspace authentication or saved state |
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
-With both agents selected there are **39 live cases** (4 interactive TUI cases),
+With both agents selected there are **41 live cases** (6 interactive TUI cases),
 **2 managed-workspace cases** (marker `managed`, run against a separate workspace that
 publishes a CodingAgentConfig), and **5 installation checks**. Parametrization varies
 argument spelling or routing mode, never hides the agent/provider in the test name. Duplicate boot-only cases
@@ -79,11 +80,12 @@ Fresh consumer dependency resolution covers the install path behind #496, rather
 than consuming `uv.lock`. Use `--dependency PACKAGE==VERSION` or replay the archived
 dependency graph to reproduce a user's combination. Every relevant same-repository
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
-Databricks Hosted configure/TUI and headless argument journeys for both agents,
-in two parallel jobs. After smoke finishes, the full suite runs all 39 cases
-across two parallel agent jobs: one Claude VM and one Codex VM, each running its
-configure, headless, and commands/lifecycle cases serially. Each agent is installed
-once for the full suite, and no two full jobs for the same agent overlap within a run.
+Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
+journeys for both agents, in two parallel jobs. After smoke finishes, the full
+suite runs all 41 cases across two parallel agent jobs: one Claude VM and one
+Codex VM, each running its configure, headless, and commands/lifecycle cases
+serially. Each agent is installed once for the full suite, and no two full jobs
+for the same agent overlap within a run.
 CI starts integration alongside unit tests and the existing e2e shards. Integration
 does not wait for agent e2e or get skipped when an agent shard fails. These suites
 share workspace capacity; overlapping their requests can still encounter rate limits.
@@ -112,7 +114,7 @@ pending. The descriptive jobs provide the actual coverage and diagnostics.
 | Scenario | Status / requirement |
 | --- | --- |
 | Live MCP and skills functionality | Deferred; installation tests cover the local web-search MCP handshake and tool listing, not upstream proxying or a real search request |
-| Broad configure flags, tracing, multiple workspaces, OAuth/PAT flows | Deferred while focusing on basic CUJs |
+| Broad configure flags, tracing, multiple workspaces, and PAT flows | Deferred while focusing on basic CUJs |
 | Provider switching, relayed/subscription MPS | Not covered by the four provider journeys |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |

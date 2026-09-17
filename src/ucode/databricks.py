@@ -15,6 +15,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable
 from concurrent.futures import (
@@ -953,6 +954,28 @@ def external_bearer_configured() -> bool:
         os.environ.get("DATABRICKS_BEARER", "").strip()
         or os.environ.get("DATABRICKS_BEARER_COMMAND", "").strip()
     )
+
+
+def save_databricks_cli_oauth_profile(workspace: str, profile: str, client_id: str) -> None:
+    """Persist the profile metadata normally written by ``databricks auth login``."""
+    cfg_path = Path(os.environ.get("DATABRICKS_CONFIG_FILE") or "~/.databrickscfg").expanduser()
+    parser = configparser.ConfigParser(default_section="@ucode-no-defaults@", interpolation=None)
+    try:
+        parser.read(cfg_path, encoding="utf-8")
+        if parser.has_section(profile):
+            parser.remove_section(profile)
+        parser[profile] = {
+            "host": workspace,
+            "auth_type": "databricks-cli",
+            "client_id": client_id,
+        }
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=cfg_path.parent, prefix=f".{cfg_path.name}.")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            parser.write(handle)
+        os.replace(tmp_name, cfg_path)
+    except (configparser.Error, OSError) as exc:
+        raise RuntimeError(f"Could not save Databricks CLI profile '{profile}'.") from exc
 
 
 def has_valid_databricks_auth(workspace: str, profile: str | None = None) -> bool:

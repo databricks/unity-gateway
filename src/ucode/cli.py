@@ -335,7 +335,9 @@ def _custom_oauth_config(
     if client_id is None:
         raise RuntimeError("--redirect-url and --scopes require --client-id.")
     if scopes is None:
-        raise RuntimeError("--scopes is required with --client-id.")
+        if not custom_oauth_cli_enabled(client_id):
+            raise RuntimeError("--scopes is required with --client-id.")
+        scopes = ",".join(custom_oauth.DEFAULT_CLI_SCOPES)
 
     return custom_oauth.create_custom_oauth_config(
         client_id,

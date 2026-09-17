@@ -18,13 +18,16 @@ from ucode.constants import LOCALHOST, LOOPBACK_HOST
 from ucode.databricks import (
     build_auth_token_argv,
     ensure_databricks_cli_version,
+    external_bearer_configured,
     get_databricks_token,
     has_valid_databricks_auth,
     run,
+    save_databricks_cli_oauth_profile,
 )
 from ucode.ui import err_console, normalize_workspace_url, print_warning_err
 
 DEFAULT_REDIRECT_URL = f"http://{LOCALHOST}:8020"
+DEFAULT_CLI_SCOPES = ("offline_access", "all-apis")
 # Custom OAuth may need a human to finish browser consent, not just a token fetch.
 CUSTOM_OAUTH_TIMEOUT_MS = 180_000
 CUSTOM_OAUTH_CLI_MIN_VERSION = (1, 17, 0)
@@ -38,8 +41,8 @@ class CustomOAuthConfig(TypedDict):
     profile: NotRequired[str]
 
 
-def custom_oauth_cli_enabled(config: CustomOAuthConfig | None) -> bool:
-    return config is not None and os.environ.get(CUSTOM_OAUTH_CLI_ENV_VAR) == "1"
+def custom_oauth_cli_enabled(custom_oauth: object | None) -> bool:
+    return custom_oauth is not None and os.environ.get(CUSTOM_OAUTH_CLI_ENV_VAR) == "1"
 
 
 def _normalize_scopes(scopes: Sequence[str]) -> list[str]:
@@ -139,6 +142,8 @@ def ensure_custom_oauth_cli_token(
     workspace = normalize_workspace_url(workspace)
     profile = config.get("profile") or _custom_cli_profile(workspace, config["client_id"])
     config["profile"] = profile
+    if external_bearer_configured():
+        save_databricks_cli_oauth_profile(workspace, profile, config["client_id"])
     if has_valid_databricks_auth(workspace, profile):
         return get_databricks_token(workspace, profile)
     login_args = [

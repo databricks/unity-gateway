@@ -200,6 +200,7 @@ class TestCustomClientCommand:
             client_id="my-client",
             redirect_url="http://localhost:41735/callback",
             scopes=["offline_access", "catalog.catalogs:read"],
+            profile="saved",
             force_refresh=True,
         )
 
