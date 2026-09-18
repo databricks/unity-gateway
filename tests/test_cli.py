@@ -994,6 +994,102 @@ class TestManagedConfigLaunchSourceGuard:
         launch.assert_called_once()
 
 
+class TestManagedClaudeModelDiscovery:
+    MPS_CONFIG = {
+        "enabled_agents": {
+            "claude": {
+                "model_config": {
+                    "model_provider_service": "main.default.anthropic-mps",
+                    "models": {
+                        "default_sonnet_model": "anthropic.claude-sonnet-4-6",
+                        "default_opus_model": "anthropic.claude-opus-4-8",
+                        "default_haiku_model": "anthropic.claude-haiku-4-5",
+                        "default_fable_model": "anthropic.claude-fable-5-1",
+                    },
+                    "default_model": "anthropic.claude-sonnet-4-6",
+                }
+            }
+        }
+    }
+    UC_CONFIG = {
+        "enabled_agents": {"claude": {"model_config": {"unity_catalog_location": "main.default"}}}
+    }
+
+    @staticmethod
+    def _invoke(monkeypatch, managed):
+        state = {
+            **MINIMAL_STATE,
+            "claude_models": {},
+            "provider_services": {"claude": "main.developer.provider"},
+        }
+        shared = MagicMock(return_value=state)
+        configure = MagicMock(side_effect=lambda _tool, configured, *_args, **_kwargs: configured)
+        launch = MagicMock()
+        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
+        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
+        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (managed, False))
+        monkeypatch.setattr(cli_mod, "get_provider_service", lambda *_a: "main.developer.provider")
+        monkeypatch.setattr(cli_mod, "configure_shared_state", shared)
+        resolve_provider = MagicMock(return_value=(None, None, False))
+        monkeypatch.setattr(cli_mod, "resolve_provider_models", resolve_provider)
+        resolve_model = MagicMock(side_effect=AssertionError("must use native discovery"))
+        monkeypatch.setattr(cli_mod, "resolve_launch_model", resolve_model)
+        monkeypatch.setattr(cli_mod, "configure_tool", configure)
+        monkeypatch.setattr(cli_mod, "launch_agent", launch)
+
+        result = runner.invoke(app, ["claude"])
+        return {
+            "result": result,
+            "state": state,
+            "shared": shared,
+            "configure": configure,
+            "launch": launch,
+            "resolve_provider": resolve_provider,
+            "resolve_model": resolve_model,
+        }
+
+    @pytest.mark.parametrize(
+        ("managed", "expected_provider", "expected_parent"),
+        [
+            (MPS_CONFIG, "main.default.anthropic-mps", None),
+            (UC_CONFIG, None, "main.default"),
+        ],
+        ids=["mps", "uc-parent"],
+    )
+    def test_launch_uses_managed_source_and_native_discovery(
+        self, monkeypatch, managed, expected_provider, expected_parent
+    ):
+        calls = self._invoke(monkeypatch, managed)
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert calls["shared"].call_args.kwargs["skip_model_discovery"] is True
+        calls["resolve_model"].assert_not_called()
+        if expected_provider:
+            assert calls["resolve_provider"].call_args.args[2] == expected_provider
+        else:
+            calls["resolve_provider"].assert_not_called()
+        assert calls["configure"].call_args.kwargs["provider"] == expected_provider
+        assert calls["configure"].call_args.kwargs["parent_schema"] == expected_parent
+        assert calls["configure"].call_args.args[1]["provider_services"]["claude"] == (
+            expected_provider or "main.developer.provider"
+        )
+        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+
+
+def test_claude_discovery_changes_do_not_break_other_managed_providers():
+    managed = {
+        "enabled_agents": {
+            "gemini": {"model_config": {"model_provider_service": "main.default.gemini-mps"}}
+        }
+    }
+    with _launch_policy_patches(managed):
+        result = runner.invoke(app, ["gemini"])
+
+    assert result.exit_code == 0, result.output
+    assert "main.default.gemini-mps" in _strip_ansi(result.output)
+
+
 class TestClaudeModelFlag:
     """`ucode claude --model <id>` pins the id into the family aliases so the gateway resolves any
     Databricks model id, instead of Claude Code's own --model flag rejecting non-catalog ids."""
@@ -3000,6 +3096,74 @@ class TestConfigureAgentsSelection:
         assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
         assert installed == ["claude", "codex"]
         assert configured == ["claude", "codex"]
+
+    @pytest.mark.parametrize(
+        ("model_config", "expected_provider", "expected_parent"),
+        [
+            (
+                {"model_provider_service": "main.default.anthropic-mps"},
+                "main.default.anthropic-mps",
+                None,
+            ),
+            ({"unity_catalog_location": "main.models"}, None, "main.models"),
+        ],
+        ids=["mps", "uc-parent"],
+    )
+    def test_managed_claude_source_configures_without_global_models(
+        self, monkeypatch, model_config, expected_provider, expected_parent
+    ):
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": [],
+            "claude_models": {},
+            "provider_services": {"claude": "main.default.developer"},
+        }
+        managed = {"enabled_agents": {"claude": {"model_config": model_config}}}
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s, **_k: (managed, False))
+        monkeypatch.setattr(
+            cli_mod,
+            "check_gateway_endpoint",
+            lambda *_a: pytest.fail("managed model sources do not require global models"),
+        )
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *_a: None)
+        configured: list[tuple[dict, dict]] = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda resolved, tools, **kwargs: configured.append((resolved, kwargs)) or resolved,
+        )
+
+        assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
+
+        assert len(configured) == 1
+        resolved, kwargs = configured[0]
+        expected_saved_provider = expected_provider or "main.default.developer"
+        assert cli_mod.get_provider_service(resolved, "claude") == expected_saved_provider
+        assert kwargs["parent_schemas"] == (
+            {"claude": expected_parent} if expected_parent else None
+        )
+
+    def test_single_claude_agent_passes_managed_uc_parent_directly(self, monkeypatch):
+        state = {**MINIMAL_STATE, "provider_services": {"claude": "main.default.developer"}}
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"unity_catalog_location": "main.models"}}
+            }
+        }
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (managed, False))
+        configure = MagicMock(return_value=state)
+        monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+
+        assert (
+            cli_mod.configure_workspace_command(tool="claude", workspaces=[("https://w.com", None)])
+            == 0
+        )
+        configure.assert_called_once_with("claude", state, parent_schema="main.models")
 
     def test_managed_config_fails_when_no_enabled_agent_is_available(self, monkeypatch):
         import ucode.cli as cli_mod

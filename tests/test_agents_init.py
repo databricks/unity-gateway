@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from contextlib import contextmanager
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -182,6 +183,23 @@ class TestConfigureWiresAiToolsInstall:
         captured = self._stub_configure(monkeypatch)
         agents_mod.configure_single_tool("codex", {"codex_models": ["m"], "profile": "myprof"})
         assert captured == {}
+
+    def test_managed_parent_skips_global_availability_and_writes_header(self, monkeypatch):
+        state = {"workspace": "https://x.databricks.com"}
+        monkeypatch.setattr(
+            agents_mod,
+            "check_gateway_endpoint",
+            lambda *_a: pytest.fail("managed parent must not require global model availability"),
+        )
+        configure = MagicMock(return_value=state)
+        monkeypatch.setattr(agents_mod, "configure_tool", configure)
+        monkeypatch.setattr(agents_mod, "save_state", lambda _state: None)
+
+        assert (
+            agents_mod.configure_single_tool("claude", state, parent_schema="main.default") is state
+        )
+
+        configure.assert_called_once_with("claude", state, parent_schema="main.default")
 
     def test_configure_selected_tools_triggers_install(self, monkeypatch):
         captured = self._stub_configure(monkeypatch)
@@ -739,7 +757,9 @@ class TestConfigureSelectedTools:
             yield
 
         monkeypatch.setattr(agents_mod, "managed_write_batch", capture_batch)
-        monkeypatch.setattr(agents_mod, "_configure_one", lambda tool, state, provider: state)
+        monkeypatch.setattr(
+            agents_mod, "_configure_one", lambda tool, state, provider, **kwargs: state
+        )
         monkeypatch.setattr(agents_mod, "save_state", lambda state: None)
         monkeypatch.setattr(agents_mod, "install_databricks_ai_tools_for_agents", lambda *_: None)
 
