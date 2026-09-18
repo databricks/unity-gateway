@@ -16,6 +16,8 @@ from utils.terminal import AgentTerminal
 
 # The same model lists as the managed_fixture smart-routing banner journeys, which are
 # proven servable route options on the live e2e workspace.
+SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
+SMART_ROUTING_SUBAGENT_NOTICE = "Using Unity Gateway Smart Router - Subagent"
 CLAUDE_MODELS = [
     "system.ai.claude-opus-5",
     "system.ai.claude-sonnet-5",
@@ -81,7 +83,7 @@ def test_smart_routing_claude_route_subagent_hook(live_session, workspace):
     hook = output["hookSpecificOutput"]
     assert hook["hookEventName"] == "PreToolUse", output
     assert hook["permissionDecision"] == "allow", output
-    assert "Using Unity Gateway Smart Router - Subagent" in output["systemMessage"], output
+    assert SMART_ROUTING_SUBAGENT_NOTICE in output["systemMessage"], output
     updated = hook["updatedInput"]
     assert "model" not in updated, updated
     assert updated["subagent_type"].startswith("ucode-route-"), updated
@@ -134,7 +136,7 @@ def test_smart_routing_codex_route_subagent_hook(live_session, workspace):
     hook = output["hookSpecificOutput"]
     assert hook["hookEventName"] == "PreToolUse", output
     assert hook["permissionDecision"] == "allow", output
-    assert "Using Unity Gateway Smart Router - Subagent" in output["systemMessage"], output
+    assert SMART_ROUTING_SUBAGENT_NOTICE in output["systemMessage"], output
     updated = hook["updatedInput"]
     assert updated["model"] in CODEX_MODEL_SLUGS, updated
     assert updated["message"] == payload["tool_input"]["message"], updated
@@ -149,9 +151,6 @@ def test_smart_routing_codex_route_subagent_hook(live_session, workspace):
     assert row["session_id"] == payload["session_id"], row
     assert row["task_name"] == payload["tool_input"]["message"], row
     assert row["requested_model"] == updated["model"], row
-
-
-SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 
 
 @pytest.mark.live
