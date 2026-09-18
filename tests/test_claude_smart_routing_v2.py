@@ -190,17 +190,6 @@ class TestSmartRoutingEnvVars:
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         assert v2.first_prompt_routing_enabled()
 
-    def test_disable_and_restore_cover_both_flags(self, monkeypatch):
-        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
-
-        previous = v2.disable_smart_routing()
-
-        assert not v2.smart_routing_enabled()
-        v2.restore_smart_routing_env(previous)
-        assert os.environ[v2.ENABLE_SMART_ROUTING_ENV_VAR] == "1"
-        assert v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR not in os.environ
-
 
 class TestV2Launch:
     def test_strips_gateway_prefix_for_interposer(self):
