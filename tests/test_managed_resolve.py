@@ -15,6 +15,7 @@ from ucode.managed_resolve import (
     managed_default_model,
     managed_enabled_tools,
     managed_launch_model,
+    managed_model_discovery_enabled,
     managed_otel_tracing_enabled,
     managed_provider_service,
     managed_state_overrides,
@@ -205,6 +206,45 @@ class TestManagedProviderService:
 
     def test_none_for_agent_not_in_manifest(self):
         assert managed_provider_service(MANAGED, "gemini") is None
+
+
+class TestManagedModelDiscovery:
+    def test_enabled_for_selected_agent_with_provider_service(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"model_provider_service": "main.default.mps"}}
+            }
+        }
+        assert managed_model_discovery_enabled(managed, "claude") is True
+
+    @pytest.mark.parametrize(
+        "managed",
+        [
+            None,
+            {},
+            {"enabled_agents": []},
+            {"enabled_agents": {"claude": []}},
+            {"enabled_agents": {"claude": {"model_config": []}}},
+            {"enabled_agents": {"claude": {"model_config": {"model_provider_service": "  "}}}},
+        ],
+    )
+    def test_disabled_for_missing_or_malformed_config(self, managed):
+        assert managed_model_discovery_enabled(managed, "claude") is False
+
+    def test_disabled_for_static_model_config(self):
+        managed = {
+            "enabled_agents": {"claude": {"model_config": {"model_services": ["system.ai.claude"]}}}
+        }
+        assert managed_model_discovery_enabled(managed, "claude") is False
+
+    def test_provider_for_another_agent_does_not_enable_discovery(self):
+        managed = {
+            "enabled_agents": {
+                "codex": {"model_config": {"model_provider_service": "main.default.mps"}},
+                "claude": {"model_config": {"model_services": ["system.ai.claude"]}},
+            }
+        }
+        assert managed_model_discovery_enabled(managed, "claude") is False
 
 
 class TestResolveState:

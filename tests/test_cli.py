@@ -4163,6 +4163,56 @@ class TestManagedConfigDecidesDiscoveryFromFreshRead:
         assert mock_shared.call_args.kwargs["skip_model_discovery"] is False
 
 
+class TestManagedModelDiscoveryLaunch:
+    MPS = {
+        "enabled_agents": {
+            "claude": {"model_config": {"model_provider_service": "main.default.mps"}}
+        }
+    }
+    STATIC = {
+        "enabled_agents": {"claude": {"model_config": {"model_services": ["system.ai.claude"]}}}
+    }
+
+    @pytest.mark.parametrize(("managed", "expected"), [(MPS, "1"), (STATIC, "0")])
+    def test_sets_literal_value_and_restores_prior(self, monkeypatch, managed, expected):
+        monkeypatch.setenv("UG_ENABLE_MODEL_DISCOVERY", "prior-value")
+
+        with cli_mod._managed_model_discovery_environment(managed, "claude"):
+            assert os.environ["UG_ENABLE_MODEL_DISCOVERY"] == expected
+
+        assert os.environ["UG_ENABLE_MODEL_DISCOVERY"] == "prior-value"
+
+    def test_restores_absent_environment_after_launch_error(self, monkeypatch):
+        monkeypatch.delenv("UG_ENABLE_MODEL_DISCOVERY", raising=False)
+
+        with pytest.raises(RuntimeError, match="launch failed"):
+            with cli_mod._managed_model_discovery_environment(self.MPS, "claude"):
+                raise RuntimeError("launch failed")
+
+        assert "UG_ENABLE_MODEL_DISCOVERY" not in os.environ
+
+    @pytest.mark.parametrize(
+        ("flag", "value"),
+        [("--provider", "main.default.other"), ("--model-location", "main.models")],
+    )
+    def test_managed_provider_rejects_explicit_routing_flags(self, flag, value):
+        state = dict(MINIMAL_STATE)
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.ensure_provider_state", return_value=state),
+            patch("ucode.cli._fetch_managed_config", return_value=(self.MPS, False)),
+            patch(
+                "ucode.cli.configure_shared_state",
+                side_effect=AssertionError("managed source flag was not rejected"),
+            ),
+        ):
+            result = runner.invoke(app, ["claude", flag, value])
+
+        assert result.exit_code == 1
+        assert flag in _strip_ansi(result.output)
+
+
 class TestBareUcode:
     """Bare `ucode` launches the managed default agent, or explains why it can't."""
 
