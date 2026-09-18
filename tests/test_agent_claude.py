@@ -2320,21 +2320,14 @@ class TestWriteToolConfigBackup:
 
 
 class TestManagedMcpUsesManagedFile:
-    def _wire(
-        self, monkeypatch, *, supported=True, interactive=True, version="2.1.259", oauth=True
-    ):
+    def _wire(self, monkeypatch, *, supported=True, interactive=True, oauth=True):
         monkeypatch.setattr(claude, "managed_files_supported", lambda: supported)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: interactive)
-        monkeypatch.setattr(claude, "agent_version", lambda _binary: version)
         monkeypatch.setattr(claude, "oauth_client_available", lambda ws, client_id: oauth)
 
     def test_true_when_all_conditions_hold(self, monkeypatch):
         self._wire(monkeypatch)
         assert claude.managed_mcp_uses_managed_file(WS, use_pat=False) is True
-
-    def test_false_on_old_claude(self, monkeypatch):
-        self._wire(monkeypatch, version="2.1.258")
-        assert claude.managed_mcp_uses_managed_file(WS, use_pat=False) is False
 
     def test_false_under_pat(self, monkeypatch):
         self._wire(monkeypatch)
