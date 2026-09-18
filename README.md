@@ -106,6 +106,9 @@ Unity Catalog Skills can be registered as MCP tools or downloaded into local
 agent skill directories.
 
 ```bash
+# List configured skills and how each was configured.
+ug skills list
+
 # Add to existing MCP scope or downloads.
 ug skills add --location main.default --mcp
 ug skills add --location main.default
@@ -127,6 +130,7 @@ ug skills remove --skill main.default.my-skill
 | `ug mcp add` | Add MCP servers without removing existing registrations |
 | `ug mcp remove` | Unregister configured MCP servers |
 | `ug mcp list` | List configured MCP servers and connection status |
+| `ug skills list` | List configured skills and how each was configured |
 | `ug skills add` | Add skill MCP scopes or download skills |
 | `ug skills remove` | Remove skill MCP scopes or downloaded skills |
 | `ug export` | Print or write portable managed config JSON |

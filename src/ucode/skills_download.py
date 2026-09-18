@@ -25,6 +25,7 @@ from ucode.skills_state import (
     record_downloads,
     records_for_fqns,
     records_for_schema,
+    records_for_scope,
     remove_downloads,
 )
 from ucode.state import load_state
@@ -124,18 +125,29 @@ def write_skill(roots: list[Path], ref: SkillRef, files: dict[str, bytes]) -> No
 
 
 def _skill_installs(
-    refs: list[SkillRef], roots: list[Path], path: str | None, workspace: str
+    refs: list[SkillRef],
+    roots: list[Path],
+    path: str | None,
+    workspace: str,
+    *,
+    scope: str | None = None,
 ) -> list[SkillInstall]:
-    """Attribution records for ``refs`` written into ``roots`` (see ``skills_state``)."""
+    """Attribution records for ``refs`` written into ``roots`` (see ``skills_state``).
+
+    ``scope`` overrides the download scope; when omitted it is ``project`` for a ``--path``
+    download and ``user`` otherwise. Admin-published (managed) downloads pass ``scope="managed"``
+    so they stay distinguishable from a developer's own downloads, which lets ``ug configure``
+    reconcile them and keeps ``ug skills remove`` from dropping them.
+    """
     base = path or str(Path.home())
-    scope = "project" if path else "user"
+    resolved_scope = scope or ("project" if path else "user")
     org_id = workspace_org_id(workspace)
     return [
         SkillInstall(
             fqn=ref.fqn,
             bundle_name=ref.bundle_name,
             workspace=workspace,
-            scope=scope,
+            scope=resolved_scope,
             base=base,
             dirs=tuple(str(root / ref.bundle_name) for root in roots),
             metastore_id=ref.metastore_id,
@@ -292,46 +304,112 @@ def download_selected_skills(workspace: str, token: str, fqns: list[str], path: 
     print_success(f"Downloaded {count}/{total} skill(s){skipped} in {roots_display}.")
 
 
-def download_managed_skills_on_launch(
-    workspace: str, token: str, locations: list[str], path: str | None = None
-) -> list[str]:
-    """Download admin-published skills to disk so the agent's ``/skills`` lists them.
+def _resolve_managed_skills(
+    workspace: str, token: str, selector: dict
+) -> tuple[list[SkillRef], set[str] | None]:
+    """Resolve a managed ``skills`` selector into ``(refs_to_download, desired_fqns)``.
 
-    Runs on the managed launch path: the config only registers the skills MCP
-    connection, so nothing else writes the bundles that ``/skills`` reads. Writes
-    only skills not already on disk -- no overwrite prompt, so the launch never
-    blocks on input and a developer's own same-named skill is never clobbered.
-    Best-effort and never raises, so it can't block the launch. Returns the bundle
-    names newly written.
+    ``selector`` is the normalized ``NamesOrLocation`` (``{names?, unity_catalog_location?}``).
+    ``desired_fqns`` is the set of FQNs the config wants on disk -- the reconcile removes any managed
+    skill outside it -- and is ``None`` when that set can't be determined (a malformed or unlistable
+    ``unity_catalog_location``), so the caller removes nothing rather than acting on a partial view.
+    An empty set means the config authoritatively wants no managed skills.
+
+    A ``unity_catalog_location`` lists every finalized skill under that ``<catalog>.<schema>``, so
+    the listing is both the download set and the desired set. ``names`` are full
+    ``<catalog>.<schema>.<name>`` FQNs: they form the desired set directly, so a name that currently
+    can't be fetched is still desired and is never reconciled away. Mirrors
+    :func:`ucode.mcp._resolve_managed_mcp_servers`.
     """
-    roots = skill_dir_roots(path)
-    written: list[str] = []
-    for location in locations:
-        if location.count(".") != 1:
-            continue
+    location = selector.get("unity_catalog_location")
+    if isinstance(location, str) and location:
+        if location.count(".") != 1 or not all(part for part in location.split(".")):
+            print_warning(
+                f"Skipping managed skills location `{location}`: expected `<catalog>.<schema>`."
+            )
+            return [], None
         catalog, schema = location.split(".")
         refs, reason = list_schema_skills(workspace, token, catalog, schema)
         if reason:
             print_warning(f"Could not list workspace skills in `{location}`: {reason}.")
-            continue
-        refs = _reject_bundle_name_collisions(refs)
-        missing = [ref for ref in refs if not existing_skill_on_disk(roots, ref.bundle_name)]
-        if not missing:
-            continue
-        bundles = _fetch_bundles(
-            workspace, token, missing, label=f"Fetching skills from {location}"
+            return [], None
+        return refs, {ref.fqn for ref in refs}
+    names = [n for n in (selector.get("names") or []) if isinstance(n, str) and n]
+    malformed = sorted(
+        n for n in names if n.count(".") != 2 or not all(part for part in n.split("."))
+    )
+    if malformed:
+        print_warning(
+            "Skipping managed skills name(s) that aren't full "
+            f"`<catalog>.<schema>.<name>` names: {', '.join(malformed)}."
         )
+    wanted = [n for n in names if n not in set(malformed)]
+    refs: list[SkillRef] = []
+    seen: set[str] = set()
+    for fqn in wanted:
+        if fqn in seen:
+            continue
+        seen.add(fqn)
+        ref = get_skill(workspace, token, fqn)
+        if ref is None:
+            print_warning(f"Skipping `{fqn}`: not a downloadable skill.")
+            continue
+        refs.append(ref)
+    return refs, set(wanted)
+
+
+def reconcile_managed_skills(managed: dict) -> tuple[list[str], list[str]]:
+    """Make the developer's on-disk skills match the managed config's ``skills`` selector.
+
+    Called from ``ug configure`` once the enabled agents are configured, mirroring
+    :func:`ucode.mcp.reconcile_managed_mcp_servers`. Downloads any desired skill not already on disk
+    (additive, no overwrite prompt) and removes the managed skills the config no longer lists.
+    Removals are driven by attribution (``scope="managed"`` in the skills manifest), so a developer's
+    own skills are never touched, and are skipped when the desired set can't be determined, so a
+    transient listing failure never deletes one. Bundles land in both ``.claude/skills`` and
+    ``.agents/skills``, so Claude Code and Codex both pick them up. Returns ``(written, removed)``
+    bundle names. Raises ``RuntimeError`` on an auth or discovery failure; the caller stays best-effort.
+    """
+    selector = managed.get("skills")
+    selector = selector if isinstance(selector, dict) else {}
+    state = load_state()
+    workspace = state.get("workspace")
+    if not workspace:
+        raise RuntimeError("Workspace is not configured. Run `ucode configure` first.")
+    # An empty selector only removes prior managed skills, a local no-auth op, so skip the token.
+    token = get_databricks_token(workspace, state.get("profile")) if selector else ""
+    roots = skill_dir_roots(None)
+    base = str(Path.home())
+    refs, desired = _resolve_managed_skills(workspace, token, selector)
+    refs = _reject_bundle_name_collisions(refs)
+
+    removed: list[str] = []
+    if desired is not None:
+        stale = [r for r in records_for_scope("managed", base) if r.get("fqn") not in desired]
+        if stale:
+            remove_downloads(stale)
+            removed = [str(r["bundle_name"]) for r in stale if r.get("bundle_name")]
+
+    missing = [ref for ref in refs if not existing_skill_on_disk(roots, ref.bundle_name)]
+    written: list[str] = []
+    if missing:
+        bundles = _fetch_bundles(workspace, token, missing, label="Fetching workspace skills")
         installed: list[SkillRef] = []
         for ref in missing:
             files, reason = bundles[ref.fqn]
             if reason or files is None:
                 print_warning(f"Skipping `{ref.fqn}`: {reason}.")
                 continue
-            write_skill(roots, ref, files)
+            try:
+                write_skill(roots, ref, files)
+            except OSError as exc:
+                # Best-effort per skill: a disk failure on one must not strand the rest.
+                print_warning(f"Skipping `{ref.fqn}`: {exc}.")
+                continue
             installed.append(ref)
             written.append(ref.bundle_name)
-        record_downloads(_skill_installs(installed, roots, path, workspace))
-    return written
+        record_downloads(_skill_installs(installed, roots, None, workspace, scope="managed"))
+    return written, removed
 
 
 def configure_location_skills_download_command(locations: list[str], *, path: str | None) -> int:
@@ -480,6 +558,24 @@ def _prompt_for_downloaded_skill_removal(records: list[dict]) -> list[dict] | No
     return [records[int(index)] for index in selection]
 
 
+def _personal_records(records: list[dict]) -> tuple[list[dict], int]:
+    """Split off managed installs: return ``(developer-owned records, managed count dropped)``.
+
+    Managed skills are owned by the workspace config and reconciled by ``ug configure``, so
+    ``ug skills remove`` never deletes one (a developer can adopt one first by re-downloading it
+    with ``ug skills add``, which transfers it to their own attribution)."""
+    personal = [record for record in records if record.get("scope") != "managed"]
+    return personal, len(records) - len(personal)
+
+
+def _note_managed_skipped(managed_count: int) -> None:
+    if managed_count:
+        print_note(
+            f"Left {managed_count} workspace-managed skill(s) in place; those are configured by "
+            "your workspace, not removable here."
+        )
+
+
 def remove_downloaded_skills_command(
     locations: list[str], fqns: list[str] | None = None, *, path: str | None
 ) -> int:
@@ -488,26 +584,30 @@ def remove_downloaded_skills_command(
     With ``fqns``, removes those fully-qualified skills; with ``locations``, every skill
     downloaded from those ``<catalog>.<schema>`` schemas; with neither, opens a picker over
     every downloaded skill. ``path`` limits any of these to one download base. Removal is
-    driven entirely by attribution, so a same-named skill the user authored is never touched.
+    driven entirely by attribution, so a same-named skill the user authored is never touched,
+    and workspace-managed skills are left in place for ``ug configure`` to reconcile.
     """
     if fqns is not None:
-        records = records_for_fqns(set(fqns), path)
+        records, managed = _personal_records(records_for_fqns(set(fqns), path))
         if not records:
             scope = f" under `{path}`" if path else ""
             joined = ", ".join(f"`{fqn}`" for fqn in fqns) or "those names"
-            print_note(f"No downloaded skills matching {joined}{scope}.")
+            print_note(f"No developer-downloaded skills matching {joined}{scope}.")
+            _note_managed_skipped(managed)
             return 0
     elif locations:
-        records = [
-            record for location in locations for record in records_for_schema(location, path)
-        ]
+        records, managed = _personal_records(
+            [record for location in locations for record in records_for_schema(location, path)]
+        )
         if not records:
             scope = f" under `{path}`" if path else ""
             joined = ", ".join(f"`{location}`" for location in locations)
-            print_note(f"No downloaded skills from {joined}{scope}.")
+            print_note(f"No developer-downloaded skills from {joined}{scope}.")
+            _note_managed_skipped(managed)
             return 0
     else:
-        selected = _prompt_for_downloaded_skill_removal(list_downloaded())
+        offered, _ = _personal_records(list_downloaded())
+        selected = _prompt_for_downloaded_skill_removal(offered)
         if selected is None:
             return 0
         if not selected:

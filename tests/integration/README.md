@@ -101,6 +101,8 @@ test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credent
 test_ug_configure_managed.py            # managed workspace: static model list, no agent selector
 test_ug_configure_managed_models.py     # injected model lists: pickers and Codex fallback metadata
 test_ug_configure_managed_mcp.py        # injected managed MCP list
+test_ug_configure_managed_skills.py     # injected managed skills: download, coexist, reconcile away
+test_ug_configure_managed_lifecycle.py  # none -> A -> B -> MPS -> none: reconcile, clear on MPS/no-config
 test_installation.py                   # fresh installed package
 utils/                                # process/terminal/evidence helpers and Docker files
 ```
@@ -157,9 +159,17 @@ fails the selected CUJ, rather than skipping it.
 There are **42 live cases** (including 6 TUI journeys) and **5 installation
 checks** with both agents. A separate **3 managed-workspace cases** (one per agent
 plus an idempotent re-configure, marker `managed`) run against a workspace that publishes a CodingAgentConfig; see
-"Managed-workspace journeys" below. A further **3 `managed_fixture` cases** inject the admin config
-locally (via `UCODE_MANAGED_CONFIG_STUB`) to cover shapes the live workspace does not publish; each
+"Managed-workspace journeys" below. A further **9 `managed_fixture` cases** inject the admin config
+locally (via `UCODE_MANAGED_CONFIG_STUB`) to cover shapes the live workspace does not publish,
+including a managed MCP server landing in Codex's OS-managed `[mcp_servers]` (interactive configure)
+while the developer's own config stays untouched, and reaching Claude's `/mcp` view via the
+user-scope fallback (non-interactive configure); each
 differs from the published config in what it asserts so it proves the injected config drove configure.
+Two of those are per-agent lifecycle journeys (no config -> static A -> static B -> MPS -> no config):
+they assert the generated model files reconcile to each static config, are cleared when switching to
+a Model Provider Service, and are cleared when the workspace has no managed config (an explicit
+`null` stub reproduces the no-config states; the MPS states use real provider services on the managed
+workspace, `main.default.ci_e2e_anthropic_mps` and `main.default.ci_e2e_openai_mps`).
 See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
