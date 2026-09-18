@@ -120,3 +120,74 @@ class TestConfiguredSkills:
         sl.list_configured_skills_command()
 
         assert notes and "ug skills add" in notes[0]
+
+
+class TestConfiguredSkillCountsByAgent:
+    _AGENTS = ("claude", "codex", "gemini")
+
+    def _downloaded(self, monkeypatch, fqns):
+        monkeypatch.setattr(sl, "list_downloaded", lambda: [{"fqn": fqn} for fqn in fqns])
+
+    def _mcp(self, monkeypatch, locations_by_client, by_schema):
+        monkeypatch.setattr(sl, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(
+            sl,
+            "configured_skill_workspace_and_mcp_locations",
+            lambda _state: (WS, locations_by_client) if locations_by_client else None,
+        )
+        monkeypatch.setattr(
+            sl, "list_schema_skills", lambda ws, tok, c, s: by_schema.get(f"{c}.{s}", ([], None))
+        )
+
+    def test_downloaded_skills_reach_every_agent(self, monkeypatch):
+        self._downloaded(monkeypatch, ["main.default.alpha", "main.default.beta"])
+        self._mcp(monkeypatch, {}, {})
+
+        assert sl.configured_skill_counts_by_agent({}, self._AGENTS) == {
+            "claude": 2,
+            "codex": 2,
+            "gemini": 2,
+        }
+
+    def test_combines_local_and_per_agent_mcp_skills(self, monkeypatch):
+        self._downloaded(monkeypatch, ["main.default.alpha"])
+        self._mcp(
+            monkeypatch,
+            {"claude": ["main.default", "ml.prod"], "codex": ["main.default"]},
+            {
+                "main.default": ([ref("alpha"), ref("beta")], None),
+                "ml.prod": ([ref("gamma", catalog="ml", schema="prod")], None),
+            },
+        )
+
+        assert sl.configured_skill_counts_by_agent({}, self._AGENTS) == {
+            "claude": 3,  # alpha (local + mcp), beta, gamma
+            "codex": 2,  # alpha (local + mcp), beta
+            "gemini": 1,  # alpha (local only)
+        }
+
+    def test_unreadable_schema_is_skipped(self, monkeypatch):
+        self._downloaded(monkeypatch, [])
+        self._mcp(
+            monkeypatch,
+            {"claude": ["main.default", "ml.prod"]},
+            {"main.default": ([ref("alpha")], None), "ml.prod": ([], "HTTP 403 Forbidden")},
+        )
+
+        assert sl.configured_skill_counts_by_agent({}, ["claude"]) == {"claude": 1}
+
+    def test_token_error_yields_local_only(self, monkeypatch):
+        def _raise(*_a, **_k):
+            raise RuntimeError("no token")
+
+        self._downloaded(monkeypatch, ["main.default.alpha"])
+        self._mcp(monkeypatch, {"claude": ["main.default", "ml.prod"]}, {})
+        monkeypatch.setattr(sl, "get_databricks_token", _raise)
+
+        assert sl.configured_skill_counts_by_agent({}, ["claude"]) == {"claude": 1}
+
+    def test_agent_without_skills_counts_zero(self, monkeypatch):
+        self._downloaded(monkeypatch, [])
+        self._mcp(monkeypatch, {}, {})
+
+        assert sl.configured_skill_counts_by_agent({}, ["claude"]) == {"claude": 0}
