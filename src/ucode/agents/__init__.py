@@ -35,6 +35,7 @@ from ucode.ui import (
     print_success,
     print_warning,
     prompt_yes_no,
+    prompt_yes_no_default,
     spinner,
 )
 
@@ -201,6 +202,12 @@ def install_tool_binary(
 
         if not too_new and version_error:
             print_warning(version_error)
+            # Native upgraders run in place, so confirm before mutating the install;
+            # EOF/piped runs take the default and upgrade (a required fix must not stall).
+            if tool in _NATIVE_UPGRADE_COMMANDS and not prompt_yes_no_default(
+                f"Upgrade {spec['display']} if available?", default=True
+            ):
+                raise RuntimeError(version_error)
             if not _update_installed_tool_binary(tool):
                 raise RuntimeError(version_error)
             version_error = _minimum_version_error(tool)

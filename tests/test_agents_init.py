@@ -634,30 +634,66 @@ class TestInstallToolBinary:
         [
             ("claude", ["claude", "upgrade"]),
             ("codex", ["codex", "update"]),
-            ("opencode", ["npm", "install", "-g", "opencode-ai@1"]),
         ],
     )
-    def test_required_update_runs_without_prompt_and_rechecks(self, monkeypatch, tool, command):
+    def test_required_update_prompts_and_rechecks(self, monkeypatch, tool, command):
         calls = []
+        prompts = []
         monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
         monkeypatch.setattr(
             "ucode.agents.subprocess.run",
             lambda args, **kwargs: calls.append(args) or subprocess.CompletedProcess(args, 0),
         )
         monkeypatch.setattr(
-            "ucode.agents.prompt_yes_no",
-            lambda _: pytest.fail("required upgrades must not prompt"),
+            "ucode.agents.prompt_yes_no_default",
+            lambda prompt, *, default: prompts.append((prompt, default)) or True,
         )
         errors = iter(["must upgrade", None])
         monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: next(errors))
 
         assert install_tool_binary(tool) is True
         assert calls == [command]
+        assert prompts == [(f"Upgrade {TOOL_SPECS[tool]['display']} if available?", True)]
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_required_update_declined_blocks_launch(self, monkeypatch, tool):
+        monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
+        monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: "must upgrade")
+        monkeypatch.setattr("ucode.agents.prompt_yes_no_default", lambda prompt, *, default: False)
+        monkeypatch.setattr(
+            "ucode.agents._update_installed_tool_binary",
+            lambda _: pytest.fail("declined upgrade must not run"),
+        )
+
+        with pytest.raises(RuntimeError, match="must upgrade"):
+            install_tool_binary(tool)
+
+    def test_required_update_runs_without_prompt_for_npm_tools(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
+        monkeypatch.setattr(
+            "ucode.agents.subprocess.run",
+            lambda args, **kwargs: calls.append(args) or subprocess.CompletedProcess(args, 0),
+        )
+        monkeypatch.setattr(
+            "ucode.agents.prompt_yes_no_default",
+            lambda *a, **k: pytest.fail("npm-tool upgrades must not prompt"),
+        )
+        errors = iter(["must upgrade", None])
+        monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: next(errors))
+
+        assert install_tool_binary("opencode") is True
+        assert calls == [["npm", "install", "-g", "opencode-ai@1"]]
 
     @pytest.mark.parametrize("update_succeeds", [False, True])
     def test_required_update_must_clear_version_blocker(self, monkeypatch, update_succeeds):
         monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
         monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: "still too old")
+        monkeypatch.setattr("ucode.agents.prompt_yes_no_default", lambda prompt, *, default: True)
         monkeypatch.setattr("ucode.agents._update_installed_tool_binary", lambda _: update_succeeds)
 
         with pytest.raises(RuntimeError, match="still too old"):
