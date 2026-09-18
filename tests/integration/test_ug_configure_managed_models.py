@@ -102,7 +102,7 @@ def test_managed_fixture_claude_mps_defaults_accompany_discovery(live_session, w
 @pytest.mark.managed_fixture
 @pytest.mark.claude
 def test_managed_fixture_claude_parent_schema_defaults_accompany_discovery(
-    live_session, workspace, parent_schema, tmp_path
+    live_session, workspace, tmp_path
 ):
     """Scenario: launch Claude with managed defaults and Unity Catalog discovery.
 
@@ -111,6 +111,7 @@ def test_managed_fixture_claude_parent_schema_defaults_accompany_discovery(
     This settings reconciliation check does not claim model inference.
     """
     session = live_session
+    parent_schema = "system.ai"
     defaults = {
         "default_model": f"{parent_schema}.claude-sonnet-5",
         "default_fable_model": f"{parent_schema}.claude-fable-5-1",

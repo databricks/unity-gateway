@@ -582,6 +582,7 @@ def _enforce_model_default_hierarchy(
     ucode_defaults: dict[str, str],
     ucode_last_written_defaults: dict[str, str],
     enforced_models: list[str] | None,
+    add_1m_suffix: bool = True,
 ) -> str | None:
     """Resolve one Claude family's managed-file default model.
 
@@ -598,7 +599,7 @@ def _enforce_model_default_hierarchy(
         selected = ucode_defaults.get(family)
     if selected is None:
         return None
-    if family in ("opus", "sonnet"):
+    if add_1m_suffix and family in ("opus", "sonnet"):
         selected = _maybe_add_1m_suffix(selected)
     if enforced_models is not None and selected.split("[", 1)[0] not in enforced_models:
         return None
@@ -919,20 +920,7 @@ def write_tool_config(
         otel_tracing=bool(state.get("claude_otel_tracing")),
         picker_catalog=picker_catalog,
     )
-    if (provider or parent_schema) and coding_agent_config_defaults:
-        # Source-scoped managed defaults belong in the common overlay so they reach both settings
-        # files (or only the private file for a relay). The authored map is complete policy:
-        # omitted families must not inherit targets from local or live discovery.
-        overlay_env = overlay["env"]
-        for key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.values():
-            overlay_env.pop(key, None)
-        for family, model_id in coding_agent_config_defaults.items():
-            if key := CLAUDE_DEFAULT_MODEL_ENV_KEYS.get(family):
-                overlay_env[key] = (
-                    _maybe_add_1m_suffix(model_id)
-                    if parent_schema and family in ("opus", "sonnet")
-                    else model_id
-                )
+    source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
     # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
     # written by this launch, and remove only previously owned picker keys that no longer apply.
     stale_picker_keys = [
@@ -971,15 +959,21 @@ def write_tool_config(
             settings_file_env = base_env if isinstance(base_env, dict) else {}
             target_env = overlay_for_merge["env"]
             configured_defaults = coding_agent_config_defaults or {}
-            settings_file_existing_defaults = {
-                family: model
-                for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items()
-                if isinstance((model := settings_file_env.get(key)), str)
-            }
-            managed_overlay = state.get(MANAGED_OVERLAY_KEY, {})
-            ucode_defaults = (
-                managed_overlay.get("claude_models") or state.get("claude_models") or {}
-            )
+            if source_scoped_defaults:
+                # The managed map is complete policy for this source: omitted families must not
+                # inherit targets from local settings or live discovery.
+                settings_file_existing_defaults = {}
+                ucode_defaults = {}
+            else:
+                settings_file_existing_defaults = {
+                    family: model
+                    for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items()
+                    if isinstance((model := settings_file_env.get(key)), str)
+                }
+                managed_overlay = state.get(MANAGED_OVERLAY_KEY, {})
+                ucode_defaults = (
+                    managed_overlay.get("claude_models") or state.get("claude_models") or {}
+                )
 
             enforced_models = overlay_for_merge.get("availableModels")
             last_applied_env = {}
@@ -1001,6 +995,7 @@ def write_tool_config(
                     ucode_defaults=ucode_defaults,
                     ucode_last_written_defaults=ucode_last_written_defaults,
                     enforced_models=enforced_models,
+                    add_1m_suffix=provider is None,
                 )
                 if selected_default_model is None:
                     target_env.pop(key, None)
@@ -1060,7 +1055,7 @@ def write_tool_config(
         CLAUDE_SETTINGS_PATH,
         _compose(
             read_json_safe(CLAUDE_SETTINGS_PATH),
-            enforce_model_default_hierarchy=False,
+            enforce_model_default_hierarchy=source_scoped_defaults,
             managed_settings_snapshots=None,
         ),
     )
@@ -1069,7 +1064,9 @@ def write_tool_config(
         state,
         lambda base: _compose(
             base,
-            enforce_model_default_hierarchy=provider is None and parent_schema is None,
+            enforce_model_default_hierarchy=(
+                source_scoped_defaults or (provider is None and parent_schema is None)
+            ),
             managed_settings_snapshots=managed_snapshots,
         ),
         managed_file_keys,
