@@ -919,17 +919,20 @@ def write_tool_config(
         otel_tracing=bool(state.get("claude_otel_tracing")),
         picker_catalog=picker_catalog,
     )
-    if provider and coding_agent_config_defaults:
-        # Managed MPS defaults are provider target ids, so write them verbatim into the common
-        # overlay (including relayed launches, which intentionally skip the OS-managed file).
-        # The authored family map is complete policy: omitted families must not inherit targets
-        # derived from the live provider or local discovery.
+    if (provider or parent_schema) and coding_agent_config_defaults:
+        # Source-scoped managed defaults belong in the common overlay so they reach both settings
+        # files (or only the private file for a relay). The authored map is complete policy:
+        # omitted families must not inherit targets from local or live discovery.
         overlay_env = overlay["env"]
         for key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.values():
             overlay_env.pop(key, None)
         for family, model_id in coding_agent_config_defaults.items():
             if key := CLAUDE_DEFAULT_MODEL_ENV_KEYS.get(family):
-                overlay_env[key] = model_id
+                overlay_env[key] = (
+                    _maybe_add_1m_suffix(model_id)
+                    if parent_schema and family in ("opus", "sonnet")
+                    else model_id
+                )
     # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
     # written by this launch, and remove only previously owned picker keys that no longer apply.
     stale_picker_keys = [
@@ -991,21 +994,14 @@ def write_tool_config(
                 if isinstance(last_applied_env.get(key), str)
             }
             for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items():
-                if parent_schema is not None:
-                    # A parent schema gets only admin-authored family mappings, never fallback
-                    # defaults from local state or discovery.
-                    selected_default_model = configured_defaults.get(family)
-                    if selected_default_model and family in ("opus", "sonnet"):
-                        selected_default_model = _maybe_add_1m_suffix(selected_default_model)
-                else:
-                    selected_default_model = _enforce_model_default_hierarchy(
-                        family,
-                        coding_agent_config_defaults=configured_defaults,
-                        settings_file_existing_defaults=settings_file_existing_defaults,
-                        ucode_defaults=ucode_defaults,
-                        ucode_last_written_defaults=ucode_last_written_defaults,
-                        enforced_models=enforced_models,
-                    )
+                selected_default_model = _enforce_model_default_hierarchy(
+                    family,
+                    coding_agent_config_defaults=configured_defaults,
+                    settings_file_existing_defaults=settings_file_existing_defaults,
+                    ucode_defaults=ucode_defaults,
+                    ucode_last_written_defaults=ucode_last_written_defaults,
+                    enforced_models=enforced_models,
+                )
                 if selected_default_model is None:
                     target_env.pop(key, None)
                 else:
@@ -1073,8 +1069,7 @@ def write_tool_config(
         state,
         lambda base: _compose(
             base,
-            enforce_model_default_hierarchy=provider is None
-            and (parent_schema is None or bool(coding_agent_config_defaults)),
+            enforce_model_default_hierarchy=provider is None and parent_schema is None,
             managed_settings_snapshots=managed_snapshots,
         ),
         managed_file_keys,

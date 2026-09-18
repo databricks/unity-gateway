@@ -2715,17 +2715,20 @@ def _launch_tool(
             # managed UC discovery likewise lets the agent select from the parent schema. Skip model
             # resolution, which would otherwise fail when global discovery found no models.
             resolved_model = None
+            managed_source_model = (
+                managed_launch_model(managed or {}, recommendation, tool)
+                if tool == "claude" and (managed_provider or managed_parent_schema)
+                else None
+            )
             if tool == "claude" and managed_parent_schema:
                 # Native discovery supplies the catalog, but the managed policy still controls
                 # which model Claude starts on.
-                route_root_model = managed_launch_model(managed or {}, recommendation, tool)
+                route_root_model = managed_source_model
             provider_launch_model = model
             if tool == "claude" and managed_provider:
                 # A CLI model still wins, followed by the budget recommendation and the managed
                 # default. Unmanaged providers retain their existing target-selection behavior.
-                provider_launch_model = provider_launch_model or managed_launch_model(
-                    managed or {}, recommendation, tool
-                )
+                provider_launch_model = provider_launch_model or managed_source_model
             if provider and tool == "claude" and (provider_launch_model or provider_models):
                 if relayed:
                     # Resolve against a curated allowlist so the forwarded id is one the gateway

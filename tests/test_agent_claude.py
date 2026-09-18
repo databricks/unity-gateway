@@ -1141,6 +1141,10 @@ class TestWriteToolConfigManagedSettings:
         assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "system.ai.claude-opus-5[1m]"
         assert "ANTHROPIC_DEFAULT_SONNET_MODEL" not in env
         assert "ANTHROPIC_DEFAULT_HAIKU_MODEL" not in env
+        private_env = private_writes[0][1]["env"]
+        assert private_env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "system.ai.claude-opus-5[1m]"
+        assert "ANTHROPIC_DEFAULT_SONNET_MODEL" not in private_env
+        assert "ANTHROPIC_DEFAULT_HAIKU_MODEL" not in private_env
 
     def test_managed_file_applies_all_configured_defaults_for_parent_schema(self, monkeypatch):
         private_writes: list = []
@@ -1165,6 +1169,15 @@ class TestWriteToolConfigManagedSettings:
         assert env["ANTHROPIC_MODEL"] == "system.ai.claude-sonnet-5"
         assert {
             family: env[key] for family, key in claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.items()
+        } == {
+            "fable": "system.ai.claude-fable-5",
+            "opus": "system.ai.claude-opus-5[1m]",
+            "sonnet": "system.ai.claude-sonnet-5[1m]",
+            "haiku": "system.ai.claude-haiku-4-5",
+        }
+        private_env = private_writes[0][1]["env"]
+        assert {
+            family: private_env[key] for family, key in claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.items()
         } == {
             "fable": "system.ai.claude-fable-5",
             "opus": "system.ai.claude-opus-5[1m]",
