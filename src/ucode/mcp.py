@@ -1360,12 +1360,12 @@ def _resolve_location_mcp_servers(
 # path), the one source a consumer-only identity can reach. The V2 AI Gateway sources — external
 # connections, Databricks apps, Genie spaces, Vector Search, and UC functions, all served under
 # `/api/2.0/mcp/*` — aren't offered in the picker because consumer entitlements don't grant access
-# to them; workspace users add one non-interactively with a typed `--services` selector (see
+# to them; workspace users add one non-interactively with a typed `--names` selector (see
 # `V2_MCP_SELECTOR_PREFIXES` and `_configure_v2_mcp_selectors`). Since there's a single source,
 # there is no "choose sources" wizard step.
 MCP_SERVICES_SOURCE = "mcp-services"
 
-# Typed `--services` selectors that name a V2 AI Gateway MCP server directly, e.g.
+# Typed `--names` selectors that name a V2 AI Gateway MCP server directly, e.g.
 # `vector-search:main.docs` or `uc-functions:main.tools`. These bypass the interactive
 # picker (which no longer offers V2 sources) so workspace users can still add them on
 # request; a consumer-only identity is blocked with a clear error before registering.
@@ -1379,7 +1379,7 @@ V2_MCP_SELECTOR_PREFIXES = (
 
 
 def _is_v2_mcp_selector(service: str) -> bool:
-    """Whether a `--services` entry is a typed V2 MCP selector (see `V2_MCP_SELECTOR_PREFIXES`)."""
+    """Whether a `--names` entry is a typed V2 MCP selector (see `V2_MCP_SELECTOR_PREFIXES`)."""
     return service.startswith(V2_MCP_SELECTOR_PREFIXES)
 
 
@@ -1390,6 +1390,7 @@ def setup_mcp_clients(
     require_auth: bool = True,
     action_note: str = "Configuring for",
     agents: set[str] | None = None,
+    quiet: bool = False,
 ) -> tuple[str, str | None, list[str]]:
     """Validate the workspace, resolve configured MCP clients, and prepare auth.
 
@@ -1404,6 +1405,9 @@ def setup_mcp_clients(
     the configured MCP clients, so the operation touches only those agents instead
     of every configured one. Requested agents that aren't configured/installed
     raise a clear error.
+
+    ``quiet`` suppresses the section header and the ``action_note`` line so a repeat,
+    no-op registration prints nothing; the missing-client warnings are kept.
     """
     workspace = state.get("workspace")
     if not workspace:
@@ -1441,9 +1445,10 @@ def setup_mcp_clients(
         apply_pat_environment(state)
         ensure_databricks_auth(workspace, profile)
 
-    print_section(section)
-    client_names = ", ".join(str(MCP_CLIENTS[client]["display"]) for client in clients)
-    print_note(f"{action_note}: {client_names}")
+    if not quiet:
+        print_section(section)
+        client_names = ", ".join(str(MCP_CLIENTS[client]["display"]) for client in clients)
+        print_note(f"{action_note}: {client_names}")
     for client in missing_clients:
         print_warning(
             f"{MCP_CLIENTS[client]['display']} is configured in ucode but not installed; "
@@ -1470,17 +1475,17 @@ def add_mcp_command(
     are already configured.
 
     Runs the same discovery — the interactive picker, or the non-interactive
-    `--location`/`--services` paths — as the shared configure flow, but is purely additive: it
+    `--location`/`--names` paths — as the shared configure flow, but is purely additive: it
     never removes servers outside the selection (use `ucode mcp remove` for that).
 
     ``agents`` scopes the registration to that subset of configured MCP clients
     (the agents must already be configured — the `--agents` CLI option sets up any
     that aren't before calling this)."""
     if services is not None and not services:
-        # An empty `--services` selects nothing. In replace mode that means
+        # An empty `--names` selects nothing. In replace mode that means
         # "remove all"; for the additive `add` there is simply nothing to register,
         # so it's a no-op (and doesn't need --location the way a real subset does).
-        print_note("No MCP services given to add (empty --services); nothing to do.")
+        print_note("No MCP services given to add (empty --names); nothing to do.")
         return 0
     return configure_mcp_command(location=location, services=services, append=True, agents=agents)
 
@@ -1491,7 +1496,7 @@ def _configure_v2_mcp_selectors(
     append: bool,
     agents: set[str] | None,
 ) -> int:
-    """Non-interactive add for V2 AI Gateway MCP servers named by typed `--services`
+    """Non-interactive add for V2 AI Gateway MCP servers named by typed `--names`
     selectors (`vector-search:`/`uc-functions:`/`external:`/`genie-space:`/`app:`).
 
     The interactive picker no longer offers these sources; this is how a workspace user adds one
@@ -1585,19 +1590,19 @@ def configure_mcp_command(
                 )
             return _configure_v2_mcp_selectors(v2_selectors, append=append, agents=agents)
     if services is not None and location is None:
-        # `--services` works standalone with full names (`system.ai.github`): the
+        # `--names` works standalone with full names (`system.ai.github`): the
         # `<catalog>.<schema>` to configure is derived from them. Bare short names
         # (`github`) can't be located without `--location`.
         schemas = {".".join(s.split(".")[:2]) for s in services if s.count(".") >= 2}
         bare = sorted(s for s in services if s.count(".") < 2)
         if bare:
             raise RuntimeError(
-                "--services short names need --location (or pass full names like "
+                "--names short names need --location (or pass full names like "
                 f"`system.ai.<name>`): {', '.join(bare)}"
             )
         if len(schemas) != 1:
             raise RuntimeError(
-                "--services without --location must all share one `<catalog>.<schema>` "
+                "--names without --location must all share one `<catalog>.<schema>` "
                 f"(got: {', '.join(sorted(schemas)) or 'none'}); pass --location instead."
             )
         location = next(iter(schemas))
@@ -1631,7 +1636,7 @@ def configure_mcp_command(
 
     excluded_sources = exclude_sources or set()
     original_mcp_servers: list[dict] = list(state.get("mcp_servers") or [])
-    # Skills connections are managed by `configure skills`, so keep them out of
+    # Skills connections are managed by the `ug skills` commands, so keep them out of
     # the picker and carry them through untouched.
     skills_servers = _skills_entries(original_mcp_servers)
     picker_servers = [s for s in original_mcp_servers if s.get("kind") != SKILLS_MCP_KIND]
@@ -1777,7 +1782,7 @@ def remove_mcp_command(agents: set[str] | None = None) -> int:
     """`ucode mcp remove`: interactively unregister configured MCP servers.
 
     Shows the servers currently configured (skills connections excluded — they're
-    owned by `configure skills`) and removes the ones you select. It never adds or
+    owned by the `ug skills` commands) and removes the ones you select. It never adds or
     reconfigures anything, and needs no Databricks auth.
 
     Without ``agents``, a selected server is removed from every coding tool it's
@@ -2456,17 +2461,6 @@ def _update_skills_mcp(
     return changed or original != working
 
 
-def configure_skills_mcp_command(locations: list[str]) -> int:
-    """Set every configured client's skill scope to ``locations``."""
-    state = load_state()
-    workspace, profile, clients = setup_mcp_clients(state, "Skills MCP")
-    locations_by_client = _skill_locations_by_client_from_state(state)
-    for client in clients:
-        locations_by_client[client] = list(locations)
-    _update_skills_mcp(state, workspace, profile, clients, locations_by_client)
-    return 0
-
-
 def _skill_mcp_locations(state: dict) -> list[str]:
     """The skills MCP connection's ``skill_locations``, or ``[]`` if none exists."""
     entry = _skills_entry(list(state.get("mcp_servers") or []))
@@ -2475,15 +2469,45 @@ def _skill_mcp_locations(state: dict) -> list[str]:
 
 
 def register_schemaless_skills_connection(
-    state: dict, workspace: str, profile: str | None, clients: list[str]
+    state: dict,
+    workspace: str,
+    profile: str | None,
+    clients: list[str],
+    *,
+    print_summary: bool = True,
 ) -> None:
     """Register/keep the skills MCP connection without changing its schema set.
 
     Download mode calls this after writing files: it preserves each client's prior
-    ``--mcp`` scope and otherwise registers the bare schema-less route (utility tools only)."""
+    ``--mcp`` scope and otherwise registers the bare schema-less route (utility tools only).
+    Downloads pass ``print_summary=False`` so the connection summary never buries any
+    per-skill download failures the download step already reported."""
     _update_skills_mcp(
-        state, workspace, profile, clients, _skill_locations_by_client_from_state(state)
+        state,
+        workspace,
+        profile,
+        clients,
+        _skill_locations_by_client_from_state(state),
+        print_summary=print_summary,
     )
+
+
+def configure_bare_skills_mcp_command() -> bool:
+    """Register the schema-less skills MCP connection for every configured agent.
+
+    The simple entrypoint behind a bare ``ug skills``. Re-registers on every run,
+    preserving any client's existing ``--mcp`` scope, but only the first run prints
+    anything (the setup header and the connection summary) -- a repeat ``ug skills``
+    re-registers silently. Returns whether no skills connection existed beforehand, so
+    the caller can also show first-run guidance only then.
+    """
+    state = load_state()
+    first_time = _skills_entry(list(state.get("mcp_servers") or [])) is None
+    workspace, profile, clients = setup_mcp_clients(state, "Skills", quiet=not first_time)
+    register_schemaless_skills_connection(
+        state, workspace, profile, clients, print_summary=first_time
+    )
+    return first_time
 
 
 def _union_locations(base: list[str], new: list[str]) -> list[str]:

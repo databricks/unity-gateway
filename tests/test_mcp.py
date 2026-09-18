@@ -1390,7 +1390,7 @@ class TestConfigureMcpFromLocation:
         ]
 
     def test_preserves_skills_connection(self, monkeypatch):
-        """A skills connection is owned by `configure skills`, so a replace-mode
+        """A skills connection is owned by the `ug skills` commands, so a replace-mode
         `--location` run must leave it registered rather than treating it as a removal."""
         saved_states: list[dict] = []
         removed: list[tuple[str, str]] = []
@@ -1521,7 +1521,7 @@ class TestAddMcpCommand:
         ]
 
     def test_services_subset_keeps_others_in_location(self, monkeypatch):
-        """`mcp add --services` registers the named subset while leaving other
+        """`mcp add --names` registers the named subset while leaving other
         already-registered services in the same schema untouched."""
         saved_states: list[dict] = []
         removed: list[tuple[str, str]] = []
@@ -1555,7 +1555,7 @@ class TestAddMcpCommand:
         assert names == ["system-ai-github", "system-ai-slack"]
 
     def test_empty_services_is_a_noop(self, monkeypatch):
-        """`mcp add --services ""` has nothing to add, so it's a no-op that never
+        """`mcp add --names ""` has nothing to add, so it's a no-op that never
         reaches configuration (and doesn't need --location the way a subset does)."""
         called: list[bool] = []
         monkeypatch.setattr(mcp, "load_state", lambda: called.append(True) or {})
@@ -1670,7 +1670,7 @@ class TestRemoveMcpCommand:
         monkeypatch.setattr(mcp, "_prompt_for_mcp_removal", fake_prompt)
 
         assert mcp.remove_mcp_command() == 0
-        # The skills connection is owned by `configure skills`, so it's never a
+        # The skills connection is owned by the `ug skills` commands, so it's never a
         # removal candidate; only the real MCP server is offered.
         assert offered["names"] == ["system-ai-github"]
 
@@ -1737,7 +1737,7 @@ class TestRemoveMcpCommand:
 
 
 class TestConfigureMcpServicesSubset:
-    """`--location <schema> --services a,b,...` configures exactly the named subset."""
+    """`--location <schema> --names a,b,...` configures exactly the named subset."""
 
     def test_configures_only_the_requested_subset(self, monkeypatch):
         configured: list[tuple[str, str, str, dict]] = []
@@ -2033,98 +2033,6 @@ def _skills_state(mcp_servers=None):
     return state
 
 
-class TestConfigureSkillsMcpCommand:
-    def test_set_on_empty_registers_connection(self, monkeypatch):
-        saved_states: list[dict] = []
-        configured: list[dict] = []
-        _stub_location_base(monkeypatch, _skills_state())
-        monkeypatch.setattr(
-            mcp,
-            "configure_client_mcp_server",
-            lambda client, name, url, *a, **kw: (
-                configured.append(
-                    {
-                        "client": client,
-                        "name": name,
-                        "url": url,
-                        "always_load": kw.get("always_load"),
-                    }
-                )
-                or []
-            ),
-        )
-        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
-
-        assert mcp.configure_skills_mcp_command(["a.b"]) == 0
-
-        skills = _find_skills(saved_states[-1]["mcp_servers"])
-        assert len(skills) == 1
-        assert skills[0]["skill_locations"] == ["a.b"]
-        assert skills[0]["url"] == f"{WS}/ai-gateway/skills/?schema=a.b"
-        # alwaysLoad is passed through the proxy registration (Claude-only hint).
-        assert configured[0]["always_load"] is True
-
-    def test_location_replaces_prior_set(self, monkeypatch):
-        saved_states: list[dict] = []
-        prior = mcp._resolve_skills_mcp_servers(
-            WS, ["claude"], _by_client(["claude"], ["A.a", "B.b"]), []
-        )
-        _stub_location_base(monkeypatch, _skills_state(prior))
-        monkeypatch.setattr(mcp, "configure_client_mcp_server", lambda *a, **kw: [])
-        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
-
-        assert mcp.configure_skills_mcp_command(["X.x"]) == 0
-
-        assert _find_skills(saved_states[-1]["mcp_servers"])[0]["skill_locations"] == ["X.x"]
-
-    def test_multiple_locations_set_in_order(self, monkeypatch):
-        saved_states: list[dict] = []
-        prior = mcp._resolve_skills_mcp_servers(WS, ["claude"], _by_client(["claude"], ["A.a"]), [])
-        _stub_location_base(monkeypatch, _skills_state(prior))
-        monkeypatch.setattr(mcp, "configure_client_mcp_server", lambda *a, **kw: [])
-        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
-
-        assert mcp.configure_skills_mcp_command(["X.x", "Y.y"]) == 0
-
-        assert _find_skills(saved_states[-1]["mcp_servers"])[0]["skill_locations"] == ["X.x", "Y.y"]
-
-    def test_replaces_scope_for_configured_clients_only(self, monkeypatch):
-        saved_states: list[dict] = []
-        prior = mcp._resolve_skills_mcp_servers(
-            WS, ["claude", "codex"], {"claude": ["claude.old"], "codex": ["codex.kept"]}, []
-        )
-        _stub_location_base(monkeypatch, _skills_state(prior))
-        monkeypatch.setattr(mcp, "configure_client_mcp_server", lambda *a, **kw: [])
-        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
-
-        assert mcp.configure_skills_mcp_command(["new.default"]) == 0
-
-        entry = _find_skills(saved_states[-1]["mcp_servers"])[0]
-        assert mcp.skill_locations_for_client(entry, "claude") == ["new.default"]
-        assert mcp.skill_locations_for_client(entry, "codex") == ["codex.kept"]
-
-    def test_preserves_mcp_service_entries_across_set(self, monkeypatch):
-        saved_states: list[dict] = []
-        service_entry = {
-            "name": "system-ai-github",
-            "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
-            "auth": "env:OAUTH_TOKEN",
-            "clients": ["claude"],
-        }
-        prior = mcp._resolve_skills_mcp_servers(
-            WS, ["claude"], _by_client(["claude"], ["A.a"]), [service_entry]
-        )
-        _stub_location_base(monkeypatch, _skills_state(prior))
-        monkeypatch.setattr(mcp, "configure_client_mcp_server", lambda *a, **kw: [])
-        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
-
-        assert mcp.configure_skills_mcp_command(["B.b"]) == 0
-
-        names = [s["name"] for s in saved_states[-1]["mcp_servers"]]
-        assert "system-ai-github" in names
-        assert names.count(mcp.SKILLS_MCP_SERVER_NAME) == 1
-
-
 class TestSkillMcpLocations:
     def test_reads_locations_off_skills_entry(self):
         state = _skills_state(
@@ -2184,8 +2092,8 @@ class TestUnionLocations:
 
 
 class TestAddSkillsCommand:
-    """`ucode skills add --mcp` unions schemas into the connection scope rather
-    than replacing it (unlike `configure_skills_mcp_command`)."""
+    """`ucode skills add --mcp` unions schemas into the connection scope (additive),
+    keeping any already configured."""
 
     def test_unions_into_existing_scope(self, monkeypatch):
         state = _skills_state(
@@ -2630,6 +2538,51 @@ class TestRegisterSchemalessSkillsConnection:
         mcp.register_schemaless_skills_connection(state, WS, None, ["claude"])
 
         assert _find_skills(state["mcp_servers"])[0]["skill_locations"] == ["X.x", "Y.y"]
+
+    def test_download_path_suppresses_summary(self, monkeypatch, capsys):
+        self._stub(monkeypatch)
+        state = _skills_state([])
+
+        mcp.register_schemaless_skills_connection(state, WS, None, ["claude"], print_summary=False)
+
+        assert _unwrap(capsys.readouterr().out) == ""
+
+
+class TestConfigureBareSkillsMcpCommand:
+    def _stub(self, monkeypatch, state):
+        _stub_location_base(monkeypatch, state)
+        saved_states: list[dict] = []
+        configured: list[str] = []
+        monkeypatch.setattr(
+            mcp, "configure_client_mcp_server", lambda client, *a, **kw: configured.append(client)
+        )
+        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
+        return saved_states, configured
+
+    def test_first_run_registers_bare_route_and_reports_first_time(self, monkeypatch, capsys):
+        saved_states, configured = self._stub(monkeypatch, _skills_state())
+
+        assert mcp.configure_bare_skills_mcp_command() is True
+
+        skills = _find_skills(saved_states[-1]["mcp_servers"])
+        assert len(skills) == 1
+        assert skills[0]["skill_locations"] == []
+        assert configured == ["claude"]
+        # Only the first run prints: the setup header plus the connection summary.
+        out = _unwrap(capsys.readouterr().out)
+        assert "Configuring for: Claude Code" in out
+        assert "Skills MCP registered" in out
+
+    def test_existing_connection_reregisters_and_reports_not_first_time(self, monkeypatch, capsys):
+        prior = mcp._resolve_skills_mcp_servers(WS, ["claude"], _by_client(["claude"], []), [])
+        _, configured = self._stub(monkeypatch, _skills_state(prior))
+
+        assert mcp.configure_bare_skills_mcp_command() is False
+
+        # A repeat run re-registers silently: no client re-touched, and no output at all
+        # (neither the setup header nor the connection summary).
+        assert configured == []
+        assert _unwrap(capsys.readouterr().out) == ""
 
 
 class TestSkillsToolsDescription:

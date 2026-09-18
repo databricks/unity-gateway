@@ -141,10 +141,18 @@ def test_native_non_gpt_metadata_takes_precedence(bundled):
     assert model["context_window"] == 123456
 
 
+def test_baseline_is_any_ordinary_tool_model_not_a_pinned_slug(bundled):
+    # gpt-5.2 gone; the remaining ordinary-tool model serves as the skeleton.
+    without_gpt52 = [{**bundled[1], "tool_mode": None}, bundled[2]]
+    model = catalog.build_codex_catalog(without_gpt52, ["kimi-k3"])["models"][0]
+    assert model["base_instructions"] == without_gpt52[0]["base_instructions"]
+    assert model["tool_mode"] is None
+
+
 def test_missing_baseline_does_not_affect_gpt(bundled):
-    without_baseline = bundled[1:]
+    without_baseline = bundled[1:]  # leaves only code-mode models, no ordinary-tool skeleton
     assert catalog.build_codex_catalog(without_baseline, ["gpt-6-astra"])["models"]
-    with pytest.raises(RuntimeError, match="gpt-5.2 metadata"):
+    with pytest.raises(RuntimeError, match="no ordinary-tool bundled model"):
         catalog.build_codex_catalog(without_baseline, ["kimi-k3"])
 
 
