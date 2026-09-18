@@ -106,6 +106,11 @@ def arguments():
         help="Existing relayed (subscription-relay) Anthropic MPS for the hybrid-routing CUJ.",
     )
     parser.add_argument(
+        "--claude-bedrock-provider",
+        default="main.ucode.bedrock_e2e",
+        help="Existing AWS Bedrock Anthropic MPS selected in the configure CUJ.",
+    )
+    parser.add_argument(
         "--codex-provider",
         default="main.ucode.ci_openai_mps",
         help="Existing OpenAI MPS selected in the configure CUJ.",
@@ -293,6 +298,7 @@ def main() -> int:
             "codex_model": args.codex_model,
             "claude_provider": args.claude_provider,
             "claude_relayed_provider": args.claude_relayed_provider,
+            "claude_bedrock_provider": args.claude_bedrock_provider,
             "codex_provider": args.codex_provider,
             "codex_provider_model": args.codex_provider_model,
             "parent_schema": args.parent_schema,
@@ -533,6 +539,7 @@ def main() -> int:
                 "UG_INTEGRATION_AGENTS": ",".join(agents),
                 "UG_INTEGRATION_CLAUDE_PROVIDER": args.claude_provider,
                 "UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER": args.claude_relayed_provider,
+                "UG_INTEGRATION_CLAUDE_BEDROCK_PROVIDER": args.claude_bedrock_provider,
                 "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN": oauth_token,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
