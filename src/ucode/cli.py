@@ -127,6 +127,7 @@ from ucode.skills_download import (
     remove_downloaded_skills_command,
 )
 from ucode.skills_list import list_configured_skills_command
+from ucode.skills_state import records_for_scope
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
 from ucode.state import (
@@ -197,6 +198,21 @@ def _policy_summary_lines(managed: dict) -> list[str]:
     return lines
 
 
+def _configured_summary(names: list[str], *, limit: int = 5) -> str:
+    """Format a resolved MCP/skill set for the Configuration panel as ``N (name, ..., name)``.
+
+    Empty renders "none configured": the admin set none, or a fetch failed and warned above. At most
+    ``limit`` names are shown, with the rest collapsed to an ellipsis so a large set stays scannable.
+    """
+    unique = sorted({name for name in names if name})
+    if not unique:
+        return "[dim]none configured[/dim]"
+    shown = unique[:limit]
+    if len(unique) > limit:
+        shown.append("...")
+    return f"{len(unique)} ({', '.join(shown)})"
+
+
 def _print_managed_summary(
     managed: dict,
     state: dict,
@@ -204,6 +220,7 @@ def _print_managed_summary(
     *,
     abridged: bool = False,
     configured_tools: list[str] | None = None,
+    registered_mcps: list[str] | None = None,
 ) -> None:
     """Show which of the admin's settings are in force.
 
@@ -243,23 +260,16 @@ def _print_managed_summary(
         model = managed_default_model(managed, tool)
         if model:
             lines.append(f"[bold]Model:[/bold] [magenta]{model}[/magenta]")
-    # Always listed, including when empty: "none configured" tells a developer their admin set none,
-    # which a missing row leaves ambiguous. Shown as the admin configured them — registering them
-    # locally is a separate change, hence "pending".
-    mcp_names = [
-        str(server.get("name"))
-        for server in (managed.get("mcp_servers") or [])
-        if isinstance(server, dict) and server.get("name")
+    # Count what ug actually registered/downloaded, not the admin's raw selector (a UC location is
+    # just a pointer with no count): the MCP servers reconcile registered this run, and the managed
+    # skills on disk. State can't stand in for the MCPs — #717 writes them to OS-managed files.
+    lines.append(f"[bold]MCPs:[/bold] {_configured_summary(registered_mcps or [])}")
+    skill_names = [
+        str(record.get("bundle_name"))
+        for record in records_for_scope("managed")
+        if record.get("bundle_name")
     ]
-    if mcp_names:
-        lines.append(f"[bold]MCPs:[/bold] {', '.join(mcp_names)} [dim](pending)[/dim]")
-    else:
-        lines.append("[bold]MCPs:[/bold] [dim]none configured[/dim]")
-    skill_names = [str(name) for name in ((managed.get("skills") or {}).get("names") or []) if name]
-    if skill_names:
-        lines.append(f"[bold]Skills:[/bold] {', '.join(skill_names)} [dim](pending)[/dim]")
-    else:
-        lines.append("[bold]Skills:[/bold] [dim]none configured[/dim]")
+    lines.append(f"[bold]Skills:[/bold] {_configured_summary(skill_names)}")
     lines.extend(_policy_summary_lines(managed))
     console.print(Panel("\n".join(lines), title="Configuration", style="green", expand=False))
 
@@ -285,10 +295,16 @@ def _print_managed_summary_abridged(managed: dict, state: dict, tool: str | None
     )
 
 
-def _summarize_managed_config(managed: dict, workspace: str, configured_tools: list[str]) -> None:
+def _summarize_managed_config(
+    managed: dict, configured_tools: list[str], registered_mcps: list[str]
+) -> None:
     """Show the resulting managed setup, listing only the agents that configured cleanly."""
     _print_managed_summary(
-        managed, {"workspace": workspace}, tool=None, configured_tools=configured_tools
+        managed,
+        load_state(),
+        tool=None,
+        configured_tools=configured_tools,
+        registered_mcps=registered_mcps,
     )
     print_success("Configuration complete — launch with [bold cyan]ug[/bold cyan].")
 
@@ -877,10 +893,11 @@ def configure_workspace_command(
                 "None of the coding agents enabled by your workspace configuration "
                 "are available on this workspace."
             )
+        registered_mcps: list[str] = []
         if not is_dry_run():
-            _configure_managed_mcp_servers(managed)
+            registered_mcps = _configure_managed_mcp_servers(managed)
             _configure_managed_skills(managed)
-        _summarize_managed_config(managed, state["workspace"], configured_tools)
+        _summarize_managed_config(managed, configured_tools, registered_mcps)
         return 0
 
     available_on_workspace: list[str] = []
@@ -2343,14 +2360,16 @@ def _print_budget_panel(recommendation: dict, tool: str, managed: dict | None = 
         console.print(panel)
 
 
-def _configure_managed_mcp_servers(managed: dict | None) -> None:
+def _configure_managed_mcp_servers(managed: dict | None) -> list[str]:
     """Register the managed config's MCP servers for every enabled MCP-client agent.
 
     Runs during ``ug configure`` after the enabled agents are configured, so a workspace-published
     server reaches each agent's `/mcp` list without the developer re-adding it. ``managed`` is None
     when the (now-current) workspace has no managed config: the reconcile then unregisters any
     servers a prior managed workspace registered, so switching workspaces resets the MCP registry.
-    Best-effort: a failure warns and leaves the rest of configure intact.
+    Best-effort: a failure warns and leaves the rest of configure intact. Returns the names of the
+    servers registered this run (the completion summary counts them; state alone can't, since #717
+    writes them to agents' OS-managed files rather than ``managed_mcp_servers``).
     """
     managed = managed or {}
     agents = {tool for tool in managed_enabled_tools(managed) if tool in MCP_CLIENTS}
@@ -2358,10 +2377,11 @@ def _configure_managed_mcp_servers(managed: dict | None) -> None:
         registered = reconcile_managed_mcp_servers(managed, agents)
     except RuntimeError as exc:
         print_warning(f"Could not register your workspace's MCP servers: {exc}")
-        return
-    if registered:
-        names = ", ".join(str(server["name"]) for server in registered)
-        print_note(f"Registered workspace MCP server(s): {names}")
+        return []
+    names = [str(server["name"]) for server in registered if server.get("name")]
+    if names:
+        print_note(f"Registered workspace MCP server(s): {', '.join(names)}")
+    return names
 
 
 def _configure_managed_skills(managed: dict | None) -> None:
