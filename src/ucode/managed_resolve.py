@@ -249,7 +249,7 @@ def managed_provider_family_models(managed: dict) -> dict[str, str] | None:
 
     config = _agent_model_config(managed, "claude")
     slots: dict[str, str] = {}
-    raw_slots = _as_dict(config.get("models"))
+    raw_slots = _as_dict(config.get("default_models_by_model_family"))
     for slot, family in _CLAUDE_FAMILY_SLOTS.items():
         model = _str(raw_slots.get(slot))
         if model:

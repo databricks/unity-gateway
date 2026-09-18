@@ -172,7 +172,8 @@ cases** use `UCODE_MANAGED_CONFIG_STUB`. Twenty-four explicit configured/fresh C
 discovery and source-override journeys fetch the published config once per agent, replace that
 agent's static source with its dedicated MPS, and reuse the result. Twelve existing collected cases
 cover focused model, MCP, skills, and lifecycle shapes, including per-agent model reconciliation
-and managed skill cleanup.
+and managed skill cleanup. The two Claude default-model cases launch with injected MPS and Unity
+Catalog sources and verify both generated settings files retain all admin-authored family defaults.
 See the named coverage and gaps matrix in
 [../README.md](../README.md).
 

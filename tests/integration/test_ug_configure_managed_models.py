@@ -8,6 +8,7 @@ driven against a model list the live workspace does not publish; only the config
 import json
 
 import pytest
+from utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
 from utils.evidence import FileTask
 from utils.managed import (
     build_claude_agent_config,
@@ -15,7 +16,7 @@ from utils.managed import (
     build_coding_agent_config,
     set_managed_config_stub,
 )
-from utils.terminal import AgentTerminal
+from utils.terminal import AgentTerminal, TerminalProcess
 
 CLAUDE_OPUS = "system.ai.claude-opus-4-8"
 # A real ca-central model absent from the live published config: its presence in the picker can
@@ -24,6 +25,12 @@ CLAUDE_OFF_MENU = "system.ai.claude-sonnet-5"
 LIVE_ONLY = "haiku-4-5"  # published live, but not in the injected list below
 CODEX_DEFAULT = "system.ai.gpt-5-6-sol"
 CODEX_WITHOUT_BUNDLED_METADATA = "system.ai.gpt-99"
+MANAGED_CLAUDE_DEFAULT_ENV_KEYS = {
+    "default_fable_model": "ANTHROPIC_DEFAULT_FABLE_MODEL",
+    "default_opus_model": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "default_sonnet_model": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "default_haiku_model": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+}
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 CLAUDE_SMART_ROUTING_MODELS = [
@@ -42,6 +49,108 @@ CODEX_SMART_ROUTING_MODELS = [
     "system.ai.glm-5-3",
     "system.ai.kimi-k3",
 ]
+
+
+@pytest.mark.managed_fixture
+@pytest.mark.claude
+def test_managed_fixture_claude_mps_defaults_accompany_discovery(live_session, workspace, tmp_path):
+    """Scenario: launch Claude with managed defaults and MPS discovery.
+
+    Expected: the installed ug launch writes the MPS header and every admin-authored default to
+    both Claude settings files without changing the model ids. This settings reconciliation check
+    does not claim model inference.
+    """
+    session = live_session
+    defaults = {
+        "default_model": "anthropic.claude-sonnet-5",
+        "default_fable_model": "anthropic.claude-fable-5-1",
+        "default_opus_model": "anthropic.claude-opus-5",
+        "default_sonnet_model": "anthropic.claude-sonnet-5",
+        "default_haiku_model": "anthropic.claude-haiku-4-5",
+    }
+    config = build_coding_agent_config(
+        "CODING_AGENT_CLAUDE_CODE",
+        {
+            "agent": "CODING_AGENT_CLAUDE_CODE",
+            "config": {
+                "models": {"model_provider_service": MANAGED_CLAUDE_PROVIDER_SERVICE},
+                "default_models": defaults,
+            },
+        },
+    )
+    set_managed_config_stub(session, tmp_path, config)
+    result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+    assert "Select coding agents to configure:" not in result.stdout, result.stdout
+
+    command = [str(session.binary), "claude", "--", "--version"]
+    with TerminalProcess(session, "claude", command, "managed-defaults-mps") as terminal:
+        terminal.finish(timeout=240)
+
+    private_settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
+    os_managed_settings = json.loads(
+        session.run("/etc/claude-code/managed-settings.json", binary="cat", timeout=30).stdout
+    )
+    for settings in (private_settings, os_managed_settings):
+        env = settings.get("env") or {}
+        expected_header = f"Databricks-Model-Provider-Service: {MANAGED_CLAUDE_PROVIDER_SERVICE}"
+        assert expected_header in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines(), settings
+        assert env.get("ANTHROPIC_MODEL") == defaults["default_model"], settings
+        for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
+            assert env.get(env_key) == defaults[config_key], settings
+
+
+@pytest.mark.managed_fixture
+@pytest.mark.claude
+def test_managed_fixture_claude_parent_schema_defaults_accompany_discovery(
+    live_session, workspace, tmp_path
+):
+    """Scenario: launch Claude with managed defaults and Unity Catalog discovery.
+
+    Expected: the installed ug launch writes the parent-schema header and every admin-authored
+    default to both Claude settings files, adding ``[1m]`` only to Opus and Sonnet family defaults.
+    This settings reconciliation check does not claim model inference.
+    """
+    session = live_session
+    parent_schema = "system.ai"
+    defaults = {
+        "default_model": f"{parent_schema}.claude-sonnet-5",
+        "default_fable_model": f"{parent_schema}.claude-fable-5-1",
+        "default_opus_model": f"{parent_schema}.claude-opus-5",
+        "default_sonnet_model": f"{parent_schema}.claude-sonnet-5",
+        "default_haiku_model": f"{parent_schema}.claude-haiku-4-5",
+    }
+    config = build_coding_agent_config(
+        "CODING_AGENT_CLAUDE_CODE",
+        {
+            "agent": "CODING_AGENT_CLAUDE_CODE",
+            "config": {
+                "models": {"unity_catalog_location": parent_schema},
+                "default_models": defaults,
+            },
+        },
+    )
+    set_managed_config_stub(session, tmp_path, config)
+    result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+    assert "Select coding agents to configure:" not in result.stdout, result.stdout
+
+    command = [str(session.binary), "claude", "--", "--version"]
+    with TerminalProcess(session, "claude", command, "managed-defaults-parent-schema") as terminal:
+        terminal.finish(timeout=240)
+
+    private_settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
+    os_managed_settings = json.loads(
+        session.run("/etc/claude-code/managed-settings.json", binary="cat", timeout=30).stdout
+    )
+    for settings in (private_settings, os_managed_settings):
+        env = settings.get("env") or {}
+        expected_header = f"Databricks-Model-Service-Parent-Schema: {parent_schema}"
+        assert expected_header in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines(), settings
+        assert env.get("ANTHROPIC_MODEL") == defaults["default_model"], settings
+        for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
+            expected = defaults[config_key]
+            if config_key in {"default_opus_model", "default_sonnet_model"}:
+                expected += "[1m]"
+            assert env.get(env_key) == expected, settings
 
 
 @pytest.mark.managed_fixture
