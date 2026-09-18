@@ -8,16 +8,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from rich.table import Table
+
 from ucode.databricks import get_databricks_token
 from ucode.mcp import configured_skill_workspace_and_mcp_locations
 from ucode.skills_api import list_schema_skills
 from ucode.skills_state import list_downloaded
 from ucode.state import load_state
-from ucode.ui import console, print_heading, print_note, print_warning, render_box_table
+from ucode.ui import console, print_heading, print_note, print_warning
 
-_DOWNLOADED = "downloaded"
-_SKILL_MCP = "skill mcp"
-_BOTH = "both (discouraged)"
+_LOCAL = "local"
+_MCP = "mcp"
+_BOTH = "local,mcp"
 _ALL_AGENTS = "all"
 
 
@@ -25,7 +27,7 @@ _ALL_AGENTS = "all"
 class ConfiguredSkill:
     name: str
     location: str
-    method: str
+    via: str
     agents: str
 
 
@@ -36,7 +38,7 @@ def _mcp_skill_agents(
 
     ``agents_by_fqn`` maps each reachable skill's fully-qualified name to the agents scoped to
     it. Each scoped schema is listed once against its workspace; a schema whose listing fails
-    becomes an ``(location, agents)`` entry in ``unlisted_schemas`` so it still surfaces.
+    becomes a ``(location, agents)`` entry in ``unlisted_schemas`` so it still surfaces.
     """
     configured = configured_skill_workspace_and_mcp_locations(state)
     if configured is None:
@@ -65,15 +67,15 @@ def _mcp_skill_agents(
     return agents_by_fqn, unlisted_schemas
 
 
-def list_configured_skills_command() -> int:
-    """Print every configured skill and how it reaches each coding agent.
+def _configured_skills(state: dict) -> list[ConfiguredSkill]:
+    """Every configured skill as rows sorted by name then location.
 
-    Keys on fully-qualified name: a skill downloaded to disk is visible to every agent, a skill
-    in a schema scoped into the skills MCP connection is visible to that schema's agents, and a
-    skill configured both ways is flagged as discouraged.
+    Keyed on fully-qualified name: a skill downloaded to disk (``local``) is visible to every
+    agent, a skill in a schema scoped into the skills MCP connection (``mcp``) is visible to that
+    schema's agents, and a skill configured both ways shows ``local,mcp``.
     """
     downloaded_fqns = {record["fqn"] for record in list_downloaded() if record.get("fqn")}
-    mcp_agents, unlisted_schemas = _mcp_skill_agents(load_state())
+    mcp_agents, unlisted_schemas = _mcp_skill_agents(state)
 
     rows: list[ConfiguredSkill] = []
     for fqn in downloaded_fqns | mcp_agents.keys():
@@ -82,24 +84,35 @@ def list_configured_skills_command() -> int:
         if in_download and in_mcp:
             rows.append(ConfiguredSkill(securable, location, _BOTH, _ALL_AGENTS))
         elif in_download:
-            rows.append(ConfiguredSkill(securable, location, _DOWNLOADED, _ALL_AGENTS))
+            rows.append(ConfiguredSkill(securable, location, _LOCAL, _ALL_AGENTS))
         else:
-            agents = ",".join(sorted(mcp_agents[fqn]))
-            rows.append(ConfiguredSkill(securable, location, _SKILL_MCP, agents))
+            rows.append(
+                ConfiguredSkill(securable, location, _MCP, ",".join(sorted(mcp_agents[fqn])))
+            )
     for location, clients in unlisted_schemas:
-        agents = ",".join(sorted(clients))
-        rows.append(ConfiguredSkill(f"(skills in {location})", location, _SKILL_MCP, agents))
+        rows.append(
+            ConfiguredSkill(f"(skills in {location})", location, _MCP, ",".join(sorted(clients)))
+        )
 
+    rows.sort(key=lambda skill: (skill.name, skill.location))
+    return rows
+
+
+def list_configured_skills_command() -> int:
+    """`ug skills list`: print every configured skill and how it reaches each coding agent."""
+    rows = _configured_skills(load_state())
     if not rows:
         print_note("No skills configured. Use `ug skills add` to configure skills.")
         return 0
 
-    rows.sort(key=lambda skill: (skill.name, skill.location))
     print_heading("Configured Skills")
-    console.print(
-        render_box_table(
-            ["NAME", "UC LOCATION", "CONFIGURATION METHOD", "AGENTS"],
-            [[row.name, row.location, row.method, row.agents] for row in rows],
-        )
-    )
+    table = Table(box=None, pad_edge=False, header_style="bold")
+    for header in ("NAME", "LOCATION", "VIA", "AGENTS"):
+        table.add_column(header)
+    for row in rows:
+        table.add_row(row.name, row.location, row.via, row.agents)
+    console.print(table)
+
+    console.print()
+    print_note("Use `ug skills add` / `ug skills remove` to change the skills ug configures.")
     return 0
