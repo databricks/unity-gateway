@@ -17,6 +17,7 @@ from typing import NoReturn, TextIO
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
+    custom_catalog_path,
 )
 from ucode.config_io import APP_DIR, read_json_safe, read_toml_safe, write_json_file
 from ucode.constants import LOOPBACK_HOST
@@ -558,6 +559,9 @@ def launch_codex(
         use_pat=bool(state.get("use_pat")),
         custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
     )
+    catalog_path = custom_catalog_path()
+    if catalog_path is not None:
+        overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = {
         "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
     }
