@@ -81,7 +81,7 @@ def test_smart_routing_claude_route_subagent_hook(live_session, workspace):
     hook = output["hookSpecificOutput"]
     assert hook["hookEventName"] == "PreToolUse", output
     assert hook["permissionDecision"] == "allow", output
-    assert output["systemMessage"], output
+    assert "Using Unity Gateway Smart Router - Subagent" in output["systemMessage"], output
     updated = hook["updatedInput"]
     assert "model" not in updated, updated
     assert updated["subagent_type"].startswith("ucode-route-"), updated
@@ -134,7 +134,7 @@ def test_smart_routing_codex_route_subagent_hook(live_session, workspace):
     hook = output["hookSpecificOutput"]
     assert hook["hookEventName"] == "PreToolUse", output
     assert hook["permissionDecision"] == "allow", output
-    assert output["systemMessage"], output
+    assert "Using Unity Gateway Smart Router - Subagent" in output["systemMessage"], output
     updated = hook["updatedInput"]
     assert updated["model"] in CODEX_MODEL_SLUGS, updated
     assert updated["message"] == payload["tool_input"]["message"], updated
