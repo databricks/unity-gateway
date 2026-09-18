@@ -425,7 +425,7 @@ def configure_location_skills_download_command(locations: list[str], *, path: st
 
     download_skills_from_schema_locations(workspace, token, locations, path)
 
-    register_schemaless_skills_connection(state, workspace, profile, clients)
+    register_schemaless_skills_connection(state, workspace, profile, clients, print_summary=False)
     return 0
 
 
@@ -441,7 +441,7 @@ def configure_selected_skills_download_command(fqns: list[str], path: str | None
 
     download_selected_skills(workspace, token, fqns, path)
 
-    register_schemaless_skills_connection(state, workspace, profile, clients)
+    register_schemaless_skills_connection(state, workspace, profile, clients, print_summary=False)
     return 0
 
 
@@ -514,7 +514,7 @@ def configure_skills_download_picker_command(path: str | None = None) -> int:
         return 0
 
     download_selected_skills(workspace, token, fqns, path)
-    register_schemaless_skills_connection(state, workspace, profile, clients)
+    register_schemaless_skills_connection(state, workspace, profile, clients, print_summary=False)
     return 0
 
 

@@ -2018,6 +2018,50 @@ class TestConfigureSkillsCommand:
         mock_download.assert_not_called()
 
 
+class TestSkillsEntrypoint:
+    """Bare `ug skills` registers the schema-less MCP connection, then prints help."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_install_cli(self):
+        with patch("ucode.cli.install_databricks_cli") as mock_install:
+            yield mock_install
+
+    def test_first_run_configures_shows_help_and_create_note(self, _stub_install_cli):
+        from ucode.databricks import SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
+
+        with patch("ucode.cli.configure_bare_skills_mcp_command", return_value=True) as mock_conf:
+            result = runner.invoke(app, ["skills"])
+
+        assert result.exit_code == 0, result.output
+        mock_conf.assert_called_once_with()
+        _stub_install_cli.assert_called_once_with(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        output = _strip_ansi(result.output)
+        assert "To create a skill" in output
+        # Still prints the group help it always showed.
+        assert "Usage:" in output
+        for command in ("list", "add", "remove"):
+            assert command in output
+
+    def test_already_configured_omits_create_note(self):
+        with patch("ucode.cli.configure_bare_skills_mcp_command", return_value=False):
+            result = runner.invoke(app, ["skills"])
+
+        assert result.exit_code == 0, result.output
+        output = _strip_ansi(result.output)
+        assert "To create a skill" not in output
+        assert "Usage:" in output
+
+    def test_subcommand_skips_entrypoint_configuration(self):
+        with (
+            patch("ucode.cli.configure_bare_skills_mcp_command") as mock_conf,
+            patch("ucode.cli.list_configured_skills_command"),
+        ):
+            result = runner.invoke(app, ["skills", "list"])
+
+        assert result.exit_code == 0, result.output
+        mock_conf.assert_not_called()
+
+
 class TestSkillsAddCommand:
     """`ucode skills add` is the additive sibling of `configure skills`: `--mcp`
     unions schemas into the connection scope, the default mode downloads."""

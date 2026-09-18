@@ -2475,15 +2475,42 @@ def _skill_mcp_locations(state: dict) -> list[str]:
 
 
 def register_schemaless_skills_connection(
-    state: dict, workspace: str, profile: str | None, clients: list[str]
+    state: dict,
+    workspace: str,
+    profile: str | None,
+    clients: list[str],
+    *,
+    print_summary: bool = True,
 ) -> None:
     """Register/keep the skills MCP connection without changing its schema set.
 
     Download mode calls this after writing files: it preserves each client's prior
-    ``--mcp`` scope and otherwise registers the bare schema-less route (utility tools only)."""
+    ``--mcp`` scope and otherwise registers the bare schema-less route (utility tools only).
+    Downloads pass ``print_summary=False`` so the connection summary never buries any
+    per-skill download failures the download step already reported."""
     _update_skills_mcp(
-        state, workspace, profile, clients, _skill_locations_by_client_from_state(state)
+        state,
+        workspace,
+        profile,
+        clients,
+        _skill_locations_by_client_from_state(state),
+        print_summary=print_summary,
     )
+
+
+def configure_bare_skills_mcp_command() -> bool:
+    """Register the schema-less skills MCP connection for every configured agent.
+
+    The simple entrypoint behind a bare ``ug skills`` (replacing ``ug configure skills``
+    with no arguments). Re-registers on every run and prints the connection summary,
+    preserving any client's existing ``--mcp`` scope. Returns whether no skills
+    connection existed beforehand, so the caller can show first-run guidance only then.
+    """
+    state = load_state()
+    first_time = _skills_entry(list(state.get("mcp_servers") or [])) is None
+    workspace, profile, clients = setup_mcp_clients(state, "Skills")
+    register_schemaless_skills_connection(state, workspace, profile, clients)
+    return first_time
 
 
 def _union_locations(base: list[str], new: list[str]) -> list[str]:

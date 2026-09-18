@@ -732,7 +732,9 @@ class TestConfigureLocationSkillsDownloadCommand:
         monkeypatch.setattr(
             sd,
             "register_schemaless_skills_connection",
-            lambda state, ws, profile, clients: calls.update(register=(ws, profile, clients)),
+            lambda state, ws, profile, clients, print_summary=True: calls.update(
+                register=(ws, profile, clients), print_summary=print_summary
+            ),
         )
         return calls
 
@@ -743,6 +745,8 @@ class TestConfigureLocationSkillsDownloadCommand:
 
         assert calls["download"] == (WS, "token", ["a.b"], "/tmp/skills")
         assert calls["register"] == (WS, "profile", ["claude"])
+        # Downloads suppress the connection summary so it can't bury per-skill failures.
+        assert calls["print_summary"] is False
 
     def test_none_path_threads_through(self, monkeypatch):
         calls = self._stub(monkeypatch)
@@ -769,7 +773,9 @@ class TestConfigureSelectedSkillsDownloadCommand:
         monkeypatch.setattr(
             sd,
             "register_schemaless_skills_connection",
-            lambda state, ws, profile, clients: calls.update(register=(ws, profile, clients)),
+            lambda state, ws, profile, clients, print_summary=True: calls.update(
+                register=(ws, profile, clients), print_summary=print_summary
+            ),
         )
         return calls
 
@@ -781,6 +787,7 @@ class TestConfigureSelectedSkillsDownloadCommand:
 
         assert calls["download"] == (WS, "token", fqns, "/tmp/skills")
         assert calls["register"] == (WS, "profile", ["claude"])
+        assert calls["print_summary"] is False
 
     def test_none_path_threads_through(self, monkeypatch):
         calls = self._stub(monkeypatch)
@@ -903,7 +910,9 @@ class TestConfigureSkillsDownloadPickerCommand:
         monkeypatch.setattr(
             sd,
             "register_schemaless_skills_connection",
-            lambda state, ws, profile, clients: calls.update(register=(ws, profile, clients)),
+            lambda state, ws, profile, clients, print_summary=True: calls.update(
+                register=(ws, profile, clients), print_summary=print_summary
+            ),
         )
         return calls
 
@@ -914,6 +923,7 @@ class TestConfigureSkillsDownloadPickerCommand:
 
         assert calls["download"] == (WS, "token", ["main.default.triage"], str(tmp_path))
         assert calls["register"] == (WS, "profile", ["claude"])
+        assert calls["print_summary"] is False
 
     def test_cancel_downloads_nothing_and_skips_register(self, monkeypatch):
         calls = self._stub(monkeypatch, None)

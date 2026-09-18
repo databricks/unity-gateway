@@ -106,6 +106,7 @@ from ucode.mcp import (
     add_mcp_command,
     add_skills_command,
     available_mcp_clients,
+    configure_bare_skills_mcp_command,
     configure_mcp_command,
     configure_skills_mcp_command,
     configure_skills_mcp_picker_command,
@@ -1385,7 +1386,7 @@ app.add_typer(
     help="Inspect and manage the Databricks MCP servers ug configures for your coding agents.",
     rich_help_panel="Tools and Skills",
 )
-skill_app = typer.Typer(add_completion=False, no_args_is_help=True)
+skill_app = typer.Typer(add_completion=False, no_args_is_help=False)
 app.add_typer(
     skill_app,
     name="skills",
@@ -1570,6 +1571,32 @@ def _stdin_is_interactive() -> bool:
     import sys
 
     return sys.stdin.isatty()
+
+
+@skill_app.callback(invoke_without_command=True)
+def skills(ctx: typer.Context) -> None:
+    """Databricks Skills for your coding tools.
+
+    With no subcommand, registers the skills MCP connection (utility tools only) for
+    your configured agents, keeping any existing scope, then prints this help.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    try:
+        install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        first_time = configure_bare_skills_mcp_command()
+    except (RuntimeError, ValueError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    except KeyboardInterrupt:
+        print_err("Interrupted.")
+        raise typer.Exit(130) from None
+    if first_time:
+        print_note(
+            "To create a skill, start your agent (e.g. `ug claude`) and ask it to create a "
+            "Databricks skill — the skills MCP's tools author and register it in Unity Catalog."
+        )
+    console.print(ctx.get_help())
 
 
 @skill_app.command("list")
