@@ -772,8 +772,16 @@ def _managed_model_method(managed: dict, tool: str) -> str:
     """
     services = managed_static_models(managed, tool)
     if services:
-        count = len(services)
-        return f"{count} custom model service{'s' if count != 1 else ''}"
+        # Name the services in the admin's order (not sorted), capping a long tail so the line
+        # stays short.
+        seen: list[str] = []
+        for name in services:
+            if name not in seen:
+                seen.append(name)
+        limit = 3
+        if len(seen) <= limit:
+            return ", ".join(seen)
+        return ", ".join(seen[:limit]) + f" ... and {len(seen) - limit} more"
     provider = managed_provider_service(managed, tool)
     if provider:
         return f"automatic discovery within {provider}"
@@ -834,6 +842,13 @@ def _apply_managed_config(managed: dict, state: dict, tools: list[str]) -> tuple
                     f"Configured models for {TOOL_SPECS[tool_name]['display']}: "
                     f"{_managed_model_method(managed, tool_name)}"
                 )
+        # Keep the MCP and skill writes inside the batch: they write the same per-agent OS-managed
+        # files, so leaving them outside makes each write self-announce a "Settings configured for
+        # X" line that duplicates the phase's own "Configured MCP server(s)" / "Configured skills"
+        # report. Staying in the batch suppresses those and reuses the one password heads-up.
+        if configured_tools and not is_dry_run():
+            _configure_managed_mcp_servers(managed)
+            _configure_managed_skills(managed)
     if not configured_tools:
         # Name what was actually requested. For a single `--agent`, "none of the enabled agents"
         # would be misleading since only that one was tried.
@@ -845,9 +860,6 @@ def _apply_managed_config(managed: dict, state: dict, tools: list[str]) -> tuple
             "None of the coding agents enabled by your workspace configuration "
             "are available on this workspace."
         )
-    if not is_dry_run():
-        _configure_managed_mcp_servers(managed)
-        _configure_managed_skills(managed)
     return state, configured_tools
 
 
