@@ -30,23 +30,20 @@ class ConfiguredSkill:
 
 
 def _downloaded_skills() -> dict[str, tuple[str, str]]:
-    """Downloaded skills as ``fqn -> (bundle_name, "<catalog>.<schema>")``, one entry per fqn.
-
-    ``bundle_name`` is the skill's display name -- the ``name:`` an agent reads from SKILL.md
-    and the on-disk directory name -- which the securable leaf in the fqn need not match.
-    """
+    """Downloaded skills as ``fqn -> (securable_name, "<catalog>.<schema>")``, one entry per fqn."""
     by_fqn: dict[str, tuple[str, str]] = {}
     for record in list_downloaded():
-        fqn, bundle_name = record.get("fqn"), record.get("bundle_name")
-        if fqn and bundle_name:
-            by_fqn.setdefault(fqn, (bundle_name, fqn.rsplit(".", 1)[0]))
+        fqn = record.get("fqn")
+        if fqn:
+            location, securable = fqn.rsplit(".", 1)
+            by_fqn.setdefault(fqn, (securable, location))
     return by_fqn
 
 
 def _mcp_skills(state: dict) -> dict[str, tuple[str, str, frozenset[str]]]:
     """Skills reachable through the skills MCP connection, keyed by fully-qualified name.
 
-    Value is ``(bundle_name, "<catalog>.<schema>", agents)``. Each scoped schema is listed
+    Value is ``(securable_name, "<catalog>.<schema>", agents)``. Each scoped schema is listed
     once against its workspace; a schema whose listing fails contributes one placeholder
     entry so it still appears in the output.
     """
@@ -73,7 +70,7 @@ def _mcp_skills(state: dict) -> dict[str, tuple[str, str, frozenset[str]]]:
             by_fqn[f"{location}.*"] = (f"(skills in {location})", location, agents)
             continue
         for ref in refs:
-            by_fqn[ref.fqn] = (ref.bundle_name, f"{ref.catalog}.{ref.schema}", agents)
+            by_fqn[ref.fqn] = (ref.securable_name, f"{ref.catalog}.{ref.schema}", agents)
     return by_fqn
 
 

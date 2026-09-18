@@ -12,8 +12,12 @@ WS = "https://example.databricks.com"
 
 
 def ref(securable_name: str, *, catalog: str = "main", schema: str = "default") -> SkillRef:
+    # Bundle name deliberately differs from the securable: the NAME column shows the securable.
     return SkillRef(
-        catalog=catalog, schema=schema, securable_name=securable_name, bundle_name=securable_name
+        catalog=catalog,
+        schema=schema,
+        securable_name=securable_name,
+        bundle_name=f"{securable_name}-bundle",
     )
 
 
@@ -29,7 +33,7 @@ class TestListConfiguredSkills:
         return calls
 
     def _downloaded(self, monkeypatch, fqns):
-        records = [{"fqn": fqn, "bundle_name": fqn.rsplit(".", 1)[-1]} for fqn in fqns]
+        records = [{"fqn": fqn, "bundle_name": f"{fqn.rsplit('.', 1)[-1]}-bundle"} for fqn in fqns]
         monkeypatch.setattr(sl, "list_downloaded", lambda: records)
 
     def _mcp(self, monkeypatch, locations_by_client, by_schema):
