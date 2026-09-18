@@ -10,6 +10,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from ucode.codex_config import ModelVisibility
 from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.ui import print_warning
 
@@ -109,7 +110,7 @@ def build_codex_catalog(
         model.update(
             slug=name,
             display_name=name,
-            visibility="list",
+            visibility=ModelVisibility.LIST,
             supported_in_api=True,
             priority=len(models),
         )
@@ -120,7 +121,7 @@ def build_codex_catalog(
         native_slug = codex_model_id(model["slug"])
         if native_slug != model["slug"] and native_slug not in requested:
             alias = copy.deepcopy(model)
-            alias.update(slug=native_slug, visibility="hide")
+            alias.update(slug=native_slug, visibility=ModelVisibility.HIDE)
             aliases.setdefault(native_slug, alias)
     models.extend(aliases.values())
     return {"models": models}
