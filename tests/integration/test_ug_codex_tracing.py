@@ -61,16 +61,34 @@ def test_ug_codex_exports_trace_to_configured_table(live_session, workspace, tmp
     assert table, "Pass --trace-table for the configured tracing table"
     warehouse_id = os.environ.get("UG_INTEGRATION_WAREHOUSE_ID", "").strip()
     warehouse_id = warehouse_id or resolve_warehouse_id(workspace, session.env["DATABRICKS_BEARER"])
+    bearer = session.env["DATABRICKS_BEARER"]
+    marker_query = (
+        f"SELECT COUNT(*) FROM {table} "
+        "WHERE time > current_timestamp() - INTERVAL 10 MINUTES "
+        "AND variant_get(attributes, '$[\"ug_integration_marker\"]', 'STRING') = :marker"
+    )
     count = query_count(
         workspace,
-        session.env["DATABRICKS_BEARER"],
+        bearer,
         warehouse_id,
-        (
-            f"SELECT COUNT(*) FROM {table} "
-            "WHERE time > current_timestamp() - INTERVAL 10 MINUTES "
-            "AND variant_get(attributes, '$[\"ug_integration_marker\"]', 'STRING') = :marker"
-        ),
+        marker_query,
         [{"name": "marker", "value": marker, "type": "STRING"}],
     )
-    session.record("trace-query.json", {"marker": marker, "table": table, "count": count})
+    # The span must also carry Codex's `model` attribute matching the model that ran,
+    # so the trace is attributable to a specific model and not just to this test run.
+    model_count = query_count(
+        workspace,
+        bearer,
+        warehouse_id,
+        marker_query + " AND variant_get(attributes, '$[\"model\"]', 'STRING') = :model",
+        [
+            {"name": "marker", "value": marker, "type": "STRING"},
+            {"name": "model", "value": CODEX_TEST_MODEL, "type": "STRING"},
+        ],
+    )
+    session.record(
+        "trace-query.json",
+        {"marker": marker, "table": table, "count": count, "model_count": model_count},
+    )
     assert count > 0
+    assert model_count > 0, f"Codex span for {marker} lacked model={CODEX_TEST_MODEL}"

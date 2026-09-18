@@ -188,7 +188,7 @@ jobs:
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: ${{ inputs.suite == 'tui' && 'live and tui' || 'live' }} and ${{ matrix.agent }}
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}
-      UG_INTEGRATION_TRACE_TABLE: main.alkis_tracing_test.unity_gateway_otel_spans
+      UG_INTEGRATION_TRACE_TABLE: main.aigw_tracing.unity_gateway_otel_spans
     steps: *live-steps
 
   managed:

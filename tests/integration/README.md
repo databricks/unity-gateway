@@ -163,8 +163,10 @@ configuration, the journey injects only a tracing-enabled CodingAgentConfig inpu
 the suite's `managed_fixture` mechanism; Codex, inference, OTLP export, and table verification
 remain real. It adds the prompt's UUID as the trace-safe `ug_integration_marker` span
 attribute, waits 30 seconds, and queries
-`main.alkis_tracing_test.unity_gateway_otel_spans` through an existing SQL warehouse in the
-workspace.
+`main.aigw_tracing.unity_gateway_otel_spans` through an existing SQL warehouse in the
+workspace. It asserts both that a span with the marker arrived and that the same span
+carries the `model` attribute for the model that ran, so the trace is attributable to a
+specific model.
 
 There are **43 live cases** (including 6 TUI journeys) and **5 installation
 checks** with both agents. A separate **4 managed-workspace cases** (one per agent,
