@@ -10,6 +10,7 @@ import ucode.agents.claude as claude
 import ucode.agents.opencode as opencode
 import ucode.config_io as config_io
 import ucode.state as state_mod
+from ucode.managed_config import normalize_managed_config
 from ucode.managed_resolve import (
     managed_default_model,
     managed_enabled_tools,
@@ -35,7 +36,7 @@ MANAGED = {
         "claude": {
             "model_config": {
                 "default_model": "system.ai.claude-opus-5",
-                "models": {
+                "default_models_by_model_family": {
                     "default_opus_model": "system.ai.claude-opus-5",
                     "default_sonnet_model": "system.ai.claude-sonnet-4-6",
                     "default_haiku_model": "system.ai.claude-haiku-4-5",
@@ -110,7 +111,11 @@ class TestClaudeModels:
         # sanction. Nothing is written for it, so the agent uses its own default.
         managed = {
             "enabled_agents": {
-                "claude": {"model_config": {"models": {"default_opus_model": "managed-opus"}}}
+                "claude": {
+                    "model_config": {
+                        "default_models_by_model_family": {"default_opus_model": "managed-opus"}
+                    }
+                }
             }
         }
         state = _state(claude_models={"opus": "local-opus", "fable": "local-fable"})
@@ -124,7 +129,7 @@ class TestClaudeModels:
                 "claude": {
                     "model_config": {
                         "default_model": "managed-default",
-                        "models": {"default_opus_model": "managed-opus"},
+                        "default_models_by_model_family": {"default_opus_model": "managed-opus"},
                     }
                 }
             }
@@ -136,6 +141,32 @@ class TestClaudeModels:
         # No override means resolve_state never touches the key, so the developer's own models stand.
         state = _state(claude_models={"sonnet": "local-sonnet"})
         assert resolve_state({}, state, "claude")["claude_models"] == {"sonnet": "local-sonnet"}
+
+    def test_family_defaults_propagate_through_the_real_normalize_path(self):
+        managed = normalize_managed_config(
+            {
+                "spec_version": 1,
+                "default_agent": "CODING_AGENT_CLAUDE_CODE",
+                "enabled_agents": [
+                    {
+                        "agent": "CODING_AGENT_CLAUDE_CODE",
+                        "config": {
+                            "models": {"model_services": ["system.ai.claude-opus-4-8"]},
+                            "default_models": {
+                                "default_opus_model": "system.ai.claude-opus-4-8",
+                                "default_sonnet_model": "system.ai.claude-sonnet-4-6",
+                                "default_haiku_model": "system.ai.claude-haiku-4-5",
+                            },
+                        },
+                    }
+                ],
+            }
+        )
+        assert resolve_state(managed, _state(), "claude")["claude_models"] == {
+            "opus": "system.ai.claude-opus-4-8",
+            "sonnet": "system.ai.claude-sonnet-4-6",
+            "haiku": "system.ai.claude-haiku-4-5",
+        }
 
 
 class TestListModels:

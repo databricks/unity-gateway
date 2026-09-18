@@ -220,6 +220,15 @@ class AgentTerminal(TerminalProcess):
             if "Hooks need review" in text:
                 self.choose("Hooks need review", "Trust all and continue")
                 continue
+            if (
+                "Update available" in text
+                and "Press enter to continue" in text
+                and "update-notice" not in handled
+            ):
+                self.send("\x1b[B", "move selection off Update now to Skip")
+                self.send("\r", "continue with Skip selected")
+                handled.add("update-notice")
+                continue
             # These are interactions with ordinary UI choices, not pre-written
             # onboarding state. Only the test's disposable project is trusted.
             dialogs = [

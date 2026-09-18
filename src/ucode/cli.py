@@ -13,7 +13,8 @@ from typing import Annotated, Any
 
 import typer
 from rich.panel import Panel
-from typer.core import TyperCommand
+from typer import _click
+from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
 from ucode import custom_oauth
 from ucode.agents import (
@@ -119,9 +120,10 @@ from ucode.skills_download import (
     configure_location_skills_download_command,
     configure_selected_skills_download_command,
     configure_skills_download_picker_command,
-    download_managed_skills_on_launch,
+    reconcile_managed_skills,
     remove_downloaded_skills_command,
 )
+from ucode.skills_list import list_configured_skills_command
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
 from ucode.state import (
@@ -833,6 +835,7 @@ def configure_workspace_command(
             )
         if not is_dry_run():
             _configure_managed_mcp_servers(managed)
+            _configure_managed_skills(managed)
         _summarize_managed_config(managed, state["workspace"])
         return 0
 
@@ -882,10 +885,11 @@ def configure_workspace_command(
     else:
         state = configure_selected_tools(state, picked)
 
-    # This workspace has no managed config, so unregister any MCP servers a prior managed
-    # workspace registered — otherwise switching workspaces leaves the old registry behind.
+    # No managed config here: undo what a prior managed workspace left behind (its MCP servers and
+    # skills), so switching workspaces doesn't strand the old registry and skills.
     if not is_dry_run():
         _configure_managed_mcp_servers(None)
+        _configure_managed_skills(None)
 
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
@@ -957,6 +961,11 @@ def status() -> int:
                 and server.get("name")
                 and server.get("kind") != SKILLS_MCP_KIND
             }
+            # Managed servers ug delivers through an OS-managed file live in that file, not state.
+            if tool == "claude":
+                mcp_names |= claude_agent.read_managed_mcp_urls().keys()
+            elif tool == "codex":
+                mcp_names |= codex_agent.read_managed_mcp_urls().keys()
             print_kv("MCP servers", str(len(mcp_names)))
         print_kv("Config file", str(config_path) if config_path.exists() else "missing")
         if tool == "claude":
@@ -1055,21 +1064,114 @@ def revert() -> int:
 # ---------------------------------------------------------------------------
 
 
+_HELP_COMMAND_ORDER = (
+    "claude",
+    "codex",
+    "copilot",
+    "cursor",
+    "gemini",
+    "opencode",
+    "pi",
+    "configure",
+    "mcp",
+    "skills",
+    "export",
+    "revert",
+    "status",
+    "upgrade",
+    "doctor",
+    "usage",
+)
+
+
+class _HelpOrderedGroup(TyperGroup):
+    """Keep top-level help organized across commands and nested Typer apps."""
+
+    def list_commands(self, ctx: _click.Context) -> list[str]:
+        commands = super().list_commands(ctx)
+        order = {name: index for index, name in enumerate(_HELP_COMMAND_ORDER)}
+        return sorted(commands, key=lambda name: order.get(name, len(order)))
+
+    def format_options(self, ctx: _click.Context, formatter: _click.HelpFormatter) -> None:
+        self.format_commands(ctx, formatter)
+        options = []
+        for param in self.get_params(ctx):
+            record = param.get_help_record(ctx)
+            if record is not None and param.param_type_name == "option":
+                options.append(record)
+        if options:
+            with formatter.section("Global Options"):
+                formatter.write_dl(options)
+
+    def format_help(self, ctx: _click.Context, formatter: _click.HelpFormatter) -> None:
+        if not HAS_RICH or self.rich_markup_mode is None:
+            return super().format_help(ctx, formatter)
+
+        from typer import rich_utils
+
+        options = [
+            param
+            for param in self.get_params(ctx)
+            if isinstance(param, TyperOption) and not param.hidden
+        ]
+        for option in options:
+            option.hidden = True
+        try:
+            rich_utils.rich_format_help(obj=self, ctx=ctx, markup_mode=self.rich_markup_mode)
+        finally:
+            for option in options:
+                option.hidden = False
+        option_rows: list[_click.Command] = []
+        for option in options:
+            signature = ", ".join(option.opts)
+            if option.secondary_opts:
+                signature += f" / {', '.join(option.secondary_opts)}"
+            metavar = option.make_metavar(ctx=ctx)
+            if metavar and "boolean" not in metavar.lower():
+                signature += f" {metavar}"
+            help_record = option.get_help_record(ctx)
+            option_rows.append(
+                TyperCommand(
+                    name=signature,
+                    help=help_record[1] if help_record is not None else "",
+                )
+            )
+        rich_utils._print_commands_panel(
+            name="Global Options",
+            commands=option_rows,
+            markup_mode=self.rich_markup_mode,
+            console=rich_utils._get_rich_console(),
+            cmd_len=max(len(row.name or "") for row in option_rows),
+        )
+
+
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=False,
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    cls=_HelpOrderedGroup,
 )
 configure_app = typer.Typer(add_completion=False, no_args_is_help=False)
-app.add_typer(configure_app, name="configure", help="Configure workspace and tool settings.")
+app.add_typer(
+    configure_app,
+    name="configure",
+    help="Configure workspace and tool settings.",
+    rich_help_panel="Setup",
+)
 mcp_app = typer.Typer(add_completion=False, no_args_is_help=True)
 app.add_typer(
     mcp_app,
     name="mcp",
     help="Inspect and manage the Databricks MCP servers ug configures for your coding agents.",
+    rich_help_panel="Tools and Skills",
 )
 skill_app = typer.Typer(add_completion=False, no_args_is_help=True)
-app.add_typer(skill_app, name="skills", help="Databricks Skills for your coding tools.")
+app.add_typer(
+    skill_app,
+    name="skills",
+    help="Databricks Skills for your coding tools.",
+    rich_help_panel="Tools and Skills",
+)
 
 
 def _version_callback(value: bool) -> None:
@@ -1248,6 +1350,20 @@ def _stdin_is_interactive() -> bool:
     import sys
 
     return sys.stdin.isatty()
+
+
+@skill_app.command("list")
+def skills_list() -> None:
+    """List the skills configured for your coding tools and how each was configured."""
+    try:
+        install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        list_configured_skills_command()
+    except (RuntimeError, ValueError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    except KeyboardInterrupt:
+        print_err("Interrupted.")
+        raise typer.Exit(130) from None
 
 
 @skill_app.command("add")
@@ -1980,7 +2096,7 @@ def _fetch_budget_recommendation(state: dict, managed: dict | None) -> dict | No
             # A token that lapsed since the config refresh — or a Databricks CLI that isn't
             # installed or reachable — must not block the launch; the config's default_model stands.
             reason = str(exc)
-    if reason is not None:
+    if reason is not None and not reason.startswith("HTTP 404"):
         print_warning(
             f"Could not check your budget ({reason}); "
             "using the default model from your workspace's config."
@@ -2032,35 +2148,24 @@ def _configure_managed_mcp_servers(managed: dict | None) -> None:
         print_note(f"Registered workspace MCP server(s): {names}")
 
 
-def _managed_skill_locations(managed: dict) -> list[str]:
-    """The ``<catalog>.<schema>`` skill locations the admin published, or ``[]``."""
-    return [
-        loc
-        for loc in ((managed.get("skills") or {}).get("names") or [])
-        if isinstance(loc, str) and loc
-    ]
+def _configure_managed_skills(managed: dict | None) -> None:
+    """Download and reconcile the managed config's skills for every agent's ``/skills`` picker.
 
-
-def _download_managed_skills(managed: dict, state: dict) -> None:
-    """Download the admin-published skill schemas to disk (user scope).
-
-    Managed skills are delivered by download only. The agent's ``/skills`` picker reads skill bundles
-    from ``~/.claude/skills`` / ``~/.agents/skills`` on disk, so without this download a
-    workspace-published skill never shows up in ``/skills``. Skills already on disk are left
-    untouched, so a steady-state launch only lists each schema and writes nothing. Best-effort: a
-    failure here never blocks the launch.
+    Mirrors :func:`_configure_managed_mcp_servers`: runs during ``ug configure`` after the enabled
+    agents are configured, so a workspace-published skill reaches ``.claude/skills`` and
+    ``.agents/skills`` (both agents) without the developer downloading it. ``managed`` is None when
+    the current workspace has no config: the reconcile then removes any managed skills a prior
+    workspace left behind. Best-effort: a failure warns and leaves the rest of configure intact.
     """
-    locations = _managed_skill_locations(managed)
-    if not locations:
-        return
     try:
-        token = get_databricks_token(state["workspace"], state.get("profile"))
-        written = download_managed_skills_on_launch(state["workspace"], token, locations)
-    except RuntimeError as exc:
-        print_warning(f"Could not download your workspace's skills: {exc}")
+        written, removed = reconcile_managed_skills(managed or {})
+    except (RuntimeError, OSError) as exc:
+        print_warning(f"Could not sync your workspace's skills: {exc}")
         return
     if written:
-        print_note(f"Downloaded workspace skill(s) to disk: {', '.join(written)}")
+        print_note(f"Downloaded workspace skill(s): {', '.join(written)}")
+    if removed:
+        print_note(f"Removed workspace skill(s) no longer configured: {', '.join(removed)}")
 
 
 def _child_owns_stdout(tool: str, tool_args: list[str]) -> bool:
@@ -2399,11 +2504,8 @@ def _launch_tool(
             )
         if recommendation is not None:
             _print_budget_panel(recommendation, tool, managed)
-        # Download the managed config's skills so they reach the agent's `/skills` picker. MCP
-        # servers are registered at `ug configure`, not here. Skipped on --dry-run, which writes
-        # nothing.
-        if managed is not None and not is_dry_run():
-            _download_managed_skills(managed, state)
+        # The managed config's MCP servers and skills are both applied at `ug configure`, not here,
+        # so the launch hot path makes no per-launch discovery calls for them.
         if tool == "claude":
             if provider:
                 state["_claude_launch_provider"] = provider
@@ -2511,12 +2613,7 @@ def default(
     skip_preflight: SkipPreflightOption = False,
     workspace: WorkspaceOption = None,
 ) -> None:
-    """Configure and launch coding agents through Databricks AI Gateway.
-
-    The primary command is `ug`; `ucode` remains supported as an alias.
-
-    With no subcommand, launches the agent your workspace's managed config selects.
-    """
+    """Configure and launch coding agents through Databricks AI Gateway."""
     if ctx.invoked_subcommand is not None:
         return
     set_dry_run(dry_run)
@@ -2600,6 +2697,7 @@ def _print_no_managed_config_guidance() -> None:
     "codex",
     cls=_PromptAwareCommand,
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel="Launch",
 )
 def codex_cmd(
     ctx: typer.Context,
@@ -2689,6 +2787,7 @@ def codex_cmd(
     "claude",
     cls=_PromptAwareCommand,
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel="Launch",
 )
 def claude_cmd(
     ctx: typer.Context,
@@ -2779,7 +2878,7 @@ def claude_cmd(
         claude_agent.disable_smart_routing(load_state())
         print_success("Claude Code smart routing disabled; ug routing hooks removed")
         return
-    if enable_model_discovery or (model_location is not None and provider is None):
+    if enable_model_discovery or model_location is not None or provider is not None:
         os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
     with _smart_routing_v2_flag(enable_smart_routing_flag):
         with _disable_smart_routing_for_subcommand("claude", ctx):
@@ -2796,7 +2895,7 @@ def claude_cmd(
             )
 
 
-@app.command("claude-desktop")
+@app.command("claude-desktop", rich_help_panel="Launch")
 def claude_desktop_cmd(
     provider: Annotated[
         str,
@@ -2856,7 +2955,11 @@ def claude_desktop_cmd(
         raise typer.Exit(130) from None
 
 
-@app.command("gemini", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+@app.command(
+    "gemini",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel="Launch",
+)
 def gemini_cmd(
     ctx: typer.Context,
     provider: Annotated[
@@ -2883,7 +2986,9 @@ def gemini_cmd(
 
 
 @app.command(
-    "opencode", context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+    "opencode",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel="Launch",
 )
 def opencode_cmd(
     ctx: typer.Context,
@@ -2893,7 +2998,11 @@ def opencode_cmd(
     _launch_tool("opencode", ctx, skip_preflight=skip_preflight)
 
 
-@app.command("copilot", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+@app.command(
+    "copilot",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel="Launch",
+)
 def copilot_cmd(
     ctx: typer.Context,
     skip_preflight: SkipPreflightOption = False,
@@ -2902,7 +3011,11 @@ def copilot_cmd(
     _launch_tool("copilot", ctx, skip_preflight=skip_preflight)
 
 
-@app.command("pi", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+@app.command(
+    "pi",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel="Launch",
+)
 def pi_cmd(
     ctx: typer.Context,
     skip_preflight: SkipPreflightOption = False,
@@ -2911,7 +3024,11 @@ def pi_cmd(
     _launch_tool("pi", ctx, skip_preflight=skip_preflight)
 
 
-@app.command("cursor", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+@app.command(
+    "cursor",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel="Launch",
+)
 def cursor_cmd(ctx: typer.Context) -> None:
     """Launch Cursor Agent.
 
@@ -3335,7 +3452,7 @@ def configure_skills(
         raise typer.Exit(130) from None
 
 
-@app.command("export")
+@app.command("export", rich_help_panel="Manage")
 def export_cmd(
     file_path: Annotated[
         str | None,
@@ -3363,7 +3480,7 @@ def export_cmd(
         raise typer.Exit(1) from None
 
 
-@app.command("status")
+@app.command("status", rich_help_panel="Manage")
 def status_cmd() -> None:
     """Show current workspace, tool configs, and saved model selections."""
     try:
@@ -3373,7 +3490,7 @@ def status_cmd() -> None:
         raise typer.Exit(1) from None
 
 
-@app.command("revert")
+@app.command("revert", rich_help_panel="Manage")
 def revert_cmd() -> None:
     """Clear ug state and restore backed-up agent config files."""
     try:
@@ -3383,7 +3500,7 @@ def revert_cmd() -> None:
         raise typer.Exit(1) from None
 
 
-@app.command("doctor")
+@app.command("doctor", rich_help_panel="Manage")
 def doctor_cmd() -> None:
     """Diagnose the local ug setup and offer to fix any problems found."""
     from ucode.doctor import doctor
@@ -3395,7 +3512,7 @@ def doctor_cmd() -> None:
         raise typer.Exit(1) from None
 
 
-@app.command("usage")
+@app.command("usage", rich_help_panel="Usage")
 def usage_cmd() -> None:
     """Show AI Gateway dollars spent and total budget."""
     try:
@@ -3406,7 +3523,7 @@ def usage_cmd() -> None:
         raise typer.Exit(1) from None
 
 
-@app.command("upgrade")
+@app.command("upgrade", rich_help_panel="Manage")
 def upgrade_cmd() -> None:
     """Upgrade ug to the latest version from GitHub."""
     legacy_distribution = "ucode"

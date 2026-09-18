@@ -42,7 +42,7 @@ jobs:
           - group: claude
             name: Agent launch tests · Claude
             keyword: TestClaudeLaunch or TestConfigureSubset or (TestModelProviderLaunch and not codex)
-            package: '@anthropic-ai/claude-code'
+            package: '@anthropic-ai/claude-code@2.1.274'
           - group: codex
             name: Agent launch tests · Codex
             keyword: TestCodexLaunch or (TestModelProviderLaunch and codex)

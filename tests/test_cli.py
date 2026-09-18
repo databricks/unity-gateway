@@ -93,6 +93,46 @@ class TestHelp:
         for tool in TOOLS:
             assert tool in result.output
 
+    def test_help_groups_commands_by_workflow(self):
+        result = runner.invoke(app, ["--help"])
+        output = _strip_ansi(result.output)
+
+        assert result.exit_code == 0
+        panels = {
+            name: output.index(f"╭─ {name} ")
+            for name in ("Launch", "Setup", "Tools and Skills", "Manage", "Usage")
+        }
+        assert list(panels.values()) == sorted(panels.values())
+        global_options = output.index("╭─ Global Options ")
+        assert panels["Usage"] < global_options
+        global_options_section = output[global_options:]
+        assert "--version, -V" in global_options_section
+        assert "--workspace <str>" in global_options_section
+
+        sections = {
+            "Launch": output[panels["Launch"] : panels["Setup"]],
+            "Setup": output[panels["Setup"] : panels["Tools and Skills"]],
+            "Tools and Skills": output[panels["Tools and Skills"] : panels["Manage"]],
+            "Manage": output[panels["Manage"] : panels["Usage"]],
+            "Usage": output[panels["Usage"] : global_options],
+        }
+        for command in ("claude", "codex", "copilot", "cursor", "gemini", "opencode", "pi"):
+            assert command in sections["Launch"]
+        assert "configure" in sections["Setup"]
+        for command in ("mcp", "skills"):
+            assert command in sections["Tools and Skills"]
+        for command in ("export", "revert", "status", "upgrade", "doctor"):
+            assert command in sections["Manage"]
+        assert "usage" in sections["Usage"]
+        for command in (
+            "mcp-proxy",
+            "auth-token",
+            "otel-headers",
+            "codex-router-hook",
+            "claude-router-hook",
+        ):
+            assert command not in output
+
     def test_managed_authoring_commands_are_removed(self):
         # Authoring moved to the AI Gateway API/UI, so `ug setup` and `ug publish` no longer exist.
         assert runner.invoke(app, ["setup"]).exit_code != 0
@@ -102,14 +142,15 @@ class TestHelp:
         assert runner.invoke(app, ["export", "--help"]).exit_code == 0
 
     @pytest.mark.parametrize("prog_name", ["ug", "ucode"])
-    def test_help_uses_invoked_name_and_names_ucode_as_an_alias(self, prog_name):
+    def test_help_uses_invoked_name_for_alias(self, prog_name):
         result = runner.invoke(app, ["--help"], prog_name=prog_name)
         output = _strip_ansi(result.output)
 
         assert result.exit_code == 0
         assert f"Usage: {prog_name}" in output
-        assert "primary command is `ug`" in output
-        assert "`ucode` remains supported as an alias" in output
+        assert "primary command is `ug`" not in output
+        assert "`ucode` remains supported as an alias" not in output
+        assert "With no subcommand" not in output
 
     @pytest.mark.parametrize("tool", TOOLS)
     def test_subcommand_help(self, tool):
@@ -648,6 +689,15 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.kwargs["parent_schema"] == "main.default"
+        assert mock_launch.call_args.args[1].args == []
+        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+
+    def test_claude_provider_enables_model_discovery(self):
+        with patch("ucode.cli._launch_tool") as mock_launch:
+            result = runner.invoke(app, ["claude", "--provider", "main.default.anthropic"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_launch.call_args.kwargs["provider"] == "main.default.anthropic"
         assert mock_launch.call_args.args[1].args == []
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
@@ -2013,13 +2063,9 @@ class TestSkillsRemoveCommand:
         remove.assert_not_called()
 
 
-class TestManagedSkillsOnLaunch:
-    """Managed skills are delivered by download only: the launch path downloads them and never
-    registers them on the skills MCP connection (only a developer's own `skills add --mcp` schemas
-    live there)."""
-
-    def _state(self):
-        return {"workspace": "https://example.databricks.com", "profile": "prod"}
+class TestManagedSkills:
+    """Managed skills are downloaded at `ug configure` (alongside MCP registration), not on the
+    launch hot path, so `ug <agent>` makes no per-launch skill-discovery calls."""
 
     def _launch(self, monkeypatch, *, managed):
         state = dict(MINIMAL_STATE)
@@ -2035,53 +2081,50 @@ class TestManagedSkillsOnLaunch:
             patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
             patch("ucode.cli.launch_agent"),
             patch(
-                "ucode.cli.download_managed_skills_on_launch", return_value=["main.default"]
+                "ucode.cli.reconcile_managed_skills", return_value=(["pr-review"], [])
             ) as mock_dl,
         ):
             result = runner.invoke(app, ["claude"])
         return result, state, mock_dl
 
-    def test_launch_downloads_managed_skills_and_skips_mcp_registration(self, monkeypatch):
-        from ucode import cli
-
+    def test_launch_does_not_reconcile_managed_skills(self, monkeypatch):
+        # Skills are reconciled at `ug configure`; the launch path must not re-fetch them, so a
+        # managed config's `names` never triggers per-launch get_skill calls.
         managed = {
             "enabled_agents": {"claude": {}},
-            "skills": {"names": ["main.default", "ml.prod"]},
+            "skills": {"names": ["main.default.pr-review", "ml.prod.test-writer"]},
         }
-        result, state, mock_dl = self._launch(monkeypatch, managed=managed)
+        result, _state, mock_dl = self._launch(monkeypatch, managed=managed)
 
         assert result.exit_code == 0, result.output
-        mock_dl.assert_called_once_with(
-            "https://example.databricks.com", "tok", ["main.default", "ml.prod"]
-        )
-        skills = [
-            s for s in (state.get("mcp_servers") or []) if s.get("kind") == cli.SKILLS_MCP_KIND
-        ]
-        assert skills == []
-
-    def test_no_managed_skills_skips_the_download(self):
-        with (
-            patch("ucode.cli.get_databricks_token") as mock_token,
-            patch("ucode.cli.download_managed_skills_on_launch") as mock_dl,
-        ):
-            from ucode import cli
-
-            cli._download_managed_skills({}, self._state())
-
-        mock_token.assert_not_called()
         mock_dl.assert_not_called()
 
-    def test_download_failure_never_blocks_launch(self):
-        with (
-            patch("ucode.cli.get_databricks_token", side_effect=RuntimeError("no auth")),
-            patch("ucode.cli.download_managed_skills_on_launch") as mock_dl,
-        ):
+    def test_configure_passes_managed_to_reconcile(self):
+        with patch("ucode.cli.reconcile_managed_skills", return_value=([], [])) as mock_dl:
             from ucode import cli
 
-            # Must not raise.
-            cli._download_managed_skills({"skills": {"names": ["main.default"]}}, self._state())
+            cli._configure_managed_skills({"skills": {"names": ["a.b.c"]}})
 
-        mock_dl.assert_not_called()
+        mock_dl.assert_called_once_with({"skills": {"names": ["a.b.c"]}})
+
+    def test_no_managed_config_reconciles_empty(self):
+        # No managed config still reconciles, so a prior workspace's managed skills are removed.
+        with patch("ucode.cli.reconcile_managed_skills", return_value=([], [])) as mock_dl:
+            from ucode import cli
+
+            cli._configure_managed_skills(None)
+
+        mock_dl.assert_called_once_with({})
+
+    def test_failure_never_blocks_configure(self):
+        # A RuntimeError (auth/discovery) or OSError (disk) must not abort configure.
+        for exc in (RuntimeError("no auth"), OSError("read-only file system")):
+            with patch("ucode.cli.reconcile_managed_skills", side_effect=exc):
+                from ucode import cli
+
+                cli._configure_managed_skills(
+                    {"skills": {"unity_catalog_location": "main.default"}}
+                )
 
 
 class TestStatusSkillsSection:
@@ -2965,9 +3008,15 @@ class TestConfigureAgentsSelection:
             "_configure_managed_mcp_servers",
             lambda m: order.append("mcp") or None,
         )
+        monkeypatch.setattr(
+            cli_mod,
+            "_configure_managed_skills",
+            lambda m: order.append("skills") or None,
+        )
 
         assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
-        assert order == ["configure:claude", "configure:codex", "mcp"]
+        # Skills reconcile runs at configure too, after the MCP registration.
+        assert order == ["configure:claude", "configure:codex", "mcp", "skills"]
 
     def test_managed_configure_accumulates_available_tools_for_all_agents(self, monkeypatch):
         # Regression: each agent is configured from a fresh copy of `state`, and
@@ -4330,7 +4379,7 @@ class TestBudgetRecommendationAtLaunch:
             "enabled_agents": {
                 "claude": {
                     "model_config": {
-                        "models": {
+                        "default_models_by_model_family": {
                             "default_sonnet_model": "system.ai.claude-sonnet-4-6",
                         }
                     }
@@ -4377,6 +4426,20 @@ class TestBudgetRecommendationAtLaunch:
         )
         assert result.exit_code == 0, result.output
         assert "Could not check your budget" in result.output
+
+    def test_a_404_is_silently_ignored(self, monkeypatch):
+        result, _calls, _cfg = self._launch(
+            monkeypatch,
+            managed={"enabled_agents": {"claude": {}}},
+            recommendation=None,
+            reason=(
+                'HTTP 404 Not Found: {"error_code":"FEATURE_DISABLED",'
+                '"message":"Coding agent config recommendation is not enabled."}'
+            ),
+        )
+        assert result.exit_code == 0, result.output
+        assert "Could not check your budget" not in result.output
+        assert "FEATURE_DISABLED" not in result.output
 
     def test_a_token_failure_does_not_block_the_launch(self, monkeypatch):
         # Auth can lapse between the config refresh and the budget check.

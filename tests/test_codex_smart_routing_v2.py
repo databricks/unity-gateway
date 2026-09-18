@@ -379,7 +379,7 @@ class TestLaunchCodex:
 class TestCustomCatalogModels:
     def _catalog(self, path, slugs):
         path.write_text(
-            json.dumps({"models": [{"slug": slug} for slug in slugs]}),
+            json.dumps({"models": [{"slug": slug, "visibility": "list"} for slug in slugs]}),
             encoding="utf-8",
         )
         return path
@@ -434,6 +434,14 @@ class TestCustomCatalogModels:
 
         assert codex_config.custom_catalog_models() == expected
 
+    def test_catalog_path_uses_config_precedence(self, tmp_path, monkeypatch):
+        managed = self._catalog(tmp_path / "managed.json", ["gpt-managed"])
+        cli = self._catalog(tmp_path / "cli.json", ["gpt-cli"])
+        default = self._catalog(tmp_path / "default.json", ["gpt-default"])
+        self._settings(tmp_path, monkeypatch, managed=managed, cli=cli, default=default)
+
+        assert codex_config.custom_catalog_path() == managed
+
     def test_unreadable_catalog_warns_and_falls_back(self, tmp_path, monkeypatch):
         self._settings(tmp_path, monkeypatch, cli=tmp_path / "missing.json")
         warnings = []
@@ -442,6 +450,31 @@ class TestCustomCatalogModels:
         assert codex_config.custom_catalog_models() is None
         assert len(warnings) == 1
         assert "falling back to the cached model services" in warnings[0]
+
+    def _catalog_with_visibility(self, path, rows):
+        path.write_text(
+            json.dumps({"models": [{"slug": slug, "visibility": vis} for slug, vis in rows]}),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_only_visible_models_offered_to_router(self, tmp_path, monkeypatch):
+        catalog = self._catalog_with_visibility(
+            tmp_path / "cli.json",
+            [
+                ("system.ai.glm-5-3", "list"),
+                ("glm-5-3", "hide"),
+                ("system.ai.gpt-5-6-luna", "list"),
+                ("gpt-5.6-luna", "hide"),
+                ("gpt-5-6-luna", "hide"),
+            ],
+        )
+        self._settings(tmp_path, monkeypatch, cli=catalog)
+
+        assert codex_config.custom_catalog_models() == [
+            "system.ai.glm-5-3",
+            "system.ai.gpt-5-6-luna",
+        ]
 
     def test_launch_prefers_catalog_over_cached_models(self, tmp_path, monkeypatch, capsys):
         self._settings(
@@ -488,6 +521,8 @@ class TestCustomCatalogModels:
             )
 
         assert interposer_kwargs["available_models"] == ["gpt-6-astra", "gpt-6-b"]
+        catalog_override = next(arg for arg in launched[0] if arg.startswith("model_catalog_json="))
+        assert catalog_override == f'model_catalog_json="{tmp_path / "cli.json"}"'
         hook_override = next(arg for arg in launched[0] if arg.startswith("hooks.PreToolUse="))
         assert "--model gpt-6-astra" in hook_override
         assert "--model gpt-6-b" in hook_override

@@ -244,6 +244,37 @@ class TestCodexWriteConfig:
         doc = read_toml_safe(config_path)
         assert "model" not in doc
 
+    def test_smart_routing_prunes_stale_catalog_reference(self, tmp_path, monkeypatch):
+        config_path = tmp_path / ".codex" / "ucode.config.toml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text('model_catalog_json = "/tmp/stale.json"\n', encoding="utf-8")
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        # Smart routing selects dynamically, so a leftover static catalog is not kept.
+        assert "model_catalog_json" not in read_toml_safe(config_path)
+
+    def test_unmanaged_configure_prunes_catalog_reference(self, tmp_path, monkeypatch):
+        config_path = tmp_path / ".codex" / "ucode.config.toml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text('model_catalog_json = "/tmp/prior.json"\n', encoding="utf-8")
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        # An unmanaged configure builds no catalog, so a prior config's catalog reference is dropped.
+        assert "model_catalog_json" not in read_toml_safe(config_path)
+
     def test_provider_drops_stale_model_without_persisting_header(self, tmp_path, monkeypatch):
         config_path = tmp_path / ".codex" / "ucode.config.toml"
         backup_path = tmp_path / "codex-ucode-config.backup.toml"
@@ -1383,3 +1414,128 @@ class TestWriteConfigBackup:
         assert changed is True
         assert "model" not in read_toml_safe(tmp_path / "ucode.config.toml")
         assert not (tmp_path / "backup.toml").exists()
+
+
+class TestCodexManagedMcpUsesManagedFile:
+    def test_true_when_supported_and_interactive(self, monkeypatch):
+        monkeypatch.setattr(codex, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        assert codex.managed_mcp_uses_managed_file() is True
+
+    def test_false_when_non_interactive(self, monkeypatch):
+        monkeypatch.setattr(codex, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
+        assert codex.managed_mcp_uses_managed_file() is False
+
+
+class TestCodexReconcileManagedMcp:
+    URL = "https://w/ai-gateway/mcp-services/system.ai.github"
+    ARGV = ["/opt/ug", "mcp-proxy", "--url", URL, "--host", WS]
+
+    def _wire(self, monkeypatch, existing_text, captured):
+        monkeypatch.setattr(
+            codex, "codex_managed_config_path", lambda: Path("/etc/codex/managed_config.toml")
+        )
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(codex, "read_managed_file", lambda path: existing_text)
+        monkeypatch.setattr(codex, "mark_managed_file_verified", lambda *a, **k: None)
+
+        def fake_reconcile(path, desired_text, *, tool, display, owned_paths):
+            captured.update(text=desired_text, tool=tool, owned_paths=owned_paths)
+
+        monkeypatch.setattr(codex, "reconcile_managed_file", fake_reconcile)
+
+    def test_writes_mcp_servers_preserving_model_keys(self, monkeypatch):
+        import tomllib
+
+        captured: dict = {}
+        self._wire(monkeypatch, 'model_provider = "Databricks"\n', captured)
+        used = codex.reconcile_managed_mcp(
+            {}, {"system-ai-github": codex.managed_mcp_entry(self.ARGV)}
+        )
+        assert used is True
+        doc = tomllib.loads(captured["text"])
+        assert doc["model_provider"] == "Databricks"
+        assert doc["mcp_servers"]["system-ai-github"]["command"] == "/opt/ug"
+        assert doc["mcp_servers"]["system-ai-github"]["args"][:2] == ["mcp-proxy", "--url"]
+        assert captured["owned_paths"] == [["mcp_servers"]]
+        assert captured["tool"] == "codex"
+
+    def test_empty_map_clears_table_preserving_model_keys(self, monkeypatch):
+        import tomllib
+
+        captured: dict = {}
+        existing = 'model_provider = "Databricks"\n\n[mcp_servers.old]\ncommand = "x"\nargs = []\n'
+        self._wire(monkeypatch, existing, captured)
+        used = codex.reconcile_managed_mcp({}, {})
+        assert used is True
+        doc = tomllib.loads(captured["text"])
+        assert "mcp_servers" not in doc
+        assert doc["model_provider"] == "Databricks"
+
+    def test_clearing_an_absent_table_never_writes(self, monkeypatch):
+        monkeypatch.setattr(
+            codex, "codex_managed_config_path", lambda: Path("/etc/codex/managed_config.toml")
+        )
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(codex, "read_managed_file", lambda path: None)
+        monkeypatch.setattr(codex, "mark_managed_file_verified", lambda *a, **k: None)
+        monkeypatch.setattr(
+            codex, "reconcile_managed_file", lambda *a, **k: pytest.fail("must not write")
+        )
+        assert codex.reconcile_managed_mcp({}, {}) is True
+
+    def test_non_interactive_returns_false_without_writing(self, monkeypatch):
+        monkeypatch.setattr(
+            codex, "codex_managed_config_path", lambda: Path("/etc/codex/managed_config.toml")
+        )
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
+        monkeypatch.setattr(
+            codex, "reconcile_managed_file", lambda *a, **k: pytest.fail("must not write")
+        )
+        assert codex.reconcile_managed_mcp({}, {"s": codex.managed_mcp_entry(self.ARGV)}) is False
+
+    def test_preserves_prior_verification_scope(self, monkeypatch):
+        # An MCP-only write must refresh the fingerprint without downgrading the model reconcile's
+        # scope (e.g. local-compatible).
+        captured: dict = {}
+        monkeypatch.setattr(
+            codex, "codex_managed_config_path", lambda: Path("/etc/codex/managed_config.toml")
+        )
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(
+            codex, "read_managed_file", lambda path: 'model_provider = "Databricks"\n'
+        )
+        monkeypatch.setattr(codex, "reconcile_managed_file", lambda *a, **k: None)
+
+        def fake_mark(state, tool, path, *, scope="managed"):
+            captured["scope"] = scope
+
+        monkeypatch.setattr(codex, "mark_managed_file_verified", fake_mark)
+        state = {"managed_file_fingerprints": {"codex": {"scope": "local-compatible"}}}
+        codex.reconcile_managed_mcp(state, {"gh": codex.managed_mcp_entry(self.ARGV)})
+        assert captured["scope"] == "local-compatible"
+
+
+class TestCodexReadManagedMcpUrls:
+    def test_reads_url_from_proxy_args(self, monkeypatch):
+        monkeypatch.setattr(
+            codex, "codex_managed_config_path", lambda: Path("/etc/codex/managed_config.toml")
+        )
+        text = (
+            '[mcp_servers.gh]\ncommand = "/opt/ug"\n'
+            'args = ["mcp-proxy", "--url", "https://w/mcp-services/x", "--host", "https://w"]\n'
+        )
+        monkeypatch.setattr(codex, "read_managed_file", lambda path: text)
+        assert codex.read_managed_mcp_urls() == {"gh": "https://w/mcp-services/x"}
+
+    def test_empty_when_file_unreadable(self, monkeypatch):
+        monkeypatch.setattr(
+            codex, "codex_managed_config_path", lambda: Path("/etc/codex/managed_config.toml")
+        )
+
+        def boom(path):
+            raise RuntimeError("permission denied")
+
+        monkeypatch.setattr(codex, "read_managed_file", boom)
+        assert codex.read_managed_mcp_urls() == {}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from enum import StrEnum
 from pathlib import Path
 
 import tomlkit
@@ -15,6 +16,14 @@ from ucode.ui import print_warning
 
 CODEX_PROFILE_NAME = "ucode"
 DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / f"{CODEX_PROFILE_NAME}.config.toml"
+
+
+class ModelVisibility(StrEnum):
+    """A model's visibility in Codex's picker/APIs (mirrors Codex's ModelVisibility)."""
+
+    LIST = "list"
+    HIDE = "hide"
+    NONE = "none"
 
 
 def codex_managed_config_path() -> Path | None:
@@ -41,8 +50,8 @@ def codex_config_precedence_paths(
     return tuple(path for path in (managed_config, cli_config, default_config) if path is not None)
 
 
-def custom_catalog_models() -> list[str] | None:
-    """Read model slugs from the configured model_catalog_json, if present."""
+def custom_catalog_path() -> Path | None:
+    """Resolve the configured model catalog using Codex config precedence."""
     try:
         paths = codex_config_precedence_paths(
             codex_managed_config_path(),
@@ -57,18 +66,28 @@ def custom_catalog_models() -> list[str] | None:
         catalog_ref = settings.get("model_catalog_json")
         if not isinstance(catalog_ref, str) or not catalog_ref.strip():
             continue
-        slugs = catalog_slugs(read_json_safe(Path(catalog_ref).expanduser()))
-        if slugs:
-            return slugs
-        print_warning(
-            f"Codex smart routing could not read models from the custom catalog {catalog_ref} "
-            f"referenced by {path}; falling back to the cached model services."
-        )
-        return None
+        return Path(catalog_ref).expanduser()
     return None
 
 
-def catalog_slugs(catalog: Mapping) -> list[str]:
+def custom_catalog_models() -> list[str] | None:
+    """Read model slugs from the configured model_catalog_json, if present."""
+    catalog_path = custom_catalog_path()
+    if catalog_path is None:
+        return None
+    slugs = catalog_slugs(read_json_safe(catalog_path), required_visibility=ModelVisibility.LIST)
+    if slugs:
+        return slugs
+    print_warning(
+        f"Codex smart routing could not read models from the custom catalog {catalog_path}; "
+        "falling back to the cached model services."
+    )
+    return None
+
+
+def catalog_slugs(
+    catalog: Mapping, *, required_visibility: ModelVisibility | None = None
+) -> list[str]:
     """Extract deduplicated model slugs from a Codex custom catalog mapping."""
     models = catalog.get("models")
     if not isinstance(models, list):
@@ -77,6 +96,8 @@ def catalog_slugs(catalog: Mapping) -> list[str]:
     seen: set[str] = set()
     for row in models:
         if not isinstance(row, dict) or not isinstance(row.get("slug"), str):
+            continue
+        if required_visibility is not None and row.get("visibility") != required_visibility:
             continue
         slug = row["slug"].strip()
         if not slug or slug in seen:
