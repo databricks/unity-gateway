@@ -2073,7 +2073,7 @@ def _fetch_budget_recommendation(state: dict, managed: dict | None) -> dict | No
             # A token that lapsed since the config refresh — or a Databricks CLI that isn't
             # installed or reachable — must not block the launch; the config's default_model stands.
             reason = str(exc)
-    if reason is not None:
+    if reason is not None and not reason.startswith("HTTP 404"):
         print_warning(
             f"Could not check your budget ({reason}); "
             "using the default model from your workspace's config."

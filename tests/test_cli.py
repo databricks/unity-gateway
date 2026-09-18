@@ -4419,6 +4419,20 @@ class TestBudgetRecommendationAtLaunch:
         assert result.exit_code == 0, result.output
         assert "Could not check your budget" in result.output
 
+    def test_a_404_is_silently_ignored(self, monkeypatch):
+        result, _calls, _cfg = self._launch(
+            monkeypatch,
+            managed={"enabled_agents": {"claude": {}}},
+            recommendation=None,
+            reason=(
+                'HTTP 404 Not Found: {"error_code":"FEATURE_DISABLED",'
+                '"message":"Coding agent config recommendation is not enabled."}'
+            ),
+        )
+        assert result.exit_code == 0, result.output
+        assert "Could not check your budget" not in result.output
+        assert "FEATURE_DISABLED" not in result.output
+
     def test_a_token_failure_does_not_block_the_launch(self, monkeypatch):
         # Auth can lapse between the config refresh and the budget check.
         state = dict(MINIMAL_STATE)
