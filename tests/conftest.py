@@ -58,6 +58,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(managed_files_mod, "_sudo_replace", reject_privileged_write)
+    # The once-per-run password heads-up flag is a module global; reset it so a managed write in one
+    # test can't suppress the prompt another test asserts.
+    monkeypatch.setattr(managed_files_mod, "_managed_write_prompted", False)
     monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
     # A developer's ambient managed-config stub would otherwise short-circuit every fetch in the suite.

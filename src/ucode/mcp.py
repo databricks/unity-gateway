@@ -886,7 +886,14 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         return []
     if scope:
         workspace, profile, clients = setup_mcp_clients(
-            state, "Managed MCP Servers", agents=scope, action_note="Registering for"
+            state,
+            "MCP Servers",
+            agents=scope,
+            # `ug configure`/launch already reported Databricks auth before reconciling; don't
+            # re-announce "auth already available" for this workspace a second time. The caller
+            # prints a single "Configuring MCP server(s): ..." line, so skip the box and prelude.
+            quiet_auth=True,
+            announce=False,
         )
         working = _resolve_managed_mcp_servers(selector, workspace, profile, clients)
     else:
@@ -1391,6 +1398,8 @@ def setup_mcp_clients(
     action_note: str = "Configuring for",
     agents: set[str] | None = None,
     quiet: bool = False,
+    quiet_auth: bool = False,
+    announce: bool = True,
 ) -> tuple[str, str | None, list[str]]:
     """Validate the workspace, resolve configured MCP clients, and prepare auth.
 
@@ -1408,6 +1417,12 @@ def setup_mcp_clients(
 
     ``quiet`` suppresses the section header and the ``action_note`` line so a repeat,
     no-op registration prints nothing; the missing-client warnings are kept.
+
+    ``quiet_auth`` suppresses the "auth already available" line when the caller
+    already reported auth earlier in the same command (e.g. the managed reconcile
+    during ``ug configure``), so it isn't announced twice. ``announce`` off skips
+    the section box and the ``action_note`` prelude for a caller that prints its
+    own one-line status instead.
     """
     workspace = state.get("workspace")
     if not workspace:
@@ -1443,9 +1458,12 @@ def setup_mcp_clients(
     profile = state.get("profile")
     if require_auth:
         apply_pat_environment(state)
-        ensure_databricks_auth(workspace, profile)
+        ensure_databricks_auth(workspace, profile, quiet=quiet_auth)
 
-    if not quiet:
+    # Print the section box + action note only when the caller wants it: ``announce`` off (a caller
+    # that prints its own one-line status, e.g. the managed reconcile) or ``quiet`` on (a repeat,
+    # no-op registration) both suppress it.
+    if announce and not quiet:
         print_section(section)
         client_names = ", ".join(str(MCP_CLIENTS[client]["display"]) for client in clients)
         print_note(f"{action_note}: {client_names}")

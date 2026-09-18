@@ -589,7 +589,9 @@ class TestConfigureMcpCommand:
             },
         )
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch, "github")
@@ -611,7 +613,9 @@ class TestConfigureMcpCommand:
             lambda: {"workspace": WS, "available_tools": ALL_MCP_CLIENTS},
         )
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(
             mcp,
             "available_mcp_clients",
@@ -653,7 +657,9 @@ class TestConfigureMcpCommand:
 
         monkeypatch.setattr(mcp, "load_state", lambda: {**CLAUDE_STATE})
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(
@@ -690,7 +696,9 @@ class TestConfigureMcpCommand:
 
         monkeypatch.setattr(mcp, "load_state", lambda: {**CLAUDE_STATE})
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(
@@ -729,7 +737,9 @@ class TestConfigureMcpCommand:
 
         monkeypatch.setattr(mcp, "load_state", lambda: {**CLAUDE_STATE})
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(
@@ -804,7 +814,9 @@ class TestConfigureMcpCommand:
 
         monkeypatch.setattr(mcp, "load_state", lambda: {**CLAUDE_STATE})
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         # Default sources only (no vector-search / uc-functions). Set the
@@ -828,7 +840,9 @@ class TestConfigureMcpCommand:
 
         monkeypatch.setattr(mcp, "load_state", lambda: {**CLAUDE_STATE})
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch)
@@ -860,7 +874,9 @@ class TestConfigureMcpCommand:
             mcp, "load_state", lambda: {**CLAUDE_STATE, "mcp_servers": [skills_entry]}
         )
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         monkeypatch.setattr(mcp, "discover_mcp_service_names", lambda workspace, profile=None: [])
@@ -912,7 +928,9 @@ class TestConfigureMcpCommand:
             },
         )
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch, "databricks-sql")
@@ -971,7 +989,9 @@ class TestConfigureMcpCommand:
             },
         )
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch, "databricks-sql")
@@ -1019,7 +1039,9 @@ class TestConfigureMcpCommand:
             },
         )
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch)
@@ -1044,7 +1066,9 @@ class TestConfigureMcpCommand:
 
         monkeypatch.setattr(mcp, "load_state", lambda: {**CLAUDE_STATE})
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch, f"{mcp.MCP_ADD_PREFIX}app:mcp-vanished")
@@ -1068,7 +1092,9 @@ class TestConfigureMcpCommand:
 
         monkeypatch.setattr(mcp, "load_state", lambda: {**CLAUDE_STATE})
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch, f"{mcp.MCP_ADD_PREFIX}bogus:value")
@@ -1094,7 +1120,9 @@ class TestConfigureMcpCommand:
 
         monkeypatch.setattr(mcp, "load_state", lambda: {**CLAUDE_STATE})
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         _patch_mcp_choices(monkeypatch, f"{mcp.MCP_ADD_PREFIX}managed:sql")
         # Override after _patch_mcp_choices (which also stubs this) so the failure sticks.
@@ -1129,7 +1157,9 @@ class TestConfigureMcpCommand:
             lambda: {**CLAUDE_STATE, "profile": "my-profile"},
         )
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
 
         def fake_services(workspace, profile=None):
@@ -1153,7 +1183,9 @@ class TestConfigureMcpCommand:
             lambda: {"workspace": WS, "available_tools": ["claude", "codex"]},
         )
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ALL_MCP_CLIENTS)
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch, f"{mcp.MCP_ADD_PREFIX}managed:sql")
@@ -1183,7 +1215,9 @@ class TestConfigureMcpCommand:
         configured: list[tuple[str, str, str, dict]] = []
         monkeypatch.setattr(mcp, "load_state", lambda: {**CLAUDE_STATE})
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch, f"{mcp.MCP_ADD_PREFIX}managed:sql")
@@ -1230,7 +1264,9 @@ class TestConfigureMcpCommand:
 
         monkeypatch.setattr(mcp, "load_state", lambda: state)
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch)
@@ -1252,7 +1288,7 @@ def _stub_location_base(monkeypatch, state):
     auth no-ops, no cross-workspace residue."""
     monkeypatch.setattr(mcp, "load_state", lambda: state)
     monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-    monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+    monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None)
     monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
     monkeypatch.setattr(mcp, "purge_cross_workspace_mcp_residue", lambda state, workspace: None)
     monkeypatch.setattr(mcp, "get_databricks_token", lambda workspace, profile=None: "token")
@@ -3248,7 +3284,9 @@ class TestV2McpSelectors:
     def _base_mocks(self, monkeypatch):
         monkeypatch.setattr(mcp, "load_state", lambda: {**CLAUDE_STATE})
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "get_databricks_token", lambda workspace, profile=None: "tok")
 
@@ -3312,7 +3350,9 @@ class TestSingleSourceSkipsPrompt:
 
         monkeypatch.setattr(mcp, "load_state", lambda: {**CLAUDE_STATE})
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-        monkeypatch.setattr(mcp, "ensure_databricks_auth", lambda workspace, profile=None: None)
+        monkeypatch.setattr(
+            mcp, "ensure_databricks_auth", lambda workspace, profile=None, **_kw: None
+        )
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_mcp_service_names", lambda workspace, profile=None: [])
         monkeypatch.setattr(

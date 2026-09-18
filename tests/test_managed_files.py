@@ -210,6 +210,95 @@ class TestManagedFileLifecycle:
         assert notes == ["Enter password to configure settings for Codex and Claude Code."]
         assert successes == ["Settings configured for Codex and Claude Code"]
 
+    def test_nested_batch_joins_outer_and_prompts_once(self, tmp_path, backup_dir, monkeypatch):
+        # Models and MCP servers write the same managed file within one configure phase; a nested
+        # batch must join the outer one so the developer is prompted (and told "configured") once,
+        # using the outer batch's agent list, not once per writer.
+        notes: list[str] = []
+        successes: list[str] = []
+        monkeypatch.setattr(managed_files, "print_note", notes.append)
+        monkeypatch.setattr(managed_files, "print_success", successes.append)
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+
+        def write(tool: str) -> None:
+            managed_files.reconcile_managed_file(
+                tmp_path / f"{tool}.json",
+                '{"ucode": true}\n',
+                tool=tool,
+                display=tool.title(),
+                owned_paths=[["ucode"]],
+            )
+
+        with managed_files.managed_write_batch(["Codex", "Claude Code"]):
+            write("codex")  # e.g. the Models phase
+            with managed_files.managed_write_batch(["Codex"]):  # e.g. the MCP phase
+                write("claude")
+
+        assert notes == ["Enter password to configure settings for Codex and Claude Code."]
+        assert successes == ["Settings configured for Codex and Claude Code"]
+
+    def test_announce_success_off_suppresses_the_settings_line(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        # The managed spine reports each step's own ✔, so it opens the batch with announce_success
+        # off: no aggregate "Settings configured" line, and nested writers stay quiet too.
+        notes: list[str] = []
+        successes: list[str] = []
+        monkeypatch.setattr(managed_files, "print_note", notes.append)
+        monkeypatch.setattr(managed_files, "print_success", successes.append)
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+
+        def write(tool: str) -> None:
+            managed_files.reconcile_managed_file(
+                tmp_path / f"{tool}.json",
+                '{"ucode": true}\n',
+                tool=tool,
+                display=tool.title(),
+                owned_paths=[["ucode"]],
+            )
+
+        with managed_files.managed_write_batch(["Codex", "Claude Code"], announce_success=False):
+            with managed_files.managed_write_batch(["Codex"]):  # a per-agent writer joins the outer
+                write("codex")
+
+        assert notes == ["Enter password to configure settings for Codex and Claude Code."]
+        assert successes == []
+
+    def test_prompt_shown_once_across_separate_phases(self, tmp_path, backup_dir, monkeypatch):
+        # Models writes in a batch, then a later phase (e.g. MCP servers) writes outside any batch in
+        # the same run. sudo caches the credential, so the password heads-up must show once total.
+        notes: list[str] = []
+        monkeypatch.setattr(managed_files, "print_note", notes.append)
+        monkeypatch.setattr(managed_files, "print_success", lambda *_a: None)
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+
+        def write(tool: str) -> None:
+            managed_files.reconcile_managed_file(
+                tmp_path / f"{tool}.json",
+                '{"ucode": true}\n',
+                tool=tool,
+                display=tool.title(),
+                owned_paths=[["ucode"]],
+            )
+
+        with managed_files.managed_write_batch(["Claude Code"]):  # Models phase
+            write("claude")
+        write("codex")  # a later phase, outside any batch
+
+        assert notes == ["Enter password to configure settings for Claude Code."]
+
     def test_unchanged_file_never_creates_backup(self, tmp_path, backup_dir, monkeypatch):
         path = tmp_path / "managed.json"
         path.write_text("same", encoding="utf-8")

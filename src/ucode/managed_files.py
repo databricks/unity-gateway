@@ -32,6 +32,9 @@ MANAGED_FINGERPRINT_VERSION = 1
 _MISSING = object()
 _managed_write_batch: tuple[str, ...] = ()
 _managed_write_notice_shown = False
+# The sudo password heads-up is shown once per run: sudo caches the credential, so a later managed
+# write in the same command (e.g. the MCP servers after the model config) needs no second prompt.
+_managed_write_prompted = False
 
 ManagedParser = Callable[[str], dict]
 ManagedDumper = Callable[[dict], str]
@@ -150,17 +153,30 @@ def managed_writes_allowed() -> bool:
 
 
 @contextmanager
-def managed_write_batch(displays: list[str]) -> Iterator[None]:
-    """Group setup messaging for agents configured in one command."""
-    global _managed_write_batch, _managed_write_notice_shown
+def managed_write_batch(displays: list[str], *, announce_success: bool = True) -> Iterator[None]:
+    """Group setup messaging for agents whose managed files are written in one phase.
+
+    Re-entrant: a nested call joins the outer batch instead of starting its own, so several writers
+    grouped under one phase (e.g. per-agent model configs) share a single password heads-up rather
+    than one each. The outermost batch owns the messaging and the displays it lists, and resets the
+    once-per-run password heads-up so it fires on this run's first managed write wherever that
+    happens. On exit it prints one "Settings configured for ..." line naming every agent, unless
+    ``announce_success`` is off — for a caller that reports each step's own completion instead.
+    """
+    global _managed_write_batch, _managed_write_notice_shown, _managed_write_prompted
+
+    if _managed_write_batch:
+        yield
+        return
 
     previous_batch = _managed_write_batch
     previous_notice = _managed_write_notice_shown
     _managed_write_batch = tuple(dict.fromkeys(displays))
     _managed_write_notice_shown = False
+    _managed_write_prompted = False
     try:
         yield
-        if _managed_write_notice_shown:
+        if announce_success and _managed_write_notice_shown:
             print_success(f"Settings configured for {' and '.join(_managed_write_batch)}")
     finally:
         _managed_write_batch = previous_batch
@@ -168,7 +184,14 @@ def managed_write_batch(displays: list[str]) -> Iterator[None]:
 
 
 def _print_managed_write_permission(display: str) -> None:
-    global _managed_write_notice_shown
+    global _managed_write_notice_shown, _managed_write_prompted
+
+    # Shown once per run: sudo caches the credential, so a later managed write in the same command
+    # (e.g. the MCP servers after the model config, in a separate phase) needs no second heads-up.
+    if _managed_write_prompted:
+        _managed_write_notice_shown = True
+        return
+    _managed_write_prompted = True
 
     if not _managed_write_batch:
         print_note(f"Enter password to configure settings for {display}.")

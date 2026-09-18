@@ -2691,35 +2691,53 @@ def test_cursor_launch_uses_unity_gateway_branding():
 @pytest.mark.parametrize(
     "names,expected",
     [
-        (["b.mcp", "a.mcp"], "2 (a.mcp, b.mcp)"),  # counted, deduped, sorted
-        (["a.mcp", "a.mcp"], "1 (a.mcp)"),
-        ([], "[dim]none configured[/dim]"),
-        (["", None], "[dim]none configured[/dim]"),
-        ([f"s{i}" for i in range(7)], "7 (s0, s1, s2, s3, s4, ...)"),  # truncated past 5
+        (["b.mcp", "a.mcp"], "a.mcp, b.mcp"),  # deduped, sorted, no count
+        (["a.mcp", "a.mcp"], "a.mcp"),
+        ([], "none"),
+        (["", None], "none"),
+        ([f"s{i}" for i in range(7)], "s0, s1, s2, s3, s4, +2 more"),  # truncated past 5
     ],
 )
-def test_configured_summary(names, expected):
-    from ucode.cli import _configured_summary
+def test_truncated_names(names, expected):
+    from ucode.cli import _truncated_names
 
-    assert _configured_summary(names) == expected
+    assert _truncated_names(names) == expected
 
 
-def test_print_managed_summary_counts_registered_mcps_and_skills():
-    # The `ug configure` completion panel counts the MCP servers reconcile registered this run and
-    # the managed skills ug wrote to disk, not the admin's raw selector (AIGTWY-4789).
+@pytest.mark.parametrize(
+    "model_config,expected",
+    [
+        ({"model_services": ["a", "b", "c"]}, "3 custom model services"),
+        ({"model_services": ["a"]}, "1 custom model service"),
+        (
+            {"model_provider_service": "main.default.bedrock"},
+            "automatic discovery within main.default.bedrock",
+        ),
+        ({"unity_catalog_location": "main.davidl"}, "automatic discovery within main.davidl"),
+        ({}, "automatic model discovery"),  # nothing pinned -> gateway discovery
+    ],
+)
+def test_managed_model_method(model_config, expected):
+    from ucode.cli import _managed_model_method
+
+    managed = {"enabled_agents": {"claude": {"model_config": model_config}}}
+    assert _managed_model_method(managed, "claude") == expected
+
+
+def test_print_managed_summary_omits_mcps_and_skills():
+    # MCP servers and skills get their own ✔ step lines during configure, so the completion box
+    # recaps workspace + agents only and does not repeat them.
     from ucode.cli import _print_managed_summary, console
 
     managed = {"enabled_agents": {"claude": {}, "codex": {}}}
     state = {"workspace": "https://example.databricks.com"}
-    with patch("ucode.cli.records_for_scope", return_value=[{"bundle_name": "debug-ci"}]):
-        with console.capture() as capture:
-            _print_managed_summary(
-                managed, state, tool=None, registered_mcps=["jira-mcp", "github-mcp"]
-            )
+    with console.capture() as capture:
+        _print_managed_summary(managed, state, tool=None, configured_tools=["claude", "codex"])
 
     output = re.sub(r"\s+", " ", capture.get())
-    assert "MCPs: 2 (github-mcp, jira-mcp)" in output
-    assert "Skills: 1 (debug-ci)" in output
+    assert "Coding Agents: Claude Code, Codex" in output
+    assert "MCPs:" not in output
+    assert "Skills:" not in output
 
 
 class TestConfigureAgentFlag:
@@ -3250,8 +3268,7 @@ class TestConfigureAgentsSelection:
 
         managed = {"enabled_agents": {"claude": {}, "codex": {}}}
         monkeypatch.setattr(cli_mod, "load_state", lambda: {"workspace": "https://w.com"})
-        monkeypatch.setattr(cli_mod, "records_for_scope", lambda scope: [])
-        cli_mod._summarize_managed_config(managed, ["claude"], [])
+        cli_mod._summarize_managed_config(managed, ["claude"])
 
         out = capsys.readouterr().out
         # The rich panel wraps lines, so match on the labels and names rather than exact spacing.
@@ -3308,6 +3325,9 @@ class TestConfigureAgentsSelection:
         )
 
     def test_single_claude_agent_passes_managed_uc_parent_directly(self, monkeypatch):
+        # Under a managed config, --agent follows the same Models->MCP->Skills spine as the
+        # multi-agent path, so the UC parent is passed to configure_selected_tools, not the old
+        # single-tool writer.
         state = {**MINIMAL_STATE, "provider_services": {"claude": "main.default.developer"}}
         managed = {
             "enabled_agents": {
@@ -3316,15 +3336,22 @@ class TestConfigureAgentsSelection:
         }
         monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
         monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (managed, False))
-        configure = MagicMock(return_value=state)
-        monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
-        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *_a: [])
+        monkeypatch.setattr(cli_mod, "_configure_managed_skills", lambda *_a: None)
+        monkeypatch.setattr(cli_mod, "_summarize_managed_config", lambda *a, **k: None)
+        configured: list[dict] = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda resolved, tools, **kwargs: configured.append(kwargs) or resolved,
+        )
 
         assert (
             cli_mod.configure_workspace_command(tool="claude", workspaces=[("https://w.com", None)])
             == 0
         )
-        configure.assert_called_once_with("claude", state, parent_schema="main.models")
+        assert configured[0]["parent_schemas"] == {"claude": "main.models"}
 
     def test_managed_codex_parent_is_passed_to_generic_configure(self, monkeypatch):
         state = {
@@ -3358,6 +3385,8 @@ class TestConfigureAgentsSelection:
         assert configured[0]["parent_schemas"] == {"codex": "main.models"}
 
     def test_single_codex_agent_passes_managed_parent_directly(self, monkeypatch):
+        # Managed --agent runs the spine: the UC parent reaches configure_selected_tools, and the
+        # managed config is refreshed once up front.
         state = {
             **MINIMAL_STATE,
             "provider_services": {"codex": "main.default.developer"},
@@ -3368,20 +3397,62 @@ class TestConfigureAgentsSelection:
         monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
         refresh = MagicMock(return_value=(managed, False))
         monkeypatch.setattr(cli_mod, "refresh_managed_config", refresh)
-        configure = MagicMock(return_value=state)
-        monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
-        install_ai_tools = MagicMock()
-        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", install_ai_tools)
-
-        result = runner.invoke(
-            app, ["configure", "--agent", "codex", "--workspace", "https://w.com"]
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *_a: [])
+        monkeypatch.setattr(cli_mod, "_configure_managed_skills", lambda *_a: None)
+        monkeypatch.setattr(cli_mod, "_summarize_managed_config", lambda *a, **k: None)
+        configured: list[dict] = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda resolved, tools, **kwargs: configured.append(kwargs) or resolved,
         )
 
-        assert result.exit_code == 0, result.output
-        assert "(Provider: Databricks)" in _strip_ansi(result.output)
+        assert (
+            cli_mod.configure_workspace_command(tool="codex", workspaces=[("https://w.com", None)])
+            == 0
+        )
+        assert configured[0]["parent_schemas"] == {"codex": "main.models"}
         refresh.assert_called_once_with(state, force_refresh=True)
-        configure.assert_called_once_with("codex", state, parent_schema="main.models")
-        install_ai_tools.assert_called_once_with(["codex"], state, force_refresh=False)
+
+    def test_single_non_managed_agent_leaves_managed_state_untouched(self, monkeypatch):
+        # `--agent gemini` (no managed config governs gemini) must not clear the managed MCP servers
+        # or skills the workspace set up for its other agents — a single agent isn't a switch.
+        state = {**MINIMAL_STATE}
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "configure_single_tool", lambda tool, s, **k: s)
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+        monkeypatch.setattr(
+            cli_mod,
+            "_configure_managed_mcp_servers",
+            lambda *a, **k: pytest.fail(
+                "must not reconcile managed MCP for a single non-managed agent"
+            ),
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "_configure_managed_skills",
+            lambda *a, **k: pytest.fail(
+                "must not reconcile managed skills for a single non-managed agent"
+            ),
+        )
+
+        assert (
+            cli_mod.configure_workspace_command(tool="gemini", workspaces=[("https://w.com", None)])
+            == 0
+        )
+
+    def test_single_managed_agent_unavailable_names_the_agent(self, monkeypatch):
+        # The single-agent failure names that agent, not "none of the enabled agents".
+        state = {**MINIMAL_STATE, "available_tools": []}
+        managed = {"enabled_agents": {"claude": {}, "codex": {}}}
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (managed, False))
+        monkeypatch.setattr(cli_mod, "get_provider_service", lambda *a: None)
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *a: False)
+
+        with pytest.raises(RuntimeError, match="Claude Code is not available"):
+            cli_mod.configure_workspace_command(tool="claude", workspaces=[("https://w.com", None)])
 
     def test_managed_config_fails_when_no_enabled_agent_is_available(self, monkeypatch):
         import ucode.cli as cli_mod
@@ -3515,14 +3586,14 @@ class TestConfigureAgentsSelection:
             "reconcile_managed_mcp_servers",
             lambda managed, agents: seen.update(agents=agents) or [{"name": "x-y-z", "url": "u"}],
         )
-        notes: list[str] = []
-        monkeypatch.setattr(cli_mod, "print_note", lambda msg: notes.append(msg))
+        messages: list[str] = []
+        monkeypatch.setattr(cli_mod, "print_success", lambda msg: messages.append(msg))
         # `pi` is enabled but not an MCP client, so it is excluded from the registration scope.
         cli_mod._configure_managed_mcp_servers(
             {"enabled_agents": {"claude": {}, "codex": {}, "pi": {}}}
         )
         assert seen["agents"] == {"claude", "codex"}
-        assert notes and "x-y-z" in notes[0]
+        assert messages and "x-y-z" in messages[0]
 
     def test_configure_managed_mcp_servers_warns_and_continues_on_failure(self, monkeypatch):
         import ucode.cli as cli_mod
