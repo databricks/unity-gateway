@@ -1042,10 +1042,20 @@ class TestManagedClaudeModelDiscovery:
         monkeypatch.setattr(cli_mod, "load_state", lambda: state)
         monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
         monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (managed, False))
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
         monkeypatch.setattr(cli_mod, "get_provider_service", lambda *_a: "main.developer.provider")
         monkeypatch.setattr(cli_mod, "configure_shared_state", shared)
         resolve_provider = MagicMock(return_value=(None, None, False))
         monkeypatch.setattr(cli_mod, "resolve_provider_models", resolve_provider)
+        picker_catalog = db_mod.AnthropicModelCatalog(
+            model_ids=["main.default.claude-sonnet-5"],
+            model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
+            model_id_to_description={
+                "main.default.claude-sonnet-5": "Recommended for everyday use"
+            },
+        )
+        list_anthropic_model_catalog = MagicMock(return_value=picker_catalog)
+        monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", list_anthropic_model_catalog)
         resolve_model = MagicMock(side_effect=AssertionError("must use native discovery"))
         monkeypatch.setattr(cli_mod, "resolve_launch_model", resolve_model)
         monkeypatch.setattr(cli_mod, "configure_tool", configure)
@@ -1059,6 +1069,8 @@ class TestManagedClaudeModelDiscovery:
             "configure": configure,
             "launch": launch,
             "resolve_provider": resolve_provider,
+            "picker_catalog": picker_catalog,
+            "list_anthropic_model_catalog": list_anthropic_model_catalog,
             "resolve_model": resolve_model,
         }
 
@@ -1087,6 +1099,20 @@ class TestManagedClaudeModelDiscovery:
         assert calls["configure"].call_args.args[1]["provider_services"]["claude"] == (
             expected_provider or "main.developer.provider"
         )
+        if expected_parent:
+            calls["list_anthropic_model_catalog"].assert_called_once_with(
+                calls["state"]["workspace"],
+                "token",
+                parent_schema=expected_parent,
+            )
+            assert calls["configure"].call_args.kwargs["picker_catalog"] is calls["picker_catalog"]
+            assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == [
+                "main.default.claude-sonnet-5"
+            ]
+        else:
+            calls["list_anthropic_model_catalog"].assert_not_called()
+            assert calls["configure"].call_args.kwargs["picker_catalog"] is None
+            assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
 

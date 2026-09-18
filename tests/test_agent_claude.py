@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
+from ucode import databricks as db_mod
 from ucode import managed_files
 from ucode.agents import LaunchOptions, claude
 from ucode.smart_routing import claude_routing, v2
@@ -1078,7 +1079,8 @@ class TestWriteToolConfigManagedSettings:
         env = json.loads(managed_writes[0][1])["env"]
         assert not set(claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.values()) & env.keys()
 
-    def test_parent_schema_prunes_previous_static_picker(self, monkeypatch):
+    @pytest.mark.parametrize("with_catalog", [False, True])
+    def test_parent_schema_prunes_previous_static_picker(self, monkeypatch, with_catalog):
         private_writes: list = []
         managed_writes: list = []
         picker = {
@@ -1099,15 +1101,35 @@ class TestWriteToolConfigManagedSettings:
             },
         }
 
-        updated = claude.write_tool_config(state, None, parent_schema="main.default")
+        catalog = (
+            db_mod.AnthropicModelCatalog(
+                model_ids=["main.default.claude-sonnet-5"],
+                model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
+                model_id_to_description={"main.default.claude-sonnet-5": "Everyday model"},
+            )
+            if with_catalog
+            else None
+        )
+        updated = claude.write_tool_config(
+            state, None, parent_schema="main.default", picker_catalog=catalog
+        )
 
         for written in (private_writes[0][1], json.loads(managed_writes[0][1])):
-            assert not set(claude.CLAUDE_MANAGED_PICKER_KEYS) & written.keys()
+            assert "availableModels" not in written
+            assert "enforceAvailableModels" not in written
+            if with_catalog:
+                assert written["modelPicker"]["options"] == [
+                    {
+                        "model": "main.default.claude-sonnet-5",
+                        "label": "Claude Sonnet 5",
+                        "description": "Everyday model",
+                        "behavesAs": "claude-sonnet-5",
+                    }
+                ]
+            else:
+                assert "modelPicker" not in written
             assert written["companyPolicy"] == "keep"
-        assert not any(
-            [key] in updated["managed_configs"]["claude"]["keys"]
-            for key in claude.CLAUDE_MANAGED_PICKER_KEYS
-        )
+        assert (["modelPicker"] in updated["managed_configs"]["claude"]["keys"]) is with_catalog
 
     def test_managed_file_keeps_provider_model_pins(self, monkeypatch):
         private_writes: list = []
@@ -1829,6 +1851,34 @@ class TestClaudeLaunch:
         assert calls[0][:2] == ["claude", "--settings"]
         settings = json.loads(calls[0][2])
         assert settings["env"]["ANTHROPIC_MODEL"] == "cat.schema.model"
+
+    def test_managed_picker_replaces_stale_saved_model_for_this_launch(self, monkeypatch):
+        calls: list[list[str]] = []
+        picker_models = ["main.andy.test-anth", "main.andy.test-claude"]
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        monkeypatch.setattr(
+            claude,
+            "read_json_safe",
+            lambda path: (
+                {"model": "system.ai.claude-sonnet-5"}
+                if path == claude.CLAUDE_USER_SETTINGS_PATH
+                else {"env": {}}
+            ),
+        )
+
+        claude.launch(
+            {
+                "workspace": WS,
+                "profile": "test",
+                "_claude_launch_picker_models": picker_models,
+            },
+            [],
+            options=LaunchOptions(),
+        )
+
+        settings = json.loads(calls[0][2])
+        assert settings["model"] == picker_models[0]
 
     @pytest.mark.parametrize(
         "tool_args",
