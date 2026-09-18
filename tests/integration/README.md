@@ -93,6 +93,7 @@ test_ug_codex_custom_oauth.py            # CLI custom-OAuth launch and profile
 test_ug_claude_headless.py              # script prompts, models, caller settings
 test_ug_claude_relayed.py               # relayed session: subscription + Databricks-hosted models
 test_ug_codex_headless.py               # script prompts and model arguments
+test_ug_codex_tracing.py                # Codex OTLP export reaches the staging trace table
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
 test_ug_codex_app_server.py             # actual client/server initialize exchange
@@ -156,10 +157,18 @@ service allows a different model. Those choices are recorded in `versions.json`.
 No service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
 
-There are **42 live cases** (including 6 TUI journeys) and **5 installation
-checks** with both agents. A separate **3 managed-workspace cases** (one per agent
-plus an idempotent re-configure, marker `managed`) run against a workspace that publishes a CodingAgentConfig; see
-"Managed-workspace journeys" below. A further **9 `managed_fixture` cases** inject the admin config
+The `tracing and codex` journey runs separately against
+`https://eng-ml-inference.staging.cloud.databricks.com`, where agent-trace ingestion is
+currently enabled. It adds the prompt's UUID as Codex's trace-safe
+`ug_integration_marker` span attribute, waits 30 seconds, and queries
+`main.alkis_tracing_test.unity_gateway_otel_spans` through warehouse
+`aaa0f6351bb845df`. CI supplies a staging-scoped `UCODE_TRACING_DATABRICKS_BEARER`;
+the normal live jobs and credentials remain unchanged.
+
+There are **42 live cases** (including 6 TUI journeys), **1 staging tracing case**, and **5 installation
+checks** with both agents. A separate **4 managed-workspace cases** (one per agent,
+an idempotent re-configure, and a cache-reuse case; marker `managed`) run against a workspace that publishes a CodingAgentConfig; see
+"Managed-workspace journeys" below. A further **10 `managed_fixture` cases** inject the admin config
 locally (via `UCODE_MANAGED_CONFIG_STUB`) to cover shapes the live workspace does not publish,
 including a managed MCP server landing in Codex's OS-managed `[mcp_servers]` (interactive configure)
 while the developer's own config stays untouched, and reaching Claude's `/mcp` view via the
@@ -178,6 +187,7 @@ See the named coverage and gaps matrix in
 -- -m live         # default: all live user journeys
 -- -m smoke        # six Hosted, custom OAuth CLI TUI, and headless journeys
 -- -m tui          # six interactive TUI journeys
+-- -m 'tracing and codex'  # installed Codex -> gateway -> staging trace table
 -- -k test_ug_codex_app_server_client_initializes  # one named journey and its variants
 # Use --installation-only before -- for package checks without credentials.
 ```
@@ -186,7 +196,7 @@ The old focused checks are now descriptive CUJs with setup and outcomes visible
 in each test. Duplicate boot-only checks are incorporated into the Databricks
 configuration TUI journeys. Real failures, including generated
 config left after revert and banners on app-server stdout, remain assertions.
-Live MCP/skills functionality, tracing, the broad configure-option matrix, and other
+Live MCP/skills functionality, the broad configure-option matrix, and other
 agents are outside this focused revision.
 
 The configure terminal helper recognizes `[✓]` / `[ ]` agent checkboxes as well
@@ -267,8 +277,8 @@ shards and other PRs; this limit does not guarantee freedom from rate limits.
 No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
-The **All integration tests** check requires installation, workspace validation, smoke, and
-both full lanes to pass. The **Managed config** lanes run for signal but are temporarily
+The **All integration tests** check requires installation, workspace validation, smoke,
+both full lanes, and the staging Codex tracing journey to pass. The **Managed config** lanes run for signal but are temporarily
 non-blocking (`continue-on-error`): the managed workspace is now runner-reachable, but the lanes
 stay non-blocking until the managed-config apply path is proven stable. They neither fail the
 workflow nor gate merges until then. The
