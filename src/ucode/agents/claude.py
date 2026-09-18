@@ -36,6 +36,7 @@ from ucode.custom_oauth import (
     custom_oauth_cli_enabled,
 )
 from ucode.databricks import (
+    AnthropicModelCatalog,
     build_auth_shell_command,
     build_otel_headers_shell_command,
     build_otel_traces_endpoint,
@@ -364,6 +365,7 @@ def render_overlay(
     parent_schema: str | None = None,
     static_models: list[str] | None = None,
     otel_tracing: bool = False,
+    picker_catalog: AnthropicModelCatalog | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
 
@@ -494,6 +496,19 @@ def render_overlay(
             "options": [{"model": m, "label": _picker_label(m)} for m in static_models],
         }
         keys += [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
+    elif picker_catalog and picker_catalog.model_ids and not relayed:
+        overlay["modelPicker"] = {
+            "replaceBuiltInOptions": True,
+            "options": [
+                _picker_option(
+                    model,
+                    picker_catalog.model_id_to_display_name.get(model) or _picker_label(model),
+                    picker_catalog.model_id_to_description.get(model),
+                )
+                for model in picker_catalog.model_ids
+            ],
+        }
+        keys.append(["modelPicker"])
 
     if otel_tracing:
         otel_env = _otel_trace_env(workspace)
@@ -507,6 +522,9 @@ def render_overlay(
 
 
 _MODEL_LABEL_ACRONYMS = frozenset({"glm", "gpt"})
+_CLAUDE_PICKER_LABEL_RE = re.compile(
+    r"^Claude (Fable|Opus|Sonnet|Haiku) (\d+(?:\.\d+)*)$", re.IGNORECASE
+)
 
 
 def _picker_label(model: str) -> str:
@@ -527,6 +545,17 @@ def _picker_label(model: str) -> str:
     if version:
         parts.append(".".join(version))
     return " ".join(parts) if parts else stem
+
+
+def _picker_option(model: str, label: str, description: str | None = None) -> dict[str, str]:
+    option = {"model": model, "label": label}
+    if description:
+        option["description"] = description
+    match = _CLAUDE_PICKER_LABEL_RE.fullmatch(label)
+    if match:
+        family, version = match.groups()
+        option["behavesAs"] = f"claude-{family.lower()}-{version.replace('.', '-')}"
+    return option
 
 
 def _maybe_add_1m_suffix(model: str) -> str:
@@ -859,6 +888,7 @@ def write_tool_config(
     custom_model: str | None = None,
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
+    picker_catalog: AnthropicModelCatalog | None = None,
 ) -> dict:
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
@@ -866,13 +896,6 @@ def write_tool_config(
     if not is_tool_managed(state, "claude"):
         backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
-    # Native discovery must not inherit UG's prior static allow-list. Untracked picker values
-    # remain user/admin-owned and are preserved by the merge below.
-    stale_picker_keys = (
-        [key for key in CLAUDE_MANAGED_PICKER_KEYS if [key] in previous_keys]
-        if provider or parent_schema
-        else []
-    )
     web_search_model = _resolve_web_search_model(state)
     # Relayed inference points at a local refresh proxy; its loopback base URL is
     # recorded in state so launch starts the proxy on the matching port.
@@ -894,7 +917,15 @@ def write_tool_config(
         parent_schema=parent_schema,
         static_models=state.get("claude_static_models"),
         otel_tracing=bool(state.get("claude_otel_tracing")),
+        picker_catalog=picker_catalog,
     )
+    # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
+    # written by this launch, and remove only previously owned picker keys that no longer apply.
+    stale_picker_keys = [
+        key
+        for key in CLAUDE_MANAGED_PICKER_KEYS
+        if [key] in previous_keys and key not in overlay and (provider or parent_schema)
+    ]
     managed_file_keys = list(managed_keys)
     for path in (
         [[key] for key in stale_picker_keys]
@@ -1515,6 +1546,15 @@ def launch(
             *_launch_model_args(tool_args, options.user_pinned_model),
             *tool_args,
         ]
+    else:
+        picker_models = state.get("_claude_launch_picker_models")
+        if isinstance(picker_models, list) and picker_models:
+            saved_model = read_json_safe(CLAUDE_USER_SETTINGS_PATH).get("model")
+            if saved_model not in picker_models:
+                # Launch on a valid discovered model without turning it into a managed default or
+                # overwriting the user's saved selection. This also prevents Claude from appending
+                # that stale built-in selection to an otherwise replaced picker.
+                settings_override = {"model": picker_models[0]}
     exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 

@@ -67,6 +67,7 @@ from ucode.databricks import (
     get_databricks_token,
     install_databricks_cli,
     is_model_provider_feature_unavailable,
+    list_anthropic_model_catalog,
     list_profile_entries,
     list_tool_provider_services,
     normalize_workspace_url,
@@ -2671,11 +2672,19 @@ def _launch_tool(
         # Gemini is exempt: it validates the service and resolves its target in a single
         # lookup via resolve_gemini_provider_model (below), and uses no family model map.
         provider_models = None
+        picker_catalog = None
         relayed = False
         coding_agent_config_defaults = (
             managed_claude_family_models(managed) or {}
             if tool == "claude" and managed is not None
             else {}
+        )
+        managed_claude_uc_without_defaults = (
+            tool == "claude"
+            and managed is not None
+            and bool(managed_parent_schema)
+            and managed_default_model(managed, tool) is None
+            and not coding_agent_config_defaults
         )
         if provider and tool != "gemini":
             provider_models, error, relayed = resolve_provider_models(tool, state, provider)
@@ -2701,6 +2710,17 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        elif managed_claude_uc_without_defaults:
+            token = get_databricks_token(state["workspace"], state.get("profile"))
+            picker_catalog = list_anthropic_model_catalog(
+                state["workspace"], token, parent_schema=managed_parent_schema
+            )
+            error = picker_catalog.error_msg
+            if error:
+                raise RuntimeError(
+                    f"Could not discover Claude models for managed Unity Catalog location "
+                    f"{managed_parent_schema}: {error}"
+                )
         # The router's per-launch pick for the root session. Codex pins it as the
         # resolved model; claude pins it via ANTHROPIC_MODEL (route_root_model).
         route_root_model = None
@@ -2756,6 +2776,7 @@ def _launch_tool(
             resolved_model,
             provider=provider,
             provider_models=provider_models,
+            picker_catalog=picker_catalog,
             relayed=relayed,
             route_root_model=route_root_model,
             # Claude's explicit model is launch-scoped and is passed through LaunchOptions below.
@@ -2763,6 +2784,10 @@ def _launch_tool(
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
         )
+        if picker_catalog and picker_catalog.model_ids:
+            # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
+            # replaced. Keep the managed catalog launch-scoped and leave the user's settings alone.
+            state["_claude_launch_picker_models"] = picker_catalog.model_ids
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
             tool == "claude"
