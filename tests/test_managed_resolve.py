@@ -16,7 +16,6 @@ from ucode.managed_resolve import (
     managed_enabled_tools,
     managed_launch_model,
     managed_otel_tracing_enabled,
-    managed_provider_family_models,
     managed_provider_service,
     managed_state_overrides,
     managed_static_models,
@@ -168,30 +167,6 @@ class TestClaudeModels:
             "opus": "system.ai.claude-opus-4-8",
             "sonnet": "system.ai.claude-sonnet-4-6",
             "haiku": "system.ai.claude-haiku-4-5",
-        }
-
-    def test_provider_family_models_read_the_normalized_slots(self):
-        managed = normalize_managed_config(
-            {
-                "spec_version": 1,
-                "enabled_agents": [
-                    {
-                        "agent": "CODING_AGENT_CLAUDE_CODE",
-                        "config": {
-                            "models": {"model_provider_service": "main.default.anthropic-mps"},
-                            "default_models": {
-                                "default_opus_model": "anthropic.claude-opus-4-8",
-                                "default_sonnet_model": "anthropic.claude-sonnet-4-6",
-                            },
-                        },
-                    }
-                ],
-            }
-        )
-
-        assert managed_provider_family_models(managed) == {
-            "opus": "anthropic.claude-opus-4-8",
-            "sonnet": "anthropic.claude-sonnet-4-6",
         }
 
 

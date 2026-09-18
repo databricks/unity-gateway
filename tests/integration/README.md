@@ -162,12 +162,13 @@ fails the selected CUJ, rather than skipping it.
 There are **42 live cases** (including 6 TUI journeys) and **5 installation
 checks** with both agents. A separate **4 managed-workspace cases** (one per agent, an idempotent
 re-configure, and a cache-TTL journey; marker `managed`) run against a workspace that publishes a
-CodingAgentConfig; see "Managed-workspace journeys" below. A further **34 `managed_fixture`
+CodingAgentConfig; see "Managed-workspace journeys" below. A further **36 `managed_fixture`
 cases** use `UCODE_MANAGED_CONFIG_STUB`. Twenty-four explicit configured/fresh Claude and Codex
 discovery and source-override journeys fetch the published config once per agent, replace that
-agent's static source with its dedicated MPS, and reuse the result. Ten existing collected cases
+agent's static source with its dedicated MPS, and reuse the result. Twelve existing collected cases
 cover focused model, MCP, skills, and lifecycle shapes, including per-agent model reconciliation
-and managed skill cleanup.
+and managed skill cleanup. The two Claude default-model cases launch with injected MPS and Unity
+Catalog sources and verify both generated settings files retain all admin-authored family defaults.
 See the named coverage and gaps matrix in
 [../README.md](../README.md).
 

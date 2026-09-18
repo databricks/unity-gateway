@@ -2372,7 +2372,7 @@ def map_claude_family_models(targets: list[str]) -> dict[str, str]:
 # A bare launch pins the first tier the service offers, so it never dead-ends on a model the
 # gateway 403s. Sonnet first: it's Claude Code's own default tier, so we keep that balanced default
 # rather than jumping to opus, then fall back to the next offered tier when sonnet isn't allowed.
-_CLAUDE_LAUNCH_TIER_PREFERENCE = ("sonnet", "opus", "haiku", "fable")
+_CLAUDE_LAUNCH_TIER_PREFERENCE = ("sonnet", "opus", "haiku")
 
 
 def resolve_provider_launch_model(model: str | None, provider_models: dict[str, str]) -> str | None:

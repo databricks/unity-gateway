@@ -897,11 +897,6 @@ class TestResolveProviderLaunchModel:
             "claude-haiku-4-5"
         )
 
-    def test_falls_back_to_fable_when_only_fable(self):
-        assert db_mod.resolve_provider_launch_model(None, {"fable": "claude-fable-5-1"}) == (
-            "claude-fable-5-1"
-        )
-
     def test_family_alias_resolves_to_declared_target(self):
         models = {"sonnet": "claude-sonnet-5", "haiku": "claude-haiku-4-5"}
         assert db_mod.resolve_provider_launch_model("haiku", models) == "claude-haiku-4-5"

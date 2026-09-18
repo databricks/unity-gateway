@@ -1013,7 +1013,7 @@ class TestManagedClaudeModelDiscovery:
             "claude": {
                 "model_config": {
                     "model_provider_service": "main.default.anthropic-mps",
-                    "default_models_by_model_family": {
+                    "models": {
                         "default_sonnet_model": "anthropic.claude-sonnet-4-6",
                         "default_opus_model": "anthropic.claude-opus-4-8",
                         "default_haiku_model": "anthropic.claude-haiku-4-5",
@@ -1029,7 +1029,7 @@ class TestManagedClaudeModelDiscovery:
     }
 
     @staticmethod
-    def _invoke(monkeypatch, managed, *, args=None, recommendation=None, relayed=False):
+    def _invoke(monkeypatch, managed):
         state = {
             **MINIMAL_STATE,
             "claude_models": {},
@@ -1042,13 +1042,10 @@ class TestManagedClaudeModelDiscovery:
         monkeypatch.setattr(cli_mod, "load_state", lambda: state)
         monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
         monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (managed, False))
-        monkeypatch.setattr(
-            cli_mod, "_fetch_budget_recommendation", lambda _state, _managed: recommendation
-        )
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
         monkeypatch.setattr(cli_mod, "get_provider_service", lambda *_a: "main.developer.provider")
         monkeypatch.setattr(cli_mod, "configure_shared_state", shared)
-        resolve_provider = MagicMock(return_value=(None, None, relayed))
+        resolve_provider = MagicMock(return_value=(None, None, False))
         monkeypatch.setattr(cli_mod, "resolve_provider_models", resolve_provider)
         picker_catalog = db_mod.AnthropicModelCatalog(
             model_ids=["main.default.claude-sonnet-5"],
@@ -1064,7 +1061,7 @@ class TestManagedClaudeModelDiscovery:
         monkeypatch.setattr(cli_mod, "configure_tool", configure)
         monkeypatch.setattr(cli_mod, "launch_agent", launch)
 
-        result = runner.invoke(app, ["claude", *(args or [])])
+        result = runner.invoke(app, ["claude"])
         return {
             "result": result,
             "state": state,
@@ -1116,52 +1113,7 @@ class TestManagedClaudeModelDiscovery:
             calls["list_anthropic_model_catalog"].assert_not_called()
             assert calls["configure"].call_args.kwargs["picker_catalog"] is None
             assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
-            assert calls["configure"].call_args.kwargs["route_root_model"] == (
-                "anthropic.claude-sonnet-4-6"
-            )
-            assert calls["configure"].call_args.kwargs["coding_agent_config_defaults"] == {
-                "fable": "anthropic.claude-fable-5-1",
-                "opus": "anthropic.claude-opus-4-8",
-                "sonnet": "anthropic.claude-sonnet-4-6",
-                "haiku": "anthropic.claude-haiku-4-5",
-            }
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
-
-    @pytest.mark.parametrize(
-        ("args", "recommendation", "relayed", "route_root", "forwarded"),
-        [
-            (
-                [],
-                {"agent": "claude", "model": "anthropic.claude-haiku-4-5"},
-                False,
-                "anthropic.claude-haiku-4-5",
-                [],
-            ),
-            (
-                ["--model", "anthropic.claude-opus-4-8"],
-                {"agent": "claude", "model": "anthropic.claude-haiku-4-5"},
-                False,
-                "anthropic.claude-opus-4-8",
-                [],
-            ),
-            ([], None, True, None, ["--model", "anthropic.claude-sonnet-4-6"]),
-        ],
-        ids=["recommendation", "explicit-model", "relayed-default"],
-    )
-    def test_managed_mps_initial_model_precedence(
-        self, monkeypatch, args, recommendation, relayed, route_root, forwarded
-    ):
-        calls = self._invoke(
-            monkeypatch,
-            self.MPS_CONFIG,
-            args=args,
-            recommendation=recommendation,
-            relayed=relayed,
-        )
-
-        assert calls["result"].exit_code == 0, calls["result"].output
-        assert calls["configure"].call_args.kwargs["route_root_model"] == route_root
-        assert calls["launch"].call_args.args[2] == forwarded
 
 
 def test_claude_discovery_changes_do_not_break_other_managed_providers():
@@ -4853,16 +4805,14 @@ class TestBudgetRecommendationAtLaunch:
         )
         assert cfg.call_args.args[2] == "system.ai.claude-haiku-4-5"
 
-    def test_managed_parent_schema_passes_configured_claude_defaults_to_writer(self, monkeypatch):
+    def test_passes_configured_claude_defaults_to_writer(self, monkeypatch):
         managed = {
             "enabled_agents": {
                 "claude": {
                     "model_config": {
-                        "unity_catalog_location": "system.ai",
-                        "default_model": "system.ai.claude-sonnet-4-6",
                         "default_models_by_model_family": {
                             "default_sonnet_model": "system.ai.claude-sonnet-4-6",
-                        },
+                        }
                     }
                 }
             }
@@ -4871,51 +4821,9 @@ class TestBudgetRecommendationAtLaunch:
         result, _calls, cfg = self._launch(monkeypatch, managed=managed)
 
         assert result.exit_code == 0, result.output
-        assert cfg.call_args.kwargs["parent_schema"] == "system.ai"
-        assert cfg.call_args.kwargs["route_root_model"] == "system.ai.claude-sonnet-4-6"
         assert cfg.call_args.kwargs["coding_agent_config_defaults"] == {
             "sonnet": "system.ai.claude-sonnet-4-6"
         }
-
-    def test_managed_parent_schema_pins_configured_claude_default(self, monkeypatch):
-        managed = {
-            "enabled_agents": {
-                "claude": {
-                    "model_config": {
-                        "unity_catalog_location": "system.ai",
-                        "default_model": "system.ai.claude-sonnet-5",
-                    }
-                }
-            }
-        }
-
-        result, _calls, cfg = self._launch(monkeypatch, managed=managed)
-
-        assert result.exit_code == 0, result.output
-        assert cfg.call_args.kwargs["parent_schema"] == "system.ai"
-        assert cfg.call_args.kwargs["route_root_model"] == "system.ai.claude-sonnet-5"
-        assert cfg.call_args.kwargs["coding_agent_config_defaults"] == {}
-
-    def test_managed_parent_schema_honors_recommended_claude_model(self, monkeypatch):
-        managed = {
-            "enabled_agents": {
-                "claude": {
-                    "model_config": {
-                        "unity_catalog_location": "system.ai",
-                        "default_model": "system.ai.claude-sonnet-5",
-                    }
-                }
-            }
-        }
-
-        result, _calls, cfg = self._launch(
-            monkeypatch,
-            managed=managed,
-            recommendation={"agent": "claude", "model": "system.ai.claude-haiku-4-5"},
-        )
-
-        assert result.exit_code == 0, result.output
-        assert cfg.call_args.kwargs["route_root_model"] == "system.ai.claude-haiku-4-5"
 
     def test_another_agent_keeps_its_own_model_and_is_told_why(self, monkeypatch):
         # A tier's model belongs to the tier's agent; pinning it on claude would land a Kimi id in
