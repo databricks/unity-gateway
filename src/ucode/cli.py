@@ -8,6 +8,7 @@ import shutil
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
+from enum import StrEnum
 from importlib import metadata
 from typing import Annotated, Any
 
@@ -66,6 +67,7 @@ from ucode.databricks import (
     get_databricks_token,
     install_databricks_cli,
     is_model_provider_feature_unavailable,
+    list_anthropic_model_catalog,
     list_profile_entries,
     list_tool_provider_services,
     normalize_workspace_url,
@@ -106,8 +108,8 @@ from ucode.mcp import (
     add_mcp_command,
     add_skills_command,
     available_mcp_clients,
+    configure_bare_skills_mcp_command,
     configure_mcp_command,
-    configure_skills_mcp_command,
     configure_skills_mcp_picker_command,
     configured_mcp_clients,
     list_mcp_command,
@@ -127,6 +129,7 @@ from ucode.skills_download import (
     remove_downloaded_skills_command,
 )
 from ucode.skills_list import list_configured_skills_command
+from ucode.skills_state import records_for_scope
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
 from ucode.state import (
@@ -197,6 +200,21 @@ def _policy_summary_lines(managed: dict) -> list[str]:
     return lines
 
 
+def _configured_summary(names: list[str], *, limit: int = 5) -> str:
+    """Format a resolved MCP/skill set for the Configuration panel as ``N (name, ..., name)``.
+
+    Empty renders "none configured": the admin set none, or a fetch failed and warned above. At most
+    ``limit`` names are shown, with the rest collapsed to an ellipsis so a large set stays scannable.
+    """
+    unique = sorted({name for name in names if name})
+    if not unique:
+        return "[dim]none configured[/dim]"
+    shown = unique[:limit]
+    if len(unique) > limit:
+        shown.append("...")
+    return f"{len(unique)} ({', '.join(shown)})"
+
+
 def _print_managed_summary(
     managed: dict,
     state: dict,
@@ -204,6 +222,7 @@ def _print_managed_summary(
     *,
     abridged: bool = False,
     configured_tools: list[str] | None = None,
+    registered_mcps: list[str] | None = None,
 ) -> None:
     """Show which of the admin's settings are in force.
 
@@ -243,23 +262,16 @@ def _print_managed_summary(
         model = managed_default_model(managed, tool)
         if model:
             lines.append(f"[bold]Model:[/bold] [magenta]{model}[/magenta]")
-    # Always listed, including when empty: "none configured" tells a developer their admin set none,
-    # which a missing row leaves ambiguous. Shown as the admin configured them — registering them
-    # locally is a separate change, hence "pending".
-    mcp_names = [
-        str(server.get("name"))
-        for server in (managed.get("mcp_servers") or [])
-        if isinstance(server, dict) and server.get("name")
+    # Count what ug actually registered/downloaded, not the admin's raw selector (a UC location is
+    # just a pointer with no count): the MCP servers reconcile registered this run, and the managed
+    # skills on disk. State can't stand in for the MCPs — #717 writes them to OS-managed files.
+    lines.append(f"[bold]MCPs:[/bold] {_configured_summary(registered_mcps or [])}")
+    skill_names = [
+        str(record.get("bundle_name"))
+        for record in records_for_scope("managed")
+        if record.get("bundle_name")
     ]
-    if mcp_names:
-        lines.append(f"[bold]MCPs:[/bold] {', '.join(mcp_names)} [dim](pending)[/dim]")
-    else:
-        lines.append("[bold]MCPs:[/bold] [dim]none configured[/dim]")
-    skill_names = [str(name) for name in ((managed.get("skills") or {}).get("names") or []) if name]
-    if skill_names:
-        lines.append(f"[bold]Skills:[/bold] {', '.join(skill_names)} [dim](pending)[/dim]")
-    else:
-        lines.append("[bold]Skills:[/bold] [dim]none configured[/dim]")
+    lines.append(f"[bold]Skills:[/bold] {_configured_summary(skill_names)}")
     lines.extend(_policy_summary_lines(managed))
     console.print(Panel("\n".join(lines), title="Configuration", style="green", expand=False))
 
@@ -285,10 +297,16 @@ def _print_managed_summary_abridged(managed: dict, state: dict, tool: str | None
     )
 
 
-def _summarize_managed_config(managed: dict, workspace: str, configured_tools: list[str]) -> None:
+def _summarize_managed_config(
+    managed: dict, configured_tools: list[str], registered_mcps: list[str]
+) -> None:
     """Show the resulting managed setup, listing only the agents that configured cleanly."""
     _print_managed_summary(
-        managed, {"workspace": workspace}, tool=None, configured_tools=configured_tools
+        managed,
+        load_state(),
+        tool=None,
+        configured_tools=configured_tools,
+        registered_mcps=registered_mcps,
     )
     print_success("Configuration complete — launch with [bold cyan]ug[/bold cyan].")
 
@@ -877,10 +895,11 @@ def configure_workspace_command(
                 "None of the coding agents enabled by your workspace configuration "
                 "are available on this workspace."
             )
+        registered_mcps: list[str] = []
         if not is_dry_run():
-            _configure_managed_mcp_servers(managed)
+            registered_mcps = _configure_managed_mcp_servers(managed)
             _configure_managed_skills(managed)
-        _summarize_managed_config(managed, state["workspace"], configured_tools)
+        _summarize_managed_config(managed, configured_tools, registered_mcps)
         return 0
 
     available_on_workspace: list[str] = []
@@ -1368,13 +1387,21 @@ app.add_typer(
     help="Inspect and manage the Databricks MCP servers ug configures for your coding agents.",
     rich_help_panel="Tools and Skills",
 )
-skill_app = typer.Typer(add_completion=False, no_args_is_help=True)
+skill_app = typer.Typer(add_completion=False, no_args_is_help=False)
 app.add_typer(
     skill_app,
     name="skills",
     help="Databricks Skills for your coding tools.",
     rich_help_panel="Tools and Skills",
 )
+
+
+class SkillsVia(StrEnum):
+    """How `ug skills add`/`remove` act on skills: download them to disk (the
+    default) or scope them on the skills MCP connection."""
+
+    download = "download"
+    mcp = "mcp"
 
 
 def _version_callback(value: bool) -> None:
@@ -1387,7 +1414,7 @@ def _version_callback(value: bool) -> None:
 
 def _configure_agents_for_mcp(requested: list[str]) -> set[str]:
     """Ensure the named coding agents are set up (workspace + models) so a
-    subsequent `ug mcp add` / `ug skills add --mcp` has them as targets, and
+    subsequent `ug mcp add` / `ug skills add --via mcp` has them as targets, and
     return the full canonical name set. Agents already configured are left as-is;
     only the rest are bootstrapped. Model agents go through
     configure_workspace_command (which installs binaries and configures models);
@@ -1429,14 +1456,14 @@ def mcp_add(
             "Servers already configured outside this location are kept.",
         ),
     ] = None,
-    name: Annotated[
+    names: Annotated[
         str | None,
         typer.Option(
-            "--name",
+            "--names",
             help="Register this comma-separated subset of MCP services (additively). Full names "
             "like `system.ai.github` work on their own; bare short names like `github` need "
-            "--location to locate them. Omit --name to register the whole --location schema; "
-            'an empty `--name ""` adds nothing (no-op). V2 AI Gateway servers (not in the '
+            "--location to locate them. Omit --names to register the whole --location schema; "
+            'an empty `--names ""` adds nothing (no-op). V2 AI Gateway servers (not in the '
             "interactive picker) are added by naming them here: `vector-search:<catalog>.<schema>`, "
             "`uc-functions:<catalog>.<schema>`, `external:<connection>`, `genie-space:<id>`, or "
             "`app:<name>` (workspace access required).",
@@ -1459,7 +1486,7 @@ def mcp_add(
     ones (use `ug mcp remove` to remove). Pass --agents to target (and, if needed, set up) specific
     agents.
     """
-    selected = None if name is None else {s.strip() for s in name.split(",") if s.strip()}
+    selected = None if names is None else {s.strip() for s in names.split(",") if s.strip()}
     requested_agents = (
         None
         if agents is None
@@ -1555,6 +1582,32 @@ def _stdin_is_interactive() -> bool:
     return sys.stdin.isatty()
 
 
+@skill_app.callback(invoke_without_command=True)
+def skills(ctx: typer.Context) -> None:
+    """Databricks Skills for your coding tools.
+
+    With no subcommand, prints this help, then registers the skills MCP connection
+    (utility tools only) for your configured agents, keeping any existing scope.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    console.print(ctx.get_help())
+    try:
+        install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        first_time = configure_bare_skills_mcp_command()
+    except (RuntimeError, ValueError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    except KeyboardInterrupt:
+        print_err("Interrupted.")
+        raise typer.Exit(130) from None
+    if first_time:
+        print_note(
+            "To create a skill, ask your agent to create one with the Databricks skills "
+            "registry MCP, which registers it in Unity Catalog."
+        )
+
+
 @skill_app.command("list")
 def skills_list() -> None:
     """List the skills configured for your coding tools and how each was configured."""
@@ -1577,13 +1630,14 @@ def skills_add(
             "--location", help="Comma-separated `<catalog>.<schema>` skill scopes to add."
         ),
     ] = None,
-    mcp: Annotated[
-        bool,
+    via: Annotated[
+        SkillsVia,
         typer.Option(
-            "--mcp",
-            help="Add the schemas to the skills MCP connection's scope instead of downloading.",
+            "--via",
+            help="`download` skills to disk (default) or add the schemas to the skills MCP "
+            "connection's scope (`mcp`).",
         ),
-    ] = False,
+    ] = SkillsVia.download,
     path: Annotated[
         str | None,
         typer.Option(
@@ -1592,20 +1646,20 @@ def skills_add(
             "to user-level skill directories.",
         ),
     ] = None,
-    name: Annotated[
+    names: Annotated[
         str | None,
         typer.Option(
-            "--name",
+            "--names",
             help="(download) Download exactly these comma-separated fully-qualified "
             "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
-            "with --mcp or --location.",
+            "with --via mcp or --location.",
         ),
     ] = None,
     agents: Annotated[
         str | None,
         typer.Option(
             "--agents",
-            help="(--mcp only) Comma-separated coding agents whose skills MCP scope should "
+            help="(--via mcp only) Comma-separated coding agents whose skills MCP scope should "
             "be updated. Any that aren't configured yet are set up first. Without --agents, "
             "every configured agent is updated.",
         ),
@@ -1613,18 +1667,20 @@ def skills_add(
 ) -> None:
     """Add Databricks Skills to your coding tools, keeping any already configured.
 
-    With ``--mcp``, adds the given schemas to the skills MCP connection's scope.
-    Otherwise downloads skills to project-level skill directories under ``--path``, or
-    to user-level skill directories when omitted, keeping already-downloaded skills.
-    ``--location`` downloads whole ``<catalog>.<schema>`` schemas; ``--name``
-    downloads a named set of fully-qualified skills that may span schemas (and takes
-    no ``--location``). With no ``--location``/``--name`` on an interactive terminal,
-    opens a picker of the workspace's schemas to scope (``--mcp``) or skills to download.
+    With ``--via mcp``, adds the given schemas to the skills MCP connection's scope.
+    By default (``--via download``) downloads skills to project-level skill directories
+    under ``--path``, or to user-level skill directories when omitted, keeping
+    already-downloaded skills. ``--location`` downloads whole ``<catalog>.<schema>``
+    schemas; ``--names`` downloads a named set of fully-qualified skills that may span
+    schemas (and takes no ``--location``). With no ``--location``/``--names`` on an
+    interactive terminal, opens a picker of the workspace's schemas to scope
+    (``--via mcp``) or skills to download.
     """
     try:
         install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        mcp = via is SkillsVia.mcp
         requested_skills = (
-            None if name is None else {s.strip() for s in name.split(",") if s.strip()}
+            None if names is None else {s.strip() for s in names.split(",") if s.strip()}
         )
         requested_agents = (
             None
@@ -1632,19 +1688,19 @@ def skills_add(
             else ({agent.strip().lower() for agent in agents.split(",") if agent.strip()} or None)
         )
         if mcp and path is not None:
-            raise RuntimeError("--path is not supported when using --mcp")
+            raise RuntimeError("--path is not supported with --via mcp")
         if mcp and requested_skills is not None:
-            raise RuntimeError("--name is not supported when using --mcp")
+            raise RuntimeError("--names is not supported with --via mcp")
         if requested_skills is not None and location is not None:
-            raise RuntimeError("--name takes fully-qualified names; drop --location.")
+            raise RuntimeError("--names takes fully-qualified names; drop --location.")
         # Downloaded skills use shared directory families, so only MCP scopes can be agent-scoped.
         if not mcp and agents is not None:
-            raise RuntimeError("--agents is only supported when using --mcp")
+            raise RuntimeError("--agents is only supported with --via mcp")
         if requested_skills is not None:
             invalid = sorted(s for s in requested_skills if not _is_qualified_skill_name(s))
             if invalid:
                 raise RuntimeError(
-                    "--name entries must be fully-qualified `<catalog>.<schema>.<name>` names "
+                    "--names entries must be fully-qualified `<catalog>.<schema>.<name>` names "
                     f"(invalid: {', '.join(invalid)})."
                 )
             configure_selected_skills_download_command(sorted(requested_skills), path)
@@ -1685,16 +1741,17 @@ def skills_remove(
         typer.Option(
             "--location",
             help="Comma-separated `<catalog>.<schema>` schemas to remove (from the skills MCP "
-            "scope with --mcp, else their downloaded skills).",
+            "scope with --via mcp, else their downloaded skills).",
         ),
     ] = None,
-    mcp: Annotated[
-        bool,
+    via: Annotated[
+        SkillsVia,
         typer.Option(
-            "--mcp",
-            help="Remove schemas from the skills MCP connection instead of downloaded files.",
+            "--via",
+            help="Remove `download`ed skill files (default) or drop the schemas from the skills "
+            "MCP connection (`mcp`).",
         ),
-    ] = False,
+    ] = SkillsVia.download,
     path: Annotated[
         str | None,
         typer.Option(
@@ -1703,20 +1760,20 @@ def skills_remove(
             "without it, every base is in scope.",
         ),
     ] = None,
-    name: Annotated[
+    names: Annotated[
         str | None,
         typer.Option(
-            "--name",
+            "--names",
             help="(download) Remove exactly these comma-separated fully-qualified "
             "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
-            "with --mcp or --location.",
+            "with --via mcp or --location.",
         ),
     ] = None,
     agents: Annotated[
         str | None,
         typer.Option(
             "--agents",
-            help="(--mcp only) Comma-separated coding agents to remove the schemas from "
+            help="(--via mcp only) Comma-separated coding agents to remove the schemas from "
             "(e.g. claude,codex). A schema scoped to several agents is removed only from the "
             "named ones and kept on the rest. Without --agents, it is removed from every agent.",
         ),
@@ -1724,22 +1781,23 @@ def skills_remove(
 ) -> None:
     """Remove Skills previously added to your coding tools.
 
-    With ``--mcp``, drops skill schemas from the skills MCP connection: ``--location`` removes the
-    named ``<catalog>.<schema>`` schemas, and with none on an interactive terminal a picker lists
-    the scoped schemas. Otherwise removes downloaded skill directories: ``--location`` removes every
-    skill downloaded from a ``<catalog>.<schema>``, ``--name`` removes named fully-qualified skills
-    that may span schemas, and with none of them a picker lists every downloaded skill. ``--path``
-    limits either to one download base. Only skills ucode downloaded are removed; a same-named skill
-    you authored is left alone.
+    With ``--via mcp``, drops skill schemas from the skills MCP connection: ``--location`` removes
+    the named ``<catalog>.<schema>`` schemas, and with none on an interactive terminal a picker
+    lists the scoped schemas. By default (``--via download``) removes downloaded skill directories:
+    ``--location`` removes every skill downloaded from a ``<catalog>.<schema>``, ``--names`` removes
+    named fully-qualified skills that may span schemas, and with none of them a picker lists every
+    downloaded skill. ``--path`` limits either to one download base. Only skills ucode downloaded
+    are removed; a same-named skill you authored is left alone.
     """
     try:
         install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        mcp = via is SkillsVia.mcp
         requested_skills = (
-            None if name is None else {s.strip() for s in name.split(",") if s.strip()}
+            None if names is None else {s.strip() for s in names.split(",") if s.strip()}
         )
         if mcp:
             if path is not None or requested_skills is not None:
-                raise RuntimeError("--path and --name are not supported with --mcp.")
+                raise RuntimeError("--path and --names are not supported with --via mcp.")
             requested_agents = (
                 None
                 if agents is None
@@ -1751,26 +1809,26 @@ def skills_remove(
             elif _stdin_is_interactive():
                 remove_skills_command(agents=requested_agents)
             else:
-                raise RuntimeError("--location is required for `ug skills remove --mcp`.")
+                raise RuntimeError("--location is required for `ug skills remove --via mcp`.")
             return
         if agents is not None:
-            raise RuntimeError("--agents is only supported when using --mcp.")
+            raise RuntimeError("--agents is only supported with --via mcp.")
         if requested_skills is not None and location is not None:
-            raise RuntimeError("--name takes fully-qualified names; drop --location.")
+            raise RuntimeError("--names takes fully-qualified names; drop --location.")
         if requested_skills is not None:
             invalid = sorted(s for s in requested_skills if not _is_qualified_skill_name(s))
             if invalid:
                 raise RuntimeError(
-                    "--name entries must be fully-qualified `<catalog>.<schema>.<name>` names "
+                    "--names entries must be fully-qualified `<catalog>.<schema>.<name>` names "
                     f"(invalid: {', '.join(invalid)})."
                 )
             remove_downloaded_skills_command([], sorted(requested_skills), path=path)
             return
         locations = _parse_skill_locations(location)
         if path is not None and not locations:
-            raise RuntimeError("--path is only supported with --location or --name.")
+            raise RuntimeError("--path is only supported with --location or --names.")
         if not locations and not _stdin_is_interactive():
-            raise RuntimeError("--location or --name is required for `ug skills remove`.")
+            raise RuntimeError("--location or --names is required for `ug skills remove`.")
         remove_downloaded_skills_command(locations, path=path)
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
@@ -2343,14 +2401,16 @@ def _print_budget_panel(recommendation: dict, tool: str, managed: dict | None = 
         console.print(panel)
 
 
-def _configure_managed_mcp_servers(managed: dict | None) -> None:
+def _configure_managed_mcp_servers(managed: dict | None) -> list[str]:
     """Register the managed config's MCP servers for every enabled MCP-client agent.
 
     Runs during ``ug configure`` after the enabled agents are configured, so a workspace-published
     server reaches each agent's `/mcp` list without the developer re-adding it. ``managed`` is None
     when the (now-current) workspace has no managed config: the reconcile then unregisters any
     servers a prior managed workspace registered, so switching workspaces resets the MCP registry.
-    Best-effort: a failure warns and leaves the rest of configure intact.
+    Best-effort: a failure warns and leaves the rest of configure intact. Returns the names of the
+    servers registered this run (the completion summary counts them; state alone can't, since #717
+    writes them to agents' OS-managed files rather than ``managed_mcp_servers``).
     """
     managed = managed or {}
     agents = {tool for tool in managed_enabled_tools(managed) if tool in MCP_CLIENTS}
@@ -2358,10 +2418,11 @@ def _configure_managed_mcp_servers(managed: dict | None) -> None:
         registered = reconcile_managed_mcp_servers(managed, agents)
     except RuntimeError as exc:
         print_warning(f"Could not register your workspace's MCP servers: {exc}")
-        return
-    if registered:
-        names = ", ".join(str(server["name"]) for server in registered)
-        print_note(f"Registered workspace MCP server(s): {names}")
+        return []
+    names = [str(server["name"]) for server in registered if server.get("name")]
+    if names:
+        print_note(f"Registered workspace MCP server(s): {', '.join(names)}")
+    return names
 
 
 def _configure_managed_skills(managed: dict | None) -> None:
@@ -2611,11 +2672,19 @@ def _launch_tool(
         # Gemini is exempt: it validates the service and resolves its target in a single
         # lookup via resolve_gemini_provider_model (below), and uses no family model map.
         provider_models = None
+        picker_catalog = None
         relayed = False
         coding_agent_config_defaults = (
             managed_claude_family_models(managed) or {}
             if tool == "claude" and managed is not None
             else {}
+        )
+        managed_claude_uc_without_defaults = (
+            tool == "claude"
+            and managed is not None
+            and bool(managed_parent_schema)
+            and managed_default_model(managed, tool) is None
+            and not coding_agent_config_defaults
         )
         if provider and tool != "gemini":
             provider_models, error, relayed = resolve_provider_models(tool, state, provider)
@@ -2641,6 +2710,17 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        elif managed_claude_uc_without_defaults:
+            token = get_databricks_token(state["workspace"], state.get("profile"))
+            picker_catalog = list_anthropic_model_catalog(
+                state["workspace"], token, parent_schema=managed_parent_schema
+            )
+            error = picker_catalog.error_msg
+            if error:
+                raise RuntimeError(
+                    f"Could not discover Claude models for managed Unity Catalog location "
+                    f"{managed_parent_schema}: {error}"
+                )
         # The router's per-launch pick for the root session. Codex pins it as the
         # resolved model; claude pins it via ANTHROPIC_MODEL (route_root_model).
         route_root_model = None
@@ -2696,6 +2776,7 @@ def _launch_tool(
             resolved_model,
             provider=provider,
             provider_models=provider_models,
+            picker_catalog=picker_catalog,
             relayed=relayed,
             route_root_model=route_root_model,
             # Claude's explicit model is launch-scoped and is passed through LaunchOptions below.
@@ -2703,6 +2784,10 @@ def _launch_tool(
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
         )
+        if picker_catalog and picker_catalog.model_ids:
+            # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
+            # replaced. Keep the managed catalog launch-scoped and leave the user's settings alone.
+            state["_claude_launch_picker_models"] = picker_catalog.model_ids
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
             tool == "claude"
@@ -3534,82 +3619,6 @@ def configure(
         # meaningless "ERROR 0".
         raise
     except RuntimeError as exc:
-        print_err(str(exc))
-        raise typer.Exit(1) from None
-    except KeyboardInterrupt:
-        print_err("Interrupted.")
-        raise typer.Exit(130) from None
-
-
-@configure_app.command("skills")
-def configure_skills(
-    location: Annotated[
-        str | None,
-        typer.Option("--location", help="Comma-separated `<catalog>.<schema>` skill scopes."),
-    ] = None,
-    mcp: Annotated[
-        bool,
-        typer.Option("--mcp", help="Mutate the skills MCP connection instead of downloading."),
-    ] = False,
-    path: Annotated[
-        str | None,
-        typer.Option(
-            "--path",
-            help="(download) Existing absolute dir to download into; defaults to your home dir.",
-        ),
-    ] = None,
-    name: Annotated[
-        str | None,
-        typer.Option(
-            "--name",
-            help="(download) Download exactly these comma-separated fully-qualified "
-            "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
-            "with --mcp or --location.",
-        ),
-    ] = None,
-) -> None:
-    """Configure Databricks Skills for your coding tools.
-
-    When ``--location`` is not provided, registers the skills MCP connection with
-    utility tools only.
-
-    When ``--location`` is provided: with ``--mcp``, sets the connection's scope to
-    exactly the listed schemas (no download); otherwise, downloads every skill in
-    each schema to disk (under ``--path``, or your home dir when omitted) and
-    registers the MCP connection with utility tools only. ``--name`` instead
-    downloads a named set of fully-qualified skills that may span schemas (and takes
-    no ``--location``).
-    """
-    try:
-        install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
-        # `--name` absent -> None (whole schemas via --location); present (even
-        # empty) -> the explicit FQN set, so `--name ""` downloads nothing.
-        selected_skills = (
-            None if name is None else {s.strip() for s in name.split(",") if s.strip()}
-        )
-        if mcp and path is not None:
-            raise RuntimeError("--path is not valid with --mcp.")
-        if mcp and selected_skills is not None:
-            raise RuntimeError("--name is not valid with --mcp; it only applies when downloading.")
-        if selected_skills is not None and location is not None:
-            raise RuntimeError("--name takes fully-qualified names; drop --location.")
-        if selected_skills is not None:
-            invalid = sorted(s for s in selected_skills if not _is_qualified_skill_name(s))
-            if invalid:
-                raise RuntimeError(
-                    "--name entries must be fully-qualified `<catalog>.<schema>.<name>` names "
-                    f"(invalid: {', '.join(invalid)})."
-                )
-            configure_selected_skills_download_command(sorted(selected_skills), path)
-            return
-        locations = _parse_skill_locations(location)
-        if path is not None and not locations:
-            raise RuntimeError("--path only applies when downloading with --location.")
-        if mcp or not locations:
-            configure_skills_mcp_command(locations)
-        else:
-            configure_location_skills_download_command(locations, path=path)
-    except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:

@@ -721,7 +721,11 @@ class TestConfigureLocationSkillsDownloadCommand:
         calls: dict[str, object] = {}
         monkeypatch.setattr(sd, "load_state", lambda: {"state": True})
         monkeypatch.setattr(
-            sd, "setup_mcp_clients", lambda state, section: (WS, "profile", ["claude"])
+            sd,
+            "setup_mcp_clients",
+            lambda state, section, quiet=False: (
+                calls.update(setup_quiet=quiet) or (WS, "profile", ["claude"])
+            ),
         )
         monkeypatch.setattr(sd, "get_databricks_token", lambda ws, profile: "token")
         monkeypatch.setattr(
@@ -732,7 +736,9 @@ class TestConfigureLocationSkillsDownloadCommand:
         monkeypatch.setattr(
             sd,
             "register_schemaless_skills_connection",
-            lambda state, ws, profile, clients: calls.update(register=(ws, profile, clients)),
+            lambda state, ws, profile, clients, print_summary=True: calls.update(
+                register=(ws, profile, clients), print_summary=print_summary
+            ),
         )
         return calls
 
@@ -743,6 +749,9 @@ class TestConfigureLocationSkillsDownloadCommand:
 
         assert calls["download"] == (WS, "token", ["a.b"], "/tmp/skills")
         assert calls["register"] == (WS, "profile", ["claude"])
+        # Downloads suppress the connection summary so it can't bury per-skill failures.
+        assert calls["print_summary"] is False
+        assert calls["setup_quiet"] is True
 
     def test_none_path_threads_through(self, monkeypatch):
         calls = self._stub(monkeypatch)
@@ -758,7 +767,11 @@ class TestConfigureSelectedSkillsDownloadCommand:
         calls: dict[str, object] = {}
         monkeypatch.setattr(sd, "load_state", lambda: {"state": True})
         monkeypatch.setattr(
-            sd, "setup_mcp_clients", lambda state, section: (WS, "profile", ["claude"])
+            sd,
+            "setup_mcp_clients",
+            lambda state, section, quiet=False: (
+                calls.update(setup_quiet=quiet) or (WS, "profile", ["claude"])
+            ),
         )
         monkeypatch.setattr(sd, "get_databricks_token", lambda ws, profile: "token")
         monkeypatch.setattr(
@@ -769,7 +782,9 @@ class TestConfigureSelectedSkillsDownloadCommand:
         monkeypatch.setattr(
             sd,
             "register_schemaless_skills_connection",
-            lambda state, ws, profile, clients: calls.update(register=(ws, profile, clients)),
+            lambda state, ws, profile, clients, print_summary=True: calls.update(
+                register=(ws, profile, clients), print_summary=print_summary
+            ),
         )
         return calls
 
@@ -781,6 +796,8 @@ class TestConfigureSelectedSkillsDownloadCommand:
 
         assert calls["download"] == (WS, "token", fqns, "/tmp/skills")
         assert calls["register"] == (WS, "profile", ["claude"])
+        assert calls["print_summary"] is False
+        assert calls["setup_quiet"] is True
 
     def test_none_path_threads_through(self, monkeypatch):
         calls = self._stub(monkeypatch)
@@ -888,7 +905,11 @@ class TestConfigureSkillsDownloadPickerCommand:
         calls: dict[str, object] = {}
         monkeypatch.setattr(sd, "load_state", lambda: {"state": True})
         monkeypatch.setattr(
-            sd, "setup_mcp_clients", lambda state, section: (WS, "profile", ["claude"])
+            sd,
+            "setup_mcp_clients",
+            lambda state, section, quiet=False: (
+                calls.update(setup_quiet=quiet) or (WS, "profile", ["claude"])
+            ),
         )
         monkeypatch.setattr(sd, "get_databricks_token", lambda ws, profile: "token")
         monkeypatch.setattr(
@@ -903,7 +924,9 @@ class TestConfigureSkillsDownloadPickerCommand:
         monkeypatch.setattr(
             sd,
             "register_schemaless_skills_connection",
-            lambda state, ws, profile, clients: calls.update(register=(ws, profile, clients)),
+            lambda state, ws, profile, clients, print_summary=True: calls.update(
+                register=(ws, profile, clients), print_summary=print_summary
+            ),
         )
         return calls
 
@@ -914,6 +937,8 @@ class TestConfigureSkillsDownloadPickerCommand:
 
         assert calls["download"] == (WS, "token", ["main.default.triage"], str(tmp_path))
         assert calls["register"] == (WS, "profile", ["claude"])
+        assert calls["print_summary"] is False
+        assert calls["setup_quiet"] is True
 
     def test_cancel_downloads_nothing_and_skips_register(self, monkeypatch):
         calls = self._stub(monkeypatch, None)
