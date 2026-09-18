@@ -420,7 +420,7 @@ def configure_location_skills_download_command(locations: list[str], *, path: st
     ``--mcp`` set survives a download run. Downloading a named subset instead of whole
     schemas is a separate command (``configure_selected_skills_download_command``)."""
     state = load_state()
-    workspace, profile, clients = setup_mcp_clients(state, "Skills")
+    workspace, profile, clients = setup_mcp_clients(state, "Skills", quiet=True)
     token = get_databricks_token(workspace, profile)
 
     download_skills_from_schema_locations(workspace, token, locations, path)
@@ -436,7 +436,7 @@ def configure_selected_skills_download_command(fqns: list[str], path: str | None
     ``download_selected_skills`` (which alone does not register), then registers/keeps
     the schema-less MCP connection, exactly as the whole-schema download does."""
     state = load_state()
-    workspace, profile, clients = setup_mcp_clients(state, "Skills")
+    workspace, profile, clients = setup_mcp_clients(state, "Skills", quiet=True)
     token = get_databricks_token(workspace, profile)
 
     download_selected_skills(workspace, token, fqns, path)
@@ -504,7 +504,7 @@ def configure_skills_download_picker_command(path: str | None = None) -> int:
     Ctrl-C downloads nothing and leaves the connection untouched.
     """
     state = load_state()
-    workspace, profile, clients = setup_mcp_clients(state, "Skills")
+    workspace, profile, clients = setup_mcp_clients(state, "Skills", quiet=True)
     token = get_databricks_token(workspace, profile)
     roots = skill_dir_roots(path)
 
