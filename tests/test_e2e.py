@@ -711,20 +711,11 @@ class TestModelProviderLaunch:
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", config_dir / "settings.json")
         monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "claude-settings.backup.json")
-        # The proxy mints the Databricks swap token; feed it the e2e bearer rather
-        # than shelling out to the CLI, matching the other launch tests.
-        monkeypatch.setattr(
-            gateway_proxy, "get_databricks_token", lambda ws, profile=None, **kwargs: e2e_token
-        )
-
-        # Start the real loopback refresh proxy exactly as `_launch_relayed` does,
-        # so the request is credential-swapped and relayed like a live session.
-        server, cache, client = gateway_proxy.start_proxy(
-            e2e_workspace,
-            None,
-            0,
-            token_header=gateway_proxy.AI_GATEWAY_TOKEN_HEADER,
-            force_refresh_near_expiry=False,
+        # Start the real loopback refresh proxy exactly as `_launch_relayed` does, so
+        # the request is credential-swapped and relayed like a live session. The token
+        # provider feeds the e2e bearer rather than shelling out to the CLI.
+        server, cache, client = gateway_proxy.start_relay_proxy(
+            e2e_workspace, lambda _force: e2e_token, 0
         )
         port = server.server_address[1]
         threading.Thread(target=server.serve_forever, daemon=True).start()

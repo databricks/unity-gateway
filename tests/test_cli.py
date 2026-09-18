@@ -446,6 +446,41 @@ def _patch_launch(tool: str):
     ]
 
 
+@contextlib.contextmanager
+def _launch_policy_patches(
+    managed: dict | None,
+    *,
+    persisted_provider: str | None = None,
+):
+    launch_state = dict(MINIMAL_STATE)
+    with (
+        patch("ucode.cli.ensure_bootstrap_dependencies"),
+        patch("ucode.cli.load_state", return_value=launch_state),
+        patch("ucode.cli.ensure_provider_state", return_value=launch_state),
+        patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
+        patch("ucode.cli._fetch_budget_recommendation", return_value=None),
+        patch("ucode.cli.get_provider_service", return_value=persisted_provider) as get_provider,
+        patch("ucode.cli.configure_shared_state", return_value=launch_state) as shared,
+        patch(
+            "ucode.cli.resolve_provider_models", return_value=(None, None, False)
+        ) as resolve_provider,
+        patch("ucode.cli.resolve_gemini_provider_model", return_value=("gemini-2.0-flash", None)),
+        patch(
+            "ucode.cli.resolve_launch_model",
+            return_value=(launch_state, "databricks-claude-sonnet-4"),
+        ),
+        patch("ucode.cli.configure_tool", return_value=launch_state) as configure,
+        patch("ucode.cli.launch_agent") as launch,
+    ):
+        yield {
+            "get_provider": get_provider,
+            "shared": shared,
+            "resolve_provider": resolve_provider,
+            "configure": configure,
+            "launch": launch,
+        }
+
+
 class TestSubcommandRouting:
     @pytest.mark.parametrize("tool", TOOLS)
     def test_subcommand_calls_correct_tool(self, tool):
@@ -692,6 +727,15 @@ class TestSubcommandRouting:
         assert mock_launch.call_args.args[1].args == []
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
+    def test_claude_provider_enables_model_discovery(self):
+        with patch("ucode.cli._launch_tool") as mock_launch:
+            result = runner.invoke(app, ["claude", "--provider", "main.default.anthropic"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_launch.call_args.kwargs["provider"] == "main.default.anthropic"
+        assert mock_launch.call_args.args[1].args == []
+        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+
     def test_codex_model_location_is_forwarded(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
             result = runner.invoke(app, ["codex", "--model-location", "main.default"])
@@ -701,26 +745,41 @@ class TestSubcommandRouting:
         assert mock_launch.call_args.args[1].args == []
 
     def test_codex_provider_and_model_location_are_mutually_exclusive(self):
-        result = runner.invoke(
-            app,
-            ["codex", "--provider", "main.default.provider", "--model-location", "main.default"],
-        )
+        with _launch_policy_patches(None):
+            result = runner.invoke(
+                app,
+                [
+                    "codex",
+                    "--provider",
+                    "main.default.provider",
+                    "--model-location",
+                    "main.default",
+                ],
+            )
 
         assert result.exit_code == 1
         assert "--provider and --model-location cannot be used together" in result.output
 
     def test_claude_provider_and_model_location_are_mutually_exclusive(self):
-        result = runner.invoke(
-            app,
-            ["claude", "--provider", "main.default.provider", "--model-location", "main.default"],
-        )
+        with _launch_policy_patches(None):
+            result = runner.invoke(
+                app,
+                [
+                    "claude",
+                    "--provider",
+                    "main.default.provider",
+                    "--model-location",
+                    "main.default",
+                ],
+            )
 
         assert result.exit_code == 1
         assert "--provider and --model-location cannot be used together" in result.output
 
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     def test_invalid_model_location_is_rejected(self, tool):
-        result = runner.invoke(app, [tool, "--model-location", "main"])
+        with _launch_policy_patches(None):
+            result = runner.invoke(app, [tool, "--model-location", "main"])
 
         assert result.exit_code == 1
         assert "--model-location must be `<catalog>.<schema>`." in _strip_ansi(result.output)
@@ -915,6 +974,176 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         assert json.loads(result.output) == routed
         mock_v2_route.assert_called_once()
+
+
+class TestManagedConfigLaunchSourceGuard:
+    @pytest.mark.parametrize(
+        ("tool", "option", "value"),
+        [
+            ("claude", "--provider", "main.default.provider"),
+            ("codex", "--provider", "main.default.provider"),
+            ("gemini", "--provider", "main.default.provider"),
+            ("claude", "--model-location", "main.default"),
+            ("codex", "--model-location", "main.default"),
+        ],
+    )
+    def test_managed_config_rejects_launch_source_options(self, tool, option, value):
+        with _launch_policy_patches({}) as calls:
+            result = runner.invoke(app, [tool, option, value])
+
+        assert result.exit_code == 1
+        assert "`--provider` or `--model-location` is not allowed" in _strip_ansi(result.output)
+        calls["launch"].assert_not_called()
+
+    def test_persisted_provider_is_not_mistaken_for_an_explicit_option(self):
+        with _launch_policy_patches({}, persisted_provider="main.default.provider") as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["get_provider"].call_count == 1
+        assert calls["get_provider"].call_args.args[1] == "claude"
+        calls["resolve_provider"].assert_called_once()
+        calls["configure"].assert_called_once()
+        calls["launch"].assert_called_once()
+
+
+class TestManagedClaudeModelDiscovery:
+    MPS_CONFIG = {
+        "enabled_agents": {
+            "claude": {
+                "model_config": {
+                    "model_provider_service": "main.default.anthropic-mps",
+                    "models": {
+                        "default_sonnet_model": "anthropic.claude-sonnet-4-6",
+                        "default_opus_model": "anthropic.claude-opus-4-8",
+                        "default_haiku_model": "anthropic.claude-haiku-4-5",
+                        "default_fable_model": "anthropic.claude-fable-5-1",
+                    },
+                    "default_model": "anthropic.claude-sonnet-4-6",
+                }
+            }
+        }
+    }
+    UC_CONFIG = {
+        "enabled_agents": {"claude": {"model_config": {"unity_catalog_location": "main.default"}}}
+    }
+
+    @staticmethod
+    def _invoke(monkeypatch, managed):
+        state = {
+            **MINIMAL_STATE,
+            "claude_models": {},
+            "provider_services": {"claude": "main.developer.provider"},
+        }
+        shared = MagicMock(return_value=state)
+        configure = MagicMock(side_effect=lambda _tool, configured, *_args, **_kwargs: configured)
+        launch = MagicMock()
+        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
+        monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
+        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (managed, False))
+        monkeypatch.setattr(cli_mod, "get_provider_service", lambda *_a: "main.developer.provider")
+        monkeypatch.setattr(cli_mod, "configure_shared_state", shared)
+        resolve_provider = MagicMock(return_value=(None, None, False))
+        monkeypatch.setattr(cli_mod, "resolve_provider_models", resolve_provider)
+        resolve_model = MagicMock(side_effect=AssertionError("must use native discovery"))
+        monkeypatch.setattr(cli_mod, "resolve_launch_model", resolve_model)
+        monkeypatch.setattr(cli_mod, "configure_tool", configure)
+        monkeypatch.setattr(cli_mod, "launch_agent", launch)
+
+        result = runner.invoke(app, ["claude"])
+        return {
+            "result": result,
+            "state": state,
+            "shared": shared,
+            "configure": configure,
+            "launch": launch,
+            "resolve_provider": resolve_provider,
+            "resolve_model": resolve_model,
+        }
+
+    @pytest.mark.parametrize(
+        ("managed", "expected_provider", "expected_parent"),
+        [
+            (MPS_CONFIG, "main.default.anthropic-mps", None),
+            (UC_CONFIG, None, "main.default"),
+        ],
+        ids=["mps", "uc-parent"],
+    )
+    def test_launch_uses_managed_source_and_native_discovery(
+        self, monkeypatch, managed, expected_provider, expected_parent
+    ):
+        calls = self._invoke(monkeypatch, managed)
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert calls["shared"].call_args.kwargs["skip_model_discovery"] is True
+        calls["resolve_model"].assert_not_called()
+        if expected_provider:
+            assert calls["resolve_provider"].call_args.args[2] == expected_provider
+        else:
+            calls["resolve_provider"].assert_not_called()
+        assert calls["configure"].call_args.kwargs["provider"] == expected_provider
+        assert calls["configure"].call_args.kwargs["parent_schema"] == expected_parent
+        assert calls["configure"].call_args.args[1]["provider_services"]["claude"] == (
+            expected_provider or "main.developer.provider"
+        )
+        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+
+
+def test_claude_discovery_changes_do_not_break_other_managed_providers():
+    managed = {
+        "enabled_agents": {
+            "gemini": {"model_config": {"model_provider_service": "main.default.gemini-mps"}}
+        }
+    }
+    with _launch_policy_patches(managed):
+        result = runner.invoke(app, ["gemini"])
+
+    assert result.exit_code == 0, result.output
+    assert "main.default.gemini-mps" in _strip_ansi(result.output)
+
+
+class TestManagedCodexModelSource:
+    @pytest.mark.parametrize(
+        ("model_config", "expected_provider", "expected_parent"),
+        [
+            (
+                {"model_provider_service": "main.default.managed-mps"},
+                "main.default.managed-mps",
+                None,
+            ),
+            ({"unity_catalog_location": "main.managed"}, None, "main.managed"),
+        ],
+        ids=["mps", "uc-parent"],
+    )
+    def test_managed_source_overrides_saved_provider(
+        self, monkeypatch, model_config, expected_provider, expected_parent
+    ):
+        monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        managed = {"enabled_agents": {"codex": {"model_config": model_config}}}
+
+        with _launch_policy_patches(
+            managed,
+            persisted_provider="main.default.developer",
+        ) as calls:
+            result = runner.invoke(app, ["codex"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["shared"].call_args.kwargs["skip_model_discovery"] is True
+        if expected_provider:
+            calls["resolve_provider"].assert_called_once()
+        else:
+            calls["resolve_provider"].assert_not_called()
+        assert calls["configure"].call_args.kwargs["provider"] == expected_provider
+        assert calls["configure"].call_args.kwargs["parent_schema"] == expected_parent
+        launch_state = calls["launch"].call_args.args[1]
+        if expected_provider:
+            assert launch_state["_codex_launch_provider"] == expected_provider
+            assert "_codex_launch_parent_schema" not in launch_state
+        else:
+            assert launch_state["_codex_launch_parent_schema"] == expected_parent
+            assert "_codex_launch_provider" not in launch_state
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
 
 class TestClaudeModelFlag:
@@ -1488,13 +1717,22 @@ class TestStatus:
                 },
             ],
         }
-        with patch("ucode.cli.load_state", return_value=state):
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch(
+                "ucode.cli.claude_agent.read_managed_mcp_urls",
+                return_value={
+                    "managed-mcp": "https://example.databricks.com/managed-mcp",
+                    "os-only-mcp": "https://example.databricks.com/os-only-mcp",
+                },
+            ),
+        ):
             result = runner.invoke(app, ["status"])
 
         output = re.sub(r"\s+", " ", _strip_ansi(result.output))
         assert result.exit_code == 0, result.output
-        # claude: dev-mcp, shared-mcp, managed-mcp = 3 distinct (shared-mcp not double-counted).
-        assert "MCP servers: 3" in output
+        # The managed file adds os-only-mcp; managed-mcp remains deduplicated by name.
+        assert "MCP servers: 4" in output
 
     def test_status_treats_available_tools_as_configured_agents(self):
         state = {
@@ -2172,54 +2410,9 @@ class TestSkillsRemoveCommand:
         remove.assert_not_called()
 
 
-class TestSkillsList:
-    def test_lists_managed_scopes_and_downloads(self, tmp_path):
-        installed = tmp_path / "skills" / "triage"
-        installed.mkdir(parents=True)
-        state = {
-            **MINIMAL_STATE,
-            "mcp_servers": [
-                {
-                    "name": "databricks-skill-registry",
-                    "kind": "skills",
-                    "skill_locations": ["main.default"],
-                    "clients": ["claude", "codex"],
-                }
-            ],
-        }
-        managed = {"skills": {"names": ["main.admin.release"]}}
-        downloads = [
-            {
-                "fqn": "main.default.triage",
-                "scope": "user",
-                "base": str(tmp_path),
-                "dirs": [str(installed)],
-            }
-        ]
-        with (
-            patch("ucode.cli.load_state", return_value=state),
-            patch("ucode.cli.load_managed_state", return_value=managed),
-            patch("ucode.cli.list_downloaded", return_value=downloads),
-        ):
-            result = runner.invoke(app, ["skills", "list"])
-
-        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
-        assert result.exit_code == 0, result.output
-        assert "Workspace-managed" in output
-        assert "main.admin.release" in output
-        assert "Claude Code main.default" in output
-        assert "Codex main.default" in output
-        assert "main.default.triage user" in output
-        assert "available" in output
-
-
-class TestManagedSkillsOnLaunch:
-    """Managed skills are delivered by download only: the launch path downloads them and never
-    registers them on the skills MCP connection (only a developer's own `skills add --mcp` schemas
-    live there)."""
-
-    def _state(self):
-        return {"workspace": "https://example.databricks.com", "profile": "prod"}
+class TestManagedSkills:
+    """Managed skills are downloaded at `ug configure` (alongside MCP registration), not on the
+    launch hot path, so `ug <agent>` makes no per-launch skill-discovery calls."""
 
     def _launch(self, monkeypatch, *, managed):
         state = dict(MINIMAL_STATE)
@@ -2235,53 +2428,50 @@ class TestManagedSkillsOnLaunch:
             patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
             patch("ucode.cli.launch_agent"),
             patch(
-                "ucode.cli.download_managed_skills_on_launch", return_value=["main.default"]
+                "ucode.cli.reconcile_managed_skills", return_value=(["pr-review"], [])
             ) as mock_dl,
         ):
             result = runner.invoke(app, ["claude"])
         return result, state, mock_dl
 
-    def test_launch_downloads_managed_skills_and_skips_mcp_registration(self, monkeypatch):
-        from ucode import cli
-
+    def test_launch_does_not_reconcile_managed_skills(self, monkeypatch):
+        # Skills are reconciled at `ug configure`; the launch path must not re-fetch them, so a
+        # managed config's `names` never triggers per-launch get_skill calls.
         managed = {
             "enabled_agents": {"claude": {}},
-            "skills": {"names": ["main.default", "ml.prod"]},
+            "skills": {"names": ["main.default.pr-review", "ml.prod.test-writer"]},
         }
-        result, state, mock_dl = self._launch(monkeypatch, managed=managed)
+        result, _state, mock_dl = self._launch(monkeypatch, managed=managed)
 
         assert result.exit_code == 0, result.output
-        mock_dl.assert_called_once_with(
-            "https://example.databricks.com", "tok", ["main.default", "ml.prod"]
-        )
-        skills = [
-            s for s in (state.get("mcp_servers") or []) if s.get("kind") == cli.SKILLS_MCP_KIND
-        ]
-        assert skills == []
-
-    def test_no_managed_skills_skips_the_download(self):
-        with (
-            patch("ucode.cli.get_databricks_token") as mock_token,
-            patch("ucode.cli.download_managed_skills_on_launch") as mock_dl,
-        ):
-            from ucode import cli
-
-            cli._download_managed_skills({}, self._state())
-
-        mock_token.assert_not_called()
         mock_dl.assert_not_called()
 
-    def test_download_failure_never_blocks_launch(self):
-        with (
-            patch("ucode.cli.get_databricks_token", side_effect=RuntimeError("no auth")),
-            patch("ucode.cli.download_managed_skills_on_launch") as mock_dl,
-        ):
+    def test_configure_passes_managed_to_reconcile(self):
+        with patch("ucode.cli.reconcile_managed_skills", return_value=([], [])) as mock_dl:
             from ucode import cli
 
-            # Must not raise.
-            cli._download_managed_skills({"skills": {"names": ["main.default"]}}, self._state())
+            cli._configure_managed_skills({"skills": {"names": ["a.b.c"]}})
 
-        mock_dl.assert_not_called()
+        mock_dl.assert_called_once_with({"skills": {"names": ["a.b.c"]}})
+
+    def test_no_managed_config_reconciles_empty(self):
+        # No managed config still reconciles, so a prior workspace's managed skills are removed.
+        with patch("ucode.cli.reconcile_managed_skills", return_value=([], [])) as mock_dl:
+            from ucode import cli
+
+            cli._configure_managed_skills(None)
+
+        mock_dl.assert_called_once_with({})
+
+    def test_failure_never_blocks_configure(self):
+        # A RuntimeError (auth/discovery) or OSError (disk) must not abort configure.
+        for exc in (RuntimeError("no auth"), OSError("read-only file system")):
+            with patch("ucode.cli.reconcile_managed_skills", side_effect=exc):
+                from ucode import cli
+
+                cli._configure_managed_skills(
+                    {"skills": {"unity_catalog_location": "main.default"}}
+                )
 
 
 class TestStatusSkillsSection:
@@ -3093,6 +3283,131 @@ class TestConfigureAgentsSelection:
         assert installed == ["claude", "codex"]
         assert configured == ["claude", "codex"]
 
+    @pytest.mark.parametrize(
+        ("model_config", "expected_provider", "expected_parent"),
+        [
+            (
+                {"model_provider_service": "main.default.anthropic-mps"},
+                "main.default.anthropic-mps",
+                None,
+            ),
+            ({"unity_catalog_location": "main.models"}, None, "main.models"),
+        ],
+        ids=["mps", "uc-parent"],
+    )
+    def test_managed_claude_source_configures_without_global_models(
+        self, monkeypatch, model_config, expected_provider, expected_parent
+    ):
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": [],
+            "claude_models": {},
+            "provider_services": {"claude": "main.default.developer"},
+        }
+        managed = {"enabled_agents": {"claude": {"model_config": model_config}}}
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s, **_k: (managed, False))
+        monkeypatch.setattr(
+            cli_mod,
+            "check_gateway_endpoint",
+            lambda *_a: pytest.fail("managed model sources do not require global models"),
+        )
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *_a: None)
+        configured: list[tuple[dict, dict]] = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda resolved, tools, **kwargs: configured.append((resolved, kwargs)) or resolved,
+        )
+
+        assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
+
+        assert len(configured) == 1
+        resolved, kwargs = configured[0]
+        expected_saved_provider = expected_provider or "main.default.developer"
+        assert cli_mod.get_provider_service(resolved, "claude") == expected_saved_provider
+        assert kwargs["parent_schemas"] == (
+            {"claude": expected_parent} if expected_parent else None
+        )
+
+    def test_single_claude_agent_passes_managed_uc_parent_directly(self, monkeypatch):
+        state = {**MINIMAL_STATE, "provider_services": {"claude": "main.default.developer"}}
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"unity_catalog_location": "main.models"}}
+            }
+        }
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (managed, False))
+        configure = MagicMock(return_value=state)
+        monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+
+        assert (
+            cli_mod.configure_workspace_command(tool="claude", workspaces=[("https://w.com", None)])
+            == 0
+        )
+        configure.assert_called_once_with("claude", state, parent_schema="main.models")
+
+    def test_managed_codex_parent_is_passed_to_generic_configure(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": [],
+            "codex_models": [],
+            "provider_services": {"codex": "main.default.developer"},
+        }
+        managed = {
+            "enabled_agents": {"codex": {"model_config": {"unity_catalog_location": "main.models"}}}
+        }
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s, **_k: (managed, False))
+        monkeypatch.setattr(
+            cli_mod,
+            "check_gateway_endpoint",
+            lambda *_a: pytest.fail("managed model sources do not require global models"),
+        )
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *_a: None)
+        configured: list[dict] = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda resolved, tools, **kwargs: configured.append(kwargs) or resolved,
+        )
+
+        assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
+
+        assert configured[0]["parent_schemas"] == {"codex": "main.models"}
+
+    def test_single_codex_agent_passes_managed_parent_directly(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "provider_services": {"codex": "main.default.developer"},
+        }
+        managed = {
+            "enabled_agents": {"codex": {"model_config": {"unity_catalog_location": "main.models"}}}
+        }
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        refresh = MagicMock(return_value=(managed, False))
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", refresh)
+        configure = MagicMock(return_value=state)
+        monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
+        install_ai_tools = MagicMock()
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", install_ai_tools)
+
+        result = runner.invoke(
+            app, ["configure", "--agent", "codex", "--workspace", "https://w.com"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "(Provider: Databricks)" in _strip_ansi(result.output)
+        refresh.assert_called_once_with(state, force_refresh=True)
+        configure.assert_called_once_with("codex", state, parent_schema="main.models")
+        install_ai_tools.assert_called_once_with(["codex"], state, force_refresh=False)
+
     def test_managed_config_fails_when_no_enabled_agent_is_available(self, monkeypatch):
         import ucode.cli as cli_mod
 
@@ -3168,9 +3483,15 @@ class TestConfigureAgentsSelection:
             "_configure_managed_mcp_servers",
             lambda m: order.append("mcp") or None,
         )
+        monkeypatch.setattr(
+            cli_mod,
+            "_configure_managed_skills",
+            lambda m: order.append("skills") or None,
+        )
 
         assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
-        assert order == ["configure:claude", "configure:codex", "mcp"]
+        # Skills reconcile runs at configure too, after the MCP registration.
+        assert order == ["configure:claude", "configure:codex", "mcp", "skills"]
 
     def test_managed_configure_accumulates_available_tools_for_all_agents(self, monkeypatch):
         # Regression: each agent is configured from a fresh copy of `state`, and
@@ -4533,7 +4854,7 @@ class TestBudgetRecommendationAtLaunch:
             "enabled_agents": {
                 "claude": {
                     "model_config": {
-                        "models": {
+                        "default_models_by_model_family": {
                             "default_sonnet_model": "system.ai.claude-sonnet-4-6",
                         }
                     }
@@ -4580,6 +4901,20 @@ class TestBudgetRecommendationAtLaunch:
         )
         assert result.exit_code == 0, result.output
         assert "Could not check your budget" in result.output
+
+    def test_a_404_is_silently_ignored(self, monkeypatch):
+        result, _calls, _cfg = self._launch(
+            monkeypatch,
+            managed={"enabled_agents": {"claude": {}}},
+            recommendation=None,
+            reason=(
+                'HTTP 404 Not Found: {"error_code":"FEATURE_DISABLED",'
+                '"message":"Coding agent config recommendation is not enabled."}'
+            ),
+        )
+        assert result.exit_code == 0, result.output
+        assert "Could not check your budget" not in result.output
+        assert "FEATURE_DISABLED" not in result.output
 
     def test_a_token_failure_does_not_block_the_launch(self, monkeypatch):
         # Auth can lapse between the config refresh and the budget check.

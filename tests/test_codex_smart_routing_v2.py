@@ -104,7 +104,7 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.144.0")
-        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "token")
         monkeypatch.setattr(v2, "launch_codex", lambda *args, **kwargs: pytest.fail("launched"))
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
 
@@ -379,7 +379,7 @@ class TestLaunchCodex:
 class TestCustomCatalogModels:
     def _catalog(self, path, slugs):
         path.write_text(
-            json.dumps({"models": [{"slug": slug} for slug in slugs]}),
+            json.dumps({"models": [{"slug": slug, "visibility": "list"} for slug in slugs]}),
             encoding="utf-8",
         )
         return path
@@ -450,6 +450,31 @@ class TestCustomCatalogModels:
         assert codex_config.custom_catalog_models() is None
         assert len(warnings) == 1
         assert "falling back to the cached model services" in warnings[0]
+
+    def _catalog_with_visibility(self, path, rows):
+        path.write_text(
+            json.dumps({"models": [{"slug": slug, "visibility": vis} for slug, vis in rows]}),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_only_visible_models_offered_to_router(self, tmp_path, monkeypatch):
+        catalog = self._catalog_with_visibility(
+            tmp_path / "cli.json",
+            [
+                ("system.ai.glm-5-3", "list"),
+                ("glm-5-3", "hide"),
+                ("system.ai.gpt-5-6-luna", "list"),
+                ("gpt-5.6-luna", "hide"),
+                ("gpt-5-6-luna", "hide"),
+            ],
+        )
+        self._settings(tmp_path, monkeypatch, cli=catalog)
+
+        assert codex_config.custom_catalog_models() == [
+            "system.ai.glm-5-3",
+            "system.ai.gpt-5-6-luna",
+        ]
 
     def test_launch_prefers_catalog_over_cached_models(self, tmp_path, monkeypatch, capsys):
         self._settings(

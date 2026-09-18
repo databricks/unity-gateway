@@ -98,9 +98,13 @@ test_ug_codex_commands.py               # command help and parser error forwardi
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
+test_ug_claude_managed_model_discovery.py # fetched/reused Claude MPS policy cases
+test_ug_codex_managed_model_discovery.py  # fetched/reused Codex MPS policy cases
 test_ug_configure_managed.py            # managed workspace: static model list, no agent selector
-test_ug_configure_managed_models.py     # injected model lists: pickers and Codex fallback metadata
+test_ug_configure_managed_models.py     # injected model sources and Codex fallback metadata
 test_ug_configure_managed_mcp.py        # injected managed MCP list
+test_ug_configure_managed_skills.py     # injected managed skills: download, coexist, reconcile away
+test_ug_configure_managed_lifecycle.py  # none -> A -> B -> MPS -> none: reconcile, clear on MPS/no-config
 test_installation.py                   # fresh installed package
 utils/                                # process/terminal/evidence helpers and Docker files
 ```
@@ -155,11 +159,14 @@ No service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
 
 There are **42 live cases** (including 6 TUI journeys) and **5 installation
-checks** with both agents. A separate **3 managed-workspace cases** (one per agent
-plus an idempotent re-configure, marker `managed`) run against a workspace that publishes a CodingAgentConfig; see
-"Managed-workspace journeys" below. A further **3 `managed_fixture` cases** inject the admin config
-locally (via `UCODE_MANAGED_CONFIG_STUB`) to cover shapes the live workspace does not publish; each
-differs from the published config in what it asserts so it proves the injected config drove configure.
+checks** with both agents. A separate **4 managed-workspace cases** (one per agent, an idempotent
+re-configure, and a cache-TTL journey; marker `managed`) run against a workspace that publishes a
+CodingAgentConfig; see "Managed-workspace journeys" below. A further **34 `managed_fixture`
+cases** use `UCODE_MANAGED_CONFIG_STUB`. Twenty-four explicit configured/fresh Claude and Codex
+discovery and source-override journeys fetch the published config once per agent, replace that
+agent's static source with its dedicated MPS, and reuse the result. Ten existing collected cases
+cover focused model, MCP, skills, and lifecycle shapes, including per-agent model reconciliation
+and managed skill cleanup.
 See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
@@ -279,7 +286,13 @@ enabled agents, or defaults) breaks these lanes until the constants in `test_ug_
 are updated to match. Do not change it casually.
 
 The `managed_fixture` journeys use `UCODE_MANAGED_CONFIG_STUB` to short-circuit only the
-managed-config HTTP read for config shapes that workspace does not publish. In particular,
+managed-config HTTP read for config shapes that workspace does not publish. The Claude discovery
+module fetches the workspace's published config once, replaces Claude's static model source with
+`main.default.ci_e2e_anthropic_mps`, drops incompatible static defaults, and reuses that fixture
+across all configured/fresh scenarios. The Codex module does the same with
+`main.default.ci_e2e_openai_mps`. The tests verify Claude's admin header, native cache and real
+model picker, Codex's exact app-server catalog, and both agents' rejection of personal source
+overrides. In addition,
 `test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
 `system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that
 workspace on the valid default model `system.ai.gpt-5-6-sol`. With smart routing enabled, it opens

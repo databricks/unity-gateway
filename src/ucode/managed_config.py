@@ -511,6 +511,13 @@ def get_model_recommendation(workspace: str, token: str) -> tuple[dict | None, s
     }, None
 
 
+class _StubUnset:
+    """Sentinel type: the stub env var is unset or unreadable, so fall through to the real read."""
+
+
+_STUB_UNSET = _StubUnset()
+
+
 def get_managed_config(workspace: str, token: str) -> FetchedManagedConfig:
     """Fetch and normalize the workspace's managed config.
 
@@ -529,11 +536,14 @@ def get_managed_config(workspace: str, token: str) -> FetchedManagedConfig:
     v0 stores at most one config per workspace, so the first entry is the workspace's config.
 
     ``UCODE_MANAGED_CONFIG_STUB`` short-circuits the HTTP read: when it names a readable JSON file,
-    that file's single CodingAgentConfig is used verbatim. It exists so this client can be exercised
-    against the managed-config shape before the server emits it (AIGTWY-4572); unset in normal use.
+    that file's single CodingAgentConfig is used verbatim, or an explicit ``null`` stands in for a
+    workspace with no managed config. It exists so this client can be exercised against the
+    managed-config shape before the server emits it (AIGTWY-4572); unset in normal use.
     """
     stub = _stub_config()
-    if stub is not None:
+    if not isinstance(stub, _StubUnset):
+        if stub is None:
+            return FetchedManagedConfig(None, None)
         return _gate_config(stub)
     configs, reason = fetch_managed_coding_agent_configs(workspace, token)
     if reason is not None:
@@ -548,17 +558,22 @@ def get_managed_config(workspace: str, token: str) -> FetchedManagedConfig:
     return _gate_config(configs[0])
 
 
-def _stub_config() -> dict | None:
-    """The stub CodingAgentConfig named by ``UCODE_MANAGED_CONFIG_STUB``, or None when unset/bad."""
+def _stub_config() -> dict | None | _StubUnset:
+    """The stub named by ``UCODE_MANAGED_CONFIG_STUB``: the CodingAgentConfig dict it holds, ``None``
+    when it is an explicit JSON ``null`` (a workspace with no managed config), or ``_STUB_UNSET``
+    when the var is unset, the file cannot be read, or its content is not a config dict (fall
+    through to the real read)."""
     path = os.environ.get("UCODE_MANAGED_CONFIG_STUB")
     if not path:
-        return None
+        return _STUB_UNSET
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         print_warning(f"UCODE_MANAGED_CONFIG_STUB could not be read ({exc}); ignoring it.")
+        return _STUB_UNSET
+    if raw is None:
         return None
-    return raw if isinstance(raw, dict) else None
+    return raw if isinstance(raw, dict) else _STUB_UNSET
 
 
 def _gate_config(raw: dict) -> FetchedManagedConfig:
