@@ -139,7 +139,11 @@ def _run_codex_openai_dialect_mps_cuj(session, workspace, provider, model, label
 def test_ug_configure_codex_azure_openai_mps(
     live_session, workspace, codex_azure_provider, codex_azure_provider_model
 ):
-    """Route Codex through an Azure OpenAI (`azure_openai`) MPS backed by a reasoning model."""
+    """Scenario: select an Azure OpenAI (`azure_openai`) MPS in ug configure's picker for Codex.
+
+    Expected: ug saves the provider and a real Codex session completes a file task on one of its
+    reasoning-capable models (see _run_codex_openai_dialect_mps_cuj).
+    """
     _run_codex_openai_dialect_mps_cuj(
         live_session, workspace, codex_azure_provider, codex_azure_provider_model, "azure"
     )
@@ -148,10 +152,11 @@ def test_ug_configure_codex_azure_openai_mps(
 def test_ug_configure_codex_foundry_mps(
     live_session, workspace, codex_foundry_provider, codex_foundry_provider_model
 ):
-    """Route Codex through a Microsoft Foundry (`microsoft_foundry`) MPS backed by a reasoning model.
+    """Scenario: select a Microsoft Foundry (`microsoft_foundry`) MPS in ug configure's picker.
 
-    Foundry speaks the same OpenAI dialect as Azure OpenAI, so this reuses the Azure CUJ; the
-    separate test exercises the `microsoft_foundry` provider-type allowlist entry for Codex.
+    Expected: ug saves the provider and a real Codex session completes a file task, exercising the
+    `microsoft_foundry` allowlist entry for Codex. Foundry speaks the same OpenAI dialect as Azure
+    OpenAI, so this reuses the Azure CUJ (see _run_codex_openai_dialect_mps_cuj).
     """
     _run_codex_openai_dialect_mps_cuj(
         live_session, workspace, codex_foundry_provider, codex_foundry_provider_model, "foundry"
