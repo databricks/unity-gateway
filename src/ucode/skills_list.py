@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ucode.databricks import get_databricks_token
-from ucode.mcp import configured_skill_mcp_locations
+from ucode.mcp import configured_skill_workspace_and_mcp_locations
 from ucode.skills_api import list_schema_skills
 from ucode.skills_state import list_downloaded
 from ucode.state import load_state
@@ -29,49 +29,40 @@ class ConfiguredSkill:
     agents: str
 
 
-def _downloaded_skills() -> dict[str, tuple[str, str]]:
-    """Downloaded skills as ``fqn -> (securable_name, "<catalog>.<schema>")``, one entry per fqn."""
-    by_fqn: dict[str, tuple[str, str]] = {}
-    for record in list_downloaded():
-        fqn = record.get("fqn")
-        if fqn:
-            location, securable = fqn.rsplit(".", 1)
-            by_fqn.setdefault(fqn, (securable, location))
-    return by_fqn
+def _mcp_skill_agents(
+    state: dict,
+) -> tuple[dict[str, frozenset[str]], list[tuple[str, frozenset[str]]]]:
+    """The skills MCP connection's reach, as ``(agents_by_fqn, unlisted_schemas)``.
 
-
-def _mcp_skills(state: dict) -> dict[str, tuple[str, str, frozenset[str]]]:
-    """Skills reachable through the skills MCP connection, keyed by fully-qualified name.
-
-    Value is ``(securable_name, "<catalog>.<schema>", agents)``. Each scoped schema is listed
-    once against its workspace; a schema whose listing fails contributes one placeholder
-    entry so it still appears in the output.
+    ``agents_by_fqn`` maps each reachable skill's fully-qualified name to the agents scoped to
+    it. Each scoped schema is listed once against its workspace; a schema whose listing fails
+    becomes an ``(location, agents)`` entry in ``unlisted_schemas`` so it still surfaces.
     """
-    configured = configured_skill_mcp_locations(state)
+    configured = configured_skill_workspace_and_mcp_locations(state)
     if configured is None:
-        return {}
+        return {}, []
     workspace, locations_by_client = configured
     agents_by_schema: dict[str, set[str]] = {}
     for client, locations in locations_by_client.items():
         for location in locations:
             agents_by_schema.setdefault(location, set()).add(client)
     if not agents_by_schema:
-        return {}
+        return {}, []
 
     profile = state.get("profile") if isinstance(state.get("profile"), str) else None
     token = get_databricks_token(workspace, profile)
-    by_fqn: dict[str, tuple[str, str, frozenset[str]]] = {}
+    agents_by_fqn: dict[str, frozenset[str]] = {}
+    unlisted_schemas: list[tuple[str, frozenset[str]]] = []
     for location, clients in agents_by_schema.items():
-        agents = frozenset(clients)
         catalog, schema = location.split(".")
         refs, reason = list_schema_skills(workspace, token, catalog, schema)
         if reason:
             print_warning(f"Could not list skills in `{location}`: {reason}.")
-            by_fqn[f"{location}.*"] = (f"(skills in {location})", location, agents)
+            unlisted_schemas.append((location, frozenset(clients)))
             continue
         for ref in refs:
-            by_fqn[ref.fqn] = (ref.securable_name, f"{ref.catalog}.{ref.schema}", agents)
-    return by_fqn
+            agents_by_fqn[ref.fqn] = frozenset(clients)
+    return agents_by_fqn, unlisted_schemas
 
 
 def list_configured_skills_command() -> int:
@@ -81,21 +72,23 @@ def list_configured_skills_command() -> int:
     in a schema scoped into the skills MCP connection is visible to that schema's agents, and a
     skill configured both ways is flagged as discouraged.
     """
-    state = load_state()
-    downloaded = _downloaded_skills()
-    mcp_skills = _mcp_skills(state)
+    downloaded_fqns = {record["fqn"] for record in list_downloaded() if record.get("fqn")}
+    mcp_agents, unlisted_schemas = _mcp_skill_agents(load_state())
 
     rows: list[ConfiguredSkill] = []
-    for fqn in downloaded.keys() | mcp_skills.keys():
-        in_download, in_mcp = fqn in downloaded, fqn in mcp_skills
-        name, location = downloaded[fqn] if in_download else mcp_skills[fqn][:2]
+    for fqn in downloaded_fqns | mcp_agents.keys():
+        location, securable = fqn.rsplit(".", 1)
+        in_download, in_mcp = fqn in downloaded_fqns, fqn in mcp_agents
         if in_download and in_mcp:
-            rows.append(ConfiguredSkill(name, location, _BOTH, _ALL_AGENTS))
+            rows.append(ConfiguredSkill(securable, location, _BOTH, _ALL_AGENTS))
         elif in_download:
-            rows.append(ConfiguredSkill(name, location, _DOWNLOADED, _ALL_AGENTS))
+            rows.append(ConfiguredSkill(securable, location, _DOWNLOADED, _ALL_AGENTS))
         else:
-            agents = ",".join(sorted(mcp_skills[fqn][2]))
-            rows.append(ConfiguredSkill(name, location, _SKILL_MCP, agents))
+            agents = ",".join(sorted(mcp_agents[fqn]))
+            rows.append(ConfiguredSkill(securable, location, _SKILL_MCP, agents))
+    for location, clients in unlisted_schemas:
+        agents = ",".join(sorted(clients))
+        rows.append(ConfiguredSkill(f"(skills in {location})", location, _SKILL_MCP, agents))
 
     if not rows:
         print_note("No skills configured. Use `ug skills add` to configure skills.")

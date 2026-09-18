@@ -2111,7 +2111,9 @@ def skill_locations_for_client(entry: dict | None, client: str) -> list[str]:
     return _skill_locations_by_client(entry).get(client, [])
 
 
-def configured_skill_mcp_locations(state: dict) -> tuple[str, dict[str, list[str]]] | None:
+def configured_skill_workspace_and_mcp_locations(
+    state: dict,
+) -> tuple[str, dict[str, list[str]]] | None:
     """The skills MCP connection's workspace and its per-client ``<catalog>.<schema>`` locations.
 
     None when no skills connection is registered. The workspace comes from the

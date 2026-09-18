@@ -39,7 +39,7 @@ class TestListConfiguredSkills:
     def _mcp(self, monkeypatch, locations_by_client, by_schema):
         monkeypatch.setattr(
             sl,
-            "configured_skill_mcp_locations",
+            "configured_skill_workspace_and_mcp_locations",
             lambda _state: (WS, locations_by_client) if locations_by_client else None,
         )
         monkeypatch.setattr(
