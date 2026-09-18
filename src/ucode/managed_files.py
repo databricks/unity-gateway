@@ -16,6 +16,7 @@ import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from copy import deepcopy
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, cast
@@ -166,6 +167,45 @@ def _print_managed_write_permission(display: str) -> None:
     displays = " and ".join(_managed_write_batch)
     print_note(f"Enter password to configure settings for {displays}.")
     _managed_write_notice_shown = True
+
+
+@dataclass
+class ManagedFileSnapshots:
+    """The pre-ucode baseline and ucode's last write for a managed file, for a three-way merge."""
+
+    original_before_ug: dict | None
+    last_applied_by_ug: dict | None
+
+
+def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnapshots:
+    """Return the parsed baseline and last-applied snapshots of ``tool``'s managed file.
+
+    ``original_before_ug`` is the pre-ucode baseline; ``last_applied_by_ug`` is what ucode last
+    wrote. A caller reverting a value ucode owns compares the live value against
+    ``last_applied_by_ug`` (unchanged since ucode wrote it) and restores ``original_before_ug`` (the
+    value before ucode, if any) as a three-way merge, so it removes only what ucode itself introduced
+    and never an administrator's own or edited entry. Either field is None when its snapshot is absent
+    or cannot be read/parsed, so callers fall back to keeping the live value.
+    """
+
+    def _parse(text: str | None) -> dict | None:
+        if text is None:
+            return None
+        try:
+            return parser(text)
+        except Exception:  # noqa: BLE001 - an unparseable snapshot just means "unknown".
+            return None
+
+    try:
+        entry = _manifest_files(_load_manifest()).get(tool)
+        if not isinstance(entry, dict):
+            return ManagedFileSnapshots(None, None)
+        return ManagedFileSnapshots(
+            _parse(_snapshot_text(entry, "backup_file")),
+            _parse(_snapshot_text(entry, "last_applied_file")),
+        )
+    except RuntimeError:
+        return ManagedFileSnapshots(None, None)
 
 
 def managed_file_conflicts(

@@ -244,6 +244,37 @@ class TestCodexWriteConfig:
         doc = read_toml_safe(config_path)
         assert "model" not in doc
 
+    def test_smart_routing_prunes_stale_catalog_reference(self, tmp_path, monkeypatch):
+        config_path = tmp_path / ".codex" / "ucode.config.toml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text('model_catalog_json = "/tmp/stale.json"\n', encoding="utf-8")
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        # Smart routing selects dynamically, so a leftover static catalog is not kept.
+        assert "model_catalog_json" not in read_toml_safe(config_path)
+
+    def test_unmanaged_configure_prunes_catalog_reference(self, tmp_path, monkeypatch):
+        config_path = tmp_path / ".codex" / "ucode.config.toml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text('model_catalog_json = "/tmp/prior.json"\n', encoding="utf-8")
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "catalog.json")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        # An unmanaged configure builds no catalog, so a prior config's catalog reference is dropped.
+        assert "model_catalog_json" not in read_toml_safe(config_path)
+
     def test_provider_drops_stale_model_without_persisting_header(self, tmp_path, monkeypatch):
         config_path = tmp_path / ".codex" / "ucode.config.toml"
         backup_path = tmp_path / "codex-ucode-config.backup.toml"
