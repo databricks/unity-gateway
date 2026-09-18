@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime
 from pathlib import Path
 
 import questionary
@@ -20,13 +22,16 @@ from ucode.skills_api import (
     list_schema_skills,
 )
 from ucode.skills_state import (
+    SKILL_UPDATE_CHECK_INTERVAL,
     SkillInstall,
+    last_update_check,
     list_downloaded,
     record_downloads,
     records_for_fqns,
     records_for_schema,
     records_for_scope,
     remove_downloads,
+    set_last_update_check,
 )
 from ucode.state import load_state
 from ucode.ui import (
@@ -410,6 +415,114 @@ def reconcile_managed_skills(managed: dict) -> tuple[list[str], list[str]]:
             written.append(ref.bundle_name)
         record_downloads(_skill_installs(installed, roots, None, workspace, scope="managed"))
     return written, removed
+
+
+# --- Launch-time refresh ---------------------------------------------------
+
+
+def _eligible_launch_records(records: list[dict], workspace: str, cwd: str) -> list[dict]:
+    """The downloaded skills a launch from ``cwd`` loads and can refresh itself.
+
+    Only the current workspace's own (non-managed) downloads under the home dir or the
+    working dir qualify. Managed skills are left to ``ug configure``, and other workspaces'
+    downloads are skipped because the launch token authenticates only this workspace.
+    """
+    bases = {os.path.normpath(str(Path.home())), os.path.normpath(cwd)}
+    return [
+        record
+        for record in records
+        if record.get("scope") != "managed"
+        and record.get("workspace") == workspace
+        and os.path.normpath(record.get("base", "")) in bases
+    ]
+
+
+def _stale_launch_refs(
+    workspace: str, token: str, records: list[dict]
+) -> list[tuple[dict, SkillRef]]:
+    """Pair each record whose UC source is newer than its download with the current skill.
+
+    Resolves every record concurrently; one that no longer resolves (deleted, unfinalized,
+    unauthorized) is skipped, leaving its on-disk copy alone. A record with no recorded
+    ``uc_update_time`` predates attribution, so it is refreshed once to backfill the field.
+    """
+    if not records:
+        return []
+    pairs: list[tuple[dict, SkillRef]] = []
+    with ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(records))) as pool:
+        futures = {pool.submit(get_skill, workspace, token, r["fqn"]): r for r in records}
+        for future in as_completed(futures):
+            ref = future.result()
+            if ref is None:
+                continue
+            record = futures[future]
+            stored = record.get("uc_update_time")
+            if stored is None or (ref.uc_update_time or "") > stored:
+                pairs.append((record, ref))
+    return pairs
+
+
+def _apply_launch_updates(workspace: str, token: str, pairs: list[tuple[dict, SkillRef]]) -> int:
+    """Re-download each stale skill into its own base and refresh its manifest record.
+
+    Overwrites in place with no prompt, since the developer already chose to download these,
+    and only manifest-attributed directories are touched, so a user-authored skill of the same
+    name is never overwritten. Returns how many skills were rewritten.
+    """
+    home = os.path.normpath(str(Path.home()))
+    refs_by_base: dict[str, list[SkillRef]] = {}
+    for record, ref in pairs:
+        refs_by_base.setdefault(os.path.normpath(record["base"]), []).append(ref)
+
+    updated = 0
+    for base, refs in refs_by_base.items():
+        path = None if base == home else base
+        roots = skill_dir_roots(path)
+        bundles = _fetch_bundles(workspace, token, refs, label="Updating skills")
+        written: list[SkillRef] = []
+        for ref in refs:
+            files, reason = bundles[ref.fqn]
+            if reason or files is None:
+                print_warning(f"Skipping `{ref.fqn}`: {reason}.")
+                continue
+            try:
+                write_skill(roots, ref, files)
+            except OSError as exc:
+                print_warning(f"Skipping `{ref.fqn}`: {exc}.")
+                continue
+            written.append(ref)
+        record_downloads(_skill_installs(written, roots, path, workspace))
+        updated += len(written)
+    return updated
+
+
+def refresh_downloaded_skills_on_launch(state: dict) -> None:
+    """Update downloaded skills whose UC source changed, before an agent launches.
+
+    Rate-limited to once per ``SKILL_UPDATE_CHECK_INTERVAL`` via the manifest's
+    ``last_update_check`` stamp, so back-to-back launches make no network calls. Best-effort:
+    any failure is reported and the launch proceeds on whatever is already on disk.
+    """
+    try:
+        now = datetime.now(UTC)
+        last = last_update_check()
+        if last is not None and now - last < SKILL_UPDATE_CHECK_INTERVAL:
+            return
+        workspace = state.get("workspace")
+        if not workspace:
+            return
+        records = _eligible_launch_records(list_downloaded(), workspace, os.getcwd())
+        if not records:
+            set_last_update_check(now)
+            return
+        token = get_databricks_token(workspace, state.get("profile"))
+        stale = _stale_launch_refs(workspace, token, records)
+        updated = _apply_launch_updates(workspace, token, stale)
+        set_last_update_check(now)
+        if updated:
+            print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
+    except Exception as exc:  # noqa: BLE001 - a skill refresh must never block a launch
+        print_note(f"Skipped checking for skill updates: {exc}")
 
 
 def configure_location_skills_download_command(locations: list[str], *, path: str | None) -> int:
