@@ -1390,6 +1390,7 @@ def setup_mcp_clients(
     require_auth: bool = True,
     action_note: str = "Configuring for",
     agents: set[str] | None = None,
+    quiet: bool = False,
 ) -> tuple[str, str | None, list[str]]:
     """Validate the workspace, resolve configured MCP clients, and prepare auth.
 
@@ -1404,6 +1405,9 @@ def setup_mcp_clients(
     the configured MCP clients, so the operation touches only those agents instead
     of every configured one. Requested agents that aren't configured/installed
     raise a clear error.
+
+    ``quiet`` suppresses the section header and the ``action_note`` line so a repeat,
+    no-op registration prints nothing; the missing-client warnings are kept.
     """
     workspace = state.get("workspace")
     if not workspace:
@@ -1441,9 +1445,10 @@ def setup_mcp_clients(
         apply_pat_environment(state)
         ensure_databricks_auth(workspace, profile)
 
-    print_section(section)
-    client_names = ", ".join(str(MCP_CLIENTS[client]["display"]) for client in clients)
-    print_note(f"{action_note}: {client_names}")
+    if not quiet:
+        print_section(section)
+        client_names = ", ".join(str(MCP_CLIENTS[client]["display"]) for client in clients)
+        print_note(f"{action_note}: {client_names}")
     for client in missing_clients:
         print_warning(
             f"{MCP_CLIENTS[client]['display']} is configured in ucode but not installed; "
@@ -2503,13 +2508,14 @@ def configure_bare_skills_mcp_command() -> bool:
 
     The simple entrypoint behind a bare ``ug skills`` (replacing ``ug configure skills``
     with no arguments). Re-registers on every run, preserving any client's existing
-    ``--mcp`` scope, but prints the connection summary only on the first run -- a repeat
-    ``ug skills`` stays quiet. Returns whether no skills connection existed beforehand,
-    so the caller can also show first-run guidance only then.
+    ``--mcp`` scope, but only the first run prints anything (the setup header and the
+    connection summary) -- a repeat ``ug skills`` re-registers silently. Returns whether
+    no skills connection existed beforehand, so the caller can also show first-run
+    guidance only then.
     """
     state = load_state()
     first_time = _skills_entry(list(state.get("mcp_servers") or [])) is None
-    workspace, profile, clients = setup_mcp_clients(state, "Skills")
+    workspace, profile, clients = setup_mcp_clients(state, "Skills", quiet=not first_time)
     register_schemaless_skills_connection(
         state, workspace, profile, clients, print_summary=first_time
     )

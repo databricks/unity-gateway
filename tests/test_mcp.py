@@ -2660,8 +2660,10 @@ class TestConfigureBareSkillsMcpCommand:
         assert len(skills) == 1
         assert skills[0]["skill_locations"] == []
         assert configured == ["claude"]
-        # The bare entrypoint always prints the connection summary.
-        assert "Skills MCP registered" in _unwrap(capsys.readouterr().out)
+        # Only the first run prints: the setup header plus the connection summary.
+        out = _unwrap(capsys.readouterr().out)
+        assert "Configuring for: Claude Code" in out
+        assert "Skills MCP registered" in out
 
     def test_existing_connection_reregisters_and_reports_not_first_time(self, monkeypatch, capsys):
         prior = mcp._resolve_skills_mcp_servers(WS, ["claude"], _by_client(["claude"], []), [])
@@ -2669,9 +2671,10 @@ class TestConfigureBareSkillsMcpCommand:
 
         assert mcp.configure_bare_skills_mcp_command() is False
 
-        # Nothing changed, so no client is re-touched, and a repeat run stays quiet.
+        # A repeat run re-registers silently: no client re-touched, and no output at all
+        # (neither the setup header nor the connection summary).
         assert configured == []
-        assert "Skills MCP registered" not in _unwrap(capsys.readouterr().out)
+        assert _unwrap(capsys.readouterr().out) == ""
 
 
 class TestSkillsToolsDescription:
