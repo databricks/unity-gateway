@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import shlex
@@ -1675,6 +1674,20 @@ class TestClaudeLaunch:
         class Server:
             server_address = ("127.0.0.1", 12345)
 
+            def serve_forever(self):
+                calls.append(("serve",))
+
+            def shutdown(self):
+                calls.append(("shutdown",))
+
+        class Cache:
+            def stop(self):
+                calls.append(("stop",))
+
+        class Client:
+            def close(self):
+                calls.append(("close",))
+
         class Process:
             def __init__(self, argv):
                 calls.append(("popen", argv))
@@ -1682,26 +1695,13 @@ class TestClaudeLaunch:
             def wait(self):
                 return 0
 
-        @contextlib.contextmanager
-        def running_proxy(workspace, token_provider, port, spec, *, force_refresh_near_expiry):
-            # Record how the proxy is configured, and resolve the provider once to
-            # prove Claude authenticates the proxy with its own workspace/profile.
-            calls.append(
-                (
-                    "proxy",
-                    workspace,
-                    port,
-                    spec,
-                    force_refresh_near_expiry,
-                    token_provider(False),
-                )
-            )
-            yield Server()
-            calls.append(("torn_down",))
+        def start_relay_proxy(workspace, token_provider, port):
+            calls.append(("proxy", workspace, port, token_provider(False)))
+            return Server(), Cache(), Client()
 
         monkeypatch.setattr(claude, "_managed_relayed_conflicts", lambda: None)
         monkeypatch.setattr(claude, "_ensure_subscription_login", lambda: None)
-        monkeypatch.setattr(claude.gateway_proxy, "running_proxy", running_proxy)
+        monkeypatch.setattr(claude.gateway_proxy, "start_relay_proxy", start_relay_proxy)
         monkeypatch.setattr(
             claude,
             "get_databricks_token",
@@ -1726,12 +1726,9 @@ class TestClaudeLaunch:
             "proxy",
             WS,
             12345,
-            claude.gateway_proxy.RELAY_SPEC,
-            False,
-            f"tok:{WS}:test:False",  # provider uses Claude's own workspace + profile
+            f"tok:{WS}:test:False",
         )
-        assert ("popen", ["claude", "--debug"]) in calls or any(c[0] == "popen" for c in calls)
-        assert calls[-1] == ("torn_down",)  # proxy always torn down
+        assert calls[-3:] == [("stop",), ("shutdown",), ("close",)]
 
     def test_smart_routing_on_windows_is_not_supported(self, monkeypatch):
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")

@@ -9,8 +9,8 @@ real `rfile`, the pooled `httpx` client streaming to a real upstream and back,
 and `_relay_response` writing to a real `wfile`.
 
 These tests stand up a fake AI Gateway upstream, start the *real* proxy via
-`start_proxy` pointed at it (patching only the Databricks token mint), and drive
-it with a real HTTP client — so a regression anywhere in that chain is caught.
+`start_relay_proxy` pointed at it, and drive it with a real HTTP client — so a
+regression anywhere in that chain is caught.
 Fully hermetic: no agent binary, no network, no workspace credentials.
 """
 
@@ -142,16 +142,21 @@ def _counting_token(value: str = "dbx-swap-token"):
 
 
 @contextlib.contextmanager
-def _running_proxy(gateway: _FakeGateway, token_provider=None, *, spec=gateway_proxy.RELAY_SPEC):
-    """Start the real proxy pointed at `gateway`, yield its loopback URL, tear down."""
-    with gateway_proxy.running_proxy(
-        gateway.base_url,
-        token_provider or _counting_token(),
-        0,
-        spec,
-        force_refresh_near_expiry=False,
-    ) as server:
+def _running_proxy(gateway: _FakeGateway, token_provider=None):
+    """Start the real relay proxy pointed at `gateway`, yield its URL, then tear down."""
+    server, cache, client = gateway_proxy.start_relay_proxy(
+        gateway.base_url, token_provider or _counting_token(), 0
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
         yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        cache.stop()
+        client.close()
+        thread.join(timeout=2)
 
 
 class TestRelayedProxyEndToEnd:
@@ -218,36 +223,3 @@ class TestRelayedProxyEndToEnd:
         # what forces a fresh mint before the single retry.
         assert token_fn.calls == [False, True]  # type: ignore[attr-defined]
         assert len(gw.requests) == 2  # original attempt + one retry
-
-
-class TestOtelProxyEndToEnd:
-    def test_otlp_body_forwards_with_token_in_authorization(self, make_gateway):
-        # The OTLP seam: a protobuf body (no JSON model) forwards under
-        # /ai-gateway/otel/ with the provider's token in Authorization and no relay
-        # headers. The provider token stands in for a per-user custom-OAuth token —
-        # the point of finding #1 is that the proxy authenticates as THAT principal.
-        token = _counting_token("per-user-otel-token")
-        gw = make_gateway()
-        with _running_proxy(gw, token, spec=gateway_proxy.OTEL_SPEC) as proxy_url:
-            resp = httpx.post(
-                f"{proxy_url}/v1/traces",
-                headers={"Content-Type": "application/x-protobuf"},
-                content=b"\x0a\x02\x08\x01",  # arbitrary protobuf bytes, not JSON
-                timeout=10,
-            )
-        assert resp.status_code == 200
-        req = gw.requests[-1]
-        assert req.path == "/ai-gateway/otel/v1/traces"
-        assert req.header("Authorization") == "Bearer per-user-otel-token"
-        assert req.header("X-Databricks-AI-Gateway-Token") is None
-        assert req.body == b"\x0a\x02\x08\x01"
-
-    def test_otlp_upstream_401_forces_refresh_and_retries(self, make_gateway):
-        # Same self-healing retry as relay, on the OTLP seam over real sockets.
-        token = _counting_token("otel-token")
-        gw = make_gateway(status=401, chunks=[b"{}"])
-        with _running_proxy(gw, token, spec=gateway_proxy.OTEL_SPEC) as proxy_url:
-            resp = httpx.post(f"{proxy_url}/v1/traces", content=b"\x0a\x00", timeout=10)
-        assert resp.status_code == 401
-        assert token.calls == [False, True]  # type: ignore[attr-defined]
-        assert len(gw.requests) == 2

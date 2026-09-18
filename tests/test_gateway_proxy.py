@@ -508,6 +508,9 @@ class TestStartProxyPortFallback:
             def run_refresher(self):
                 return None
 
+            def stop(self):
+                return None
+
         monkeypatch.setattr(
             gateway_proxy,
             "TokenCache",
@@ -520,12 +523,10 @@ class TestStartProxyPortFallback:
         occupied.listen(1)
         busy_port = occupied.getsockname()[1]
         try:
-            server, _cache, client = gateway_proxy.start_proxy(
+            server, _cache, client = gateway_proxy.start_relay_proxy(
                 "https://x.staging.cloud.databricks.com",
                 lambda _force: "tok",
                 busy_port,
-                gateway_proxy.RELAY_SPEC,
-                force_refresh_near_expiry=False,
             )
             try:
                 bound = server.server_address[1]
@@ -539,11 +540,9 @@ class TestStartProxyPortFallback:
 
 
 def _relayed_oss_handler(client, cache, wfile, *, headers, body) -> gateway_proxy._ProxyHandler:
-    h = object.__new__(gateway_proxy._ProxyHandler)
+    h = object.__new__(gateway_proxy._RelayProxyHandler)
     h.client = client
     h.cache = cache
-    # The relay seam's per-request routing (what start_proxy binds from RELAY_SPEC).
-    h.forward_target = gateway_proxy.relay_forward_target
     h.token_header = gateway_proxy.AI_GATEWAY_TOKEN_HEADER
     hdrs = dict(headers)
     hdrs["Content-Length"] = str(len(body))
@@ -595,58 +594,3 @@ class TestRelayedOssRouting:
         assert sent["Authorization"] == "Bearer anthropic-oauth"
         assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
         assert sent["Databricks-Model-Provider-Service"] == "cat.s.relayed_mps"
-
-
-class TestForwardTarget:
-    """A ProxySpec's forward_target picks the per-request auth target. The plain
-    target forwards as-is; the relay target routes Databricks-hosted models to the
-    gateway while keeping subscription models on the OAuth passthrough."""
-
-    def test_plain_always_forwards_in_default_header(self):
-        # A Databricks-hosted model in the body does not change the plain target.
-        assert gateway_proxy.plain_forward_target(
-            b'{"model": "system.ai.x"}', gateway_proxy.AUTHORIZATION_HEADER
-        ) == (gateway_proxy.AUTHORIZATION_HEADER, frozenset(), "forward")
-
-    def test_relay_routes_databricks_model_to_gateway_auth(self):
-        token_header, extra_strip, label = gateway_proxy.relay_forward_target(
-            b'{"model": "system.ai.x"}', gateway_proxy.AI_GATEWAY_TOKEN_HEADER
-        )
-        assert token_header == gateway_proxy.AUTHORIZATION_HEADER
-        assert extra_strip == gateway_proxy._DATABRICKS_ROUTE_STRIP
-        assert label == "databricks"
-
-    def test_relay_keeps_subscription_passthrough_for_bare_model(self):
-        assert gateway_proxy.relay_forward_target(
-            b'{"model": "claude-opus-4-1"}', gateway_proxy.AI_GATEWAY_TOKEN_HEADER
-        ) == (gateway_proxy.AI_GATEWAY_TOKEN_HEADER, frozenset(), "relay")
-
-    def test_specs_carry_expected_targets(self):
-        assert gateway_proxy.RELAY_SPEC.forward_target is gateway_proxy.relay_forward_target
-        assert gateway_proxy.OTEL_SPEC.forward_target is gateway_proxy.plain_forward_target
-
-
-class TestStartProxyParams:
-    """start_proxy forwards to the spec's upstream_path and binds its behavior."""
-
-    def test_upstream_path_and_spec_binding(self):
-        cases = (
-            (gateway_proxy.OTEL_SPEC, "ai-gateway/otel/", gateway_proxy.plain_forward_target),
-            (gateway_proxy.RELAY_SPEC, "ai-gateway/anthropic/", gateway_proxy.relay_forward_target),
-        )
-        for spec, path, target in cases:
-            server, cache, client = gateway_proxy.start_proxy(
-                "https://ws.example.com/",
-                lambda _force: _make_jwt(time.time() + 3600),
-                0,
-                spec,
-                force_refresh_near_expiry=True,
-            )
-            try:
-                assert str(client.base_url) == f"https://ws.example.com/{path}"
-                assert server.RequestHandlerClass.forward_target is target
-                assert server.RequestHandlerClass.token_header == spec.token_header
-            finally:
-                cache.stop()
-                server.server_close()  # never ran serve_forever; shutdown() would deadlock
-                client.close()
