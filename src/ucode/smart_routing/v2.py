@@ -29,6 +29,7 @@ from ucode.databricks import (
     list_anthropic_model_catalog,
     list_anthropic_models,
 )
+from ucode.launcher import exec_or_spawn
 from ucode.smart_routing import claude_routing, codex_interposer, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -39,7 +40,10 @@ from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_mo
 from ucode.ui import print_warning
 
 ENABLE_SMART_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_V2"
+ENABLE_SUBAGENT_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"
 LEGACY_STATE_KEY = "smart_routing_enabled"
+
+_SMART_ROUTING_ENV_VARS = (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
 
 CODEX_INTERPOSER_LOG = APP_DIR / "codex-v2-interposer.log"
 
@@ -115,32 +119,43 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
 
 def smart_routing_enabled(env: MutableMapping[str, str] | None = None) -> bool:
     source = os.environ if env is None else env
+    return any(source.get(var) == "1" for var in _SMART_ROUTING_ENV_VARS)
+
+
+def first_prompt_routing_enabled(env: MutableMapping[str, str] | None = None) -> bool:
+    """Whether the first prompt is routed. The full V2 flag wins over subagent-only."""
+    source = os.environ if env is None else env
     return source.get(ENABLE_SMART_ROUTING_ENV_VAR) == "1"
 
 
-def enable_smart_routing(env: MutableMapping[str, str] | None = None) -> str | None:
-    """Set the only supported smart-routing env var and return its prior value."""
+def enable_smart_routing(
+    env: MutableMapping[str, str] | None = None,
+) -> dict[str, str | None]:
+    """Set the full smart-routing env var and return the prior value of every routing var."""
     target = os.environ if env is None else env
-    previous = target.get(ENABLE_SMART_ROUTING_ENV_VAR)
+    previous = {var: target.get(var) for var in _SMART_ROUTING_ENV_VARS}
     target[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
     return previous
 
 
 def restore_smart_routing_env(
-    previous: str | None, env: MutableMapping[str, str] | None = None
+    previous: dict[str, str | None], env: MutableMapping[str, str] | None = None
 ) -> None:
     """Restore the env state captured when smart routing was enabled or disabled."""
     target = os.environ if env is None else env
-    if previous is None:
-        target.pop(ENABLE_SMART_ROUTING_ENV_VAR, None)
-    else:
-        target[ENABLE_SMART_ROUTING_ENV_VAR] = previous
+    for var, value in previous.items():
+        if value is None:
+            target.pop(var, None)
+        else:
+            target[var] = value
 
 
-def disable_smart_routing(env: MutableMapping[str, str] | None = None) -> str | None:
-    """Temporarily remove the smart-routing env var and return its prior value."""
+def disable_smart_routing(
+    env: MutableMapping[str, str] | None = None,
+) -> dict[str, str | None]:
+    """Temporarily remove the smart-routing env vars and return their prior values."""
     target = os.environ if env is None else env
-    return target.pop(ENABLE_SMART_ROUTING_ENV_VAR, None)
+    return {var: target.pop(var, None) for var in _SMART_ROUTING_ENV_VARS}
 
 
 def _loopback_websocket_url(port: int) -> str:
@@ -445,6 +460,7 @@ def launch_claude(
         )
     model_ids = catalog.model_ids
 
+    route_first_prompt = first_prompt_routing_enabled()
     run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
     socket_path = APP_DIR / f"claude-v2-{run_id}.sock"
     settings_path = APP_DIR / f"claude-v2-{run_id}.json"
@@ -457,8 +473,11 @@ def launch_claude(
     if not isinstance(env, dict):
         raise RuntimeError("Claude settings 'env' must be an object for smart routing.")
     env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
-    env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
-    env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
+    if route_first_prompt:
+        env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
+        env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
+    else:
+        env[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
     model_overrides = settings.setdefault("modelOverrides", {})
     if not isinstance(model_overrides, dict):
         raise RuntimeError("Claude settings 'modelOverrides' must be an object for smart routing.")
@@ -468,11 +487,25 @@ def launch_claude(
         "claude_models": {str(index): model for index, model in enumerate(model_ids)},
     }
     sync_smart_routing_hooks(settings, routing_state, enabled=True)
-    sync_first_prompt_hook(settings, hook_executable)
+    if route_first_prompt:
+        sync_first_prompt_hook(settings, hook_executable)
     write_json_file(settings_path, settings)
     model_args = launch_model_args(remaining, launch_model)
     routed_agent_args = _with_routed_claude_agents(remaining, model_ids)
     argv = [binary, "--settings", str(settings_path), *model_args, *routed_agent_args]
+
+    if not route_first_prompt:
+        # Subagent-only routing needs no PTY: the PreToolUse hooks ride in the
+        # per-launch settings, so spawn Claude directly and clean up after it.
+        proc = subprocess.Popen(argv)
+        try:
+            returncode = proc.wait()
+        except KeyboardInterrupt:
+            proc.send_signal(signal.SIGINT)
+            returncode = proc.wait()
+        finally:
+            settings_path.unlink(missing_ok=True)
+        sys.exit(returncode)
 
     model_setting = _ClaudeModelSettingGuard(user_settings_path)
 
@@ -566,6 +599,10 @@ def launch_codex(
         "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
     }
     config_args = codex_config_args(overlay)
+    if not first_prompt_routing_enabled():
+        # Subagent-only routing needs neither the app-server nor the interposer:
+        # the hooks ride in the CLI config, so launch the TUI directly.
+        exec_or_spawn([binary, *config_args, *tool_args])
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
 

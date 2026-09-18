@@ -172,6 +172,36 @@ class TestFirstPromptHook:
         assert "user-policy" in str(settings["hooks"]["PreToolUse"])
 
 
+class TestSmartRoutingEnvVars:
+    def test_either_flag_enables_smart_routing(self, monkeypatch):
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
+        assert not v2.smart_routing_enabled()
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        assert v2.smart_routing_enabled()
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        assert v2.smart_routing_enabled()
+
+    def test_only_the_full_flag_routes_the_first_prompt(self, monkeypatch):
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        assert not v2.first_prompt_routing_enabled()
+        # The full flag wins when both are set.
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        assert v2.first_prompt_routing_enabled()
+
+    def test_disable_and_restore_cover_both_flags(self, monkeypatch):
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
+
+        previous = v2.disable_smart_routing()
+
+        assert not v2.smart_routing_enabled()
+        v2.restore_smart_routing_env(previous)
+        assert os.environ[v2.ENABLE_SMART_ROUTING_ENV_VAR] == "1"
+        assert v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR not in os.environ
+
+
 class TestV2Launch:
     def test_strips_gateway_prefix_for_interposer(self):
         model = "anthropic-aigw-73ea02b2-system.ai.glm-5-2"
@@ -182,6 +212,7 @@ class TestV2Launch:
         user_settings = tmp_path / "settings.json"
         ucode_settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://gw"}}))
         user_settings.write_text(json.dumps({"model": "opus", "theme": "dark"}))
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(claude, "APP_DIR", tmp_path)
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", ucode_settings)
         monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_settings)
@@ -290,6 +321,7 @@ class TestV2Launch:
     def test_does_not_restore_when_wrapper_never_switches(self, tmp_path, monkeypatch):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
@@ -323,6 +355,7 @@ class TestV2Launch:
     ):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "haiku", "theme": "dark"}))
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
@@ -361,6 +394,77 @@ class TestV2Launch:
             "theme": "dark",
         }
 
+    def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch):
+        user_settings = tmp_path / "settings.json"
+        user_settings.write_text(json.dumps({"model": "opus"}))
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "")
+        monkeypatch.setenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "")
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
+        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        monkeypatch.setattr(
+            v2,
+            "list_anthropic_model_catalog",
+            lambda *_args: AnthropicModelCatalog(
+                model_ids=["system.ai.claude-opus-4-8"], model_id_to_display_name={}
+            ),
+        )
+        monkeypatch.setattr(
+            claude_pty,
+            "run_claude_pty",
+            lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not use the PTY"),
+        )
+        captured: dict = {}
+
+        class FakeProcess:
+            def __init__(self, argv, **_kwargs):
+                captured["argv"] = argv
+                settings_path = Path(argv[argv.index("--settings") + 1])
+                captured["settings_path"] = settings_path
+                captured["settings"] = json.loads(settings_path.read_text())
+                captured["agents"] = json.loads(argv[argv.index("--agents") + 1])
+
+            def wait(self):
+                return 4
+
+            def send_signal(self, _signal):
+                raise AssertionError("test does not interrupt Claude")
+
+        monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
+
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                [],
+                binary="claude",
+                user_settings_path=user_settings,
+                launch_model="opus",
+                compose_settings=lambda _args: ({}, []),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        assert exc.value.code == 4
+        settings = captured["settings"]
+        env = settings["env"]
+        assert env[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+        assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in env
+        assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in env
+        # Subagent routing is fully wired; only the first-prompt machinery is absent.
+        assert "UserPromptSubmit" not in settings["hooks"]
+        assert "route-subagent" in str(settings["hooks"]["PreToolUse"])
+        assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
+        assert {definition["model"] for definition in captured["agents"].values()} == {
+            "system.ai.claude-opus-4-8"
+        }
+        assert captured["argv"][3:5] == ["--model", "opus"]
+        assert not captured["settings_path"].exists()
+        # The model-setting guard is a first-prompt concern; user settings stay untouched.
+        assert json.loads(user_settings.read_text()) == {"model": "opus"}
+
 
 class TestV2ModelPickerDiscovery:
     """modelPicker takes priority over gateway model discovery for smart routing."""
@@ -369,6 +473,7 @@ class TestV2ModelPickerDiscovery:
     def _launch(monkeypatch, tmp_path, *, picker_catalog):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
