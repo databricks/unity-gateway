@@ -8,6 +8,7 @@ import shutil
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
+from enum import StrEnum
 from importlib import metadata
 from typing import Annotated, Any
 
@@ -66,6 +67,7 @@ from ucode.databricks import (
     get_databricks_token,
     install_databricks_cli,
     is_model_provider_feature_unavailable,
+    list_anthropic_model_catalog,
     list_profile_entries,
     list_tool_provider_services,
     normalize_workspace_url,
@@ -1394,6 +1396,14 @@ app.add_typer(
 )
 
 
+class SkillsVia(StrEnum):
+    """How `ug skills add`/`remove` act on skills: download them to disk (the
+    default) or scope them on the skills MCP connection."""
+
+    download = "download"
+    mcp = "mcp"
+
+
 def _version_callback(value: bool) -> None:
     if value:
         from ucode.telemetry import ug_version
@@ -1404,7 +1414,7 @@ def _version_callback(value: bool) -> None:
 
 def _configure_agents_for_mcp(requested: list[str]) -> set[str]:
     """Ensure the named coding agents are set up (workspace + models) so a
-    subsequent `ug mcp add` / `ug skills add --mcp` has them as targets, and
+    subsequent `ug mcp add` / `ug skills add --via mcp` has them as targets, and
     return the full canonical name set. Agents already configured are left as-is;
     only the rest are bootstrapped. Model agents go through
     configure_workspace_command (which installs binaries and configures models);
@@ -1620,13 +1630,14 @@ def skills_add(
             "--location", help="Comma-separated `<catalog>.<schema>` skill scopes to add."
         ),
     ] = None,
-    mcp: Annotated[
-        bool,
+    via: Annotated[
+        SkillsVia,
         typer.Option(
-            "--mcp",
-            help="Add the schemas to the skills MCP connection's scope instead of downloading.",
+            "--via",
+            help="`download` skills to disk (default) or add the schemas to the skills MCP "
+            "connection's scope (`mcp`).",
         ),
-    ] = False,
+    ] = SkillsVia.download,
     path: Annotated[
         str | None,
         typer.Option(
@@ -1641,14 +1652,14 @@ def skills_add(
             "--names",
             help="(download) Download exactly these comma-separated fully-qualified "
             "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
-            "with --mcp or --location.",
+            "with --via mcp or --location.",
         ),
     ] = None,
     agents: Annotated[
         str | None,
         typer.Option(
             "--agents",
-            help="(--mcp only) Comma-separated coding agents whose skills MCP scope should "
+            help="(--via mcp only) Comma-separated coding agents whose skills MCP scope should "
             "be updated. Any that aren't configured yet are set up first. Without --agents, "
             "every configured agent is updated.",
         ),
@@ -1656,16 +1667,18 @@ def skills_add(
 ) -> None:
     """Add Databricks Skills to your coding tools, keeping any already configured.
 
-    With ``--mcp``, adds the given schemas to the skills MCP connection's scope.
-    Otherwise downloads skills to project-level skill directories under ``--path``, or
-    to user-level skill directories when omitted, keeping already-downloaded skills.
-    ``--location`` downloads whole ``<catalog>.<schema>`` schemas; ``--names``
-    downloads a named set of fully-qualified skills that may span schemas (and takes
-    no ``--location``). With no ``--location``/``--names`` on an interactive terminal,
-    opens a picker of the workspace's schemas to scope (``--mcp``) or skills to download.
+    With ``--via mcp``, adds the given schemas to the skills MCP connection's scope.
+    By default (``--via download``) downloads skills to project-level skill directories
+    under ``--path``, or to user-level skill directories when omitted, keeping
+    already-downloaded skills. ``--location`` downloads whole ``<catalog>.<schema>``
+    schemas; ``--names`` downloads a named set of fully-qualified skills that may span
+    schemas (and takes no ``--location``). With no ``--location``/``--names`` on an
+    interactive terminal, opens a picker of the workspace's schemas to scope
+    (``--via mcp``) or skills to download.
     """
     try:
         install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        mcp = via is SkillsVia.mcp
         requested_skills = (
             None if names is None else {s.strip() for s in names.split(",") if s.strip()}
         )
@@ -1675,14 +1688,14 @@ def skills_add(
             else ({agent.strip().lower() for agent in agents.split(",") if agent.strip()} or None)
         )
         if mcp and path is not None:
-            raise RuntimeError("--path is not supported when using --mcp")
+            raise RuntimeError("--path is not supported with --via mcp")
         if mcp and requested_skills is not None:
-            raise RuntimeError("--names is not supported when using --mcp")
+            raise RuntimeError("--names is not supported with --via mcp")
         if requested_skills is not None and location is not None:
             raise RuntimeError("--names takes fully-qualified names; drop --location.")
         # Downloaded skills use shared directory families, so only MCP scopes can be agent-scoped.
         if not mcp and agents is not None:
-            raise RuntimeError("--agents is only supported when using --mcp")
+            raise RuntimeError("--agents is only supported with --via mcp")
         if requested_skills is not None:
             invalid = sorted(s for s in requested_skills if not _is_qualified_skill_name(s))
             if invalid:
@@ -1728,16 +1741,17 @@ def skills_remove(
         typer.Option(
             "--location",
             help="Comma-separated `<catalog>.<schema>` schemas to remove (from the skills MCP "
-            "scope with --mcp, else their downloaded skills).",
+            "scope with --via mcp, else their downloaded skills).",
         ),
     ] = None,
-    mcp: Annotated[
-        bool,
+    via: Annotated[
+        SkillsVia,
         typer.Option(
-            "--mcp",
-            help="Remove schemas from the skills MCP connection instead of downloaded files.",
+            "--via",
+            help="Remove `download`ed skill files (default) or drop the schemas from the skills "
+            "MCP connection (`mcp`).",
         ),
-    ] = False,
+    ] = SkillsVia.download,
     path: Annotated[
         str | None,
         typer.Option(
@@ -1752,14 +1766,14 @@ def skills_remove(
             "--names",
             help="(download) Remove exactly these comma-separated fully-qualified "
             "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
-            "with --mcp or --location.",
+            "with --via mcp or --location.",
         ),
     ] = None,
     agents: Annotated[
         str | None,
         typer.Option(
             "--agents",
-            help="(--mcp only) Comma-separated coding agents to remove the schemas from "
+            help="(--via mcp only) Comma-separated coding agents to remove the schemas from "
             "(e.g. claude,codex). A schema scoped to several agents is removed only from the "
             "named ones and kept on the rest. Without --agents, it is removed from every agent.",
         ),
@@ -1767,22 +1781,23 @@ def skills_remove(
 ) -> None:
     """Remove Skills previously added to your coding tools.
 
-    With ``--mcp``, drops skill schemas from the skills MCP connection: ``--location`` removes the
-    named ``<catalog>.<schema>`` schemas, and with none on an interactive terminal a picker lists
-    the scoped schemas. Otherwise removes downloaded skill directories: ``--location`` removes every
-    skill downloaded from a ``<catalog>.<schema>``, ``--names`` removes named fully-qualified skills
-    that may span schemas, and with none of them a picker lists every downloaded skill. ``--path``
-    limits either to one download base. Only skills ucode downloaded are removed; a same-named skill
-    you authored is left alone.
+    With ``--via mcp``, drops skill schemas from the skills MCP connection: ``--location`` removes
+    the named ``<catalog>.<schema>`` schemas, and with none on an interactive terminal a picker
+    lists the scoped schemas. By default (``--via download``) removes downloaded skill directories:
+    ``--location`` removes every skill downloaded from a ``<catalog>.<schema>``, ``--names`` removes
+    named fully-qualified skills that may span schemas, and with none of them a picker lists every
+    downloaded skill. ``--path`` limits either to one download base. Only skills ucode downloaded
+    are removed; a same-named skill you authored is left alone.
     """
     try:
         install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        mcp = via is SkillsVia.mcp
         requested_skills = (
             None if names is None else {s.strip() for s in names.split(",") if s.strip()}
         )
         if mcp:
             if path is not None or requested_skills is not None:
-                raise RuntimeError("--path and --names are not supported with --mcp.")
+                raise RuntimeError("--path and --names are not supported with --via mcp.")
             requested_agents = (
                 None
                 if agents is None
@@ -1794,10 +1809,10 @@ def skills_remove(
             elif _stdin_is_interactive():
                 remove_skills_command(agents=requested_agents)
             else:
-                raise RuntimeError("--location is required for `ug skills remove --mcp`.")
+                raise RuntimeError("--location is required for `ug skills remove --via mcp`.")
             return
         if agents is not None:
-            raise RuntimeError("--agents is only supported when using --mcp.")
+            raise RuntimeError("--agents is only supported with --via mcp.")
         if requested_skills is not None and location is not None:
             raise RuntimeError("--names takes fully-qualified names; drop --location.")
         if requested_skills is not None:
@@ -2657,11 +2672,19 @@ def _launch_tool(
         # Gemini is exempt: it validates the service and resolves its target in a single
         # lookup via resolve_gemini_provider_model (below), and uses no family model map.
         provider_models = None
+        picker_catalog = None
         relayed = False
         coding_agent_config_defaults = (
             managed_claude_family_models(managed) or {}
             if tool == "claude" and managed is not None
             else {}
+        )
+        managed_claude_uc_without_defaults = (
+            tool == "claude"
+            and managed is not None
+            and bool(managed_parent_schema)
+            and managed_default_model(managed, tool) is None
+            and not coding_agent_config_defaults
         )
         if provider and tool != "gemini":
             provider_models, error, relayed = resolve_provider_models(tool, state, provider)
@@ -2687,6 +2710,17 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        elif managed_claude_uc_without_defaults:
+            token = get_databricks_token(state["workspace"], state.get("profile"))
+            picker_catalog = list_anthropic_model_catalog(
+                state["workspace"], token, parent_schema=managed_parent_schema
+            )
+            error = picker_catalog.error_msg
+            if error:
+                raise RuntimeError(
+                    f"Could not discover Claude models for managed Unity Catalog location "
+                    f"{managed_parent_schema}: {error}"
+                )
         # The router's per-launch pick for the root session. Codex pins it as the
         # resolved model; claude pins it via ANTHROPIC_MODEL (route_root_model).
         route_root_model = None
@@ -2742,6 +2776,7 @@ def _launch_tool(
             resolved_model,
             provider=provider,
             provider_models=provider_models,
+            picker_catalog=picker_catalog,
             relayed=relayed,
             route_root_model=route_root_model,
             # Claude's explicit model is launch-scoped and is passed through LaunchOptions below.
@@ -2749,6 +2784,10 @@ def _launch_tool(
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
         )
+        if picker_catalog and picker_catalog.model_ids:
+            # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
+            # replaced. Keep the managed catalog launch-scoped and leave the user's settings alone.
+            state["_claude_launch_picker_models"] = picker_catalog.model_ids
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
             tool == "claude"

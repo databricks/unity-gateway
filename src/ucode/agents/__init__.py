@@ -17,6 +17,7 @@ from pathlib import Path
 
 from ucode.config_io import ToolSpec
 from ucode.databricks import (
+    AnthropicModelCatalog,
     get_databricks_token,
     install_ai_tools,
     install_databricks_cli,
@@ -385,6 +386,7 @@ def configure_tool(
     custom_model: str | None = None,
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
+    picker_catalog: AnthropicModelCatalog | None = None,
 ) -> dict:
     result: dict | tuple[dict, str]
     if tool == "codex":
@@ -406,6 +408,7 @@ def configure_tool(
             custom_model=custom_model,
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
+            picker_catalog=picker_catalog,
         )
     else:
         # Every tool in this branch needs a model — including gemini under a provider,
