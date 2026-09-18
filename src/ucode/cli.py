@@ -108,7 +108,6 @@ from ucode.mcp import (
     available_mcp_clients,
     configure_bare_skills_mcp_command,
     configure_mcp_command,
-    configure_skills_mcp_command,
     configure_skills_mcp_picker_command,
     configured_mcp_clients,
     list_mcp_command,
@@ -3581,82 +3580,6 @@ def configure(
         # meaningless "ERROR 0".
         raise
     except RuntimeError as exc:
-        print_err(str(exc))
-        raise typer.Exit(1) from None
-    except KeyboardInterrupt:
-        print_err("Interrupted.")
-        raise typer.Exit(130) from None
-
-
-@configure_app.command("skills")
-def configure_skills(
-    location: Annotated[
-        str | None,
-        typer.Option("--location", help="Comma-separated `<catalog>.<schema>` skill scopes."),
-    ] = None,
-    mcp: Annotated[
-        bool,
-        typer.Option("--mcp", help="Mutate the skills MCP connection instead of downloading."),
-    ] = False,
-    path: Annotated[
-        str | None,
-        typer.Option(
-            "--path",
-            help="(download) Existing absolute dir to download into; defaults to your home dir.",
-        ),
-    ] = None,
-    names: Annotated[
-        str | None,
-        typer.Option(
-            "--names",
-            help="(download) Download exactly these comma-separated fully-qualified "
-            "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
-            "with --mcp or --location.",
-        ),
-    ] = None,
-) -> None:
-    """Configure Databricks Skills for your coding tools.
-
-    When ``--location`` is not provided, registers the skills MCP connection with
-    utility tools only.
-
-    When ``--location`` is provided: with ``--mcp``, sets the connection's scope to
-    exactly the listed schemas (no download); otherwise, downloads every skill in
-    each schema to disk (under ``--path``, or your home dir when omitted) and
-    registers the MCP connection with utility tools only. ``--names`` instead
-    downloads a named set of fully-qualified skills that may span schemas (and takes
-    no ``--location``).
-    """
-    try:
-        install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
-        # `--names` absent -> None (whole schemas via --location); present (even
-        # empty) -> the explicit FQN set, so `--names ""` downloads nothing.
-        selected_skills = (
-            None if names is None else {s.strip() for s in names.split(",") if s.strip()}
-        )
-        if mcp and path is not None:
-            raise RuntimeError("--path is not valid with --mcp.")
-        if mcp and selected_skills is not None:
-            raise RuntimeError("--names is not valid with --mcp; it only applies when downloading.")
-        if selected_skills is not None and location is not None:
-            raise RuntimeError("--names takes fully-qualified names; drop --location.")
-        if selected_skills is not None:
-            invalid = sorted(s for s in selected_skills if not _is_qualified_skill_name(s))
-            if invalid:
-                raise RuntimeError(
-                    "--names entries must be fully-qualified `<catalog>.<schema>.<name>` names "
-                    f"(invalid: {', '.join(invalid)})."
-                )
-            configure_selected_skills_download_command(sorted(selected_skills), path)
-            return
-        locations = _parse_skill_locations(location)
-        if path is not None and not locations:
-            raise RuntimeError("--path only applies when downloading with --location.")
-        if mcp or not locations:
-            configure_skills_mcp_command(locations)
-        else:
-            configure_location_skills_download_command(locations, path=path)
-    except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:

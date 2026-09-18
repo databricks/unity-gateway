@@ -1636,7 +1636,7 @@ def configure_mcp_command(
 
     excluded_sources = exclude_sources or set()
     original_mcp_servers: list[dict] = list(state.get("mcp_servers") or [])
-    # Skills connections are managed by `configure skills`, so keep them out of
+    # Skills connections are managed by the `ug skills` commands, so keep them out of
     # the picker and carry them through untouched.
     skills_servers = _skills_entries(original_mcp_servers)
     picker_servers = [s for s in original_mcp_servers if s.get("kind") != SKILLS_MCP_KIND]
@@ -1782,7 +1782,7 @@ def remove_mcp_command(agents: set[str] | None = None) -> int:
     """`ucode mcp remove`: interactively unregister configured MCP servers.
 
     Shows the servers currently configured (skills connections excluded — they're
-    owned by `configure skills`) and removes the ones you select. It never adds or
+    owned by the `ug skills` commands) and removes the ones you select. It never adds or
     reconfigures anything, and needs no Databricks auth.
 
     Without ``agents``, a selected server is removed from every coding tool it's
@@ -2461,17 +2461,6 @@ def _update_skills_mcp(
     return changed or original != working
 
 
-def configure_skills_mcp_command(locations: list[str]) -> int:
-    """Set every configured client's skill scope to ``locations``."""
-    state = load_state()
-    workspace, profile, clients = setup_mcp_clients(state, "Skills MCP")
-    locations_by_client = _skill_locations_by_client_from_state(state)
-    for client in clients:
-        locations_by_client[client] = list(locations)
-    _update_skills_mcp(state, workspace, profile, clients, locations_by_client)
-    return 0
-
-
 def _skill_mcp_locations(state: dict) -> list[str]:
     """The skills MCP connection's ``skill_locations``, or ``[]`` if none exists."""
     entry = _skills_entry(list(state.get("mcp_servers") or []))
@@ -2506,12 +2495,11 @@ def register_schemaless_skills_connection(
 def configure_bare_skills_mcp_command() -> bool:
     """Register the schema-less skills MCP connection for every configured agent.
 
-    The simple entrypoint behind a bare ``ug skills`` (replacing ``ug configure skills``
-    with no arguments). Re-registers on every run, preserving any client's existing
-    ``--mcp`` scope, but only the first run prints anything (the setup header and the
-    connection summary) -- a repeat ``ug skills`` re-registers silently. Returns whether
-    no skills connection existed beforehand, so the caller can also show first-run
-    guidance only then.
+    The simple entrypoint behind a bare ``ug skills``. Re-registers on every run,
+    preserving any client's existing ``--mcp`` scope, but only the first run prints
+    anything (the setup header and the connection summary) -- a repeat ``ug skills``
+    re-registers silently. Returns whether no skills connection existed beforehand, so
+    the caller can also show first-run guidance only then.
     """
     state = load_state()
     first_time = _skills_entry(list(state.get("mcp_servers") or [])) is None

@@ -1887,137 +1887,6 @@ class TestStatusLiveManagedConfig:
         assert freshness == "cached"
 
 
-class TestConfigureSkillsCommand:
-    @pytest.fixture(autouse=True)
-    def _stub_install_cli(self):
-        with patch("ucode.cli.install_databricks_cli") as mock_install:
-            yield mock_install
-
-    def test_requires_skills_mcp_cli_floor(self, _stub_install_cli):
-        from ucode.databricks import SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
-
-        with patch("ucode.cli.configure_skills_mcp_command"):
-            result = runner.invoke(app, ["configure", "skills", "--location", "a.b", "--mcp"])
-        assert result.exit_code == 0, result.output
-        _stub_install_cli.assert_called_once_with(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
-
-    def test_mcp_flag_dispatches_location_set(self):
-        with patch("ucode.cli.configure_skills_mcp_command") as mock_mcp:
-            result = runner.invoke(app, ["configure", "skills", "--location", "a.b", "--mcp"])
-        assert result.exit_code == 0, result.output
-        mock_mcp.assert_called_once_with(["a.b"])
-
-    def test_comma_location_yields_multiple_schemas(self):
-        with patch("ucode.cli.configure_skills_mcp_command") as mock_mcp:
-            result = runner.invoke(app, ["configure", "skills", "--location", "a.b, c.d", "--mcp"])
-        assert result.exit_code == 0, result.output
-        mock_mcp.assert_called_once_with(["a.b", "c.d"])
-
-    def test_default_mode_dispatches_download_with_path(self):
-        with patch("ucode.cli.configure_location_skills_download_command") as mock_download:
-            result = runner.invoke(
-                app, ["configure", "skills", "--location", "a.b", "--path", "/tmp/skills"]
-            )
-        assert result.exit_code == 0, result.output
-        mock_download.assert_called_once_with(["a.b"], path="/tmp/skills")
-
-    def test_default_mode_without_path_dispatches_download(self):
-        with patch("ucode.cli.configure_location_skills_download_command") as mock_download:
-            result = runner.invoke(app, ["configure", "skills", "--location", "a.b"])
-        assert result.exit_code == 0, result.output
-        mock_download.assert_called_once_with(["a.b"], path=None)
-
-    def test_skill_downloads_fully_qualified_across_schemas(self):
-        with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
-            result = runner.invoke(app, ["configure", "skills", "--names", "a.b.s1, c.d.s2"])
-        assert result.exit_code == 0, result.output
-        mock_download.assert_called_once_with(["a.b.s1", "c.d.s2"], None)
-
-    def test_skill_threads_path_through(self):
-        with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
-            result = runner.invoke(
-                app, ["configure", "skills", "--names", "a.b.s1", "--path", "/tmp/skills"]
-            )
-        assert result.exit_code == 0, result.output
-        mock_download.assert_called_once_with(["a.b.s1"], "/tmp/skills")
-
-    def test_skill_with_location_exit_1(self):
-        with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
-            result = runner.invoke(
-                app, ["configure", "skills", "--location", "a.b", "--names", "a.b.s1"]
-            )
-        assert result.exit_code == 1
-        assert "--names takes fully-qualified names; drop --location" in _strip_ansi(result.output)
-        mock_download.assert_not_called()
-
-    def test_bare_skill_exit_1(self):
-        with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
-            result = runner.invoke(app, ["configure", "skills", "--names", "my_skill"])
-        assert result.exit_code == 1
-        assert "must be fully-qualified" in _strip_ansi(result.output)
-        mock_download.assert_not_called()
-
-    def test_skill_with_mcp_exit_1(self):
-        with (
-            patch("ucode.cli.configure_skills_mcp_command") as mock_mcp,
-            patch("ucode.cli.configure_selected_skills_download_command") as mock_download,
-        ):
-            result = runner.invoke(app, ["configure", "skills", "--mcp", "--names", "a.b.s1"])
-        assert result.exit_code == 1
-        assert "--names" in _strip_ansi(result.output)
-        mock_mcp.assert_not_called()
-        mock_download.assert_not_called()
-
-    def test_path_with_mcp_exit_1(self):
-        with (
-            patch("ucode.cli.configure_skills_mcp_command") as mock_mcp,
-            patch("ucode.cli.configure_location_skills_download_command") as mock_download,
-        ):
-            result = runner.invoke(
-                app, ["configure", "skills", "--location", "a.b", "--mcp", "--path", "/tmp/skills"]
-            )
-        assert result.exit_code == 1
-        assert "--path" in _strip_ansi(result.output)
-        mock_mcp.assert_not_called()
-        mock_download.assert_not_called()
-
-    def test_three_part_location_exit_1(self):
-        with patch("ucode.cli.configure_skills_mcp_command") as mock_mcp:
-            result = runner.invoke(app, ["configure", "skills", "--location", "a.b.c", "--mcp"])
-        assert result.exit_code == 1
-        mock_mcp.assert_not_called()
-
-    def test_malformed_location_exit_1_names_location(self):
-        with patch("ucode.cli.configure_skills_mcp_command") as mock_mcp:
-            result = runner.invoke(app, ["configure", "skills", "--location", "justone", "--mcp"])
-        assert result.exit_code == 1
-        assert "--location" in _strip_ansi(result.output)
-        mock_mcp.assert_not_called()
-
-    def test_bare_command_registers_schemaless_connection(self):
-        with patch("ucode.cli.configure_skills_mcp_command") as mock_mcp:
-            result = runner.invoke(app, ["configure", "skills"])
-        assert result.exit_code == 0, result.output
-        mock_mcp.assert_called_once_with([])
-
-    def test_mcp_without_location_registers_schemaless_connection(self):
-        with patch("ucode.cli.configure_skills_mcp_command") as mock_mcp:
-            result = runner.invoke(app, ["configure", "skills", "--mcp"])
-        assert result.exit_code == 0, result.output
-        mock_mcp.assert_called_once_with([])
-
-    def test_path_without_location_exit_1(self):
-        with (
-            patch("ucode.cli.configure_skills_mcp_command") as mock_mcp,
-            patch("ucode.cli.configure_location_skills_download_command") as mock_download,
-        ):
-            result = runner.invoke(app, ["configure", "skills", "--path", "/tmp/skills"])
-        assert result.exit_code == 1
-        assert "--path" in _strip_ansi(result.output)
-        mock_mcp.assert_not_called()
-        mock_download.assert_not_called()
-
-
 class TestSkillsEntrypoint:
     """Bare `ug skills` registers the schema-less MCP connection, then prints help."""
 
@@ -2064,8 +1933,8 @@ class TestSkillsEntrypoint:
 
 
 class TestSkillsAddCommand:
-    """`ucode skills add` is the additive sibling of `configure skills`: `--mcp`
-    unions schemas into the connection scope, the default mode downloads."""
+    """`ucode skills add` is purely additive: `--mcp` unions schemas into the
+    connection scope, the default mode downloads."""
 
     @pytest.fixture(autouse=True)
     def _stub_install_cli(self):
