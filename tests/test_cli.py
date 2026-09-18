@@ -1626,19 +1626,38 @@ class TestOtelHeadersCommand:
 
 
 class TestStatus:
+    @pytest.fixture(autouse=True)
+    def _live_model_state(self):
+        with (
+            patch(
+                "ucode.cli._live_status_model_state",
+                side_effect=lambda state, _tools: (state, "live"),
+            ),
+            patch(
+                "ucode.cli._live_status_managed_state",
+                side_effect=lambda _state, cached: (cached, "live"),
+            ),
+        ):
+            yield
+
     def test_points_to_ug_mcp_list_with_counts(self):
         # status is a high-level overview: it shows a per-agent MCP count and points to the
         # detail command, rather than surfacing each agent's raw `<agent> mcp list` command.
         with patch("ucode.cli.load_state", return_value=MINIMAL_STATE):
             result = runner.invoke(app, ["status"])
 
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
         assert result.exit_code == 0, result.output
-        assert "Managed by Databricks" not in result.output
-        assert "MCP servers: 0" in result.output
-        assert "ug mcp list" in result.output
-        assert "MCP list command:" not in result.output
-        assert "claude mcp list" not in result.output
-        assert "codex mcp list" not in result.output
+        assert "Configuration: Self-configured" in output
+        assert "MCP servers: 0" in output
+        assert "Details:" not in result.output
+        assert "Manage:" not in result.output
+        assert "Config file" not in result.output
+        assert "System settings" not in result.output
+        panel_tops = [
+            line for line in _strip_ansi(result.output).splitlines() if line.startswith("╭")
+        ]
+        assert len({len(line) for line in panel_tops}) == 1
 
     def test_shows_mcp_server_counts_configured_by_ucode(self):
         state = {
@@ -1661,12 +1680,12 @@ class TestStatus:
         with patch("ucode.cli.load_state", return_value=state):
             result = runner.invoke(app, ["status"])
 
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
         assert result.exit_code == 0, result.output
         # Counts, not names: claude, codex, and gemini each carry one server.
-        assert "MCP servers: 1" in result.output
+        assert "MCP servers: 1" in output
         assert "github-mcp" not in result.output
         assert "databricks-sql" not in result.output
-        assert "ug mcp list" in result.output
 
     def test_mcp_count_includes_managed_servers_and_dedupes(self):
         # The count folds in workspace-managed servers (matching `ug mcp list`) and dedupes a
@@ -1698,12 +1717,22 @@ class TestStatus:
                 },
             ],
         }
-        with patch("ucode.cli.load_state", return_value=state):
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch(
+                "ucode.cli.claude_agent.read_managed_mcp_urls",
+                return_value={
+                    "managed-mcp": "https://example.databricks.com/managed-mcp",
+                    "os-only-mcp": "https://example.databricks.com/os-only-mcp",
+                },
+            ),
+        ):
             result = runner.invoke(app, ["status"])
 
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
         assert result.exit_code == 0, result.output
-        # claude: dev-mcp, shared-mcp, managed-mcp = 3 distinct (shared-mcp not double-counted).
-        assert "MCP servers: 3" in result.output
+        # The managed file adds os-only-mcp; managed-mcp remains deduplicated by name.
+        assert "MCP servers: 4" in output
 
     def test_status_treats_available_tools_as_configured_agents(self):
         state = {
@@ -1725,15 +1754,31 @@ class TestStatus:
         with patch("ucode.cli.load_state", return_value=state):
             result = runner.invoke(app, ["status"])
 
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
         assert result.exit_code == 0, result.output
-        assert "MCP servers: 1" in result.output
+        assert "MCP servers: 1" in output
+        assert "GitHub Copilot CLI" in output
+        assert "Claude Code" not in output
+        assert "Gemini CLI" not in output
         assert "databricks-sql" not in result.output
         assert "https://example.databricks.com/ai-gateway/anthropic" not in result.output
         assert "https://example.databricks.com/ai-gateway/gemini" not in result.output
 
-    def test_status_shows_managed_config_box_when_present_and_enabled(self, monkeypatch):
+    def test_status_shows_effective_managed_models_and_tracing(self, monkeypatch):
         managed = {
-            "enabled_agents": {"claude": {}, "codex": {}},
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "default_model": "system.ai.claude-opus-4-8",
+                        "model_services": [
+                            "system.ai.claude-opus-4-8",
+                            "system.ai.claude-sonnet-5",
+                        ],
+                    },
+                    "otel_tracing_enabled": True,
+                },
+                "codex": {},
+            },
             "mcp_servers": [{"name": "github-mcp", "type": "external"}],
             "skills": {"names": ["debug-ci"]},
         }
@@ -1743,21 +1788,103 @@ class TestStatus:
         ):
             result = runner.invoke(app, ["status"])
 
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
         assert result.exit_code == 0, result.output
-        assert "Configuration" in result.output
-        assert "Coding Agents:" in result.output
-        assert "github-mcp" in result.output
-        assert "debug-ci" in result.output
+        assert "Configuration: Workspace-managed" in output
+        assert "Models (2, managed): system.ai.claude-opus-4-8, system.ai.claude-sonnet-5" in output
+        assert "Default model: system.ai.claude-opus-4-8" in output
+        assert "Tracing: enabled" in output
 
-    def test_status_hides_managed_config_box_when_none_present(self, monkeypatch):
+    def test_status_labels_self_configured_setup(self, monkeypatch):
         with (
             patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
             patch("ucode.cli.load_managed_state", return_value=None),
         ):
             result = runner.invoke(app, ["status"])
-
+        output = re.sub(r"\s+", " ", _strip_ansi(result.output))
         assert result.exit_code == 0, result.output
-        assert "Configuration" not in result.output
+        assert "Configuration: Self-configured" in output
+        assert "Models (1, live): codex-mini" in output
+        assert "Models (1, live): databricks-claude-sonnet-4" in output
+        assert cli_mod._status_default_model("claude", MINIMAL_STATE, ["cached"]) is None
+        assert "Tracing: disabled" in output
+
+
+class TestStatusLiveModels:
+    def test_refreshes_models_with_the_saved_profile_without_persisting(self):
+        state = {
+            **MINIMAL_STATE,
+            "profile": "explicit-profile",
+            "claude_models": {"sonnet": "cached-claude"},
+            "codex_models": ["cached-codex"],
+        }
+        with (
+            patch("ucode.cli.get_databricks_token", return_value="token") as get_token,
+            patch(
+                "ucode.cli.discover_model_services",
+                return_value=(
+                    {"opus": "live-claude"},
+                    ["live-codex"],
+                    ["live-gemini"],
+                    ["live-oss"],
+                    None,
+                ),
+            ),
+            patch("ucode.cli.discover_claude_models") as legacy_claude,
+            patch("ucode.cli.discover_codex_models") as legacy_codex,
+            patch("ucode.cli.discover_gemini_models") as legacy_gemini,
+            patch("ucode.cli.save_state") as save,
+        ):
+            live, freshness = cli_mod._live_status_model_state(state, {"claude", "codex"})
+
+        assert freshness == "live"
+        assert live["claude_models"] == {"opus": "live-claude"}
+        assert live["codex_models"] == ["live-codex"]
+        assert live["opencode_models"]["oss"] == ["live-oss"]
+        assert state["codex_models"] == ["cached-codex"]
+        get_token.assert_called_once_with("https://example.databricks.com", "explicit-profile")
+        legacy_claude.assert_not_called()
+        legacy_codex.assert_not_called()
+        legacy_gemini.assert_not_called()
+        save.assert_not_called()
+
+    def test_labels_cached_fallback_when_live_auth_fails(self):
+        state = {**MINIMAL_STATE, "profile": "explicit-profile"}
+        with patch("ucode.cli.get_databricks_token", side_effect=RuntimeError("expired login")):
+            resolved, freshness = cli_mod._live_status_model_state(state, {"claude"})
+
+        assert resolved is state
+        assert freshness == "cached"
+
+
+class TestStatusLiveManagedConfig:
+    def test_refreshes_with_saved_profile_without_persisting(self):
+        state = {**MINIMAL_STATE, "profile": "explicit-profile"}
+        raw = {"enabled_agents": []}
+        normalized = {"enabled_agents": {"codex": {}}}
+        with (
+            patch("ucode.cli.get_databricks_token", return_value="token") as get_token,
+            patch("ucode.cli.get_managed_config", return_value=(raw, None)) as fetch,
+            patch("ucode.cli.normalize_managed_config", return_value=normalized) as normalize,
+            patch("ucode.cli.save_state") as save,
+        ):
+            managed, freshness = cli_mod._live_status_managed_state(state, {"cached": True})
+
+        assert managed == normalized
+        assert freshness == "live"
+        get_token.assert_called_once_with("https://example.databricks.com", "explicit-profile")
+        fetch.assert_called_once_with("https://example.databricks.com", "token")
+        normalize.assert_called_once_with(raw)
+        save.assert_not_called()
+
+    def test_labels_cached_fallback_when_live_auth_fails(self):
+        state = {**MINIMAL_STATE, "profile": "explicit-profile"}
+        cached = {"enabled_agents": {"claude": {}}}
+        with patch("ucode.cli.get_databricks_token", side_effect=RuntimeError("expired login")):
+            managed, freshness = cli_mod._live_status_managed_state(state, cached)
+
+        assert managed is cached
+        assert freshness == "cached"
 
 
 class TestConfigureSkillsCommand:
@@ -2349,15 +2476,18 @@ class TestManagedSkills:
 
 class TestStatusSkillsSection:
     def _run(self, state):
-        with patch("ucode.cli.load_state", return_value=state):
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli._live_status_managed_state", return_value=(None, "live")),
+            patch("ucode.cli._live_status_model_state", return_value=(state, "live")),
+        ):
             return runner.invoke(app, ["status"])
 
     def test_not_configured_when_no_skills_entry(self):
         result = self._run(MINIMAL_STATE)
         assert result.exit_code == 0, result.output
-        out = _strip_ansi(result.output)
-        assert "Skills" in out
-        assert "not configured" in out
+        out = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert "Skills MCP: not configured" in out
 
     def test_renders_locations_and_configured_agents(self):
         state = {
@@ -2375,9 +2505,8 @@ class TestStatusSkillsSection:
         }
         result = self._run(state)
         assert result.exit_code == 0, result.output
-        out = _strip_ansi(result.output)
-        assert "Skill MCP Locations: main.default, ml.prod" in out
-        assert "Configured: Claude Code, Codex" in out
+        out = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert out.count("Skills MCP: main.default, ml.prod") == 2
 
     def test_renders_placeholder_when_no_locations(self):
         state = {
@@ -2395,8 +2524,8 @@ class TestStatusSkillsSection:
         }
         result = self._run(state)
         assert result.exit_code == 0, result.output
-        out = _strip_ansi(result.output)
-        assert "Skill MCP Locations: none — utility tools only" in out
+        out = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert "Skills MCP: utility tools only" in out
 
     def test_skills_entry_absent_from_per_client_mcp_lines(self):
         state = {
@@ -2421,12 +2550,13 @@ class TestStatusSkillsSection:
         result = self._run(state)
         assert result.exit_code == 0, result.output
         out = _strip_ansi(result.output)
-        # The skills registry is managed in the Skills section, never listed on
-        # a per-client "MCP servers:" line.
+        # The skills registry has its own row and is never counted as a general MCP server.
         for line in out.splitlines():
             if "MCP servers:" in line:
                 assert "databricks-skill-registry" not in line
-        assert "Skill MCP Locations: main.default" in out
+        flat = re.sub(r"\s+", " ", out)
+        assert "MCP servers: 1" in flat
+        assert "Skills MCP: main.default" in flat
 
     def test_renders_per_agent_locations_when_scopes_diverge(self):
         state = {
@@ -2450,9 +2580,9 @@ class TestStatusSkillsSection:
         result = self._run(state)
 
         assert result.exit_code == 0, result.output
-        out = _strip_ansi(result.output)
-        assert "Claude Code skill MCP locations: main.default, claude.only" in out
-        assert "Codex skill MCP locations: main.default" in out
+        out = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert "Skills MCP: main.default, claude.only" in out
+        assert "Skills MCP: main.default" in out
 
 
 class TestRevert:
