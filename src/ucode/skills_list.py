@@ -107,7 +107,7 @@ def list_configured_skills_command() -> int:
 
     print_heading("Configured Skills")
     console.print()
-    table = Table(box=None, pad_edge=False, header_style="bold")
+    table = Table(box=None, pad_edge=False, header_style="bold", padding=(0, 2))
     for header in ("NAME", "LOCATION", "VIA", "AGENTS"):
         table.add_column(header)
     for row in rows:
