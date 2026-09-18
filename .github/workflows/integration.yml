@@ -188,22 +188,7 @@ jobs:
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: ${{ inputs.suite == 'tui' && 'live and tui' || 'live' }} and ${{ matrix.agent }}
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}
-    steps: *live-steps
-
-  tracing:
-    name: Codex tracing journey
-    if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && inputs.suite != 'tui' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    runs-on: ubuntu-22.04
-    timeout-minutes: 20
-    env:
-      UCODE_TEST_WORKSPACE: https://eng-ml-inference.staging.cloud.databricks.com
-      DATABRICKS_BEARER: ${{ secrets.UCODE_TRACING_DATABRICKS_BEARER }}
       UG_INTEGRATION_TRACE_TABLE: main.alkis_tracing_test.unity_gateway_otel_spans
-      UG_INTEGRATION_WAREHOUSE_ID: aaa0f6351bb845df
-      DEPENDENCY: ${{ inputs.dependency }}
-      AGENT: codex
-      TEST_MARKER: tracing and codex
-      ARTIFACT_NAME: integration-codex-tracing
     steps: *live-steps
 
   managed:
@@ -253,7 +238,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${args[@]}" -- -m "(managed or managed_fixture) and $AGENT"
+            "${args[@]}" -- -m "(managed or (managed_fixture and not live)) and $AGENT"
       - name: Upload managed test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -271,7 +256,7 @@ jobs:
   cujs:
     name: All integration tests
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, workspace, smoke, full, tracing]
+    needs: [installation, workspace, smoke, full]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -292,8 +277,6 @@ jobs:
                   required.append("smoke")
               if suite != "smoke":
                   required.append("full")
-              if suite not in ("smoke", "tui"):
-                  required.append("tracing")
           # `managed` is intentionally omitted while it is non-blocking (see its job comment).
           failed = [job for job in required if results[job]["result"] != "success"]
           if failed:

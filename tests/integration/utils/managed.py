@@ -54,13 +54,18 @@ def build_claude_agent_config(
     }
 
 
-def build_codex_agent_config(*, models: list[str]) -> dict:
+def build_codex_agent_config(
+    *, models: list[str], otel_tracing_enabled: bool | None = None
+) -> dict:
+    config = {
+        "models": {"model_services": models},
+        "default_models": {"default_model": models[0]},
+    }
+    if otel_tracing_enabled is not None:
+        config["tracing"] = {"enabled": otel_tracing_enabled}
     return {
         "agent": "CODING_AGENT_CODEX",
-        "config": {
-            "models": {"model_services": models},
-            "default_models": {"default_model": models[0]},
-        },
+        "config": config,
     }
 
 

@@ -40,7 +40,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_claude_custom_oauth_cli_boots`, `test_ug_codex_custom_oauth_cli_boots` | Launch with `ENABLE_CUSTOM_OAUTH_FROM_CLI=1`, `--workspace`, and `--client-id databricks-cli` | Real TUI reaches a usable prompt, accepts keyboard input, exits normally, and saves `client_id = databricks-cli` in its generated CLI profile; Claude also reads the OS-managed settings and requires a profile-only `apiKeyHelper` |
 | `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
-| `test_ug_codex_exports_trace_to_configured_table` | Configure Codex tracing, complete a headless task carrying a unique trace marker, then wait for ingestion | The staging trace table contains a Codex span with the same trace-safe marker |
+| `test_ug_codex_exports_trace_to_configured_table` | Configure Codex tracing, complete a headless task carrying a unique trace marker, then wait for ingestion | The configured trace table contains a Codex span with the same trace-safe marker |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` with routing enabled | Real file task completes; no routing wrapper |
 | `test_ug_codex_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` / `-m VALUE` with routing enabled | Real file task completes; no routing wrapper |
 | `test_ug_claude_preserves_caller_settings_and_hook` | Pass a settings path containing spaces | Real SessionStart hook executes; caller file unchanged; file task completes |
@@ -60,9 +60,9 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_and_ucode_auth_helpers_emit_only_the_supplied_bearer` | Run both auth helper commands with the public bearer override, with and without forced refresh | Exact token-only stdout, no warnings or ANSI escapes; no workspace authentication or saved state |
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
-With both agents selected there are **42 live cases** (6 interactive TUI cases),
-**1 staging tracing case**, **4 managed-workspace cases** (marker `managed`, run against a separate workspace that
-publishes a CodingAgentConfig), **10 managed-fixture cases** (marker `managed_fixture`, with only
+With both agents selected there are **43 live cases** (6 interactive TUI cases),
+**4 managed-workspace cases** (marker `managed`, run against a separate workspace that
+publishes a CodingAgentConfig), **11 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected), and **5 installation checks**. Parametrization varies
 argument spelling or routing mode, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
@@ -86,7 +86,7 @@ dependency graph to reproduce a user's combination. Every relevant same-reposito
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
 journeys for both agents, in two parallel jobs. After smoke finishes, the full
-suite runs all 41 cases across two parallel agent jobs: one Claude VM and one
+suite runs all 43 cases across two parallel agent jobs: one Claude VM and one
 Codex VM, each running its configure, headless, and commands/lifecycle cases
 serially. Each agent is installed once for the full suite, and no two full jobs
 for the same agent overlap within a run.
