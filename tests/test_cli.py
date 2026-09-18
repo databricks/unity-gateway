@@ -452,24 +452,33 @@ def _launch_policy_patches(
     *,
     persisted_provider: str | None = None,
 ):
+    launch_state = dict(MINIMAL_STATE)
     with (
         patch("ucode.cli.ensure_bootstrap_dependencies"),
-        patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
-        patch("ucode.cli.ensure_provider_state", return_value=MINIMAL_STATE),
+        patch("ucode.cli.load_state", return_value=launch_state),
+        patch("ucode.cli.ensure_provider_state", return_value=launch_state),
         patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
         patch("ucode.cli._fetch_budget_recommendation", return_value=None),
-        patch("ucode.cli.get_provider_service", return_value=persisted_provider),
-        patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
-        patch("ucode.cli.resolve_provider_models", return_value=(None, None, False)),
+        patch("ucode.cli.get_provider_service", return_value=persisted_provider) as get_provider,
+        patch("ucode.cli.configure_shared_state", return_value=launch_state) as shared,
+        patch(
+            "ucode.cli.resolve_provider_models", return_value=(None, None, False)
+        ) as resolve_provider,
         patch("ucode.cli.resolve_gemini_provider_model", return_value=("gemini-2.0-flash", None)),
         patch(
             "ucode.cli.resolve_launch_model",
-            return_value=(MINIMAL_STATE, "databricks-claude-sonnet-4"),
+            return_value=(launch_state, "databricks-claude-sonnet-4"),
         ),
-        patch("ucode.cli.configure_tool", return_value=MINIMAL_STATE),
+        patch("ucode.cli.configure_tool", return_value=launch_state) as configure,
         patch("ucode.cli.launch_agent") as launch,
     ):
-        yield launch
+        yield {
+            "get_provider": get_provider,
+            "shared": shared,
+            "resolve_provider": resolve_provider,
+            "configure": configure,
+            "launch": launch,
+        }
 
 
 class TestSubcommandRouting:
@@ -979,19 +988,23 @@ class TestManagedConfigLaunchSourceGuard:
         ],
     )
     def test_managed_config_rejects_launch_source_options(self, tool, option, value):
-        with _launch_policy_patches({}) as launch:
+        with _launch_policy_patches({}) as calls:
             result = runner.invoke(app, [tool, option, value])
 
         assert result.exit_code == 1
         assert "`--provider` or `--model-location` is not allowed" in _strip_ansi(result.output)
-        launch.assert_not_called()
+        calls["launch"].assert_not_called()
 
     def test_persisted_provider_is_not_mistaken_for_an_explicit_option(self):
-        with _launch_policy_patches({}, persisted_provider="main.default.provider") as launch:
+        with _launch_policy_patches({}, persisted_provider="main.default.provider") as calls:
             result = runner.invoke(app, ["claude"])
 
         assert result.exit_code == 0, result.output
-        launch.assert_called_once()
+        assert calls["get_provider"].call_count == 1
+        assert calls["get_provider"].call_args.args[1] == "claude"
+        calls["resolve_provider"].assert_called_once()
+        calls["configure"].assert_called_once()
+        calls["launch"].assert_called_once()
 
 
 class TestManagedClaudeModelDiscovery:
@@ -1088,6 +1101,49 @@ def test_claude_discovery_changes_do_not_break_other_managed_providers():
 
     assert result.exit_code == 0, result.output
     assert "main.default.gemini-mps" in _strip_ansi(result.output)
+
+
+class TestManagedCodexModelSource:
+    @pytest.mark.parametrize(
+        ("model_config", "expected_provider", "expected_parent"),
+        [
+            (
+                {"model_provider_service": "main.default.managed-mps"},
+                "main.default.managed-mps",
+                None,
+            ),
+            ({"unity_catalog_location": "main.managed"}, None, "main.managed"),
+        ],
+        ids=["mps", "uc-parent"],
+    )
+    def test_managed_source_overrides_saved_provider(
+        self, monkeypatch, model_config, expected_provider, expected_parent
+    ):
+        monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        managed = {"enabled_agents": {"codex": {"model_config": model_config}}}
+
+        with _launch_policy_patches(
+            managed,
+            persisted_provider="main.default.developer",
+        ) as calls:
+            result = runner.invoke(app, ["codex"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["shared"].call_args.kwargs["skip_model_discovery"] is True
+        if expected_provider:
+            calls["resolve_provider"].assert_called_once()
+        else:
+            calls["resolve_provider"].assert_not_called()
+        assert calls["configure"].call_args.kwargs["provider"] == expected_provider
+        assert calls["configure"].call_args.kwargs["parent_schema"] == expected_parent
+        launch_state = calls["launch"].call_args.args[1]
+        if expected_provider:
+            assert launch_state["_codex_launch_provider"] == expected_provider
+            assert "_codex_launch_parent_schema" not in launch_state
+        else:
+            assert launch_state["_codex_launch_parent_schema"] == expected_parent
+            assert "_codex_launch_provider" not in launch_state
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
 
 class TestClaudeModelFlag:
@@ -3164,6 +3220,63 @@ class TestConfigureAgentsSelection:
             == 0
         )
         configure.assert_called_once_with("claude", state, parent_schema="main.models")
+
+    def test_managed_codex_parent_is_passed_to_generic_configure(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": [],
+            "codex_models": [],
+            "provider_services": {"codex": "main.default.developer"},
+        }
+        managed = {
+            "enabled_agents": {"codex": {"model_config": {"unity_catalog_location": "main.models"}}}
+        }
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s, **_k: (managed, False))
+        monkeypatch.setattr(
+            cli_mod,
+            "check_gateway_endpoint",
+            lambda *_a: pytest.fail("managed model sources do not require global models"),
+        )
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *_a: None)
+        configured: list[dict] = []
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda resolved, tools, **kwargs: configured.append(kwargs) or resolved,
+        )
+
+        assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
+
+        assert configured[0]["parent_schemas"] == {"codex": "main.models"}
+
+    def test_single_codex_agent_passes_managed_parent_directly(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "provider_services": {"codex": "main.default.developer"},
+        }
+        managed = {
+            "enabled_agents": {"codex": {"model_config": {"unity_catalog_location": "main.models"}}}
+        }
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        refresh = MagicMock(return_value=(managed, False))
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", refresh)
+        configure = MagicMock(return_value=state)
+        monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
+        install_ai_tools = MagicMock()
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", install_ai_tools)
+
+        result = runner.invoke(
+            app, ["configure", "--agent", "codex", "--workspace", "https://w.com"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "(Provider: Databricks)" in _strip_ansi(result.output)
+        refresh.assert_called_once_with(state, force_refresh=True)
+        configure.assert_called_once_with("codex", state, parent_schema="main.models")
+        install_ai_tools.assert_called_once_with(["codex"], state, force_refresh=False)
 
     def test_managed_config_fails_when_no_enabled_agent_is_available(self, monkeypatch):
         import ucode.cli as cli_mod

@@ -913,6 +913,38 @@ class TestCodexLaunch:
         )
         assert 'Databricks-Model-Service-Parent-Schema = "main.default"' in parent_arg
 
+    def test_transient_parent_suppresses_persisted_provider(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        seen = {}
+        monkeypatch.setattr(
+            codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "models.json"
+        )
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda workspace, token, **kwargs: seen.update(kwargs) or {"models": []},
+        )
+
+        codex.launch(
+            {
+                "workspace": WS,
+                "provider_services": {"codex": "main.default.developer"},
+                "_codex_launch_parent_schema": "main.managed",
+            },
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert seen == {
+            "source": codex.CodexCatalogSource.PARENT_SCHEMA,
+            "identifier": "main.managed",
+        }
+        provider_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
+        )
+        assert 'Databricks-Model-Service-Parent-Schema = "main.managed"' in provider_arg
+        assert "Databricks-Model-Provider-Service" not in provider_arg
+
     def test_parent_discovery_refreshes_when_parent_changes(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
         monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "models.json")

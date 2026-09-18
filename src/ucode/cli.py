@@ -777,7 +777,7 @@ def configure_workspace_command(
         )
         state = states[0]
         parent_schema = None
-        if tool == "claude":
+        if tool in ("claude", "codex"):
             managed, _ = refresh_managed_config(state, force_refresh=True)
             _reject_disabled_agent(managed, tool)
             if managed is not None:
@@ -785,13 +785,16 @@ def configure_workspace_command(
                 if not managed_provider_service(managed, tool):
                     parent_schema = managed_unity_catalog_location(managed, tool)
         state = configure_single_tool(tool, state, parent_schema=parent_schema)
-        install_databricks_ai_tools_for_agents([tool], state, force_refresh=tool != "claude")
+        install_databricks_ai_tools_for_agents(
+            [tool], state, force_refresh=tool not in ("claude", "codex")
+        )
         spec = TOOL_SPECS[tool]
+        provider_summary = "Databricks" if parent_schema else _provider_summary(tool, state)
         console.print(
             Panel(
                 f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]\n"
                 f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
-                f"[dim](Provider: {_provider_summary(tool, state)})[/dim]",
+                f"[dim](Provider: {provider_summary})[/dim]",
                 title="Configuration Complete",
                 style="green",
                 expand=False,
@@ -822,7 +825,8 @@ def configure_workspace_command(
             resolved = resolve_state(managed, state, tool_name)
             parent_schema = (
                 managed_unity_catalog_location(managed, tool_name)
-                if tool_name == "claude" and not managed_provider_service(managed, tool_name)
+                if tool_name in ("claude", "codex")
+                and not managed_provider_service(managed, tool_name)
                 else None
             )
             if (
@@ -2358,7 +2362,7 @@ def _launch_tool(
         managed_provider = managed_provider_service(managed or {}, tool)
         managed_parent_schema = (
             managed_unity_catalog_location(managed or {}, tool)
-            if tool == "claude" and not managed_provider
+            if tool in {"claude", "codex"} and not managed_provider
             else None
         )
         if managed_provider:
@@ -2462,7 +2466,7 @@ def _launch_tool(
         relayed_forward_model = None  # forwarded to Claude Code's --model for a relayed provider
         if provider or managed_parent_schema:
             # Routing through a Model Provider Service pins no Databricks model;
-            # managed UC discovery likewise lets Claude select from the parent schema. Skip model
+            # managed UC discovery likewise lets the agent select from the parent schema. Skip model
             # resolution, which would otherwise fail when global discovery found no models.
             resolved_model = None
             if provider and tool == "claude" and (model or provider_models):
