@@ -96,30 +96,33 @@ def build_coding_agent_config(
 
 
 def build_claude_agent_config(
-    models: list[str], *, family_defaults: dict[str, str] | None = None
+    models: list[str],
+    *,
+    family_defaults: dict[str, str] | None = None,
+    smart_routing: bool = False,
 ) -> dict:
     default_models = {"default_model": models[0]}
     if family_defaults:
         default_models.update(
             {f"default_{family}_model": m for family, m in family_defaults.items()}
         )
-    return {
-        "agent": "CODING_AGENT_CLAUDE_CODE",
-        "config": {
-            "models": {"model_services": models},
-            "default_models": default_models,
-        },
+    config = {
+        "models": {"model_services": models},
+        "default_models": default_models,
     }
+    if smart_routing:
+        config["smart_routing"] = {"enabled": True}
+    return {"agent": "CODING_AGENT_CLAUDE_CODE", "config": config}
 
 
-def build_codex_agent_config(*, models: list[str]) -> dict:
-    return {
-        "agent": "CODING_AGENT_CODEX",
-        "config": {
-            "models": {"model_services": models},
-            "default_models": {"default_model": models[0]},
-        },
+def build_codex_agent_config(*, models: list[str], smart_routing: bool = False) -> dict:
+    config = {
+        "models": {"model_services": models},
+        "default_models": {"default_model": models[0]},
     }
+    if smart_routing:
+        config["smart_routing"] = {"enabled": True}
+    return {"agent": "CODING_AGENT_CODEX", "config": config}
 
 
 def build_mps_agent_config(agent: str, provider: str) -> dict:

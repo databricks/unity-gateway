@@ -112,15 +112,23 @@ ug skills
 # List configured skills and how each was configured.
 ug skills list
 
-# Add to existing MCP scope or downloads.
-ug skills add --location main.default --mcp
+# Download every skill in a schema into your local agent skill directories.
 ug skills add --location main.default
+
+# Download specific skills by fully-qualified name (may span schemas).
 ug skills add --names main.default.my-skill,ml.prod.other-skill
 
-# Remove MCP scopes or downloaded skill files.
-ug skills remove --location main.default --mcp
+# Add a schema to the MCP connection scope, exposing its skills as MCP tools.
+ug skills add --location main.default --via mcp
+
+# Interactively pick downloaded skills to delete.
 ug skills remove
+
+# Delete a specific downloaded skill by fully-qualified name.
 ug skills remove --names main.default.my-skill
+
+# Drop a schema from the MCP connection scope.
+ug skills remove --location main.default --via mcp
 ```
 
 ## Commands

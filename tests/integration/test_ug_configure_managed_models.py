@@ -1,4 +1,4 @@
-"""Managed-config CUJs for agent model lists and Codex catalog fallback metadata.
+"""Managed-config CUJs for agent model lists, smart routing, and Codex catalog fallback metadata.
 
 The admin CodingAgentConfig is injected via UCODE_MANAGED_CONFIG_STUB so the real /model TUI can be
 driven against a model list the live workspace does not publish; only the config INPUT is stubbed
@@ -8,6 +8,7 @@ driven against a model list the live workspace does not publish; only the config
 import json
 
 import pytest
+from utils.evidence import FileTask
 from utils.managed import (
     build_claude_agent_config,
     build_codex_agent_config,
@@ -23,6 +24,24 @@ CLAUDE_OFF_MENU = "system.ai.claude-sonnet-5"
 LIVE_ONLY = "haiku-4-5"  # published live, but not in the injected list below
 CODEX_DEFAULT = "system.ai.gpt-5-6-sol"
 CODEX_WITHOUT_BUNDLED_METADATA = "system.ai.gpt-99"
+
+SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
+CLAUDE_SMART_ROUTING_MODELS = [
+    "system.ai.claude-opus-5",
+    "system.ai.claude-sonnet-5",
+    "system.ai.claude-haiku-4-5",
+    "system.ai.glm-5-3",
+    "system.ai.kimi-k3",
+]
+CODEX_SMART_ROUTING_MODELS = [
+    "system.ai.gpt-6-astra",
+    "system.ai.gpt-5-6-sol",
+    "system.ai.gpt-5-6-terra",
+    "system.ai.gpt-5-6-luna",
+    "system.ai.gpt-5-5",
+    "system.ai.glm-5-3",
+    "system.ai.kimi-k3",
+]
 
 
 @pytest.mark.managed_fixture
@@ -99,3 +118,75 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, tm
         tui.send("\x1b", "close the model picker")
         tui.wait_for(lambda s: "Select Model and Effort" not in s, "the model picker to close")
         tui.exit_normally()
+
+
+@pytest.mark.managed_fixture
+@pytest.mark.claude
+def test_managed_fixture_claude_smart_routing_banner(live_session, workspace, tmp_path):
+    """Scenario: an admin config lists Claude models and enables smart routing for Claude.
+
+    Expected: `ug configure` applies the config without the personal agent selector, and
+    `ug claude` routes the first real prompt: the TUI shows the Unity Gateway Smart Router
+    banner naming the selected model, the routed answer completes the file task, and the
+    session exits normally.
+    """
+    session = live_session
+    task = FileTask(session)
+    config = build_coding_agent_config(
+        "CODING_AGENT_CLAUDE_CODE",
+        build_claude_agent_config(CLAUDE_SMART_ROUTING_MODELS, smart_routing=True),
+    )
+    set_managed_config_stub(session, tmp_path, config)
+    result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+    assert "Select coding agents to configure:" not in result.stdout, result.stdout
+
+    with AgentTerminal(
+        session, "claude", [str(session.binary), "claude"], "managed-smart-routing"
+    ) as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for(
+            lambda screen: SMART_ROUTING_BANNER in screen,
+            "the smart routing banner for the routed first prompt",
+            timeout=120,
+        )
+        assert "Selected Model" in tui.visible, tui.visible
+        tui.wait_for_task(task)
+        tui.exit_normally()
+    task.assert_completed(session, "claude")
+
+
+@pytest.mark.managed_fixture
+@pytest.mark.codex
+def test_managed_fixture_codex_smart_routing_banner(live_session, workspace, tmp_path):
+    """Scenario: an admin config lists Codex models and enables smart routing for Codex.
+
+    Expected: `ug configure` applies the config without the personal agent selector, and
+    `ug codex` routes the first real prompt: the TUI shows the Unity Gateway Smart Router
+    banner naming the selected model, the routed answer completes the file task, and the
+    session exits normally.
+    """
+    session = live_session
+    task = FileTask(session)
+    config = build_coding_agent_config(
+        "CODING_AGENT_CODEX",
+        build_codex_agent_config(models=CODEX_SMART_ROUTING_MODELS, smart_routing=True),
+    )
+    set_managed_config_stub(session, tmp_path, config)
+    result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+    assert "Select coding agents to configure:" not in result.stdout, result.stdout
+
+    with AgentTerminal(
+        session, "codex", [str(session.binary), "codex"], "managed-smart-routing"
+    ) as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for(
+            lambda screen: SMART_ROUTING_BANNER in screen,
+            "the smart routing banner for the routed first prompt",
+            timeout=120,
+        )
+        assert "Selected Model" in tui.visible, tui.visible
+        tui.wait_for_task(task)
+        tui.exit_normally()
+    task.assert_completed(session, "codex")

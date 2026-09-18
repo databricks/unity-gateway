@@ -129,7 +129,7 @@ pending. The descriptive jobs provide the actual coverage and diagnostics.
 | Provider switching, relayed/subscription MPS | Not covered by the four provider journeys |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
-| Claude/Codex interactive smart routing | Deferred at the user's request; routing jobs and live journeys removed. Unit/component routing tests remain, but do not establish live routing behavior. |
+| Claude/Codex interactive smart routing | First-prompt routing covered by the `managed_fixture` smart-routing banner journeys; subagent routing, interactive explicit-model bypass, and dedicated routing CI shards remain deferred. Unit/component routing tests do not establish live routing behavior. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
 | Native macOS/Windows managed settings, resize/signals | Separate platform coverage needed |

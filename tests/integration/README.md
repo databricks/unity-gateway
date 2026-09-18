@@ -101,7 +101,7 @@ test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credent
 test_ug_claude_managed_model_discovery.py # fetched/reused Claude MPS policy cases
 test_ug_codex_managed_model_discovery.py  # fetched/reused Codex MPS policy cases
 test_ug_configure_managed.py            # managed workspace: static model list, no agent selector
-test_ug_configure_managed_models.py     # injected model sources and Codex fallback metadata
+test_ug_configure_managed_models.py     # injected model sources, smart-routing banner, Codex fallback metadata
 test_ug_configure_managed_mcp.py        # injected managed MCP list
 test_ug_configure_managed_skills.py     # injected managed skills: download, coexist, reconcile away
 test_ug_configure_managed_lifecycle.py  # none -> A -> B -> MPS -> none: reconcile, clear on MPS/no-config
@@ -133,9 +133,10 @@ permission dialog; any broader permission request fails immediately.
 A fixture file contains an unpredictable value absent from the prompt. Success
 requires an assistant answer in the real agent transcript containing that value,
 plus normal TUI exit. Codex evidence requires its task-complete event.
-Interactive smart-routing journeys and their Claude/Codex CI shards are deferred
-at the user's request. Unit/component routing tests remain; live first-prompt,
-subagent routing, and interactive explicit-model bypass are not covered.
+Interactive first-prompt routing is covered by the managed_fixture smart-routing
+banner journeys below for both agents. Subagent routing, interactive explicit-model
+bypass, and dedicated smart-routing CI shards remain deferred; unit/component
+routing tests do not establish that live behavior.
 
 The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
 completes a file task on two models: a bare Anthropic id the subscription serves
@@ -298,6 +299,12 @@ overrides. In addition,
 workspace on the valid default model `system.ai.gpt-5-6-sol`. With smart routing enabled, it opens
 the real Codex `/models` picker and requires that injected custom-catalog model to be listed. The
 same picker assertion also runs with smart routing disabled to cover both launch paths.
+
+The smart-routing banner journeys inject static Claude and Codex model lists with
+`smart_routing` enabled in the agent config, run `ug configure`, then launch the real TUI and
+submit one small file task. Each asserts the "Using Unity Gateway Smart Router." banner naming
+the selected model appears in the TUI, the routed answer completes the file task, and the
+session exits normally.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:
