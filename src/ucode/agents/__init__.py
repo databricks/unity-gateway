@@ -580,9 +580,6 @@ def configure_selected_tools(
     existing = state.get("available_tools") or []
     state["available_tools"] = sorted(set(existing) | set(configured))
     save_state(state)
-    # available_tools is cumulative across runs; callers that need this run's
-    # outcome (e.g. the configure summary) read this transient, unpersisted key
-    # so an agent that failed *this* run isn't reported as configured.
     state["last_configured_tools"] = configured
     if install_ai_tools:
         install_databricks_ai_tools_for_agents(configured, state)
