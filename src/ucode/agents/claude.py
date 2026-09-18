@@ -447,7 +447,7 @@ def render_overlay(
     # provider and Claude Code's own canonical model names are sent verbatim —
     # pinning a Databricks model id here would mislabel the picker and isn't
     # routable.
-    elif claude_models and not provider:
+    elif claude_models and not provider and not parent_schema:
         # Picker rows show the raw routable id (e.g. "system.ai.claude-opus-4-8[1m]")
         # so users can see which gateway-routable model is behind each shortcut.
         # We deliberately don't set the `_NAME` companion env vars — the raw id
@@ -486,7 +486,7 @@ def render_overlay(
         overlay["permissions"] = {"deny": ["WebSearch"]}
         keys.append(["permissions", "deny"])
 
-    if static_models and not provider and not relayed:
+    if static_models and not provider and not parent_schema and not relayed:
         overlay["availableModels"] = list(static_models)
         overlay["enforceAvailableModels"] = True
         overlay["modelPicker"] = {
@@ -865,6 +865,14 @@ def write_tool_config(
     # revert would restore that snapshot instead of deleting the file.
     if not is_tool_managed(state, "claude"):
         backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
+    previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
+    # Native discovery must not inherit UG's prior static allow-list. Untracked picker values
+    # remain user/admin-owned and are preserved by the merge below.
+    stale_picker_keys = (
+        [key for key in CLAUDE_MANAGED_PICKER_KEYS if [key] in previous_keys]
+        if provider or parent_schema
+        else []
+    )
     web_search_model = _resolve_web_search_model(state)
     # Relayed inference points at a local refresh proxy; its loopback base URL is
     # recorded in state so launch starts the proxy on the matching port.
@@ -889,7 +897,8 @@ def write_tool_config(
     )
     managed_file_keys = list(managed_keys)
     for path in (
-        [["env", key] for key in CLAUDE_MANAGED_MODEL_ENV_KEYS]
+        [[key] for key in stale_picker_keys]
+        + [["env", key] for key in CLAUDE_MANAGED_MODEL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_CONDITIONAL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_REMOVED_ENV_KEYS]
         + [["env", key] for key in CLAUDE_OTEL_TRACE_ENV_KEYS]
@@ -953,6 +962,8 @@ def write_tool_config(
                 else:
                     target_env[key] = selected_default_model
         merged = deep_merge_dict(base, overlay_for_merge)
+        for key in stale_picker_keys:
+            merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
         merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
             existing_custom_headers, overlay_custom_headers
@@ -1013,7 +1024,7 @@ def write_tool_config(
         state,
         lambda base: _compose(
             base,
-            enforce_model_default_hierarchy=provider is None,
+            enforce_model_default_hierarchy=provider is None and parent_schema is None,
             managed_settings_snapshots=managed_snapshots,
         ),
         managed_file_keys,
@@ -1430,14 +1441,13 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     if not isinstance(port, int):
         raise RuntimeError("Relayed proxy port was not configured; re-run `ucode claude`.")
 
-    server, cache, client = gateway_proxy.start_proxy(
-        workspace,
-        state.get("profile"),
-        port,
-        token_header=gateway_proxy.AI_GATEWAY_TOKEN_HEADER,
-        force_refresh_near_expiry=False,
-    )
-    # start_proxy falls back to an OS-assigned port when the cached one is taken
+    profile = state.get("profile")
+
+    def token_provider(force_refresh: bool) -> str:
+        return get_databricks_token(workspace, profile, force_refresh=force_refresh)
+
+    server, cache, client = gateway_proxy.start_relay_proxy(workspace, token_provider, port)
+    # start_relay_proxy falls back to an OS-assigned port when the cached one is taken
     # (stale proxy from a killed session). Reconcile settings + state to whatever
     # it actually bound, so Claude Code connects to the live port.
     bound_port = server.server_address[1]

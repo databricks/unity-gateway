@@ -392,9 +392,9 @@ def configure_tool(
             state, model, provider=provider, parent_schema=parent_schema
         )
     elif tool == "claude":
-        # A Model Provider Service routes by header and pins no Databricks
-        # model, so the usual "model required" guard doesn't apply to claude.
-        if not model and not provider:
+        # A Model Provider Service or parent schema routes by header and discovers models natively,
+        # so the usual "model required" guard doesn't apply to either Claude source.
+        if not model and not provider and not parent_schema:
             raise RuntimeError(f"A {tool} model must be selected before configuration.")
         result = claude.write_tool_config(
             state,
@@ -497,12 +497,12 @@ def _availability_failure_detail(tool: str, state: dict) -> str:
     return " (" + "; ".join(parts) + ")"
 
 
-def configure_single_tool(tool: str, state: dict) -> dict:
+def configure_single_tool(tool: str, state: dict, *, parent_schema: str | None = None) -> dict:
     """Check availability, configure, and persist state for one tool only."""
-    provider = get_provider_service(state, tool)
-    # A Model Provider Service routes through the same gateway and pins no
-    # Databricks model, so the per-tool model availability check doesn't apply.
-    if not provider:
+    provider = None if parent_schema else get_provider_service(state, tool)
+    # A Model Provider Service or parent schema routes through the same gateway and pins no
+    # globally discovered Databricks model, so the availability check doesn't apply.
+    if not provider and not parent_schema:
         with spinner(f"Checking {TOOL_SPECS[tool]['display']} availability..."):
             ok = check_gateway_endpoint(state, tool)
         if not ok:
@@ -511,15 +511,19 @@ def configure_single_tool(tool: str, state: dict) -> dict:
                 f"{TOOL_SPECS[tool]['display']} is not available on this workspace.{detail}"
             )
     with managed_write_batch(_managed_settings_displays([tool])):
-        state = _configure_one(tool, state, provider)
+        state = _configure_one(tool, state, provider, parent_schema=parent_schema)
     available_tools = list(set((state.get("available_tools") or []) + [tool]))
     state["available_tools"] = available_tools
     save_state(state)
     return state
 
 
-def _configure_one(tool: str, state: dict, provider: str | None) -> dict:
+def _configure_one(
+    tool: str, state: dict, provider: str | None, *, parent_schema: str | None = None
+) -> dict:
     """Write one tool's config, routing through ``provider`` when set."""
+    if parent_schema:
+        return configure_tool(tool, state, parent_schema=parent_schema)
     if provider:
         if tool == "gemini":
             # Gemini pins a concrete target in the URL, so configure must resolve one now —
@@ -542,7 +546,11 @@ def _configure_one(tool: str, state: dict, provider: str | None) -> dict:
 
 
 def configure_selected_tools(
-    state: dict, tools: list[str], *, install_ai_tools: bool = True
+    state: dict,
+    tools: list[str],
+    *,
+    install_ai_tools: bool = True,
+    parent_schemas: dict[str, str] | None = None,
 ) -> dict:
     """Configure the given tools. Caller is responsible for ensuring each tool
     is available on the workspace.
@@ -553,7 +561,9 @@ def configure_selected_tools(
     """
     with managed_write_batch(_managed_settings_displays(tools)):
         for tool in tools:
-            state = _configure_one(tool, state, get_provider_service(state, tool))
+            parent_schema = (parent_schemas or {}).get(tool)
+            provider = None if parent_schema else get_provider_service(state, tool)
+            state = _configure_one(tool, state, provider, parent_schema=parent_schema)
 
     existing = state.get("available_tools") or []
     state["available_tools"] = sorted(set(existing) | set(tools))

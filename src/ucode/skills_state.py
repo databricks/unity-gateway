@@ -190,6 +190,17 @@ def records_for_schema(location: str, base: str | None = None) -> list[dict]:
     ]
 
 
+def records_for_scope(scope: str, base: str | None = None) -> list[dict]:
+    """Installs recorded with the given ``scope`` (e.g. ``managed``), optionally under one base."""
+    base_norm = _norm(base) if base is not None else None
+    return [
+        record
+        for record in list_downloaded()
+        if record.get("scope") == scope
+        and (base_norm is None or _norm(record.get("base", "")) == base_norm)
+    ]
+
+
 def records_for_fqns(fqns: set[str], base: str | None = None) -> list[dict]:
     """Installs whose fully-qualified name is in ``fqns``, optionally under one base."""
     base_norm = _norm(base) if base is not None else None
