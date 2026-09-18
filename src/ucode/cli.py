@@ -1593,8 +1593,8 @@ def skills(ctx: typer.Context) -> None:
         raise typer.Exit(130) from None
     if first_time:
         print_note(
-            "To create a skill, start your agent (e.g. `ug claude`) and ask it to create a "
-            "Databricks skill — the skills MCP's tools author and register it in Unity Catalog."
+            "To create a skill, ask your agent to create one with the skills MCP tools, "
+            "which register it in Unity Catalog."
         )
     console.print(ctx.get_help())
 
