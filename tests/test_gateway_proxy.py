@@ -279,55 +279,57 @@ class TestJwtExp:
         assert gateway_proxy._jwt_exp("not-a-jwt") is None
 
 
-def _install_fake_token(monkeypatch, exp_offsets, delay=0.0):
-    """Patch get_databricks_token to hand out JWTs whose exp is now+offset, one
-    per successive mint (last offset repeats). Records the force flag of each."""
-    state = {"i": 0, "forces": []}
+def _fake_token_provider(exp_offsets, delay=0.0):
+    """Build a ``token_provider(force)`` that hands out JWTs whose exp is now+offset,
+    one per successive mint (last offset repeats), recording each force flag. Set
+    ``state['raise'] = True`` to make subsequent mints fail."""
+    state = {"i": 0, "forces": [], "raise": False}
 
-    def fake(_ws, _profile, force_refresh=False):
+    def provider(force_refresh=False):
         if delay:
             time.sleep(delay)
+        if state["raise"]:
+            raise RuntimeError("mint failed")
         off = exp_offsets[min(state["i"], len(exp_offsets) - 1)]
         state["i"] += 1
         state["forces"].append(force_refresh)
         return _make_jwt(time.time() + off)
 
-    monkeypatch.setattr(gateway_proxy, "get_databricks_token", fake)
-    return state
+    return state, provider
 
 
 class TestTokenCache:
-    def test_initial_mint_preserves_default_nonforce_refresh(self, monkeypatch):
-        state = _install_fake_token(monkeypatch, [5000])
-        gateway_proxy.TokenCache("ws", None)
+    def test_initial_mint_preserves_default_nonforce_refresh(self):
+        state, provider = _fake_token_provider([5000])
+        gateway_proxy.TokenCache(provider)
         assert state["forces"] == [False]
 
-    def test_fresh_token_is_not_refreshed(self, monkeypatch):
-        state = _install_fake_token(monkeypatch, [5000])
-        cache = gateway_proxy.TokenCache("ws", None)
+    def test_fresh_token_is_not_refreshed(self):
+        state, provider = _fake_token_provider([5000])
+        cache = gateway_proxy.TokenCache(provider)
         _ = cache.token
         _ = cache.token
         assert state["forces"] == [False]  # no extra mint while fresh
 
-    def test_near_expiry_preserves_default_nonforce_refresh(self, monkeypatch):
-        state = _install_fake_token(monkeypatch, [100, 5000])
-        cache = gateway_proxy.TokenCache("ws", None)
+    def test_near_expiry_preserves_default_nonforce_refresh(self):
+        state, provider = _fake_token_provider([100, 5000])
+        cache = gateway_proxy.TokenCache(provider)
         _ = cache.token
         assert state["forces"] == [False, False]
         _ = cache.token  # now fresh again
         assert state["forces"] == [False, False]
 
-    def test_near_expiry_can_force_refresh(self, monkeypatch):
-        state = _install_fake_token(monkeypatch, [100, 5000])
-        cache = gateway_proxy.TokenCache("ws", None, force_refresh_near_expiry=True)
+    def test_near_expiry_can_force_refresh(self):
+        state, provider = _fake_token_provider([100, 5000])
+        cache = gateway_proxy.TokenCache(provider, force_refresh_near_expiry=True)
         _ = cache.token
         assert state["forces"] == [True, True]
 
-    def test_refresh_is_single_flighted(self, monkeypatch):
+    def test_refresh_is_single_flighted(self):
         # A burst of concurrent requests at the expiry boundary must trigger ONE
         # refresh, not a thundering herd on the shared token cache.
-        state = _install_fake_token(monkeypatch, [100, 5000], delay=0.05)
-        cache = gateway_proxy.TokenCache("ws", None, force_refresh_near_expiry=True)
+        state, provider = _fake_token_provider([100, 5000], delay=0.05)
+        cache = gateway_proxy.TokenCache(provider, force_refresh_near_expiry=True)
         threads = [threading.Thread(target=lambda: cache.token) for _ in range(10)]
         for t in threads:
             t.start()
@@ -336,22 +338,19 @@ class TestTokenCache:
         # 1 forced init + exactly 1 forced refresh shared by all 10 readers.
         assert state["forces"] == [True, True]
 
-    def test_ensure_fresh_keeps_token_when_refresh_fails(self, monkeypatch):
-        _install_fake_token(monkeypatch, [5000])
-        cache = gateway_proxy.TokenCache("ws", None)
+    def test_ensure_fresh_keeps_token_when_refresh_fails(self):
+        state, provider = _fake_token_provider([5000])
+        cache = gateway_proxy.TokenCache(provider)
         good = cache.token
 
-        def boom(*_a, **_k):
-            raise RuntimeError("mint failed")
-
-        monkeypatch.setattr(gateway_proxy, "get_databricks_token", boom)
+        state["raise"] = True  # subsequent mints fail
         # Force staleness so _ensure_fresh attempts a refresh, which now fails.
         cache._expiry = time.time()
         assert cache.token == good  # last good token retained, no exception
 
     def test_refresher_loop_survives_unexpected_error(self, monkeypatch):
-        _install_fake_token(monkeypatch, [5000])
-        cache = gateway_proxy.TokenCache("ws", None)
+        _state, provider = _fake_token_provider([5000])
+        cache = gateway_proxy.TokenCache(provider)
         monkeypatch.setattr(gateway_proxy, "_REFRESHER_POLL_S", 0.01)
         ticks = []
 
@@ -509,10 +508,13 @@ class TestStartProxyPortFallback:
             def run_refresher(self):
                 return None
 
+            def stop(self):
+                return None
+
         monkeypatch.setattr(
             gateway_proxy,
             "TokenCache",
-            lambda workspace, profile, **_kwargs: _StubCache(),
+            lambda token_provider, **_kwargs: _StubCache(),
         )
         # Occupy a port to simulate the leftover proxy holding it.
         occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -521,12 +523,10 @@ class TestStartProxyPortFallback:
         occupied.listen(1)
         busy_port = occupied.getsockname()[1]
         try:
-            server, _cache, client = gateway_proxy.start_proxy(
+            server, _cache, client = gateway_proxy.start_relay_proxy(
                 "https://x.staging.cloud.databricks.com",
-                None,
+                lambda _force: "tok",
                 busy_port,
-                token_header=gateway_proxy.AI_GATEWAY_TOKEN_HEADER,
-                force_refresh_near_expiry=False,
             )
             try:
                 bound = server.server_address[1]
@@ -540,9 +540,10 @@ class TestStartProxyPortFallback:
 
 
 def _relayed_oss_handler(client, cache, wfile, *, headers, body) -> gateway_proxy._ProxyHandler:
-    h = object.__new__(gateway_proxy._ProxyHandler)
+    h = object.__new__(gateway_proxy._RelayProxyHandler)
     h.client = client
     h.cache = cache
+    h.token_header = gateway_proxy.AI_GATEWAY_TOKEN_HEADER
     hdrs = dict(headers)
     hdrs["Content-Length"] = str(len(body))
     h.headers = hdrs
