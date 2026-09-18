@@ -37,6 +37,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
   group: integration-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
@@ -84,6 +85,11 @@ jobs:
             ${{ runner.temp }}/ug-integration/*.log
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
+      - name: Cancel the remaining jobs on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api -X POST "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel"
 
   workspace:
     name: Workspace validation
@@ -106,6 +112,11 @@ jobs:
               raise SystemExit("The existing e2e DATABRICKS_BEARER secret is missing.")
           print("CI workspace matches; the existing e2e credential is present.")
           PY
+      - name: Cancel the remaining jobs on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api -X POST "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel"
 
   smoke:
     name: Smoke journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
@@ -114,7 +125,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         agent: [claude, codex]
     env:
@@ -164,6 +175,11 @@ jobs:
             ${{ runner.temp }}/ug-integration/*.log
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
+      - name: Cancel the remaining jobs on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api -X POST "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel"
 
   full:
     name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
@@ -174,7 +190,7 @@ jobs:
     # so a slow run fails through the runner's report instead of a job kill.
     timeout-minutes: 70
     strategy:
-      fail-fast: false
+      fail-fast: true
       # One VM per agent: reuse its install and run its cases serially. Allow
       # Claude and Codex to overlap, but never launch concurrent same-agent shards.
       max-parallel: 2

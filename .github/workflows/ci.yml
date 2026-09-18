@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
@@ -27,12 +28,17 @@ jobs:
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
       - run: uv lock
       - run: uv run pytest --ignore=tests/test_e2e.py
+      - name: Cancel the remaining jobs on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api -X POST "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel"
 
   e2e-shards:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - group: gateway
@@ -97,6 +103,11 @@ jobs:
       # set, the auth code path doesn't shell out at all — this is a safety
       # net for any code path we may have missed.
       - run: uv run pytest tests/test_e2e.py -v -k "$TEST_KEYWORD" < /dev/null
+      - name: Cancel the remaining jobs on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api -X POST "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel"
 
   e2e:
     name: All agent tests
