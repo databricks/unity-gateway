@@ -2669,9 +2669,9 @@ class TestConfigureBareSkillsMcpCommand:
 
         assert mcp.configure_bare_skills_mcp_command() is False
 
-        # Nothing changed, so no client is re-touched, but the summary still prints.
+        # Nothing changed, so no client is re-touched, and a repeat run stays quiet.
         assert configured == []
-        assert "Skills MCP registered" in _unwrap(capsys.readouterr().out)
+        assert "Skills MCP registered" not in _unwrap(capsys.readouterr().out)
 
 
 class TestSkillsToolsDescription:

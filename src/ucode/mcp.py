@@ -2502,14 +2502,17 @@ def configure_bare_skills_mcp_command() -> bool:
     """Register the schema-less skills MCP connection for every configured agent.
 
     The simple entrypoint behind a bare ``ug skills`` (replacing ``ug configure skills``
-    with no arguments). Re-registers on every run and prints the connection summary,
-    preserving any client's existing ``--mcp`` scope. Returns whether no skills
-    connection existed beforehand, so the caller can show first-run guidance only then.
+    with no arguments). Re-registers on every run, preserving any client's existing
+    ``--mcp`` scope, but prints the connection summary only on the first run -- a repeat
+    ``ug skills`` stays quiet. Returns whether no skills connection existed beforehand,
+    so the caller can also show first-run guidance only then.
     """
     state = load_state()
     first_time = _skills_entry(list(state.get("mcp_servers") or [])) is None
     workspace, profile, clients = setup_mcp_clients(state, "Skills")
-    register_schemaless_skills_connection(state, workspace, profile, clients)
+    register_schemaless_skills_connection(
+        state, workspace, profile, clients, print_summary=first_time
+    )
     return first_time
 
 
