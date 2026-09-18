@@ -76,7 +76,7 @@ Use `ug mcp add` to add servers without removing existing registrations:
 
 ```bash
 ug mcp add --location system.ai
-ug mcp add --services system.ai.slack,system.ai.github
+ug mcp add --name system.ai.slack,system.ai.github
 ug mcp add --agents claude,codex --location system.ai
 ```
 
@@ -112,12 +112,12 @@ ug skills list
 # Add to existing MCP scope or downloads.
 ug skills add --location main.default --mcp
 ug skills add --location main.default
-ug skills add --skill main.default.my-skill,ml.prod.other-skill
+ug skills add --name main.default.my-skill,ml.prod.other-skill
 
 # Remove MCP scopes or downloaded skill files.
 ug skills remove --location main.default --mcp
 ug skills remove
-ug skills remove --skill main.default.my-skill
+ug skills remove --name main.default.my-skill
 ```
 
 ## Commands

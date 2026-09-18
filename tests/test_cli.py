@@ -1929,14 +1929,14 @@ class TestConfigureSkillsCommand:
 
     def test_skill_downloads_fully_qualified_across_schemas(self):
         with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
-            result = runner.invoke(app, ["configure", "skills", "--skill", "a.b.s1, c.d.s2"])
+            result = runner.invoke(app, ["configure", "skills", "--name", "a.b.s1, c.d.s2"])
         assert result.exit_code == 0, result.output
         mock_download.assert_called_once_with(["a.b.s1", "c.d.s2"], None)
 
     def test_skill_threads_path_through(self):
         with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
             result = runner.invoke(
-                app, ["configure", "skills", "--skill", "a.b.s1", "--path", "/tmp/skills"]
+                app, ["configure", "skills", "--name", "a.b.s1", "--path", "/tmp/skills"]
             )
         assert result.exit_code == 0, result.output
         mock_download.assert_called_once_with(["a.b.s1"], "/tmp/skills")
@@ -1944,15 +1944,15 @@ class TestConfigureSkillsCommand:
     def test_skill_with_location_exit_1(self):
         with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
             result = runner.invoke(
-                app, ["configure", "skills", "--location", "a.b", "--skill", "a.b.s1"]
+                app, ["configure", "skills", "--location", "a.b", "--name", "a.b.s1"]
             )
         assert result.exit_code == 1
-        assert "--skill takes fully-qualified names; drop --location" in _strip_ansi(result.output)
+        assert "--name takes fully-qualified names; drop --location" in _strip_ansi(result.output)
         mock_download.assert_not_called()
 
     def test_bare_skill_exit_1(self):
         with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
-            result = runner.invoke(app, ["configure", "skills", "--skill", "my_skill"])
+            result = runner.invoke(app, ["configure", "skills", "--name", "my_skill"])
         assert result.exit_code == 1
         assert "must be fully-qualified" in _strip_ansi(result.output)
         mock_download.assert_not_called()
@@ -1962,9 +1962,9 @@ class TestConfigureSkillsCommand:
             patch("ucode.cli.configure_skills_mcp_command") as mock_mcp,
             patch("ucode.cli.configure_selected_skills_download_command") as mock_download,
         ):
-            result = runner.invoke(app, ["configure", "skills", "--mcp", "--skill", "a.b.s1"])
+            result = runner.invoke(app, ["configure", "skills", "--mcp", "--name", "a.b.s1"])
         assert result.exit_code == 1
-        assert "--skill" in _strip_ansi(result.output)
+        assert "--name" in _strip_ansi(result.output)
         mock_mcp.assert_not_called()
         mock_download.assert_not_called()
 
@@ -2055,27 +2055,27 @@ class TestSkillsAddCommand:
 
     def test_skills_download_fully_qualified_across_schemas(self):
         with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
-            result = runner.invoke(app, ["skills", "add", "--skill", "a.b.s1, c.d.s2"])
+            result = runner.invoke(app, ["skills", "add", "--name", "a.b.s1, c.d.s2"])
         assert result.exit_code == 0, result.output
         mock_download.assert_called_once_with(["a.b.s1", "c.d.s2"], None)
 
     def test_skills_thread_path_through(self):
         with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
-            result = runner.invoke(app, ["skills", "add", "--skill", "a.b.s1", "--path", "/tmp/s"])
+            result = runner.invoke(app, ["skills", "add", "--name", "a.b.s1", "--path", "/tmp/s"])
         assert result.exit_code == 0, result.output
         mock_download.assert_called_once_with(["a.b.s1"], "/tmp/s")
 
     def test_skills_with_location_exit_1(self):
         with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
-            result = runner.invoke(app, ["skills", "add", "--location", "a.b", "--skill", "a.b.s1"])
+            result = runner.invoke(app, ["skills", "add", "--location", "a.b", "--name", "a.b.s1"])
         assert result.exit_code == 1
-        assert "--skill takes fully-qualified names; drop --location" in _strip_ansi(result.output)
+        assert "--name takes fully-qualified names; drop --location" in _strip_ansi(result.output)
         mock_download.assert_not_called()
 
     @pytest.mark.parametrize("skill", ["a.b", "a..s1", "a.b.c.d", "leaf"])
     def test_non_fully_qualified_skill_exit_1(self, skill):
         with patch("ucode.cli.configure_selected_skills_download_command") as mock_download:
-            result = runner.invoke(app, ["skills", "add", "--skill", skill])
+            result = runner.invoke(app, ["skills", "add", "--name", skill])
         assert result.exit_code == 1
         assert "must be fully-qualified" in _strip_ansi(result.output)
         mock_download.assert_not_called()
@@ -2152,7 +2152,7 @@ class TestSkillsAddCommand:
             patch("ucode.cli.configure_skills_download_picker_command") as mock_picker,
             patch("ucode.cli.configure_selected_skills_download_command") as mock_download,
         ):
-            result = runner.invoke(app, ["skills", "add", "--skill", "a.b.s1"])
+            result = runner.invoke(app, ["skills", "add", "--name", "a.b.s1"])
         assert result.exit_code == 0, result.output
         mock_picker.assert_not_called()
         mock_download.assert_called_once_with(["a.b.s1"], None)
@@ -2162,9 +2162,9 @@ class TestSkillsAddCommand:
             patch("ucode.cli.add_skills_command") as mock_add,
             patch("ucode.cli.configure_selected_skills_download_command") as mock_download,
         ):
-            result = runner.invoke(app, ["skills", "add", "--mcp", "--skill", "a.b.s1"])
+            result = runner.invoke(app, ["skills", "add", "--mcp", "--name", "a.b.s1"])
         assert result.exit_code == 1
-        assert "--skill" in _strip_ansi(result.output)
+        assert "--name" in _strip_ansi(result.output)
         mock_add.assert_not_called()
         mock_download.assert_not_called()
 
@@ -2301,29 +2301,29 @@ class TestSkillsRemoveCommand:
 
     def test_skills_routes_to_download_remove_by_name(self):
         with patch("ucode.cli.remove_downloaded_skills_command") as mock_remove:
-            result = runner.invoke(app, ["skills", "remove", "--skill", "a.b.s1, c.d.s2"])
+            result = runner.invoke(app, ["skills", "remove", "--name", "a.b.s1, c.d.s2"])
         assert result.exit_code == 0, result.output
         mock_remove.assert_called_once_with([], ["a.b.s1", "c.d.s2"], path=None)
 
     def test_skills_with_path(self):
         with patch("ucode.cli.remove_downloaded_skills_command") as mock_remove:
-            result = runner.invoke(app, ["skills", "remove", "--skill", "a.b.s1", "--path", "/abs"])
+            result = runner.invoke(app, ["skills", "remove", "--name", "a.b.s1", "--path", "/abs"])
         assert result.exit_code == 0, result.output
         mock_remove.assert_called_once_with([], ["a.b.s1"], path="/abs")
 
     def test_skills_with_location_exit_1(self):
         with patch("ucode.cli.remove_downloaded_skills_command") as mock_remove:
             result = runner.invoke(
-                app, ["skills", "remove", "--skill", "a.b.s1", "--location", "a.b"]
+                app, ["skills", "remove", "--name", "a.b.s1", "--location", "a.b"]
             )
         assert result.exit_code == 1
-        assert "--skill takes fully-qualified names; drop --location" in _strip_ansi(result.output)
+        assert "--name takes fully-qualified names; drop --location" in _strip_ansi(result.output)
         mock_remove.assert_not_called()
 
     @pytest.mark.parametrize("skill", ["a.b", "a..s1", "a.b.c.d", "leaf"])
     def test_non_fully_qualified_skill_exit_1(self, skill):
         with patch("ucode.cli.remove_downloaded_skills_command") as mock_remove:
-            result = runner.invoke(app, ["skills", "remove", "--skill", skill])
+            result = runner.invoke(app, ["skills", "remove", "--name", skill])
         assert result.exit_code == 1
         assert "must be fully-qualified" in _strip_ansi(result.output)
         mock_remove.assert_not_called()
@@ -2344,14 +2344,14 @@ class TestSkillsRemoveCommand:
         ):
             result = runner.invoke(app, ["skills", "remove"])
         assert result.exit_code == 1
-        assert "--location or --skill is required" in _strip_ansi(result.output)
+        assert "--location or --name is required" in _strip_ansi(result.output)
         mock_remove.assert_not_called()
 
     def test_path_without_location_exit_1(self):
         with patch("ucode.cli.remove_downloaded_skills_command") as mock_remove:
             result = runner.invoke(app, ["skills", "remove", "--path", "/abs"])
         assert result.exit_code == 1
-        assert "--path is only supported with --location or --skill" in _strip_ansi(result.output)
+        assert "--path is only supported with --location or --name" in _strip_ansi(result.output)
         mock_remove.assert_not_called()
 
     def test_agents_without_mcp_exit_1(self):
@@ -2404,9 +2404,9 @@ class TestSkillsRemoveCommand:
 
     def test_mcp_with_skills_exit_1(self):
         with patch("ucode.cli.remove_skills_locations_command") as remove:
-            result = runner.invoke(app, ["skills", "remove", "--mcp", "--skill", "a.b.s1"])
+            result = runner.invoke(app, ["skills", "remove", "--mcp", "--name", "a.b.s1"])
         assert result.exit_code == 1
-        assert "--skill" in _strip_ansi(result.output)
+        assert "--name" in _strip_ansi(result.output)
         remove.assert_not_called()
 
 
