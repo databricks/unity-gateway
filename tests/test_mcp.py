@@ -1521,7 +1521,7 @@ class TestAddMcpCommand:
         ]
 
     def test_services_subset_keeps_others_in_location(self, monkeypatch):
-        """`mcp add --services` registers the named subset while leaving other
+        """`mcp add --name` registers the named subset while leaving other
         already-registered services in the same schema untouched."""
         saved_states: list[dict] = []
         removed: list[tuple[str, str]] = []
@@ -1555,7 +1555,7 @@ class TestAddMcpCommand:
         assert names == ["system-ai-github", "system-ai-slack"]
 
     def test_empty_services_is_a_noop(self, monkeypatch):
-        """`mcp add --services ""` has nothing to add, so it's a no-op that never
+        """`mcp add --name ""` has nothing to add, so it's a no-op that never
         reaches configuration (and doesn't need --location the way a subset does)."""
         called: list[bool] = []
         monkeypatch.setattr(mcp, "load_state", lambda: called.append(True) or {})
@@ -1737,7 +1737,7 @@ class TestRemoveMcpCommand:
 
 
 class TestConfigureMcpServicesSubset:
-    """`--location <schema> --services a,b,...` configures exactly the named subset."""
+    """`--location <schema> --name a,b,...` configures exactly the named subset."""
 
     def test_configures_only_the_requested_subset(self, monkeypatch):
         configured: list[tuple[str, str, str, dict]] = []
