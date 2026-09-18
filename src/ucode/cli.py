@@ -198,7 +198,12 @@ def _policy_summary_lines(managed: dict) -> list[str]:
 
 
 def _print_managed_summary(
-    managed: dict, state: dict, tool: str | None, *, abridged: bool = False
+    managed: dict,
+    state: dict,
+    tool: str | None,
+    *,
+    abridged: bool = False,
+    configured_tools: list[str] | None = None,
 ) -> None:
     """Show which of the admin's settings are in force.
 
@@ -218,9 +223,18 @@ def _print_managed_summary(
     if tool is not None:
         lines.append(f"[bold]Agent:[/bold] [green]{TOOL_SPECS[tool]['display']}[/green]")
     enabled = [t for t in (managed.get("enabled_agents") or {}) if t in TOOL_SPECS]
+    failed: list[str] = []
+    if configured_tools is not None:
+        failed = [t for t in enabled if t not in configured_tools]
+        enabled = [t for t in enabled if t in configured_tools]
     if enabled:
         lines.append(
             f"[bold]Coding Agents:[/bold] {', '.join(TOOL_SPECS[t]['display'] for t in enabled)}"
+        )
+    if failed:
+        lines.append(
+            f"[bold]Failed to configure:[/bold] "
+            f"[yellow]{', '.join(TOOL_SPECS[t]['display'] for t in failed)}[/yellow]"
         )
     if tool is not None:
         provider = managed_provider_service(managed, tool)
@@ -271,9 +285,11 @@ def _print_managed_summary_abridged(managed: dict, state: dict, tool: str | None
     )
 
 
-def _summarize_managed_config(managed: dict, workspace: str) -> None:
-    """Show the resulting managed setup once every enabled agent has been configured."""
-    _print_managed_summary(managed, {"workspace": workspace}, tool=None)
+def _summarize_managed_config(managed: dict, workspace: str, configured_tools: list[str]) -> None:
+    """Show the resulting managed setup, listing only the agents that configured cleanly."""
+    _print_managed_summary(
+        managed, {"workspace": workspace}, tool=None, configured_tools=configured_tools
+    )
     print_success("Configuration complete — launch with [bold cyan]ug[/bold cyan].")
 
 
@@ -850,7 +866,12 @@ def configure_workspace_command(
                 state["available_tools"] = configured.get("available_tools") or state.get(
                     "available_tools"
                 )
-                configured_tools.append(tool_name)
+                # available_tools is cumulative across runs, so an agent that failed
+                # this run may still be in it from a prior success. Trust the per-run
+                # signal when present; fall back to "configured" only when it's absent.
+                last = configured.get("last_configured_tools")
+                if last is None or tool_name in last:
+                    configured_tools.append(tool_name)
         if not configured_tools:
             raise RuntimeError(
                 "None of the coding agents enabled by your workspace configuration "
@@ -859,7 +880,7 @@ def configure_workspace_command(
         if not is_dry_run():
             _configure_managed_mcp_servers(managed)
             _configure_managed_skills(managed)
-        _summarize_managed_config(managed, state["workspace"])
+        _summarize_managed_config(managed, state["workspace"], configured_tools)
         return 0
 
     available_on_workspace: list[str] = []
@@ -914,13 +935,26 @@ def configure_workspace_command(
         _configure_managed_mcp_servers(None)
         _configure_managed_skills(None)
 
+    # Prefer this run's outcome; available_tools is cumulative and can still list a
+    # tool that failed this run from an earlier success. Fall back to it only when the
+    # per-run signal is absent (e.g. a stubbed configure_selected_tools).
+    last_configured = state.get("last_configured_tools")
+    configured_set = set(
+        last_configured if last_configured is not None else state.get("available_tools") or []
+    )
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
         spec = TOOL_SPECS[tool_name]
-        summary_lines.append(
-            f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
-            f"[dim](Provider: {_provider_summary(tool_name, state)})[/dim]"
-        )
+        if tool_name in configured_set:
+            summary_lines.append(
+                f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
+                f"[dim](Provider: {_provider_summary(tool_name, state)})[/dim]"
+            )
+        else:
+            summary_lines.append(
+                f"[bold]{spec['display']}:[/bold] [yellow]not configured "
+                "(see warnings above)[/yellow]"
+            )
     console.print(
         Panel(
             "\n".join(summary_lines),

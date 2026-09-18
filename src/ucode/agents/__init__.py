@@ -558,18 +558,31 @@ def configure_selected_tools(
     Merges newly-configured tools into state['available_tools'] rather than
     replacing it, so a previously-configured tool the user didn't pick this
     run is preserved.
+
+    One agent failing to configure warns and is skipped rather than aborting
+    the rest, so a single broken harness can't block configuring the others.
+    Only tools that configured cleanly are recorded as available.
     """
+    configured: list[str] = []
     with managed_write_batch(_managed_settings_displays(tools)):
         for tool in tools:
             parent_schema = (parent_schemas or {}).get(tool)
             provider = None if parent_schema else get_provider_service(state, tool)
-            state = _configure_one(tool, state, provider, parent_schema=parent_schema)
+            try:
+                state = _configure_one(tool, state, provider, parent_schema=parent_schema)
+            except Exception as exc:  # noqa: BLE001 -- surface any harness failure as a warning
+                print_warning(
+                    f"Could not configure {TOOL_SPECS[tool]['display']}: {exc}. Continuing."
+                )
+                continue
+            configured.append(tool)
 
     existing = state.get("available_tools") or []
-    state["available_tools"] = sorted(set(existing) | set(tools))
+    state["available_tools"] = sorted(set(existing) | set(configured))
     save_state(state)
+    state["last_configured_tools"] = configured
     if install_ai_tools:
-        install_databricks_ai_tools_for_agents(tools, state)
+        install_databricks_ai_tools_for_agents(configured, state)
     return state
 
 
