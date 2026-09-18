@@ -2586,7 +2586,7 @@ def _skill_schema_choice(location: str, skill_count: int, in_scope: bool) -> que
     """Picker row for one schema: value is ``<catalog>.<schema>``, title carries the skill count.
 
     An already-scoped schema is flagged and stays selectable; re-selecting it is a no-op, since
-    adding to the MCP scope is additive (removal is ``ug skills remove --mcp``).
+    adding to the MCP scope is additive (removal is ``ug skills remove --via mcp``).
     """
     noun = "skill" if skill_count == 1 else "skills"
     scope_flag = "  (already in skill MCP)" if in_scope else ""
@@ -2699,7 +2699,7 @@ def _removed_schemas_summary(count: int) -> str:
 
 
 def remove_skills_command(agents: set[str] | None = None) -> int:
-    """`ucode skills remove --mcp`: interactively drop skill schemas from clients' skills scopes.
+    """`ucode skills remove --via mcp`: interactively drop skill schemas from clients' skills scopes.
 
     Shows the schemas in each targeted client's skills scope and removes the ones you select from
     those clients. Without ``agents`` a selected schema is removed from every configured client;
@@ -2733,7 +2733,7 @@ def remove_skills_command(agents: set[str] | None = None) -> int:
 
 
 def remove_skills_locations_command(locations: list[str], agents: set[str] | None = None) -> int:
-    """`ucode skills remove --mcp --location`: drop the named schemas from clients' skills scopes.
+    """`ucode skills remove --via mcp --location`: drop the named schemas from clients' skills scopes.
 
     Non-interactive counterpart to ``remove_skills_command``. ``agents`` (from ``--agents``) scopes
     removal to that subset of configured clients; omitting it targets every configured client. A

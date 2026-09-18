@@ -112,13 +112,13 @@ ug skills
 # List configured skills and how each was configured.
 ug skills list
 
-# Add to existing MCP scope or downloads.
-ug skills add --location main.default --mcp
+# Add to existing MCP scope or downloads (downloads by default; `--via mcp` adds to the MCP scope).
+ug skills add --location main.default --via mcp
 ug skills add --location main.default
 ug skills add --names main.default.my-skill,ml.prod.other-skill
 
-# Remove MCP scopes or downloaded skill files.
-ug skills remove --location main.default --mcp
+# Remove MCP scopes or downloaded skill files (removes downloads by default; `--via mcp` for scopes).
+ug skills remove --location main.default --via mcp
 ug skills remove
 ug skills remove --names main.default.my-skill
 ```
