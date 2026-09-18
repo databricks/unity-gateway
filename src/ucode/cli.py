@@ -1577,11 +1577,12 @@ def _stdin_is_interactive() -> bool:
 def skills(ctx: typer.Context) -> None:
     """Databricks Skills for your coding tools.
 
-    With no subcommand, registers the skills MCP connection (utility tools only) for
-    your configured agents, keeping any existing scope, then prints this help.
+    With no subcommand, prints this help, then registers the skills MCP connection
+    (utility tools only) for your configured agents, keeping any existing scope.
     """
     if ctx.invoked_subcommand is not None:
         return
+    console.print(ctx.get_help())
     try:
         install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
         first_time = configure_bare_skills_mcp_command()
@@ -1596,7 +1597,6 @@ def skills(ctx: typer.Context) -> None:
             "To create a skill, ask your agent to create one with the Databricks skills "
             "registry MCP, which registers it in Unity Catalog."
         )
-    console.print(ctx.get_help())
 
 
 @skill_app.command("list")

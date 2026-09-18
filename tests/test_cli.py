@@ -2037,8 +2037,9 @@ class TestSkillsEntrypoint:
         _stub_install_cli.assert_called_once_with(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
         output = _strip_ansi(result.output)
         assert "To create a skill" in output
-        # Still prints the group help it always showed.
+        # Still prints the group help it always showed, and prints it before the MCP messages.
         assert "Usage:" in output
+        assert output.index("Usage:") < output.index("To create a skill")
         for command in ("list", "add", "remove"):
             assert command in output
 
