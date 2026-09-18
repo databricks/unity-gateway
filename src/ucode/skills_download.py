@@ -4,12 +4,22 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 import questionary
 
-from ucode.databricks import get_databricks_token, workspace_org_id
-from ucode.mcp import register_schemaless_skills_connection, setup_mcp_clients
+from ucode.databricks import (
+    SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
+    get_databricks_token,
+    install_databricks_cli,
+    workspace_org_id,
+)
+from ucode.mcp import (
+    configured_skill_scopes,
+    register_schemaless_skills_connection,
+    setup_mcp_clients,
+)
 from ucode.skills_api import (
     _SKILLS_WALK_DEADLINE_SECONDS,
     _SKILLS_WALK_TIMEOUT_REASON,
@@ -31,11 +41,13 @@ from ucode.state import load_state
 from ucode.ui import (
     console,
     picker_style,
+    print_heading,
     print_note,
     print_success,
     print_warning,
     progress_bar,
     prompt_yes_no,
+    render_box_table,
     scrolling_checkbox,
 )
 
@@ -517,4 +529,103 @@ def remove_downloaded_skills_command(
 
     remove_downloads(records)
     print_success(f"Removed {len(records)} downloaded skill(s).")
+    return 0
+
+
+# --- List configured skills ------------------------------------------------
+
+_DOWNLOADED = "downloaded"
+_SKILL_MCP = "skill mcp"
+_BOTH = "both (discouraged)"
+_ALL_AGENTS = "all"
+
+
+@dataclass(frozen=True)
+class ConfiguredSkill:
+    name: str
+    location: str
+    method: str
+    agents: str
+
+
+def _downloaded_skills() -> dict[str, tuple[str, str]]:
+    """Downloaded skills as ``fqn -> (bundle_name, "<catalog>.<schema>")``, one entry per fqn."""
+    by_fqn: dict[str, tuple[str, str]] = {}
+    for record in list_downloaded():
+        fqn, bundle_name = record.get("fqn"), record.get("bundle_name")
+        if fqn and bundle_name:
+            by_fqn.setdefault(fqn, (bundle_name, fqn.rsplit(".", 1)[0]))
+    return by_fqn
+
+
+def _mcp_scoped_skills(state: dict) -> dict[str, tuple[str, str, frozenset[str]]]:
+    """Skills reachable through the skills MCP connection, keyed by fully-qualified name.
+
+    Value is ``(bundle_name, "<catalog>.<schema>", agents)``. Each scoped schema is listed
+    once against its workspace; a schema whose listing fails contributes one placeholder
+    entry so the scope still appears in the output.
+    """
+    scope = configured_skill_scopes(state)
+    if scope is None:
+        return {}
+    workspace, locations_by_client = scope
+    agents_by_schema: dict[str, set[str]] = {}
+    for client, locations in locations_by_client.items():
+        for location in locations:
+            agents_by_schema.setdefault(location, set()).add(client)
+    if not agents_by_schema:
+        return {}
+
+    install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+    profile = state.get("profile") if isinstance(state.get("profile"), str) else None
+    token = get_databricks_token(workspace, profile)
+    by_fqn: dict[str, tuple[str, str, frozenset[str]]] = {}
+    for location, clients in agents_by_schema.items():
+        agents = frozenset(clients)
+        catalog, schema = location.split(".")
+        refs, reason = list_schema_skills(workspace, token, catalog, schema)
+        if reason:
+            print_warning(f"Could not list skills in `{location}`: {reason}.")
+            by_fqn[f"{location}.*"] = (f"(skills in {location})", location, agents)
+            continue
+        for ref in refs:
+            by_fqn[ref.fqn] = (ref.bundle_name, f"{ref.catalog}.{ref.schema}", agents)
+    return by_fqn
+
+
+def list_configured_skills_command() -> int:
+    """`ug skills list`: print every configured skill and how it reaches each coding agent.
+
+    Merges the two ways a skill is configured, keyed by fully-qualified name: downloaded to
+    disk (visible to every agent) or in a schema scoped into the skills MCP connection
+    (visible to that schema's agents). A skill configured both ways is flagged as discouraged.
+    """
+    state = load_state()
+    downloaded = _downloaded_skills()
+    mcp_scoped = _mcp_scoped_skills(state)
+
+    rows: list[ConfiguredSkill] = []
+    for fqn in downloaded.keys() | mcp_scoped.keys():
+        in_download, in_mcp = fqn in downloaded, fqn in mcp_scoped
+        name, location = downloaded[fqn] if in_download else mcp_scoped[fqn][:2]
+        if in_download and in_mcp:
+            rows.append(ConfiguredSkill(name, location, _BOTH, _ALL_AGENTS))
+        elif in_download:
+            rows.append(ConfiguredSkill(name, location, _DOWNLOADED, _ALL_AGENTS))
+        else:
+            agents = ",".join(sorted(mcp_scoped[fqn][2]))
+            rows.append(ConfiguredSkill(name, location, _SKILL_MCP, agents))
+
+    if not rows:
+        print_note("No skills configured. Use `ug skills add` to configure skills.")
+        return 0
+
+    rows.sort(key=lambda skill: (skill.name, skill.location))
+    print_heading("Configured Skills")
+    console.print(
+        render_box_table(
+            ["NAME", "UC LOCATION", "CONFIGURATION METHOD", "AGENTS"],
+            [[row.name, row.location, row.method, row.agents] for row in rows],
+        )
+    )
     return 0

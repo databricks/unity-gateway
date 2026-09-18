@@ -2111,6 +2111,18 @@ def skill_locations_for_client(entry: dict | None, client: str) -> list[str]:
     return _skill_locations_by_client(entry).get(client, [])
 
 
+def configured_skill_scopes(state: dict) -> tuple[str, dict[str, list[str]]] | None:
+    """The skills MCP connection's workspace and its per-client ``<catalog>.<schema>`` scopes.
+
+    None when no skills connection is registered. The workspace comes from the
+    connection so the scopes are read against the workspace they belong to.
+    """
+    entry = _skills_entry(list(state.get("mcp_servers") or []))
+    if entry is None:
+        return None
+    return _skills_workspace(entry), _skill_locations_by_client(entry)
+
+
 def agents_share_one_scope(scopes: dict[str, list[str]]) -> bool:
     return len({tuple(locations) for locations in scopes.values()}) <= 1
 
