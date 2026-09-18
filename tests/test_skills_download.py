@@ -723,8 +723,9 @@ class TestConfigureLocationSkillsDownloadCommand:
         monkeypatch.setattr(
             sd,
             "setup_mcp_clients",
-            lambda state, section, quiet=False: calls.update(setup_quiet=quiet)
-            or (WS, "profile", ["claude"]),
+            lambda state, section, quiet=False: (
+                calls.update(setup_quiet=quiet) or (WS, "profile", ["claude"])
+            ),
         )
         monkeypatch.setattr(sd, "get_databricks_token", lambda ws, profile: "token")
         monkeypatch.setattr(
@@ -768,8 +769,9 @@ class TestConfigureSelectedSkillsDownloadCommand:
         monkeypatch.setattr(
             sd,
             "setup_mcp_clients",
-            lambda state, section, quiet=False: calls.update(setup_quiet=quiet)
-            or (WS, "profile", ["claude"]),
+            lambda state, section, quiet=False: (
+                calls.update(setup_quiet=quiet) or (WS, "profile", ["claude"])
+            ),
         )
         monkeypatch.setattr(sd, "get_databricks_token", lambda ws, profile: "token")
         monkeypatch.setattr(
@@ -905,8 +907,9 @@ class TestConfigureSkillsDownloadPickerCommand:
         monkeypatch.setattr(
             sd,
             "setup_mcp_clients",
-            lambda state, section, quiet=False: calls.update(setup_quiet=quiet)
-            or (WS, "profile", ["claude"]),
+            lambda state, section, quiet=False: (
+                calls.update(setup_quiet=quiet) or (WS, "profile", ["claude"])
+            ),
         )
         monkeypatch.setattr(sd, "get_databricks_token", lambda ws, profile: "token")
         monkeypatch.setattr(
