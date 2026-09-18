@@ -823,6 +823,7 @@ class TestConfigureSelectedTools:
 
         # The broken agent is skipped, the healthy one still configures.
         assert result["available_tools"] == ["claude"]
+        assert result["last_configured_tools"] == ["claude"]
         assert installed == [["claude"]]
         assert warnings == ["Could not configure Codex: boom. Continuing."]
 

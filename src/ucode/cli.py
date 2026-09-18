@@ -864,7 +864,12 @@ def configure_workspace_command(
                 state["available_tools"] = configured.get("available_tools") or state.get(
                     "available_tools"
                 )
-                configured_tools.append(tool_name)
+                # available_tools is cumulative across runs, so an agent that failed
+                # this run may still be in it from a prior success. Trust the per-run
+                # signal when present; fall back to "configured" only when it's absent.
+                last = configured.get("last_configured_tools")
+                if last is None or tool_name in last:
+                    configured_tools.append(tool_name)
         if not configured_tools:
             raise RuntimeError(
                 "None of the coding agents enabled by your workspace configuration "
@@ -873,7 +878,7 @@ def configure_workspace_command(
         if not is_dry_run():
             _configure_managed_mcp_servers(managed)
             _configure_managed_skills(managed)
-        _summarize_managed_config(managed, state["workspace"], state.get("available_tools") or [])
+        _summarize_managed_config(managed, state["workspace"], configured_tools)
         return 0
 
     available_on_workspace: list[str] = []
@@ -928,7 +933,13 @@ def configure_workspace_command(
         _configure_managed_mcp_servers(None)
         _configure_managed_skills(None)
 
-    configured_set = set(state.get("available_tools") or [])
+    # Prefer this run's outcome; available_tools is cumulative and can still list a
+    # tool that failed this run from an earlier success. Fall back to it only when the
+    # per-run signal is absent (e.g. a stubbed configure_selected_tools).
+    last_configured = state.get("last_configured_tools")
+    configured_set = set(
+        last_configured if last_configured is not None else state.get("available_tools") or []
+    )
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
         spec = TOOL_SPECS[tool_name]
