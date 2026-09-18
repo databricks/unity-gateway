@@ -196,7 +196,12 @@ def _policy_summary_lines(managed: dict) -> list[str]:
 
 
 def _print_managed_summary(
-    managed: dict, state: dict, tool: str | None, *, abridged: bool = False
+    managed: dict,
+    state: dict,
+    tool: str | None,
+    *,
+    abridged: bool = False,
+    configured_tools: list[str] | None = None,
 ) -> None:
     """Show which of the admin's settings are in force.
 
@@ -216,6 +221,8 @@ def _print_managed_summary(
     if tool is not None:
         lines.append(f"[bold]Agent:[/bold] [green]{TOOL_SPECS[tool]['display']}[/green]")
     enabled = [t for t in (managed.get("enabled_agents") or {}) if t in TOOL_SPECS]
+    if configured_tools is not None:
+        enabled = [t for t in enabled if t in configured_tools]
     if enabled:
         lines.append(
             f"[bold]Coding Agents:[/bold] {', '.join(TOOL_SPECS[t]['display'] for t in enabled)}"
@@ -269,9 +276,11 @@ def _print_managed_summary_abridged(managed: dict, state: dict, tool: str | None
     )
 
 
-def _summarize_managed_config(managed: dict, workspace: str) -> None:
-    """Show the resulting managed setup once every enabled agent has been configured."""
-    _print_managed_summary(managed, {"workspace": workspace}, tool=None)
+def _summarize_managed_config(managed: dict, workspace: str, configured_tools: list[str]) -> None:
+    """Show the resulting managed setup, listing only the agents that configured cleanly."""
+    _print_managed_summary(
+        managed, {"workspace": workspace}, tool=None, configured_tools=configured_tools
+    )
     print_success("Configuration complete — launch with [bold cyan]ug[/bold cyan].")
 
 
@@ -857,7 +866,7 @@ def configure_workspace_command(
         if not is_dry_run():
             _configure_managed_mcp_servers(managed)
             _configure_managed_skills(managed)
-        _summarize_managed_config(managed, state["workspace"])
+        _summarize_managed_config(managed, state["workspace"], state.get("available_tools") or [])
         return 0
 
     available_on_workspace: list[str] = []

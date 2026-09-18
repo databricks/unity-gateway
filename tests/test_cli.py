@@ -3153,6 +3153,18 @@ class TestConfigureAgentsSelection:
         assert installed == ["claude", "codex"]
         assert configured == ["claude", "codex"]
 
+    def test_managed_summary_lists_only_configured_agents(self, capsys):
+        # An enabled agent that failed to configure (and was warned about) must not appear as a
+        # configured coding agent in the summary.
+        import ucode.cli as cli_mod
+
+        managed = {"enabled_agents": {"claude": {}, "codex": {}}}
+        cli_mod._summarize_managed_config(managed, "https://w.com", ["claude"])
+
+        out = capsys.readouterr().out
+        assert "Claude Code" in out
+        assert "Codex" not in out
+
     @pytest.mark.parametrize(
         ("model_config", "expected_provider", "expected_parent"),
         [
