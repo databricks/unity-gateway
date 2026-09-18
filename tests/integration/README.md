@@ -96,6 +96,7 @@ test_ug_codex_headless.py               # script prompts and model arguments
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
 test_ug_codex_app_server.py             # actual client/server initialize exchange
+test_ug_smart_routing_hooks.py           # route-subagent hook contract against the live router
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_claude_managed_model_discovery.py # fetched/reused Claude MPS policy cases
@@ -134,9 +135,13 @@ A fixture file contains an unpredictable value absent from the prompt. Success
 requires an assistant answer in the real agent transcript containing that value,
 plus normal TUI exit. Codex evidence requires its task-complete event.
 Interactive first-prompt routing is covered by the managed_fixture smart-routing
-banner journeys below for both agents. Subagent routing, interactive explicit-model
-bypass, and dedicated smart-routing CI shards remain deferred; unit/component
-routing tests do not establish that live behavior.
+banner journeys below for both agents. Subagent routing is covered at the hook protocol
+level by the route-subagent hook journeys, which drive the real installed hook commands
+with a harness-shaped payload against the live router; the subagent-only launch journeys
+assert the first-prompt banner and routing wrappers stay silent while the routing hooks
+arm. The agent's interactive spawn decision, interactive explicit-model bypass, and
+dedicated smart-routing CI shards remain deferred; unit/component routing tests do not
+establish that live behavior.
 
 The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
 completes a file task on two models: a bare Anthropic id the subscription serves
@@ -159,7 +164,7 @@ service allows a different model. Those choices are recorded in `versions.json`.
 No service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
 
-There are **42 live cases** (including 6 TUI journeys) and **5 installation
+There are **46 live cases** (including 6 TUI journeys) and **5 installation
 checks** with both agents. A separate **4 managed-workspace cases** (one per agent, an idempotent
 re-configure, and a cache-TTL journey; marker `managed`) run against a workspace that publishes a
 CodingAgentConfig; see "Managed-workspace journeys" below. A further **36 `managed_fixture`
@@ -247,13 +252,13 @@ record a discovered `system.ai` model as a test argument.
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 42 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 46 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 17 |
-| Codex | `live and codex` | 25 |
+| Claude | `live and claude` | 19 |
+| Codex | `live and codex` | 27 |
 
 Each lane installs only its agent CLI, once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
@@ -505,7 +510,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 42 live cases. For the five installation checks, run the same
+This runs all 46 live cases. For the five installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.
