@@ -497,3 +497,19 @@ def start_relay_proxy(
         handler_type=_RelayProxyHandler,
         force_refresh_near_expiry=False,
     )
+
+
+def start_otel_proxy(
+    workspace: str,
+    token_provider: Callable[[bool], str],
+) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
+    """Start the Codex OTLP proxy on an OS-assigned port."""
+    return _start_proxy(
+        workspace,
+        token_provider,
+        0,
+        upstream_path="ai-gateway/otel/",
+        token_header=AUTHORIZATION_HEADER,
+        handler_type=_ProxyHandler,
+        force_refresh_near_expiry=True,
+    )

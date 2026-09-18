@@ -6,13 +6,17 @@ import copy
 import hashlib
 import os
 import re
+import signal
+import subprocess
 import tempfile
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
 import tomlkit
 from tomlkit.exceptions import ParseError
 
+from ucode import gateway_proxy
 from ucode.codex_config import (
     catalog_slugs,
     codex_config_args,
@@ -32,6 +36,7 @@ from ucode.config_io import (
     write_toml_file,
 )
 from ucode.constants import (
+    LOOPBACK_HOST,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
@@ -47,7 +52,6 @@ from ucode.databricks import (
     CodexMpsModelCatalogUnavailable,
     _fetch_codex_model_catalog,
     build_auth_token_argv,
-    build_otel_traces_endpoint,
     build_tool_base_url,
     get_databricks_token,
 )
@@ -792,7 +796,10 @@ def _write_model_catalog(path: Path, catalog: dict) -> None:
                 pass
 
 
-def _launch_token(state: dict, workspace: str) -> str:
+def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:
+    """The token Codex authenticates with: a custom-OAuth client token when configured,
+    else the CLI profile. The single auth-selection point — the OTLP proxy's token
+    provider (_otel_token_provider) delegates here so both mint the same principal."""
     custom_oauth = state.get("custom_oauth")
     if isinstance(custom_oauth, dict):
         return get_custom_client_token(
@@ -801,8 +808,9 @@ def _launch_token(state: dict, workspace: str) -> str:
             custom_oauth["redirect_url"],
             scopes=custom_oauth["scopes"],
             profile=custom_oauth.get("profile"),
+            force_refresh=force_refresh,
         )
-    return get_databricks_token(workspace, state.get("profile"))
+    return get_databricks_token(workspace, state.get("profile"), force_refresh=force_refresh)
 
 
 def _tool_args_select_model(tool_args: list[str]) -> bool:
@@ -828,23 +836,72 @@ def _reject_managed_model_catalog() -> None:
         )
 
 
-def _otel_overlay(workspace: str, token: str) -> dict:
-    """Build Codex's OTLP HTTP trace-export configuration.
-
-    Codex has no headers helper, so this token is visible in argv and can expire mid-session.
-    A fresh token is injected for each launch.
-    """
+def _otel_proxy_overlay(endpoint: str) -> dict:
+    """Codex OTLP trace exporter pointed at the loopback proxy — no auth header, since
+    the proxy injects a freshly-minted Databricks token that codex could not refresh."""
     return {
         "otel": {
             "trace_exporter": {
                 "otlp-http": {
-                    "endpoint": build_otel_traces_endpoint(workspace),
+                    "endpoint": endpoint,
                     "protocol": "binary",
-                    "headers": {"Authorization": f"Bearer {token}"},
                 }
             }
         }
     }
+
+
+def _otel_token_provider(state: dict, workspace: str) -> Callable[[bool], str]:
+    """The proxy's token_provider: mints from the same source Codex uses for inference
+    (via _launch_token) so exported traces are attributed to the same principal."""
+    return lambda force: _launch_token(state, workspace, force_refresh=force)
+
+
+def _launch_codex_with_otel_proxy(
+    state: dict,
+    base_argv: list[str],
+    tool_args: list[str],
+    workspace: str,
+) -> None:
+    """Run the loopback OTLP refresh proxy for the session, with Codex as a child.
+
+    The proxy must outlive the launch, so Codex runs as a child rather than
+    exec-replacing this process; mirrors Claude's relayed launch. The proxy binds an
+    OS-assigned port and tears everything down when Codex exits (or fails to spawn).
+    """
+    server, cache, client = gateway_proxy.start_otel_proxy(
+        workspace, _otel_token_provider(state, workspace)
+    )
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    endpoint = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1/traces"
+    otel_args = codex_config_args(_otel_proxy_overlay(endpoint))
+    proc = subprocess.Popen([*base_argv, *otel_args, *tool_args])
+    try:
+        returncode = proc.wait()
+    except KeyboardInterrupt:
+        proc.send_signal(signal.SIGINT)
+        returncode = proc.wait()
+    finally:
+        cache.stop()
+        server.shutdown()
+        client.close()
+    raise SystemExit(returncode)
+
+
+def _run_codex(
+    state: dict,
+    base_argv: list[str],
+    tool_args: list[str],
+    *,
+    otel_tracing: bool,
+    workspace: str | None,
+) -> None:
+    """Launch Codex — via the loopback proxy when OTLP tracing is on, else exec-replace."""
+    if otel_tracing and workspace:
+        _launch_codex_with_otel_proxy(state, base_argv, tool_args, workspace)
+    else:
+        exec_or_spawn([*base_argv, *tool_args])
 
 
 def launch(
@@ -873,20 +930,24 @@ def launch(
     )
     if workspace and (provider or parent_schema):
         _reject_managed_model_catalog()
-    otel_args: list[str] = []
     token = None
+    otel_tracing = bool(workspace and state.get("codex_otel_tracing"))
     if workspace:
         token = _launch_token(state, workspace)
         os.environ["OAUTH_TOKEN"] = token
-        if state.get("codex_otel_tracing"):
-            otel_args = codex_config_args(_otel_overlay(workspace, token))
     if _use_legacy_layout():
         print_warning_err(
             f"Codex {agent_version(binary)} is outdated. Upgrade Codex to "
             f"{MINIMUM_CODEX_VERSION_TEXT} or newer, then run `codex --version` to verify "
             "the active installation."
         )
-        exec_or_spawn([binary, "--profile", CODEX_PROFILE_NAME, *otel_args, *tool_args])
+        _run_codex(
+            state,
+            [binary, "--profile", CODEX_PROFILE_NAME],
+            tool_args,
+            otel_tracing=otel_tracing,
+            workspace=workspace,
+        )
         return
     # Layer ucode's named profile as ordinary config overrides. Unlike
     # `--profile`, `--config` is accepted by runtime, utility, and server
@@ -932,7 +993,13 @@ def launch(
                 slugs = catalog_slugs(catalog)
                 if slugs:
                     profile_doc["model"] = slugs[0]
-    exec_or_spawn([binary, *codex_config_args(profile_doc), *otel_args, *tool_args])
+    _run_codex(
+        state,
+        [binary, *codex_config_args(profile_doc)],
+        tool_args,
+        otel_tracing=otel_tracing,
+        workspace=workspace,
+    )
 
 
 def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
