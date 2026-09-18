@@ -2111,11 +2111,11 @@ def skill_locations_for_client(entry: dict | None, client: str) -> list[str]:
     return _skill_locations_by_client(entry).get(client, [])
 
 
-def configured_skill_scopes(state: dict) -> tuple[str, dict[str, list[str]]] | None:
-    """The skills MCP connection's workspace and its per-client ``<catalog>.<schema>`` scopes.
+def configured_skill_mcp_locations(state: dict) -> tuple[str, dict[str, list[str]]] | None:
+    """The skills MCP connection's workspace and its per-client ``<catalog>.<schema>`` locations.
 
     None when no skills connection is registered. The workspace comes from the
-    connection so the scopes are read against the workspace they belong to.
+    connection so the locations are read against the workspace they belong to.
     """
     entry = _skills_entry(list(state.get("mcp_servers") or []))
     if entry is None:

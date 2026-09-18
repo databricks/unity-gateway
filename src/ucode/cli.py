@@ -120,9 +120,9 @@ from ucode.skills_download import (
     configure_selected_skills_download_command,
     configure_skills_download_picker_command,
     download_managed_skills_on_launch,
-    list_configured_skills_command,
     remove_downloaded_skills_command,
 )
+from ucode.skills_list import list_configured_skills_command
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
 from ucode.state import (
@@ -1348,6 +1348,7 @@ def _stdin_is_interactive() -> bool:
 def skills_list() -> None:
     """List the skills configured for your coding tools and how each was configured."""
     try:
+        install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
         list_configured_skills_command()
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
