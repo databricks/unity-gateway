@@ -1079,6 +1079,65 @@ class TestWriteToolConfigManagedSettings:
         env = json.loads(managed_writes[0][1])["env"]
         assert not set(claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.values()) & env.keys()
 
+    def test_managed_file_applies_only_configured_defaults_for_parent_schema(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): {
+                "env": {"ANTHROPIC_DEFAULT_HAIKU_MODEL": "system.ai.claude-haiku-4-5"}
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {
+            "workspace": WS,
+            "claude_models": {
+                "opus": "developer.claude-opus-4-8",
+                "sonnet": "developer.claude-sonnet-4-6",
+            },
+        }
+
+        claude.write_tool_config(
+            state,
+            None,
+            coding_agent_config_defaults={"opus": "system.ai.claude-opus-5"},
+            parent_schema="system.ai",
+        )
+
+        env = json.loads(managed_writes[0][1])["env"]
+        assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "system.ai.claude-opus-5[1m]"
+        assert "ANTHROPIC_DEFAULT_SONNET_MODEL" not in env
+        assert "ANTHROPIC_DEFAULT_HAIKU_MODEL" not in env
+
+    def test_managed_file_applies_all_configured_defaults_for_parent_schema(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        defaults = {
+            "fable": "system.ai.claude-fable-5",
+            "opus": "system.ai.claude-opus-5",
+            "sonnet": "system.ai.claude-sonnet-5",
+            "haiku": "system.ai.claude-haiku-4-5",
+        }
+
+        claude.write_tool_config(
+            {"workspace": WS, "claude_models": defaults},
+            None,
+            route_root_model="system.ai.claude-sonnet-5",
+            coding_agent_config_defaults=defaults,
+            parent_schema="system.ai",
+        )
+
+        env = json.loads(managed_writes[0][1])["env"]
+        assert env["ANTHROPIC_MODEL"] == "system.ai.claude-sonnet-5"
+        assert {
+            family: env[key] for family, key in claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.items()
+        } == {
+            "fable": "system.ai.claude-fable-5",
+            "opus": "system.ai.claude-opus-5[1m]",
+            "sonnet": "system.ai.claude-sonnet-5[1m]",
+            "haiku": "system.ai.claude-haiku-4-5",
+        }
+
     @pytest.mark.parametrize("with_catalog", [False, True])
     def test_parent_schema_prunes_previous_static_picker(self, monkeypatch, with_catalog):
         private_writes: list = []

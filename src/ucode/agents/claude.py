@@ -980,14 +980,21 @@ def write_tool_config(
                 if isinstance(last_applied_env.get(key), str)
             }
             for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items():
-                selected_default_model = _enforce_model_default_hierarchy(
-                    family,
-                    coding_agent_config_defaults=configured_defaults,
-                    settings_file_existing_defaults=settings_file_existing_defaults,
-                    ucode_defaults=ucode_defaults,
-                    ucode_last_written_defaults=ucode_last_written_defaults,
-                    enforced_models=enforced_models,
-                )
+                if parent_schema is not None:
+                    # A parent schema gets only admin-authored family mappings, never fallback
+                    # defaults from local state or discovery.
+                    selected_default_model = configured_defaults.get(family)
+                    if selected_default_model and family in ("opus", "sonnet"):
+                        selected_default_model = _maybe_add_1m_suffix(selected_default_model)
+                else:
+                    selected_default_model = _enforce_model_default_hierarchy(
+                        family,
+                        coding_agent_config_defaults=configured_defaults,
+                        settings_file_existing_defaults=settings_file_existing_defaults,
+                        ucode_defaults=ucode_defaults,
+                        ucode_last_written_defaults=ucode_last_written_defaults,
+                        enforced_models=enforced_models,
+                    )
                 if selected_default_model is None:
                     target_env.pop(key, None)
                 else:
@@ -1055,7 +1062,8 @@ def write_tool_config(
         state,
         lambda base: _compose(
             base,
-            enforce_model_default_hierarchy=provider is None and parent_schema is None,
+            enforce_model_default_hierarchy=provider is None
+            and (parent_schema is None or bool(coding_agent_config_defaults)),
             managed_settings_snapshots=managed_snapshots,
         ),
         managed_file_keys,

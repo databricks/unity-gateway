@@ -2715,6 +2715,10 @@ def _launch_tool(
             # managed UC discovery likewise lets the agent select from the parent schema. Skip model
             # resolution, which would otherwise fail when global discovery found no models.
             resolved_model = None
+            if tool == "claude" and managed_parent_schema:
+                # Native discovery supplies the catalog, but the managed policy still controls
+                # which model Claude starts on.
+                route_root_model = managed_launch_model(managed or {}, recommendation, tool)
             if provider and tool == "claude" and (model or provider_models):
                 if relayed:
                     # Resolve against a curated allowlist so the forwarded id is one the gateway

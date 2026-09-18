@@ -4805,14 +4805,16 @@ class TestBudgetRecommendationAtLaunch:
         )
         assert cfg.call_args.args[2] == "system.ai.claude-haiku-4-5"
 
-    def test_passes_configured_claude_defaults_to_writer(self, monkeypatch):
+    def test_managed_parent_schema_passes_configured_claude_defaults_to_writer(self, monkeypatch):
         managed = {
             "enabled_agents": {
                 "claude": {
                     "model_config": {
+                        "unity_catalog_location": "system.ai",
+                        "default_model": "system.ai.claude-sonnet-4-6",
                         "default_models_by_model_family": {
                             "default_sonnet_model": "system.ai.claude-sonnet-4-6",
-                        }
+                        },
                     }
                 }
             }
@@ -4821,9 +4823,51 @@ class TestBudgetRecommendationAtLaunch:
         result, _calls, cfg = self._launch(monkeypatch, managed=managed)
 
         assert result.exit_code == 0, result.output
+        assert cfg.call_args.kwargs["parent_schema"] == "system.ai"
+        assert cfg.call_args.kwargs["route_root_model"] == "system.ai.claude-sonnet-4-6"
         assert cfg.call_args.kwargs["coding_agent_config_defaults"] == {
             "sonnet": "system.ai.claude-sonnet-4-6"
         }
+
+    def test_managed_parent_schema_pins_configured_claude_default(self, monkeypatch):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "unity_catalog_location": "system.ai",
+                        "default_model": "system.ai.claude-sonnet-5",
+                    }
+                }
+            }
+        }
+
+        result, _calls, cfg = self._launch(monkeypatch, managed=managed)
+
+        assert result.exit_code == 0, result.output
+        assert cfg.call_args.kwargs["parent_schema"] == "system.ai"
+        assert cfg.call_args.kwargs["route_root_model"] == "system.ai.claude-sonnet-5"
+        assert cfg.call_args.kwargs["coding_agent_config_defaults"] == {}
+
+    def test_managed_parent_schema_honors_recommended_claude_model(self, monkeypatch):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "unity_catalog_location": "system.ai",
+                        "default_model": "system.ai.claude-sonnet-5",
+                    }
+                }
+            }
+        }
+
+        result, _calls, cfg = self._launch(
+            monkeypatch,
+            managed=managed,
+            recommendation={"agent": "claude", "model": "system.ai.claude-haiku-4-5"},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert cfg.call_args.kwargs["route_root_model"] == "system.ai.claude-haiku-4-5"
 
     def test_another_agent_keeps_its_own_model_and_is_told_why(self, monkeypatch):
         # A tier's model belongs to the tier's agent; pinning it on claude would land a Kimi id in
