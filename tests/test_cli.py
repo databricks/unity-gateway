@@ -2058,9 +2058,6 @@ class TestManagedSkills:
     """Managed skills are downloaded at `ug configure` (alongside MCP registration), not on the
     launch hot path, so `ug <agent>` makes no per-launch skill-discovery calls."""
 
-    def _state(self):
-        return {"workspace": "https://example.databricks.com", "profile": "prod"}
-
     def _launch(self, monkeypatch, *, managed):
         state = dict(MINIMAL_STATE)
         monkeypatch.setattr("ucode.cli.get_model_recommendation", lambda ws, tok: (None, None))
@@ -2074,13 +2071,15 @@ class TestManagedSkills:
             patch("ucode.cli.get_databricks_token", return_value="tok"),
             patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
             patch("ucode.cli.launch_agent"),
-            patch("ucode.cli.download_managed_skills", return_value=["pr-review"]) as mock_dl,
+            patch(
+                "ucode.cli.reconcile_managed_skills", return_value=(["pr-review"], [])
+            ) as mock_dl,
         ):
             result = runner.invoke(app, ["claude"])
         return result, state, mock_dl
 
-    def test_launch_does_not_download_managed_skills(self, monkeypatch):
-        # Skills are downloaded at `ug configure`; the launch path must not re-fetch them, so a
+    def test_launch_does_not_reconcile_managed_skills(self, monkeypatch):
+        # Skills are reconciled at `ug configure`; the launch path must not re-fetch them, so a
         # managed config's `names` never triggers per-launch get_skill calls.
         managed = {
             "enabled_agents": {"claude": {}},
@@ -2091,46 +2090,32 @@ class TestManagedSkills:
         assert result.exit_code == 0, result.output
         mock_dl.assert_not_called()
 
-    def test_no_managed_skills_skips_the_download(self):
-        with (
-            patch("ucode.cli.get_databricks_token") as mock_token,
-            patch("ucode.cli.download_managed_skills") as mock_dl,
-        ):
+    def test_configure_passes_managed_to_reconcile(self):
+        with patch("ucode.cli.reconcile_managed_skills", return_value=([], [])) as mock_dl:
             from ucode import cli
 
-            cli._download_managed_skills({}, self._state())
+            cli._configure_managed_skills({"skills": {"names": ["a.b.c"]}})
 
-        mock_token.assert_not_called()
-        mock_dl.assert_not_called()
+        mock_dl.assert_called_once_with({"skills": {"names": ["a.b.c"]}})
 
-    def test_download_failure_never_blocks_configure(self):
-        with (
-            patch("ucode.cli.get_databricks_token", side_effect=RuntimeError("no auth")),
-            patch("ucode.cli.download_managed_skills") as mock_dl,
-        ):
+    def test_no_managed_config_reconciles_empty(self):
+        # No managed config still reconciles, so a prior workspace's managed skills are removed.
+        with patch("ucode.cli.reconcile_managed_skills", return_value=([], [])) as mock_dl:
             from ucode import cli
 
-            # Must not raise.
-            cli._download_managed_skills(
-                {"skills": {"unity_catalog_location": "main.default"}}, self._state()
-            )
+            cli._configure_managed_skills(None)
 
-        mock_dl.assert_not_called()
+        mock_dl.assert_called_once_with({})
 
-    def test_download_oserror_never_blocks_configure(self):
-        # A disk failure during the download must not abort configure (the wrapper is best-effort).
-        with (
-            patch("ucode.cli.get_databricks_token", return_value="tok"),
-            patch(
-                "ucode.cli.download_managed_skills", side_effect=OSError("read-only file system")
-            ),
-        ):
-            from ucode import cli
+    def test_failure_never_blocks_configure(self):
+        # A RuntimeError (auth/discovery) or OSError (disk) must not abort configure.
+        for exc in (RuntimeError("no auth"), OSError("read-only file system")):
+            with patch("ucode.cli.reconcile_managed_skills", side_effect=exc):
+                from ucode import cli
 
-            # Must not raise.
-            cli._download_managed_skills(
-                {"skills": {"unity_catalog_location": "main.default"}}, self._state()
-            )
+                cli._configure_managed_skills(
+                    {"skills": {"unity_catalog_location": "main.default"}}
+                )
 
 
 class TestStatusSkillsSection:
@@ -3016,12 +3001,12 @@ class TestConfigureAgentsSelection:
         )
         monkeypatch.setattr(
             cli_mod,
-            "_download_managed_skills",
-            lambda m, s: order.append("skills") or None,
+            "_configure_managed_skills",
+            lambda m: order.append("skills") or None,
         )
 
         assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
-        # Skills download runs at configure too, after the MCP registration.
+        # Skills reconcile runs at configure too, after the MCP registration.
         assert order == ["configure:claude", "configure:codex", "mcp", "skills"]
 
     def test_managed_configure_accumulates_available_tools_for_all_agents(self, monkeypatch):

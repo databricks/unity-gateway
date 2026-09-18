@@ -119,7 +119,7 @@ from ucode.skills_download import (
     configure_location_skills_download_command,
     configure_selected_skills_download_command,
     configure_skills_download_picker_command,
-    download_managed_skills,
+    reconcile_managed_skills,
     remove_downloaded_skills_command,
 )
 from ucode.skills_list import list_configured_skills_command
@@ -834,7 +834,7 @@ def configure_workspace_command(
             )
         if not is_dry_run():
             _configure_managed_mcp_servers(managed)
-            _download_managed_skills(managed, state)
+            _configure_managed_skills(managed)
         _summarize_managed_config(managed, state["workspace"])
         return 0
 
@@ -884,10 +884,11 @@ def configure_workspace_command(
     else:
         state = configure_selected_tools(state, picked)
 
-    # This workspace has no managed config, so unregister any MCP servers a prior managed
-    # workspace registered — otherwise switching workspaces leaves the old registry behind.
+    # No managed config here: undo what a prior managed workspace left behind (its MCP servers and
+    # skills), so switching workspaces doesn't strand the old registry and skills.
     if not is_dry_run():
         _configure_managed_mcp_servers(None)
+        _configure_managed_skills(None)
 
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
@@ -2146,27 +2147,24 @@ def _configure_managed_mcp_servers(managed: dict | None) -> None:
         print_note(f"Registered workspace MCP server(s): {names}")
 
 
-def _download_managed_skills(managed: dict, state: dict) -> None:
-    """Download the managed config's skills to disk so they reach each agent's ``/skills`` picker.
+def _configure_managed_skills(managed: dict | None) -> None:
+    """Download and reconcile the managed config's skills for every agent's ``/skills`` picker.
 
-    Resolves the managed ``skills`` selector (``names`` FQNs or a ``unity_catalog_location`` schema)
-    and writes any skill not already on disk into ``~/.claude/skills`` and ``~/.agents/skills``, so
-    Claude Code and Codex both pick them up. Runs at ``ug configure`` when the admin's config is
-    applied, alongside MCP-server registration and never on the launch hot path. Best-effort: a
-    failure warns and never blocks configure, and a developer's own same-named skill is never
-    overwritten.
+    Mirrors :func:`_configure_managed_mcp_servers`: runs during ``ug configure`` after the enabled
+    agents are configured, so a workspace-published skill reaches ``.claude/skills`` and
+    ``.agents/skills`` (both agents) without the developer downloading it. ``managed`` is None when
+    the current workspace has no config: the reconcile then removes any managed skills a prior
+    workspace left behind. Best-effort: a failure warns and leaves the rest of configure intact.
     """
-    selector = managed.get("skills")
-    if not isinstance(selector, dict) or not selector:
-        return
     try:
-        token = get_databricks_token(state["workspace"], state.get("profile"))
-        written = download_managed_skills(state["workspace"], token, selector)
+        written, removed = reconcile_managed_skills(managed or {})
     except (RuntimeError, OSError) as exc:
-        print_warning(f"Could not download your workspace's skills: {exc}")
+        print_warning(f"Could not sync your workspace's skills: {exc}")
         return
     if written:
-        print_note(f"Downloaded workspace skill(s) to disk: {', '.join(written)}")
+        print_note(f"Downloaded workspace skill(s): {', '.join(written)}")
+    if removed:
+        print_note(f"Removed workspace skill(s) no longer configured: {', '.join(removed)}")
 
 
 def _child_owns_stdout(tool: str, tool_args: list[str]) -> bool:

@@ -432,7 +432,33 @@ class TestDownloadSelectedSkills:
         assert record["workspace_id"] == "org-42"
 
 
-class TestDownloadManagedSkills:
+class TestReconcileManagedSkills:
+    """`reconcile_managed_skills` downloads the managed selector's skills additively and removes
+    managed skills the config no longer lists, tagging its own installs `scope="managed"`."""
+
+    @pytest.fixture(autouse=True)
+    def _managed_env(self, tmp_path, monkeypatch):
+        # reconcile_managed_skills loads the state, token, and home itself (mirroring the MCP core),
+        # so point all three at the test's tmp_path.
+        monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setattr(sd, "load_state", lambda: {"workspace": WS, "profile": "p"})
+        monkeypatch.setattr(sd, "get_databricks_token", lambda ws, prof: "token")
+        monkeypatch.setattr(sd, "workspace_org_id", lambda ws: "org-test")
+
+    @staticmethod
+    def _seed_managed(tmp_path, *names: str) -> None:
+        """Write and record ``names`` as already-installed managed skills under ``tmp_path``."""
+        roots = skill_dir_roots(str(tmp_path))
+        refs = [
+            ref(name.split(".")[-1], catalog=name.split(".")[0], schema=name.split(".")[1])
+            for name in names
+        ]
+        for r in refs:
+            write_skill(roots, r, {"SKILL.md": b"seed"})
+        skills_state.record_downloads(
+            sd._skill_installs(refs, roots, str(tmp_path), WS, scope="managed")
+        )
+
     def test_location_writes_missing_skills_and_returns_bundle_names(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             sd, "list_schema_skills", lambda *a, **k: ([ref("triage"), ref("pii")], None)
@@ -443,13 +469,25 @@ class TestDownloadManagedSkills:
             lambda ws, tok, c, s, leaf: ({"SKILL.md": leaf.encode()}, None),
         )
 
-        written = sd.download_managed_skills(
-            WS, "token", {"unity_catalog_location": "main.default"}, str(tmp_path)
+        written, removed = sd.reconcile_managed_skills(
+            {"skills": {"unity_catalog_location": "main.default"}}
         )
 
         assert sorted(written) == ["pii", "triage"]
+        assert removed == []
         assert (tmp_path / ".claude/skills/triage/SKILL.md").read_bytes() == b"triage"
         assert (tmp_path / ".agents/skills/pii/SKILL.md").read_bytes() == b"pii"
+
+    def test_downloaded_skills_are_recorded_as_managed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sd, "list_schema_skills", lambda *a, **k: ([ref("triage")], None))
+        monkeypatch.setattr(
+            sd, "fetch_skill_bundle", lambda ws, tok, c, s, leaf: ({"SKILL.md": b"x"}, None)
+        )
+
+        sd.reconcile_managed_skills({"skills": {"unity_catalog_location": "main.default"}})
+
+        managed = skills_state.records_for_scope("managed", str(tmp_path))
+        assert [r["fqn"] for r in managed] == ["main.default.triage"]
 
     def test_names_resolves_each_fqn_and_downloads(self, tmp_path, monkeypatch):
         resolved = {"main.default.triage": ref("triage"), "ml.prod.pii": ref("pii", schema="prod")}
@@ -463,11 +501,12 @@ class TestDownloadManagedSkills:
             lambda ws, tok, c, s, leaf: ({"SKILL.md": leaf.encode()}, None),
         )
 
-        written = sd.download_managed_skills(
-            WS, "token", {"names": ["main.default.triage", "ml.prod.pii"]}, str(tmp_path)
+        written, removed = sd.reconcile_managed_skills(
+            {"skills": {"names": ["main.default.triage", "ml.prod.pii"]}}
         )
 
         assert sorted(written) == ["pii", "triage"]
+        assert removed == []
 
     def test_duplicate_names_resolve_once_without_collision_warning(self, tmp_path, monkeypatch):
         calls: list[str] = []
@@ -480,8 +519,8 @@ class TestDownloadManagedSkills:
         warnings: list[str] = []
         monkeypatch.setattr(sd, "print_warning", warnings.append)
 
-        written = sd.download_managed_skills(
-            WS, "token", {"names": ["main.default.triage", "main.default.triage"]}, str(tmp_path)
+        written, _ = sd.reconcile_managed_skills(
+            {"skills": {"names": ["main.default.triage", "main.default.triage"]}}
         )
 
         assert written == ["triage"]
@@ -495,11 +534,8 @@ class TestDownloadManagedSkills:
             sd, "fetch_skill_bundle", lambda ws, tok, c, s, leaf: ({"SKILL.md": b"x"}, None)
         )
 
-        written = sd.download_managed_skills(
-            WS,
-            "token",
-            {"unity_catalog_location": "main.default", "names": ["a.b.c"]},
-            str(tmp_path),
+        written, _ = sd.reconcile_managed_skills(
+            {"skills": {"unity_catalog_location": "main.default", "names": ["a.b.c"]}}
         )
 
         assert written == ["triage"]
@@ -518,8 +554,8 @@ class TestDownloadManagedSkills:
         )
         monkeypatch.setattr(sd, "prompt_yes_no", lambda msg: pytest.fail(f"prompted: {msg}"))
 
-        written = sd.download_managed_skills(
-            WS, "token", {"unity_catalog_location": "main.default"}, str(tmp_path)
+        written, _ = sd.reconcile_managed_skills(
+            {"skills": {"unity_catalog_location": "main.default"}}
         )
 
         # Only the missing one is fetched; the existing skill is left untouched.
@@ -535,32 +571,72 @@ class TestDownloadManagedSkills:
             sd, "fetch_skill_bundle", lambda *a, **k: pytest.fail("should not fetch")
         )
 
-        assert (
-            sd.download_managed_skills(
-                WS, "token", {"unity_catalog_location": "main.default"}, str(tmp_path)
-            )
-            == []
-        )
+        assert sd.reconcile_managed_skills(
+            {"skills": {"unity_catalog_location": "main.default"}}
+        ) == ([], [])
 
-    def test_empty_selector_is_a_noop(self, tmp_path, monkeypatch):
+    def test_empty_selector_removes_all_managed(self, tmp_path, monkeypatch):
+        # An empty selector is authoritative: the config wants no managed skills, so a prior
+        # managed install is removed (both agent dirs) while its manifest record is forgotten.
+        self._seed_managed(tmp_path, "main.default.triage")
         monkeypatch.setattr(sd, "list_schema_skills", lambda *a, **k: pytest.fail("no selector"))
         monkeypatch.setattr(sd, "get_skill", lambda *a, **k: pytest.fail("no selector"))
 
-        assert sd.download_managed_skills(WS, "token", {}, str(tmp_path)) == []
+        written, removed = sd.reconcile_managed_skills({})
 
-    def test_list_failure_warns_and_returns_empty(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setattr(sd, "list_schema_skills", lambda *a, **k: ([], "HTTP 404 Not Found"))
+        assert written == []
+        assert removed == ["triage"]
+        assert not (tmp_path / ".claude/skills/triage").exists()
+        assert not (tmp_path / ".agents/skills/triage").exists()
+        assert skills_state.records_for_scope("managed", str(tmp_path)) == []
+
+    def test_removes_managed_skill_dropped_from_config(self, tmp_path, monkeypatch):
+        # triage stays in the config; pii was dropped, so only pii is removed.
+        self._seed_managed(tmp_path, "main.default.triage", "main.default.pii")
+        monkeypatch.setattr(sd, "list_schema_skills", lambda *a, **k: ([ref("triage")], None))
+        monkeypatch.setattr(sd, "fetch_skill_bundle", lambda *a, **k: pytest.fail("triage on disk"))
+
+        written, removed = sd.reconcile_managed_skills(
+            {"skills": {"unity_catalog_location": "main.default"}}
+        )
+
+        assert written == []
+        assert removed == ["pii"]
+        assert (tmp_path / ".claude/skills/triage").exists()
+        assert not (tmp_path / ".claude/skills/pii").exists()
+        assert {r["fqn"] for r in skills_state.records_for_scope("managed", str(tmp_path))} == {
+            "main.default.triage"
+        }
+
+    def test_listing_failure_never_removes_managed(self, tmp_path, monkeypatch, capsys):
+        # A transient listing failure must not be read as "the config dropped the skill".
+        self._seed_managed(tmp_path, "main.default.triage")
+        monkeypatch.setattr(sd, "list_schema_skills", lambda *a, **k: ([], "HTTP 500 Server Error"))
         monkeypatch.setattr(
             sd, "fetch_skill_bundle", lambda *a, **k: pytest.fail("should not fetch")
         )
 
-        assert (
-            sd.download_managed_skills(
-                WS, "token", {"unity_catalog_location": "main.default"}, str(tmp_path)
-            )
-            == []
+        written, removed = sd.reconcile_managed_skills(
+            {"skills": {"unity_catalog_location": "main.default"}}
         )
+
+        assert (written, removed) == ([], [])
+        assert (tmp_path / ".claude/skills/triage").exists()
+        assert skills_state.records_for_scope("managed", str(tmp_path))
         assert "Could not list workspace skills in `main.default`" in capsys.readouterr().out
+
+    def test_names_keeps_a_configured_but_unfetchable_skill(self, tmp_path, monkeypatch):
+        # triage is configured by name but currently unresolvable; it is still desired, so its
+        # on-disk managed copy is kept rather than reconciled away.
+        self._seed_managed(tmp_path, "main.default.triage")
+        monkeypatch.setattr(sd, "get_skill", lambda ws, tok, fqn: None)
+
+        written, removed = sd.reconcile_managed_skills(
+            {"skills": {"names": ["main.default.triage"]}}
+        )
+
+        assert (written, removed) == ([], [])
+        assert (tmp_path / ".claude/skills/triage").exists()
 
     def test_bundle_failure_skips_that_skill_only(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
@@ -574,8 +650,8 @@ class TestDownloadManagedSkills:
             ),
         )
 
-        written = sd.download_managed_skills(
-            WS, "token", {"unity_catalog_location": "main.default"}, str(tmp_path)
+        written, _ = sd.reconcile_managed_skills(
+            {"skills": {"unity_catalog_location": "main.default"}}
         )
 
         assert written == ["good"]
@@ -601,8 +677,8 @@ class TestDownloadManagedSkills:
 
         monkeypatch.setattr(sd, "write_skill", flaky_write)
 
-        written = sd.download_managed_skills(
-            WS, "token", {"unity_catalog_location": "main.default"}, str(tmp_path)
+        written, _ = sd.reconcile_managed_skills(
+            {"skills": {"unity_catalog_location": "main.default"}}
         )
 
         assert written == ["good"]
@@ -610,17 +686,18 @@ class TestDownloadManagedSkills:
         assert not (tmp_path / ".claude/skills/bad").exists()
         assert "read-only file system" in capsys.readouterr().out
 
-    def test_malformed_location_is_skipped(self, tmp_path, monkeypatch, capsys):
+    def test_malformed_location_is_skipped_and_never_removes(self, tmp_path, monkeypatch, capsys):
+        self._seed_managed(tmp_path, "main.default.triage")
         monkeypatch.setattr(
             sd, "list_schema_skills", lambda *a, **k: pytest.fail("should not list a bad location")
         )
 
-        assert (
-            sd.download_managed_skills(
-                WS, "token", {"unity_catalog_location": "not-a-schema"}, str(tmp_path)
-            )
-            == []
+        written, removed = sd.reconcile_managed_skills(
+            {"skills": {"unity_catalog_location": "not-a-schema"}}
         )
+
+        assert (written, removed) == ([], [])
+        assert (tmp_path / ".claude/skills/triage").exists()  # indeterminate desired => no removal
         out = capsys.readouterr().out
         assert "not-a-schema" in out and "expected" in out
 
@@ -630,22 +707,13 @@ class TestDownloadManagedSkills:
             sd, "fetch_skill_bundle", lambda ws, tok, c, s, leaf: ({"SKILL.md": b"x"}, None)
         )
 
-        written = sd.download_managed_skills(
-            WS, "token", {"names": ["main.default.triage", "bare", "a.b.c.d"]}, str(tmp_path)
+        written, _ = sd.reconcile_managed_skills(
+            {"skills": {"names": ["main.default.triage", "bare", "a.b.c.d"]}}
         )
 
         assert written == ["triage"]
         out = capsys.readouterr().out
         assert "bare" in out and "a.b.c.d" in out
-
-    def test_unresolvable_name_is_skipped(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setattr(sd, "get_skill", lambda ws, tok, fqn: None)
-
-        assert (
-            sd.download_managed_skills(WS, "token", {"names": ["main.default.gone"]}, str(tmp_path))
-            == []
-        )
-        assert "not a downloadable skill" in capsys.readouterr().out
 
 
 class TestConfigureLocationSkillsDownloadCommand:
@@ -915,7 +983,7 @@ class TestRemoveDownloadedSkillsCommand:
 
         sd.remove_downloaded_skills_command(["other.schema"], path=None)
 
-        assert "No downloaded skills from `other.schema`" in capsys.readouterr().out
+        assert "No developer-downloaded skills from `other.schema`" in capsys.readouterr().out
         assert (tmp_path / ".claude/skills/triage").exists()
 
     def test_by_fqns_removes_only_named_skills(self, tmp_path, monkeypatch):
@@ -932,7 +1000,9 @@ class TestRemoveDownloadedSkillsCommand:
 
         sd.remove_downloaded_skills_command([], ["main.default.gone"], path=None)
 
-        assert "No downloaded skills matching `main.default.gone`" in capsys.readouterr().out
+        assert (
+            "No developer-downloaded skills matching `main.default.gone`" in capsys.readouterr().out
+        )
         assert (tmp_path / ".claude/skills/triage").exists()
 
     def test_picker_removes_selected(self, tmp_path, monkeypatch):
@@ -961,3 +1031,36 @@ class TestRemoveDownloadedSkillsCommand:
 
         assert "(missing)" in by_fqn["main.default.triage"].title
         assert "(missing)" not in by_fqn["ml.prod.pii"].title
+
+    @staticmethod
+    def _seed_managed(tmp_path, name: str) -> None:
+        roots = skill_dir_roots(str(tmp_path))
+        r = ref(name.split(".")[-1], catalog=name.split(".")[0], schema=name.split(".")[1])
+        write_skill(roots, r, {"SKILL.md": b"seed"})
+        skills_state.record_downloads(
+            sd._skill_installs([r], roots, str(tmp_path), WS, scope="managed")
+        )
+
+    def test_managed_skill_is_not_removed_by_fqn(self, tmp_path, capsys):
+        # `ug skills remove` must never delete a workspace-managed skill.
+        self._seed_managed(tmp_path, "main.default.triage")
+
+        sd.remove_downloaded_skills_command([], ["main.default.triage"], path=None)
+
+        assert (tmp_path / ".claude/skills/triage").exists()
+        assert skills_state.records_for_scope("managed", str(tmp_path))
+        assert "not removable here" in capsys.readouterr().out
+
+    def test_managed_skill_is_not_offered_by_picker(self, tmp_path, monkeypatch):
+        self._seed_managed(tmp_path, "main.default.triage")
+        _seed_downloads(monkeypatch, ["ml.prod.pii"], str(tmp_path))
+        offered: list[dict] = []
+        monkeypatch.setattr(
+            sd,
+            "_prompt_for_downloaded_skill_removal",
+            lambda records: offered.extend(records) or [],
+        )
+
+        sd.remove_downloaded_skills_command([], path=None)
+
+        assert [r["fqn"] for r in offered] == ["ml.prod.pii"]  # managed skill withheld
