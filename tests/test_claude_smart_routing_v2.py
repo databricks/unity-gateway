@@ -182,12 +182,15 @@ class TestSmartRoutingEnvVars:
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         assert v2.smart_routing_enabled()
 
-    def test_only_the_full_flag_routes_the_first_prompt(self, monkeypatch):
+    def test_subagent_only_flag_suppresses_first_prompt_routing(self, monkeypatch):
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         assert not v2.first_prompt_routing_enabled()
-        # The full flag wins when both are set.
+        # Subagent-only wins when both are set: an ambient full flag cannot
+        # override an explicit subagent-only session.
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        assert not v2.first_prompt_routing_enabled()
+        monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR)
         assert v2.first_prompt_routing_enabled()
 
 
