@@ -1060,6 +1060,40 @@ class TestWriteToolConfigManagedSettings:
         env = json.loads(managed_writes[0][1])["env"]
         assert not set(claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.values()) & env.keys()
 
+    def test_managed_file_applies_only_exact_configured_defaults_for_provider(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): {
+                "env": {"ANTHROPIC_DEFAULT_HAIKU_MODEL": "local.claude-haiku-4-5"}
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {
+            "workspace": WS,
+            "claude_models": {
+                "opus": "local.claude-opus-4-8",
+                "haiku": "local.claude-haiku-4-5",
+            },
+        }
+
+        claude.write_tool_config(
+            state,
+            None,
+            provider="main.default.anthropic-mps",
+            route_root_model="anthropic.claude-opus-5",
+            coding_agent_config_defaults={"opus": "anthropic.claude-opus-5"},
+        )
+
+        env = json.loads(managed_writes[0][1])["env"]
+        assert env["ANTHROPIC_MODEL"] == "anthropic.claude-opus-5"
+        assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "anthropic.claude-opus-5"
+        assert "ANTHROPIC_DEFAULT_SONNET_MODEL" not in env
+        assert "ANTHROPIC_DEFAULT_HAIKU_MODEL" not in env
+        private_env = private_writes[0][1]["env"]
+        assert private_env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "anthropic.claude-opus-5"
+        assert "ANTHROPIC_DEFAULT_HAIKU_MODEL" not in private_env
+
     def test_managed_file_omits_workspace_defaults_for_parent_schema(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []
@@ -1413,10 +1447,30 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(claude, "print_warning", lambda msg: warns.append(msg))
         monkeypatch.setattr(claude, "relayed_proxy_base_url", lambda state: "http://127.0.0.1:9999")
         monkeypatch.setattr(claude, "_managed_relayed_conflicts", lambda path: [])
-        state = {"workspace": WS, "codex_models": []}
-        claude.write_tool_config(state, "databricks-claude-sonnet-4", relayed=True)
+        state = {
+            "workspace": WS,
+            "claude_models": {"haiku": "local.claude-haiku-4-5"},
+        }
+        defaults = {
+            "fable": "anthropic.claude-fable-5-1",
+            "opus": "anthropic.claude-opus-5",
+            "sonnet": "anthropic.claude-sonnet-5",
+            "haiku": "anthropic.claude-haiku-4-5",
+        }
+        claude.write_tool_config(
+            state,
+            "databricks-claude-sonnet-4",
+            provider="main.default.anthropic-mps",
+            provider_models={"haiku": "local.claude-haiku-4-5"},
+            relayed=True,
+            coding_agent_config_defaults=defaults,
+        )
         assert managed_writes == []
         assert warns == []
+        env = private_writes[0][1]["env"]
+        assert {
+            family: env[key] for family, key in claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.items()
+        } == defaults
 
     def test_relayed_fails_on_conflicting_managed_auth(self, monkeypatch):
         private_writes: list = []

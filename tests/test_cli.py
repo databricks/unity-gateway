@@ -1013,7 +1013,7 @@ class TestManagedClaudeModelDiscovery:
             "claude": {
                 "model_config": {
                     "model_provider_service": "main.default.anthropic-mps",
-                    "models": {
+                    "default_models_by_model_family": {
                         "default_sonnet_model": "anthropic.claude-sonnet-4-6",
                         "default_opus_model": "anthropic.claude-opus-4-8",
                         "default_haiku_model": "anthropic.claude-haiku-4-5",
@@ -1029,7 +1029,7 @@ class TestManagedClaudeModelDiscovery:
     }
 
     @staticmethod
-    def _invoke(monkeypatch, managed):
+    def _invoke(monkeypatch, managed, *, args=None, recommendation=None, relayed=False):
         state = {
             **MINIMAL_STATE,
             "claude_models": {},
@@ -1042,10 +1042,13 @@ class TestManagedClaudeModelDiscovery:
         monkeypatch.setattr(cli_mod, "load_state", lambda: state)
         monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
         monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (managed, False))
+        monkeypatch.setattr(
+            cli_mod, "_fetch_budget_recommendation", lambda _state, _managed: recommendation
+        )
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
         monkeypatch.setattr(cli_mod, "get_provider_service", lambda *_a: "main.developer.provider")
         monkeypatch.setattr(cli_mod, "configure_shared_state", shared)
-        resolve_provider = MagicMock(return_value=(None, None, False))
+        resolve_provider = MagicMock(return_value=(None, None, relayed))
         monkeypatch.setattr(cli_mod, "resolve_provider_models", resolve_provider)
         picker_catalog = db_mod.AnthropicModelCatalog(
             model_ids=["main.default.claude-sonnet-5"],
@@ -1061,7 +1064,7 @@ class TestManagedClaudeModelDiscovery:
         monkeypatch.setattr(cli_mod, "configure_tool", configure)
         monkeypatch.setattr(cli_mod, "launch_agent", launch)
 
-        result = runner.invoke(app, ["claude"])
+        result = runner.invoke(app, ["claude", *(args or [])])
         return {
             "result": result,
             "state": state,
@@ -1113,7 +1116,52 @@ class TestManagedClaudeModelDiscovery:
             calls["list_anthropic_model_catalog"].assert_not_called()
             assert calls["configure"].call_args.kwargs["picker_catalog"] is None
             assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
+            assert calls["configure"].call_args.kwargs["route_root_model"] == (
+                "anthropic.claude-sonnet-4-6"
+            )
+            assert calls["configure"].call_args.kwargs["coding_agent_config_defaults"] == {
+                "fable": "anthropic.claude-fable-5-1",
+                "opus": "anthropic.claude-opus-4-8",
+                "sonnet": "anthropic.claude-sonnet-4-6",
+                "haiku": "anthropic.claude-haiku-4-5",
+            }
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+
+    @pytest.mark.parametrize(
+        ("args", "recommendation", "relayed", "route_root", "forwarded"),
+        [
+            (
+                [],
+                {"agent": "claude", "model": "anthropic.claude-haiku-4-5"},
+                False,
+                "anthropic.claude-haiku-4-5",
+                [],
+            ),
+            (
+                ["--model", "anthropic.claude-opus-4-8"],
+                {"agent": "claude", "model": "anthropic.claude-haiku-4-5"},
+                False,
+                "anthropic.claude-opus-4-8",
+                [],
+            ),
+            ([], None, True, None, ["--model", "anthropic.claude-sonnet-4-6"]),
+        ],
+        ids=["recommendation", "explicit-model", "relayed-default"],
+    )
+    def test_managed_mps_initial_model_precedence(
+        self, monkeypatch, args, recommendation, relayed, route_root, forwarded
+    ):
+        calls = self._invoke(
+            monkeypatch,
+            self.MPS_CONFIG,
+            args=args,
+            recommendation=recommendation,
+            relayed=relayed,
+        )
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        assert calls["configure"].call_args.kwargs["route_root_model"] == route_root
+        assert calls["launch"].call_args.args[2] == forwarded
 
 
 def test_claude_discovery_changes_do_not_break_other_managed_providers():

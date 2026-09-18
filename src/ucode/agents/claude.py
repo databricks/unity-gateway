@@ -919,6 +919,17 @@ def write_tool_config(
         otel_tracing=bool(state.get("claude_otel_tracing")),
         picker_catalog=picker_catalog,
     )
+    if provider and coding_agent_config_defaults:
+        # Managed MPS defaults are provider target ids, so write them verbatim into the common
+        # overlay (including relayed launches, which intentionally skip the OS-managed file).
+        # The authored family map is complete policy: omitted families must not inherit targets
+        # derived from the live provider or local discovery.
+        overlay_env = overlay["env"]
+        for key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.values():
+            overlay_env.pop(key, None)
+        for family, model_id in coding_agent_config_defaults.items():
+            if key := CLAUDE_DEFAULT_MODEL_ENV_KEYS.get(family):
+                overlay_env[key] = model_id
     # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
     # written by this launch, and remove only previously owned picker keys that no longer apply.
     stale_picker_keys = [

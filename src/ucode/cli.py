@@ -2719,17 +2719,26 @@ def _launch_tool(
                 # Native discovery supplies the catalog, but the managed policy still controls
                 # which model Claude starts on.
                 route_root_model = managed_launch_model(managed or {}, recommendation, tool)
-            if provider and tool == "claude" and (model or provider_models):
+            provider_launch_model = model
+            if tool == "claude" and managed_provider:
+                # A CLI model still wins, followed by the budget recommendation and the managed
+                # default. Unmanaged providers retain their existing target-selection behavior.
+                provider_launch_model = provider_launch_model or managed_launch_model(
+                    managed or {}, recommendation, tool
+                )
+            if provider and tool == "claude" and (provider_launch_model or provider_models):
                 if relayed:
                     # Resolve against a curated allowlist so the forwarded id is one the gateway
                     # allows; an allow_all relay declares none, so forward as-is.
                     relayed_forward_model = (
-                        resolve_provider_launch_model(model, provider_models)
+                        resolve_provider_launch_model(provider_launch_model, provider_models)
                         if provider_models
-                        else model
+                        else provider_launch_model
                     )
                 else:
-                    route_root_model = resolve_provider_launch_model(model, provider_models or {})
+                    route_root_model = resolve_provider_launch_model(
+                        provider_launch_model, provider_models or {}
+                    )
             if provider and tool == "gemini":
                 # Gemini is the exception: the request still names a concrete model
                 # in the URL, so pin one of the service's targets (--model or default).
