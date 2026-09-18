@@ -2762,6 +2762,40 @@ def test_cursor_launch_uses_unity_gateway_branding():
     assert "Unity Gateway with Cursor" in result.output
 
 
+@pytest.mark.parametrize(
+    "names,expected",
+    [
+        (["b.mcp", "a.mcp"], "2 (a.mcp, b.mcp)"),  # counted, deduped, sorted
+        (["a.mcp", "a.mcp"], "1 (a.mcp)"),
+        ([], "[dim]none configured[/dim]"),
+        (["", None], "[dim]none configured[/dim]"),
+        ([f"s{i}" for i in range(7)], "7 (s0, s1, s2, s3, s4, ...)"),  # truncated past 5
+    ],
+)
+def test_configured_summary(names, expected):
+    from ucode.cli import _configured_summary
+
+    assert _configured_summary(names) == expected
+
+
+def test_print_managed_summary_counts_registered_mcps_and_skills():
+    # The `ug configure` completion panel counts the MCP servers reconcile registered this run and
+    # the managed skills ug wrote to disk, not the admin's raw selector (AIGTWY-4789).
+    from ucode.cli import _print_managed_summary, console
+
+    managed = {"enabled_agents": {"claude": {}, "codex": {}}}
+    state = {"workspace": "https://example.databricks.com"}
+    with patch("ucode.cli.records_for_scope", return_value=[{"bundle_name": "debug-ci"}]):
+        with console.capture() as capture:
+            _print_managed_summary(
+                managed, state, tool=None, registered_mcps=["jira-mcp", "github-mcp"]
+            )
+
+    output = re.sub(r"\s+", " ", capture.get())
+    assert "MCPs: 2 (github-mcp, jira-mcp)" in output
+    assert "Skills: 1 (debug-ci)" in output
+
+
 class TestConfigureAgentFlag:
     def test_no_flag_calls_configure_all(self):
         with (
@@ -3283,13 +3317,15 @@ class TestConfigureAgentsSelection:
         assert installed == ["claude", "codex"]
         assert configured == ["claude", "codex"]
 
-    def test_managed_summary_separates_configured_and_failed_agents(self, capsys):
+    def test_managed_summary_separates_configured_and_failed_agents(self, capsys, monkeypatch):
         # An enabled agent that failed to configure is listed under "Failed to configure",
         # not as a configured coding agent.
         import ucode.cli as cli_mod
 
         managed = {"enabled_agents": {"claude": {}, "codex": {}}}
-        cli_mod._summarize_managed_config(managed, "https://w.com", ["claude"])
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {"workspace": "https://w.com"})
+        monkeypatch.setattr(cli_mod, "records_for_scope", lambda scope: [])
+        cli_mod._summarize_managed_config(managed, ["claude"], [])
 
         out = capsys.readouterr().out
         # The rich panel wraps lines, so match on the labels and names rather than exact spacing.
