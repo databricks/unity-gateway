@@ -68,7 +68,7 @@ def _mcp_skill_agents(
 
 
 def _configured_skills(state: dict) -> list[ConfiguredSkill]:
-    """Every configured skill as rows sorted by name then location.
+    """Every configured skill as rows sorted by location then name.
 
     Keyed on fully-qualified name: a skill downloaded to disk (``local``) is visible to every
     agent, a skill in a schema scoped into the skills MCP connection (``mcp``) is visible to that
@@ -94,7 +94,7 @@ def _configured_skills(state: dict) -> list[ConfiguredSkill]:
             ConfiguredSkill(f"(skills in {location})", location, _MCP, ",".join(sorted(clients)))
         )
 
-    rows.sort(key=lambda skill: (skill.name, skill.location))
+    rows.sort(key=lambda skill: (skill.location, skill.name))
     return rows
 
 

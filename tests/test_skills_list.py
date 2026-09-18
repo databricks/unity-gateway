@@ -72,14 +72,14 @@ class TestConfiguredSkills:
             ("alpha", "main.default", "local,mcp", "all")
         ]
 
-    def test_sorted_by_name_then_location(self, monkeypatch):
-        self._downloaded(monkeypatch, ["z.a.beta", "main.default.alpha", "ml.prod.alpha"])
+    def test_sorted_by_location_then_name(self, monkeypatch):
+        self._downloaded(monkeypatch, ["a.a.zeta", "shared.s.gamma", "shared.s.alpha"])
         self._mcp(monkeypatch, {}, {})
 
         assert [(r.name, r.location) for r in sl._configured_skills({})] == [
-            ("alpha", "main.default"),
-            ("alpha", "ml.prod"),
-            ("beta", "z.a"),
+            ("zeta", "a.a"),
+            ("alpha", "shared.s"),
+            ("gamma", "shared.s"),
         ]
 
     def test_repeated_installs_of_one_skill_collapse_to_one_row(self, monkeypatch):
