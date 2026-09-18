@@ -188,6 +188,16 @@ def codex_azure_provider_model():
 
 
 @pytest.fixture(scope="session")
+def codex_foundry_provider():
+    return os.environ["UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def codex_foundry_provider_model():
+    return os.environ["UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
 def parent_schema():
     return os.environ["UG_INTEGRATION_PARENT_SCHEMA"]
 
