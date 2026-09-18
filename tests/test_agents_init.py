@@ -801,6 +801,47 @@ class TestConfigureSelectedTools:
         result = configure_selected_tools(state, [])
         assert result["available_tools"] == ["codex"]
 
+    def test_one_tool_failing_warns_and_configures_the_rest(self, monkeypatch):
+        warnings: list[str] = []
+        installed: list[list[str]] = []
+
+        def configure_one(tool, state, provider, **kwargs):
+            if tool == "codex":
+                raise RuntimeError("boom")
+            return state
+
+        monkeypatch.setattr(agents_mod, "_configure_one", configure_one)
+        monkeypatch.setattr(agents_mod, "save_state", lambda s: None)
+        monkeypatch.setattr(agents_mod, "print_warning", warnings.append)
+        monkeypatch.setattr(
+            agents_mod,
+            "install_databricks_ai_tools_for_agents",
+            lambda tools, _: installed.append(tools),
+        )
+
+        result = configure_selected_tools({"workspace": "w"}, ["codex", "claude"])
+
+        # The broken agent is skipped, the healthy one still configures.
+        assert result["available_tools"] == ["claude"]
+        assert installed == [["claude"]]
+        assert warnings == ["Could not configure Codex: boom. Continuing."]
+
+    def test_all_tools_failing_does_not_raise(self, monkeypatch):
+        monkeypatch.setattr(
+            agents_mod,
+            "_configure_one",
+            lambda tool, state, provider, **kwargs: (_ for _ in ()).throw(RuntimeError("nope")),
+        )
+        monkeypatch.setattr(agents_mod, "save_state", lambda s: None)
+        monkeypatch.setattr(agents_mod, "print_warning", lambda _: None)
+        monkeypatch.setattr(agents_mod, "install_databricks_ai_tools_for_agents", lambda *_: None)
+
+        state = {"workspace": "w", "available_tools": ["gemini"]}
+        result = configure_selected_tools(state, ["codex", "claude"])
+
+        # Nothing new configured; a previously-available tool is untouched.
+        assert result["available_tools"] == ["gemini"]
+
 
 class TestConfiguredPaths:
     def test_claude_reports_its_settings_file_home_abbreviated(self):

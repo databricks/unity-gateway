@@ -912,13 +912,20 @@ def configure_workspace_command(
         _configure_managed_mcp_servers(None)
         _configure_managed_skills(None)
 
+    configured_set = set(state.get("available_tools") or [])
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
         spec = TOOL_SPECS[tool_name]
-        summary_lines.append(
-            f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
-            f"[dim](Provider: {_provider_summary(tool_name, state)})[/dim]"
-        )
+        if tool_name in configured_set:
+            summary_lines.append(
+                f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
+                f"[dim](Provider: {_provider_summary(tool_name, state)})[/dim]"
+            )
+        else:
+            summary_lines.append(
+                f"[bold]{spec['display']}:[/bold] [yellow]not configured "
+                "(see warnings above)[/yellow]"
+            )
     console.print(
         Panel(
             "\n".join(summary_lines),
