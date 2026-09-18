@@ -117,7 +117,6 @@ from ucode.mcp import (
     remove_skills_command,
     remove_skills_locations_command,
     revert_mcp_configs,
-    skill_locations_for_client,
 )
 from ucode.skills_download import (
     configure_location_skills_download_command,
@@ -126,7 +125,7 @@ from ucode.skills_download import (
     reconcile_managed_skills,
     remove_downloaded_skills_command,
 )
-from ucode.skills_list import list_configured_skills_command
+from ucode.skills_list import configured_skill_counts_by_agent, list_configured_skills_command
 from ucode.skills_state import records_for_scope
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
@@ -1043,22 +1042,6 @@ def _status_default_model(tool: str, state: dict, models: list[str]) -> str | No
     return models[0] if models and tool in ("gemini", "opencode", "copilot", "pi") else None
 
 
-def _status_skill_scope(state: dict, tool: str) -> str:
-    entries = (state.get("mcp_servers") or []) + (state.get("managed_mcp_servers") or [])
-    entry = next(
-        (
-            server
-            for server in entries
-            if server.get("kind") == SKILLS_MCP_KIND and tool in (server.get("clients") or [])
-        ),
-        None,
-    )
-    if entry is None:
-        return "not configured"
-    locations = skill_locations_for_client(entry, tool)
-    return ", ".join(locations) if locations else "utility tools only"
-
-
 def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
     """Return a fresh, read-only model inventory and its freshness label."""
     workspace = state.get("workspace")
@@ -1173,6 +1156,7 @@ def status() -> int:
 
     model_state, model_freshness = _live_status_model_state(state, configured_tools)
     print_heading("Coding Agents")
+    skill_counts_by_agent = configured_skill_counts_by_agent(state, TOOL_SPECS)
     for tool, spec in TOOL_SPECS.items():
         if tool not in configured_tools:
             continue
@@ -1228,7 +1212,7 @@ def status() -> int:
             elif tool == "codex":
                 mcp_names |= codex_agent.read_managed_mcp_urls().keys()
             rows.append(("MCP servers", str(len(mcp_names))))
-            rows.append(("Skills MCP", _status_skill_scope(state, tool)))
+            rows.append(("Skills", str(skill_counts_by_agent.get(tool, 0))))
         base_url = state.get("base_urls", {}).get(tool)
         if isinstance(base_url, dict):
             base_url = ", ".join(str(url) for url in base_url.values())

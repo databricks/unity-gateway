@@ -2389,57 +2389,37 @@ class TestManagedSkills:
 
 
 class TestStatusSkillsSection:
-    def _run(self, state):
+    def _run(self, state, counts=None):
         with (
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli._live_status_managed_state", return_value=(None, "live")),
             patch("ucode.cli._live_status_model_state", return_value=(state, "live")),
+            patch("ucode.cli.configured_skill_counts_by_agent", return_value=counts or {}),
         ):
             return runner.invoke(app, ["status"])
 
-    def test_not_configured_when_no_skills_entry(self):
+    def test_shows_zero_when_no_skills(self):
         result = self._run(MINIMAL_STATE)
         assert result.exit_code == 0, result.output
-        out = re.sub(r"\s+", " ", _strip_ansi(result.output))
-        assert "Skills MCP: not configured" in out
+        flat = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert "Skills: 0" in flat
+        assert "Skills MCP" not in flat
 
-    def test_renders_locations_and_configured_agents(self):
-        state = {
-            **MINIMAL_STATE,
-            "mcp_servers": [
-                {
-                    "name": "databricks-skill-registry",
-                    "kind": "skills",
-                    "skill_locations": ["main.default", "ml.prod"],
-                    "url": "https://example.databricks.com/ai-gateway/skills/?schema=main.default&schema=ml.prod",
-                    "auth": "env:OAUTH_TOKEN",
-                    "clients": ["claude", "codex"],
-                }
-            ],
-        }
-        result = self._run(state)
+    def test_shows_one_combined_count_per_agent(self):
+        result = self._run(MINIMAL_STATE, counts={"claude": 4, "codex": 3, "gemini": 2})
         assert result.exit_code == 0, result.output
-        out = re.sub(r"\s+", " ", _strip_ansi(result.output))
-        assert out.count("Skills MCP: main.default, ml.prod") == 2
+        flat = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert "Skills: 4" in flat
+        assert "Skills: 3" in flat
+        assert "Skills: 2" in flat
 
-    def test_renders_placeholder_when_no_locations(self):
-        state = {
-            **MINIMAL_STATE,
-            "mcp_servers": [
-                {
-                    "name": "databricks-skill-registry",
-                    "kind": "skills",
-                    "skill_locations": [],
-                    "url": "https://example.databricks.com/ai-gateway/skills/",
-                    "auth": "env:OAUTH_TOKEN",
-                    "clients": ["claude"],
-                }
-            ],
-        }
-        result = self._run(state)
+    def test_only_configured_agents_show_a_skills_count(self):
+        state = {**MINIMAL_STATE, "available_tools": ["claude"]}
+        result = self._run(state, counts={"claude": 1})
         assert result.exit_code == 0, result.output
-        out = re.sub(r"\s+", " ", _strip_ansi(result.output))
-        assert "Skills MCP: utility tools only" in out
+        flat = re.sub(r"\s+", " ", _strip_ansi(result.output))
+        assert "Skills: 1" in flat
+        assert flat.count("Skills:") == 1
 
     def test_skills_entry_absent_from_per_client_mcp_lines(self):
         state = {
@@ -2464,39 +2444,11 @@ class TestStatusSkillsSection:
         result = self._run(state)
         assert result.exit_code == 0, result.output
         out = _strip_ansi(result.output)
-        # The skills registry has its own row and is never counted as a general MCP server.
+        # The skills registry is never counted as a general MCP server.
         for line in out.splitlines():
             if "MCP servers:" in line:
                 assert "databricks-skill-registry" not in line
-        flat = re.sub(r"\s+", " ", out)
-        assert "MCP servers: 1" in flat
-        assert "Skills MCP: main.default" in flat
-
-    def test_renders_per_agent_locations_when_scopes_diverge(self):
-        state = {
-            **MINIMAL_STATE,
-            "mcp_servers": [
-                {
-                    "name": "databricks-skill-registry",
-                    "kind": "skills",
-                    "skill_locations": ["main.default", "claude.only"],
-                    "skill_locations_by_client": {
-                        "claude": ["main.default", "claude.only"],
-                        "codex": ["main.default"],
-                    },
-                    "url": "https://example.databricks.com/ai-gateway/skills/?schema=main.default&schema=claude.only",
-                    "auth": "proxy",
-                    "clients": ["claude", "codex"],
-                }
-            ],
-        }
-
-        result = self._run(state)
-
-        assert result.exit_code == 0, result.output
-        out = re.sub(r"\s+", " ", _strip_ansi(result.output))
-        assert "Skills MCP: main.default, claude.only" in out
-        assert "Skills MCP: main.default" in out
+        assert "MCP servers: 1" in re.sub(r"\s+", " ", out)
 
 
 class TestRevert:
