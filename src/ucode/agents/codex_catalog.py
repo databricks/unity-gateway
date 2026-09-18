@@ -15,7 +15,6 @@ from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.ui import print_warning
 
 _TIMEOUT_SECONDS = 30
-_BASELINE_MODEL = "gpt-5.2"
 
 # Known hosted-model capabilities, following universe#2591694. These are not
 # universal non-GPT defaults: an arbitrary UC service need not support images,
@@ -83,14 +82,12 @@ def build_codex_catalog(
                         "falling back to default metadata. Try updating Codex with "
                         "`ug codex update`."
                     )
-            baseline = by_slug.get(_BASELINE_MODEL)
+            baseline = next((m for m in bundled_models if m.get("tool_mode") is None), None)
             if baseline is None:
                 raise RuntimeError(
-                    f"Codex is missing the {_BASELINE_MODEL} metadata needed for '{name}'. "
-                    "Install a Codex version with that bundled template."
+                    f"Codex has no ordinary-tool bundled model to base '{name}' on. "
+                    "Upgrade or reinstall Codex."
                 )
-            # GPT-5.2 supplies a complete ordinary-tool schema and prompt, not
-            # the GPT-only code-mode tooling used by newer native models.
             model = copy.deepcopy(baseline)
             model.update(copy.deepcopy(_HOSTED_DEFAULTS))
             capabilities = _HOSTED_CAPABILITIES.get(name.removeprefix("system.ai."))
