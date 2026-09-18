@@ -93,6 +93,7 @@ test_ug_codex_custom_oauth.py            # CLI custom-OAuth launch and profile
 test_ug_claude_headless.py              # script prompts, models, caller settings
 test_ug_claude_relayed.py               # relayed session: subscription + Databricks-hosted models
 test_ug_codex_headless.py               # script prompts and model arguments
+test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
 test_ug_codex_app_server.py             # actual client/server initialize exchange
@@ -156,10 +157,21 @@ service allows a different model. Those choices are recorded in `versions.json`.
 No service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
 
-There are **42 live cases** (including 6 TUI journeys) and **5 installation
-checks** with both agents. A separate **3 managed-workspace cases** (one per agent
-plus an idempotent re-configure, marker `managed`) run against a workspace that publishes a CodingAgentConfig; see
-"Managed-workspace journeys" below. A further **9 `managed_fixture` cases** inject the admin config
+The Codex tracing journey is part of the Full Codex lane and uses its existing e2e
+workspace and bearer. Because that workspace deliberately has no published managed
+configuration, the journey injects only a tracing-enabled CodingAgentConfig input through
+the suite's `managed_fixture` mechanism; Codex, inference, OTLP export, and table verification
+remain real. It adds the prompt's UUID as the trace-safe `ug_integration_marker` span
+attribute, waits 30 seconds, and queries
+`main.aigw_tracing.unity_gateway_otel_spans` through an existing SQL warehouse in the
+workspace. It asserts both that a span with the marker arrived and that the same span
+carries the `model` attribute for the model that ran, so the trace is attributable to a
+specific model.
+
+There are **43 live cases** (including 6 TUI journeys) and **5 installation
+checks** with both agents. A separate **4 managed-workspace cases** (one per agent,
+an idempotent re-configure, and a cache-reuse case; marker `managed`) run against a workspace that publishes a CodingAgentConfig; see
+"Managed-workspace journeys" below. A further **11 `managed_fixture` cases** inject the admin config
 locally (via `UCODE_MANAGED_CONFIG_STUB`) to cover shapes the live workspace does not publish,
 including a managed MCP server landing in Codex's OS-managed `[mcp_servers]` (interactive configure)
 while the developer's own config stays untouched, and reaching Claude's `/mcp` view via the
@@ -178,6 +190,7 @@ See the named coverage and gaps matrix in
 -- -m live         # default: all live user journeys
 -- -m smoke        # six Hosted, custom OAuth CLI TUI, and headless journeys
 -- -m tui          # six interactive TUI journeys
+-- -m 'live and codex' -k trace  # installed Codex -> gateway -> configured trace table
 -- -k test_ug_codex_app_server_client_initializes  # one named journey and its variants
 # Use --installation-only before -- for package checks without credentials.
 ```
@@ -186,7 +199,7 @@ The old focused checks are now descriptive CUJs with setup and outcomes visible
 in each test. Duplicate boot-only checks are incorporated into the Databricks
 configuration TUI journeys. Real failures, including generated
 config left after revert and banners on app-server stdout, remain assertions.
-Live MCP/skills functionality, tracing, the broad configure-option matrix, and other
+Live MCP/skills functionality, the broad configure-option matrix, and other
 agents are outside this focused revision.
 
 The configure terminal helper recognizes `[✓]` / `[ ]` agent checkboxes as well
@@ -248,13 +261,13 @@ record a discovered `system.ai` model as a test argument.
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 42 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 43 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
 | Claude | `live and claude` | 17 |
-| Codex | `live and codex` | 25 |
+| Codex | `live and codex` | 26 |
 
 Each lane installs only its agent CLI, once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
@@ -268,7 +281,7 @@ No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, workspace validation, smoke, and
-both full lanes to pass. The **Managed config** lanes run for signal but are temporarily
+both full lanes to pass; the tracing journey is included in the Full Codex lane. The **Managed config** lanes run for signal but are temporarily
 non-blocking (`continue-on-error`): the managed workspace is now runner-reachable, but the lanes
 stay non-blocking until the managed-config apply path is proven stable. They neither fail the
 workflow nor gate merges until then. The
@@ -494,7 +507,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 42 live cases. For the five installation checks, run the same
+This runs all 43 live cases. For the five installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

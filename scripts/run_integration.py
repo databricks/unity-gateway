@@ -127,6 +127,8 @@ def arguments():
     parser.add_argument("--npm-registry", default="https://registry.npmjs.org")
     parser.add_argument("--profile", help="Explicit Databricks profile to mint the live bearer.")
     parser.add_argument("--workspace", default=os.environ.get("UCODE_TEST_WORKSPACE"))
+    parser.add_argument("--trace-table", default=os.environ.get("UG_INTEGRATION_TRACE_TABLE"))
+    parser.add_argument("--warehouse-id", default=os.environ.get("UG_INTEGRATION_WAREHOUSE_ID"))
     parser.add_argument("--output", type=Path, help="New results directory; never reused.")
     parser.add_argument("--installation-only", action="store_true", help="No workspace calls.")
     parser.add_argument(
@@ -292,6 +294,8 @@ def main() -> int:
             "codex_provider_model": args.codex_provider_model,
             "dependencies": args.dependency,
             "workspace": args.workspace,
+            "trace_table": args.trace_table,
+            "warehouse_id": args.warehouse_id,
         },
         "platform": platform.platform(),
         "installation_only": args.installation_only,
@@ -532,6 +536,8 @@ def main() -> int:
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
                 "DATABRICKS_BEARER": bearer,
+                "UG_INTEGRATION_TRACE_TABLE": args.trace_table or "",
+                "UG_INTEGRATION_WAREHOUSE_ID": args.warehouse_id or "",
             }
         )
         for agent in agents:

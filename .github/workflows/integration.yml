@@ -188,6 +188,7 @@ jobs:
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: ${{ inputs.suite == 'tui' && 'live and tui' || 'live' }} and ${{ matrix.agent }}
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}
+      UG_INTEGRATION_TRACE_TABLE: main.aigw_tracing.unity_gateway_otel_spans
     steps: *live-steps
 
   managed:
@@ -237,7 +238,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${args[@]}" -- -m "(managed or managed_fixture) and $AGENT"
+            "${args[@]}" -- -m "(managed or (managed_fixture and not live)) and $AGENT"
       - name: Upload managed test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
