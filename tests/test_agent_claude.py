@@ -372,10 +372,9 @@ class TestRenderOverlay:
 
     def test_provider_adds_routing_header(self):
         overlay, _ = claude.render_overlay(WS, "s4", provider="main.aarushi.aarushi-claude")
-        assert (
-            "Databricks-Model-Provider-Service: main.aarushi.aarushi-claude"
-            in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
-        )
+        headers = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert "Databricks-Model-Provider-Service: main.aarushi.aarushi-claude" in headers
+        assert "Databricks-Model-Service-Parent-Schema" not in headers
 
     def test_provider_skips_model_pinning(self):
         models = {
@@ -396,11 +395,18 @@ class TestRenderOverlay:
         assert "Databricks-Model-Provider-Service" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
     def test_parent_adds_discovery_header(self):
-        overlay, _ = claude.render_overlay(WS, "s4", parent_schema="main.default")
-        assert (
-            "Databricks-Model-Service-Parent-Schema: main.default"
-            in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        overlay, _ = claude.render_overlay(
+            WS,
+            "s4",
+            claude_models={"sonnet": "system.ai.claude-sonnet-4-6"},
+            parent_schema="main.default",
+            static_models=["system.ai.claude-sonnet-4-6"],
         )
+        headers = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert "Databricks-Model-Service-Parent-Schema: main.default" in headers
+        assert "Databricks-Model-Provider-Service" not in headers
+        assert "ANTHROPIC_DEFAULT_SONNET_MODEL" not in overlay["env"]
+        assert "availableModels" not in overlay
 
     def test_bedrock_provider_pins_model_ids(self):
         provider_models = {
@@ -961,7 +967,7 @@ class TestWriteToolConfigManagedSettings:
         self._patch(monkeypatch, private_writes, managed_writes, existing)
         state = {"workspace": WS, "codex_models": []}
 
-        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        claude.write_tool_config(state, "databricks-claude-sonnet-4", parent_schema="main.default")
 
         written = json.loads(managed_writes[0][1])
         assert written["modelPicker"] == picker
@@ -1052,6 +1058,56 @@ class TestWriteToolConfigManagedSettings:
 
         env = json.loads(managed_writes[0][1])["env"]
         assert not set(claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.values()) & env.keys()
+
+    def test_managed_file_omits_workspace_defaults_for_parent_schema(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): {
+                "env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-4-8"}
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {
+            "workspace": WS,
+            "claude_models": {"opus": "system.ai.claude-opus-4-8"},
+        }
+
+        claude.write_tool_config(state, None, parent_schema="main.default")
+
+        env = json.loads(managed_writes[0][1])["env"]
+        assert not set(claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.values()) & env.keys()
+
+    def test_parent_schema_prunes_previous_static_picker(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        picker = {
+            "availableModels": ["system.ai.claude-opus-4-8"],
+            "enforceAvailableModels": True,
+            "modelPicker": {"replaceBuiltInOptions": True, "options": []},
+            "companyPolicy": "keep",
+        }
+        existing = {
+            str(claude.CLAUDE_SETTINGS_PATH): picker,
+            str(FAKE_MANAGED_PATH): picker,
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {
+            "workspace": WS,
+            "managed_configs": {
+                "claude": {"keys": [[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS]}
+            },
+        }
+
+        updated = claude.write_tool_config(state, None, parent_schema="main.default")
+
+        for written in (private_writes[0][1], json.loads(managed_writes[0][1])):
+            assert not set(claude.CLAUDE_MANAGED_PICKER_KEYS) & written.keys()
+            assert written["companyPolicy"] == "keep"
+        assert not any(
+            [key] in updated["managed_configs"]["claude"]["keys"]
+            for key in claude.CLAUDE_MANAGED_PICKER_KEYS
+        )
 
     def test_managed_file_keeps_provider_model_pins(self, monkeypatch):
         private_writes: list = []
@@ -1695,22 +1751,18 @@ class TestClaudeLaunch:
             def wait(self):
                 return 0
 
-        def start_proxy(workspace, profile, port, token_header, force_refresh_near_expiry):
-            calls.append(
-                (
-                    "proxy",
-                    workspace,
-                    profile,
-                    port,
-                    token_header,
-                    force_refresh_near_expiry,
-                )
-            )
+        def start_relay_proxy(workspace, token_provider, port):
+            calls.append(("proxy", workspace, port, token_provider(False)))
             return Server(), Cache(), Client()
 
         monkeypatch.setattr(claude, "_managed_relayed_conflicts", lambda: None)
         monkeypatch.setattr(claude, "_ensure_subscription_login", lambda: None)
-        monkeypatch.setattr(claude.gateway_proxy, "start_proxy", start_proxy)
+        monkeypatch.setattr(claude.gateway_proxy, "start_relay_proxy", start_relay_proxy)
+        monkeypatch.setattr(
+            claude,
+            "get_databricks_token",
+            lambda ws, profile, force_refresh=False: f"tok:{ws}:{profile}:{force_refresh}",
+        )
         monkeypatch.setattr(claude.subprocess, "Popen", Process)
 
         with pytest.raises(SystemExit) as exc:
@@ -1729,10 +1781,8 @@ class TestClaudeLaunch:
         assert calls[0] == (
             "proxy",
             WS,
-            "test",
             12345,
-            claude.gateway_proxy.AI_GATEWAY_TOKEN_HEADER,
-            False,
+            f"tok:{WS}:test:False",
         )
         assert calls[-3:] == [("stop",), ("shutdown",), ("close",)]
 
