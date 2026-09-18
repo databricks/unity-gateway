@@ -1360,12 +1360,12 @@ def _resolve_location_mcp_servers(
 # path), the one source a consumer-only identity can reach. The V2 AI Gateway sources — external
 # connections, Databricks apps, Genie spaces, Vector Search, and UC functions, all served under
 # `/api/2.0/mcp/*` — aren't offered in the picker because consumer entitlements don't grant access
-# to them; workspace users add one non-interactively with a typed `--name` selector (see
+# to them; workspace users add one non-interactively with a typed `--names` selector (see
 # `V2_MCP_SELECTOR_PREFIXES` and `_configure_v2_mcp_selectors`). Since there's a single source,
 # there is no "choose sources" wizard step.
 MCP_SERVICES_SOURCE = "mcp-services"
 
-# Typed `--name` selectors that name a V2 AI Gateway MCP server directly, e.g.
+# Typed `--names` selectors that name a V2 AI Gateway MCP server directly, e.g.
 # `vector-search:main.docs` or `uc-functions:main.tools`. These bypass the interactive
 # picker (which no longer offers V2 sources) so workspace users can still add them on
 # request; a consumer-only identity is blocked with a clear error before registering.
@@ -1379,7 +1379,7 @@ V2_MCP_SELECTOR_PREFIXES = (
 
 
 def _is_v2_mcp_selector(service: str) -> bool:
-    """Whether a `--name` entry is a typed V2 MCP selector (see `V2_MCP_SELECTOR_PREFIXES`)."""
+    """Whether a `--names` entry is a typed V2 MCP selector (see `V2_MCP_SELECTOR_PREFIXES`)."""
     return service.startswith(V2_MCP_SELECTOR_PREFIXES)
 
 
@@ -1470,17 +1470,17 @@ def add_mcp_command(
     are already configured.
 
     Runs the same discovery — the interactive picker, or the non-interactive
-    `--location`/`--name` paths — as the shared configure flow, but is purely additive: it
+    `--location`/`--names` paths — as the shared configure flow, but is purely additive: it
     never removes servers outside the selection (use `ucode mcp remove` for that).
 
     ``agents`` scopes the registration to that subset of configured MCP clients
     (the agents must already be configured — the `--agents` CLI option sets up any
     that aren't before calling this)."""
     if services is not None and not services:
-        # An empty `--name` selects nothing. In replace mode that means
+        # An empty `--names` selects nothing. In replace mode that means
         # "remove all"; for the additive `add` there is simply nothing to register,
         # so it's a no-op (and doesn't need --location the way a real subset does).
-        print_note("No MCP services given to add (empty --name); nothing to do.")
+        print_note("No MCP services given to add (empty --names); nothing to do.")
         return 0
     return configure_mcp_command(location=location, services=services, append=True, agents=agents)
 
@@ -1491,7 +1491,7 @@ def _configure_v2_mcp_selectors(
     append: bool,
     agents: set[str] | None,
 ) -> int:
-    """Non-interactive add for V2 AI Gateway MCP servers named by typed `--name`
+    """Non-interactive add for V2 AI Gateway MCP servers named by typed `--names`
     selectors (`vector-search:`/`uc-functions:`/`external:`/`genie-space:`/`app:`).
 
     The interactive picker no longer offers these sources; this is how a workspace user adds one
@@ -1585,19 +1585,19 @@ def configure_mcp_command(
                 )
             return _configure_v2_mcp_selectors(v2_selectors, append=append, agents=agents)
     if services is not None and location is None:
-        # `--name` works standalone with full names (`system.ai.github`): the
+        # `--names` works standalone with full names (`system.ai.github`): the
         # `<catalog>.<schema>` to configure is derived from them. Bare short names
         # (`github`) can't be located without `--location`.
         schemas = {".".join(s.split(".")[:2]) for s in services if s.count(".") >= 2}
         bare = sorted(s for s in services if s.count(".") < 2)
         if bare:
             raise RuntimeError(
-                "--name short names need --location (or pass full names like "
+                "--names short names need --location (or pass full names like "
                 f"`system.ai.<name>`): {', '.join(bare)}"
             )
         if len(schemas) != 1:
             raise RuntimeError(
-                "--name without --location must all share one `<catalog>.<schema>` "
+                "--names without --location must all share one `<catalog>.<schema>` "
                 f"(got: {', '.join(sorted(schemas)) or 'none'}); pass --location instead."
             )
         location = next(iter(schemas))
