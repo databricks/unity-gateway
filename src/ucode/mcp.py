@@ -1863,6 +1863,10 @@ LIVE_ENABLED = "enabled"
 LIVE_DISABLED = "disabled"
 LIVE_UNKNOWN = "unknown"
 LIVE_NOT_REGISTERED = "not-registered"
+# A registered (usually HTTP OAuth) server the agent reached but that needs a one-time per-user
+# connection sign-in before it vends tools — e.g. Claude's "! Needs authentication". Distinct from
+# `unknown` so `ug mcp list` tells the developer to sign in instead of showing an opaque status.
+LIVE_NEEDS_AUTH = "needs-auth"
 
 # Some agent CLIs (e.g. cursor-agent) redraw progress with ANSI escapes that otherwise leak into
 # parsed server names; strip them before parsing.
@@ -1887,6 +1891,10 @@ def _classify_health_line(rest: str) -> str:
     low = rest.lower()
     if "fail" in low or "error" in low or "disconnect" in low:
         return LIVE_FAILED
+    # A glyph-less "needs authentication" (Claude's HTTP-OAuth sign-in prompt) is not a failure —
+    # the server is reachable and just needs the one-time connection login.
+    if "authenticat" in low:
+        return LIVE_NEEDS_AUTH
     if "connected" in low or "ready" in low:
         return LIVE_CONNECTED
     return LIVE_UNKNOWN
@@ -2047,6 +2055,7 @@ _LIVE_LABEL = {
     LIVE_DISABLED: "disabled",
     LIVE_UNKNOWN: "unknown",
     LIVE_NOT_REGISTERED: "missing",
+    LIVE_NEEDS_AUTH: "needs sign-in",
 }
 _LIVE_STYLE = {
     LIVE_CONNECTED: "green",
@@ -2055,6 +2064,7 @@ _LIVE_STYLE = {
     LIVE_DISABLED: "yellow",
     LIVE_UNKNOWN: "yellow",
     LIVE_NOT_REGISTERED: "yellow",
+    LIVE_NEEDS_AUTH: "yellow",
 }
 
 
@@ -2068,6 +2078,7 @@ _LIVE_CLASS = {
     LIVE_FAILED: "bad",
     LIVE_NOT_REGISTERED: "missing",
     LIVE_UNKNOWN: "unknown",
+    LIVE_NEEDS_AUTH: "needs-auth",
 }
 
 
@@ -2200,6 +2211,17 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
         # Only mention Codex's enabled/disabled caveat when Codex is actually in the reported set.
         live_note += "; Codex reports enabled/disabled"
     print_note(f"{live_note}.")
+    # A `needs sign-in` server is registered fine but needs the one-time per-user connection login;
+    # point the developer at it rather than leaving an opaque status.
+    if any(
+        state == LIVE_NEEDS_AUTH
+        for client in probe_clients
+        for state in live.get(client, {}).values()
+    ):
+        print_note(
+            "`needs sign-in` means the server needs a one-time connection login: authenticate it in "
+            "the agent (Claude Code: `/mcp` → the server → Authenticate)."
+        )
     print_note("Use `ug mcp add` / `ug mcp remove` to change the servers ug configures.")
     return 0
 

@@ -3466,6 +3466,21 @@ class TestParseMcpListOutput:
             "foo": mcp.LIVE_FAILED
         }
 
+    def test_needs_authentication_is_its_own_state_not_unknown(self):
+        # Claude prints an unauthenticated HTTP OAuth server as "! Needs authentication" (no ✔/✘
+        # glyph, no fail/connected keyword). It must map to needs-auth, not the opaque `unknown`,
+        # so `ug mcp list` tells the developer to sign in.
+        out = (
+            "system-ai-github: https://ws/ai-gateway/mcp-services/system.ai.github (HTTP) "
+            "- ! Needs authentication\n"
+        )
+        assert mcp.parse_mcp_list_output("claude", out) == {"system-ai-github": mcp.LIVE_NEEDS_AUTH}
+
+    def test_authentication_failure_glyph_stays_failed(self):
+        # A hard ✘ failure whose message happens to mention authentication is still a failure.
+        out = "svc: https://ws/x (HTTP) - ✘ Failed to connect — 401 authentication error\n"
+        assert mcp.parse_mcp_list_output("claude", out) == {"svc": mcp.LIVE_FAILED}
+
 
 class TestListMcpCommand:
     def _state(self):
@@ -3570,6 +3585,24 @@ class TestListMcpCommand:
         self._patch(monkeypatch, live={"claude": {}, "codex": {}})
         assert mcp.list_mcp_command() == 0
         assert "missing" in _unwrap(capsys.readouterr().out)
+
+    def test_needs_sign_in_status_and_hint(self, monkeypatch, capsys):
+        # Claude reachable but unauthenticated (HTTP OAuth) => "needs sign-in", not "unknown",
+        # and the footer explains how to authenticate.
+        self._patch(
+            monkeypatch,
+            live={
+                "claude": {"system-ai-github": mcp.LIVE_NEEDS_AUTH},
+                "codex": {"system-ai-github": mcp.LIVE_ENABLED},
+            },
+        )
+        assert mcp.list_mcp_command() == 0
+        out = _unwrap(capsys.readouterr().out)
+        assert "needs sign-in" in out
+        assert "unknown" not in out
+        # claude (needs sign-in) and codex (enabled) disagree, so the cell splits per-agent.
+        assert "claude:needs sign-in" in out
+        assert "one-time connection login" in out
 
     def test_agent_not_installed_is_flagged(self, monkeypatch, capsys):
         # Only claude installed; codex diverges to "not installed" in the split status cell.
