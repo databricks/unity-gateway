@@ -1223,14 +1223,14 @@ def mcp_add(
             "Servers already configured outside this location are kept.",
         ),
     ] = None,
-    services: Annotated[
+    name: Annotated[
         str | None,
         typer.Option(
-            "--services",
+            "--name",
             help="Register this comma-separated subset of MCP services (additively). Full names "
             "like `system.ai.github` work on their own; bare short names like `github` need "
-            "--location to locate them. Omit --services to register the whole --location schema; "
-            'an empty `--services ""` adds nothing (no-op). V2 AI Gateway servers (not in the '
+            "--location to locate them. Omit --name to register the whole --location schema; "
+            'an empty `--name ""` adds nothing (no-op). V2 AI Gateway servers (not in the '
             "interactive picker) are added by naming them here: `vector-search:<catalog>.<schema>`, "
             "`uc-functions:<catalog>.<schema>`, `external:<connection>`, `genie-space:<id>`, or "
             "`app:<name>` (workspace access required).",
@@ -1253,7 +1253,7 @@ def mcp_add(
     ones (use `ug mcp remove` to remove). Pass --agents to target (and, if needed, set up) specific
     agents.
     """
-    selected = None if services is None else {s.strip() for s in services.split(",") if s.strip()}
+    selected = None if name is None else {s.strip() for s in name.split(",") if s.strip()}
     requested_agents = (
         None
         if agents is None
@@ -1386,10 +1386,10 @@ def skills_add(
             "to user-level skill directories.",
         ),
     ] = None,
-    skills: Annotated[
+    name: Annotated[
         str | None,
         typer.Option(
-            "--skill",
+            "--name",
             help="(download) Download exactly these comma-separated fully-qualified "
             "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
             "with --mcp or --location.",
@@ -1410,15 +1410,15 @@ def skills_add(
     With ``--mcp``, adds the given schemas to the skills MCP connection's scope.
     Otherwise downloads skills to project-level skill directories under ``--path``, or
     to user-level skill directories when omitted, keeping already-downloaded skills.
-    ``--location`` downloads whole ``<catalog>.<schema>`` schemas; ``--skill``
+    ``--location`` downloads whole ``<catalog>.<schema>`` schemas; ``--name``
     downloads a named set of fully-qualified skills that may span schemas (and takes
-    no ``--location``). With no ``--location``/``--skill`` on an interactive terminal,
+    no ``--location``). With no ``--location``/``--name`` on an interactive terminal,
     opens a picker of the workspace's schemas to scope (``--mcp``) or skills to download.
     """
     try:
         install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
         requested_skills = (
-            None if skills is None else {s.strip() for s in skills.split(",") if s.strip()}
+            None if name is None else {s.strip() for s in name.split(",") if s.strip()}
         )
         requested_agents = (
             None
@@ -1428,9 +1428,9 @@ def skills_add(
         if mcp and path is not None:
             raise RuntimeError("--path is not supported when using --mcp")
         if mcp and requested_skills is not None:
-            raise RuntimeError("--skill is not supported when using --mcp")
+            raise RuntimeError("--name is not supported when using --mcp")
         if requested_skills is not None and location is not None:
-            raise RuntimeError("--skill takes fully-qualified names; drop --location.")
+            raise RuntimeError("--name takes fully-qualified names; drop --location.")
         # Downloaded skills use shared directory families, so only MCP scopes can be agent-scoped.
         if not mcp and agents is not None:
             raise RuntimeError("--agents is only supported when using --mcp")
@@ -1438,7 +1438,7 @@ def skills_add(
             invalid = sorted(s for s in requested_skills if not _is_qualified_skill_name(s))
             if invalid:
                 raise RuntimeError(
-                    "--skill entries must be fully-qualified `<catalog>.<schema>.<name>` names "
+                    "--name entries must be fully-qualified `<catalog>.<schema>.<name>` names "
                     f"(invalid: {', '.join(invalid)})."
                 )
             configure_selected_skills_download_command(sorted(requested_skills), path)
@@ -1497,10 +1497,10 @@ def skills_remove(
             "without it, every base is in scope.",
         ),
     ] = None,
-    skills: Annotated[
+    name: Annotated[
         str | None,
         typer.Option(
-            "--skill",
+            "--name",
             help="(download) Remove exactly these comma-separated fully-qualified "
             "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
             "with --mcp or --location.",
@@ -1521,7 +1521,7 @@ def skills_remove(
     With ``--mcp``, drops skill schemas from the skills MCP connection: ``--location`` removes the
     named ``<catalog>.<schema>`` schemas, and with none on an interactive terminal a picker lists
     the scoped schemas. Otherwise removes downloaded skill directories: ``--location`` removes every
-    skill downloaded from a ``<catalog>.<schema>``, ``--skill`` removes named fully-qualified skills
+    skill downloaded from a ``<catalog>.<schema>``, ``--name`` removes named fully-qualified skills
     that may span schemas, and with none of them a picker lists every downloaded skill. ``--path``
     limits either to one download base. Only skills ucode downloaded are removed; a same-named skill
     you authored is left alone.
@@ -1529,11 +1529,11 @@ def skills_remove(
     try:
         install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
         requested_skills = (
-            None if skills is None else {s.strip() for s in skills.split(",") if s.strip()}
+            None if name is None else {s.strip() for s in name.split(",") if s.strip()}
         )
         if mcp:
             if path is not None or requested_skills is not None:
-                raise RuntimeError("--path and --skill are not supported with --mcp.")
+                raise RuntimeError("--path and --name are not supported with --mcp.")
             requested_agents = (
                 None
                 if agents is None
@@ -1550,21 +1550,21 @@ def skills_remove(
         if agents is not None:
             raise RuntimeError("--agents is only supported when using --mcp.")
         if requested_skills is not None and location is not None:
-            raise RuntimeError("--skill takes fully-qualified names; drop --location.")
+            raise RuntimeError("--name takes fully-qualified names; drop --location.")
         if requested_skills is not None:
             invalid = sorted(s for s in requested_skills if not _is_qualified_skill_name(s))
             if invalid:
                 raise RuntimeError(
-                    "--skill entries must be fully-qualified `<catalog>.<schema>.<name>` names "
+                    "--name entries must be fully-qualified `<catalog>.<schema>.<name>` names "
                     f"(invalid: {', '.join(invalid)})."
                 )
             remove_downloaded_skills_command([], sorted(requested_skills), path=path)
             return
         locations = _parse_skill_locations(location)
         if path is not None and not locations:
-            raise RuntimeError("--path is only supported with --location or --skill.")
+            raise RuntimeError("--path is only supported with --location or --name.")
         if not locations and not _stdin_is_interactive():
-            raise RuntimeError("--location or --skill is required for `ug skills remove`.")
+            raise RuntimeError("--location or --name is required for `ug skills remove`.")
         remove_downloaded_skills_command(locations, path=path)
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
@@ -3344,10 +3344,10 @@ def configure_skills(
             help="(download) Existing absolute dir to download into; defaults to your home dir.",
         ),
     ] = None,
-    skill: Annotated[
+    name: Annotated[
         str | None,
         typer.Option(
-            "--skill",
+            "--name",
             help="(download) Download exactly these comma-separated fully-qualified "
             "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
             "with --mcp or --location.",
@@ -3362,28 +3362,28 @@ def configure_skills(
     When ``--location`` is provided: with ``--mcp``, sets the connection's scope to
     exactly the listed schemas (no download); otherwise, downloads every skill in
     each schema to disk (under ``--path``, or your home dir when omitted) and
-    registers the MCP connection with utility tools only. ``--skill`` instead
+    registers the MCP connection with utility tools only. ``--name`` instead
     downloads a named set of fully-qualified skills that may span schemas (and takes
     no ``--location``).
     """
     try:
         install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
-        # `--skill` absent -> None (whole schemas via --location); present (even
-        # empty) -> the explicit FQN set, so `--skill ""` downloads nothing.
+        # `--name` absent -> None (whole schemas via --location); present (even
+        # empty) -> the explicit FQN set, so `--name ""` downloads nothing.
         selected_skills = (
-            None if skill is None else {s.strip() for s in skill.split(",") if s.strip()}
+            None if name is None else {s.strip() for s in name.split(",") if s.strip()}
         )
         if mcp and path is not None:
             raise RuntimeError("--path is not valid with --mcp.")
         if mcp and selected_skills is not None:
-            raise RuntimeError("--skill is not valid with --mcp; it only applies when downloading.")
+            raise RuntimeError("--name is not valid with --mcp; it only applies when downloading.")
         if selected_skills is not None and location is not None:
-            raise RuntimeError("--skill takes fully-qualified names; drop --location.")
+            raise RuntimeError("--name takes fully-qualified names; drop --location.")
         if selected_skills is not None:
             invalid = sorted(s for s in selected_skills if not _is_qualified_skill_name(s))
             if invalid:
                 raise RuntimeError(
-                    "--skill entries must be fully-qualified `<catalog>.<schema>.<name>` names "
+                    "--name entries must be fully-qualified `<catalog>.<schema>.<name>` names "
                     f"(invalid: {', '.join(invalid)})."
                 )
             configure_selected_skills_download_command(sorted(selected_skills), path)
