@@ -57,6 +57,12 @@ CI_ANTHROPIC_RELAY_MPS = (
 )
 CI_OPENAI_MPS = "main.ucode.ci_openai_mps"  # api-key OpenAI (for codex)
 CI_OPENAI_MODEL = "gpt-5-nano"
+# Azure OpenAI MPS for codex, with a mixed allowlist: two reasoning-capable models plus one
+# non-reasoning model. Codex always sends `reasoning.effort`, so this single MPS exercises the
+# reasoning gate, model switching, and allowlist rejection (see TestAzureOpenAiMps).
+CI_AZURE_OPENAI_MPS = "main.ucode.ci_azure_openai_mps"
+CI_AZURE_REASONING_MODELS = ("gpt-5-nano", "gpt-5.6-luna")
+CI_AZURE_NON_REASONING_MODEL = "gpt-4.1-mini"
 
 # Claude Code's client-side model pre-flight is flaky for MPS-routed ids and emits this; the
 # launch retries on it before giving up (see TestModelProviderLaunch).
@@ -846,6 +852,84 @@ class TestAnthropicNonRelayMps:
         )
         assert service_usable_for_tool("claude", entry)
         assert not entry.get("relayed")
+
+
+class TestAzureOpenAiMps:
+    """Azure OpenAI MPS for codex, pinned to CI_AZURE_OPENAI_MPS.
+
+    Exercised without the agent binary — direct Responses API calls through the gateway MPS,
+    the same surface codex uses. The allowlist mixes reasoning-capable models (gpt-5 family)
+    with a non-reasoning one (gpt-4.1-mini); codex always sends reasoning.effort, so these probes
+    pin the behavior a real codex launch depends on: any reasoning model routes (so a session can
+    switch between them), a non-reasoning model rejects reasoning.effort, and an off-allowlist
+    model is refused up front.
+    """
+
+    @staticmethod
+    def _responses_request(
+        workspace: str, token: str, model: str, *, reasoning: bool = True
+    ) -> httpx.Response:
+        body: dict = {
+            "model": model,
+            "input": "say hi in 5 words or less",
+            "max_output_tokens": 16,
+        }
+        if reasoning:
+            body["reasoning"] = {"effort": "low"}
+        return httpx.post(
+            f"{build_tool_base_url('codex', workspace)}/responses",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Databricks-Model-Provider-Service": CI_AZURE_OPENAI_MPS,
+            },
+            json=body,
+            timeout=60,
+        )
+
+    @staticmethod
+    def _skip_if_unusable(resp: httpx.Response) -> None:
+        # Environmental account conditions, not ucode bugs (mirrors TestAnthropicNonRelayMps). The
+        # allowlist 403 ("not in the allowed models list") is a real assertion, not a skip — only a
+        # connection-permission 401/403 or an exhausted account falls outside the test's scope.
+        text = resp.text
+        if resp.status_code in (401, 403) and ("USE CONNECTION" in text or "EXECUTE" in text):
+            pytest.skip(f"no permission on {CI_AZURE_OPENAI_MPS}: {text[:200]}")
+        if "quota" in text.lower():
+            pytest.skip(f"{CI_AZURE_OPENAI_MPS} account is out of quota: {text[:200]}")
+
+    @pytest.mark.parametrize("model", CI_AZURE_REASONING_MODELS)
+    def test_reasoning_model_serves_codex_reasoning_effort(self, model, e2e_workspace, e2e_token):
+        # codex's request shape (reasoning.effort) routes on every reasoning-capable allowed model,
+        # so an in-session /model switch between them stays within the allowlist.
+        resp = self._responses_request(e2e_workspace, e2e_token, model)
+        self._skip_if_unusable(resp)
+        assert resp.status_code == 200, f"model={model} HTTP {resp.status_code}: {resp.text[:300]}"
+
+    def test_non_reasoning_model_rejects_reasoning_effort(self, e2e_workspace, e2e_token):
+        # Parity invariant: a model that would not work with codex natively must not work through the
+        # gateway either. gpt-4.1-mini is allow-listed but non-reasoning, and codex always sends
+        # reasoning.effort, so the gateway must surface the provider's 400 — not paper over it by
+        # stripping the param.
+        resp = self._responses_request(e2e_workspace, e2e_token, CI_AZURE_NON_REASONING_MODEL)
+        self._skip_if_unusable(resp)
+        assert resp.status_code == 400, f"HTTP {resp.status_code}: {resp.text[:300]}"
+        assert "reasoning.effort" in resp.text
+
+    def test_non_reasoning_model_serves_without_reasoning(self, e2e_workspace, e2e_token):
+        # The rejection above is the reasoning parameter, not the model or the allowlist: the same
+        # model serves a plain request.
+        resp = self._responses_request(
+            e2e_workspace, e2e_token, CI_AZURE_NON_REASONING_MODEL, reasoning=False
+        )
+        self._skip_if_unusable(resp)
+        assert resp.status_code == 200, f"HTTP {resp.status_code}: {resp.text[:300]}"
+
+    def test_rejects_model_outside_allowlist(self, e2e_workspace, e2e_token):
+        # The MPS enforces its allowlist up front: a model it doesn't declare is refused.
+        resp = self._responses_request(e2e_workspace, e2e_token, "gpt-4o")
+        self._skip_if_unusable(resp)
+        assert resp.status_code == 403, f"HTTP {resp.status_code}: {resp.text[:300]}"
+        assert "not in the allowed models list" in resp.text
 
 
 class TestGeminiLaunch:
