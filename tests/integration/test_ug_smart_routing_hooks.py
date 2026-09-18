@@ -158,15 +158,17 @@ def test_smart_routing_codex_route_subagent_hook(live_session, workspace):
 def test_smart_routing_claude_subagent_only_launch_shows_no_first_prompt_banner(
     live_session, workspace
 ):
-    """Scenario: configure Claude, then launch the real TUI with only subagent-only
-    routing enabled and submit one file prompt.
+    """Scenario: configure Claude, then launch the real TUI with both the full and the
+    subagent-only routing flags set and submit one file prompt.
 
-    Expected: the routing hooks are armed (SessionStart canary), yet the prompt completes
-    with no smart-routing banner and no first-prompt routing wrapper anywhere in the
-    session, and the TUI exits normally. Only first-prompt silence is asserted here;
-    subagent routing engagement is covered by the route-subagent hook journey above.
+    Expected: subagent-only takes precedence over the ambient full flag: the routing
+    hooks are armed (SessionStart canary), yet the prompt completes with no
+    smart-routing banner and no first-prompt routing wrapper anywhere in the session,
+    and the TUI exits normally. Only first-prompt silence is asserted here; subagent
+    routing engagement is covered by the route-subagent hook journey above.
     """
     session = live_session
+    session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
     session.run(
         "configure",
@@ -199,15 +201,17 @@ def test_smart_routing_claude_subagent_only_launch_shows_no_first_prompt_banner(
 def test_smart_routing_codex_subagent_only_launch_shows_no_first_prompt_banner(
     live_session, workspace
 ):
-    """Scenario: configure Codex, then launch the real TUI with only subagent-only
-    routing enabled and submit one file prompt.
+    """Scenario: configure Codex, then launch the real TUI with both the full and the
+    subagent-only routing flags set and submit one file prompt.
 
-    Expected: the prompt completes with no smart-routing banner and no interposer
-    first-prompt routing wrapper anywhere in the session, and the TUI exits normally.
-    Only first-prompt silence is asserted here; subagent routing engagement is covered
-    by the route-subagent hook journey above.
+    Expected: subagent-only takes precedence over the ambient full flag: the prompt
+    completes with no smart-routing banner and no interposer first-prompt routing wrapper
+    anywhere in the session, and the TUI exits normally. Only first-prompt silence is
+    asserted here; subagent routing engagement is covered by the route-subagent hook
+    journey above.
     """
     session = live_session
+    session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
     session.run(
         "configure",
