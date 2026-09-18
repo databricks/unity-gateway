@@ -194,13 +194,37 @@ def forwarded_request_headers(
     handler: BaseHTTPRequestHandler,
     token: str,
     token_header: str = AI_GATEWAY_TOKEN_HEADER,
-    extra_strip: frozenset[str] = frozenset(),
+    extra_headers: dict[str, str] | None = None,
+    strip_client_headers: frozenset[str] | None = None,
 ) -> dict[str, str]:
-    strip_on_forward = HOP_BY_HOP_HEADERS | {token_header.lower()} | extra_strip
+    """Build the upstream headers: pass the client's headers through, minus
+    hop-by-hop, with the refreshed Databricks credential in ``token_header``.
+
+    ``extra_headers`` are fixed values the proxy owns and stamps on every
+    request (e.g. the `Databricks-Model-Provider-Service` routing header, or the
+    relayed `Authorization` when the client — like Claude Desktop — cannot itself
+    hold the Anthropic OAuth). Any client-supplied header of the same name is
+    dropped first so a stale client value can never survive, exactly as the swap
+    header is replaced.
+
+    ``strip_client_headers`` names additional client headers to drop before
+    forwarding. Used when the proxy owns the credential and a client-supplied
+    auth header would otherwise conflict upstream — e.g. Claude Desktop may send
+    the configured key as `x-api-key`, which must not reach Anthropic alongside
+    the OAuth the proxy injects in `Authorization`.
+    """
+    extra = extra_headers or {}
+    strip_on_forward = (
+        HOP_BY_HOP_HEADERS
+        | {token_header.lower()}
+        | {name.lower() for name in extra}
+        | {name.lower() for name in (strip_client_headers or frozenset())}
+    )
     headers = {
         key: value for key, value in handler.headers.items() if key.lower() not in strip_on_forward
     }
     headers[token_header] = f"Bearer {token}"
+    headers.update(extra)
     return headers
 
 
@@ -241,6 +265,12 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     cache: TokenCache
     client: httpx.Client
     token_header = AI_GATEWAY_TOKEN_HEADER
+    # Fixed headers the proxy stamps on every forwarded request (None for the
+    # Claude Code path, where the client owns Authorization and no MPS header is
+    # injected server-side). Bound by the server factory.
+    extra_headers: dict[str, str] | None = None
+    # Client headers to drop before forwarding (None for the Claude Code path).
+    strip_client_headers: frozenset[str] | None = None
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -272,13 +302,23 @@ class _ProxyHandler(BaseHTTPRequestHandler):
 
         def request_headers() -> dict[str, str]:
             if route_databricks:
+                # Gateway-served model: dbx token in Authorization, relay swap + MPS headers
+                # dropped. Also honor any client headers the relay owner strips (e.g. a Claude
+                # Desktop x-api-key), so a proxy-owned credential never leaks on this route either.
                 return forwarded_request_headers(
                     self,
                     self.cache.token,
                     AUTHORIZATION_HEADER,
-                    extra_strip=_DATABRICKS_ROUTE_STRIP,
+                    strip_client_headers=_DATABRICKS_ROUTE_STRIP
+                    | (self.strip_client_headers or frozenset()),
                 )
-            return forwarded_request_headers(self, self.cache.token, self.token_header)
+            return forwarded_request_headers(
+                self,
+                self.cache.token,
+                self.token_header,
+                extra_headers=self.extra_headers,
+                strip_client_headers=self.strip_client_headers,
+            )
 
         try:
             # First attempt with the current token.
@@ -430,6 +470,8 @@ def start_proxy(
     port: int,
     token_header: str,
     force_refresh_near_expiry: bool,
+    extra_headers: dict[str, str] | None = None,
+    strip_client_headers: frozenset[str] | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start the loopback refresh proxy + its background token refresher.
 
@@ -459,6 +501,8 @@ def start_proxy(
             "cache": cache,
             "client": client,
             "token_header": token_header,
+            "extra_headers": extra_headers,
+            "strip_client_headers": strip_client_headers,
         },
     )
     try:
