@@ -134,6 +134,7 @@ def build_codex_agent_config(
     models: list[str],
     smart_routing: bool = False,
     http_headers: dict[str, str] | None = None,
+    otel_tracing_enabled: bool | None = None,
 ) -> dict:
     config = {
         "models": {"model_services": models},
@@ -143,6 +144,8 @@ def build_codex_agent_config(
         config["smart_routing"] = {"enabled": True}
     if http_headers is not None:
         config["http_headers"] = http_headers
+    if otel_tracing_enabled is not None:
+        config["tracing"] = {"enabled": otel_tracing_enabled}
     return {"agent": "CODING_AGENT_CODEX", "config": config}
 
 

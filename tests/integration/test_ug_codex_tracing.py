@@ -7,24 +7,32 @@ import uuid
 import pytest
 from utils.constants import CODEX_TEST_MODEL
 from utils.evidence import FileTask
-from utils.sql import query_count
+from utils.managed import (
+    build_codex_agent_config,
+    build_coding_agent_config,
+    set_managed_config_stub,
+)
+from utils.sql import query_count, resolve_warehouse_id
 
-pytestmark = [pytest.mark.tracing, pytest.mark.codex]
+pytestmark = [pytest.mark.live, pytest.mark.managed_fixture, pytest.mark.codex]
 
 
-def test_ug_codex_exports_trace_to_configured_table(live_session, workspace):
-    """Scenario: configure tracing and run Codex with a unique prompt marker.
+def test_ug_codex_exports_trace_to_configured_table(live_session, workspace, tmp_path):
+    """Scenario: configure Codex with tracing enabled and run a task with a unique marker.
 
-    Expected: after the 30-second ingestion window, the configured tracing table
-    contains a Codex span carrying that marker, and the real agent task completed.
+    Expected: the real agent task completes and, after the ingestion window, the
+    configured trace table contains a Codex span carrying the same marker.
     """
     session = live_session
     marker = f"ug-codex-trace-{uuid.uuid4().hex}"
     task = FileTask(session)
+    config = build_coding_agent_config(
+        "CODING_AGENT_CODEX",
+        build_codex_agent_config(models=[CODEX_TEST_MODEL], otel_tracing_enabled=True),
+    )
+    set_managed_config_stub(session, tmp_path, config)
     session.run(
         "configure",
-        "--agents",
-        "codex",
         "--workspace",
         workspace,
         "--skip-validate",
@@ -50,9 +58,9 @@ def test_ug_codex_exports_trace_to_configured_table(live_session, workspace):
 
     time.sleep(30)
     table = os.environ.get("UG_INTEGRATION_TRACE_TABLE", "").strip()
+    assert table, "Pass --trace-table for the configured tracing table"
     warehouse_id = os.environ.get("UG_INTEGRATION_WAREHOUSE_ID", "").strip()
-    assert table, "Pass --trace-table for the staging tracing table"
-    assert warehouse_id, "Pass --warehouse-id for the staging SQL warehouse"
+    warehouse_id = warehouse_id or resolve_warehouse_id(workspace, session.env["DATABRICKS_BEARER"])
     count = query_count(
         workspace,
         session.env["DATABRICKS_BEARER"],

@@ -7,6 +7,27 @@ import time
 import urllib.request
 
 
+def resolve_warehouse_id(workspace: str, bearer: str) -> str:
+    """Choose an existing warehouse, preferring one that is already running."""
+    request = urllib.request.Request(
+        f"{workspace.rstrip('/')}/api/2.0/sql/warehouses",
+        headers={"Authorization": f"Bearer {bearer}"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+        result = json.load(response)
+
+    warehouses = [
+        warehouse
+        for warehouse in result.get("warehouses", [])
+        if isinstance(warehouse, dict) and warehouse.get("id")
+    ]
+    assert warehouses, "The integration workspace has no SQL warehouse"
+    running = next(
+        (warehouse for warehouse in warehouses if warehouse.get("state") == "RUNNING"), None
+    )
+    return str((running or warehouses[0])["id"])
+
+
 def query_count(
     workspace: str,
     bearer: str,
