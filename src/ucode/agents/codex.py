@@ -102,10 +102,11 @@ _MODEL_SERVICE_ROUTING_KEY_PATHS = [
         MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     ],
 ]
-MINIMUM_CODEX_VERSION = (0, 134, 0)
-MINIMUM_CODEX_VERSION_TEXT = "0.134.0"
-MINIMUM_ROUTING_CODEX_VERSION = (0, 145, 0)
-MINIMUM_ROUTING_CODEX_VERSION_TEXT = "0.145.0"
+MINIMUM_CODEX_VERSION = (0, 145, 0)
+MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
+# Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
+LEGACY_LAYOUT_CODEX_VERSION = (0, 134, 0)
+LEGACY_LAYOUT_CODEX_VERSION_TEXT = "0.134.0"
 # Retained only to identify and remove state written by the legacy persisted opt-in.
 SMART_ROUTING_STATE_KEY = smart_routing_v2.LEGACY_STATE_KEY
 APP_SERVER_SMART_ROUTING_STARTING_MODEL = "gpt-5.6-luna"
@@ -142,17 +143,11 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
 
 
 def minimum_version_error() -> str | None:
-    """Return the active smart-routing version blocker, if any."""
-    if not smart_routing_v2.smart_routing_enabled():
-        return None
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
-    if parsed is None or parsed >= MINIMUM_ROUTING_CODEX_VERSION:
+    if parsed is None or parsed >= MINIMUM_CODEX_VERSION:
         return None
-    return (
-        "Codex smart routing requires Codex "
-        f"{MINIMUM_ROUTING_CODEX_VERSION_TEXT} or newer; found {version}."
-    )
+    return f"ug requires Codex {MINIMUM_CODEX_VERSION_TEXT} or newer; found {version}."
 
 
 def _use_legacy_layout() -> bool:
@@ -167,7 +162,7 @@ def _use_legacy_layout() -> bool:
     parsed = _parse_version(agent_version(SPEC["binary"]))
     if parsed is None:
         return False
-    return parsed < MINIMUM_CODEX_VERSION
+    return parsed < LEGACY_LAYOUT_CODEX_VERSION
 
 
 def has_ucode_config() -> bool:
@@ -943,7 +938,7 @@ def launch(
     if _use_legacy_layout():
         print_warning_err(
             f"Codex {agent_version(binary)} is outdated. Upgrade Codex to "
-            f"{MINIMUM_CODEX_VERSION_TEXT} or newer, then run `codex --version` to verify "
+            f"{LEGACY_LAYOUT_CODEX_VERSION_TEXT} or newer, then run `codex --version` to verify "
             "the active installation."
         )
         _run_codex(
@@ -1010,13 +1005,6 @@ def launch(
 def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
     binary = SPEC["binary"]
-    version_text = agent_version(binary)
-    parsed_version = _parse_version(version_text)
-    if parsed_version is not None and parsed_version < MINIMUM_ROUTING_CODEX_VERSION:
-        raise RuntimeError(
-            "Codex smart routing requires Codex "
-            f"{MINIMUM_ROUTING_CODEX_VERSION_TEXT} or newer; found {version_text}."
-        )
 
     configured_model = _smart_routing_config_model(state)
     # Prefer the custom catalog if it exists.

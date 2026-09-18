@@ -39,15 +39,6 @@ def test_smart_routing_switch_message_wraps_to_fixed_width():
 
 
 class TestLaunchCodex:
-    def test_rejects_unsupported_codex_version(self, monkeypatch):
-        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
-        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.144.0")
-        monkeypatch.setattr(v2, "launch_codex", lambda *args, **kwargs: pytest.fail("launched"))
-
-        with pytest.raises(RuntimeError, match="requires Codex 0.145.0 or newer; found 0.144.0"):
-            codex.launch({"workspace": WS}, [], options=LaunchOptions(launch_smart_routing=True))
-
     @pytest.mark.parametrize(
         ("tool_args", "options"),
         [

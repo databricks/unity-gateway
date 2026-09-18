@@ -29,16 +29,20 @@ class TestCodexSpec:
 
 
 class TestMinimumVersion:
-    def test_smart_routing_old_version_requires_update(self, monkeypatch):
-        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+    @pytest.mark.parametrize("version", ["0.145.0", "0.148.0", "1.0.0"])
+    def test_supported_version(self, monkeypatch, version):
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: version)
+
+        assert codex.minimum_version_error() is None
+
+    def test_older_version_requires_update(self, monkeypatch):
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.144.0")
 
-        expected = "Codex smart routing requires Codex 0.145.0 or newer; found 0.144.0."
+        expected = "ug requires Codex 0.145.0 or newer; found 0.144.0."
         assert codex.minimum_version_error() == expected
 
-    def test_old_version_is_not_blocked_without_smart_routing(self, monkeypatch):
-        monkeypatch.delenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
-        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.144.0")
+    def test_unknown_version_does_not_block(self, monkeypatch):
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "unknown")
 
         assert codex.minimum_version_error() is None
 
