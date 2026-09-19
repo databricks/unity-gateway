@@ -272,17 +272,16 @@ No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, workspace validation, smoke, and
-both full lanes to pass. The **Managed config** lanes run for signal but are temporarily
-non-blocking (`continue-on-error`): the managed workspace is now runner-reachable, but the lanes
-stay non-blocking until the managed-config apply path is proven stable. They neither fail the
-workflow nor gate merges until then. The
-existing required `e2e` context also waits for the complete integration workflow, so integration
-cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
+both full lanes to pass. Managed-config coverage runs in the independent
+`managed-integration.yml` signal workflow. A runner shutdown there cannot cancel this required
+workflow or gate merges. Codex is divided into published-workspace, discovery-policy, and
+remaining-fixture shards so each runner has a shorter exposure window and a stalled scenario is
+immediately identifiable. Full required coverage on PRs needs no label or opt-in.
 
 ### Managed-workspace journeys
 
-`test_ug_configure_managed.py` (marker `managed`, not `live`) runs in its own per-agent
-**Managed config** jobs against a second workspace that publishes an admin CodingAgentConfig,
+`test_ug_configure_managed.py` (marker `managed`, not `live`) runs in the independent
+**Managed integration (signal)** workflow against a second workspace that publishes an admin CodingAgentConfig,
 which the shared `live` workspace deliberately does not. `ug configure` applies the admin config
 with no agent selector, and each agent's generated config exposes exactly the admin's static
 `model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog).
@@ -336,7 +335,7 @@ policies prevented Codex's bubblewrap tool from reading even the test file in th
 first run. The agent sandbox is not disabled or bypassed.
 The workflow consumes the stored bearer; it does not mint or refresh credentials.
 
-For a manual run, use **Actions → Integration → Run workflow**, select the branch,
+For a manual required-suite run, use **Actions → Integration → Run workflow**, select the branch,
 and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
 alias for `full`. Manual subsets are explicit: `smoke` runs just the six smoke
 cases; `tui` adds `and tui` to each agent lane's marker and runs all six TUI cases. Installation
@@ -355,6 +354,12 @@ Before this PR merges, CI's pull-request event calls the workflow. Missing
 credentials or a workspace mismatch fail the workspace job. Expired or invalid
 credentials fail the actual workspace calls. Those failures do not count as live
 test passes.
+
+Run **Managed integration (signal)** separately to reproduce the managed shards. Its four jobs
+use distinct artifact names. Codex's discovery-policy shard owns
+`test_ug_codex_managed_model_discovery.py`; the remaining-fixture shard selects the other Codex
+`managed_fixture` cases; the workspace shard selects the un-stubbed `managed` cases. These
+selectors are disjoint and together preserve the previous Codex managed coverage.
 
 ## Reproduce and debug a CI failure locally
 
