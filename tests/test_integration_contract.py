@@ -1,7 +1,22 @@
 """Keep the black-box suite independent of application internals and test doubles."""
 
+import argparse
 import ast
 from pathlib import Path
+
+import pytest
+
+from scripts.run_integration import positive_seconds
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "forever"])
+def test_integration_watchdog_durations_must_be_positive_seconds(value):
+    with pytest.raises(argparse.ArgumentTypeError):
+        positive_seconds(value)
+
+
+def test_integration_watchdog_accepts_positive_seconds():
+    assert positive_seconds("300") == 300
 
 
 def _markers(nodes):

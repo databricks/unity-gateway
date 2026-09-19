@@ -224,6 +224,11 @@ inspection; remove that run directory when finished. Agent versions are checked
 before and after the suite so an automatic upgrade cannot silently change the
 combination being tested. Model requests and subprocesses have deadlines, and
 the process group is cleaned up after each command.
+The runner also enforces a per-test watchdog and an overall pytest deadline. A
+stuck case produces a pytest-timeout stack dump, while periodic heartbeats keep
+the CI log visibly active; the outer deadline interrupts and reaps the complete
+pytest process group before the hosting job's timeout. Use `--test-timeout`,
+`--suite-timeout`, and `--heartbeat-interval` to reproduce CI's budgets locally.
 Selection after `--` accepts `-k`, `-m`, `-x`, and `--maxfail`; configuration and
 report paths cannot be overridden. `--installation-only` always restricts the
 selection to installation checks, including when additional filters are used.

@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -26,6 +27,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_PACKAGES = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}
+
+
+def positive_seconds(value: str) -> int:
+    """Parse a strictly positive watchdog duration."""
+    try:
+        seconds = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a whole number of seconds") from exc
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return seconds
 
 
 def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
@@ -134,6 +146,27 @@ def arguments():
     parser.add_argument("--workspace", default=os.environ.get("UCODE_TEST_WORKSPACE"))
     parser.add_argument("--output", type=Path, help="New results directory; never reused.")
     parser.add_argument("--installation-only", action="store_true", help="No workspace calls.")
+    parser.add_argument(
+        "--suite-timeout",
+        type=positive_seconds,
+        default=3600,
+        metavar="SECONDS",
+        help="Hard deadline for the complete pytest run (default: 3600).",
+    )
+    parser.add_argument(
+        "--test-timeout",
+        type=positive_seconds,
+        default=600,
+        metavar="SECONDS",
+        help="Hard deadline for each integration case (default: 600).",
+    )
+    parser.add_argument(
+        "--heartbeat-interval",
+        type=positive_seconds,
+        default=60,
+        metavar="SECONDS",
+        help="Print pytest progress heartbeats at this interval (default: 60).",
+    )
     parser.add_argument(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
     )
@@ -519,6 +552,7 @@ def main() -> int:
                 "--default-index",
                 args.default_index,
                 "pytest==9.0.3",
+                "pytest-timeout==2.4.0",
                 "pexpect==4.9.0",
                 "pyte==0.8.2",
             ]
@@ -567,6 +601,8 @@ def main() -> int:
                 "-o",
                 f"cache_dir={output / 'pytest-cache'}",
                 f"--junitxml={output / 'junit.xml'}",
+                f"--timeout={args.test_timeout}",
+                "--timeout-method=signal",
                 *extra,
             ],
             env=runtime_env,
@@ -574,7 +610,24 @@ def main() -> int:
             stdin=subprocess.DEVNULL,
             interrupt=True,
         ) as result:
-            result.wait(timeout=3600)
+            started = time.monotonic()
+            while True:
+                elapsed = int(time.monotonic() - started)
+                remaining = args.suite_timeout - elapsed
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(result.args, args.suite_timeout)
+                try:
+                    result.wait(timeout=min(args.heartbeat_interval, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    elapsed = int(time.monotonic() - started)
+                    if elapsed >= args.suite_timeout:
+                        raise
+                    print(
+                        f"Integration heartbeat: pytest pid={result.pid} "
+                        f"elapsed={elapsed}s suite_deadline={args.suite_timeout}s",
+                        flush=True,
+                    )
         exitcode = result.returncode
         junit = output / "junit.xml"
         if junit.is_file():
