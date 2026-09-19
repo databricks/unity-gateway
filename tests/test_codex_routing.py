@@ -253,6 +253,60 @@ def test_codex_model_id_maps_uc_gpt_models_to_codex_slugs():
     assert codex_routing.codex_model_id("system.ai.glm-5-2") == "system.ai.glm-5-2"
 
 
+def test_codex_model_id_translates_bare_hyphenated_gpt_slugs():
+    """Bare hyphenated slugs (from the MPS catalog / router arms) get dotted too.
+
+    This is the race condition: when the custom catalog is present, available_models
+    contains bare slugs like gpt-5-6-luna; when absent, it falls back to
+    system.ai.gpt-5-6-luna.  Both must produce the same dotted alias.
+    """
+    assert codex_routing.codex_model_id("gpt-5-6-luna") == "gpt-5.6-luna"
+    assert codex_routing.codex_model_id("gpt-5-6-sol") == "gpt-5.6-sol"
+    assert codex_routing.codex_model_id("gpt-5-6-terra") == "gpt-5.6-terra"
+    assert codex_routing.codex_model_id("gpt-5-2") == "gpt-5.2"
+    # Already-dotted form is idempotent.
+    assert codex_routing.codex_model_id("gpt-5.6-luna") == "gpt-5.6-luna"
+    # Major-only slugs are unchanged (no minor to dot-ize).
+    assert codex_routing.codex_model_id("gpt-6-astra") == "gpt-6-astra"
+    # Non-GPT bare slugs are still passed through.
+    assert codex_routing.codex_model_id("glm-5-2") == "glm-5-2"
+
+
+def test_routing_with_bare_catalog_slugs_produces_dotted_alias(monkeypatch):
+    """Reproduce the race: bare catalog slugs must route to the dotted alias.
+
+    When custom_catalog_models() returns bare hyphenated slugs (the MPS catalog
+    format), the router resolves the arm back to the bare slug, and codex_model_id
+    must translate it to the dotted alias the gateway resolves.  Before the fix,
+    codex_model_id returned bare slugs unchanged, so users on the catalog path
+    got gpt-5-6-luna (broken) while users on the fallback path got
+    gpt-5.6-luna (working).
+    """
+    monkeypatch.setattr(
+        codex_routing,
+        "request_routing_decision",
+        lambda *args, **kwargs: (
+            codex_routing.RoutingDecision(
+                model="gpt-5-6-luna",
+                raw_model="gpt-5-6-luna",
+            ),
+            None,
+        ),
+    )
+
+    output = codex_routing.route_pre_tool_use(
+        {
+            "tool_name": "collaborationspawn_agent",
+            "tool_input": {"task_name": "routing-smoke-test", "message": "encrypted"},
+        },
+        workspace=WS,
+        token="token",
+        available_models=["gpt-5-6-luna", "gpt-5-6-sol"],
+    )
+
+    assert output["hookSpecificOutput"]["updatedInput"]["model"] == "gpt-5.6-luna"
+
+
 def test_spawn_glm_decision_applies_glm_model(monkeypatch):
     # GLM is no longer skipped for Codex subagents: a GLM routing decision is
     # applied like any other arm.
