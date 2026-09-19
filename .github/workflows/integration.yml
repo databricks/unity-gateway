@@ -190,68 +190,6 @@ jobs:
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}
     steps: *live-steps
 
-  managed:
-    name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
-    if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && inputs.suite != 'tui' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    runs-on: ubuntu-22.04
-    # Kept non-blocking for now: the managed workspace (E2E_ADMIN_WORKSPACE) is repointed to
-    # runner-reachable ca-central, but leave these lanes for signal until the managed-config apply
-    # path is proven stable. Then drop this and add `managed` to the required set.
-    continue-on-error: true
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        agent: [claude, codex]
-    env:
-      DEPENDENCY: ${{ inputs.dependency }}
-      AGENT: ${{ matrix.agent }}
-      ARTIFACT_NAME: integration-managed-${{ matrix.agent }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
-        with:
-          node-version: 22.19.0
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-        with:
-          version: 0.9.8
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
-      - name: Run the managed cases against the managed e2e workspace
-        shell: bash
-        env:
-          # The managed workspace authenticates as a service principal; the runner mints a
-          # short-lived token from these standard Databricks client-credential variables.
-          UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
-          DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
-          DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
-        run: |
-          # A managed config enables both agents and `ug configure` applies it to every enabled
-          # agent, so both CLIs must be installed even though this lane asserts only one agent.
-          args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION")
-          if [[ -n "$DEPENDENCY" ]]; then
-            args+=(--dependency "$DEPENDENCY")
-          fi
-          uv run --no-project --python 3.12 python scripts/run_integration.py \
-            --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
-            --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${args[@]}" -- -m "(managed or managed_fixture) and $AGENT"
-      - name: Upload managed test evidence
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
-        with:
-          name: ${{ env.ARTIFACT_NAME }}
-          include-hidden-files: true
-          path: |
-            ${{ runner.temp }}/ug-integration/*.json
-            ${{ runner.temp }}/ug-integration/*.txt
-            ${{ runner.temp }}/ug-integration/*.xml
-            ${{ runner.temp }}/ug-integration/*.log
-            ${{ runner.temp }}/ug-integration/artifacts/
-            ${{ runner.temp }}/ug-integration/wheels/
-
   cujs:
     name: All integration tests
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
@@ -276,7 +214,6 @@ jobs:
                   required.append("smoke")
               if suite != "smoke":
                   required.append("full")
-          # `managed` is intentionally omitted while it is non-blocking (see its job comment).
           failed = [job for job in required if results[job]["result"] != "success"]
           if failed:
               raise SystemExit("Integration jobs did not pass: " + ", ".join(failed))
