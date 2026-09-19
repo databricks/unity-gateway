@@ -889,9 +889,6 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
             state,
             "MCP Servers",
             agents=scope,
-            # `ug configure`/launch already reported Databricks auth before reconciling; don't
-            # re-announce "auth already available" for this workspace a second time. The caller
-            # prints a single "Configuring MCP server(s): ..." line, so skip the box and prelude.
             quiet_auth=True,
             announce=False,
         )
@@ -1460,9 +1457,6 @@ def setup_mcp_clients(
         apply_pat_environment(state)
         ensure_databricks_auth(workspace, profile, quiet=quiet_auth)
 
-    # Print the section box + action note only when the caller wants it: ``announce`` off (a caller
-    # that prints its own one-line status, e.g. the managed reconcile) or ``quiet`` on (a repeat,
-    # no-op registration) both suppress it.
     if announce and not quiet:
         print_section(section)
         client_names = ", ".join(str(MCP_CLIENTS[client]["display"]) for client in clients)

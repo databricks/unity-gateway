@@ -246,8 +246,6 @@ def _print_managed_summary(
     enabled = [t for t in (managed.get("enabled_agents") or {}) if t in TOOL_SPECS]
     failed: list[str] = []
     if configured_tools is not None:
-        # Only agents this run actually tried can be reported as failed. A single `--agent` run
-        # attempts just that agent, so the workspace's other enabled agents aren't failures.
         attempted = attempted_tools if attempted_tools is not None else enabled
         failed = [t for t in enabled if t in attempted and t not in configured_tools]
         enabled = [t for t in enabled if t in configured_tools]
@@ -267,8 +265,6 @@ def _print_managed_summary(
         model = managed_default_model(managed, tool)
         if model:
             lines.append(f"[bold]Model:[/bold] [magenta]{model}[/magenta]")
-    # MCP servers and skills are reported by their own ✔ step lines during configure, so the box
-    # doesn't repeat them; it recaps the workspace, agents, and policy.
     lines.extend(_policy_summary_lines(managed))
     console.print(Panel("\n".join(lines), title="Configuration", style="green", expand=False))
 
@@ -791,8 +787,6 @@ def _managed_model_method(managed: dict, tool: str) -> str:
     """
     services = managed_static_models(managed, tool)
     if services:
-        # Name the services in the admin's order (not sorted), capping a long tail so the line
-        # stays short.
         return _truncated_names(services, limit=3, sort=False)
     provider = managed_provider_service(managed, tool)
     if provider:
@@ -808,15 +802,17 @@ def _apply_managed_config(managed: dict, state: dict, tools: list[str]) -> tuple
     Skills.
 
     Each phase reports its own ✔ as it completes: a per-agent model line, then MCP servers, then
-    skills. The model config and the managed MCP servers write the same per-agent OS-managed file
-    and need ``sudo``, but the password heads-up is shown once per run (see
-    :func:`managed_write_batch`), so the MCP write does not re-prompt. Skills need no elevated write.
-    Returns the (updated) state and the tools that configured cleanly.
+    skills. The model config and the managed MCP servers write per-agent OS-managed files and need
+    ``sudo``, but the password heads-up is shown once per run (see :func:`managed_write_batch`), so
+    the MCP write does not re-prompt. Skills need no elevated write. Returns the (updated) state and
+    the tools that configured cleanly.
     """
     configured_tools: list[str] = []
-    # Each step reports its own ✔ on completion, so the batch's aggregate "Settings configured" line
-    # is suppressed; it would just restate what the per-agent lines already say.
-    with managed_write_batch([TOOL_SPECS[t]["display"] for t in tools], announce_success=False):
+    mcp_agents = [t for t in managed_enabled_tools(managed) if t in MCP_CLIENTS]
+    written_agents = list(dict.fromkeys([*tools, *mcp_agents]))
+    with managed_write_batch(
+        [TOOL_SPECS[t]["display"] for t in written_agents], announce_success=False
+    ):
         for tool_name in tools:
             resolved = resolve_state(managed, state, tool_name)
             parent_schema = (
@@ -839,14 +835,9 @@ def _apply_managed_config(managed: dict, state: dict, tools: list[str]) -> tuple
                 install_ai_tools=not is_dry_run(),
                 parent_schemas={tool_name: parent_schema} if parent_schema else None,
             )
-            # Each iteration resolves from `state` and persists a copy, so carry the accumulated
-            # available_tools forward, otherwise the last agent's save drops the earlier ones, and
-            # the MCP reconcile below only sees that final agent.
             state["available_tools"] = configured.get("available_tools") or state.get(
                 "available_tools"
             )
-            # available_tools is cumulative across runs, so an agent that failed this run may still
-            # be in it from a prior success. Trust the per-run signal when present.
             last = configured.get("last_configured_tools")
             if last is None or tool_name in last:
                 configured_tools.append(tool_name)
@@ -854,16 +845,10 @@ def _apply_managed_config(managed: dict, state: dict, tools: list[str]) -> tuple
                     f"Configured models for {TOOL_SPECS[tool_name]['display']}: "
                     f"{_managed_model_method(managed, tool_name)}"
                 )
-        # Keep the MCP and skill writes inside the batch: they write the same per-agent OS-managed
-        # files, so leaving them outside makes each write self-announce a "Settings configured for
-        # X" line that duplicates the phase's own "Configured MCP server(s)" / "Configured skills"
-        # report. Staying in the batch suppresses those and reuses the one password heads-up.
         if configured_tools and not is_dry_run():
             _configure_managed_mcp_servers(managed)
             _configure_managed_skills(managed)
     if not configured_tools:
-        # Name what was actually requested. For a single `--agent`, "none of the enabled agents"
-        # would be misleading since only that one was tried.
         if len(tools) == 1:
             raise RuntimeError(
                 f"{TOOL_SPECS[tools[0]]['display']} is not available on this workspace."
@@ -912,14 +897,9 @@ def configure_workspace_command(
             managed, _ = refresh_managed_config(state, force_refresh=True)
             _reject_disabled_agent(managed, tool)
         if managed is not None and tool in managed_enabled_tools(managed):
-            # Under a managed config, one agent follows the same Models → MCP → Skills spine as the
-            # multi-agent path, scoped to this tool, so `--agent` isn't a second-class setup.
             state, configured_tools = _apply_managed_config(managed, state, [tool])
             _summarize_managed_config(managed, configured_tools, [tool])
             return 0
-        # No managed config governs this agent: configure just it. Don't touch managed MCP/skills;
-        # a single `--agent` isn't a workspace switch, and clearing here would strand servers/skills
-        # the workspace configured for its other agents.
         state = configure_single_tool(tool, state)
         install_databricks_ai_tools_for_agents(
             [tool], state, force_refresh=tool not in ("claude", "codex")
@@ -2482,9 +2462,6 @@ def _configure_managed_skills(managed: dict | None) -> None:
     except (RuntimeError, OSError) as exc:
         print_warning(f"Could not sync your workspace's skills: {exc}")
         return
-    # Report the configured set (what's on disk after the reconcile), not just this run's downloads,
-    # so a re-run still shows what's in force. Reported only when the config declares skills and some
-    # land; a bare cleanup pass, or a run where every download failed (warned above), stays quiet.
     if managed and managed.get("skills"):
         on_disk = [
             str(record.get("bundle_name"))

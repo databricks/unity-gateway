@@ -32,8 +32,6 @@ MANAGED_FINGERPRINT_VERSION = 1
 _MISSING = object()
 _managed_write_batch: tuple[str, ...] = ()
 _managed_write_notice_shown = False
-# The sudo password heads-up is shown once per run: sudo caches the credential, so a later managed
-# write in the same command (e.g. the MCP servers after the model config) needs no second prompt.
 _managed_write_prompted = False
 
 ManagedParser = Callable[[str], dict]
@@ -186,8 +184,6 @@ def managed_write_batch(displays: list[str], *, announce_success: bool = True) -
 def _print_managed_write_permission(display: str) -> None:
     global _managed_write_notice_shown, _managed_write_prompted
 
-    # Shown once per run: sudo caches the credential, so a later managed write in the same command
-    # (e.g. the MCP servers after the model config, in a separate phase) needs no second heads-up.
     if _managed_write_prompted:
         _managed_write_notice_shown = True
         return
