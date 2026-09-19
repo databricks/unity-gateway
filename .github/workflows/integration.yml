@@ -198,6 +198,8 @@ jobs:
     # runner-reachable ca-central, but leave these lanes for signal until the managed-config apply
     # path is proven stable. Then drop this and add `managed` to the required set.
     continue-on-error: true
+    # Leave enough time after the bounded test command to publish its status and
+    # let the recovery job schedule a fresh runner.
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -208,7 +210,7 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       ARTIFACT_NAME: integration-managed-${{ matrix.agent }}
-    steps:
+    steps: &managed-steps
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           fetch-depth: 0
@@ -220,6 +222,7 @@ jobs:
           version: 0.9.8
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
       - name: Run the managed cases against the managed e2e workspace
+        id: managed-cases
         shell: bash
         env:
           # The managed workspace authenticates as a service principal; the runner mints a
@@ -234,10 +237,23 @@ jobs:
           if [[ -n "$DEPENDENCY" ]]; then
             args+=(--dependency "$DEPENDENCY")
           fi
-          uv run --no-project --python 3.12 python scripts/run_integration.py \
+          # End the subprocess before the job deadline. Exit 124 is reserved for
+          # infrastructure recovery; assertion failures are not retried.
+          set +e
+          timeout --signal=TERM --kill-after=30s 24m \
+            uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
             "${args[@]}" -- -m "(managed or managed_fixture) and $AGENT"
+          exit_code=$?
+          set -e
+          mkdir -p "$RUNNER_TEMP/ug-integration"
+          printf '%s\n' "$exit_code" > "$RUNNER_TEMP/ug-integration/managed-exit-code.txt"
+          if [[ "$exit_code" -eq 124 ]]; then
+            echo "::warning::Managed integration command timed out; a fresh-runner retry will be requested."
+          elif [[ "$exit_code" -ne 0 ]]; then
+            echo "::warning::Managed integration tests failed with exit code $exit_code; assertion failures are not retried."
+          fi
       - name: Upload managed test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -251,6 +267,56 @@ jobs:
             ${{ runner.temp }}/ug-integration/*.log
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
+
+  managed-retry-decision:
+    name: Classify managed infrastructure failure
+    if: ${{ always() && inputs.suite != 'installation' && inputs.suite != 'smoke' && inputs.suite != 'tui' }}
+    needs: managed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      retry: ${{ steps.classify.outputs.retry }}
+    steps:
+      - name: Download first-attempt evidence
+        if: ${{ needs.managed.result == 'success' }}
+        continue-on-error: true
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4.1.8
+        with:
+          pattern: integration-managed-*
+          path: ${{ runner.temp }}/managed-evidence
+      - name: Request one retry only for timeout or runner loss
+        id: classify
+        shell: bash
+        env:
+          FIRST_ATTEMPT_RESULT: ${{ needs.managed.result }}
+        run: |
+          retry=false
+          if [[ "$FIRST_ATTEMPT_RESULT" != success ]]; then
+            retry=true
+            echo "::warning::Managed job ended as $FIRST_ATTEMPT_RESULT; retrying on fresh runners."
+          elif grep -Rqx '124' "$RUNNER_TEMP/managed-evidence" 2>/dev/null; then
+            retry=true
+            echo "::warning::Managed command hit its bounded timeout; retrying on fresh runners."
+          fi
+          echo "retry=$retry" >> "$GITHUB_OUTPUT"
+
+  managed-retry:
+    name: Managed config retry · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
+    if: ${{ needs.managed-retry-decision.outputs.retry == 'true' }}
+    needs: managed-retry-decision
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        agent: [claude, codex]
+    env:
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: ${{ matrix.agent }}
+      ARTIFACT_NAME: integration-managed-retry-${{ matrix.agent }}
+    steps: *managed-steps
 
   cujs:
     name: All integration tests
