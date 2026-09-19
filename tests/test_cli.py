@@ -3266,18 +3266,31 @@ class TestConfigureAgentsSelection:
         assert configured == ["claude", "codex"]
 
     def test_managed_summary_separates_configured_and_failed_agents(self, capsys, monkeypatch):
-        # An enabled agent that failed to configure is listed under "Failed to configure",
-        # not as a configured coding agent.
+        # An enabled agent that was attempted but failed to configure is listed under "Failed to
+        # configure", not as a configured coding agent.
         import ucode.cli as cli_mod
 
         managed = {"enabled_agents": {"claude": {}, "codex": {}}}
         monkeypatch.setattr(cli_mod, "load_state", lambda: {"workspace": "https://w.com"})
-        cli_mod._summarize_managed_config(managed, ["claude"])
+        cli_mod._summarize_managed_config(managed, ["claude"], ["claude", "codex"])
 
         out = capsys.readouterr().out
         # The rich panel wraps lines, so match on the labels and names rather than exact spacing.
         assert "Coding Agents:" in out and "Claude Code" in out
         assert "Failed to configure:" in out and "Codex" in out
+
+    def test_managed_summary_single_agent_omits_unattempted(self, capsys, monkeypatch):
+        # `ug configure --agent claude` on a multi-agent workspace attempts only claude, so the
+        # workspace's other enabled agents must not be reported as "Failed to configure".
+        import ucode.cli as cli_mod
+
+        managed = {"enabled_agents": {"claude": {}, "codex": {}}}
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {"workspace": "https://w.com"})
+        cli_mod._summarize_managed_config(managed, ["claude"], ["claude"])
+
+        out = capsys.readouterr().out
+        assert "Coding Agents:" in out and "Claude Code" in out
+        assert "Failed to configure:" not in out
 
     @pytest.mark.parametrize(
         ("model_config", "expected_provider", "expected_parent"),

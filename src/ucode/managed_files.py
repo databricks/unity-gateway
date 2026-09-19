@@ -161,7 +161,7 @@ def managed_write_batch(displays: list[str], *, announce_success: bool = True) -
     than one each. The outermost batch owns the messaging and the displays it lists, and resets the
     once-per-run password heads-up so it fires on this run's first managed write wherever that
     happens. On exit it prints one "Settings configured for ..." line naming every agent, unless
-    ``announce_success`` is off — for a caller that reports each step's own completion instead.
+    ``announce_success`` is off, for a caller that reports each step's own completion instead.
     """
     global _managed_write_batch, _managed_write_notice_shown, _managed_write_prompted
 
