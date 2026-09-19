@@ -57,9 +57,31 @@ def test_only_selected_gpt_models_get_hidden_routing_aliases(bundled):
 
 
 @pytest.mark.parametrize("name", ["gpt-99", "system.ai.gpt-99", "databricks-gpt-99"])
-def test_missing_gpt_metadata_is_an_actionable_error(bundled, name):
-    with pytest.raises(RuntimeError, match="no bundled metadata.*Upgrade"):
-        catalog.build_codex_catalog(bundled, [name])
+def test_missing_gpt_uses_generic_compatibility_metadata(bundled, name):
+    warnings = []
+
+    models = catalog.build_codex_catalog(bundled, [name], warn=warnings.append)["models"]
+
+    model = models[0]
+    assert model["slug"] == name
+    assert model["base_instructions"] == bundled[0]["base_instructions"]
+    assert model["tool_mode"] is None
+    assert model["input_modalities"] == ["text"]
+    assert model["context_window"] == 32768
+    assert model["default_reasoning_level"] == "none"
+    assert warnings == [
+        f"Codex is missing metadata for managed GPT model '{name}', so UG is falling "
+        "back to default metadata. Try updating Codex with `ug codex update`."
+    ]
+
+
+def test_missing_managed_gpt_keeps_hidden_native_alias(bundled):
+    models = catalog.build_codex_catalog(bundled, ["system.ai.gpt-99"])["models"]
+
+    assert [(model["slug"], model["visibility"]) for model in models] == [
+        ("system.ai.gpt-99", "list"),
+        ("gpt-99", "hide"),
+    ]
 
 
 def test_legacy_gpt_alias_uses_native_metadata(bundled):
@@ -119,10 +141,18 @@ def test_native_non_gpt_metadata_takes_precedence(bundled):
     assert model["context_window"] == 123456
 
 
+def test_baseline_is_any_ordinary_tool_model_not_a_pinned_slug(bundled):
+    # gpt-5.2 gone; the remaining ordinary-tool model serves as the skeleton.
+    without_gpt52 = [{**bundled[1], "tool_mode": None}, bundled[2]]
+    model = catalog.build_codex_catalog(without_gpt52, ["kimi-k3"])["models"][0]
+    assert model["base_instructions"] == without_gpt52[0]["base_instructions"]
+    assert model["tool_mode"] is None
+
+
 def test_missing_baseline_does_not_affect_gpt(bundled):
-    without_baseline = bundled[1:]
+    without_baseline = bundled[1:]  # leaves only code-mode models, no ordinary-tool skeleton
     assert catalog.build_codex_catalog(without_baseline, ["gpt-6-astra"])["models"]
-    with pytest.raises(RuntimeError, match="gpt-5.2 metadata"):
+    with pytest.raises(RuntimeError, match="no ordinary-tool bundled model"):
         catalog.build_codex_catalog(without_baseline, ["kimi-k3"])
 
 
@@ -154,6 +184,29 @@ def test_extract_and_validate_with_same_binary_in_isolation(monkeypatch, bundled
     assert len(calls) == 2
     assert homes[0] == homes[1]
     assert not homes[0].exists()
+
+
+def test_missing_gpt_warning_is_printed_after_validation(monkeypatch, bundled):
+    calls = []
+    warnings = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"models": bundled}))
+        assert warnings == []
+        return subprocess.CompletedProcess(argv, 0, "")
+
+    monkeypatch.setattr(catalog.subprocess, "run", run)
+    monkeypatch.setattr(catalog, "print_warning", warnings.append)
+
+    result = catalog.prepare_codex_catalog("codex", ["system.ai.gpt-99"])
+
+    assert result["models"][0]["slug"] == "system.ai.gpt-99"
+    assert warnings == [
+        "Codex is missing metadata for managed GPT model 'system.ai.gpt-99', so UG is "
+        "falling back to default metadata. Try updating Codex with `ug codex update`."
+    ]
 
 
 @pytest.mark.parametrize(

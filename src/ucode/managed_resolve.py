@@ -126,14 +126,16 @@ def managed_unservable_models(managed: dict, tool: str) -> list[str]:
 
 def _manifest_models(managed: dict, tool: str) -> dict | list | None:
     """The manifest's models for ``tool`` in its own vocabulary, or None when it names none."""
-    manifest_models = _agent_model_config(managed, tool).get("models")
+    model_config = _agent_model_config(managed, tool)
     if tool == "claude":
+        family_slots = _as_dict(model_config.get("default_models_by_model_family"))
         slots: dict[str, str] = {}
         for slot, family in _CLAUDE_FAMILY_SLOTS.items():
-            model = _str(_as_dict(manifest_models).get(slot))
+            model = _str(family_slots.get(slot))
             if model:
                 slots[family] = model
         return slots or None
+    manifest_models = model_config.get("models")
     if isinstance(manifest_models, list):
         listed = [model for model in (_str(item) for item in manifest_models) if model]
         return listed or None
@@ -186,6 +188,11 @@ def managed_supplies_models(managed: dict | None, tool: str) -> bool:
 def managed_provider_service(managed: dict, tool: str) -> str | None:
     """Return only the provider the managed config specifies for ``tool``, ignoring local state."""
     return _str(_agent_model_config(managed, tool).get("model_provider_service"))
+
+
+def managed_unity_catalog_location(managed: dict, tool: str) -> str | None:
+    """Return only the Unity Catalog model location managed config specifies for ``tool``."""
+    return _str(_agent_model_config(managed, tool).get("unity_catalog_location"))
 
 
 def managed_static_models(managed: dict, tool: str) -> list[str] | None:
@@ -242,7 +249,7 @@ def managed_provider_family_models(managed: dict) -> dict[str, str] | None:
 
     config = _agent_model_config(managed, "claude")
     slots: dict[str, str] = {}
-    raw_slots = _as_dict(config.get("models"))
+    raw_slots = _as_dict(config.get("default_models_by_model_family"))
     for slot, family in _CLAUDE_FAMILY_SLOTS.items():
         model = _str(raw_slots.get(slot))
         if model:

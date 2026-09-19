@@ -6,13 +6,17 @@ import copy
 import hashlib
 import os
 import re
+import signal
+import subprocess
 import tempfile
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
 import tomlkit
 from tomlkit.exceptions import ParseError
 
+from ucode import gateway_proxy
 from ucode.codex_config import (
     catalog_slugs,
     codex_config_args,
@@ -32,8 +36,10 @@ from ucode.config_io import (
     write_toml_file,
 )
 from ucode.constants import (
+    LOOPBACK_HOST,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
+    SMART_ROUTER_RECIPE_HEADER,
 )
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_TIMEOUT_MS,
@@ -46,7 +52,6 @@ from ucode.databricks import (
     CodexMpsModelCatalogUnavailable,
     _fetch_codex_model_catalog,
     build_auth_token_argv,
-    build_otel_traces_endpoint,
     build_tool_base_url,
     get_databricks_token,
 )
@@ -55,7 +60,9 @@ from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     managed_file_conflicts,
     managed_file_is_verified,
+    managed_file_scope,
     managed_file_status,
+    managed_files_supported,
     managed_writes_allowed,
     mark_managed_file_verified,
     read_managed_file,
@@ -69,6 +76,7 @@ from ucode.smart_routing.codex_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_routing import codex_model_id
+from ucode.smart_routing.routing import configured_router_name
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_warning_err
@@ -94,10 +102,11 @@ _MODEL_SERVICE_ROUTING_KEY_PATHS = [
         MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     ],
 ]
-MINIMUM_CODEX_VERSION = (0, 134, 0)
-MINIMUM_CODEX_VERSION_TEXT = "0.134.0"
-MINIMUM_ROUTING_CODEX_VERSION = (0, 145, 0)
-MINIMUM_ROUTING_CODEX_VERSION_TEXT = "0.145.0"
+MINIMUM_CODEX_VERSION = (0, 145, 0)
+MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
+# Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
+LEGACY_LAYOUT_CODEX_VERSION = (0, 134, 0)
+LEGACY_LAYOUT_CODEX_VERSION_TEXT = "0.134.0"
 # Retained only to identify and remove state written by the legacy persisted opt-in.
 SMART_ROUTING_STATE_KEY = smart_routing_v2.LEGACY_STATE_KEY
 APP_SERVER_SMART_ROUTING_STARTING_MODEL = "gpt-5.6-luna"
@@ -134,17 +143,11 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
 
 
 def minimum_version_error() -> str | None:
-    """Return the active smart-routing version blocker, if any."""
-    if not smart_routing_v2.smart_routing_enabled():
-        return None
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
-    if parsed is None or parsed >= MINIMUM_ROUTING_CODEX_VERSION:
+    if parsed is None or parsed >= MINIMUM_CODEX_VERSION:
         return None
-    return (
-        "Codex smart routing requires Codex "
-        f"{MINIMUM_ROUTING_CODEX_VERSION_TEXT} or newer; found {version}."
-    )
+    return f"ug requires Codex {MINIMUM_CODEX_VERSION_TEXT} or newer; found {version}."
 
 
 def _use_legacy_layout() -> bool:
@@ -159,7 +162,7 @@ def _use_legacy_layout() -> bool:
     parsed = _parse_version(agent_version(SPEC["binary"]))
     if parsed is None:
         return False
-    return parsed < MINIMUM_CODEX_VERSION
+    return parsed < LEGACY_LAYOUT_CODEX_VERSION
 
 
 def has_ucode_config() -> bool:
@@ -197,6 +200,8 @@ def _provider_block(
         http_headers[MODEL_PROVIDER_SERVICE_HEADER] = provider
     elif parent_schema:
         http_headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
+    if smart_routing_v2.smart_routing_enabled():
+        http_headers[SMART_ROUTER_RECIPE_HEADER] = configured_router_name()
     return {
         "name": "Databricks AI Gateway",
         "base_url": base_url,
@@ -582,6 +587,105 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     mark_managed_file_verified(state, "codex", path)
 
 
+MANAGED_MCP_CONFIG_KEY = "mcp_servers"
+
+
+def managed_mcp_uses_managed_file() -> bool:
+    """Whether Codex's managed MCP servers belong in the OS-managed file rather than user scope.
+
+    Codex reads ``/etc/codex/managed_config.toml`` natively and merges its ``[mcp_servers]`` table
+    with the developer's own ``~/.codex/config.toml`` servers, so a managed entry never hides a
+    personal one. It fits whenever the platform supports the sudo reconcile and the run is
+    interactive; otherwise the caller falls back to the user-scope registration."""
+    return managed_files_supported() and managed_writes_allowed()
+
+
+def managed_mcp_entry(argv: list[str]) -> dict:
+    """A ``[mcp_servers.<name>]`` stdio entry from the ``ug mcp-proxy`` argv (same as user scope)."""
+    return {"command": argv[0], "args": list(argv[1:])}
+
+
+def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
+    """Overwrite ug's ``[mcp_servers]`` table in Codex's OS-managed file with ``servers``.
+
+    ``servers`` is the freshly resolved managed set keyed by name; an empty map clears the table.
+    The managed file is the source of truth, so this is a wipe-and-rewrite, not a diff. Every other
+    managed key is preserved, including the model configuration ug wrote earlier this run. Returns
+    True when the managed file is the delivery mechanism, False when it cannot be used (unsupported
+    platform or a non-interactive run), so the caller routes those servers to the user-scope
+    registration instead."""
+    path = codex_managed_config_path()
+    if path is None or not managed_writes_allowed():
+        return False
+    if path.is_symlink():
+        raise RuntimeError(
+            f"Refusing to use Codex managed settings through symlink {path}. Replace it with a "
+            "regular file or contact your administrator."
+        )
+    current_text = read_managed_file(path)
+    try:
+        existing = (
+            _parse_managed_config(current_text) if current_text is not None else tomlkit.document()
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Cannot safely update Codex managed settings at {path}: {exc}. ucode did not modify "
+            "the file. Repair it or contact your administrator."
+        ) from exc
+    # Nothing managed to clear: never create or rewrite the file just to remove an absent key.
+    if not servers and MANAGED_MCP_CONFIG_KEY not in existing:
+        return True
+    if servers:
+        table = tomlkit.table()
+        for name, entry in servers.items():
+            server = tomlkit.table()
+            server.update(entry)
+            table[name] = server
+        existing[MANAGED_MCP_CONFIG_KEY] = table
+    else:
+        del existing[MANAGED_MCP_CONFIG_KEY]
+    try:
+        reconcile_managed_file(
+            path,
+            tomlkit.dumps(existing),
+            tool="codex",
+            display="Codex",
+            owned_paths=[[MANAGED_MCP_CONFIG_KEY]],
+        )
+    except ManagedFileWriteUnavailable:
+        return False
+    # Preserve the scope the model reconcile recorded (e.g. relay-compatible); an MCP-only write only
+    # refreshes the fingerprint, it does not change how the file relates to the model settings.
+    mark_managed_file_verified(state, "codex", path, scope=managed_file_scope(state, "codex"))
+    return True
+
+
+def read_managed_mcp_urls() -> dict[str, str]:
+    """``{name: url}`` for ug's managed MCP servers in Codex's OS-managed file (empty if none).
+
+    Read-only, for ``ug mcp list`` to tag managed servers now that the managed file is their source
+    of truth rather than ug state. The gateway URL is the ``--url`` argument of the proxy command."""
+    path = codex_managed_config_path()
+    if path is None:
+        return {}
+    try:
+        text = read_managed_file(path)
+        doc = _parse_managed_config(text) if text else {}
+    except RuntimeError:
+        return {}
+    servers = doc.get(MANAGED_MCP_CONFIG_KEY)
+    if not isinstance(servers, dict):
+        return {}
+    urls: dict[str, str] = {}
+    for name, entry in servers.items():
+        args = entry.get("args") if isinstance(entry, dict) else None
+        if isinstance(args, list) and "--url" in args:
+            index = args.index("--url")
+            if index + 1 < len(args):
+                urls[name] = str(args[index + 1])
+    return urls
+
+
 def default_model(state: dict) -> str | None:
     """Return a managed Codex model, or leave selection to Codex."""
     if isinstance(state.get("codex_default_model"), str):
@@ -687,7 +791,10 @@ def _write_model_catalog(path: Path, catalog: dict) -> None:
                 pass
 
 
-def _launch_token(state: dict, workspace: str) -> str:
+def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:
+    """The token Codex authenticates with: a custom-OAuth client token when configured,
+    else the CLI profile. The single auth-selection point — the OTLP proxy's token
+    provider (_otel_token_provider) delegates here so both mint the same principal."""
     custom_oauth = state.get("custom_oauth")
     if isinstance(custom_oauth, dict):
         return get_custom_client_token(
@@ -695,8 +802,10 @@ def _launch_token(state: dict, workspace: str) -> str:
             custom_oauth["client_id"],
             custom_oauth["redirect_url"],
             scopes=custom_oauth["scopes"],
+            profile=custom_oauth.get("profile"),
+            force_refresh=force_refresh,
         )
-    return get_databricks_token(workspace, state.get("profile"))
+    return get_databricks_token(workspace, state.get("profile"), force_refresh=force_refresh)
 
 
 def _tool_args_select_model(tool_args: list[str]) -> bool:
@@ -722,23 +831,72 @@ def _reject_managed_model_catalog() -> None:
         )
 
 
-def _otel_overlay(workspace: str, token: str) -> dict:
-    """Build Codex's OTLP HTTP trace-export configuration.
-
-    Codex has no headers helper, so this token is visible in argv and can expire mid-session.
-    A fresh token is injected for each launch.
-    """
+def _otel_proxy_overlay(endpoint: str) -> dict:
+    """Codex OTLP trace exporter pointed at the loopback proxy — no auth header, since
+    the proxy injects a freshly-minted Databricks token that codex could not refresh."""
     return {
         "otel": {
             "trace_exporter": {
                 "otlp-http": {
-                    "endpoint": build_otel_traces_endpoint(workspace),
+                    "endpoint": endpoint,
                     "protocol": "binary",
-                    "headers": {"Authorization": f"Bearer {token}"},
                 }
             }
         }
     }
+
+
+def _otel_token_provider(state: dict, workspace: str) -> Callable[[bool], str]:
+    """The proxy's token_provider: mints from the same source Codex uses for inference
+    (via _launch_token) so exported traces are attributed to the same principal."""
+    return lambda force: _launch_token(state, workspace, force_refresh=force)
+
+
+def _launch_codex_with_otel_proxy(
+    state: dict,
+    base_argv: list[str],
+    tool_args: list[str],
+    workspace: str,
+) -> None:
+    """Run the loopback OTLP refresh proxy for the session, with Codex as a child.
+
+    The proxy must outlive the launch, so Codex runs as a child rather than
+    exec-replacing this process; mirrors Claude's relayed launch. The proxy binds an
+    OS-assigned port and tears everything down when Codex exits (or fails to spawn).
+    """
+    server, cache, client = gateway_proxy.start_otel_proxy(
+        workspace, _otel_token_provider(state, workspace)
+    )
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    endpoint = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1/traces"
+    otel_args = codex_config_args(_otel_proxy_overlay(endpoint))
+    proc = subprocess.Popen([*base_argv, *otel_args, *tool_args])
+    try:
+        returncode = proc.wait()
+    except KeyboardInterrupt:
+        proc.send_signal(signal.SIGINT)
+        returncode = proc.wait()
+    finally:
+        cache.stop()
+        server.shutdown()
+        client.close()
+    raise SystemExit(returncode)
+
+
+def _run_codex(
+    state: dict,
+    base_argv: list[str],
+    tool_args: list[str],
+    *,
+    otel_tracing: bool,
+    workspace: str | None,
+) -> None:
+    """Launch Codex — via the loopback proxy when OTLP tracing is on, else exec-replace."""
+    if otel_tracing and workspace:
+        _launch_codex_with_otel_proxy(state, base_argv, tool_args, workspace)
+    else:
+        exec_or_spawn([*base_argv, *tool_args])
 
 
 def launch(
@@ -754,10 +912,10 @@ def launch(
     binary = SPEC["binary"]
     workspace = state.get("workspace")
     launch_provider = state.get("_codex_launch_provider")
-    provider = (
+    transient_provider = (
         launch_provider.strip()
         if isinstance(launch_provider, str) and launch_provider.strip()
-        else get_provider_service(state, "codex")
+        else None
     )
     launch_parent_schema = state.get("_codex_launch_parent_schema")
     parent_schema = (
@@ -765,22 +923,31 @@ def launch(
         if isinstance(launch_parent_schema, str) and launch_parent_schema.strip()
         else None
     )
+    # Launch-scoped admin routing wins over persisted developer configuration. A transient provider
+    # is most specific; otherwise a transient UC parent must suppress a saved provider.
+    provider = transient_provider or (
+        None if parent_schema else get_provider_service(state, "codex")
+    )
     if workspace and (provider or parent_schema):
         _reject_managed_model_catalog()
-    otel_args: list[str] = []
     token = None
+    otel_tracing = bool(workspace and state.get("codex_otel_tracing"))
     if workspace:
         token = _launch_token(state, workspace)
         os.environ["OAUTH_TOKEN"] = token
-        if state.get("codex_otel_tracing"):
-            otel_args = codex_config_args(_otel_overlay(workspace, token))
     if _use_legacy_layout():
         print_warning_err(
             f"Codex {agent_version(binary)} is outdated. Upgrade Codex to "
-            f"{MINIMUM_CODEX_VERSION_TEXT} or newer, then run `codex --version` to verify "
+            f"{LEGACY_LAYOUT_CODEX_VERSION_TEXT} or newer, then run `codex --version` to verify "
             "the active installation."
         )
-        exec_or_spawn([binary, "--profile", CODEX_PROFILE_NAME, *otel_args, *tool_args])
+        _run_codex(
+            state,
+            [binary, "--profile", CODEX_PROFILE_NAME],
+            tool_args,
+            otel_tracing=otel_tracing,
+            workspace=workspace,
+        )
         return
     # Layer ucode's named profile as ordinary config overrides. Unlike
     # `--profile`, `--config` is accepted by runtime, utility, and server
@@ -826,19 +993,18 @@ def launch(
                 slugs = catalog_slugs(catalog)
                 if slugs:
                     profile_doc["model"] = slugs[0]
-    exec_or_spawn([binary, *codex_config_args(profile_doc), *otel_args, *tool_args])
+    _run_codex(
+        state,
+        [binary, *codex_config_args(profile_doc)],
+        tool_args,
+        otel_tracing=otel_tracing,
+        workspace=workspace,
+    )
 
 
 def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
     binary = SPEC["binary"]
-    version_text = agent_version(binary)
-    parsed_version = _parse_version(version_text)
-    if parsed_version is not None and parsed_version < MINIMUM_ROUTING_CODEX_VERSION:
-        raise RuntimeError(
-            "Codex smart routing requires Codex "
-            f"{MINIMUM_ROUTING_CODEX_VERSION_TEXT} or newer; found {version_text}."
-        )
 
     configured_model = _smart_routing_config_model(state)
     # Prefer the custom catalog if it exists.

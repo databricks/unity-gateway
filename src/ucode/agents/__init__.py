@@ -17,6 +17,7 @@ from pathlib import Path
 
 from ucode.config_io import ToolSpec
 from ucode.databricks import (
+    AnthropicModelCatalog,
     get_databricks_token,
     install_ai_tools,
     install_databricks_cli,
@@ -34,6 +35,7 @@ from ucode.ui import (
     print_success,
     print_warning,
     prompt_yes_no,
+    prompt_yes_no_default,
     spinner,
 )
 
@@ -85,16 +87,22 @@ AITOOLS_AGENT_TOKENS = {
 }
 
 
-def install_databricks_ai_tools_for_agents(tools: list[str], state: dict) -> None:
+def install_databricks_ai_tools_for_agents(
+    tools: list[str], state: dict, *, force_refresh: bool = False
+) -> None:
     """Install Databricks AI Tools for supported agents.
 
     Gemini and Pi have no ``aitools`` support and are dropped.
+
+    This runs only during ``ug configure``. ``force_refresh`` reads the managed config fresh; a
+    caller that already refreshed this launch (the main configure path) leaves it False so the gate
+    reuses that read instead of adding another control-plane round trip.
     """
     if not state.get("databricks_ai_tools_enabled"):
         return
     # An admin's managed config governs the workspace, so ucode does not
     # self-install AI Tools under one (may become a managed-config option later).
-    if refresh_managed_config(state).manifest is not None:
+    if refresh_managed_config(state, force_refresh=force_refresh).manifest is not None:
         return
     agents = [AITOOLS_AGENT_TOKENS[tool] for tool in tools if tool in AITOOLS_AGENT_TOKENS]
     if not agents:
@@ -194,6 +202,12 @@ def install_tool_binary(
 
         if not too_new and version_error:
             print_warning(version_error)
+            # Native upgraders run in place, so confirm before mutating the install;
+            # EOF/piped runs take the default and upgrade (a required fix must not stall).
+            if tool in _NATIVE_UPGRADE_COMMANDS and not prompt_yes_no_default(
+                f"Upgrade {spec['display']} if available?", default=True
+            ):
+                raise RuntimeError(version_error)
             if not _update_installed_tool_binary(tool):
                 raise RuntimeError(version_error)
             version_error = _minimum_version_error(tool)
@@ -255,21 +269,6 @@ def update_tool_binary(tool: str) -> bool:
 def tool_version_error(tool: str) -> str | None:
     """Return an active minimum-version blocker for a configured agent."""
     return _minimum_version_error(tool)
-
-
-def tracing_mlflow_ok() -> bool:
-    """True when the `mlflow` CLI that Claude tracing needs is installed and in
-    the supported version range. Read-only — for ``ucode doctor``."""
-    current = claude._installed_mlflow_version()
-    return bool(
-        current and claude.MINIMUM_MLFLOW_VERSION <= current < claude.MAXIMUM_MLFLOW_VERSION
-    )
-
-
-def ensure_tracing_mlflow_cli() -> bool:
-    """Install/repair the pinned `mlflow` CLI for Claude tracing, returning True
-    on success. Public entry point so ``ucode doctor`` can apply the fix."""
-    return claude._ensure_mlflow_cli()
 
 
 def ensure_bootstrap_dependencies(tool: str) -> None:
@@ -394,6 +393,7 @@ def configure_tool(
     custom_model: str | None = None,
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
+    picker_catalog: AnthropicModelCatalog | None = None,
 ) -> dict:
     result: dict | tuple[dict, str]
     if tool == "codex":
@@ -401,9 +401,9 @@ def configure_tool(
             state, model, provider=provider, parent_schema=parent_schema
         )
     elif tool == "claude":
-        # A Model Provider Service routes by header and pins no Databricks
-        # model, so the usual "model required" guard doesn't apply to claude.
-        if not model and not provider:
+        # A Model Provider Service or parent schema routes by header and discovers models natively,
+        # so the usual "model required" guard doesn't apply to either Claude source.
+        if not model and not provider and not parent_schema:
             raise RuntimeError(f"A {tool} model must be selected before configuration.")
         result = claude.write_tool_config(
             state,
@@ -415,6 +415,7 @@ def configure_tool(
             custom_model=custom_model,
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
+            picker_catalog=picker_catalog,
         )
     else:
         # Every tool in this branch needs a model — including gemini under a provider,
@@ -506,12 +507,12 @@ def _availability_failure_detail(tool: str, state: dict) -> str:
     return " (" + "; ".join(parts) + ")"
 
 
-def configure_single_tool(tool: str, state: dict) -> dict:
+def configure_single_tool(tool: str, state: dict, *, parent_schema: str | None = None) -> dict:
     """Check availability, configure, and persist state for one tool only."""
-    provider = get_provider_service(state, tool)
-    # A Model Provider Service routes through the same gateway and pins no
-    # Databricks model, so the per-tool model availability check doesn't apply.
-    if not provider:
+    provider = None if parent_schema else get_provider_service(state, tool)
+    # A Model Provider Service or parent schema routes through the same gateway and pins no
+    # globally discovered Databricks model, so the availability check doesn't apply.
+    if not provider and not parent_schema:
         with spinner(f"Checking {TOOL_SPECS[tool]['display']} availability..."):
             ok = check_gateway_endpoint(state, tool)
         if not ok:
@@ -520,15 +521,19 @@ def configure_single_tool(tool: str, state: dict) -> dict:
                 f"{TOOL_SPECS[tool]['display']} is not available on this workspace.{detail}"
             )
     with managed_write_batch(_managed_settings_displays([tool])):
-        state = _configure_one(tool, state, provider)
+        state = _configure_one(tool, state, provider, parent_schema=parent_schema)
     available_tools = list(set((state.get("available_tools") or []) + [tool]))
     state["available_tools"] = available_tools
     save_state(state)
     return state
 
 
-def _configure_one(tool: str, state: dict, provider: str | None) -> dict:
+def _configure_one(
+    tool: str, state: dict, provider: str | None, *, parent_schema: str | None = None
+) -> dict:
     """Write one tool's config, routing through ``provider`` when set."""
+    if parent_schema:
+        return configure_tool(tool, state, parent_schema=parent_schema)
     if provider:
         if tool == "gemini":
             # Gemini pins a concrete target in the URL, so configure must resolve one now —
@@ -551,7 +556,11 @@ def _configure_one(tool: str, state: dict, provider: str | None) -> dict:
 
 
 def configure_selected_tools(
-    state: dict, tools: list[str], *, install_ai_tools: bool = True
+    state: dict,
+    tools: list[str],
+    *,
+    install_ai_tools: bool = True,
+    parent_schemas: dict[str, str] | None = None,
 ) -> dict:
     """Configure the given tools. Caller is responsible for ensuring each tool
     is available on the workspace.
@@ -559,16 +568,31 @@ def configure_selected_tools(
     Merges newly-configured tools into state['available_tools'] rather than
     replacing it, so a previously-configured tool the user didn't pick this
     run is preserved.
+
+    One agent failing to configure warns and is skipped rather than aborting
+    the rest, so a single broken harness can't block configuring the others.
+    Only tools that configured cleanly are recorded as available.
     """
+    configured: list[str] = []
     with managed_write_batch(_managed_settings_displays(tools)):
         for tool in tools:
-            state = _configure_one(tool, state, get_provider_service(state, tool))
+            parent_schema = (parent_schemas or {}).get(tool)
+            provider = None if parent_schema else get_provider_service(state, tool)
+            try:
+                state = _configure_one(tool, state, provider, parent_schema=parent_schema)
+            except Exception as exc:  # noqa: BLE001 -- surface any harness failure as a warning
+                print_warning(
+                    f"Could not configure {TOOL_SPECS[tool]['display']}: {exc}. Continuing."
+                )
+                continue
+            configured.append(tool)
 
     existing = state.get("available_tools") or []
-    state["available_tools"] = sorted(set(existing) | set(tools))
+    state["available_tools"] = sorted(set(existing) | set(configured))
     save_state(state)
+    state["last_configured_tools"] = configured
     if install_ai_tools:
-        install_databricks_ai_tools_for_agents(tools, state)
+        install_databricks_ai_tools_for_agents(configured, state)
     return state
 
 

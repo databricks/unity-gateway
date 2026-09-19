@@ -232,6 +232,13 @@ class TestReadHelpers:
         p.write_text("[1, 2, 3]", encoding="utf-8")
         assert read_json_safe(p) == {}
 
+    def test_read_json_safe_non_utf8(self, tmp_path):
+        # A file with non-UTF-8 bytes must read as absent rather than raising, so a corrupted
+        # cache file can't crash a launch that reads it.
+        p = tmp_path / "binary.json"
+        p.write_bytes(b"\xff\xfe\x00not utf-8")
+        assert read_json_safe(p) == {}
+
     def test_read_toml_safe_missing_file(self, tmp_path):
         doc = read_toml_safe(tmp_path / "missing.toml")
         assert dict(doc) == {}
