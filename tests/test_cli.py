@@ -2695,7 +2695,7 @@ def test_cursor_launch_uses_unity_gateway_branding():
         (["a.mcp", "a.mcp"], "a.mcp"),
         ([], "none"),
         (["", None], "none"),
-        ([f"s{i}" for i in range(7)], "s0, s1, s2, s3, s4, +2 more"),  # truncated past 5
+        ([f"s{i}" for i in range(7)], "s0, s1, s2, s3, s4 ... and 2 more"),  # truncated past 5
     ],
 )
 def test_truncated_names(names, expected):
@@ -2707,8 +2707,12 @@ def test_truncated_names(names, expected):
 @pytest.mark.parametrize(
     "model_config,expected",
     [
-        ({"model_services": ["a", "b", "c"]}, "3 custom model services"),
-        ({"model_services": ["a"]}, "1 custom model service"),
+        ({"model_services": ["a", "b", "c"]}, "a, b, c"),
+        ({"model_services": ["a"]}, "a"),
+        (
+            {"model_services": ["a", "b", "c", "d", "e"]},
+            "a, b, c ... and 2 more",
+        ),  # truncated past 3
         (
             {"model_provider_service": "main.default.bedrock"},
             "automatic discovery within main.default.bedrock",

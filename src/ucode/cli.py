@@ -2452,7 +2452,8 @@ def _configure_managed_mcp_servers(managed: dict | None) -> list[str]:
         return []
     names = [str(server["name"]) for server in registered if server.get("name")]
     if names:
-        print_success(f"Configured MCP server(s): {_truncated_names(names)}")
+        noun = "server" if len(names) == 1 else "servers"
+        print_success(f"Configured MCP {noun}: {_truncated_names(names)}")
     return names
 
 
