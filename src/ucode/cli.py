@@ -201,13 +201,15 @@ def _policy_summary_lines(managed: dict) -> list[str]:
     return lines
 
 
-def _truncated_names(names: list[str], *, limit: int = 5) -> str:
-    """Join a resolved MCP/skill set for a step line, truncating a long tail to `` ... and N more``.
+def _truncated_names(names: list[str], *, limit: int = 5, sort: bool = True) -> str:
+    """Join a name set for a step line, truncating a long tail to `` ... and N more``.
 
-    Deduped and sorted; at most ``limit`` names are shown. ``none`` when empty. The tail matches
-    the managed models line (see :func:`_managed_model_method`).
+    Deduped; at most ``limit`` names are shown; ``none`` when empty. ``sort`` alphabetizes (MCP
+    servers, skills); pass ``sort=False`` to keep the given order (the managed models line preserves
+    the admin's order). One tail everywhere keeps the configure summary consistent.
     """
-    unique = sorted({name for name in names if name})
+    cleaned = [name for name in names if name]
+    unique = sorted(set(cleaned)) if sort else list(dict.fromkeys(cleaned))
     if not unique:
         return "none"
     if len(unique) <= limit:
@@ -775,14 +777,7 @@ def _managed_model_method(managed: dict, tool: str) -> str:
     if services:
         # Name the services in the admin's order (not sorted), capping a long tail so the line
         # stays short.
-        seen: list[str] = []
-        for name in services:
-            if name not in seen:
-                seen.append(name)
-        limit = 3
-        if len(seen) <= limit:
-            return ", ".join(seen)
-        return ", ".join(seen[:limit]) + f" ... and {len(seen) - limit} more"
+        return _truncated_names(services, limit=3, sort=False)
     provider = managed_provider_service(managed, tool)
     if provider:
         return f"automatic discovery within {provider}"
