@@ -127,6 +127,11 @@ def arguments():
         "--npm-lock", type=Path, help="Replay a previous npm-lock.json with npm ci."
     )
     parser.add_argument(
+        "--agents-dir",
+        type=Path,
+        help="Reuse a prepared npm prefix containing the selected agent versions.",
+    )
+    parser.add_argument(
         "--default-index", default=os.environ.get("UV_DEFAULT_INDEX", "https://pypi.org/simple")
     )
     parser.add_argument("--npm-registry", default="https://registry.npmjs.org")
@@ -158,6 +163,8 @@ def arguments():
         args.pytest_args.append("-x")
     if not (args.claude_version or args.codex_version):
         parser.error("Select --claude-version and/or --codex-version explicitly.")
+    if args.agents_dir and args.npm_lock:
+        parser.error("--agents-dir and --npm-lock cannot be used together.")
     if args.ug_version != "checkout" and not re.fullmatch(
         r"[0-9][0-9A-Za-z.!+_-]*", args.ug_version
     ):
@@ -402,8 +409,18 @@ def main() -> int:
             )
 
         agents = [agent for agent in AGENT_PACKAGES if getattr(args, f"{agent}_version")]
-        npm_prefix = output / "agents"
-        npm_prefix.mkdir()
+        npm_prefix = args.agents_dir.resolve() if args.agents_dir else output / "agents"
+        if args.agents_dir:
+            if (
+                not (npm_prefix / "node_modules").is_dir()
+                or not (npm_prefix / "package-lock.json").is_file()
+            ):
+                raise RuntimeError(
+                    "Prepared agent directory must contain node_modules and package-lock.json: "
+                    f"{npm_prefix}"
+                )
+        else:
+            npm_prefix.mkdir()
         if args.npm_lock:
             (npm_prefix / "package.json").write_text(
                 json.dumps(
@@ -427,7 +444,7 @@ def main() -> int:
                     args.npm_registry,
                 ]
             )
-        else:
+        elif not args.agents_dir:
             run(
                 [
                     binaries["npm"],
