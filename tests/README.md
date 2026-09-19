@@ -78,6 +78,8 @@ varies
 argument spelling or routing mode, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
 Generated-file cleanup and strict app-server stdout assertions remain enforced.
+Managed Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable
+links recreated by Codex version checks; persistent agent files remain compared.
 
 ug no longer runs a post-configure agent probe; the deprecated `--skip-validate`
 flag is accepted as a no-op where older journeys still pass it. Tests retain

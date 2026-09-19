@@ -47,8 +47,10 @@ def _codex_state_and_agent_files(session):
         for path in paths
         if path.is_file()
         # A fresh launch must retrieve and cache the control-plane input before it can reject an
-        # override. Exclude only that expected cache; every agent-owned state/file stays compared.
+        # override. Exclude that expected cache and Codex's disposable arg0 executable links,
+        # which even a version check recreates; persistent agent-owned files stay compared.
         and not is_managed_config_control_plane_cache(session.home, path)
+        and not path.is_relative_to(session.home / ".codex" / "tmp" / "arg0")
     }
 
 
