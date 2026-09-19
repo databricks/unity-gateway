@@ -7,6 +7,7 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Category | Location | What it proves |
 | --- | --- | --- |
 | Unit/component | Existing `test_*.py` files | Individual behavior; dependencies may be mocked |
+| Routing notice formatting | `test_routing_notices.py` | First-prompt and subagent reasons hide echoed requests, preserve availability explanations and raw rationale |
 | Existing e2e | `test_e2e*.py` | Real workspace behavior with some patched setup/internal calls |
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package without credentials |

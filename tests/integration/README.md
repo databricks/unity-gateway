@@ -143,6 +143,11 @@ arm. The agent's interactive spawn decision, interactive explicit-model bypass, 
 dedicated smart-routing CI shards remain deferred; unit/component routing tests do not
 establish that live behavior.
 
+`../test_routing_notices.py` covers display-only request removal from first-prompt
+and subagent reasons, including preservation of availability explanations and raw
+rationale. This formatting coverage does not require a particular agent version
+and does not claim a live routing pass.
+
 The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
 completes a file task on two models: a bare Anthropic id the subscription serves
 directly (`route=relay`) and a Databricks-hosted `system.ai` id the loopback proxy

@@ -37,6 +37,7 @@ _FERNET_TOKEN_RE = re.compile(r"^gAAAAA[A-Za-z0-9_-]+={0,2}$")
 
 def format_switch_message(model: str, reason: str | None) -> str:
     """Format the first-prompt routed-model notice."""
+    reason = _display_reason(reason)
     lines = [
         "Using Unity Gateway Smart Router.",
         f"Selected Model : {model}",
@@ -54,6 +55,7 @@ def format_subagent_message(
     prompt: str | None = None,
 ) -> str:
     """Format a routed-subagent notice without the first-prompt disclaimer."""
+    reason = _display_reason(reason)
     lines = [
         "Using Unity Gateway Smart Router - Subagent",
         *(
@@ -67,6 +69,19 @@ def format_subagent_message(
         *([f"Reason : {reason}"] if reason else []),
     ]
     return _format_box(lines)
+
+
+def _display_reason(reason: str | None) -> str | None:
+    """Hide echoed requests while retaining any following availability explanation."""
+    if not reason:
+        return reason
+    return re.sub(
+        r'(?:^|\s+)Request:\s*(?:“.*”\.|".*"\.|.*)',
+        "",
+        reason,
+        count=1,
+        flags=re.DOTALL,
+    ).strip()
 
 
 def _format_box(lines: list[str]) -> str:
