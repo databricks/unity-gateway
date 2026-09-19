@@ -202,16 +202,17 @@ def _policy_summary_lines(managed: dict) -> list[str]:
 
 
 def _truncated_names(names: list[str], *, limit: int = 5) -> str:
-    """Join a resolved MCP/skill set for a step line, truncating a long tail to ``, +N more``.
+    """Join a resolved MCP/skill set for a step line, truncating a long tail to `` ... and N more``.
 
-    Deduped and sorted; at most ``limit`` names are shown. ``none`` when empty.
+    Deduped and sorted; at most ``limit`` names are shown. ``none`` when empty. The tail matches
+    the managed models line (see :func:`_managed_model_method`).
     """
     unique = sorted({name for name in names if name})
     if not unique:
         return "none"
     if len(unique) <= limit:
         return ", ".join(unique)
-    return ", ".join(unique[:limit]) + f", +{len(unique) - limit} more"
+    return ", ".join(unique[:limit]) + f" ... and {len(unique) - limit} more"
 
 
 def _print_managed_summary(
