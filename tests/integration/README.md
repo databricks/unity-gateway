@@ -224,6 +224,13 @@ inspection; remove that run directory when finished. Agent versions are checked
 before and after the suite so an automatic upgrade cannot silently change the
 combination being tested. Model requests and subprocesses have deadlines, and
 the process group is cleaned up after each command.
+Managed CI additionally sets `--test-timeout 300 --suite-timeout 1200`: pytest dumps
+stacks halfway through the per-case budget, fails an over-budget case after five minutes,
+and the runner stops the suite after twenty minutes. Both deadlines precede the
+thirty-minute job limit so teardown and evidence upload can run. The runner records
+these budgets and reports the ten slowest test phases. Other suites retain their
+existing process deadlines and one-hour suite budget unless explicitly overridden.
+Managed job logs also report peak resident memory through `/usr/bin/time -v`.
 Selection after `--` accepts `-k`, `-m`, `-x`, and `--maxfail`; configuration and
 report paths cannot be overridden. `--installation-only` always restricts the
 selection to installation checks, including when additional filters are used.
@@ -299,7 +306,14 @@ module fetches the workspace's published config once, replaces Claude's static m
 across all configured/fresh scenarios. The Codex module does the same with
 `main.default.ci_e2e_openai_mps`. The tests verify Claude's admin header, native cache and real
 model picker, Codex's exact app-server catalog, and both agents' rejection of personal source
-overrides. In addition,
+overrides. The Codex override cases compare persistent files with streamed SHA-256 fingerprints and
+record symlinks without following them. They exclude only ug's fetched managed-config cache
+and `.codex/tmp/arg0`, where Codex 0.154.0 rotates executable helper links even during
+`--version`. This keeps the configuration-preservation assertion without reading several
+copies of the agent binary into memory or rendering binary contents in assertion failures.
+All configured/fresh override cases remain enabled.
+
+In addition,
 `test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
 `system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that
 workspace on the valid default model `system.ai.gpt-5-6-sol`. With smart routing enabled, it opens

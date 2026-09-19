@@ -198,6 +198,7 @@ jobs:
     # runner-reachable ca-central, but leave these lanes for signal until the managed-config apply
     # path is proven stable. Then drop this and add `managed` to the required set.
     continue-on-error: true
+    # Test/suite deadlines below leave time for teardown and evidence upload before a job kill.
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -234,9 +235,10 @@ jobs:
           if [[ -n "$DEPENDENCY" ]]; then
             args+=(--dependency "$DEPENDENCY")
           fi
-          uv run --no-project --python 3.12 python scripts/run_integration.py \
+          /usr/bin/time -v uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
+            --test-timeout 300 --suite-timeout 1200 \
             "${args[@]}" -- -m "(managed or managed_fixture) and $AGENT"
       - name: Upload managed test evidence
         if: ${{ !cancelled() }}

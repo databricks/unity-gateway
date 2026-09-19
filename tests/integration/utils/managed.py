@@ -6,6 +6,7 @@ this module imports nothing from the ``ucode`` application package (tests/test_i
 enforces that boundary).
 """
 
+import hashlib
 import json
 import urllib.request
 from pathlib import Path
@@ -76,6 +77,34 @@ def set_managed_config_stub(session, tmp_path, config: dict | None) -> None:
 def is_managed_config_control_plane_cache(home: Path, path: Path) -> bool:
     """Whether ``path`` is ug's expected fetched-config cache, not agent-owned state."""
     return path == home / ".ucode" / "managed-config.json"
+
+
+def codex_state_snapshot(home: Path) -> dict[str, tuple[str, str]]:
+    """Fingerprint persistent ug/Codex files without retaining or following binary helpers.
+
+    Even `codex --version` rotates tmp/arg0 links to its executable. Those disposable
+    bootstrap files are not configuration; following each link can retain hundreds of MB
+    and make pytest render a huge binary diff when the random paths change.
+    """
+    snapshot = {}
+
+    def visit(path: Path) -> None:
+        if path == home / ".codex/tmp/arg0" or is_managed_config_control_plane_cache(home, path):
+            return
+        name = str(path.relative_to(home))
+        if path.is_symlink():
+            # Include broken links and directory links, but never read their targets.
+            snapshot[name] = ("symlink", str(path.readlink()))
+        elif path.is_dir():
+            for child in sorted(path.iterdir()):
+                visit(child)
+        elif path.is_file():
+            with path.open("rb") as source:
+                snapshot[name] = ("sha256", hashlib.file_digest(source, "sha256").hexdigest())
+
+    for directory in (home / ".ucode", home / ".codex"):
+        visit(directory)
+    return snapshot
 
 
 def build_coding_agent_config(

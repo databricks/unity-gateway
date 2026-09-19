@@ -28,6 +28,13 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENT_PACKAGES = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}
 
 
+def positive_seconds(value: str) -> int:
+    seconds = int(value)
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError("Timeout must be greater than zero seconds.")
+    return seconds
+
+
 def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
     """Mint a short-lived workspace token for a service principal via OAuth client credentials.
 
@@ -134,6 +141,12 @@ def arguments():
     parser.add_argument("--workspace", default=os.environ.get("UCODE_TEST_WORKSPACE"))
     parser.add_argument("--output", type=Path, help="New results directory; never reused.")
     parser.add_argument("--installation-only", action="store_true", help="No workspace calls.")
+    parser.add_argument(
+        "--suite-timeout", type=positive_seconds, default=3600, help="Pytest deadline in seconds."
+    )
+    parser.add_argument(
+        "--test-timeout", type=positive_seconds, help="Optional per-case deadline in seconds."
+    )
     parser.add_argument(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
     )
@@ -301,6 +314,7 @@ def main() -> int:
         },
         "platform": platform.platform(),
         "installation_only": args.installation_only,
+        "timeouts": {"suite": args.suite_timeout, "test": args.test_timeout},
     }
     manifest = output / "versions.json"
     exitcode = 1
@@ -519,6 +533,7 @@ def main() -> int:
                 "--default-index",
                 args.default_index,
                 "pytest==9.0.3",
+                "pytest-timeout==2.4.0",
                 "pexpect==4.9.0",
                 "pyte==0.8.2",
             ]
@@ -552,6 +567,16 @@ def main() -> int:
         report["suite_sha256"] = suite_hash.hexdigest()
         extra = args.pytest_args
         report["pytest_args"] = extra
+        timeout_args = (
+            [
+                f"--timeout={args.test_timeout}",
+                "--timeout-method=signal",
+                "-o",
+                f"faulthandler_timeout={max(1, args.test_timeout // 2)}",
+            ]
+            if args.test_timeout
+            else []
+        )
         manifest.write_text(redact(json.dumps(report, indent=2)) + "\n")
         print("Running integration tests against the installed package.", flush=True)
         with managed_process(
@@ -567,6 +592,8 @@ def main() -> int:
                 "-o",
                 f"cache_dir={output / 'pytest-cache'}",
                 f"--junitxml={output / 'junit.xml'}",
+                "--durations=10",
+                *timeout_args,
                 *extra,
             ],
             env=runtime_env,
@@ -574,7 +601,7 @@ def main() -> int:
             stdin=subprocess.DEVNULL,
             interrupt=True,
         ) as result:
-            result.wait(timeout=3600)
+            result.wait(timeout=args.suite_timeout)
         exitcode = result.returncode
         junit = output / "junit.xml"
         if junit.is_file():

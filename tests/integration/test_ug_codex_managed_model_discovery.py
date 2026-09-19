@@ -12,8 +12,8 @@ import tomllib
 import pytest
 from utils.constants import MANAGED_CODEX_PROVIDER_SERVICE
 from utils.managed import (
+    codex_state_snapshot,
     fetch_managed_config_stub,
-    is_managed_config_control_plane_cache,
     use_managed_config_stub,
 )
 
@@ -38,18 +38,7 @@ def _managed_codex_config(live_session, _managed_codex_config_stub):
 
 
 def _codex_state_and_agent_files(session):
-    paths = []
-    for directory in (session.home / ".ucode", session.home / ".codex"):
-        if directory.exists():
-            paths.extend(path for path in directory.rglob("*") if path.is_file())
-    return {
-        str(path.relative_to(session.home)): path.read_bytes()
-        for path in paths
-        if path.is_file()
-        # A fresh launch must retrieve and cache the control-plane input before it can reject an
-        # override. Exclude only that expected cache; every agent-owned state/file stays compared.
-        and not is_managed_config_control_plane_cache(session.home, path)
-    }
+    return codex_state_snapshot(session.home)
 
 
 def _assert_rejected_before_codex_started(session, result, before=None):
@@ -58,7 +47,11 @@ def _assert_rejected_before_codex_started(session, result, before=None):
     assert "`--provider` or `--model-location` is not allowed" in output
     assert "managed config exists for the workspace" in output
     if before is not None:
-        assert _codex_state_and_agent_files(session) == before
+        after = _codex_state_and_agent_files(session)
+        changed = sorted(
+            name for name in before.keys() | after.keys() if before.get(name) != after.get(name)
+        )
+        assert not changed, f"Rejected override changed persistent files: {changed}"
 
 
 def _assert_managed_provider_catalog(session, models):

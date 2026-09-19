@@ -79,6 +79,12 @@ argument spelling or routing mode, never hides the agent/provider in the test na
 are incorporated into the Databricks configuration TUI journeys.
 Generated-file cleanup and strict app-server stdout assertions remain enforced.
 
+Codex source-override cases preserve persistent ug/agent files using streamed SHA-256
+fingerprints and symlink targets. Only the fetched managed-config cache and Codex's
+disposable `tmp/arg0` helper links are excluded: even a version probe rotates those links.
+`test_integration_snapshots.py` covers bounded memory, symlink handling, and detection of
+persistent file additions, changes, and removals. No managed Codex cases are skipped.
+
 ug no longer runs a post-configure agent probe; the deprecated `--skip-validate`
 flag is accepted as a no-op where older journeys still pass it. Tests retain
 `--skip-upgrade` as a deprecated no-op too; UG only upgrades agents below its
