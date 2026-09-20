@@ -24,6 +24,7 @@ from ucode.skills_api import (
 from ucode.skills_state import (
     SKILL_UPDATE_CHECK_INTERVAL,
     SkillInstall,
+    forget,
     last_update_check,
     list_downloaded,
     record_downloads,
@@ -219,6 +220,29 @@ def _reject_bundle_name_collisions(refs: list[SkillRef]) -> list[SkillRef]:
     return kept
 
 
+def _fetch_and_write(
+    workspace: str, token: str, refs: list[SkillRef], roots: list[Path], *, label: str
+) -> list[SkillRef]:
+    """Fetch each ref's bundle concurrently, write it into ``roots``, and return those that
+    reached disk. A per-skill fetch failure or disk error warns and skips only that skill."""
+    if not refs:
+        return []
+    bundles = _fetch_bundles(workspace, token, refs, label=label)
+    written: list[SkillRef] = []
+    for ref in refs:
+        files, reason = bundles[ref.fqn]
+        if reason or files is None:
+            print_warning(f"Skipping `{ref.fqn}`: {reason}.")
+            continue
+        try:
+            write_skill(roots, ref, files)
+        except OSError as exc:
+            print_warning(f"Skipping `{ref.fqn}`: {exc}.")
+            continue
+        written.append(ref)
+    return written
+
+
 def _download_refs(
     workspace: str, token: str, refs: list[SkillRef], roots: list[Path], *, label: str
 ) -> tuple[list[SkillRef], int]:
@@ -227,22 +251,13 @@ def _download_refs(
     The shared download core: drop siblings claiming one directory
     (``_reject_bundle_name_collisions``), prompt before overwriting a skill already
     on disk (``should_download_skill``, so a declined skill is never fetched), then
-    fetch the survivors' bundles concurrently and write them. ``written`` are the
-    refs that reached disk, so a caller can record their attribution; ``total`` is
-    the count that could reach disk (dropped siblings excluded), so a caller's
-    summary denominator is right. A per-skill fetch failure warns and skips it.
+    fetch and write the survivors. ``written`` are the refs that reached disk, so a
+    caller can record their attribution; ``total`` is the count that could reach disk
+    (dropped siblings excluded), so a caller's summary denominator is right.
     """
     refs = _reject_bundle_name_collisions(refs)
     to_download = [ref for ref in refs if should_download_skill(roots, ref)]
-    bundles = _fetch_bundles(workspace, token, to_download, label=label)
-    written: list[SkillRef] = []
-    for ref in to_download:
-        files, reason = bundles[ref.fqn]
-        if reason or files is None:
-            print_warning(f"Skipping `{ref.fqn}`: {reason}.")
-            continue
-        write_skill(roots, ref, files)
-        written.append(ref)
+    written = _fetch_and_write(workspace, token, to_download, roots, label=label)
     console.print()
     return written, len(refs)
 
@@ -396,48 +411,30 @@ def reconcile_managed_skills(managed: dict) -> tuple[list[str], list[str]]:
             removed = [str(r["bundle_name"]) for r in stale if r.get("bundle_name")]
 
     missing = [ref for ref in refs if not existing_skill_on_disk(roots, ref.bundle_name)]
-    written: list[str] = []
-    if missing:
-        bundles = _fetch_bundles(workspace, token, missing, label="Fetching workspace skills")
-        installed: list[SkillRef] = []
-        for ref in missing:
-            files, reason = bundles[ref.fqn]
-            if reason or files is None:
-                print_warning(f"Skipping `{ref.fqn}`: {reason}.")
-                continue
-            try:
-                write_skill(roots, ref, files)
-            except OSError as exc:
-                # Best-effort per skill: a disk failure on one must not strand the rest.
-                print_warning(f"Skipping `{ref.fqn}`: {exc}.")
-                continue
-            installed.append(ref)
-            written.append(ref.bundle_name)
-        record_downloads(_skill_installs(installed, roots, None, workspace, scope="managed"))
-    return written, removed
+    installed = _fetch_and_write(
+        workspace, token, missing, roots, label="Fetching workspace skills"
+    )
+    record_downloads(_skill_installs(installed, roots, None, workspace, scope="managed"))
+    return [ref.bundle_name for ref in installed], removed
 
 
 # --- Launch-time refresh ---------------------------------------------------
 
 
-def _eligible_launch_records(records: list[dict], workspace: str, cwd: str) -> list[dict]:
-    """The downloaded skills a launch from ``cwd`` loads and can refresh itself.
+def _eligible_launch_records(records: list[dict], workspace: str) -> list[dict]:
+    """The current workspace's own (non-managed) downloads, which a launch may refresh.
 
-    Only the current workspace's own (non-managed) downloads under the home dir or the
-    working dir qualify. Managed skills are left to ``ug configure``, and other workspaces'
-    downloads are skipped because the launch token authenticates only this workspace.
+    Managed skills are left to ``ug configure``, and other workspaces' downloads are skipped
+    because the launch token authenticates only this workspace.
     """
-    bases = {os.path.normpath(str(Path.home())), os.path.normpath(cwd)}
     return [
         record
         for record in records
-        if record.get("scope") != "managed"
-        and record.get("workspace") == workspace
-        and os.path.normpath(record.get("base", "")) in bases
+        if record.get("scope") != "managed" and record.get("workspace") == workspace
     ]
 
 
-def _stale_launch_refs(
+def _get_updated_refs(
     workspace: str, token: str, records: list[dict]
 ) -> list[tuple[dict, SkillRef]]:
     """Pair each record whose UC source is newer than its download with the current skill.
@@ -462,7 +459,7 @@ def _stale_launch_refs(
     return pairs
 
 
-def _apply_launch_updates(workspace: str, token: str, pairs: list[tuple[dict, SkillRef]]) -> int:
+def _update_stale_skills(workspace: str, token: str, pairs: list[tuple[dict, SkillRef]]) -> int:
     """Re-download each stale skill into its own base and refresh its manifest record.
 
     Overwrites in place with no prompt, since the developer already chose to download these,
@@ -478,19 +475,7 @@ def _apply_launch_updates(workspace: str, token: str, pairs: list[tuple[dict, Sk
     for base, refs in refs_by_base.items():
         path = None if base == home else base
         roots = skill_dir_roots(path)
-        bundles = _fetch_bundles(workspace, token, refs, label="Updating skills")
-        written: list[SkillRef] = []
-        for ref in refs:
-            files, reason = bundles[ref.fqn]
-            if reason or files is None:
-                print_warning(f"Skipping `{ref.fqn}`: {reason}.")
-                continue
-            try:
-                write_skill(roots, ref, files)
-            except OSError as exc:
-                print_warning(f"Skipping `{ref.fqn}`: {exc}.")
-                continue
-            written.append(ref)
+        written = _fetch_and_write(workspace, token, refs, roots, label="Updating skills")
         record_downloads(_skill_installs(written, roots, path, workspace))
         updated += len(written)
     return updated
@@ -500,7 +485,8 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
     """Update downloaded skills whose UC source changed, before an agent launches.
 
     Rate-limited to once per ``SKILL_UPDATE_CHECK_INTERVAL`` via the manifest's
-    ``last_update_check`` stamp, so back-to-back launches make no network calls. Best-effort:
+    ``last_update_check`` stamp, so back-to-back launches make no network calls. A record
+    whose directories the user deleted is forgotten rather than re-downloaded. Best-effort:
     any failure is reported and the launch proceeds on whatever is already on disk.
     """
     try:
@@ -511,16 +497,17 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
         workspace = state.get("workspace")
         if not workspace:
             return
-        records = _eligible_launch_records(list_downloaded(), workspace, os.getcwd())
-        if not records:
-            set_last_update_check(now)
-            return
-        token = get_databricks_token(workspace, state.get("profile"))
-        stale = _stale_launch_refs(workspace, token, records)
-        updated = _apply_launch_updates(workspace, token, stale)
+        deleted, present = [], []
+        for record in _eligible_launch_records(list_downloaded(), workspace):
+            (deleted if _record_dirs_missing(record) else present).append(record)
+        forget(deleted)
+        if present:
+            token = get_databricks_token(workspace, state.get("profile"))
+            pairs = _get_updated_refs(workspace, token, present)
+            updated = _update_stale_skills(workspace, token, pairs)
+            if updated:
+                print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
         set_last_update_check(now)
-        if updated:
-            print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
     except Exception as exc:  # noqa: BLE001 - a skill refresh must never block a launch
         print_note(f"Skipped checking for skill updates: {exc}")
 
