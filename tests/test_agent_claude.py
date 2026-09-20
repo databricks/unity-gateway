@@ -1900,7 +1900,7 @@ class TestClaudeLaunch:
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "_refresh_gateway_models_cache", Mock())
+        monkeypatch.setattr(claude, "_refresh_gateway_models_cache", Mock(return_value=None))
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
 
         claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
@@ -1915,7 +1915,7 @@ class TestClaudeLaunch:
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "_refresh_gateway_models_cache", Mock())
+        monkeypatch.setattr(claude, "_refresh_gateway_models_cache", Mock(return_value=None))
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
 
         claude.launch(
@@ -1977,6 +1977,8 @@ class TestGatewayModelsCache:
         claude.launch(state, [], options=LaunchOptions())
         self.fetch.assert_called_with(WS, "token", headers=headers)
         assert self.fetch.call_count == 2
+        assert claude.get_databricks_token.call_count == 2
+        assert os.environ["OAUTH_TOKEN"] == "token"
         assert snapshots[0]["models"] == self.models
         assert snapshots[1]["models"] == [{"id": "claude-replacement"}]
         assert snapshots[1]["baseUrl"] == f"{WS}/ai-gateway/anthropic"
@@ -2004,7 +2006,7 @@ class TestGatewayModelsCache:
     @pytest.mark.parametrize("failed", [False, True])
     def test_relay_refreshes_after_port_fallback_and_cleans_up(self, monkeypatch, failed):
         server = Mock(server_address=("127.0.0.1", 54321))
-        cache, client = Mock(), Mock()
+        cache, client = Mock(token="relay-token"), Mock()
         monkeypatch.setattr(claude, "_ensure_subscription_login", Mock())
         monkeypatch.setattr(
             claude.gateway_proxy, "start_relay_proxy", Mock(return_value=(server, cache, client))
@@ -2029,6 +2031,8 @@ class TestGatewayModelsCache:
         server.shutdown.assert_called_once()
         cache.stop.assert_called_once()
         client.close.assert_called_once()
+        self.fetch.assert_called_once_with(WS, "relay-token", headers={})
+        claude.get_databricks_token.assert_not_called()
 
 
 class TestWriteToolConfigPrunesStaleModelEnv:

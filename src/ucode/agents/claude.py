@@ -1457,15 +1457,15 @@ def _rewrite_relayed_port(state: dict, port: int) -> None:
         write_json_file(CLAUDE_SETTINGS_PATH, settings)
 
 
-def _refresh_gateway_models_cache(state: dict) -> None:
+def _refresh_gateway_models_cache(state: dict, *, token: str | None = None) -> str | None:
     if os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) != "1" or not state.get("workspace"):
-        return
+        return None
     workspace = state["workspace"]
     custom_oauth = state.get("custom_oauth")
     token = (
         get_custom_client_token(workspace, **custom_oauth)
         if custom_oauth
-        else get_databricks_token(workspace, state.get("profile"))
+        else token or get_databricks_token(workspace, state.get("profile"))
     )
     env = read_json_safe(CLAUDE_SETTINGS_PATH).get("env", {})
     headers = {}
@@ -1487,6 +1487,7 @@ def _refresh_gateway_models_cache(state: dict) -> None:
             "models": models,
         },
     )
+    return token
 
 
 def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
@@ -1516,7 +1517,8 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread.start()
 
     try:
-        _refresh_gateway_models_cache(state)
+        if os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
+            _refresh_gateway_models_cache(state, token=cache.token)
         proc = subprocess.Popen(_build_claude_argv(binary, tool_args, relayed=True))
         try:
             returncode = proc.wait()
@@ -1545,7 +1547,7 @@ def launch(
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return
-    _refresh_gateway_models_cache(state)
+    discovery_token = _refresh_gateway_models_cache(state)
     # Smart routing needs Unix PTY support, which Windows does not provide.
     if options.launch_smart_routing and os.name == "nt":
         raise RuntimeError(
@@ -1566,7 +1568,10 @@ def launch(
         )
         return
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
-        os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
+        launch_token = None if state.get("custom_oauth") else discovery_token
+        os.environ["OAUTH_TOKEN"] = launch_token or get_databricks_token(
+            workspace, state.get("profile")
+        )
     settings_override = None
     launch_args = list(tool_args)
     if options.user_pinned_model:

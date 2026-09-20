@@ -2632,14 +2632,20 @@ def list_all_mcp_services(
 
 
 def _get_anthropic_models_json(
-    workspace: str, token: str, *, parent_schema: str | None = None
+    workspace: str,
+    token: str,
+    *,
+    parent_schema: str | None = None,
+    headers: dict[str, str] | None = None,
+    params: dict[str, str] | None = None,
 ) -> tuple[dict | list | None, str | None]:
-    hostname = workspace_hostname(workspace)
-    headers = (
-        {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema} if parent_schema is not None else None
-    )
+    if parent_schema is not None:
+        headers = {**(headers or {}), MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema}
+    url = f"https://{workspace_hostname(workspace)}{ANTHROPIC_MODELS_PATH}"
+    if params:
+        url += f"?{urlencode(params)}"
     return _http_get_json(
-        f"https://{hostname}{ANTHROPIC_MODELS_PATH}",
+        url,
         token,
         max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
         **({"headers": headers} if headers is not None else {}),
@@ -2650,16 +2656,12 @@ def fetch_anthropic_gateway_models(
     workspace: str, token: str, *, headers: dict[str, str]
 ) -> tuple[list[dict] | None, str | None]:
     """Fetch every page of the launch-scoped Claude gateway catalog."""
-    url = f"https://{workspace_hostname(workspace)}{ANTHROPIC_MODELS_PATH}"
     models: list[dict] = []
     cursors: set[str] = set()
     params = {"limit": "1000"}
     while True:
-        payload, reason = _http_get_json(
-            f"{url}?{urlencode(params)}",
-            token,
-            headers=headers,
-            max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
+        payload, reason = _get_anthropic_models_json(
+            workspace, token, headers=headers, params=params
         )
         if payload is None:
             return None, reason
