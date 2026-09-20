@@ -10,6 +10,7 @@ import signal
 import socket
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from ucode import gateway_proxy
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
+    atomic_write_json,
     backup_existing_file,
     deep_merge_dict,
     read_json_safe,
@@ -34,6 +36,7 @@ from ucode.custom_oauth import (
     CustomOAuthConfig,
     build_custom_auth_shell_command,
     custom_oauth_cli_enabled,
+    get_custom_client_token,
 )
 from ucode.databricks import (
     AnthropicModelCatalog,
@@ -41,6 +44,7 @@ from ucode.databricks import (
     build_otel_headers_shell_command,
     build_otel_traces_endpoint,
     build_tool_base_url,
+    fetch_anthropic_gateway_models,
     get_databricks_token,
     ug_binary,
 )
@@ -1453,6 +1457,38 @@ def _rewrite_relayed_port(state: dict, port: int) -> None:
         write_json_file(CLAUDE_SETTINGS_PATH, settings)
 
 
+def _refresh_gateway_models_cache(state: dict) -> None:
+    if os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) != "1" or not state.get("workspace"):
+        return
+    workspace = state["workspace"]
+    custom_oauth = state.get("custom_oauth")
+    token = (
+        get_custom_client_token(workspace, **custom_oauth)
+        if custom_oauth
+        else get_databricks_token(workspace, state.get("profile"))
+    )
+    env = read_json_safe(CLAUDE_SETTINGS_PATH).get("env", {})
+    headers = {}
+    for line in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines():
+        name, separator, value = line.partition(":")
+        if separator:
+            headers[name.strip()] = value.strip()
+    models, reason = fetch_anthropic_gateway_models(workspace, token, headers=headers)
+    if models is None:
+        raise RuntimeError(
+            f"Could not refresh Claude models: {reason}. Check your model source and retry."
+        )
+    config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or CLAUDE_CONFIG_DIR)
+    atomic_write_json(
+        config_dir / "cache" / "gateway-models.json",
+        {
+            "baseUrl": env.get("ANTHROPIC_BASE_URL") or build_tool_base_url("claude", workspace),
+            "fetchedAt": int(time.time() * 1000),
+            "models": models,
+        },
+    )
+
+
 def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     """Relayed launch: sign into the Claude subscription, start the loopback
     refresh proxy, then run Claude Code alongside it (the proxy must outlive the
@@ -1479,12 +1515,14 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess.Popen(_build_claude_argv(binary, tool_args, relayed=True))
     try:
-        returncode = proc.wait()
-    except KeyboardInterrupt:
-        proc.send_signal(signal.SIGINT)
-        returncode = proc.wait()
+        _refresh_gateway_models_cache(state)
+        proc = subprocess.Popen(_build_claude_argv(binary, tool_args, relayed=True))
+        try:
+            returncode = proc.wait()
+        except KeyboardInterrupt:
+            proc.send_signal(signal.SIGINT)
+            returncode = proc.wait()
     finally:
         cache.stop()
         server.shutdown()
@@ -1507,6 +1545,7 @@ def launch(
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return
+    _refresh_gateway_models_cache(state)
     # Smart routing needs Unix PTY support, which Windows does not provide.
     if options.launch_smart_routing and os.name == "nt":
         raise RuntimeError(

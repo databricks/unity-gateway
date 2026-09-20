@@ -310,6 +310,77 @@ class TestBuildSkillsMcpUrl:
         )
 
 
+class TestFetchAnthropicGatewayModels:
+    def test_preserves_metadata_and_scope_across_pages(self, monkeypatch):
+        first = {"id": "claude/first", "display_name": "First", "description": "Model"}
+        second = {"id": "claude-second"}
+        requests = []
+        pages = iter(
+            [
+                {"data": [first], "has_more": True, "last_id": first["id"]},
+                {"data": [second], "has_more": False},
+            ]
+        )
+
+        def fetch(url, token, **kwargs):
+            requests.append((url, token, kwargs))
+            return next(pages), None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fetch)
+        headers = {"Databricks-Model-Provider-Service": "main.default.mps"}
+        assert db_mod.fetch_anthropic_gateway_models(WS, "token", headers=headers) == (
+            [first, second],
+            None,
+        )
+        assert [request[0] for request in requests] == [
+            f"{WS}/ai-gateway/anthropic/v1/models?limit=1000",
+            f"{WS}/ai-gateway/anthropic/v1/models?limit=1000&after_id=claude%2Ffirst",
+        ]
+        assert all(
+            request[1:] == ("token", {"headers": headers, "max_retries": 2}) for request in requests
+        )
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            [],
+            {},
+            {"data": []},
+            {"data": [{"id": ""}]},
+            {"data": ["claude"]},
+            {"data": [{"id": "claude"}], "has_more": True},
+        ],
+    )
+    def test_rejects_empty_or_invalid_catalog(self, monkeypatch, payload):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
+        models, reason = db_mod.fetch_anthropic_gateway_models(WS, "token", headers={})
+        assert models is None
+        assert reason
+
+    def test_rejects_repeated_cursor(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda *args, **kwargs: (
+                {"data": [{"id": "claude"}], "has_more": True, "last_id": "claude"},
+                None,
+            ),
+        )
+        models, reason = db_mod.fetch_anthropic_gateway_models(WS, "token", headers={})
+        assert models is None
+        assert "cursor" in reason
+
+    def test_does_not_return_partial_catalog_on_failure(self, monkeypatch):
+        pages = iter(
+            [
+                ({"data": [{"id": "claude"}], "has_more": True, "last_id": "claude"}, None),
+                (None, "HTTP 403"),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: next(pages))
+        assert db_mod.fetch_anthropic_gateway_models(WS, "token", headers={}) == (None, "HTTP 403")
+
+
 class TestDiscoverClaudeModels:
     def test_lists_all_anthropic_model_ids_without_legacy_validation(self, monkeypatch):
         captured = {}

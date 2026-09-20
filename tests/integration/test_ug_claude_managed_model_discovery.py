@@ -8,9 +8,11 @@ each isolated session. Normalization, config writers, the gateway, and Claude Co
 import json
 import os
 import re
+import time
 
 import pytest
 from utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
+from utils.evidence import FileTask
 from utils.managed import (
     fetch_managed_config_stub,
     is_managed_config_control_plane_cache,
@@ -88,9 +90,10 @@ def _assert_managed_provider_in_picker(session, workspace, screen):
 
 @pytest.mark.tui
 def test_case_01_managed_claude_uses_admin_discovery_after_configure(live_session, workspace):
-    """Scenario: configure managed Claude, then launch its model picker.
+    """Scenario: configure managed Claude, open its model picker, then restart.
 
-    Expected: the managed model catalog wins after configuration.
+    Expected: the managed model catalog wins, a fresh cache replaces the prior
+    session's cache on restart, and Claude completes a real file-reading task.
     """
     session = live_session
     result = session.run(
@@ -110,6 +113,21 @@ def test_case_01_managed_claude_uses_admin_discovery_after_configure(live_sessio
         tui.exit_normally()
 
     _assert_managed_provider_in_picker(session, workspace, screen)
+
+    cache_path = session.home / ".claude/cache/gateway-models.json"
+    previous = json.loads(cache_path.read_text())
+    task = FileTask(session)
+    restarted_at = time.time_ns() // 1_000_000
+    with AgentTerminal(session, "claude", command, "case-01-restarted") as tui:
+        tui.boot()
+        refreshed = json.loads(cache_path.read_text())
+        assert refreshed["fetchedAt"] >= restarted_at > previous["fetchedAt"]
+        assert refreshed["baseUrl"] == previous["baseUrl"]
+        assert refreshed["models"]
+        tui.submit(task.prompt)
+        tui.wait_for_task(task)
+        tui.exit_normally()
+    task.assert_completed(session, "claude")
 
 
 @pytest.mark.tui

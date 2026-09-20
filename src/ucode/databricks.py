@@ -2646,6 +2646,41 @@ def _get_anthropic_models_json(
     )
 
 
+def fetch_anthropic_gateway_models(
+    workspace: str, token: str, *, headers: dict[str, str]
+) -> tuple[list[dict] | None, str | None]:
+    """Fetch every page of the launch-scoped Claude gateway catalog."""
+    url = f"https://{workspace_hostname(workspace)}{ANTHROPIC_MODELS_PATH}"
+    models: list[dict] = []
+    cursors: set[str] = set()
+    params = {"limit": "1000"}
+    while True:
+        payload, reason = _http_get_json(
+            f"{url}?{urlencode(params)}",
+            token,
+            headers=headers,
+            max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
+        )
+        if payload is None:
+            return None, reason
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            return None, "AI Gateway returned an invalid Anthropic model catalog"
+        page = payload["data"]
+        if any(
+            not isinstance(model, dict) or not isinstance(model.get("id"), str) or not model["id"]
+            for model in page
+        ):
+            return None, "AI Gateway returned an invalid Anthropic model catalog"
+        models.extend(page)
+        if not payload.get("has_more"):
+            return (models, None) if models else (None, "AI Gateway returned no Anthropic models")
+        cursor = payload.get("last_id")
+        if not isinstance(cursor, str) or not cursor or cursor in cursors:
+            return None, "AI Gateway returned an invalid Anthropic pagination cursor"
+        cursors.add(cursor)
+        params["after_id"] = cursor
+
+
 def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | None]:
     """List every model id advertised by AI Gateway's Anthropic endpoint.
 

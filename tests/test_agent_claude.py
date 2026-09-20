@@ -1900,6 +1900,7 @@ class TestClaudeLaunch:
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "_refresh_gateway_models_cache", Mock())
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
 
         claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
@@ -1914,6 +1915,7 @@ class TestClaudeLaunch:
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "_refresh_gateway_models_cache", Mock())
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
 
         claude.launch(
@@ -1928,6 +1930,124 @@ class TestClaudeLaunch:
 
         assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
+
+
+class TestGatewayModelsCache:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "custom-claude"))
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "settings.json")
+        monkeypatch.setattr(claude, "get_databricks_token", Mock(return_value="token"))
+        monkeypatch.setattr(claude, "exec_or_spawn", Mock())
+        self.cache_path = tmp_path / "custom-claude/cache/gateway-models.json"
+        self.models = [{"id": "claude-new", "display_name": "New Claude"}]
+        self.fetch = Mock(return_value=(self.models, None))
+        monkeypatch.setattr(claude, "fetch_anthropic_gateway_models", self.fetch)
+
+    @pytest.mark.parametrize(
+        "headers",
+        [
+            {},
+            {"Databricks-Model-Provider-Service": "main.default.mps"},
+            {"x-databricks-model-service-parent-schema": "main.models"},
+        ],
+    )
+    def test_refreshes_before_each_launch_with_configured_scope(self, monkeypatch, headers):
+        claude.write_json_file(
+            claude.CLAUDE_SETTINGS_PATH,
+            {
+                "env": {
+                    "ANTHROPIC_BASE_URL": f"{WS}/ai-gateway/anthropic",
+                    "ANTHROPIC_CUSTOM_HEADERS": "\n".join(
+                        f"{name}: {value}" for name, value in headers.items()
+                    ),
+                },
+            },
+        )
+        snapshots = []
+        monkeypatch.setattr(
+            claude,
+            "exec_or_spawn",
+            lambda argv: snapshots.append(json.loads(self.cache_path.read_text())),
+        )
+        state = {"workspace": WS, "profile": "test"}
+        claude.launch(state, [], options=LaunchOptions())
+        self.fetch.return_value = ([{"id": "claude-replacement"}], None)
+        claude.launch(state, [], options=LaunchOptions())
+        self.fetch.assert_called_with(WS, "token", headers=headers)
+        assert self.fetch.call_count == 2
+        assert snapshots[0]["models"] == self.models
+        assert snapshots[1]["models"] == [{"id": "claude-replacement"}]
+        assert snapshots[1]["baseUrl"] == f"{WS}/ai-gateway/anthropic"
+        assert snapshots[1]["fetchedAt"] > 0
+
+    def test_uses_custom_oauth(self, monkeypatch):
+        custom = {
+            "client_id": "client",
+            "redirect_url": "http://localhost:8020",
+            "scopes": ["all-apis", "offline_access"],
+            "profile": "custom",
+        }
+        token = Mock(return_value="custom-token")
+        monkeypatch.setattr(claude, "get_custom_client_token", token)
+        claude._refresh_gateway_models_cache({"workspace": WS, "custom_oauth": custom})
+        token.assert_called_once_with(WS, **custom)
+        self.fetch.assert_called_once_with(WS, "custom-token", headers={})
+
+    def test_discovery_disabled_leaves_cache_untouched(self, monkeypatch):
+        monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "0")
+        claude.write_json_file(self.cache_path, {"models": ["existing"]})
+        claude.launch({"workspace": WS}, [], options=LaunchOptions())
+        self.fetch.assert_not_called()
+        assert json.loads(self.cache_path.read_text()) == {"models": ["existing"]}
+
+    @pytest.mark.parametrize("failure", ["fetch", "write"])
+    def test_failure_blocks_launch_without_replacing_cache(self, monkeypatch, failure):
+        claude.write_json_file(self.cache_path, {"models": ["existing"]})
+        if failure == "fetch":
+            self.fetch.return_value = (None, "HTTP 403")
+        else:
+            monkeypatch.setattr(os, "replace", Mock(side_effect=OSError("disk full")))
+        with pytest.raises(RuntimeError):
+            claude.launch({"workspace": WS}, [], options=LaunchOptions())
+        claude.exec_or_spawn.assert_not_called()
+        assert json.loads(self.cache_path.read_text()) == {"models": ["existing"]}
+
+    @pytest.mark.parametrize("failed", [False, True])
+    def test_relay_refreshes_after_port_fallback_and_cleans_up(self, monkeypatch, failed):
+        server = Mock(server_address=("127.0.0.1", 54321))
+        cache, client = Mock(), Mock()
+        monkeypatch.setattr(claude, "_ensure_subscription_login", Mock())
+        monkeypatch.setattr(
+            claude.gateway_proxy, "start_relay_proxy", Mock(return_value=(server, cache, client))
+        )
+        claude.write_json_file(
+            claude.CLAUDE_SETTINGS_PATH, {"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:12345"}}
+        )
+        snapshots = []
+
+        def spawn(argv):
+            snapshots.append(json.loads(self.cache_path.read_text()))
+            return Mock(wait=Mock(return_value=0))
+
+        process = Mock(side_effect=spawn)
+        monkeypatch.setattr(claude.subprocess, "Popen", process)
+        if failed:
+            self.fetch.return_value = (None, "HTTP 403")
+        with pytest.raises(RuntimeError if failed else SystemExit):
+            claude.launch(
+                {"workspace": WS, "claude_relayed": True, "relayed_proxy_port": 12345},
+                [],
+                options=LaunchOptions(),
+            )
+        if failed:
+            process.assert_not_called()
+        else:
+            assert snapshots[0]["baseUrl"] == "http://127.0.0.1:54321"
+        server.shutdown.assert_called_once()
+        cache.stop.assert_called_once()
+        client.close.assert_called_once()
 
 
 class TestWriteToolConfigPrunesStaleModelEnv:

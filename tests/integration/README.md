@@ -301,6 +301,8 @@ across all configured/fresh scenarios. The Codex module does the same with
 model picker, Codex's exact app-server catalog, and both agents' rejection of personal source
 overrides. Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable links
 recreated by version checks, while continuing to compare persistent agent files.
+The configured Claude Case 1 also restarts in the same home, requires the gateway cache timestamp
+to advance past restart time, and completes a real file-reading task in that second session.
 In addition, `test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
 `system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that
 workspace on the valid default model `system.ai.gpt-5-6-sol`. With smart routing enabled, it opens
