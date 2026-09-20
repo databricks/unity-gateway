@@ -37,6 +37,7 @@ from ucode.skills_state import (
     set_last_update_check,
 )
 from ucode.state import load_state
+from ucode.string_utils import parse_update_time
 from ucode.ui import (
     console,
     picker_style,
@@ -452,7 +453,8 @@ def _get_updated_refs(
     """Pair each record whose UC source is newer than its download with the current skill.
 
     Resolves every record concurrently; one that no longer resolves (deleted, unfinalized,
-    unauthorized) is skipped, leaving its on-disk copy alone. A record with no recorded
+    unauthorized) is skipped, leaving its on-disk copy alone. Times are parsed before comparing
+    so the two RFC-3339 forms UC emits sort chronologically. A record with no parseable recorded
     ``uc_update_time`` predates attribution, so it is refreshed once to backfill the field.
     """
     if not records:
@@ -465,8 +467,9 @@ def _get_updated_refs(
             if ref is None:
                 continue
             record = futures[future]
-            stored = record.get("uc_update_time")
-            if stored is None or (ref.uc_update_time or "") > stored:
+            stored = parse_update_time(record.get("uc_update_time"))
+            current = parse_update_time(ref.uc_update_time)
+            if stored is None or (current is not None and current > stored):
                 pairs.append((record, ref))
     return pairs
 
@@ -506,7 +509,6 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
         last = last_update_check()
         if last is not None and now - last < SKILL_UPDATE_CHECK_INTERVAL:
             return
-        print_note("Checking Unity Catalog for downloaded skill updates...")
         workspace = state.get("workspace")
         if not workspace:
             return
@@ -515,6 +517,7 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
             (deleted if _record_dirs_missing(record) else present).append(record)
         forget(deleted)
         if present:
+            print_note("Checking Unity Catalog for downloaded skill updates...")
             token = get_databricks_token(workspace, state.get("profile"))
             pairs = _get_updated_refs(workspace, token, present)
             updated = _update_stale_skills(workspace, token, pairs)
