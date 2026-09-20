@@ -13,12 +13,16 @@ import os
 import shutil
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ucode import config_io
 from ucode.ui import print_warning
 
 SKILLS_STATE_VERSION = 1
+
+# Matches Isaac's plugin marketplace staleness window (see plugin-marketplace/CLAUDE.md).
+SKILL_UPDATE_CHECK_INTERVAL = timedelta(hours=24)
 
 
 @dataclass(frozen=True)
@@ -57,8 +61,8 @@ def _quarantine_corrupt(path: Path) -> None:
         pass
 
 
-def _load() -> list[dict]:
-    """Records in the manifest; ``[]`` if it is absent, unreadable, or an unrecognized version.
+def _load_manifest() -> dict:
+    """The whole manifest; ``{}`` if it is absent, unreadable, or an unrecognized version.
 
     A file that fails to parse is quarantined (see ``_quarantine_corrupt``) rather than read as
     empty, so a single bad byte doesn't let the next write silently erase every tracked skill.
@@ -67,22 +71,48 @@ def _load() -> list[dict]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        return []
+        return {}
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
         _quarantine_corrupt(path)
-        return []
+        return {}
     if not isinstance(data, dict) or data.get("version") != SKILLS_STATE_VERSION:
-        return []
-    downloads = data.get("skill_downloads")
+        return {}
+    return data
+
+
+def _load() -> list[dict]:
+    """The download records in the manifest, or ``[]`` when there are none."""
+    downloads = _load_manifest().get("skill_downloads")
     return [r for r in downloads if isinstance(r, dict)] if isinstance(downloads, list) else []
 
 
 def _save(downloads: list[dict]) -> None:
-    config_io.atomic_write_json(
-        _skills_state_path(), {"version": SKILLS_STATE_VERSION, "skill_downloads": downloads}
-    )
+    """Write the download records, preserving other manifest keys (e.g. ``last_update_check``)."""
+    manifest = _load_manifest()
+    manifest["version"] = SKILLS_STATE_VERSION
+    manifest["skill_downloads"] = downloads
+    config_io.atomic_write_json(_skills_state_path(), manifest)
+
+
+def last_update_check() -> datetime | None:
+    """When the launch-time update sweep last ran, or None if it never has."""
+    raw = _load_manifest().get("last_update_check")
+    if not isinstance(raw, str):
+        return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def set_last_update_check(when: datetime) -> None:
+    """Record when the launch-time update sweep last ran."""
+    manifest = _load_manifest()
+    manifest["version"] = SKILLS_STATE_VERSION
+    manifest["last_update_check"] = when.strftime("%Y-%m-%dT%H:%M:%SZ")
+    config_io.atomic_write_json(_skills_state_path(), manifest)
 
 
 def _norm(path: str) -> str:
