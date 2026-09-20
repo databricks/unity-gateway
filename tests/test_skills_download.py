@@ -1308,7 +1308,7 @@ class TestRefreshOnLaunch:
 
         sd.refresh_downloaded_skills_on_launch({"workspace": WS})
 
-        assert notes and "boom" in notes[0]
+        assert any("boom" in note for note in notes)
 
     def test_manually_deleted_skill_is_forgotten_not_redownloaded(self, tmp_path, monkeypatch):
         _record_download(tmp_path / "home", monkeypatch, on_disk=False)

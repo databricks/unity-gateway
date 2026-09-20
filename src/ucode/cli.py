@@ -2895,6 +2895,8 @@ def _launch_tool(
                     )
                     or picker_catalog.model_ids[0]
                 )
+        if not skip_preflight:
+            refresh_downloaded_skills_on_launch(state)
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
             tool == "claude"
@@ -2921,8 +2923,8 @@ def _launch_tool(
             )
         if recommendation is not None:
             _print_budget_panel(recommendation, tool, managed)
-        # The managed config's MCP servers and skills are both applied at `ug configure`, not here,
-        # so the launch hot path makes no per-launch discovery calls for them.
+        # The managed config's MCP servers and skills are applied at `ug configure`, not here.
+        # Downloaded skills get a rate-limited refresh above (refresh_downloaded_skills_on_launch).
         if tool == "claude":
             if provider:
                 state["_claude_launch_provider"] = provider
@@ -2941,8 +2943,6 @@ def _launch_tool(
             user_pinned_model=model or forwarded_model,
             provider=provider,
         )
-        if not skip_preflight:
-            refresh_downloaded_skills_on_launch(state)
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _smart_routing_v2_flag(
             True if managed_smart_routing_enabled and smart_routing_enabled else None

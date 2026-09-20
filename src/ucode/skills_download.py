@@ -506,6 +506,7 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
         last = last_update_check()
         if last is not None and now - last < SKILL_UPDATE_CHECK_INTERVAL:
             return
+        print_note("Checking Unity Catalog for downloaded skill updates...")
         workspace = state.get("workspace")
         if not workspace:
             return
