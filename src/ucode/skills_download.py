@@ -215,6 +215,29 @@ def _reject_bundle_name_collisions(refs: list[SkillRef]) -> list[SkillRef]:
     return kept
 
 
+def _fetch_bundles_and_write(
+    workspace: str, token: str, refs: list[SkillRef], roots: list[Path], *, label: str
+) -> list[SkillRef]:
+    """Fetch each ref's bundle concurrently, write it into ``roots``, and return those that
+    reached disk. A per-skill fetch failure or disk error warns and skips only that skill."""
+    if not refs:
+        return []
+    bundles = _fetch_bundles(workspace, token, refs, label=label)
+    written: list[SkillRef] = []
+    for ref in refs:
+        files, reason = bundles[ref.fqn]
+        if reason or files is None:
+            print_warning(f"Skipping `{ref.fqn}`: {reason}.")
+            continue
+        try:
+            write_skill(roots, ref, files)
+        except OSError as exc:
+            print_warning(f"Skipping `{ref.fqn}`: {exc}.")
+            continue
+        written.append(ref)
+    return written
+
+
 def _download_refs(
     workspace: str, token: str, refs: list[SkillRef], roots: list[Path], *, label: str
 ) -> tuple[list[SkillRef], int]:
@@ -223,22 +246,13 @@ def _download_refs(
     The shared download core: drop siblings claiming one directory
     (``_reject_bundle_name_collisions``), prompt before overwriting a skill already
     on disk (``should_download_skill``, so a declined skill is never fetched), then
-    fetch the survivors' bundles concurrently and write them. ``written`` are the
-    refs that reached disk, so a caller can record their attribution; ``total`` is
-    the count that could reach disk (dropped siblings excluded), so a caller's
-    summary denominator is right. A per-skill fetch failure warns and skips it.
+    fetch and write the survivors. ``written`` are the refs that reached disk, so a
+    caller can record their attribution; ``total`` is the count that could reach disk
+    (dropped siblings excluded), so a caller's summary denominator is right.
     """
     refs = _reject_bundle_name_collisions(refs)
     to_download = [ref for ref in refs if should_download_skill(roots, ref)]
-    bundles = _fetch_bundles(workspace, token, to_download, label=label)
-    written: list[SkillRef] = []
-    for ref in to_download:
-        files, reason = bundles[ref.fqn]
-        if reason or files is None:
-            print_warning(f"Skipping `{ref.fqn}`: {reason}.")
-            continue
-        write_skill(roots, ref, files)
-        written.append(ref)
+    written = _fetch_bundles_and_write(workspace, token, to_download, roots, label=label)
     console.print()
     return written, len(refs)
 
@@ -392,25 +406,11 @@ def reconcile_managed_skills(managed: dict) -> tuple[list[str], list[str]]:
             removed = [str(r["bundle_name"]) for r in stale if r.get("bundle_name")]
 
     missing = [ref for ref in refs if not existing_skill_on_disk(roots, ref.bundle_name)]
-    written: list[str] = []
-    if missing:
-        bundles = _fetch_bundles(workspace, token, missing, label="Fetching workspace skills")
-        installed: list[SkillRef] = []
-        for ref in missing:
-            files, reason = bundles[ref.fqn]
-            if reason or files is None:
-                print_warning(f"Skipping `{ref.fqn}`: {reason}.")
-                continue
-            try:
-                write_skill(roots, ref, files)
-            except OSError as exc:
-                # Best-effort per skill: a disk failure on one must not strand the rest.
-                print_warning(f"Skipping `{ref.fqn}`: {exc}.")
-                continue
-            installed.append(ref)
-            written.append(ref.bundle_name)
-        record_downloads(_skill_installs(installed, roots, None, workspace, scope="managed"))
-    return written, removed
+    installed = _fetch_bundles_and_write(
+        workspace, token, missing, roots, label="Fetching workspace skills"
+    )
+    record_downloads(_skill_installs(installed, roots, None, workspace, scope="managed"))
+    return [ref.bundle_name for ref in installed], removed
 
 
 def configure_location_skills_download_command(locations: list[str], *, path: str | None) -> int:

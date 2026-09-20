@@ -116,6 +116,33 @@ class TestFetchBundles:
         assert sd._fetch_bundles(WS, "token", [], label="main.default") == {}
 
 
+class TestFetchBundlesAndWrite:
+    def test_writes_survivors_and_skips_fetch_failures(self, tmp_path, monkeypatch):
+        roots = skill_dir_roots(str(tmp_path))
+        monkeypatch.setattr(
+            sd,
+            "_fetch_bundles",
+            lambda ws, tok, refs, label: {
+                "main.default.triage": ({"SKILL.md": b"ok"}, None),
+                "main.default.pii": (None, "HTTP 500"),
+            },
+        )
+        warnings: list[str] = []
+        monkeypatch.setattr(sd, "print_warning", warnings.append)
+
+        written = sd._fetch_bundles_and_write(
+            WS, "token", [ref("triage"), ref("pii")], roots, label="x"
+        )
+
+        assert [r.fqn for r in written] == ["main.default.triage"]
+        assert (roots[0] / "triage/SKILL.md").read_bytes() == b"ok"
+        assert any("pii" in w for w in warnings)
+
+    def test_empty_refs_makes_no_fetch(self, monkeypatch):
+        monkeypatch.setattr(sd, "_fetch_bundles", lambda *a, **k: pytest.fail("should not fetch"))
+        assert sd._fetch_bundles_and_write(WS, "token", [], [], label="x") == []
+
+
 class TestDownloadSkillsFromSchemaLocations:
     def test_fetches_and_writes_each_leaf(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
