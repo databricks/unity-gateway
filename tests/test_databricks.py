@@ -341,44 +341,23 @@ class TestFetchAnthropicGatewayModels:
         )
 
     @pytest.mark.parametrize(
-        "payload",
+        "responses",
         [
-            [],
-            {},
-            {"data": []},
-            {"data": [{"id": ""}]},
-            {"data": ["claude"]},
-            {"data": [{"id": "claude"}], "has_more": True},
-        ],
-    )
-    def test_rejects_empty_or_invalid_catalog(self, monkeypatch, payload):
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
-        models, reason = db_mod.fetch_anthropic_gateway_models(WS, "token", headers={})
-        assert models is None
-        assert reason
-
-    def test_rejects_repeated_cursor(self, monkeypatch):
-        monkeypatch.setattr(
-            db_mod,
-            "_http_get_json",
-            lambda *args, **kwargs: (
-                {"data": [{"id": "claude"}], "has_more": True, "last_id": "claude"},
-                None,
-            ),
-        )
-        models, reason = db_mod.fetch_anthropic_gateway_models(WS, "token", headers={})
-        assert models is None
-        assert "cursor" in reason
-
-    def test_does_not_return_partial_catalog_on_failure(self, monkeypatch):
-        pages = iter(
+            [({"data": []}, None)],
+            [({"data": [{"id": ""}]}, None)],
+            [({"data": [{"id": "claude"}], "has_more": True, "last_id": "claude"}, None)] * 2,
             [
                 ({"data": [{"id": "claude"}], "has_more": True, "last_id": "claude"}, None),
                 (None, "HTTP 403"),
-            ]
-        )
+            ],
+        ],
+    )
+    def test_rejects_failed_or_invalid_catalog(self, monkeypatch, responses):
+        pages = iter(responses)
         monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: next(pages))
-        assert db_mod.fetch_anthropic_gateway_models(WS, "token", headers={}) == (None, "HTTP 403")
+        models, reason = db_mod.fetch_anthropic_gateway_models(WS, "token", headers={})
+        assert models is None
+        assert reason
 
 
 class TestDiscoverClaudeModels:

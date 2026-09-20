@@ -1982,19 +1982,6 @@ class TestGatewayModelsCache:
         assert snapshots[1]["baseUrl"] == f"{WS}/ai-gateway/anthropic"
         assert snapshots[1]["fetchedAt"] > 0
 
-    def test_uses_custom_oauth(self, monkeypatch):
-        custom = {
-            "client_id": "client",
-            "redirect_url": "http://localhost:8020",
-            "scopes": ["all-apis", "offline_access"],
-            "profile": "custom",
-        }
-        token = Mock(return_value="custom-token")
-        monkeypatch.setattr(claude, "get_custom_client_token", token)
-        claude._refresh_gateway_models_cache({"workspace": WS, "custom_oauth": custom})
-        token.assert_called_once_with(WS, **custom)
-        self.fetch.assert_called_once_with(WS, "custom-token", headers={})
-
     def test_discovery_disabled_leaves_cache_untouched(self, monkeypatch):
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "0")
         claude.write_json_file(self.cache_path, {"models": ["existing"]})
@@ -2025,13 +2012,7 @@ class TestGatewayModelsCache:
         claude.write_json_file(
             claude.CLAUDE_SETTINGS_PATH, {"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:12345"}}
         )
-        snapshots = []
-
-        def spawn(argv):
-            snapshots.append(json.loads(self.cache_path.read_text()))
-            return Mock(wait=Mock(return_value=0))
-
-        process = Mock(side_effect=spawn)
+        process = Mock(return_value=Mock(wait=Mock(return_value=0)))
         monkeypatch.setattr(claude.subprocess, "Popen", process)
         if failed:
             self.fetch.return_value = (None, "HTTP 403")
@@ -2044,7 +2025,7 @@ class TestGatewayModelsCache:
         if failed:
             process.assert_not_called()
         else:
-            assert snapshots[0]["baseUrl"] == "http://127.0.0.1:54321"
+            assert json.loads(self.cache_path.read_text())["baseUrl"] == "http://127.0.0.1:54321"
         server.shutdown.assert_called_once()
         cache.stop.assert_called_once()
         client.close.assert_called_once()

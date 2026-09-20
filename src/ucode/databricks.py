@@ -2663,18 +2663,17 @@ def fetch_anthropic_gateway_models(
         )
         if payload is None:
             return None, reason
-        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-            return None, "AI Gateway returned an invalid Anthropic model catalog"
-        page = payload["data"]
-        if any(
+        data = payload if isinstance(payload, dict) else {}
+        page = data.get("data")
+        if not isinstance(page, list) or any(
             not isinstance(model, dict) or not isinstance(model.get("id"), str) or not model["id"]
             for model in page
         ):
             return None, "AI Gateway returned an invalid Anthropic model catalog"
         models.extend(page)
-        if not payload.get("has_more"):
+        if not data.get("has_more"):
             return (models, None) if models else (None, "AI Gateway returned no Anthropic models")
-        cursor = payload.get("last_id")
+        cursor = data.get("last_id")
         if not isinstance(cursor, str) or not cursor or cursor in cursors:
             return None, "AI Gateway returned an invalid Anthropic pagination cursor"
         cursors.add(cursor)
