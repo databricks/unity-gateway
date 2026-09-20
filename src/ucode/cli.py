@@ -2805,6 +2805,8 @@ def _launch_tool(
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
             # replaced. Keep the managed catalog launch-scoped and leave the user's settings alone.
             state["_claude_launch_picker_models"] = picker_catalog.model_ids
+        if not skip_preflight:
+            refresh_downloaded_skills_on_launch(state)
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
             tool == "claude"
@@ -2831,8 +2833,8 @@ def _launch_tool(
             )
         if recommendation is not None:
             _print_budget_panel(recommendation, tool, managed)
-        # The managed config's MCP servers and skills are both applied at `ug configure`, not here,
-        # so the launch hot path makes no per-launch discovery calls for them.
+        # The managed config's MCP servers and skills are applied at `ug configure`, not here.
+        # Downloaded skills get a rate-limited refresh above (refresh_downloaded_skills_on_launch).
         if tool == "claude":
             if provider:
                 state["_claude_launch_provider"] = provider
@@ -2851,8 +2853,6 @@ def _launch_tool(
             user_pinned_model=model or forwarded_model,
             provider=provider,
         )
-        if not skip_preflight:
-            refresh_downloaded_skills_on_launch(state)
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _managed_smart_routing_environment(managed, tool):
             launch_agent(tool, state, ctx.args, options=launch_options)
