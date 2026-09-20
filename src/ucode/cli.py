@@ -126,6 +126,7 @@ from ucode.skills_download import (
     configure_selected_skills_download_command,
     configure_skills_download_picker_command,
     reconcile_managed_skills,
+    refresh_downloaded_skills_on_launch,
     remove_downloaded_skills_command,
 )
 from ucode.skills_list import configured_skill_counts_by_agent, list_configured_skills_command
@@ -2850,6 +2851,8 @@ def _launch_tool(
             user_pinned_model=model or forwarded_model,
             provider=provider,
         )
+        if not skip_preflight:
+            refresh_downloaded_skills_on_launch(state)
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _managed_smart_routing_environment(managed, tool):
             launch_agent(tool, state, ctx.args, options=launch_options)
