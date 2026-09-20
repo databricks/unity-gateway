@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -116,13 +117,23 @@ def should_download_skill(roots: list[Path], ref: SkillRef) -> bool:
 
 
 def write_skill(roots: list[Path], ref: SkillRef, files: dict[str, bytes]) -> None:
-    """Write ``ref``'s bundle (``{relpath: bytes}``) into every root.
+    """Write ``ref``'s bundle (``{relpath: bytes}``) into every root, replacing any existing copy.
 
-    The directory is named for the bundle, so it matches the ``name:`` an agent
-    reads from the written SKILL.md.
+    The directory is named for the bundle, so it matches the ``name:`` an agent reads from the
+    written SKILL.md. Each root is cleared before it is rewritten, so a file removed upstream does
+    not linger. A write interrupted partway leaves only that one directory incomplete, never a
+    stray copy elsewhere; the next write clears and rebuilds it, so a retry always converges on
+    the current bundle.
     """
+    if not files:
+        return
     for root in roots:
-        _write_bundle(root / ref.bundle_name, ref.bundle_name, files)
+        skill_dir = root / ref.bundle_name
+        if skill_dir.is_symlink():
+            skill_dir.unlink()
+        elif skill_dir.is_dir():
+            shutil.rmtree(skill_dir)
+        _write_bundle(skill_dir, ref.bundle_name, files)
 
 
 def _skill_installs(

@@ -108,6 +108,63 @@ class TestWriteSkill:
         assert (roots[0] / "triage/SKILL.md").read_bytes() == b"ok"
         assert not (tmp_path / "escape.md").exists()
 
+    def test_replace_drops_files_removed_upstream(self, tmp_path):
+        roots = skill_dir_roots(str(tmp_path))
+        write_skill(roots, ref("triage"), {"SKILL.md": b"v1", "notes.md": b"old"})
+
+        write_skill(roots, ref("triage"), {"SKILL.md": b"v2"})
+
+        for root in roots:
+            assert (root / "triage/SKILL.md").read_bytes() == b"v2"
+            assert not (root / "triage/notes.md").exists()
+
+    def test_empty_bundle_keeps_existing_copy(self, tmp_path):
+        roots = skill_dir_roots(str(tmp_path))
+        write_skill(roots, ref("triage"), {"SKILL.md": b"v1"})
+
+        write_skill(roots, ref("triage"), {})
+
+        assert (roots[0] / "triage/SKILL.md").read_bytes() == b"v1"
+
+    def test_replaces_symlinked_bundle_without_touching_its_target(self, tmp_path):
+        roots = skill_dir_roots(str(tmp_path))
+        target = tmp_path / "real-skill"
+        target.mkdir()
+        (target / "keep.md").write_bytes(b"authored")
+        roots[0].mkdir(parents=True)
+        (roots[0] / "triage").symlink_to(target)
+
+        write_skill(roots, ref("triage"), {"SKILL.md": b"fresh"})
+
+        assert not (roots[0] / "triage").is_symlink()
+        assert (roots[0] / "triage/SKILL.md").read_bytes() == b"fresh"
+        assert (target / "keep.md").exists()
+
+    def test_leaves_only_the_bundle_dir(self, tmp_path):
+        roots = skill_dir_roots(str(tmp_path))
+
+        write_skill(roots, ref("triage"), {"SKILL.md": b"v1"})
+        write_skill(roots, ref("triage"), {"SKILL.md": b"v2"})
+
+        for root in roots:
+            assert [p.name for p in root.iterdir()] == ["triage"]
+
+    def test_recovers_from_interrupted_previous_write(self, tmp_path):
+        roots = skill_dir_roots(str(tmp_path))
+        for root in roots:
+            partial = root / "triage"
+            (partial / "scripts").mkdir(parents=True)
+            (partial / "stale.py").write_bytes(b"garbage")
+            (partial / "scripts/old.py").write_bytes(b"garbage")
+
+        write_skill(roots, ref("triage"), {"SKILL.md": b"good", "scripts/run.py": b"print(1)"})
+
+        for root in roots:
+            assert (root / "triage/SKILL.md").read_bytes() == b"good"
+            assert (root / "triage/scripts/run.py").read_bytes() == b"print(1)"
+            assert not (root / "triage/stale.py").exists()
+            assert not (root / "triage/scripts/old.py").exists()
+
 
 class TestFetchBundles:
     def test_empty_leaves_returns_empty_without_pool(self):
