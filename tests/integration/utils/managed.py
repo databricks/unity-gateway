@@ -115,13 +115,20 @@ def build_claude_agent_config(
     return {"agent": "CODING_AGENT_CLAUDE_CODE", "config": config}
 
 
-def build_codex_agent_config(*, models: list[str], smart_routing: bool = False) -> dict:
+def build_codex_agent_config(
+    *,
+    models: list[str],
+    smart_routing: bool = False,
+    http_headers: dict[str, str] | None = None,
+) -> dict:
     config = {
         "models": {"model_services": models},
         "default_models": {"default_model": models[0]},
     }
     if smart_routing:
         config["smart_routing"] = {"enabled": True}
+    if http_headers is not None:
+        config["http_headers"] = http_headers
     return {"agent": "CODING_AGENT_CODEX", "config": config}
 
 
