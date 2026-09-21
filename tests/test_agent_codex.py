@@ -171,6 +171,29 @@ class TestRenderOverlay:
         headers = overlay["model_providers"]["Databricks"]["http_headers"]
         assert headers["Databricks-Model-Service-Parent-Schema"] == "main.default"
 
+    def test_managed_http_headers_added(self):
+        overlay = codex.render_overlay(
+            WS, managed_http_headers={"x-databricks-workspace": "eng-ml-inference"}
+        )
+        headers = overlay["model_providers"]["Databricks"]["http_headers"]
+        assert headers["x-databricks-workspace"] == "eng-ml-inference"
+        assert "User-Agent" in headers  # ucode's own header is retained alongside.
+
+    def test_managed_http_headers_override_ucode_header(self, monkeypatch):
+        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.123.0")
+        overlay = codex.render_overlay(
+            WS,
+            provider="main.x.svc",
+            managed_http_headers={"databricks-model-provider-service": "admin.override"},
+        )
+        headers = overlay["model_providers"]["Databricks"]["http_headers"]
+        # Admin wins on a case-insensitive collision, leaving no duplicate spelling of the header.
+        assert headers == {
+            "User-Agent": "ucode/0.1.0 codex/0.123.0",
+            "databricks-model-provider-service": "admin.override",
+        }
+
 
 class TestRenderOverlayUserAgent:
     def test_user_agent_set_on_provider(self, monkeypatch):
@@ -337,6 +360,45 @@ class TestCodexWriteConfig:
         headers = read_toml_safe(config_path)["model_providers"]["Databricks"]["http_headers"]
         assert "Databricks-Model-Service-Parent-Schema" not in headers
         assert "Databricks-Model-Provider-Service" not in headers
+
+    def test_writes_admin_http_headers(self, tmp_path, monkeypatch):
+        config_path = tmp_path / ".codex" / "ucode.config.toml"
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "codex_http_headers": {"x-databricks-workspace": "eng-ml-inference"},
+        }
+
+        codex.write_tool_config(state)
+
+        headers = read_toml_safe(config_path)["model_providers"]["Databricks"]["http_headers"]
+        assert headers["x-databricks-workspace"] == "eng-ml-inference"  # admin header applied
+        assert "User-Agent" in headers  # ucode's own header kept
+
+    def test_drops_admin_http_header_after_removal(self, tmp_path, monkeypatch):
+        config_path = tmp_path / ".codex" / "ucode.config.toml"
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+
+        codex.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_models": [],
+                "codex_http_headers": {"x-databricks-workspace": "eng-ml-inference"},
+            }
+        )
+        # The admin removes the header from managed config; the next configure omits it entirely.
+        codex.write_tool_config({"workspace": WS, "codex_models": []})
+
+        headers = read_toml_safe(config_path)["model_providers"]["Databricks"]["http_headers"]
+        assert "x-databricks-workspace" not in headers  # dropped on removal
+        assert "User-Agent" in headers
 
     def test_legacy_replaces_stale_routing_headers(self, tmp_path, monkeypatch):
         config_dir = tmp_path / ".codex"
