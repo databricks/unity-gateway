@@ -582,6 +582,66 @@ class TestRenderOverlayUserAgent:
         assert "\n" in self._ua(monkeypatch)
 
 
+class TestMergeAnthropicCustomHeaders:
+    def test_removes_stale_parent_header(self):
+        existing = "X-User: keep\nDatabricks-Model-Service-Parent-Schema: main.default"
+        managed = "x-databricks-use-coding-agent-mode: true"
+
+        merged = claude._merge_anthropic_custom_headers(existing, managed)
+
+        assert "X-User: keep" in merged
+        assert "Databricks-Model-Service-Parent-Schema" not in merged
+
+    def test_merges_existing_settings_with_ucode_managed_headers(self):
+        headers_from_existing_settings = "\n".join(
+            [
+                "X-User-Header: keep-me",
+                "user-agent: custom-agent",
+            ]
+        )
+        headers_managed_by_ucode = "\n".join(
+            [
+                "x-databricks-use-coding-agent-mode: true",
+                "User-Agent: ucode/1.0 claude/2.0",
+            ]
+        )
+
+        merged_headers = claude._merge_anthropic_custom_headers(
+            headers_from_existing_settings, headers_managed_by_ucode
+        )
+
+        assert merged_headers.splitlines() == [
+            "X-User-Header: keep-me",  # Preserved from existing settings.
+            "User-Agent: ucode/1.0 claude/2.0",  # From ucode; overwrites existing.
+            "x-databricks-use-coding-agent-mode: true",  # Newly added by ucode.
+        ]
+
+    def test_preserves_existing_header_order(self):
+        headers_from_existing_settings = "\n".join(
+            [
+                "x-databricks-use-coding-agent-mode: true",
+                "User-Agent: ucode/0.1.0+41.gd09c080 claude/2.1.258",
+                "meep: lala",
+            ]
+        )
+        headers_managed_by_ucode = "\n".join(
+            [
+                "x-databricks-use-coding-agent-mode: true",
+                "User-Agent: ucode/1.0 claude/2.0",
+            ]
+        )
+
+        merged_headers = claude._merge_anthropic_custom_headers(
+            headers_from_existing_settings, headers_managed_by_ucode
+        )
+
+        assert merged_headers.splitlines() == [
+            "x-databricks-use-coding-agent-mode: true",  # From ucode; overwrites existing.
+            "User-Agent: ucode/1.0 claude/2.0",  # From ucode; overwrites existing.
+            "meep: lala",  # Preserved from existing settings in its original position.
+        ]
+
+
 class TestRenderOverlayWebSearchDisable:
     def test_settings_overlay_never_includes_mcp_servers(self):
         # MCP servers belong in ~/.claude.json, not settings.json.
@@ -1616,39 +1676,6 @@ class TestWriteToolConfigManagedSettings:
         managed_content = json.loads(managed_writes[0][1])
         assert "availableModels" not in managed_content
         assert "modelPicker" not in managed_content
-
-
-class TestMergeAnthropicCustomHeaders:
-    """Focused unit tests for the static-name-set merge used on the no-managed-config path."""
-
-    def test_preserves_unknown_header(self):
-        merged = claude._merge_anthropic_custom_headers(
-            "X-Foreign: keep", "x-databricks-use-coding-agent-mode: true"
-        )
-        assert merged.splitlines() == [
-            "X-Foreign: keep",
-            "x-databricks-use-coding-agent-mode: true",
-        ]
-
-    def test_replaces_ucode_managed_name_in_place(self):
-        merged = claude._merge_anthropic_custom_headers(
-            "A: 1\nUser-Agent: old\nB: 2", "User-Agent: new"
-        )
-        assert merged.splitlines() == ["A: 1", "User-Agent: new", "B: 2"]
-
-    def test_drops_stale_ucode_managed_name_no_longer_emitted(self):
-        merged = claude._merge_anthropic_custom_headers(
-            "Databricks-Model-Provider-Service: old-provider\nA: 1", ""
-        )
-        assert merged.splitlines() == ["A: 1"]
-
-    def test_appends_new_ucode_header_not_already_present(self):
-        merged = claude._merge_anthropic_custom_headers("A: 1", "User-Agent: ucode/1")
-        assert merged.splitlines() == ["A: 1", "User-Agent: ucode/1"]
-
-    def test_passes_through_when_no_existing_headers(self):
-        merged = claude._merge_anthropic_custom_headers(None, "User-Agent: ucode/1")
-        assert merged == "User-Agent: ucode/1"
 
 
 class TestAddClaudeMcpServer:

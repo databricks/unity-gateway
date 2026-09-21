@@ -200,8 +200,6 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
 ANTHROPIC_CUSTOM_HEADERS_ENV_KEY = "ANTHROPIC_CUSTOM_HEADERS"
-# Header names ug manages within ANTHROPIC_CUSTOM_HEADERS. Used only for the no-managed-config
-# merge below; ownership is judged by name, never by inferring it from a whole prior document.
 CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
     {
         "x-databricks-use-coding-agent-mode",
@@ -227,54 +225,6 @@ def _apply_managed_header_lines(
     for name, value in (managed_http_headers or {}).items():
         lines_by_name[name.strip().casefold()] = f"{name}: {value}"
     return list(lines_by_name.values())
-
-
-def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str:
-    """Preserve user headers while replacing the header names managed by ucode.
-
-    Claude's ``ANTHROPIC_CUSTOM_HEADERS`` value is a newline-delimited string. To merge it, we:
-
-    1. Split the existing custom headers by newline into individual header items.
-    2. Split each item on ``:`` to identify its header name.
-    3. Replace headers in ``CLAUDE_MANAGED_CUSTOM_HEADER_NAMES`` with ucode's values in their
-       existing positions, while preserving all other existing headers.
-    4. Append any ucode-managed headers that were not already present.
-
-    Header names are compared case-insensitively. Non-header lines are also preserved to avoid
-    silently discarding user configuration we do not understand.
-    """
-
-    if not isinstance(existing, str) or not existing:
-        return ucode_headers
-
-    ucode_lines_by_name: dict[str, str] = {}
-    ucode_header_names: list[str] = []
-    for line in ucode_headers.splitlines():
-        name, separator, _value = line.partition(":")
-        normalized_name = name.strip().casefold()
-        if separator and normalized_name not in ucode_lines_by_name:
-            ucode_header_names.append(normalized_name)
-        if separator:
-            ucode_lines_by_name[normalized_name] = line
-
-    merged: list[str] = []
-    replaced_names: set[str] = set()
-    for line in existing.splitlines():
-        name, separator, _value = line.partition(":")
-        normalized_name = name.strip().casefold()
-        if separator and normalized_name in CLAUDE_MANAGED_CUSTOM_HEADER_NAMES:
-            replacement = ucode_lines_by_name.get(normalized_name)
-            if replacement is not None and normalized_name not in replaced_names:
-                merged.append(replacement)
-                replaced_names.add(normalized_name)
-            continue
-        if line:
-            merged.append(line)
-
-    for name in ucode_header_names:
-        if name not in replaced_names:
-            merged.append(ucode_lines_by_name[name])
-    return "\n".join(merged)
 
 
 def configured_paths(state: dict) -> list[str]:
@@ -1001,9 +951,6 @@ def write_tool_config(
         managed_settings_snapshots: ManagedFileSnapshots | None,
     ) -> dict:
         base_env = base.get("env")
-        # Read before deep_merge_dict below, which mutates base's "env" dict in place (grafting
-        # overlay's value onto this same object) -- after that call this would read back overlay's
-        # own value instead of what the developer actually had.
         existing_custom_headers = (
             base_env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(base_env, dict) else None
         )
@@ -1158,6 +1105,54 @@ def write_tool_config(
     state = mark_tool_managed(state, "claude", managed_keys)
     save_state(state)
     return state
+
+
+def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str:
+    """Preserve user headers while replacing the header names managed by ucode.
+
+    Claude's ``ANTHROPIC_CUSTOM_HEADERS`` value is a newline-delimited string. To merge it, we:
+
+    1. Split the existing custom headers by newline into individual header items.
+    2. Split each item on ``:`` to identify its header name.
+    3. Replace headers in ``CLAUDE_MANAGED_CUSTOM_HEADER_NAMES`` with ucode's values in their
+       existing positions, while preserving all other existing headers.
+    4. Append any ucode-managed headers that were not already present.
+
+    Header names are compared case-insensitively. Non-header lines are also preserved to avoid
+    silently discarding user configuration we do not understand.
+    """
+
+    if not isinstance(existing, str) or not existing:
+        return ucode_headers
+
+    ucode_lines_by_name: dict[str, str] = {}
+    ucode_header_names: list[str] = []
+    for line in ucode_headers.splitlines():
+        name, separator, _value = line.partition(":")
+        normalized_name = name.strip().casefold()
+        if separator and normalized_name not in ucode_lines_by_name:
+            ucode_header_names.append(normalized_name)
+        if separator:
+            ucode_lines_by_name[normalized_name] = line
+
+    merged: list[str] = []
+    replaced_names: set[str] = set()
+    for line in existing.splitlines():
+        name, separator, _value = line.partition(":")
+        normalized_name = name.strip().casefold()
+        if separator and normalized_name in CLAUDE_MANAGED_CUSTOM_HEADER_NAMES:
+            replacement = ucode_lines_by_name.get(normalized_name)
+            if replacement is not None and normalized_name not in replaced_names:
+                merged.append(replacement)
+                replaced_names.add(normalized_name)
+            continue
+        if line:
+            merged.append(line)
+
+    for name in ucode_header_names:
+        if name not in replaced_names:
+            merged.append(ucode_lines_by_name[name])
+    return "\n".join(merged)
 
 
 def _reconcile_managed_settings(
