@@ -7,7 +7,6 @@ each isolated session. Normalization, config writers, the gateway, and Claude Co
 
 import json
 import os
-import re
 
 import pytest
 from utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
@@ -15,6 +14,11 @@ from utils.managed import (
     fetch_managed_config_stub,
     is_managed_config_control_plane_cache,
     use_managed_config_stub,
+)
+from utils.model_discovery import claude_model_in_picker
+from utils.provider_catalog import (
+    AnthropicProviderCatalog,
+    fetch_anthropic_provider_catalog,
 )
 from utils.terminal import AgentTerminal
 
@@ -30,6 +34,15 @@ def _managed_claude_config_stub(workspace, tmp_path_factory):
         "managed-config-claude.json",
         agent="CODING_AGENT_CLAUDE_CODE",
         provider_service=MANAGED_CLAUDE_PROVIDER_SERVICE,
+    )
+
+
+@pytest.fixture(scope="module")
+def _managed_claude_provider_catalog(workspace):
+    return fetch_anthropic_provider_catalog(
+        workspace,
+        os.environ["DATABRICKS_BEARER"],
+        MANAGED_CLAUDE_PROVIDER_SERVICE,
     )
 
 
@@ -62,7 +75,9 @@ def _assert_rejected_before_claude_started(session, result, before=None):
         assert _claude_state_and_agent_files(session) == before
 
 
-def _assert_managed_provider_in_picker(session, workspace, screen):
+def _assert_managed_provider_in_picker(
+    session, workspace, screen, expected: AnthropicProviderCatalog
+):
     settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
     headers = (settings.get("env") or {}).get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
     expected_header = f"Databricks-Model-Provider-Service: {MANAGED_CLAUDE_PROVIDER_SERVICE}"
@@ -71,26 +86,48 @@ def _assert_managed_provider_in_picker(session, workspace, screen):
     assert not {"availableModels", "enforceAvailableModels", "modelPicker"} & settings.keys(), (
         settings
     )
-    # Native gateway rows deduplicate against built-ins, so exact cached ids need not be rendered.
-    assert re.search(r"(?m)^\s*(?:[❯›>]\s*)?\d+\.\s+\S", screen), screen
-
     cache = json.loads((session.home / ".claude/cache/gateway-models.json").read_text())
     assert cache.get("baseUrl") == workspace.rstrip("/") + "/ai-gateway/anthropic", cache
     assert isinstance(cache.get("fetchedAt"), int) and cache["fetchedAt"] > 0, cache
     cached_models = cache.get("models")
     assert isinstance(cached_models, list) and cached_models, cache
-    cached_ids = [model.get("id") for model in cached_models if isinstance(model, dict)]
-    assert len(cached_ids) == len(cached_models), cache
-    assert cached_ids and all(isinstance(model_id, str) and model_id for model_id in cached_ids), (
-        cache
+    cached_by_id = {}
+    for model in cached_models:
+        assert isinstance(model, dict), cache
+        model_id = model.get("id")
+        assert isinstance(model_id, str) and model_id, cache
+        assert model_id not in cached_by_id, cache
+        cached_by_id[model_id] = model.get("display_name")
+    cached_ids = list(cached_by_id)
+    session.record(
+        "managed-provider-catalog.json",
+        {
+            "provider": MANAGED_CLAUDE_PROVIDER_SERVICE,
+            "expected_model_ids": list(expected.model_ids),
+            "expected_display_names": expected.display_names,
+            "cached_model_ids": cached_ids,
+        },
     )
+    session.record("managed-gateway-cache.json", cache)
+    assert sorted(cached_ids) == sorted(expected.model_ids), (cached_ids, expected.model_ids)
+    assert any(
+        claude_model_in_picker(
+            screen,
+            model_id,
+            expected.display_names.get(model_id) or cached_by_id.get(model_id),
+        )
+        for model_id in expected.model_ids
+    ), screen
 
 
 @pytest.mark.tui
-def test_case_01_managed_claude_uses_admin_discovery_after_configure(live_session, workspace):
+def test_case_01_managed_claude_uses_admin_discovery_after_configure(
+    live_session, workspace, _managed_claude_provider_catalog
+):
     """Scenario: configure managed Claude, then launch its model picker.
 
-    Expected: the managed model catalog wins after configuration.
+    Expected: the independently fetched provider catalog exactly matches Claude's gateway cache,
+    and at least one expected cached model is visible in a numbered picker row.
     """
     session = live_session
     result = session.run(
@@ -106,26 +143,43 @@ def test_case_01_managed_claude_uses_admin_discovery_after_configure(live_sessio
     command = [str(session.binary), "claude"]
     with AgentTerminal(session, "claude", command, "case-01-managed") as tui:
         tui.boot()
-        screen = tui.open_model_picker()
+        screen = tui.open_model_picker(
+            model_visible=lambda text: any(
+                claude_model_in_picker(
+                    text, model_id, _managed_claude_provider_catalog.display_names[model_id]
+                )
+                for model_id in _managed_claude_provider_catalog.model_ids
+            )
+        )
         tui.exit_normally()
 
-    _assert_managed_provider_in_picker(session, workspace, screen)
+    _assert_managed_provider_in_picker(session, workspace, screen, _managed_claude_provider_catalog)
 
 
 @pytest.mark.tui
-def test_case_01_fresh_managed_claude_uses_admin_discovery(live_session, workspace):
+def test_case_01_fresh_managed_claude_uses_admin_discovery(
+    live_session, workspace, _managed_claude_provider_catalog
+):
     """Scenario: launch managed Claude's model picker from fresh state.
 
-    Expected: the managed model catalog wins without prior configuration.
+    Expected: the independently fetched provider catalog exactly matches Claude's gateway cache,
+    and at least one expected cached model is visible in a numbered picker row.
     """
     session = live_session
     command = [str(session.binary), "claude", "--workspace", workspace]
     with AgentTerminal(session, "claude", command, "case-01-fresh-managed") as tui:
         tui.boot()
-        screen = tui.open_model_picker()
+        screen = tui.open_model_picker(
+            model_visible=lambda text: any(
+                claude_model_in_picker(
+                    text, model_id, _managed_claude_provider_catalog.display_names[model_id]
+                )
+                for model_id in _managed_claude_provider_catalog.model_ids
+            )
+        )
         tui.exit_normally()
 
-    _assert_managed_provider_in_picker(session, workspace, screen)
+    _assert_managed_provider_in_picker(session, workspace, screen, _managed_claude_provider_catalog)
 
 
 def test_case_03_managed_claude_rejects_provider_override(live_session, workspace, claude_provider):

@@ -3,7 +3,27 @@
 import re
 
 _CLAUDE_GATEWAY_ALIAS = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{8}-(?P<model>.*)$")
+_CLAUDE_PICKER_ROW = re.compile(r"(?m)^[ \t]*(?:[❯›>][ \t]*)?\d+\.[ \t]+(?P<label>[^\n]*)$")
 _SYSTEM_AI_PREFIX = "system.ai."
+
+
+def claude_model_in_picker(screen: str, model_id: str, display_name: str | None) -> bool:
+    """Return whether a Claude model appears in a numbered picker row.
+
+    The captured terminal screen also contains startup banners and picker
+    footer text.  Restrict matching to rows with a numeric picker position so
+    those other screen regions cannot satisfy the assertion accidentally.
+    """
+    rows = [row.group("label") for row in _CLAUDE_PICKER_ROW.finditer(screen)]
+    if model_id == "claude-haiku-4-5-20251001":
+        # Claude deduplicates this gateway model into its built-in Haiku 4.5 row.
+        return any(re.search(r"^Haiku\b[^\n]*\bHaiku 4\.5\b", row) for row in rows)
+    candidates = [
+        value for value in (model_id, display_name) if isinstance(value, str) and value.strip()
+    ]
+    if not candidates:
+        return False
+    return any(any(candidate in row for candidate in candidates) for row in rows)
 
 
 def claude_system_model_ids(models: list[dict]) -> list[str]:

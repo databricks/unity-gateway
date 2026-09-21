@@ -60,9 +60,9 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure against a workspace that publishes a managed CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch |
-| `test_case_01_*` | Launch managed Claude after configure and from fresh state | Claude receives the admin MPS header, caches native discovery results, and opens its real model picker |
+| `test_case_01_*` | Launch managed Claude after configure and from fresh state | Claude receives the admin MPS header, caches exactly the independently fetched provider model IDs, and shows a cached model in a numbered picker row |
 | `test_case_03_*`, `test_case_05_*` | Pass a provider or model-location override to managed Claude after configure and from fresh state | ug rejects the override before Claude starts and preserves agent-owned state |
-| `test_case_02_*` | Launch managed Codex after configure and from fresh state | Codex exposes exactly the admin MPS-scoped catalog |
+| `test_case_02_*` | Launch managed Codex after configure and from fresh state | Codex's generated catalog and app-server list match the independently fetched admin MPS-scoped model IDs |
 | `test_case_04_*`, `test_case_06_*` | Pass a provider or model-location override to managed Codex after configure and from fresh state | ug rejects the override before Codex starts and preserves agent-owned state |
 | `test_ug_configure_managed_codex_catalog_fallback` | Configure from an injected managed response containing a GPT model absent from Codex's bundled catalog | Actionable metadata warning; conservative catalog entry for the unknown model; real Codex prompt on the valid default model |
 | `test_managed_fixture_codex_http_headers_in_managed_file` | Interactive PTY configure with injected managed `http_headers` for Codex | The specified header (`x-databricks-workspace`) lands in `model_providers.Databricks.http_headers` in `/etc/codex/managed_config.toml` with the exact admin value |
@@ -98,6 +98,10 @@ launch-time `--model-location`. Repository scenario numbers run consecutively fr
 numbering is unchanged and is not the source of these repository IDs.
 Managed Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable
 links recreated by Codex version checks; persistent agent files remain compared.
+Claude discovery assertions match numbered picker rows, not startup banners or
+footers. Offline regressions cover that distinction and native Haiku deduplication.
+Managed discovery expectations come from separate read-only, provider-scoped
+model-list requests; they do not rely solely on ug's generated catalog.
 
 ug no longer runs a post-configure agent probe; the deprecated `--skip-validate`
 flag is accepted as a no-op where older journeys still pass it. Tests retain

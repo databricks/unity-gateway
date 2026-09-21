@@ -209,7 +209,8 @@ Claude provider discovery still requires the exact `--claude-provider-model` ID
 in its cache. For the default `claude-haiku-4-5-20251001` fixture, Claude deduplicates
 it into the native Haiku picker row (Haiku 4.5), so the assertion checks that row
 instead of requiring the gateway's raw display name. Custom Model Services must
-still appear by their gateway display names. Cases 7–14 send no inference prompts;
+still appear by their gateway IDs or display names in a numbered picker row;
+startup banners and footer text cannot satisfy discovery assertions. Cases 7–14 send no inference prompts;
 they only configure, list models, and open/close the picker. Other live CUJs perform
 real model tasks.
 
@@ -380,9 +381,13 @@ managed-config HTTP read for config shapes that workspace does not publish. The 
 module fetches the workspace's published config once, replaces Claude's static model source with
 `main.default.ci_e2e_anthropic_mps`, drops incompatible static defaults, and reuses that fixture
 across all configured/fresh scenarios. The Codex module does the same with
-`main.default.ci_e2e_openai_mps`. The tests verify Claude's admin header, native cache and real
-model picker, Codex's exact app-server catalog, and both agents' rejection of personal source
-overrides. Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable links
+`main.default.ci_e2e_openai_mps`. Separate read-only, provider-scoped model-list requests
+establish expected IDs independently of the generated agent files. The tests require Claude's
+native cache to match those IDs and a cached model to appear in a numbered picker row
+(including native Haiku deduplication), alongside its admin header. Codex's generated catalog
+and app-server list must match its independently fetched IDs. These requests send no inference
+prompts. Both agents must reject personal source overrides.
+Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable links
 recreated by version checks, while continuing to compare persistent agent files.
 In addition, `test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
 `system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that

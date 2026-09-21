@@ -16,6 +16,11 @@ from utils.managed import (
     is_managed_config_control_plane_cache,
     use_managed_config_stub,
 )
+from utils.provider_catalog import (
+    CodexProviderCatalog,
+    fetch_codex_provider_catalog,
+    parse_codex_provider_catalog,
+)
 
 pytestmark = [pytest.mark.managed_fixture, pytest.mark.codex]
 
@@ -29,6 +34,15 @@ def _managed_codex_config_stub(workspace, tmp_path_factory):
         "managed-config-codex.json",
         agent="CODING_AGENT_CODEX",
         provider_service=MANAGED_CODEX_PROVIDER_SERVICE,
+    )
+
+
+@pytest.fixture(scope="module")
+def _managed_codex_provider_catalog(workspace):
+    return fetch_codex_provider_catalog(
+        workspace,
+        os.environ["DATABRICKS_BEARER"],
+        MANAGED_CODEX_PROVIDER_SERVICE,
     )
 
 
@@ -63,7 +77,7 @@ def _assert_rejected_before_codex_started(session, result, before=None):
         assert _codex_state_and_agent_files(session) == before
 
 
-def _assert_managed_provider_catalog(session, models):
+def _assert_managed_provider_catalog(session, models, expected: CodexProviderCatalog):
     config = tomllib.loads((session.home / ".codex" / "ucode.config.toml").read_text())
     # The provider header is a launch-only overlay; neither it nor the scoped catalog is persisted
     # in Codex's generated profile.
@@ -89,19 +103,32 @@ def _assert_managed_provider_catalog(session, models):
     catalog_paths = list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
     assert len(catalog_paths) == 1, catalog_paths
     catalog = json.loads(catalog_paths[0].read_text())
-    catalog_ids = [
-        model.get("slug")
-        for model in catalog.get("models", [])
-        if isinstance(model, dict) and model.get("visibility") == "list"
-    ]
-    assert catalog_ids, catalog
-    assert models == catalog_ids, (models, catalog)
+    catalog_ids = parse_codex_provider_catalog(catalog)
+    session.record(
+        "managed-provider-catalog.json",
+        {
+            "provider": MANAGED_CODEX_PROVIDER_SERVICE,
+            "expected_model_ids": list(expected.model_ids),
+            "generated_catalog_model_ids": list(catalog_ids),
+            "app_server_model_ids": models,
+        },
+    )
+    session.record("managed-codex-catalog.json", catalog)
+    assert isinstance(models, list) and models, models
+    assert all(isinstance(model_id, str) and model_id for model_id in models), models
+    assert len(models) == len(set(models)), models
+    assert sorted(catalog_ids) == sorted(expected.model_ids), (catalog_ids, expected.model_ids)
+    assert sorted(models) == sorted(expected.model_ids), (models, expected.model_ids)
+    assert models == list(catalog_ids), (models, catalog)
 
 
-def test_case_02_managed_codex_uses_admin_discovery_after_configure(live_session, workspace):
+def test_case_02_managed_codex_uses_admin_discovery_after_configure(
+    live_session, workspace, _managed_codex_provider_catalog
+):
     """Scenario: configure managed Codex, then launch its app server.
 
-    Expected: Codex exposes exactly the admin-managed model catalog.
+    Expected: the independently fetched provider catalog exactly matches both the generated
+    catalog and the app-server model list.
     """
     session = live_session
     configured = session.run(
@@ -116,20 +143,23 @@ def test_case_02_managed_codex_uses_admin_discovery_after_configure(live_session
 
     models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
 
-    _assert_managed_provider_catalog(session, models)
+    _assert_managed_provider_catalog(session, models, _managed_codex_provider_catalog)
 
 
-def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(live_session, workspace):
+def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(
+    live_session, workspace, _managed_codex_provider_catalog
+):
     """Scenario: launch managed Codex with --workspace from fresh state.
 
-    Expected: Codex exposes exactly the admin-managed model catalog.
+    Expected: the independently fetched provider catalog exactly matches both the generated
+    catalog and the app-server model list.
     """
     session = live_session
     models = session.codex_model_ids(
         ["--workspace", workspace, "--", "app-server", "--listen", "stdio://"]
     )
 
-    _assert_managed_provider_catalog(session, models)
+    _assert_managed_provider_catalog(session, models, _managed_codex_provider_catalog)
 
 
 def test_case_04_managed_codex_rejects_provider_override_after_configure(
