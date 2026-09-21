@@ -180,20 +180,31 @@ Scoped discovery additionally requires Model Services
 `--parent-schema`, `--claude-parent-model`, or `--codex-parent-model`. The tests
 consume but never create or modify them.
 
-There are **66 live cases** (including 16 TUI journeys) and **5 installation
+The parent-schema catalog is API-specific: Claude's cache must contain exactly
+the Claude service, while Codex's app-server catalog must contain exactly both
+services, independent of order. Extra, missing, or duplicate entries fail.
+Claude provider discovery still requires the exact `--claude-provider-model` ID
+in its cache. For the default `claude-haiku-4-5-20251001` fixture, Claude deduplicates
+it into the native Haiku picker row (Haiku 4.5), so the assertion checks that row
+instead of requiring the gateway's raw display name. Custom Model Services must
+still appear by their gateway display names. Cases 13–24 send no inference prompts;
+they only configure, list models, and open/close the picker. Other live CUJs perform
+real model tasks.
+
+There are **66 live cases** (including 16 TUI journeys) and **7 installation
 checks** with both agents. A separate **4 managed-workspace cases** (one per agent, an idempotent
 re-configure, and a cache-TTL journey; marker `managed`) run against a workspace that publishes a
 CodingAgentConfig; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
-A further **36 `managed_fixture`
+A further **38 `managed_fixture`
 cases** use `UCODE_MANAGED_CONFIG_STUB`. Twenty-four explicit configured/fresh Claude and Codex
 discovery and source-override journeys fetch the published config once per agent, replace that
-agent's static source with its dedicated MPS, and reuse the result. Twelve existing collected cases
+agent's static source with its dedicated MPS, and reuse the result. Fourteen existing collected cases
 cover focused model, MCP, skills, and lifecycle shapes, including per-agent model reconciliation
 and managed skill cleanup. The two Claude default-model cases launch with injected MPS and Unity
 Catalog sources and verify both generated settings files retain all admin-authored family defaults.
 The 24 numbered scenarios comprise 44 explicit journeys: 24 managed and 20 unmanaged
-executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 116 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -576,7 +587,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 66 live cases. For the five installation checks, run the same
+This runs all 66 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

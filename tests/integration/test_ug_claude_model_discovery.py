@@ -1,5 +1,7 @@
 """Claude CUJs for Tests-table cases 13, 15, 17, 19, 21, and 23."""
 
+import re
+
 import pytest
 from utils.terminal import AgentTerminal
 
@@ -13,8 +15,16 @@ def _assert_scoped_models_in_picker(session, screen, expected_ids):
     assert [model.get("id") for model in models] == expected_ids, models
     display_names = [model.get("display_name") for model in models]
     assert all(isinstance(name, str) and name for name in display_names), models
-    for display_name in display_names:
-        assert display_name in screen, screen
+    for model, display_name in zip(models, display_names, strict=True):
+        if model["id"] == "claude-haiku-4-5-20251001":
+            # Claude deduplicates this built-in model into its native Haiku row,
+            # rather than adding the gateway's raw display name as a custom row.
+            # Match the actual picker row, not the current-model startup banner.
+            assert re.search(r"(?m)^\s*(?:❯\s*)?\d+\.\s+Haiku\b[^\n]*\bHaiku 4\.5\b", screen), (
+                screen
+            )
+        else:
+            assert display_name in screen, screen
 
 
 def _assert_native_models_in_picker(screen):
@@ -89,7 +99,8 @@ def test_case_17_configured_claude_provider_discovers_models_by_default(
 ):
     """Scenario: configure Claude, then launch with --provider and no opt-in flag.
 
-    Expected: automatic provider discovery supplies its exact picker catalog.
+    Expected: the cache contains exactly the provider model and the picker shows
+    its row (the native Haiku 4.5 row for the default provider fixture).
     """
     session = live_session
     session.run(
@@ -119,7 +130,8 @@ def test_case_17_fresh_claude_provider_discovers_models_by_default(
 ):
     """Scenario: launch fresh Claude with --provider and no opt-in flag.
 
-    Expected: automatic provider discovery supplies its exact picker catalog.
+    Expected: the cache contains exactly the provider model and the picker shows
+    its row (the native Haiku 4.5 row for the default provider fixture).
     """
     session = live_session
     command = [

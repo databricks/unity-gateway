@@ -39,13 +39,13 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_configure_codex_openai_mps` | Select OpenAI MPS in the real configure picker; launch Codex | Saved provider in status; completed TUI file task; normal exit |
 | `test_ug_claude_custom_oauth_cli_boots`, `test_ug_codex_custom_oauth_cli_boots` | Launch with `ENABLE_CUSTOM_OAUTH_FROM_CLI=1`, `--workspace`, and `--client-id databricks-cli` | Real TUI reaches a usable prompt, accepts keyboard input, exits normally, and saves `client_id = databricks-cli` in its generated CLI profile; Claude also reads the OS-managed settings and requires a profile-only `apiKeyHelper` |
 | `test_case_13_configured_claude_reuses_saved_model_location` | Configure Claude with a model location, then launch without options | The saved parent supplies the discovered catalog |
-| `test_case_14_configured_codex_reuses_saved_model_location` | Configure Codex with a model location, then launch without options | The saved parent supplies the discovered catalog |
+| `test_case_14_configured_codex_reuses_saved_model_location` | Configure Codex with a model location, then launch without options | The saved parent supplies exactly the Claude and Codex Model Services, independent of order |
 | `test_case_15_fresh_claude_uses_system_models_when_discovery_disabled` | Launch fresh Claude with discovery disabled | Workspace `system.ai` models appear; Claude Code creates no cache after picker launch |
 | `test_case_16_fresh_codex_uses_system_models_when_discovery_disabled` | Launch fresh Codex with discovery disabled | Workspace `system.ai` models appear without a scoped catalog |
-| `test_case_17_*` | Launch configured and fresh Claude with a provider | Automatic discovery supplies exactly the provider catalog |
+| `test_case_17_*` | Launch configured and fresh Claude with a provider | The cache contains exactly the provider model; the picker shows its row, including native Haiku 4.5 deduplication |
 | `test_case_18_*` | Launch configured and fresh Codex with a provider | The provider supplies exactly its model catalog |
 | `test_case_19_*` | Launch configured and fresh Claude with a model location | The explicit parent supplies exactly its picker catalog |
-| `test_case_20_*` | Launch configured and fresh Codex with a model location | The explicit parent supplies exactly its model catalog |
+| `test_case_20_*` | Launch configured and fresh Codex with a model location | The explicit parent supplies exactly the Claude and Codex Model Services, independent of order |
 | `test_case_21_*` | Launch configured and fresh Claude with a provider and discovery disabled | Claude uses native families; Claude Code creates no cache after picker launch |
 | `test_case_22_*` | Launch configured and fresh Codex with a provider and discovery disabled | Codex uses its native catalog and ug writes no scoped catalog |
 | `test_case_23_*` | Launch configured and fresh Claude with a parent and discovery disabled | Claude uses native families; Claude Code creates no cache after picker launch |
@@ -84,14 +84,16 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 With both agents selected there are **66 live cases** (16 interactive TUI cases),
 **4 managed-workspace cases** (marker `managed`, run against a separate workspace that
 publishes a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
-**36 managed-fixture cases** (marker `managed_fixture`, with only
-the CodingAgentConfig input injected), and **5 installation checks**. The 24 numbered scenarios
+**38 managed-fixture cases** (marker `managed_fixture`, with only
+the CodingAgentConfig input injected), and **7 installation checks**. The 24 numbered scenarios
 comprise **44 explicit journeys**: 24 managed configured/fresh executions and 20 unmanaged
-executions. Twelve additional managed-fixture cases cover focused model, MCP, skills,
+executions. Fourteen additional managed-fixture cases cover focused model, MCP, skills,
 and lifecycle shapes. Parametrization varies
 argument spelling or routing mode, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
 Generated-file cleanup and strict app-server stdout assertions remain enforced.
+Unmanaged discovery Cases 13–24 configure, list models, or open the picker without
+submitting inference prompts; separate task journeys still perform inference.
 Managed Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable
 links recreated by Codex version checks; persistent agent files remain compared.
 

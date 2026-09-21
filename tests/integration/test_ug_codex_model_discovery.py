@@ -7,11 +7,11 @@ pytestmark = pytest.mark.codex
 
 @pytest.mark.live
 def test_case_14_configured_codex_reuses_saved_model_location(
-    live_session, workspace, parent_schema, codex_parent_model
+    live_session, workspace, parent_schema, claude_parent_model, codex_parent_model
 ):
     """Scenario: configure Codex with --model-location, then launch without options.
 
-    Expected: the saved parent supplies Codex's discovered model catalog.
+    Expected: the saved parent supplies exactly both Claude and Codex Model Services.
     """
     session = live_session
     session.run(
@@ -29,7 +29,7 @@ def test_case_14_configured_codex_reuses_saved_model_location(
 
     models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
 
-    assert models == [codex_parent_model]
+    assert sorted(models) == sorted([claude_parent_model, codex_parent_model])
 
 
 @pytest.mark.live
@@ -105,11 +105,11 @@ def test_case_18_fresh_codex_provider_discovers_models_by_default(
 
 @pytest.mark.live
 def test_case_20_configured_codex_model_location_overrides_saved_setup(
-    live_session, workspace, parent_schema, codex_parent_model
+    live_session, workspace, parent_schema, claude_parent_model, codex_parent_model
 ):
     """Scenario: configure Codex, then launch with --model-location.
 
-    Expected: the explicit parent supplies its exact catalog.
+    Expected: the explicit parent supplies exactly both Claude and Codex Model Services.
     """
     session = live_session
     session.run(
@@ -133,16 +133,16 @@ def test_case_20_configured_codex_model_location_overrides_saved_setup(
         ]
     )
 
-    assert models == [codex_parent_model]
+    assert sorted(models) == sorted([claude_parent_model, codex_parent_model])
 
 
 @pytest.mark.live
 def test_case_20_fresh_codex_model_location_overrides_saved_setup(
-    live_session, workspace, parent_schema, codex_parent_model
+    live_session, workspace, parent_schema, claude_parent_model, codex_parent_model
 ):
     """Scenario: launch fresh Codex with --workspace and --model-location.
 
-    Expected: the explicit parent supplies its exact catalog.
+    Expected: the explicit parent supplies exactly both Claude and Codex Model Services.
     """
     session = live_session
     models = session.codex_model_ids(
@@ -158,7 +158,7 @@ def test_case_20_fresh_codex_model_location_overrides_saved_setup(
         ]
     )
 
-    assert models == [codex_parent_model]
+    assert sorted(models) == sorted([claude_parent_model, codex_parent_model])
 
 
 @pytest.mark.live
