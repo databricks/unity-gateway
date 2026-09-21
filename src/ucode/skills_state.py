@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ucode import config_io
+from ucode.string_utils import parse_update_time
 from ucode.ui import print_warning
 
 SKILLS_STATE_VERSION = 1
@@ -99,19 +100,14 @@ def _save(downloads: list[dict]) -> None:
 def last_update_check() -> datetime | None:
     """When the launch-time update sweep last ran, or None if it never has."""
     raw = _load_manifest().get("last_update_check")
-    if not isinstance(raw, str):
-        return None
-    try:
-        return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-    except ValueError:
-        return None
+    return parse_update_time(raw) if isinstance(raw, str) else None
 
 
 def set_last_update_check(when: datetime) -> None:
     """Record when the launch-time update sweep last ran."""
     manifest = _load_manifest()
     manifest["version"] = SKILLS_STATE_VERSION
-    manifest["last_update_check"] = when.strftime("%Y-%m-%dT%H:%M:%SZ")
+    manifest["last_update_check"] = when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     config_io.atomic_write_json(_skills_state_path(), manifest)
 
 

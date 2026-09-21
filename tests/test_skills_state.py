@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 from ucode import config_io, skills_state
@@ -272,6 +272,19 @@ class TestUpdateCheck:
             json.dumps({"version": 1, "last_update_check": "not-a-time"})
         )
         assert skills_state.last_update_check() is None
+
+    def test_reads_subsecond_form(self):
+        (config_io.APP_DIR / "skills.json").write_text(
+            json.dumps({"version": 1, "last_update_check": "2026-09-18T17:04:25.400Z"})
+        )
+        assert skills_state.last_update_check() == datetime(
+            2026, 9, 18, 17, 4, 25, 400000, tzinfo=UTC
+        )
+
+    def test_normalizes_non_utc_stamp_to_utc(self):
+        when = datetime(2026, 9, 18, 22, 4, tzinfo=timezone(timedelta(hours=5)))
+        skills_state.set_last_update_check(when)
+        assert skills_state.last_update_check() == datetime(2026, 9, 18, 17, 4, tzinfo=UTC)
 
     def test_recording_downloads_preserves_stamp(self, tmp_path):
         when = datetime(2026, 9, 18, 17, 4, tzinfo=UTC)
