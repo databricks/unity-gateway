@@ -450,7 +450,8 @@ def _eligible_launch_refresh_records(records: list[dict], workspace: str) -> lis
 def _get_updated_refs(
     workspace: str, token: str, records: list[dict]
 ) -> list[tuple[dict, SkillRef]]:
-    """Pair each record whose UC source is newer than its download with the current skill.
+    """Pair each record to re-download with its current skill: one whose UC source is newer than
+    its download, or one whose on-disk copy is only partly present and needs restoring to mirror UC.
 
     Resolves every record concurrently; one that no longer resolves (deleted, unfinalized,
     unauthorized) is skipped, leaving its on-disk copy alone. Times are parsed before comparing
@@ -469,7 +470,8 @@ def _get_updated_refs(
             record = futures[future]
             stored = parse_update_time(record.get("uc_update_time"))
             current = parse_update_time(ref.uc_update_time)
-            if stored is None or (current is not None and current > stored):
+            is_newer = stored is None or (current is not None and current > stored)
+            if is_newer or _record_dirs_missing(record):
                 pairs.append((record, ref))
     return pairs
 
@@ -500,10 +502,10 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
     """Update downloaded skills whose UC source changed, before an agent launches.
 
     Rate-limited to once per ``SKILL_UPDATE_CHECK_INTERVAL`` via the manifest's
-    ``last_update_check`` stamp, so back-to-back launches make no network calls. A record
-    whose directories the user deleted is forgotten rather than re-downloaded. Best-effort:
-    any failure is reported and the launch proceeds on whatever is already on disk, and the
-    stamp is advanced either way so a persistent failure cannot re-run the sweep every launch.
+    ``last_update_check`` stamp, so back-to-back launches make no network calls. A record whose
+    directories the user deleted entirely is forgotten; one only partly deleted is re-downloaded
+    to restore the mirror. Best-effort: any failure is reported and the launch proceeds on
+    whatever is already on disk.
     """
     try:
         now = datetime.now(UTC)
@@ -513,13 +515,10 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
         workspace = state.get("workspace")
         if not workspace:
             return
-        # Stamp before the sweep, not after: a failed check should wait out the interval like a
-        # successful one, so a persistent auth, network, or UC error cannot make every launch
-        # re-attempt (and reprint these notes) on the hot path.
         set_last_update_check(now)
         deleted, present = [], []
         for record in _eligible_launch_refresh_records(list_downloaded(), workspace):
-            (deleted if _record_dirs_missing(record) else present).append(record)
+            (deleted if _record_dirs_all_missing(record) else present).append(record)
         forget(deleted)
         if present:
             print_note("Checking Unity Catalog for downloaded skill updates...")
@@ -650,6 +649,12 @@ def configure_skills_download_picker_command(path: str | None = None) -> int:
 def _record_dirs_missing(record: dict) -> bool:
     """Whether any of a record's on-disk directories no longer exists."""
     return any(not Path(directory).exists() for directory in record.get("dirs") or [])
+
+
+def _record_dirs_all_missing(record: dict) -> bool:
+    """Whether every one of a record's on-disk directories no longer exists."""
+    dirs = record.get("dirs") or []
+    return bool(dirs) and all(not Path(directory).exists() for directory in dirs)
 
 
 def _download_label(record: dict) -> str:
