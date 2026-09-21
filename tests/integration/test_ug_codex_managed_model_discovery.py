@@ -16,6 +16,7 @@ from utils.managed import (
     is_managed_config_control_plane_cache,
     use_managed_config_stub,
 )
+from utils.terminal import TerminalProcess
 
 pytestmark = [pytest.mark.managed_fixture, pytest.mark.codex]
 
@@ -107,9 +108,18 @@ def test_case_02_managed_codex_uses_admin_discovery_after_configure(live_session
     """Scenario: configure managed Codex, then launch its app server.
 
     Expected: ug-launched and fresh bare Codex app servers expose exactly the admin-managed
-    model catalog. This verifies the desktop startup configuration, not GUI rendering.
+    model catalog. After those checks, real `ug revert` removes the ug-owned shared catalog
+    pointer and stable catalog while preserving an unrelated user-owned Codex setting. This
+    verifies desktop startup configuration and cleanup, not GUI rendering or inference.
     """
     session = live_session
+    user_config = session.home / ".codex" / "config.toml"
+    original_user_config = (
+        "# user-owned Codex settings\n[notice]\nhide_rate_limit_model_nudge = true\n"
+    )
+    user_config.parent.mkdir(parents=True)
+    user_config.write_text(original_user_config)
+
     configured = session.run(
         "configure",
         "--workspace",
@@ -127,6 +137,15 @@ def test_case_02_managed_codex_uses_admin_discovery_after_configure(live_session
         ["app-server", "--listen", "stdio://"], name="bare-codex-models", binary="codex"
     )
     assert app_models == models, (app_models, models)
+
+    with TerminalProcess(
+        session, "ug", [str(session.binary), "revert"], "managed-discovery-revert"
+    ) as terminal:
+        terminal.finish()
+    shared_config = tomllib.loads(user_config.read_text())
+    assert "model_catalog_json" not in shared_config, shared_config
+    assert tomllib.loads(user_config.read_text()) == tomllib.loads(original_user_config)
+    assert not (session.home / ".ucode" / "codex-model-catalog.json").exists()
 
 
 def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(live_session, workspace):

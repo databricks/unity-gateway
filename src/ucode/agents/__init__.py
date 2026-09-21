@@ -134,6 +134,11 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
         command = ["npm", "install", "-g", target]
 
     print_note(f"Upgrading {spec['display']}...")
+    if tool == "codex":
+        # Codex's update command and npm replacement can invalidate the metadata
+        # referenced by the desktop app. Detach before mutating the binary and
+        # leave the reference detached until a later validated catalog publish.
+        codex.detach_app_model_catalog()
     try:
         subprocess.run(command, check=True, timeout=300)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
@@ -224,6 +229,10 @@ def install_tool_binary(
 
     print_section("Bootstrap")
     print_warning(f"`{binary}` was not found. Installing {spec['display']}...")
+    if tool == "codex":
+        # The newly installed binary may not understand the previous catalog.
+        # Detachment must happen before npm mutates the installation.
+        codex.detach_app_model_catalog()
     try:
         subprocess.run(["npm", "install", "-g", package], check=True, timeout=300)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:

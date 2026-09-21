@@ -15,6 +15,16 @@ from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.ui import print_warning
 
 _TIMEOUT_SECONDS = 30
+_CATALOG_VALIDATION_ERROR = (
+    "Could not load the Codex model catalog with the selected Codex binary. "
+    "Update Codex and retry `ug codex`."
+)
+_PREPARE_CATALOG_ERROR = (
+    "Could not build the managed Codex model catalog locally. "
+    "Upgrade the active Codex installation and verify "
+    "`codex debug models --bundled` works, then retry configuration. "
+    "Gateway discovery was not used."
+)
 
 # Known hosted-model capabilities, following universe#2591694. These are not
 # universal non-GPT defaults: an arbitrary UC service need not support images,
@@ -124,6 +134,47 @@ def build_codex_catalog(
     return {"models": models}
 
 
+def _run_catalog_command(
+    binary: str, args: list[str], *, home: str, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [binary, *args],
+        env=env,
+        cwd=home,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=_TIMEOUT_SECONDS,
+        check=True,
+    )
+
+
+def _validate_codex_catalog_in_home(binary: str, catalog: dict, home: str) -> None:
+    candidate = Path(home) / "catalog.json"
+    candidate.write_text(json.dumps(catalog), encoding="utf-8")
+    env = {**os.environ, "CODEX_HOME": home}
+    _run_catalog_command(
+        binary,
+        [
+            "-c",
+            f"model_catalog_json={json.dumps(str(candidate))}",
+            "debug",
+            "models",
+        ],
+        home=home,
+        env=env,
+    )
+
+
+def validate_codex_catalog(binary: str, catalog: dict) -> None:
+    """Validate a candidate catalog with the selected Codex binary in isolation."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="ug-codex-catalog-") as home:
+            _validate_codex_catalog_in_home(binary, catalog, home)
+    except (OSError, TypeError, ValueError, subprocess.SubprocessError):
+        raise RuntimeError(_CATALOG_VALIDATION_ERROR) from None
+
+
 def prepare_codex_catalog(binary: str, names: list[str]) -> dict:
     """Extract and validate with the launch binary; never fetch or reuse stale metadata.
 
@@ -134,19 +185,9 @@ def prepare_codex_catalog(binary: str, names: list[str]) -> dict:
     try:
         with tempfile.TemporaryDirectory(prefix="ug-codex-catalog-") as home:
             env = {**os.environ, "CODEX_HOME": home}
-
-            def run(args: list[str]) -> subprocess.CompletedProcess[str]:
-                return subprocess.run(
-                    [binary, *args],
-                    env=env,
-                    cwd=home,
-                    capture_output=True,
-                    text=True,
-                    timeout=_TIMEOUT_SECONDS,
-                    check=True,
-                )
-
-            result = run(["debug", "models", "--bundled"])
+            result = _run_catalog_command(
+                binary, ["debug", "models", "--bundled"], home=home, env=env
+            )
             payload = json.loads(result.stdout)
             bundled = payload.get("models") if isinstance(payload, dict) else None
             if (
@@ -160,23 +201,9 @@ def prepare_codex_catalog(binary: str, names: list[str]) -> dict:
                 raise ValueError("invalid bundled model catalog")
             fallback_warnings: list[str] = []
             catalog = build_codex_catalog(bundled, names, warn=fallback_warnings.append)
-            candidate = Path(home) / "catalog.json"
-            candidate.write_text(json.dumps(catalog), encoding="utf-8")
-            run(
-                [
-                    "-c",
-                    f"model_catalog_json={json.dumps(str(candidate))}",
-                    "debug",
-                    "models",
-                ]
-            )
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        raise RuntimeError(
-            "Could not build the managed Codex model catalog locally. "
-            "Upgrade the active Codex installation and verify "
-            "`codex debug models --bundled` works, then retry configuration. "
-            "Gateway discovery was not used."
-        ) from exc
+            _validate_codex_catalog_in_home(binary, catalog, home)
+    except (OSError, TypeError, ValueError, subprocess.SubprocessError):
+        raise RuntimeError(_PREPARE_CATALOG_ERROR) from None
     for message in fallback_warnings:
         print_warning(message)
     return catalog

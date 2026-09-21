@@ -82,7 +82,7 @@ from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
-from .codex_catalog import prepare_codex_catalog
+from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
 
 CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"
@@ -373,7 +373,7 @@ def revert_legacy_shared_config() -> bool:
     Returns True if anything was removed.
     """
     legacy_changed = _strip_legacy_ucode_entries(_legacy_config_path())
-    app_catalog_changed = _remove_app_catalog_reference()
+    app_catalog_changed = detach_app_model_catalog()
     if app_catalog_changed and CODEX_MODEL_CATALOG_PATH.exists():
         CODEX_MODEL_CATALOG_PATH.unlink()
     return legacy_changed or app_catalog_changed
@@ -453,11 +453,15 @@ def write_tool_config(
     catalog_path = str(CODEX_MODEL_CATALOG_PATH) if static_models and not provider else None
     # Build and validate before modifying config so failure cannot leave a stale
     # catalog enabled or partially rewrite the user's configuration.
-    catalog = (
-        prepare_codex_catalog(SPEC["binary"], static_models)
-        if static_models and not provider
-        else None
-    )
+    try:
+        catalog = (
+            prepare_codex_catalog(SPEC["binary"], static_models)
+            if static_models and not provider
+            else None
+        )
+    except RuntimeError:
+        _detach_app_catalog_after_failure()
+        raise
 
     _remove_legacy_ucode_profile()
     # Back up only a file that predates ucode's management of the tool. A
@@ -494,7 +498,7 @@ def write_tool_config(
     if catalog is not None:
         _sync_app_model_catalog(catalog)
     elif not is_dry_run():
-        _remove_app_catalog_reference()
+        detach_app_model_catalog()
         if CODEX_MODEL_CATALOG_PATH.exists():
             CODEX_MODEL_CATALOG_PATH.unlink()
 
@@ -839,6 +843,15 @@ def _install_app_catalog_reference() -> bool:
             f"Codex App already uses the custom model catalog {existing}; leaving it unchanged."
         )
         return False
+    provider = doc.get("model_provider")
+    if provider not in (None, CODEX_MODEL_PROVIDER_NAME, LEGACY_CODEX_MODEL_PROVIDER_NAME):
+        if _is_ucode_catalog_reference(existing):
+            doc.pop("model_catalog_json", None)
+            write_toml_file(path, doc)
+        print_warning_err(
+            f"Codex App uses the custom provider {provider}; leaving its model catalog unmanaged."
+        )
+        return False
     catalog_path = str(CODEX_MODEL_CATALOG_PATH)
     if existing == catalog_path:
         return False
@@ -847,7 +860,7 @@ def _install_app_catalog_reference() -> bool:
     return True
 
 
-def _remove_app_catalog_reference() -> bool:
+def detach_app_model_catalog() -> bool:
     """Remove only a shared catalog reference owned by ucode."""
     if is_dry_run():
         return False
@@ -862,10 +875,19 @@ def _remove_app_catalog_reference() -> bool:
     return True
 
 
+def _detach_app_catalog_after_failure() -> None:
+    """Keep the original catalog error when shared settings cannot be edited."""
+    try:
+        detach_app_model_catalog()
+    except RuntimeError as exc:
+        print_warning_err(str(exc))
+
+
 def _sync_app_model_catalog(catalog: dict) -> None:
-    """Refresh the stable catalog that Codex App loads from shared config."""
+    """Publish a validated catalog without overwriting unreadable app settings."""
     if is_dry_run():
         return
+    _read_app_config()
     _write_model_catalog(CODEX_MODEL_CATALOG_PATH, catalog)
     _install_app_catalog_reference()
 
@@ -972,6 +994,9 @@ def _run_codex(
     workspace: str | None,
 ) -> None:
     """Launch Codex — via the loopback proxy when OTLP tracing is on, else exec-replace."""
+    if tool_args[:1] == ["update"]:
+        # exec replaces ug, so reattach only on a later validated refresh.
+        detach_app_model_catalog()
     if otel_tracing and workspace:
         _launch_codex_with_otel_proxy(state, base_argv, tool_args, workspace)
     else:
@@ -1040,7 +1065,10 @@ def launch(
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
-    if workspace and token and (provider or parent_schema):
+    updating = tool_args[:1] == ["update"]
+    if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
+        profile_doc.pop("model_catalog_json")
+    if workspace and token and (provider or parent_schema) and not updating:
         try:
             if provider is not None:
                 catalog_source = CodexCatalogSource.PROVIDER
@@ -1058,8 +1086,14 @@ def launch(
                 source=catalog_source,
                 identifier=catalog_identifier,
             )
+            validate_codex_catalog(binary, catalog)
         except CodexMpsModelCatalogUnavailable:
-            _remove_app_catalog_reference()
+            detach_app_model_catalog()
+        except RuntimeError:
+            # A failed discovery/validation must not leave a previous workspace's
+            # catalog active in independently launched app servers.
+            _detach_app_catalog_after_failure()
+            raise
         else:
             catalog_path = _model_catalog_path(workspace, catalog_scope)
             _write_model_catalog(catalog_path, catalog)

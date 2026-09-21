@@ -804,9 +804,32 @@ class TestCodexAppCatalog:
         shared_path.parent.mkdir()
         original = 'model = "unfinished\n'
         shared_path.write_text(original, encoding="utf-8")
+        codex.CODEX_MODEL_CATALOG_PATH.write_text("previous catalog", encoding="utf-8")
 
         with pytest.raises(RuntimeError, match="Cannot update Codex App settings"):
             codex._sync_app_model_catalog({"models": [{"slug": "gpt-mps"}]})
+
+        assert shared_path.read_text() == original
+        assert codex.CODEX_MODEL_CATALOG_PATH.read_text() == "previous catalog"
+
+    @pytest.mark.parametrize("previous_catalog", [False, True])
+    def test_custom_provider_keeps_its_own_model_discovery(self, previous_catalog):
+        if previous_catalog:
+            codex._sync_app_model_catalog({"models": [{"slug": "previous"}]})
+        shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
+        shared_path.parent.mkdir(exist_ok=True)
+        original = '# User settings\nmodel_provider = "custom"\nmodel = "user-model"\n'
+        shared_path.write_text(
+            original
+            + (
+                f'model_catalog_json = "{codex.CODEX_MODEL_CATALOG_PATH}"\n'
+                if previous_catalog
+                else ""
+            ),
+            encoding="utf-8",
+        )
+
+        codex._sync_app_model_catalog({"models": [{"slug": "gpt-mps"}]})
 
         assert shared_path.read_text() == original
 
@@ -832,6 +855,23 @@ class TestCodexAppCatalog:
         shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
         assert "model_catalog_json" not in read_toml_safe(shared_path)
         assert not codex.CODEX_MODEL_CATALOG_PATH.exists()
+
+    def test_failed_static_validation_detaches_previous_app_catalog(self, monkeypatch):
+        codex._sync_app_model_catalog({"models": [{"slug": "old-model"}]})
+        original_catalog = codex.CODEX_MODEL_CATALOG_PATH.read_bytes()
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.154.0")
+
+        def reject(*args):
+            raise RuntimeError("catalog is incompatible")
+
+        monkeypatch.setattr(codex, "prepare_codex_catalog", reject)
+        with pytest.raises(RuntimeError, match="incompatible"):
+            codex.write_tool_config({"workspace": WS, "codex_static_models": ["new-model"]})
+
+        assert "model_catalog_json" not in read_toml_safe(
+            codex.CODEX_CONFIG_PATH.parent / "config.toml"
+        )
+        assert codex.CODEX_MODEL_CATALOG_PATH.read_bytes() == original_catalog
 
     def test_revert_preserves_subsequent_user_catalog(self, tmp_path):
         codex._sync_app_model_catalog({"models": [{"slug": "gpt-mps"}]})
@@ -918,6 +958,9 @@ class TestCodexLaunch:
             lambda workspace, profile=None, force_refresh=False: "tok",
         )
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
+        # These launch tests isolate the real-binary validation boundary; its
+        # subprocess contract is covered in test_codex_catalog.py.
+        monkeypatch.setattr(codex, "validate_codex_catalog", lambda binary, catalog: None)
         return launches
 
     def test_sets_oauth_token(self, tmp_path, monkeypatch):
@@ -932,6 +975,47 @@ class TestCodexLaunch:
 
         assert os.environ["OAUTH_TOKEN"] == "fresh-token"
         assert launches[0][-1] == "--search"
+
+    @pytest.mark.parametrize("custom_catalog", [None, "/user/isaac-app-model-catalog.json"])
+    def test_native_update_detaches_catalog_without_discovery(
+        self, tmp_path, monkeypatch, custom_catalog
+    ):
+        self._patch(tmp_path, monkeypatch)
+        codex._sync_app_model_catalog({"models": [{"slug": "old-model"}]})
+        shared_path = tmp_path / "config.toml"
+        if custom_catalog:
+            shared_path.write_text(f'model_catalog_json = "{custom_catalog}"\n')
+        profile_path = codex.CODEX_CONFIG_PATH
+        profile_path.write_text(
+            f'model_catalog_json = "{codex.CODEX_MODEL_CATALOG_PATH}"\n' + profile_path.read_text()
+        )
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda *a, **k: pytest.fail("update must not depend on gateway discovery"),
+        )
+        monkeypatch.setattr(
+            codex,
+            "validate_codex_catalog",
+            lambda *a, **k: pytest.fail("update must not load an old catalog"),
+        )
+        launches = []
+
+        def execute(argv):
+            assert read_toml_safe(shared_path).get("model_catalog_json") == custom_catalog
+            assert not any(arg.startswith("model_catalog_json=") for arg in argv)
+            launches.append(argv)
+
+        monkeypatch.setattr(codex, "exec_or_spawn", execute)
+        codex.launch(
+            {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
+            ["update"],
+            options=LaunchOptions(),
+        )
+
+        assert len(launches) == 1
+        assert launches[0][-1] == "update"
+        assert read_toml_safe(shared_path).get("model_catalog_json") == custom_catalog
 
     def test_provider_discovery_uses_authoritative_catalog(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
@@ -970,6 +1054,61 @@ class TestCodexLaunch:
             arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
         )
         assert 'Databricks-Model-Provider-Service = "main.default.openai"' in provider_arg
+
+    def test_discovery_is_validated_before_catalogs_are_published(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        catalog = {"models": [{"slug": "gpt-mps", "future_metadata": {"tools": True}}]}
+        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", lambda *a, **k: catalog)
+        validations = []
+
+        def validate(binary, candidate):
+            assert not codex.CODEX_MODEL_CATALOG_PATH.exists()
+            assert not list(
+                codex.CODEX_MODEL_CATALOG_PATH.parent.glob("codex-model-catalog-*.json")
+            )
+            validations.append((binary, candidate))
+
+        monkeypatch.setattr(codex, "validate_codex_catalog", validate)
+        codex.launch(
+            {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert validations == [(codex.SPEC["binary"], catalog)]
+        assert json.loads(codex.CODEX_MODEL_CATALOG_PATH.read_text()) == catalog
+        assert launches
+
+    @pytest.mark.parametrize("custom_catalog", [None, "/user/isaac-app-model-catalog.json"])
+    def test_incompatible_discovery_removes_only_ug_reference(
+        self, tmp_path, monkeypatch, custom_catalog
+    ):
+        launches = self._patch(tmp_path, monkeypatch)
+        codex._sync_app_model_catalog({"models": [{"slug": "old-model"}]})
+        original_catalog = codex.CODEX_MODEL_CATALOG_PATH.read_bytes()
+        shared_path = tmp_path / "config.toml"
+        if custom_catalog:
+            shared_path.write_text(f'model_catalog_json = "{custom_catalog}"\n')
+        monkeypatch.setattr(
+            codex, "_fetch_codex_model_catalog", lambda *a, **k: {"models": [{"slug": "new"}]}
+        )
+
+        def reject(binary, catalog):
+            raise RuntimeError("The installed Codex cannot load this model catalog")
+
+        monkeypatch.setattr(codex, "validate_codex_catalog", reject)
+
+        with pytest.raises(RuntimeError, match="cannot load this model catalog"):
+            codex.launch(
+                {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
+                [],
+                options=LaunchOptions(),
+            )
+
+        assert not launches
+        assert read_toml_safe(shared_path).get("model_catalog_json") == custom_catalog
+        assert codex.CODEX_MODEL_CATALOG_PATH.read_bytes() == original_catalog
+        assert not list(codex.CODEX_MODEL_CATALOG_PATH.parent.glob("codex-model-catalog-*.json"))
 
     def test_provider_discovery_preserves_custom_app_catalog(self, tmp_path, monkeypatch, capsys):
         launches = self._patch(tmp_path, monkeypatch)
@@ -1204,6 +1343,27 @@ class TestCodexLaunch:
             )
 
         assert launches == []
+
+    def test_discovery_error_survives_unreadable_shared_config(self, tmp_path, monkeypatch, capsys):
+        launches = self._patch(tmp_path, monkeypatch)
+        shared_path = tmp_path / "config.toml"
+        original = 'model = "unfinished\n'
+        shared_path.write_text(original)
+
+        def fail_discovery(*args, **kwargs):
+            raise RuntimeError("HTTP 403 Forbidden")
+
+        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", fail_discovery)
+        with pytest.raises(RuntimeError, match="HTTP 403 Forbidden"):
+            codex.launch(
+                {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
+                [],
+                options=LaunchOptions(),
+            )
+
+        assert not launches
+        assert shared_path.read_text() == original
+        assert "Cannot update Codex App settings" in " ".join(capsys.readouterr().err.split())
 
     def test_provider_rejects_managed_model_catalog(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)

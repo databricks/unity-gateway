@@ -56,13 +56,23 @@ models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
 to select another model source; managed workspace configs control their own sources.
 
-When `ug codex` discovers a model catalog, it also refreshes
+When `ug codex` discovers a model catalog, it validates it with the installed
+Codex binary, then refreshes
 `~/.ucode/codex-model-catalog.json` and points the shared `~/.codex/config.toml`
 at it. Managed static model lists use the same path. Restart Codex App to load
 the latest list; the app's provider and authentication must already be configured
 for the corresponding gateway. The most recently refreshed workspace supplies
-the app catalog. An existing custom catalog setting is preserved, and `ug revert`
+the app catalog. Existing custom catalog settings (including Isaac's catalog)
+and custom providers are preserved; catalogs are not combined. `ug revert`
 removes the shared catalog reference installed by ug.
+
+Before installing or updating Codex, ug detaches its shared catalog reference.
+Run `ug codex` again to refresh discovery, or rerun `ug configure` for a managed
+static list, before restarting or reconnecting the app. Do the same after
+updating Codex outside ug. A failed catalog validation removes ug's shared
+reference and reports an error rather than publishing an incompatible catalog.
+Validation uses the Codex binary on this host; it does not verify a desktop
+app's separate bundled binary on another machine.
 
 ## Configure
 

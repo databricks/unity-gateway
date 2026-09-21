@@ -110,7 +110,7 @@ test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across tw
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_claude_managed_model_discovery.py # fetched/reused Claude MPS policy cases
 test_ug_codex_managed_model_discovery.py  # fetched/reused Codex MPS policy cases
-test_ug_configure_managed.py            # managed workspace: static model list, no agent selector
+test_ug_configure_managed.py            # managed workspace: static model list/catalog pointer, no agent selector
 test_ug_configure_managed_models.py     # injected model sources, smart-routing banner, Codex fallback metadata
 test_ug_configure_managed_mcp.py        # injected managed MCP list
 test_ug_configure_managed_skills.py     # injected managed skills: download, coexist, reconcile away
@@ -326,7 +326,10 @@ cannot still be running when that gate passes. Full coverage on PRs needs no lab
 **Managed config** jobs against a second workspace that publishes an admin CodingAgentConfig,
 which the shared `live` workspace deliberately does not. `ug configure` applies the admin config
 with no agent selector, and each agent's generated config exposes exactly the admin's static
-`model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog).
+`model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog). The managed
+Codex case also checks that the shared app config points at the stable catalog and that a fresh
+bare Codex app-server returns the expected visible model before the existing TUI prompt/input
+assertion. It does not claim GUI rendering or inference coverage.
 
 Treat that published CodingAgentConfig as shared CI fixture state. The managed lanes assert its
 exact model ids and its both-agent enablement, so editing the managed workspace's config (models,
@@ -341,8 +344,11 @@ across all configured/fresh scenarios. The Codex module does the same with
 `main.default.ci_e2e_openai_mps`. The tests verify Claude's admin header, native cache and real
 model picker, Codex's exact app-server catalog, and both agents' rejection of personal source
 overrides. Codex discovery also refreshes a stable catalog and shared-config reference, then a
-fresh bare `codex app-server` must return the same models without ug launch overrides. This
-checks desktop startup configuration, not GUI rendering or inference through the desktop app.
+fresh bare `codex app-server` must return the same models without ug launch overrides. The
+configured discovery journey subsequently runs real `ug revert`, verifies that the shared pointer
+and stable catalog are gone, and checks that an ordinary user-owned Codex setting survives. This
+checks desktop startup configuration and cleanup, not GUI rendering or inference through the
+desktop app.
 Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable links
 recreated by version checks, while continuing to compare persistent agent files.
 In addition, `test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
