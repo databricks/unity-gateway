@@ -208,9 +208,7 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
         SMART_ROUTER_RECIPE_HEADER.casefold(),
     }
 )
-# Case-folded ANTHROPIC_CUSTOM_HEADERS names ucode wrote on the previous launch (static + admin
-# managed). Tracked in state so a managed header an admin later removes is dropped rather than
-# preserved as an unrecognized user header.
+# Header names ucode wrote last launch, tracked so a removed managed header is dropped next launch.
 CLAUDE_MANAGED_HEADER_NAMES_STATE_KEY = "claude_managed_header_names"
 # Relayed drops the user scope to deliberately omit the stale apiKeyHelper. Only applied to relayed
 # launches — normal launches keep loading user settings (hooks/permissions) as before.
@@ -220,12 +218,7 @@ _RELAYED_SETTING_SOURCES = "project,local"
 def _apply_managed_header_lines(
     ucode_lines: list[str], managed_http_headers: dict[str, str] | None
 ) -> list[str]:
-    """Overlay admin-supplied ``managed_http_headers`` onto ucode's own header lines.
-
-    Admin headers win on a case-insensitive name collision: a managed value replaces
-    ucode's line in its existing position, and any managed header ucode does not emit is
-    appended after. Returns the ordered ``key: value`` lines.
-    """
+    """Overlay admin ``managed_http_headers`` onto ucode's header lines; admin wins by name."""
     lines_by_name: dict[str, str] = {}
     for line in ucode_lines:
         name, _separator, _value = line.partition(":")
@@ -431,9 +424,6 @@ def render_overlay(
         header_lines.append(f"{SMART_ROUTER_RECIPE_HEADER}: {configured_router_name()}")
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
-    #
-    # Admin-supplied managed headers win on a name collision: applied over ucode's
-    # own lines, they replace a matching header in place and append the rest.
     custom_headers = "\n".join(_apply_managed_header_lines(header_lines, managed_http_headers))
     env: dict[str, str] = {
         "ANTHROPIC_BASE_URL": base_url,
@@ -939,10 +929,8 @@ def write_tool_config(
         picker_catalog=picker_catalog,
         managed_http_headers=state.get("claude_http_headers"),
     )
-    # Names ucode manages in ANTHROPIC_CUSTOM_HEADERS this launch (static + admin), unioned with
-    # the names it wrote last launch. Any name in this set that ucode no longer emits is dropped
-    # from the file, so a header an admin removes from managed config does not linger; header names
-    # the developer hand-added themselves stay untouched.
+    # Names ucode owns this launch, unioned with last launch's, so a removed managed header is
+    # dropped while hand-added user headers are left alone.
     current_header_names = _custom_header_names(
         overlay["env"].get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY)
     )
@@ -1128,8 +1116,6 @@ def write_tool_config(
     else:
         state.pop("claude_relayed", None)
         state.pop("relayed_proxy_port", None)
-    # Record the ANTHROPIC_CUSTOM_HEADERS names ucode wrote so the next launch can drop any that an
-    # admin later removes from managed config.
     if current_header_names:
         state[CLAUDE_MANAGED_HEADER_NAMES_STATE_KEY] = sorted(current_header_names)
     else:
@@ -1144,21 +1130,13 @@ def _merge_anthropic_custom_headers(
     ucode_headers: str,
     managed_names: Collection[str] = CLAUDE_MANAGED_CUSTOM_HEADER_NAMES,
 ) -> str:
-    """Preserve user headers while replacing the header names managed by ucode.
+    """Merge the newline-delimited ``ANTHROPIC_CUSTOM_HEADERS`` string, replacing ucode-owned names.
 
-    Claude's ``ANTHROPIC_CUSTOM_HEADERS`` value is a newline-delimited string. To merge it, we:
-
-    1. Split the existing custom headers by newline into individual header items.
-    2. Split each item on ``:`` to identify its header name.
-    3. Replace headers whose name is in ``managed_names`` with ucode's values in their existing
-       positions, while preserving all other existing headers. A managed name ucode is no longer
-       emitting this launch (e.g. an admin-removed header) is dropped rather than preserved.
-    4. Append any ucode-managed headers that were not already present.
-
-    ``managed_names`` is the case-folded set ucode owns this launch — the static
-    ``CLAUDE_MANAGED_CUSTOM_HEADER_NAMES`` plus admin-supplied header names (current and previously
-    written). Header names are compared case-insensitively. Non-header lines are also preserved to
-    avoid silently discarding user configuration we do not understand.
+    A header whose case-folded name is in ``managed_names`` is replaced in place with ucode's value,
+    or dropped when ucode no longer emits it (e.g. an admin-removed header); ucode headers not
+    already present are appended. All other existing lines (hand-added user headers, non-header
+    lines) are preserved. ``managed_names`` is the static set plus admin header names, current and
+    previously written.
     """
 
     if not isinstance(existing, str) or not existing:
