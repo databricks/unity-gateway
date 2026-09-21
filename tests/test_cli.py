@@ -803,30 +803,23 @@ class TestSubcommandRouting:
         assert result.exit_code == 1
         assert "--model-location must be `<catalog>.<schema>`." in _strip_ansi(result.output)
 
-    def test_codex_disable_removes_hooks_without_launching(self):
+    @pytest.mark.parametrize("tool", ["codex", "claude"])
+    def test_disable_smart_routing_is_not_consumed_by_ucode(self, tool):
         with (
-            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
             patch("ucode.cli.codex_agent.disable_smart_routing") as mock_disable,
+            patch("ucode.cli.claude_agent.disable_smart_routing") as mock_disable_claude,
             patch("ucode.cli._launch_tool") as mock_launch,
         ):
-            result = runner.invoke(app, ["codex", "--disable-smart-routing"])
+            result = runner.invoke(app, [tool, "--disable-smart-routing"])
 
         assert result.exit_code == 0, result.output
-        mock_disable.assert_called_once_with(MINIMAL_STATE)
-        mock_launch.assert_not_called()
-        assert "routing hooks removed" in result.output
-
-    def test_codex_routing_flags_are_mutually_exclusive(self):
-        result = runner.invoke(
-            app,
-            ["codex", "--enable-smart-routing", "--disable-smart-routing"],
-        )
-
-        assert result.exit_code == 1
-        assert "Use only one" in result.output
+        mock_disable.assert_not_called()
+        mock_disable_claude.assert_not_called()
+        mock_launch.assert_called_once()
+        assert mock_launch.call_args.args[1].args == ["--disable-smart-routing"]
 
     @pytest.mark.parametrize("tool", ["codex", "claude"])
-    def test_disable_smart_routing_is_hidden(self, tool):
+    def test_disable_smart_routing_is_not_in_help(self, tool):
         result = runner.invoke(app, [tool, "--help"])
 
         assert result.exit_code == 0, result.output

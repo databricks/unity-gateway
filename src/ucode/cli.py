@@ -3060,14 +3060,6 @@ def codex_cmd(
             help="Enable AI Gateway model routing for Codex sessions and subagents.",
         ),
     ] = False,
-    disable_smart_routing_flag: Annotated[
-        bool,
-        typer.Option(
-            "--disable-smart-routing",
-            hidden=True,
-            help="Disable smart routing and remove ug's Codex routing hooks.",
-        ),
-    ] = False,
 ) -> None:
     """Launch Codex via Databricks."""
     try:
@@ -3075,13 +3067,6 @@ def codex_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
-    if enable_smart_routing_flag and disable_smart_routing_flag:
-        print_err("Use only one of --enable-smart-routing or --disable-smart-routing.")
-        raise typer.Exit(1)
-    if disable_smart_routing_flag:
-        codex_agent.disable_smart_routing(load_state())
-        print_success("Codex smart routing disabled; ug routing hooks removed")
-        return
     with _smart_routing_v2_flag(enable_smart_routing_flag):
         with _disable_smart_routing_for_subcommand("codex", ctx):
             _launch_tool(
@@ -3161,14 +3146,6 @@ def claude_cmd(
             help="Enable AI Gateway model routing for Claude Code sessions and subagents.",
         ),
     ] = False,
-    disable_smart_routing_flag: Annotated[
-        bool,
-        typer.Option(
-            "--disable-smart-routing",
-            hidden=True,
-            help="Disable smart routing and remove ug's Claude Code routing hooks.",
-        ),
-    ] = False,
 ) -> None:
     """Launch Claude Code via Databricks."""
     try:
@@ -3176,13 +3153,6 @@ def claude_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
-    if enable_smart_routing_flag and disable_smart_routing_flag:
-        print_err("Use only one of --enable-smart-routing or --disable-smart-routing.")
-        raise typer.Exit(1)
-    if disable_smart_routing_flag:
-        claude_agent.disable_smart_routing(load_state())
-        print_success("Claude Code smart routing disabled; ug routing hooks removed")
-        return
     with _smart_routing_v2_flag(enable_smart_routing_flag):
         with _disable_smart_routing_for_subcommand("claude", ctx):
             _launch_tool(

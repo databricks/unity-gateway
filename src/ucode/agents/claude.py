@@ -1511,7 +1511,7 @@ def launch(
     if options.launch_smart_routing and os.name == "nt":
         raise RuntimeError(
             "Smart routing in Claude Code is currently not supported on Windows. "
-            "Please use Codex or disable smart routing."
+            "Please use Codex or launch without --enable-smart-routing."
         )
     if options.launch_smart_routing:
         smart_routing_v2.launch_claude(
