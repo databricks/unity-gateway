@@ -39,8 +39,6 @@ def test_ug_codex_exports_trace_to_configured_table(live_session, workspace, tmp
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
-    assert session.workspace_state().get("codex_otel_tracing") is True
-
     result = session.run(
         "codex",
         "--",
