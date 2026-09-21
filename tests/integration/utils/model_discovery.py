@@ -4,6 +4,11 @@ import re
 
 _CLAUDE_GATEWAY_ALIAS = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{8}-(?P<model>.*)$")
 _CLAUDE_PICKER_ROW = re.compile(r"(?m)^[ \t]*(?:[❯›>][ \t]*)?\d+\.[ \t]+(?P<label>[^\n]*)$")
+_CLAUDE_NATIVE_PICKER_LABELS = {
+    "claude-haiku-4-5": ("Haiku", "Haiku 4.5"),
+    "claude-opus-5": ("Opus", "Opus 5"),
+    "claude-sonnet-5": ("Sonnet", "Sonnet 5"),
+}
 _SYSTEM_AI_PREFIX = "system.ai."
 
 
@@ -18,6 +23,13 @@ def claude_model_in_picker(screen: str, model_id: str, display_name: str | None)
     if model_id == "claude-haiku-4-5-20251001":
         # Claude deduplicates this gateway model into its built-in Haiku 4.5 row.
         return any(re.search(r"^Haiku\b[^\n]*\bHaiku 4\.5\b", row) for row in rows)
+    if model_id in _CLAUDE_NATIVE_PICKER_LABELS:
+        # Bare native IDs can also be deduplicated into built-in family rows.
+        # Match the exact family/version, never a banner or another native version.
+        family, label = _CLAUDE_NATIVE_PICKER_LABELS[model_id]
+        pattern = rf"^{re.escape(family)}\b[^\n]*\b{re.escape(label)}\b(?!\.\d)"
+        if any(re.search(pattern, row) for row in rows):
+            return True
     candidates = [
         value for value in (model_id, display_name) if isinstance(value, str) and value.strip()
     ]

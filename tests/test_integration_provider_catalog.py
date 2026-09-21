@@ -135,6 +135,20 @@ def test_codex_provider_fetch_is_a_scoped_bounded_metadata_get(monkeypatch):
     assert result.model_ids == ("gpt-a",)
 
 
+@pytest.mark.parametrize("ids", [["c.s.codex"], ["c.s.claude", "c.s.codex"]])
+def test_codex_parent_fetch_uses_parent_scope_and_retains_exact_api_catalog(monkeypatch, ids):
+    def get_json(url, headers):
+        assert url == "https://workspace/ai-gateway/codex/v1/models"
+        assert headers["Authorization"] == "Bearer token"
+        assert headers["Databricks-Model-Service-Parent-Schema"] == "c.s"
+        assert "Databricks-Model-Provider-Service" not in headers
+        return {"models": [{"slug": model, "visibility": "list"} for model in ids]}
+
+    monkeypatch.setattr(catalog, "_get_json", get_json)
+    result = catalog.fetch_codex_parent_catalog("https://workspace/", "token", "c.s")
+    assert result.model_ids == tuple(ids)
+
+
 @pytest.mark.parametrize("status", [401, 403, 404, 500])
 def test_provider_fetch_does_not_hide_http_failures(monkeypatch, status):
     def urlopen(request, timeout):

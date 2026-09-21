@@ -54,6 +54,26 @@ def test_claude_picker_rejects_wrong_or_banner_only_haiku(screen):
     assert not claude_model_in_picker(screen, "claude-haiku-4-5-20251001", "Claude Haiku 4.5")
 
 
+@pytest.mark.parametrize(
+    ("model_id", "row", "wrong_version"),
+    [
+        ("claude-haiku-4-5", "Haiku  Haiku 4.5 · Fastest", "Haiku  Haiku 3.5"),
+        ("claude-opus-5", "Opus (1M context)  Opus 5 with 1M context", "Opus  Opus 4.8"),
+        ("claude-sonnet-5", "Sonnet ✔  Sonnet 5 · Efficient", "Sonnet  Sonnet 4.6"),
+    ],
+)
+def test_claude_picker_accepts_only_matching_native_family_versions(model_id, row, wrong_version):
+    assert claude_model_in_picker(f"  ❯ 3. {row}", model_id, model_id)
+    assert claude_model_in_picker(f"  3. Custom model ({model_id})", model_id, model_id)
+    assert not claude_model_in_picker(f"  3. {wrong_version}", model_id, model_id)
+    assert not claude_model_in_picker(f"{row}\n  3. Other model", model_id, model_id)
+    assert not claude_model_in_picker(f"  3. {row}", f"system.ai.{model_id}", model_id)
+
+
+def test_claude_picker_does_not_confuse_native_minor_versions():
+    assert not claude_model_in_picker("  3. Sonnet  Sonnet 5.1", "claude-sonnet-5", None)
+
+
 def test_claude_system_model_ids_accepts_native_ids_and_gateway_aliases():
     models = [
         {"id": "system.ai.claude-sonnet-5"},

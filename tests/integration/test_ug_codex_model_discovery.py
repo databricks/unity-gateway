@@ -1,10 +1,22 @@
 """Codex model-discovery CUJs for repository scenarios 8, 10, 12, and 14."""
 
+import os
 import tomllib
 
 import pytest
+from utils.provider_catalog import fetch_codex_parent_catalog
 
 pytestmark = [pytest.mark.codex, pytest.mark.usefixtures("unmanaged_workspace")]
+
+
+@pytest.fixture(scope="module")
+def _codex_parent_catalog(unmanaged_workspace, parent_schema, codex_parent_model):
+    catalog = fetch_codex_parent_catalog(
+        unmanaged_workspace, os.environ["DATABRICKS_BEARER"], parent_schema
+    )
+    assert codex_parent_model in catalog.model_ids, catalog.model_ids
+    assert all(model.startswith(parent_schema + ".") for model in catalog.model_ids), catalog
+    return catalog
 
 
 def _assert_default_models(session, models):
@@ -114,11 +126,12 @@ def test_case_12_fresh_codex_provider_discovers_models_by_default(
 
 @pytest.mark.live
 def test_case_14_configured_codex_model_location_overrides_saved_setup(
-    live_session, workspace, parent_schema, claude_parent_model, codex_parent_model
+    live_session, workspace, parent_schema, _codex_parent_catalog
 ):
     """Scenario: configure Codex, then launch with --model-location.
 
-    Expected: the explicit parent supplies exactly both Claude and Codex Model Services.
+    Expected: the app-server list exactly matches the independently fetched parent catalog,
+    including the dedicated Codex service and excluding models outside the parent schema.
     """
     session = live_session
     session.run(
@@ -142,16 +155,18 @@ def test_case_14_configured_codex_model_location_overrides_saved_setup(
         ]
     )
 
-    assert sorted(models) == sorted([claude_parent_model, codex_parent_model])
+    session.record("case-14-expected-models.json", list(_codex_parent_catalog.model_ids))
+    assert sorted(models) == sorted(_codex_parent_catalog.model_ids)
 
 
 @pytest.mark.live
 def test_case_14_fresh_codex_model_location_overrides_saved_setup(
-    live_session, workspace, parent_schema, claude_parent_model, codex_parent_model
+    live_session, workspace, parent_schema, _codex_parent_catalog
 ):
     """Scenario: launch fresh Codex with --workspace and --model-location.
 
-    Expected: the explicit parent supplies exactly both Claude and Codex Model Services.
+    Expected: the app-server list exactly matches the independently fetched parent catalog,
+    including the dedicated Codex service and excluding models outside the parent schema.
     """
     session = live_session
     models = session.codex_model_ids(
@@ -167,4 +182,5 @@ def test_case_14_fresh_codex_model_location_overrides_saved_setup(
         ]
     )
 
-    assert sorted(models) == sorted([claude_parent_model, codex_parent_model])
+    session.record("case-14-expected-models.json", list(_codex_parent_catalog.model_ids))
+    assert sorted(models) == sorted(_codex_parent_catalog.model_ids)

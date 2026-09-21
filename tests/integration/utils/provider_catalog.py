@@ -215,3 +215,19 @@ def fetch_codex_provider_catalog(
         },
     )
     return CodexProviderCatalog(parse_codex_provider_catalog(payload))
+
+
+def fetch_codex_parent_catalog(
+    workspace: str, token: str, parent_schema: str
+) -> CodexProviderCatalog:
+    """Fetch the API-compatible models advertised for a Unity Catalog parent schema."""
+    base_url = _validate_request_inputs(workspace, token, parent_schema)
+    payload = _get_json(
+        f"{base_url}{_CODEX_MODELS_PATH}",
+        {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Databricks-Model-Service-Parent-Schema": parent_schema,
+        },
+    )
+    return CodexProviderCatalog(parse_codex_provider_catalog(payload))

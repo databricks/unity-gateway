@@ -43,7 +43,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_case_11_*` | Launch configured and fresh Claude with a provider | The cache contains exactly the provider model; the picker shows its row, including native Haiku 4.5 deduplication |
 | `test_case_12_*` | Launch configured and fresh Codex with a provider | The provider supplies exactly its model catalog |
 | `test_case_13_*` | Launch configured and fresh Claude with a model location | The explicit parent supplies exactly its picker catalog |
-| `test_case_14_*` | Launch configured and fresh Codex with a model location | The explicit parent supplies exactly the Claude and Codex Model Services, independent of order |
+| `test_case_14_*` | Launch configured and fresh Codex with a model location | The app-server list exactly matches the independent API-compatible parent catalog, includes the dedicated Codex service, and contains no out-of-schema models |
 | `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` with routing enabled | Real file task completes; no routing wrapper |
@@ -99,7 +99,7 @@ numbering is unchanged and is not the source of these repository IDs.
 Managed Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable
 links recreated by Codex version checks; persistent agent files remain compared.
 Claude discovery assertions match numbered picker rows, not startup banners or
-footers. Offline regressions cover that distinction and native Haiku deduplication.
+footers. Offline regressions cover that distinction and native Haiku/Opus/Sonnet deduplication.
 Managed discovery expectations come from separate read-only, provider-scoped
 model-list requests; they do not rely solely on ug's generated catalog.
 

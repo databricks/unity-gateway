@@ -203,8 +203,10 @@ configured/fresh variants sharing a number. External design-document numbering
 remains unchanged and is independent of these repository IDs.
 
 The parent-schema catalog is API-specific: Claude's cache must contain exactly
-the Claude service, while Codex's app-server catalog must contain exactly both
-services, independent of order. Extra, missing, or duplicate entries fail.
+the Claude service. Codex's app-server catalog must exactly match a separate read-only
+Codex model-list request with the parent-schema header, including the dedicated Codex
+service and no out-of-schema models. A Claude service is included only if that API
+advertises it as compatible. Extra, missing, or duplicate app-server entries fail.
 Claude provider discovery still requires the exact `--claude-provider-model` ID
 in its cache. For the default `claude-haiku-4-5-20251001` fixture, Claude deduplicates
 it into the native Haiku picker row (Haiku 4.5), so the assertion checks that row
@@ -384,7 +386,7 @@ across all configured/fresh scenarios. The Codex module does the same with
 `main.default.ci_e2e_openai_mps`. Separate read-only, provider-scoped model-list requests
 establish expected IDs independently of the generated agent files. The tests require Claude's
 native cache to match those IDs and a cached model to appear in a numbered picker row
-(including native Haiku deduplication), alongside its admin header. Codex's generated catalog
+(including native Haiku 4.5, Opus 5, and Sonnet 5 deduplication), alongside its admin header. Codex's generated catalog
 and app-server list must match its independently fetched IDs. These requests send no inference
 prompts. Both agents must reject personal source overrides.
 Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable links
