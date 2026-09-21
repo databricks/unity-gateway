@@ -29,11 +29,11 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import cast
 
 import httpx
-
-from ucode.databricks import get_databricks_token
 
 # Header we overwrite with the freshly-minted Databricks credential. Any
 # client-supplied value is replaced, so a stale settings.json value can't leak.
@@ -124,13 +124,14 @@ class TokenCache:
 
     def __init__(
         self,
-        workspace: str,
-        profile: str | None,
+        token_provider: Callable[[bool], str],
         *,
         force_refresh_near_expiry: bool = False,
     ) -> None:
-        self._workspace = workspace
-        self._profile = profile
+        # token_provider(force_refresh) mints a fresh token from the same source the
+        # client agent uses, so the proxy authenticates as the same principal (e.g.
+        # a per-user custom-OAuth token, not the default CLI profile).
+        self._token_provider = token_provider
         self._force_refresh_near_expiry = force_refresh_near_expiry
         self._state_lock = threading.Lock()  # guards _token / _expiry (brief)
         self._refresh_lock = threading.Lock()  # single-flights the CLI refresh
@@ -143,7 +144,7 @@ class TokenCache:
 
     def _refresh(self, *, force: bool) -> None:
         """Mint a token and record its expiry."""
-        token = get_databricks_token(self._workspace, self._profile, force_refresh=force)
+        token = self._token_provider(force)
         expiry = _jwt_exp(token) or (time.time() + _DEFAULT_TTL_S)
         with self._state_lock:
             self._token = token
@@ -283,41 +284,35 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         except OSError:
             pass
 
+    def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
+        return self.token_header, frozenset(), "forward"
+
     def _handle(self) -> None:
         diagnostic_id = uuid.uuid4().hex[:12]
         started = time.monotonic()
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else None
         url = self.path.lstrip("/")
-        # Databricks-hosted models authenticate with the gateway token in `Authorization`;
-        # everything else keeps the relay path to the Anthropic subscription.
-        route_databricks = is_databricks_routed_model(_request_model(body))
+        token_header, extra_strip, route_label = self._forward_target(body)
         log_proxy_diagnostic(
             "request_start",
             request_id=diagnostic_id,
             method=self.command,
             path=self.path.split("?", 1)[0],
-            route="databricks" if route_databricks else "relay",
+            route=route_label,
         )
 
         def request_headers() -> dict[str, str]:
-            if route_databricks:
-                # Gateway-served model: dbx token in Authorization, relay swap + MPS headers
-                # dropped. Also honor any client headers the relay owner strips (e.g. a Claude
-                # Desktop x-api-key), so a proxy-owned credential never leaks on this route either.
-                return forwarded_request_headers(
-                    self,
-                    self.cache.token,
-                    AUTHORIZATION_HEADER,
-                    strip_client_headers=_DATABRICKS_ROUTE_STRIP
-                    | (self.strip_client_headers or frozenset()),
-                )
+            # _forward_target already picked token_header + extra_strip for this route (the
+            # databricks route returns AUTHORIZATION_HEADER + _DATABRICKS_ROUTE_STRIP), so fold
+            # that strip set into the proxy-owned one and stamp the fixed headers the proxy owns
+            # (MPS routing / the relayed Authorization a client like Claude Desktop can't hold).
             return forwarded_request_headers(
                 self,
                 self.cache.token,
-                self.token_header,
+                token_header,
                 extra_headers=self.extra_headers,
-                strip_client_headers=self.strip_client_headers,
+                strip_client_headers=extra_strip | (self.strip_client_headers or frozenset()),
             )
 
         try:
@@ -464,11 +459,21 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         raise AttributeError(name)
 
 
-def start_proxy(
+class _RelayProxyHandler(_ProxyHandler):
+    def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
+        if is_databricks_routed_model(_request_model(body)):
+            return AUTHORIZATION_HEADER, _DATABRICKS_ROUTE_STRIP, "databricks"
+        return self.token_header, frozenset(), "relay"
+
+
+def _start_proxy(
     workspace: str,
-    profile: str | None,
+    token_provider: Callable[[bool], str],
     port: int,
+    *,
+    upstream_path: str,
     token_header: str,
+    handler_type: type[_ProxyHandler],
     force_refresh_near_expiry: bool,
     extra_headers: dict[str, str] | None = None,
     strip_client_headers: frozenset[str] | None = None,
@@ -480,30 +485,32 @@ def start_proxy(
     still holds the socket). The caller reads ``server.server_address[1]`` for the
     actual port and points Claude Code at it.
 
+    ``token_provider(force_refresh)`` mints the token from the same source the
+    client agent authenticates with.
+
     Returns (server, cache, client); the caller runs the server (e.g. in a
     thread) and calls shutdown()/cache.stop()/client.close() on exit.
     """
-    upstream_base = f"{workspace.rstrip('/')}/ai-gateway/anthropic/"
-    cache = TokenCache(
-        workspace,
-        profile,
-        force_refresh_near_expiry=force_refresh_near_expiry,
-    )
+    upstream_base = f"{workspace.rstrip('/')}/{upstream_path.lstrip('/')}"
+    cache = TokenCache(token_provider, force_refresh_near_expiry=force_refresh_near_expiry)
     # One pooled, keep-alive client shared across handler threads: reuses TCP+TLS
     # to the gateway instead of a fresh handshake per request. Don't follow
     # redirects — a proxy relays 3xx verbatim.
     client = httpx.Client(base_url=upstream_base, timeout=UPSTREAM_TIMEOUT, follow_redirects=False)
 
-    handler = type(
-        "BoundProxyHandler",
-        (_ProxyHandler,),
-        {
-            "cache": cache,
-            "client": client,
-            "token_header": token_header,
-            "extra_headers": extra_headers,
-            "strip_client_headers": strip_client_headers,
-        },
+    handler = cast(
+        type[_ProxyHandler],
+        type(
+            "BoundProxyHandler",
+            (handler_type,),
+            {
+                "cache": cache,
+                "client": client,
+                "token_header": token_header,
+                "extra_headers": extra_headers,
+                "strip_client_headers": strip_client_headers,
+            },
+        ),
     )
     try:
         server = ThreadingHTTPServer(("127.0.0.1", port), handler)
@@ -515,3 +522,36 @@ def start_proxy(
     refresher = threading.Thread(target=cache.run_refresher, daemon=True)
     refresher.start()
     return server, cache, client
+
+
+def start_relay_proxy(
+    workspace: str,
+    token_provider: Callable[[bool], str],
+    port: int,
+) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
+    """Start the Claude subscription relay proxy."""
+    return _start_proxy(
+        workspace,
+        token_provider,
+        port,
+        upstream_path="ai-gateway/anthropic/",
+        token_header=AI_GATEWAY_TOKEN_HEADER,
+        handler_type=_RelayProxyHandler,
+        force_refresh_near_expiry=False,
+    )
+
+
+def start_otel_proxy(
+    workspace: str,
+    token_provider: Callable[[bool], str],
+) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
+    """Start the Codex OTLP proxy on an OS-assigned port."""
+    return _start_proxy(
+        workspace,
+        token_provider,
+        0,
+        upstream_path="ai-gateway/otel/",
+        token_header=AUTHORIZATION_HEADER,
+        handler_type=_ProxyHandler,
+        force_refresh_near_expiry=True,
+    )

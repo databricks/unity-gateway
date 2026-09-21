@@ -115,6 +115,11 @@ def arguments():
         default="gpt-5-nano",
         help="Model allowed by the OpenAI MPS selected in the configure CUJ.",
     )
+    parser.add_argument(
+        "--parent-schema",
+        default="main.ucode",
+        help="Schema containing the dedicated model-discovery Model Services.",
+    )
     parser.add_argument("--python", default=sys.executable, help="Python 3.12+ path or uv version.")
     parser.add_argument("--dependency", action="append", default=[], metavar="PACKAGE==VERSION")
     parser.add_argument("--constraints", type=Path, help="Replay a previous dependencies.txt.")
@@ -290,6 +295,7 @@ def main() -> int:
             "claude_relayed_provider": args.claude_relayed_provider,
             "codex_provider": args.codex_provider,
             "codex_provider_model": args.codex_provider_model,
+            "parent_schema": args.parent_schema,
             "dependencies": args.dependency,
             "workspace": args.workspace,
         },
@@ -530,6 +536,7 @@ def main() -> int:
                 "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN": oauth_token,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
+                "UG_INTEGRATION_PARENT_SCHEMA": args.parent_schema,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
                 "DATABRICKS_BEARER": bearer,
             }

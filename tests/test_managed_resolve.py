@@ -20,6 +20,7 @@ from ucode.managed_resolve import (
     managed_state_overrides,
     managed_static_models,
     managed_supplies_models,
+    managed_unity_catalog_location,
     managed_unservable_models,
     recommended_agent,
     resolve_state,
@@ -205,6 +206,26 @@ class TestManagedProviderService:
 
     def test_none_for_agent_not_in_manifest(self):
         assert managed_provider_service(MANAGED, "gemini") is None
+
+
+class TestManagedUnityCatalogLocation:
+    def test_returns_the_normalized_agent_location(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"unity_catalog_location": " main.default "}}
+            }
+        }
+        assert managed_unity_catalog_location(managed, "claude") == "main.default"
+
+    def test_ignores_other_agents_and_blank_locations(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"unity_catalog_location": "   "}},
+                "codex": {"model_config": {"unity_catalog_location": "main.codex"}},
+            }
+        }
+        assert managed_unity_catalog_location(managed, "claude") is None
+        assert managed_unity_catalog_location(managed, "gemini") is None
 
 
 class TestResolveState:

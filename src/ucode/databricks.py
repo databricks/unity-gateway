@@ -25,7 +25,7 @@ from concurrent.futures import (
 from concurrent.futures import (
     TimeoutError as FutureTimeoutError,
 )
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
@@ -85,6 +85,7 @@ class AnthropicModelCatalog:
     model_ids: list[str]
     model_id_to_display_name: dict[str, str]
     error_msg: str | None = None
+    model_id_to_description: dict[str, str] = field(default_factory=dict)
 
 
 class CodexMpsModelCatalogUnavailable(RuntimeError):
@@ -2024,12 +2025,14 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
 # Maps the gateway routing dialect a coding tool speaks to the Model Provider
 # Service `provider_type`s it can be backed by. claude speaks Anthropic's API,
 # which both the `anthropic` and `amazon_bedrock` provider types serve (Bedrock
-# just exposes different model ids); codex speaks OpenAI's; gemini speaks
+# just exposes different model ids); codex speaks OpenAI's, which the `openai`,
+# `azure_openai`, and `microsoft_foundry` provider types all serve (the gateway
+# fronts Azure OpenAI and Foundry with the OpenAI surface); gemini speaks
 # Google's, served by a Gemini Enterprise provider. Tags are the short form
 # produced by `_provider_type_tag` (e.g. `amazon_bedrock`).
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
     "claude": ("anthropic", "amazon_bedrock"),
-    "codex": ("openai",),
+    "codex": ("openai", "azure_openai", "microsoft_foundry"),
     "gemini": ("gemini_enterprise",),
 }
 
@@ -2628,12 +2631,18 @@ def list_all_mcp_services(
     return sorted(names), None
 
 
-def _get_anthropic_models_json(workspace: str, token: str) -> tuple[dict | list | None, str | None]:
+def _get_anthropic_models_json(
+    workspace: str, token: str, *, parent_schema: str | None = None
+) -> tuple[dict | list | None, str | None]:
     hostname = workspace_hostname(workspace)
+    headers = (
+        {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema} if parent_schema is not None else None
+    )
     return _http_get_json(
         f"https://{hostname}{ANTHROPIC_MODELS_PATH}",
         token,
         max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
+        **({"headers": headers} if headers is not None else {}),
     )
 
 
@@ -2648,15 +2657,18 @@ def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | 
     return catalog.model_ids, catalog.error_msg
 
 
-def list_anthropic_model_catalog(workspace: str, token: str) -> AnthropicModelCatalog:
-    """Return advertised Anthropic model ids and their optional display names."""
-    payload, reason = _get_anthropic_models_json(workspace, token)
+def list_anthropic_model_catalog(
+    workspace: str, token: str, *, parent_schema: str | None = None
+) -> AnthropicModelCatalog:
+    """Return advertised Anthropic model ids and their optional display metadata."""
+    payload, reason = _get_anthropic_models_json(workspace, token, parent_schema=parent_schema)
     if payload is None:
         return AnthropicModelCatalog(model_ids=[], model_id_to_display_name={}, error_msg=reason)
 
     data = cast(dict, payload) if isinstance(payload, dict) else {}
     model_ids: list[str] = []
     display_names: dict[str, str] = {}
+    descriptions: dict[str, str] = {}
     seen: set[str] = set()
     for model in data.get("data", []):
         if not isinstance(model, dict):
@@ -2668,8 +2680,15 @@ def list_anthropic_model_catalog(workspace: str, token: str) -> AnthropicModelCa
             display_name = model.get("display_name")
             if isinstance(display_name, str) and display_name:
                 display_names[model_id] = display_name
+            description = model.get("description")
+            if isinstance(description, str) and description:
+                descriptions[model_id] = description
     if model_ids:
-        return AnthropicModelCatalog(model_ids=model_ids, model_id_to_display_name=display_names)
+        return AnthropicModelCatalog(
+            model_ids=model_ids,
+            model_id_to_display_name=display_names,
+            model_id_to_description=descriptions,
+        )
     return AnthropicModelCatalog(
         model_ids=[],
         model_id_to_display_name={},

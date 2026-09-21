@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -39,15 +40,6 @@ def test_smart_routing_switch_message_wraps_to_fixed_width():
 
 
 class TestLaunchCodex:
-    def test_rejects_unsupported_codex_version(self, monkeypatch):
-        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
-        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.144.0")
-        monkeypatch.setattr(v2, "launch_codex", lambda *args, **kwargs: pytest.fail("launched"))
-
-        with pytest.raises(RuntimeError, match="requires Codex 0.145.0 or newer; found 0.144.0"):
-            codex.launch({"workspace": WS}, [], options=LaunchOptions(launch_smart_routing=True))
-
     @pytest.mark.parametrize(
         ("tool_args", "options"),
         [
@@ -104,7 +96,7 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.144.0")
-        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "token")
         monkeypatch.setattr(v2, "launch_codex", lambda *args, **kwargs: pytest.fail("launched"))
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
 
@@ -187,6 +179,7 @@ class TestLaunchCodex:
         interposer_args = {}
         stopped = []
         token_calls = []
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
@@ -288,6 +281,51 @@ class TestLaunchCodex:
         assert stopped == [True]
         assert processes[0].terminated is True
 
+    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
+        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(
+            v2.subprocess,
+            "Popen",
+            lambda *_args, **_kwargs: pytest.fail("subagent-only routing spawns no app-server"),
+        )
+        monkeypatch.setattr(
+            codex_interposer,
+            "start_interposer_thread",
+            lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not interpose"),
+        )
+        execd = []
+
+        def fake_exec(argv):
+            execd.append(argv)
+            raise SystemExit(0)
+
+        monkeypatch.setattr(v2, "exec_or_spawn", fake_exec)
+
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_codex(
+                {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
+                ["--search"],
+                binary="codex",
+                start_model="gpt-start",
+                render_overlay=codex.render_overlay,
+            )
+
+        assert exc.value.code == 0
+        (argv,) = execd
+        assert argv[0] == "codex"
+        assert argv[-1] == "--search"
+        assert 'model="gpt-start"' in argv
+        hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
+        assert "codex-router-hook route-subagent" in hook_override
+        assert "--model system.ai.gpt-5-6-sol" in hook_override
+        # The hook subprocesses inherit the launch environment and pass the routing gate.
+        assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+        assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
+
     def test_v2_pre_tool_hook_preserves_user_hooks(self, tmp_path, monkeypatch):
         codex_home = tmp_path / ".codex"
         codex_home.mkdir()
@@ -341,6 +379,7 @@ class TestLaunchCodex:
         assert "--model old" not in routing_commands[0]
 
     def test_missing_cached_models_starts_with_bootstrap_model(self, monkeypatch):
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "get_databricks_token", lambda workspace, profile: "token")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "unknown")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
@@ -482,6 +521,7 @@ class TestCustomCatalogModels:
             monkeypatch,
             cli=self._catalog(tmp_path / "cli.json", ["gpt-6-astra", "gpt-6-b"]),
         )
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)

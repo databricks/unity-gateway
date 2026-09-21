@@ -190,6 +190,11 @@ def managed_provider_service(managed: dict, tool: str) -> str | None:
     return _str(_agent_model_config(managed, tool).get("model_provider_service"))
 
 
+def managed_unity_catalog_location(managed: dict, tool: str) -> str | None:
+    """Return only the Unity Catalog model location managed config specifies for ``tool``."""
+    return _str(_agent_model_config(managed, tool).get("unity_catalog_location"))
+
+
 def managed_static_models(managed: dict, tool: str) -> list[str] | None:
     """The explicit model allow-list (``model_config.model_services``) the config sets for ``tool``.
 
@@ -244,7 +249,7 @@ def managed_provider_family_models(managed: dict) -> dict[str, str] | None:
 
     config = _agent_model_config(managed, "claude")
     slots: dict[str, str] = {}
-    raw_slots = _as_dict(config.get("models"))
+    raw_slots = _as_dict(config.get("default_models_by_model_family"))
     for slot, family in _CLAUDE_FAMILY_SLOTS.items():
         model = _str(raw_slots.get(slot))
         if model:

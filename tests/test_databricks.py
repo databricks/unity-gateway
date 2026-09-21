@@ -346,17 +346,38 @@ class TestDiscoverClaudeModels:
     def test_lists_anthropic_display_names_with_model_ids(self, monkeypatch):
         payload = {
             "data": [
-                {"id": "system.ai.glm-5-3-flash", "display_name": "GLM 5.3 Flash"},
+                {
+                    "id": "system.ai.glm-5-3-flash",
+                    "display_name": "GLM 5.3 Flash",
+                    "description": "Fast GLM model",
+                },
                 {"id": "opaque-model-id"},
             ]
         }
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda *_args, **_kwargs: (payload, None))
+        requests = []
 
-        catalog = db_mod.list_anthropic_model_catalog(WS, "token")
+        def fake_get(url, token, **kwargs):
+            requests.append((url, token, kwargs))
+            return payload, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token", parent_schema="main.default")
 
         assert catalog.model_ids == ["system.ai.glm-5-3-flash", "opaque-model-id"]
         assert catalog.model_id_to_display_name == {"system.ai.glm-5-3-flash": "GLM 5.3 Flash"}
+        assert catalog.model_id_to_description == {"system.ai.glm-5-3-flash": "Fast GLM model"}
         assert catalog.error_msg is None
+        assert requests == [
+            (
+                f"{WS}/ai-gateway/anthropic/v1/models",
+                "token",
+                {
+                    "max_retries": 2,
+                    "headers": {"Databricks-Model-Service-Parent-Schema": "main.default"},
+                },
+            )
+        ]
 
     def test_selects_opus_4_8_when_advertised(self, monkeypatch):
         payload = {

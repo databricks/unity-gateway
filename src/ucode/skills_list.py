@@ -6,6 +6,7 @@ schema scoped into the skills MCP connection (``mcp``) -- into one table.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from rich.table import Table
@@ -96,6 +97,26 @@ def _configured_skills(state: dict) -> list[ConfiguredSkill]:
 
     rows.sort(key=lambda skill: (skill.location, skill.name))
     return rows
+
+
+def configured_skill_counts_by_agent(state: dict, agents: Iterable[str]) -> dict[str, int]:
+    """Count of distinct skills each of ``agents`` can reach, keyed by agent.
+
+    Combines the locally downloaded skills (which every agent can use) with the skills reachable
+    through the schemas scoped to that agent in the skills MCP connection. Best effort: lists each
+    scoped schema the way ``ug skills list`` does, and any schema that cannot be read (including an
+    auth error that stops the read entirely) is skipped rather than failing.
+    """
+    downloaded = frozenset(record["fqn"] for record in list_downloaded() if record.get("fqn"))
+    try:
+        agents_by_fqn, _ = _mcp_skill_agents(state)
+    except Exception:
+        agents_by_fqn = {}
+    mcp_by_agent: dict[str, set[str]] = {}
+    for fqn, scoped in agents_by_fqn.items():
+        for agent in scoped:
+            mcp_by_agent.setdefault(agent, set()).add(fqn)
+    return {agent: len(downloaded | mcp_by_agent.get(agent, set())) for agent in agents}
 
 
 def list_configured_skills_command() -> int:

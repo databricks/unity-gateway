@@ -8,11 +8,14 @@ import shutil
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
+from enum import StrEnum
 from importlib import metadata
 from typing import Annotated, Any
 
 import typer
 from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
@@ -65,6 +68,7 @@ from ucode.databricks import (
     get_databricks_token,
     install_databricks_cli,
     is_model_provider_feature_unavailable,
+    list_anthropic_model_catalog,
     list_profile_entries,
     list_tool_provider_services,
     normalize_workspace_url,
@@ -80,8 +84,10 @@ from ucode.managed_budget import (
 )
 from ucode.managed_config import (
     ManagedConfigResult,
+    get_managed_config,
     get_model_recommendation,
     load_managed_state,
+    normalize_managed_config,
     refresh_managed_config,
 )
 from ucode.managed_resolve import (
@@ -92,6 +98,7 @@ from ucode.managed_resolve import (
     managed_provider_family_models,
     managed_provider_service,
     managed_supplies_models,
+    managed_unity_catalog_location,
     managed_unservable_models,
     recommended_agent,
     resolve_state,
@@ -101,10 +108,9 @@ from ucode.mcp import (
     SKILLS_MCP_KIND,
     add_mcp_command,
     add_skills_command,
-    agents_share_one_scope,
     available_mcp_clients,
+    configure_bare_skills_mcp_command,
     configure_mcp_command,
-    configure_skills_mcp_command,
     configure_skills_mcp_picker_command,
     configured_mcp_clients,
     list_mcp_command,
@@ -114,7 +120,6 @@ from ucode.mcp import (
     remove_skills_command,
     remove_skills_locations_command,
     revert_mcp_configs,
-    skill_locations_for_client,
 )
 from ucode.skills_download import (
     configure_location_skills_download_command,
@@ -123,11 +128,11 @@ from ucode.skills_download import (
     reconcile_managed_skills,
     remove_downloaded_skills_command,
 )
-from ucode.skills_list import list_configured_skills_command
+from ucode.skills_list import configured_skill_counts_by_agent, list_configured_skills_command
+from ucode.skills_state import records_for_scope
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
 from ucode.state import (
-    STATE_PATH,
     clear_state,
     get_provider_service,
     load_state,
@@ -195,8 +200,29 @@ def _policy_summary_lines(managed: dict) -> list[str]:
     return lines
 
 
+def _configured_summary(names: list[str], *, limit: int = 5) -> str:
+    """Format a resolved MCP/skill set for the Configuration panel as ``N (name, ..., name)``.
+
+    Empty renders "none configured": the admin set none, or a fetch failed and warned above. At most
+    ``limit`` names are shown, with the rest collapsed to an ellipsis so a large set stays scannable.
+    """
+    unique = sorted({name for name in names if name})
+    if not unique:
+        return "[dim]none configured[/dim]"
+    shown = unique[:limit]
+    if len(unique) > limit:
+        shown.append("...")
+    return f"{len(unique)} ({', '.join(shown)})"
+
+
 def _print_managed_summary(
-    managed: dict, state: dict, tool: str | None, *, abridged: bool = False
+    managed: dict,
+    state: dict,
+    tool: str | None,
+    *,
+    abridged: bool = False,
+    configured_tools: list[str] | None = None,
+    registered_mcps: list[str] | None = None,
 ) -> None:
     """Show which of the admin's settings are in force.
 
@@ -216,9 +242,18 @@ def _print_managed_summary(
     if tool is not None:
         lines.append(f"[bold]Agent:[/bold] [green]{TOOL_SPECS[tool]['display']}[/green]")
     enabled = [t for t in (managed.get("enabled_agents") or {}) if t in TOOL_SPECS]
+    failed: list[str] = []
+    if configured_tools is not None:
+        failed = [t for t in enabled if t not in configured_tools]
+        enabled = [t for t in enabled if t in configured_tools]
     if enabled:
         lines.append(
             f"[bold]Coding Agents:[/bold] {', '.join(TOOL_SPECS[t]['display'] for t in enabled)}"
+        )
+    if failed:
+        lines.append(
+            f"[bold]Failed to configure:[/bold] "
+            f"[yellow]{', '.join(TOOL_SPECS[t]['display'] for t in failed)}[/yellow]"
         )
     if tool is not None:
         provider = managed_provider_service(managed, tool)
@@ -227,23 +262,16 @@ def _print_managed_summary(
         model = managed_default_model(managed, tool)
         if model:
             lines.append(f"[bold]Model:[/bold] [magenta]{model}[/magenta]")
-    # Always listed, including when empty: "none configured" tells a developer their admin set none,
-    # which a missing row leaves ambiguous. Shown as the admin configured them — registering them
-    # locally is a separate change, hence "pending".
-    mcp_names = [
-        str(server.get("name"))
-        for server in (managed.get("mcp_servers") or [])
-        if isinstance(server, dict) and server.get("name")
+    # Count what ug actually registered/downloaded, not the admin's raw selector (a UC location is
+    # just a pointer with no count): the MCP servers reconcile registered this run, and the managed
+    # skills on disk. State can't stand in for the MCPs — #717 writes them to OS-managed files.
+    lines.append(f"[bold]MCPs:[/bold] {_configured_summary(registered_mcps or [])}")
+    skill_names = [
+        str(record.get("bundle_name"))
+        for record in records_for_scope("managed")
+        if record.get("bundle_name")
     ]
-    if mcp_names:
-        lines.append(f"[bold]MCPs:[/bold] {', '.join(mcp_names)} [dim](pending)[/dim]")
-    else:
-        lines.append("[bold]MCPs:[/bold] [dim]none configured[/dim]")
-    skill_names = [str(name) for name in ((managed.get("skills") or {}).get("names") or []) if name]
-    if skill_names:
-        lines.append(f"[bold]Skills:[/bold] {', '.join(skill_names)} [dim](pending)[/dim]")
-    else:
-        lines.append("[bold]Skills:[/bold] [dim]none configured[/dim]")
+    lines.append(f"[bold]Skills:[/bold] {_configured_summary(skill_names)}")
     lines.extend(_policy_summary_lines(managed))
     console.print(Panel("\n".join(lines), title="Configuration", style="green", expand=False))
 
@@ -269,9 +297,17 @@ def _print_managed_summary_abridged(managed: dict, state: dict, tool: str | None
     )
 
 
-def _summarize_managed_config(managed: dict, workspace: str) -> None:
-    """Show the resulting managed setup once every enabled agent has been configured."""
-    _print_managed_summary(managed, {"workspace": workspace}, tool=None)
+def _summarize_managed_config(
+    managed: dict, configured_tools: list[str], registered_mcps: list[str]
+) -> None:
+    """Show the resulting managed setup, listing only the agents that configured cleanly."""
+    _print_managed_summary(
+        managed,
+        load_state(),
+        tool=None,
+        configured_tools=configured_tools,
+        registered_mcps=registered_mcps,
+    )
     print_success("Configuration complete — launch with [bold cyan]ug[/bold cyan].")
 
 
@@ -776,16 +812,25 @@ def configure_workspace_command(
             clear_custom_oauth=custom_oauth is None,
         )
         state = states[0]
-        state = configure_single_tool(tool, state)
-        # No managed refresh precedes this branch, so read fresh here: `ug configure` never decides
-        # from a stale cache.
-        install_databricks_ai_tools_for_agents([tool], state, force_refresh=True)
+        parent_schema = None
+        if tool in ("claude", "codex"):
+            managed, _ = refresh_managed_config(state, force_refresh=True)
+            _reject_disabled_agent(managed, tool)
+            if managed is not None:
+                state = resolve_state(managed, state, tool)
+                if not managed_provider_service(managed, tool):
+                    parent_schema = managed_unity_catalog_location(managed, tool)
+        state = configure_single_tool(tool, state, parent_schema=parent_schema)
+        install_databricks_ai_tools_for_agents(
+            [tool], state, force_refresh=tool not in ("claude", "codex")
+        )
         spec = TOOL_SPECS[tool]
+        provider_summary = "Databricks" if parent_schema else _provider_summary(tool, state)
         console.print(
             Panel(
                 f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]\n"
                 f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
-                f"[dim](Provider: {_provider_summary(tool, state)})[/dim]",
+                f"[dim](Provider: {provider_summary})[/dim]",
                 title="Configuration Complete",
                 style="green",
                 expand=False,
@@ -813,13 +858,25 @@ def configure_workspace_command(
     if managed is not None and managed_tools:
         configured_tools: list[str] = []
         for tool_name in managed_tools:
-            if check_gateway_endpoint(state, tool_name):
+            resolved = resolve_state(managed, state, tool_name)
+            parent_schema = (
+                managed_unity_catalog_location(managed, tool_name)
+                if tool_name in ("claude", "codex")
+                and not managed_provider_service(managed, tool_name)
+                else None
+            )
+            if (
+                get_provider_service(resolved, tool_name)
+                or parent_schema
+                or check_gateway_endpoint(resolved, tool_name)
+            ):
                 if not install_tool_binary(tool_name, strict=False):
                     continue
                 configured = configure_selected_tools(
-                    resolve_state(managed, state, tool_name),
+                    resolved,
                     [tool_name],
                     install_ai_tools=not is_dry_run(),
+                    parent_schemas={tool_name: parent_schema} if parent_schema else None,
                 )
                 # Each iteration resolves from `state` and persists a copy, so carry the
                 # accumulated available_tools forward — otherwise the last agent's save drops
@@ -827,16 +884,22 @@ def configure_workspace_command(
                 state["available_tools"] = configured.get("available_tools") or state.get(
                     "available_tools"
                 )
-                configured_tools.append(tool_name)
+                # available_tools is cumulative across runs, so an agent that failed
+                # this run may still be in it from a prior success. Trust the per-run
+                # signal when present; fall back to "configured" only when it's absent.
+                last = configured.get("last_configured_tools")
+                if last is None or tool_name in last:
+                    configured_tools.append(tool_name)
         if not configured_tools:
             raise RuntimeError(
                 "None of the coding agents enabled by your workspace configuration "
                 "are available on this workspace."
             )
+        registered_mcps: list[str] = []
         if not is_dry_run():
-            _configure_managed_mcp_servers(managed)
+            registered_mcps = _configure_managed_mcp_servers(managed)
             _configure_managed_skills(managed)
-        _summarize_managed_config(managed, state["workspace"])
+        _summarize_managed_config(managed, configured_tools, registered_mcps)
         return 0
 
     available_on_workspace: list[str] = []
@@ -891,13 +954,26 @@ def configure_workspace_command(
         _configure_managed_mcp_servers(None)
         _configure_managed_skills(None)
 
+    # Prefer this run's outcome; available_tools is cumulative and can still list a
+    # tool that failed this run from an earlier success. Fall back to it only when the
+    # per-run signal is absent (e.g. a stubbed configure_selected_tools).
+    last_configured = state.get("last_configured_tools")
+    configured_set = set(
+        last_configured if last_configured is not None else state.get("available_tools") or []
+    )
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
         spec = TOOL_SPECS[tool_name]
-        summary_lines.append(
-            f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
-            f"[dim](Provider: {_provider_summary(tool_name, state)})[/dim]"
-        )
+        if tool_name in configured_set:
+            summary_lines.append(
+                f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
+                f"[dim](Provider: {_provider_summary(tool_name, state)})[/dim]"
+            )
+        else:
+            summary_lines.append(
+                f"[bold]{spec['display']}:[/bold] [yellow]not configured "
+                "(see warnings above)[/yellow]"
+            )
     console.print(
         Panel(
             "\n".join(summary_lines),
@@ -911,46 +987,218 @@ def configure_workspace_command(
     return 0
 
 
+def _print_status_panel(title: str, rows: list[tuple[str, str]]) -> None:
+    """Render a compact two-column status card with values that wrap safely."""
+    table = Table.grid(padding=(0, 2))
+    table.add_column(no_wrap=True)
+    table.add_column()
+    for key, value in rows:
+        table.add_row(Text(f"{key}:", style="bold"), Text(value, style="cyan"))
+    console.print(
+        Panel(
+            table,
+            title=title,
+            border_style="blue",
+            width=min(console.width, 120),
+        )
+    )
+
+
+def _model_values(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item]
+    if isinstance(value, dict):
+        return [model for models in value.values() for model in _model_values(models)]
+    return []
+
+
+def _status_models(tool: str, state: dict) -> list[str]:
+    """Return the effective model allow-list for one configured agent."""
+    static_models = _model_values(state.get(f"{tool}_static_models"))
+    if static_models:
+        models = static_models
+    elif tool in ("claude", "codex", "gemini", "opencode"):
+        models = _model_values(state.get(f"{tool}_models"))
+    elif tool == "copilot":
+        models = _model_values(state.get("copilot_models")) or (
+            _model_values(state.get("claude_models")) + _model_values(state.get("codex_models"))
+        )
+    elif tool == "pi":
+        models = _model_values(state.get("pi_models")) or (
+            _model_values(state.get("claude_models"))
+            + _model_values(state.get("codex_models"))
+            + _model_values(state.get("gemini_models"))
+        )
+    else:
+        models = []
+    return list(dict.fromkeys(models))
+
+
+def _status_default_model(tool: str, state: dict, models: list[str]) -> str | None:
+    explicit = state.get(f"{tool}_default_model")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    # Claude and Codex deliberately leave the starting model to the agent unless a managed
+    # config pins one. The other clients write the first resolved model into their ug config.
+    return models[0] if models and tool in ("gemini", "opencode", "copilot", "pi") else None
+
+
+def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
+    """Return a fresh, read-only model inventory and its freshness label."""
+    workspace = state.get("workspace")
+    if not workspace or not tools:
+        return state, "cached"
+    profile = state.get("profile")
+    if not profile and not external_bearer_configured():
+        print_warning("Live model discovery needs the CLI profile saved by ug configure.")
+        return state, "cached"
+
+    try:
+        if state.get("use_pat"):
+            apply_pat_environment(state)
+        with spinner("Refreshing live workspace models..."):
+            token = get_databricks_token(workspace, profile)
+            claude_models, codex_models, gemini_models, oss_models, shared_reason = (
+                discover_model_services(workspace, token)
+            )
+            reasons: dict[str, str | None] = {}
+            if not claude_models:
+                claude_models, reasons["claude"] = discover_claude_models(workspace, token)
+            if not codex_models:
+                codex_models, reasons["codex"] = discover_codex_models(workspace, token)
+            if not gemini_models:
+                gemini_models, reasons["gemini"] = discover_gemini_models(workspace, token)
+    except RuntimeError as exc:
+        print_warning(f"Live model discovery failed ({exc}); showing cached models.")
+        return state, "cached"
+
+    live = dict(state)
+    live["claude_models"] = claude_models
+    live["codex_models"] = codex_models
+    live["gemini_models"] = gemini_models
+    live["oss_models"] = oss_models
+    opencode_models: dict[str, list[str]] = {}
+    if claude_models:
+        opencode_models["anthropic"] = list(claude_models.values())
+    if gemini_models:
+        opencode_models["gemini"] = gemini_models
+    if oss_models:
+        opencode_models["oss"] = oss_models
+    live["opencode_models"] = opencode_models
+    live["_status_model_reasons"] = {
+        family: reason or shared_reason for family, reason in reasons.items()
+    }
+    return live, "live"
+
+
+def _live_status_managed_state(state: dict, cached: dict | None) -> tuple[dict | None, str]:
+    """Return the current managed policy without updating the on-disk cache."""
+    workspace = state.get("workspace")
+    if not workspace:
+        return cached, "cached"
+    profile = state.get("profile")
+    if not profile and not external_bearer_configured():
+        print_warning("Live managed configuration needs the CLI profile saved by ug configure.")
+        return cached, "cached"
+
+    try:
+        if state.get("use_pat"):
+            apply_pat_environment(state)
+        with spinner("Refreshing live managed configuration..."):
+            token = get_databricks_token(workspace, profile)
+            raw, reason = get_managed_config(workspace, token)
+    except RuntimeError as exc:
+        print_warning(f"Live managed configuration failed ({exc}); showing cached configuration.")
+        return cached, "cached"
+
+    if reason is not None:
+        if "feature_disabled" in reason.lower():
+            return None, "live"
+        print_warning(
+            f"Live managed configuration failed ({reason}); showing cached configuration."
+        )
+        return cached, "cached"
+    return (normalize_managed_config(raw) if raw is not None else None), "live"
+
+
 def status() -> int:
     state = load_state()
     workspace = state.get("workspace")
     managed_configs = state.get("managed_configs") or {}
     # Both developer- and workspace-managed servers, so the count agrees with `ug mcp list`.
     mcp_servers = (state.get("mcp_servers") or []) + (state.get("managed_mcp_servers") or [])
-    configured_tools = set(state.get("available_tools") or managed_configs.keys())
+    cached_managed = load_managed_state(workspace) if workspace else None
+    managed, managed_freshness = _live_status_managed_state(state, cached_managed)
+    configured_tools = (
+        set(state.get("available_tools") or [])
+        | set(managed_configs)
+        | set((managed or {}).get("enabled_agents") or {})
+    )
 
     console.print(heading("ug status"))
     console.print(
         f"  {status_badge('Configured', 'ok') if workspace else status_badge('Not Configured', 'warn')}"
     )
 
-    print_heading("Provider")
-    print_kv("Workspace URL", workspace or "not configured")
+    provider_rows = [("Workspace URL", workspace or "not configured")]
     profile = state.get("profile")
     if profile:
-        print_kv("CLI profile", profile)
-
-    if workspace:
-        managed = load_managed_state(workspace)
-        if managed:
-            _print_managed_summary(managed, state, None)
-
-    print_heading("Coding Agents")
-    for tool, spec in TOOL_SPECS.items():
-        configured = tool in configured_tools
-        base_url = (
-            state.get("base_urls", {}).get(tool, "not configured")
-            if configured
-            else "not configured"
+        provider_rows.append(("CLI profile", profile))
+    provider_rows.append(
+        (
+            "Configuration",
+            f"Workspace-managed ({managed_freshness})" if managed else "Self-configured",
         )
-        config_path = spec["config_path"]
-        print_kv("Coding Agent", spec["display"])
-        print_kv("Configured", "yes" if configured else "no")
-        provider_service = get_provider_service(state, tool)
-        if configured and provider_service:
-            print_kv("Model Provider Service", provider_service)
-        print_kv("Base URL", base_url)
-        if configured and tool in MCP_CLIENTS:
+    )
+    policy = (managed or {}).get("budget_policy")
+    if isinstance(policy, dict):
+        provider_rows.append(("Policy", str(policy.get("display_name") or "coding-agents-default")))
+    _print_status_panel("Provider", provider_rows)
+
+    model_state, model_freshness = _live_status_model_state(state, configured_tools)
+    print_heading("Coding Agents")
+    skill_counts_by_agent = configured_skill_counts_by_agent(state, TOOL_SPECS)
+    for tool, spec in TOOL_SPECS.items():
+        if tool not in configured_tools:
+            continue
+        effective_state = resolve_state(managed, model_state, tool) if managed else model_state
+        agent_managed = tool in ((managed or {}).get("enabled_agents") or {})
+        provider_service = get_provider_service(effective_state, tool)
+        rows = [
+            (
+                "Configuration",
+                f"Workspace-managed ({managed_freshness})" if agent_managed else "Self-configured",
+            ),
+            (
+                "Model provider",
+                provider_service or "Databricks AI Gateway",
+            ),
+        ]
+        models = (
+            []
+            if provider_service and not effective_state.get(f"{tool}_static_models")
+            else _status_models(tool, effective_state)
+        )
+        model_source = "managed" if agent_managed and models else model_freshness
+        if models:
+            rows.append((f"Models ({len(models)}, {model_source})", ", ".join(models)))
+        elif provider_service:
+            rows.append(("Models", "Defined by provider service"))
+        else:
+            rows.append((f"Models ({model_source})", "none available"))
+        default_model = _status_default_model(tool, effective_state, models)
+        if default_model:
+            rows.append(("Default model", default_model))
+        if tool in ("claude", "codex"):
+            rows.append(
+                (
+                    "Tracing",
+                    "enabled" if effective_state.get(f"{tool}_otel_tracing") else "disabled",
+                )
+            )
+        if tool in MCP_CLIENTS:
             # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
             # the per-server detail and live connection status, so status stays scannable. Dedupe by
             # name so a server present in both mcp_servers and managed_mcp_servers isn't double-counted.
@@ -966,57 +1214,16 @@ def status() -> int:
                 mcp_names |= claude_agent.read_managed_mcp_urls().keys()
             elif tool == "codex":
                 mcp_names |= codex_agent.read_managed_mcp_urls().keys()
-            print_kv("MCP servers", str(len(mcp_names)))
-        print_kv("Config file", str(config_path) if config_path.exists() else "missing")
-        if tool == "claude":
-            managed_path, managed_status, backup_status = claude_agent.managed_settings_status(
-                state
-            )
-            print_kv("OS-managed settings", managed_status)
-            print_kv("Managed settings file", str(managed_path) if managed_path else "unsupported")
-            print_kv("Managed settings backup", backup_status)
-        elif tool == "codex":
-            managed_path, managed_status, backup_status = codex_agent.managed_config_status(state)
-            print_kv("OS-managed settings", managed_status)
-            print_kv("Managed settings file", str(managed_path) if managed_path else "unsupported")
-            print_kv("Managed settings backup", backup_status)
-        console.print()
+            rows.append(("MCP servers", str(len(mcp_names))))
+            rows.append(("Skills", str(skill_counts_by_agent.get(tool, 0))))
+        base_url = state.get("base_urls", {}).get(tool)
+        if isinstance(base_url, dict):
+            base_url = ", ".join(str(url) for url in base_url.values())
+        rows.append(("Endpoint", str(base_url or "not configured")))
+        _print_status_panel(str(spec["display"]), rows)
 
-    print_heading("Skills")
-    skill_mcp_entry = next((s for s in mcp_servers if s.get("kind") == SKILLS_MCP_KIND), None)
-    if not skill_mcp_entry:
-        print_kv("Skills", "not configured")
-    else:
-        scopes = {
-            client: skill_locations_for_client(skill_mcp_entry, client)
-            for client in (skill_mcp_entry.get("clients") or [])
-            if client in MCP_CLIENTS
-        }
-        if agents_share_one_scope(scopes):
-            locations = next(iter(scopes.values()), [])
-            print_kv(
-                "Skill MCP Locations",
-                ", ".join(locations) if locations else "none — utility tools only",
-            )
-            configured_agents = [str(MCP_CLIENTS[client]["display"]) for client in scopes]
-            print_kv("Configured", ", ".join(configured_agents) if configured_agents else "none")
-        else:
-            for client, locations in scopes.items():
-                print_kv(
-                    f"{MCP_CLIENTS[client]['display']} skill MCP locations",
-                    ", ".join(locations) if locations else "none — utility tools only",
-                )
-
-    print_heading("State")
-    print_kv("State file", str(STATE_PATH) if STATE_PATH.exists() else "missing")
-    print_note("Use `ug configure` to update workspace settings or configure new tools.")
-    print_note("Use `ug mcp add` to add Databricks MCP servers to configured coding tools.")
-    print_note("Use `ug mcp list` to see configured MCP servers and their connection status.")
-    print_note(
-        "Use `ug configure skills` to set up Unity Catalog Skills for configured coding tools."
-    )
-    print_note("Use `ug skills add` and `ug skills remove --mcp` to manage UC Skills.")
-    print_note("Use `ug revert` to clear managed configs and restore prior files.")
+    if not configured_tools:
+        print_note("No coding agents are configured.")
     return 0
 
 
@@ -1165,13 +1372,21 @@ app.add_typer(
     help="Inspect and manage the Databricks MCP servers ug configures for your coding agents.",
     rich_help_panel="Tools and Skills",
 )
-skill_app = typer.Typer(add_completion=False, no_args_is_help=True)
+skill_app = typer.Typer(add_completion=False, no_args_is_help=False)
 app.add_typer(
     skill_app,
     name="skills",
     help="Databricks Skills for your coding tools.",
     rich_help_panel="Tools and Skills",
 )
+
+
+class SkillsVia(StrEnum):
+    """How `ug skills add`/`remove` act on skills: download them to disk (the
+    default) or scope them on the skills MCP connection."""
+
+    download = "download"
+    mcp = "mcp"
 
 
 def _version_callback(value: bool) -> None:
@@ -1184,7 +1399,7 @@ def _version_callback(value: bool) -> None:
 
 def _configure_agents_for_mcp(requested: list[str]) -> set[str]:
     """Ensure the named coding agents are set up (workspace + models) so a
-    subsequent `ug mcp add` / `ug skills add --mcp` has them as targets, and
+    subsequent `ug mcp add` / `ug skills add --via mcp` has them as targets, and
     return the full canonical name set. Agents already configured are left as-is;
     only the rest are bootstrapped. Model agents go through
     configure_workspace_command (which installs binaries and configures models);
@@ -1226,14 +1441,14 @@ def mcp_add(
             "Servers already configured outside this location are kept.",
         ),
     ] = None,
-    services: Annotated[
+    names: Annotated[
         str | None,
         typer.Option(
-            "--services",
+            "--names",
             help="Register this comma-separated subset of MCP services (additively). Full names "
             "like `system.ai.github` work on their own; bare short names like `github` need "
-            "--location to locate them. Omit --services to register the whole --location schema; "
-            'an empty `--services ""` adds nothing (no-op). V2 AI Gateway servers (not in the '
+            "--location to locate them. Omit --names to register the whole --location schema; "
+            'an empty `--names ""` adds nothing (no-op). V2 AI Gateway servers (not in the '
             "interactive picker) are added by naming them here: `vector-search:<catalog>.<schema>`, "
             "`uc-functions:<catalog>.<schema>`, `external:<connection>`, `genie-space:<id>`, or "
             "`app:<name>` (workspace access required).",
@@ -1256,7 +1471,7 @@ def mcp_add(
     ones (use `ug mcp remove` to remove). Pass --agents to target (and, if needed, set up) specific
     agents.
     """
-    selected = None if services is None else {s.strip() for s in services.split(",") if s.strip()}
+    selected = None if names is None else {s.strip() for s in names.split(",") if s.strip()}
     requested_agents = (
         None
         if agents is None
@@ -1352,6 +1567,32 @@ def _stdin_is_interactive() -> bool:
     return sys.stdin.isatty()
 
 
+@skill_app.callback(invoke_without_command=True)
+def skills(ctx: typer.Context) -> None:
+    """Databricks Skills for your coding tools.
+
+    With no subcommand, prints this help, then registers the skills MCP connection
+    (utility tools only) for your configured agents, keeping any existing scope.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    console.print(ctx.get_help())
+    try:
+        install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        first_time = configure_bare_skills_mcp_command()
+    except (RuntimeError, ValueError) as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    except KeyboardInterrupt:
+        print_err("Interrupted.")
+        raise typer.Exit(130) from None
+    if first_time:
+        print_note(
+            "To create a skill, ask your agent to create one with the Databricks skills "
+            "registry MCP, which registers it in Unity Catalog."
+        )
+
+
 @skill_app.command("list")
 def skills_list() -> None:
     """List the skills configured for your coding tools and how each was configured."""
@@ -1374,13 +1615,14 @@ def skills_add(
             "--location", help="Comma-separated `<catalog>.<schema>` skill scopes to add."
         ),
     ] = None,
-    mcp: Annotated[
-        bool,
+    via: Annotated[
+        SkillsVia,
         typer.Option(
-            "--mcp",
-            help="Add the schemas to the skills MCP connection's scope instead of downloading.",
+            "--via",
+            help="`download` skills to disk (default) or add the schemas to the skills MCP "
+            "connection's scope (`mcp`).",
         ),
-    ] = False,
+    ] = SkillsVia.download,
     path: Annotated[
         str | None,
         typer.Option(
@@ -1389,20 +1631,20 @@ def skills_add(
             "to user-level skill directories.",
         ),
     ] = None,
-    skills: Annotated[
+    names: Annotated[
         str | None,
         typer.Option(
-            "--skill",
+            "--names",
             help="(download) Download exactly these comma-separated fully-qualified "
             "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
-            "with --mcp or --location.",
+            "with --via mcp or --location.",
         ),
     ] = None,
     agents: Annotated[
         str | None,
         typer.Option(
             "--agents",
-            help="(--mcp only) Comma-separated coding agents whose skills MCP scope should "
+            help="(--via mcp only) Comma-separated coding agents whose skills MCP scope should "
             "be updated. Any that aren't configured yet are set up first. Without --agents, "
             "every configured agent is updated.",
         ),
@@ -1410,18 +1652,20 @@ def skills_add(
 ) -> None:
     """Add Databricks Skills to your coding tools, keeping any already configured.
 
-    With ``--mcp``, adds the given schemas to the skills MCP connection's scope.
-    Otherwise downloads skills to project-level skill directories under ``--path``, or
-    to user-level skill directories when omitted, keeping already-downloaded skills.
-    ``--location`` downloads whole ``<catalog>.<schema>`` schemas; ``--skill``
-    downloads a named set of fully-qualified skills that may span schemas (and takes
-    no ``--location``). With no ``--location``/``--skill`` on an interactive terminal,
-    opens a picker of the workspace's schemas to scope (``--mcp``) or skills to download.
+    With ``--via mcp``, adds the given schemas to the skills MCP connection's scope.
+    By default (``--via download``) downloads skills to project-level skill directories
+    under ``--path``, or to user-level skill directories when omitted, keeping
+    already-downloaded skills. ``--location`` downloads whole ``<catalog>.<schema>``
+    schemas; ``--names`` downloads a named set of fully-qualified skills that may span
+    schemas (and takes no ``--location``). With no ``--location``/``--names`` on an
+    interactive terminal, opens a picker of the workspace's schemas to scope
+    (``--via mcp``) or skills to download.
     """
     try:
         install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        mcp = via is SkillsVia.mcp
         requested_skills = (
-            None if skills is None else {s.strip() for s in skills.split(",") if s.strip()}
+            None if names is None else {s.strip() for s in names.split(",") if s.strip()}
         )
         requested_agents = (
             None
@@ -1429,19 +1673,19 @@ def skills_add(
             else ({agent.strip().lower() for agent in agents.split(",") if agent.strip()} or None)
         )
         if mcp and path is not None:
-            raise RuntimeError("--path is not supported when using --mcp")
+            raise RuntimeError("--path is not supported with --via mcp")
         if mcp and requested_skills is not None:
-            raise RuntimeError("--skill is not supported when using --mcp")
+            raise RuntimeError("--names is not supported with --via mcp")
         if requested_skills is not None and location is not None:
-            raise RuntimeError("--skill takes fully-qualified names; drop --location.")
+            raise RuntimeError("--names takes fully-qualified names; drop --location.")
         # Downloaded skills use shared directory families, so only MCP scopes can be agent-scoped.
         if not mcp and agents is not None:
-            raise RuntimeError("--agents is only supported when using --mcp")
+            raise RuntimeError("--agents is only supported with --via mcp")
         if requested_skills is not None:
             invalid = sorted(s for s in requested_skills if not _is_qualified_skill_name(s))
             if invalid:
                 raise RuntimeError(
-                    "--skill entries must be fully-qualified `<catalog>.<schema>.<name>` names "
+                    "--names entries must be fully-qualified `<catalog>.<schema>.<name>` names "
                     f"(invalid: {', '.join(invalid)})."
                 )
             configure_selected_skills_download_command(sorted(requested_skills), path)
@@ -1482,16 +1726,17 @@ def skills_remove(
         typer.Option(
             "--location",
             help="Comma-separated `<catalog>.<schema>` schemas to remove (from the skills MCP "
-            "scope with --mcp, else their downloaded skills).",
+            "scope with --via mcp, else their downloaded skills).",
         ),
     ] = None,
-    mcp: Annotated[
-        bool,
+    via: Annotated[
+        SkillsVia,
         typer.Option(
-            "--mcp",
-            help="Remove schemas from the skills MCP connection instead of downloaded files.",
+            "--via",
+            help="Remove `download`ed skill files (default) or drop the schemas from the skills "
+            "MCP connection (`mcp`).",
         ),
-    ] = False,
+    ] = SkillsVia.download,
     path: Annotated[
         str | None,
         typer.Option(
@@ -1500,20 +1745,20 @@ def skills_remove(
             "without it, every base is in scope.",
         ),
     ] = None,
-    skills: Annotated[
+    names: Annotated[
         str | None,
         typer.Option(
-            "--skill",
+            "--names",
             help="(download) Remove exactly these comma-separated fully-qualified "
             "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
-            "with --mcp or --location.",
+            "with --via mcp or --location.",
         ),
     ] = None,
     agents: Annotated[
         str | None,
         typer.Option(
             "--agents",
-            help="(--mcp only) Comma-separated coding agents to remove the schemas from "
+            help="(--via mcp only) Comma-separated coding agents to remove the schemas from "
             "(e.g. claude,codex). A schema scoped to several agents is removed only from the "
             "named ones and kept on the rest. Without --agents, it is removed from every agent.",
         ),
@@ -1521,22 +1766,23 @@ def skills_remove(
 ) -> None:
     """Remove Skills previously added to your coding tools.
 
-    With ``--mcp``, drops skill schemas from the skills MCP connection: ``--location`` removes the
-    named ``<catalog>.<schema>`` schemas, and with none on an interactive terminal a picker lists
-    the scoped schemas. Otherwise removes downloaded skill directories: ``--location`` removes every
-    skill downloaded from a ``<catalog>.<schema>``, ``--skill`` removes named fully-qualified skills
-    that may span schemas, and with none of them a picker lists every downloaded skill. ``--path``
-    limits either to one download base. Only skills ucode downloaded are removed; a same-named skill
-    you authored is left alone.
+    With ``--via mcp``, drops skill schemas from the skills MCP connection: ``--location`` removes
+    the named ``<catalog>.<schema>`` schemas, and with none on an interactive terminal a picker
+    lists the scoped schemas. By default (``--via download``) removes downloaded skill directories:
+    ``--location`` removes every skill downloaded from a ``<catalog>.<schema>``, ``--names`` removes
+    named fully-qualified skills that may span schemas, and with none of them a picker lists every
+    downloaded skill. ``--path`` limits either to one download base. Only skills ucode downloaded
+    are removed; a same-named skill you authored is left alone.
     """
     try:
         install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
+        mcp = via is SkillsVia.mcp
         requested_skills = (
-            None if skills is None else {s.strip() for s in skills.split(",") if s.strip()}
+            None if names is None else {s.strip() for s in names.split(",") if s.strip()}
         )
         if mcp:
             if path is not None or requested_skills is not None:
-                raise RuntimeError("--path and --skill are not supported with --mcp.")
+                raise RuntimeError("--path and --names are not supported with --via mcp.")
             requested_agents = (
                 None
                 if agents is None
@@ -1548,26 +1794,26 @@ def skills_remove(
             elif _stdin_is_interactive():
                 remove_skills_command(agents=requested_agents)
             else:
-                raise RuntimeError("--location is required for `ug skills remove --mcp`.")
+                raise RuntimeError("--location is required for `ug skills remove --via mcp`.")
             return
         if agents is not None:
-            raise RuntimeError("--agents is only supported when using --mcp.")
+            raise RuntimeError("--agents is only supported with --via mcp.")
         if requested_skills is not None and location is not None:
-            raise RuntimeError("--skill takes fully-qualified names; drop --location.")
+            raise RuntimeError("--names takes fully-qualified names; drop --location.")
         if requested_skills is not None:
             invalid = sorted(s for s in requested_skills if not _is_qualified_skill_name(s))
             if invalid:
                 raise RuntimeError(
-                    "--skill entries must be fully-qualified `<catalog>.<schema>.<name>` names "
+                    "--names entries must be fully-qualified `<catalog>.<schema>.<name>` names "
                     f"(invalid: {', '.join(invalid)})."
                 )
             remove_downloaded_skills_command([], sorted(requested_skills), path=path)
             return
         locations = _parse_skill_locations(location)
         if path is not None and not locations:
-            raise RuntimeError("--path is only supported with --location or --skill.")
+            raise RuntimeError("--path is only supported with --location or --names.")
         if not locations and not _stdin_is_interactive():
-            raise RuntimeError("--location or --skill is required for `ug skills remove`.")
+            raise RuntimeError("--location or --names is required for `ug skills remove`.")
         remove_downloaded_skills_command(locations, path=path)
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
@@ -2047,6 +2293,19 @@ def _reject_disabled_agent(managed: dict | None, tool: str) -> None:
         )
 
 
+def _reject_managed_launch_source_options(
+    managed: dict | None,
+    *,
+    provider: str | None,
+    parent_schema: str | None,
+) -> None:
+    if managed is not None and (provider is not None or parent_schema is not None):
+        raise RuntimeError(
+            "`--provider` or `--model-location` is not allowed when a managed config exists "
+            "for the workspace; the managed config controls the model source."
+        )
+
+
 def _fetch_managed_config(state: dict) -> ManagedConfigResult:
     """The workspace's managed config for this launch, plus whether the feature is disabled.
 
@@ -2127,14 +2386,16 @@ def _print_budget_panel(recommendation: dict, tool: str, managed: dict | None = 
         console.print(panel)
 
 
-def _configure_managed_mcp_servers(managed: dict | None) -> None:
+def _configure_managed_mcp_servers(managed: dict | None) -> list[str]:
     """Register the managed config's MCP servers for every enabled MCP-client agent.
 
     Runs during ``ug configure`` after the enabled agents are configured, so a workspace-published
     server reaches each agent's `/mcp` list without the developer re-adding it. ``managed`` is None
     when the (now-current) workspace has no managed config: the reconcile then unregisters any
     servers a prior managed workspace registered, so switching workspaces resets the MCP registry.
-    Best-effort: a failure warns and leaves the rest of configure intact.
+    Best-effort: a failure warns and leaves the rest of configure intact. Returns the names of the
+    servers registered this run (the completion summary counts them; state alone can't, since #717
+    writes them to agents' OS-managed files rather than ``managed_mcp_servers``).
     """
     managed = managed or {}
     agents = {tool for tool in managed_enabled_tools(managed) if tool in MCP_CLIENTS}
@@ -2142,10 +2403,11 @@ def _configure_managed_mcp_servers(managed: dict | None) -> None:
         registered = reconcile_managed_mcp_servers(managed, agents)
     except RuntimeError as exc:
         print_warning(f"Could not register your workspace's MCP servers: {exc}")
-        return
-    if registered:
-        names = ", ".join(str(server["name"]) for server in registered)
-        print_note(f"Registered workspace MCP server(s): {names}")
+        return []
+    names = [str(server["name"]) for server in registered if server.get("name")]
+    if names:
+        print_note(f"Registered workspace MCP server(s): {', '.join(names)}")
+    return names
 
 
 def _configure_managed_skills(managed: dict | None) -> None:
@@ -2268,10 +2530,6 @@ def _launch_tool(
         # every ug line from here on must go to stderr instead.
         if _child_owns_stdout(tool, ctx.args):
             redirect_output_to_stderr()
-        if provider is not None and parent_schema is not None:
-            raise RuntimeError("--provider and --model-location cannot be used together.")
-        if parent_schema is not None and not is_valid_catalog_schema(parent_schema):
-            raise RuntimeError("--model-location must be `<catalog>.<schema>`.")
         explicit_prompt = _has_explicit_prompt(ctx)
         smart_routing_enabled = smart_routing_v2.smart_routing_enabled()
         # Launchers such as isaac put their harness arguments after `--`, so the harness's own
@@ -2318,8 +2576,36 @@ def _launch_tool(
         coding_agent_config_feature_disabled = False
         if managed is None:
             managed, coding_agent_config_feature_disabled = _fetch_managed_config(state)
+        _reject_managed_launch_source_options(
+            managed,
+            provider=explicit_provider,
+            parent_schema=parent_schema,
+        )
+        if explicit_provider is not None and parent_schema is not None:
+            raise RuntimeError("--provider and --model-location cannot be used together.")
+        if parent_schema is not None and not is_valid_catalog_schema(parent_schema):
+            raise RuntimeError("--model-location must be `<catalog>.<schema>`.")
         # Checked before discovery, which can take tens of seconds, so a blocked launch fails fast.
         _reject_disabled_agent(managed, tool)
+        managed_provider = managed_provider_service(managed or {}, tool)
+        managed_parent_schema = (
+            managed_unity_catalog_location(managed or {}, tool)
+            if tool in {"claude", "codex"} and not managed_provider
+            else None
+        )
+        if managed_provider:
+            provider = managed_provider
+            parent_schema = None
+        elif managed_parent_schema:
+            # Managed UC discovery supersedes a developer's persisted provider without
+            # rewriting it; the admin's location exists only for this launch.
+            provider = None
+            parent_schema = managed_parent_schema
+        # Unmanaged Claude launches discover gateway models automatically; with no
+        # provider or parent header the gateway defaults to system.ai. Managed
+        # configs opt into discovery by selecting an MPS or Unity Catalog location.
+        if tool == "claude" and (managed is None or managed_provider or managed_parent_schema):
+            os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         # The environment switch remains a developer override; managed config is the workspace
         # policy equivalent and must take effect before launch options are computed.
         managed_smart_routing_enabled = _managed_smart_routing_enabled(managed, tool)
@@ -2336,7 +2622,9 @@ def _launch_tool(
             state["workspace"],
             profile=state.get("profile"),
             tools=[tool],
-            skip_model_discovery=bool(provider) or managed_models_known,
+            skip_model_discovery=(
+                bool(provider) or bool(managed_parent_schema) or managed_models_known
+            ),
             skip_preflight=skip_preflight,
             **configure_kwargs,
         )
@@ -2357,19 +2645,6 @@ def _launch_tool(
                 )
         elif not coding_agent_config_feature_disabled:
             print_note("No managed coding agent config found; using your own settings")
-        if managed is not None:
-            managed_provider = managed_provider_service(managed, tool)
-            if explicit_provider and managed_provider and managed_provider != explicit_provider:
-                # An explicit --provider that disagrees with the admin's is a hard error rather
-                # than a silent override: the user asked for something the managed config forbids,
-                # and quietly routing them elsewhere would hide it.
-                raise RuntimeError(
-                    f"You cannot launch {TOOL_SPECS[tool]['display']} with provider "
-                    f"{explicit_provider} because your admin has specified managed provider "
-                    f"{managed_provider}."
-                )
-            if managed_provider:
-                provider = managed_provider
         if provider and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
@@ -2385,11 +2660,19 @@ def _launch_tool(
         # Gemini is exempt: it validates the service and resolves its target in a single
         # lookup via resolve_gemini_provider_model (below), and uses no family model map.
         provider_models = None
+        picker_catalog = None
         relayed = False
         coding_agent_config_defaults = (
             managed_claude_family_models(managed) or {}
             if tool == "claude" and managed is not None
             else {}
+        )
+        managed_claude_uc_without_defaults = (
+            tool == "claude"
+            and managed is not None
+            and bool(managed_parent_schema)
+            and managed_default_model(managed, tool) is None
+            and not coding_agent_config_defaults
         )
         if provider and tool != "gemini":
             provider_models, error, relayed = resolve_provider_models(tool, state, provider)
@@ -2415,29 +2698,55 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        elif managed_claude_uc_without_defaults:
+            token = get_databricks_token(state["workspace"], state.get("profile"))
+            picker_catalog = list_anthropic_model_catalog(
+                state["workspace"], token, parent_schema=managed_parent_schema
+            )
+            error = picker_catalog.error_msg
+            if error:
+                raise RuntimeError(
+                    f"Could not discover Claude models for managed Unity Catalog location "
+                    f"{managed_parent_schema}: {error}"
+                )
         # The router's per-launch pick for the root session. Codex pins it as the
         # resolved model; claude pins it via ANTHROPIC_MODEL (route_root_model).
         route_root_model = None
         managed_model = None
         relayed_forward_model = None  # forwarded to Claude Code's --model for a relayed provider
-        if provider:
+        if provider or managed_parent_schema:
             # Routing through a Model Provider Service pins no Databricks model;
-            # the agent uses its own canonical model names (header selects the
-            # provider). Skip model resolution, which would otherwise fail when
-            # the workspace has no matching Databricks models.
+            # managed UC discovery likewise lets the agent select from the parent schema. Skip model
+            # resolution, which would otherwise fail when global discovery found no models.
             resolved_model = None
-            if tool == "claude" and (model or provider_models):
+            managed_source_model = (
+                managed_launch_model(managed or {}, recommendation, tool)
+                if tool == "claude" and (managed_provider or managed_parent_schema)
+                else None
+            )
+            if tool == "claude" and managed_parent_schema:
+                # Native discovery supplies the catalog, but the managed policy still controls
+                # which model Claude starts on.
+                route_root_model = managed_source_model
+            provider_launch_model = model
+            if tool == "claude" and managed_provider:
+                # A CLI model still wins, followed by the budget recommendation and the managed
+                # default. Unmanaged providers retain their existing target-selection behavior.
+                provider_launch_model = provider_launch_model or managed_source_model
+            if provider and tool == "claude" and (provider_launch_model or provider_models):
                 if relayed:
                     # Resolve against a curated allowlist so the forwarded id is one the gateway
                     # allows; an allow_all relay declares none, so forward as-is.
                     relayed_forward_model = (
-                        resolve_provider_launch_model(model, provider_models)
+                        resolve_provider_launch_model(provider_launch_model, provider_models)
                         if provider_models
-                        else model
+                        else provider_launch_model
                     )
                 else:
-                    route_root_model = resolve_provider_launch_model(model, provider_models or {})
-            if tool == "gemini":
+                    route_root_model = resolve_provider_launch_model(
+                        provider_launch_model, provider_models or {}
+                    )
+            if provider and tool == "gemini":
                 # Gemini is the exception: the request still names a concrete model
                 # in the URL, so pin one of the service's targets (--model or default).
                 resolved_model, gemini_error = resolve_gemini_provider_model(state, provider, model)
@@ -2471,6 +2780,7 @@ def _launch_tool(
             resolved_model,
             provider=provider,
             provider_models=provider_models,
+            picker_catalog=picker_catalog,
             relayed=relayed,
             route_root_model=route_root_model,
             # Claude's explicit model is launch-scoped and is passed through LaunchOptions below.
@@ -2478,6 +2788,10 @@ def _launch_tool(
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
         )
+        if picker_catalog and picker_catalog.model_ids:
+            # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
+            # replaced. Keep the managed catalog launch-scoped and leave the user's settings alone.
+            state["_claude_launch_picker_models"] = picker_catalog.model_ids
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
             tool == "claude"
@@ -2841,14 +3155,6 @@ def claude_cmd(
         str | None,
         typer.Option("--scopes", hidden=True, help="Comma-separated custom OAuth scopes."),
     ] = None,
-    enable_model_discovery: Annotated[
-        bool,
-        typer.Option(
-            "--enable-model-discovery",
-            hidden=True,
-            help="Enable AI Gateway models in Claude Code's model picker.",
-        ),
-    ] = False,
     enable_smart_routing_flag: Annotated[
         bool,
         typer.Option(
@@ -2878,8 +3184,6 @@ def claude_cmd(
         claude_agent.disable_smart_routing(load_state())
         print_success("Claude Code smart routing disabled; ug routing hooks removed")
         return
-    if enable_model_discovery or model_location is not None or provider is not None:
-        os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
     with _smart_routing_v2_flag(enable_smart_routing_flag):
         with _disable_smart_routing_for_subcommand("claude", ctx):
             _launch_tool(
@@ -3376,82 +3680,6 @@ def configure(
         raise typer.Exit(130) from None
 
 
-@configure_app.command("skills")
-def configure_skills(
-    location: Annotated[
-        str | None,
-        typer.Option("--location", help="Comma-separated `<catalog>.<schema>` skill scopes."),
-    ] = None,
-    mcp: Annotated[
-        bool,
-        typer.Option("--mcp", help="Mutate the skills MCP connection instead of downloading."),
-    ] = False,
-    path: Annotated[
-        str | None,
-        typer.Option(
-            "--path",
-            help="(download) Existing absolute dir to download into; defaults to your home dir.",
-        ),
-    ] = None,
-    skill: Annotated[
-        str | None,
-        typer.Option(
-            "--skill",
-            help="(download) Download exactly these comma-separated fully-qualified "
-            "`<catalog>.<schema>.<name>` skills, spanning any number of schemas. Not valid "
-            "with --mcp or --location.",
-        ),
-    ] = None,
-) -> None:
-    """Configure Databricks Skills for your coding tools.
-
-    When ``--location`` is not provided, registers the skills MCP connection with
-    utility tools only.
-
-    When ``--location`` is provided: with ``--mcp``, sets the connection's scope to
-    exactly the listed schemas (no download); otherwise, downloads every skill in
-    each schema to disk (under ``--path``, or your home dir when omitted) and
-    registers the MCP connection with utility tools only. ``--skill`` instead
-    downloads a named set of fully-qualified skills that may span schemas (and takes
-    no ``--location``).
-    """
-    try:
-        install_databricks_cli(minimum=SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION)
-        # `--skill` absent -> None (whole schemas via --location); present (even
-        # empty) -> the explicit FQN set, so `--skill ""` downloads nothing.
-        selected_skills = (
-            None if skill is None else {s.strip() for s in skill.split(",") if s.strip()}
-        )
-        if mcp and path is not None:
-            raise RuntimeError("--path is not valid with --mcp.")
-        if mcp and selected_skills is not None:
-            raise RuntimeError("--skill is not valid with --mcp; it only applies when downloading.")
-        if selected_skills is not None and location is not None:
-            raise RuntimeError("--skill takes fully-qualified names; drop --location.")
-        if selected_skills is not None:
-            invalid = sorted(s for s in selected_skills if not _is_qualified_skill_name(s))
-            if invalid:
-                raise RuntimeError(
-                    "--skill entries must be fully-qualified `<catalog>.<schema>.<name>` names "
-                    f"(invalid: {', '.join(invalid)})."
-                )
-            configure_selected_skills_download_command(sorted(selected_skills), path)
-            return
-        locations = _parse_skill_locations(location)
-        if path is not None and not locations:
-            raise RuntimeError("--path only applies when downloading with --location.")
-        if mcp or not locations:
-            configure_skills_mcp_command(locations)
-        else:
-            configure_location_skills_download_command(locations, path=path)
-    except (RuntimeError, ValueError) as exc:
-        print_err(str(exc))
-        raise typer.Exit(1) from None
-    except KeyboardInterrupt:
-        print_err("Interrupted.")
-        raise typer.Exit(130) from None
-
-
 @app.command("export", rich_help_panel="Manage")
 def export_cmd(
     file_path: Annotated[
@@ -3482,7 +3710,7 @@ def export_cmd(
 
 @app.command("status", rich_help_panel="Manage")
 def status_cmd() -> None:
-    """Show current workspace, tool configs, and saved model selections."""
+    """Show current workspace, tool configs, and live model availability."""
     try:
         status()
     except RuntimeError as exc:

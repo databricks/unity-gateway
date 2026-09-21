@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -28,16 +29,20 @@ class TestCodexSpec:
 
 
 class TestMinimumVersion:
-    def test_smart_routing_old_version_requires_update(self, monkeypatch):
-        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+    @pytest.mark.parametrize("version", ["0.145.0", "0.148.0", "1.0.0"])
+    def test_supported_version(self, monkeypatch, version):
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: version)
+
+        assert codex.minimum_version_error() is None
+
+    def test_older_version_requires_update(self, monkeypatch):
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.144.0")
 
-        expected = "Codex smart routing requires Codex 0.145.0 or newer; found 0.144.0."
+        expected = "ug requires Codex 0.145.0 or newer; found 0.144.0."
         assert codex.minimum_version_error() == expected
 
-    def test_old_version_is_not_blocked_without_smart_routing(self, monkeypatch):
-        monkeypatch.delenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
-        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.144.0")
+    def test_unknown_version_does_not_block(self, monkeypatch):
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "unknown")
 
         assert codex.minimum_version_error() is None
 
@@ -761,7 +766,11 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
-        monkeypatch.setattr(codex, "get_databricks_token", lambda workspace, profile=None: "tok")
+        monkeypatch.setattr(
+            codex,
+            "get_databricks_token",
+            lambda workspace, profile=None, force_refresh=False: "tok",
+        )
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         return launches
 
@@ -769,7 +778,9 @@ class TestCodexLaunch:
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         launches = self._patch(tmp_path, monkeypatch)
         monkeypatch.setattr(
-            codex, "get_databricks_token", lambda workspace, profile=None: "fresh-token"
+            codex,
+            "get_databricks_token",
+            lambda workspace, profile=None, force_refresh=False: "fresh-token",
         )
         codex.launch({"workspace": WS}, ["--search"], options=LaunchOptions())
 
@@ -906,6 +917,38 @@ class TestCodexLaunch:
         )
         assert 'Databricks-Model-Service-Parent-Schema = "main.default"' in parent_arg
 
+    def test_transient_parent_suppresses_persisted_provider(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        seen = {}
+        monkeypatch.setattr(
+            codex, "_model_catalog_path", lambda workspace, scope: tmp_path / "models.json"
+        )
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda workspace, token, **kwargs: seen.update(kwargs) or {"models": []},
+        )
+
+        codex.launch(
+            {
+                "workspace": WS,
+                "provider_services": {"codex": "main.default.developer"},
+                "_codex_launch_parent_schema": "main.managed",
+            },
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert seen == {
+            "source": codex.CodexCatalogSource.PARENT_SCHEMA,
+            "identifier": "main.managed",
+        }
+        provider_arg = next(
+            arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
+        )
+        assert 'Databricks-Model-Service-Parent-Schema = "main.managed"' in provider_arg
+        assert "Databricks-Model-Provider-Service" not in provider_arg
+
     def test_parent_discovery_refreshes_when_parent_changes(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
         monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "models.json")
@@ -1021,7 +1064,9 @@ class TestCodexLaunch:
             lambda *args, **kwargs: pytest.fail("standard token used"),
         )
 
-        def custom_token(workspace, client_id, redirect_url, *, scopes, profile):
+        def custom_token(
+            workspace, client_id, redirect_url, *, scopes, profile, force_refresh=False
+        ):
             seen["profile"] = profile
             return "custom-token"
 
@@ -1093,21 +1138,40 @@ class TestCodexLaunch:
             codex._write_model_catalog(path, {"models": [{"slug": "gpt-mps"}]})
 
     def test_injects_otel_config_when_tracing_enabled(self, tmp_path, monkeypatch):
-        launches = self._patch(tmp_path, monkeypatch)
+        self._patch(tmp_path, monkeypatch)
+        server = Mock(server_address=("127.0.0.1", 54321))
+        cache = Mock()
+        client = Mock()
+        process = Mock()
+        process.wait.return_value = 0
+        popen = Mock(return_value=process)
 
-        codex.launch(
-            {"workspace": WS, "codex_otel_tracing": True},
-            ["exec", "hi"],
-            options=LaunchOptions(),
-        )
+        def start_otel_proxy(workspace, token_provider):
+            assert workspace == WS
+            assert token_provider(False) == "tok"
+            return server, cache, client
 
-        otel = next((arg for arg in launches[0] if arg.startswith("otel=")), None)
+        monkeypatch.setattr(codex.gateway_proxy, "start_otel_proxy", start_otel_proxy)
+        monkeypatch.setattr(codex.subprocess, "Popen", popen)
+
+        with pytest.raises(SystemExit) as exc:
+            codex.launch(
+                {"workspace": WS, "codex_otel_tracing": True},
+                ["exec", "hi"],
+                options=LaunchOptions(),
+            )
+
+        assert exc.value.code == 0
+        cache.stop.assert_called_once_with()
+        server.shutdown.assert_called_once_with()
+        client.close.assert_called_once_with()
+        argv = popen.call_args.args[0]
+        otel = next((arg for arg in argv if arg.startswith("otel=")), None)
         assert otel is not None
-        assert "otlp-http" in otel
-        assert f"{WS}/ai-gateway/otel/v1/traces" in otel
+        assert "http://127.0.0.1:54321/v1/traces" in otel
         assert 'protocol = "binary"' in otel
-        assert 'Authorization = "Bearer tok"' in otel
-        assert launches[0][-2:] == ["exec", "hi"]
+        assert "Authorization" not in otel  # no credential in argv; the proxy injects it
+        assert argv[-2:] == ["exec", "hi"]
 
     def test_no_otel_config_when_tracing_disabled(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
@@ -1158,7 +1222,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "LEGACY_CODEX_BACKUP_PATH", tmp_path / "legacy-backup.toml")
         monkeypatch.setattr(codex, "agent_version", lambda binary: version)
         monkeypatch.setattr(codex, "save_state", lambda state: None)
-        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args: "tok")
+        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "tok")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         launches: list[list[str]] = []
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
@@ -1186,7 +1250,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
         launches = []
         monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
-        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args: "tok")
+        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "tok")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
 
         with pytest.raises(RuntimeError, match="ucode configure --agents codex"):
@@ -1539,3 +1603,29 @@ class TestCodexReadManagedMcpUrls:
 
         monkeypatch.setattr(codex, "read_managed_file", boom)
         assert codex.read_managed_mcp_urls() == {}
+
+
+class TestOtelTokenProvider:
+    def test_token_provider_uses_default_profile(self, monkeypatch):
+        get_token = Mock(return_value="token")
+        monkeypatch.setattr(codex, "get_databricks_token", get_token)
+        provider = codex._otel_token_provider({"profile": "myprof"}, WS)
+        assert provider(True) == "token"
+        get_token.assert_called_once_with(WS, "myprof", force_refresh=True)
+
+    def test_token_provider_uses_custom_oauth_when_configured(self, monkeypatch):
+        get_custom_token = Mock(return_value="custom-token")
+        get_default_token = Mock()
+        monkeypatch.setattr(codex, "get_custom_client_token", get_custom_token)
+        monkeypatch.setattr(codex, "get_databricks_token", get_default_token)
+        state = {
+            "custom_oauth": {
+                "client_id": "cid",
+                "redirect_url": "http://localhost:8020/callback",
+                "scopes": ["offline_access", "model-serving"],
+            }
+        }
+        provider = codex._otel_token_provider(state, WS)
+        assert provider(True) == "custom-token"
+        assert get_custom_token.call_args.kwargs["force_refresh"] is True
+        get_default_token.assert_not_called()

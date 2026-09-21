@@ -51,6 +51,11 @@ On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
 
+Without a managed workspace config, `ug claude` automatically discovers gateway
+models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
+no provider or model location is selected. Use `--provider` or `--model-location`
+to select another model source; managed workspace configs control their own sources.
+
 ## Configure
 
 ```bash
@@ -76,7 +81,7 @@ Use `ug mcp add` to add servers without removing existing registrations:
 
 ```bash
 ug mcp add --location system.ai
-ug mcp add --services system.ai.slack,system.ai.github
+ug mcp add --names system.ai.slack,system.ai.github
 ug mcp add --agents claude,codex --location system.ai
 ```
 
@@ -106,18 +111,29 @@ Unity Catalog Skills can be registered as MCP tools or downloaded into local
 agent skill directories.
 
 ```bash
+# Set up the Databricks skills MCP so your agents can create and manage skills through ug.
+ug skills
+
 # List configured skills and how each was configured.
 ug skills list
 
-# Add to existing MCP scope or downloads.
-ug skills add --location main.default --mcp
+# Download every skill in a schema into your local agent skill directories.
 ug skills add --location main.default
-ug skills add --skill main.default.my-skill,ml.prod.other-skill
 
-# Remove MCP scopes or downloaded skill files.
-ug skills remove --location main.default --mcp
+# Download specific skills by fully-qualified name (may span schemas).
+ug skills add --names main.default.my-skill,ml.prod.other-skill
+
+# Add a schema to the MCP connection scope, exposing its skills as MCP tools.
+ug skills add --location main.default --via mcp
+
+# Interactively pick downloaded skills to delete.
 ug skills remove
-ug skills remove --skill main.default.my-skill
+
+# Delete a specific downloaded skill by fully-qualified name.
+ug skills remove --names main.default.my-skill
+
+# Drop a schema from the MCP connection scope.
+ug skills remove --location main.default --via mcp
 ```
 
 ## Commands
@@ -130,6 +146,7 @@ ug skills remove --skill main.default.my-skill
 | `ug mcp add` | Add MCP servers without removing existing registrations |
 | `ug mcp remove` | Unregister configured MCP servers |
 | `ug mcp list` | List configured MCP servers and connection status |
+| `ug skills` | Set up the Databricks skills MCP so agents can create and manage skills |
 | `ug skills list` | List configured skills and how each was configured |
 | `ug skills add` | Add skill MCP scopes or download skills |
 | `ug skills remove` | Remove skill MCP scopes or downloaded skills |
