@@ -56,6 +56,14 @@ models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
 to select another model source; managed workspace configs control their own sources.
 
+When `ug codex` discovers a model catalog, it also refreshes
+`~/.ucode/codex-model-catalog.json` and points the shared `~/.codex/config.toml`
+at it. Managed static model lists use the same path. Restart Codex App to load
+the latest list; the app's provider and authentication must already be configured
+for the corresponding gateway. The most recently refreshed workspace supplies
+the app catalog. An existing custom catalog setting is preserved, and `ug revert`
+removes the shared catalog reference installed by ug.
+
 ## Configure
 
 ```bash
@@ -166,7 +174,7 @@ with `ug configure` to control installation.
 
 | Tool | Managed files |
 |------|---------------|
-| Codex | `~/.codex/ucode.config.toml`, legacy `~/.codex/config.toml`, `/etc/codex/managed_config.toml` (Linux and macOS) |
+| Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS) |
 | Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |

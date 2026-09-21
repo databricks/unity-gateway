@@ -69,6 +69,10 @@ def _assert_managed_provider_catalog(session, models):
     # in Codex's generated profile.
     assert "model_catalog_json" not in config, config
 
+    shared_config = tomllib.loads((session.home / ".codex" / "config.toml").read_text())
+    app_catalog_path = session.home / ".ucode" / "codex-model-catalog.json"
+    assert shared_config.get("model_catalog_json") == str(app_catalog_path), shared_config
+
     managed_cache = json.loads((session.home / ".ucode/managed-config.json").read_text())
     raw_config = managed_cache.get("config")
     enabled_agents = raw_config.get("enabled_agents") if isinstance(raw_config, dict) else None
@@ -89,6 +93,7 @@ def _assert_managed_provider_catalog(session, models):
     catalog_paths = list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
     assert len(catalog_paths) == 1, catalog_paths
     catalog = json.loads(catalog_paths[0].read_text())
+    assert json.loads(app_catalog_path.read_text()) == catalog
     catalog_ids = [
         model.get("slug")
         for model in catalog.get("models", [])
@@ -101,7 +106,8 @@ def _assert_managed_provider_catalog(session, models):
 def test_case_02_managed_codex_uses_admin_discovery_after_configure(live_session, workspace):
     """Scenario: configure managed Codex, then launch its app server.
 
-    Expected: Codex exposes exactly the admin-managed model catalog.
+    Expected: ug-launched and fresh bare Codex app servers expose exactly the admin-managed
+    model catalog. This verifies the desktop startup configuration, not GUI rendering.
     """
     session = live_session
     configured = session.run(
@@ -117,12 +123,17 @@ def test_case_02_managed_codex_uses_admin_discovery_after_configure(live_session
     models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
 
     _assert_managed_provider_catalog(session, models)
+    app_models = session.codex_model_ids(
+        ["app-server", "--listen", "stdio://"], name="bare-codex-models", binary="codex"
+    )
+    assert app_models == models, (app_models, models)
 
 
 def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(live_session, workspace):
     """Scenario: launch managed Codex with --workspace from fresh state.
 
-    Expected: Codex exposes exactly the admin-managed model catalog.
+    Expected: ug-launched and fresh bare Codex app servers expose exactly the admin-managed
+    model catalog. This verifies the desktop startup configuration, not GUI rendering.
     """
     session = live_session
     models = session.codex_model_ids(
@@ -130,12 +141,17 @@ def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(live_sessio
     )
 
     _assert_managed_provider_catalog(session, models)
+    app_models = session.codex_model_ids(
+        ["app-server", "--listen", "stdio://"], name="bare-codex-models", binary="codex"
+    )
+    assert app_models == models, (app_models, models)
 
 
 def test_case_04_managed_codex_ignores_discovery_disable_after_configure(live_session, workspace):
     """Scenario: configure managed Codex, disable discovery, then launch its app server.
 
-    Expected: workspace-managed discovery still supplies the admin's catalog.
+    Expected: workspace-managed discovery supplies the admin's catalog to ug-launched and
+    fresh bare Codex app servers, even with the personal discovery flag disabled.
     """
     session = live_session
     configured = session.run(
@@ -152,12 +168,17 @@ def test_case_04_managed_codex_ignores_discovery_disable_after_configure(live_se
     models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
 
     _assert_managed_provider_catalog(session, models)
+    app_models = session.codex_model_ids(
+        ["app-server", "--listen", "stdio://"], name="bare-codex-models", binary="codex"
+    )
+    assert app_models == models, (app_models, models)
 
 
 def test_case_04_managed_codex_ignores_discovery_disable_from_fresh_state(live_session, workspace):
     """Scenario: disable discovery and launch managed Codex with --workspace from fresh state.
 
-    Expected: workspace-managed discovery still supplies the admin's catalog.
+    Expected: workspace-managed discovery supplies the admin's catalog to ug-launched and
+    fresh bare Codex app servers, even with the personal discovery flag disabled.
     """
     session = live_session
     session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
@@ -167,6 +188,10 @@ def test_case_04_managed_codex_ignores_discovery_disable_from_fresh_state(live_s
     )
 
     _assert_managed_provider_catalog(session, models)
+    app_models = session.codex_model_ids(
+        ["app-server", "--listen", "stdio://"], name="bare-codex-models", binary="codex"
+    )
+    assert app_models == models, (app_models, models)
 
 
 def test_case_06_managed_codex_rejects_provider_override_after_configure(

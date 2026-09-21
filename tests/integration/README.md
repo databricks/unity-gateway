@@ -340,7 +340,10 @@ module fetches the workspace's published config once, replaces Claude's static m
 across all configured/fresh scenarios. The Codex module does the same with
 `main.default.ci_e2e_openai_mps`. The tests verify Claude's admin header, native cache and real
 model picker, Codex's exact app-server catalog, and both agents' rejection of personal source
-overrides. Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable links
+overrides. Codex discovery also refreshes a stable catalog and shared-config reference, then a
+fresh bare `codex app-server` must return the same models without ug launch overrides. This
+checks desktop startup configuration, not GUI rendering or inference through the desktop app.
+Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable links
 recreated by version checks, while continuing to compare persistent agent files.
 In addition, `test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
 `system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that

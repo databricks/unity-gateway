@@ -359,9 +359,14 @@ def revert_legacy_shared_config() -> bool:
     through the workspace gateway. ``ucode revert`` only restored the
     per-profile file, leaving those edits in place. Surgically strip them here.
 
+    Also remove the shared app catalog reference installed by modern ucode.
     Returns True if anything was removed.
     """
-    return _strip_legacy_ucode_entries(_legacy_config_path())
+    legacy_changed = _strip_legacy_ucode_entries(_legacy_config_path())
+    app_catalog_changed = _remove_app_catalog_reference()
+    if app_catalog_changed and CODEX_MODEL_CATALOG_PATH.exists():
+        CODEX_MODEL_CATALOG_PATH.unlink()
+    return legacy_changed or app_catalog_changed
 
 
 def configured_paths(state: dict) -> list[str]:
@@ -475,9 +480,11 @@ def write_tool_config(
         return base
 
     if catalog is not None:
-        write_json_file(CODEX_MODEL_CATALOG_PATH, catalog)
-    elif CODEX_MODEL_CATALOG_PATH.exists() and not is_dry_run():
-        CODEX_MODEL_CATALOG_PATH.unlink()
+        _sync_app_model_catalog(catalog)
+    elif not is_dry_run():
+        _remove_app_catalog_reference()
+        if CODEX_MODEL_CATALOG_PATH.exists():
+            CODEX_MODEL_CATALOG_PATH.unlink()
 
     doc = read_toml_safe(CODEX_CONFIG_PATH)
     compose(doc)
@@ -771,6 +778,9 @@ def _model_catalog_path(workspace: str, scope: str) -> Path:
 
 
 def _write_model_catalog(path: Path, catalog: dict) -> None:
+    if is_dry_run():
+        write_json_file(path, catalog)
+        return
     temp_path = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -789,6 +799,63 @@ def _write_model_catalog(path: Path, catalog: dict) -> None:
                 temp_path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def _is_ucode_catalog_reference(value: object) -> bool:
+    return isinstance(value, str) and Path(value).expanduser() == CODEX_MODEL_CATALOG_PATH
+
+
+def _read_app_config() -> tomlkit.TOMLDocument:
+    path = _legacy_config_path()
+    try:
+        return tomlkit.parse(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return tomlkit.document()
+    except (OSError, UnicodeError, ParseError) as exc:
+        raise RuntimeError(f"Cannot update Codex App settings at {path}: {exc}") from exc
+
+
+def _install_app_catalog_reference() -> bool:
+    """Point Codex App at ucode's stable catalog without replacing a user catalog."""
+    if is_dry_run():
+        return False
+    path = _legacy_config_path()
+    doc = _read_app_config()
+    existing = doc.get("model_catalog_json")
+    if existing is not None and not _is_ucode_catalog_reference(existing):
+        print_warning_err(
+            f"Codex App already uses the custom model catalog {existing}; leaving it unchanged."
+        )
+        return False
+    catalog_path = str(CODEX_MODEL_CATALOG_PATH)
+    if existing == catalog_path:
+        return False
+    doc["model_catalog_json"] = catalog_path
+    write_toml_file(path, doc)
+    return True
+
+
+def _remove_app_catalog_reference() -> bool:
+    """Remove only a shared catalog reference owned by ucode."""
+    if is_dry_run():
+        return False
+    path = _legacy_config_path()
+    if not path.exists():
+        return False
+    doc = _read_app_config()
+    if not _is_ucode_catalog_reference(doc.get("model_catalog_json")):
+        return False
+    doc.pop("model_catalog_json", None)
+    write_toml_file(path, doc)
+    return True
+
+
+def _sync_app_model_catalog(catalog: dict) -> None:
+    """Refresh the stable catalog that Codex App loads from shared config."""
+    if is_dry_run():
+        return
+    _write_model_catalog(CODEX_MODEL_CATALOG_PATH, catalog)
+    _install_app_catalog_reference()
 
 
 def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:
@@ -980,10 +1047,11 @@ def launch(
                 identifier=catalog_identifier,
             )
         except CodexMpsModelCatalogUnavailable:
-            pass
+            _remove_app_catalog_reference()
         else:
             catalog_path = _model_catalog_path(workspace, catalog_scope)
             _write_model_catalog(catalog_path, catalog)
+            _sync_app_model_catalog(catalog)
             profile_doc["model_catalog_json"] = str(catalog_path)
             # Codex otherwise boots on its bundled default model (e.g. gpt-5.6-sol),
             # which an MPS's allowlist doesn't route, so the first request 403s. Pin
