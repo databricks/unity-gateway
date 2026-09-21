@@ -502,7 +502,8 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
     Rate-limited to once per ``SKILL_UPDATE_CHECK_INTERVAL`` via the manifest's
     ``last_update_check`` stamp, so back-to-back launches make no network calls. A record
     whose directories the user deleted is forgotten rather than re-downloaded. Best-effort:
-    any failure is reported and the launch proceeds on whatever is already on disk.
+    any failure is reported and the launch proceeds on whatever is already on disk, and the
+    stamp is advanced either way so a persistent failure cannot re-run the sweep every launch.
     """
     try:
         now = datetime.now(UTC)
@@ -512,6 +513,10 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
         workspace = state.get("workspace")
         if not workspace:
             return
+        # Stamp before the sweep, not after: a failed check should wait out the interval like a
+        # successful one, so a persistent auth, network, or UC error cannot make every launch
+        # re-attempt (and reprint these notes) on the hot path.
+        set_last_update_check(now)
         deleted, present = [], []
         for record in _eligible_launch_refresh_records(list_downloaded(), workspace):
             (deleted if _record_dirs_missing(record) else present).append(record)
@@ -523,7 +528,6 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
             updated = _update_stale_skills(workspace, token, pairs)
             if updated:
                 print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
-        set_last_update_check(now)
     except Exception as exc:  # noqa: BLE001 - a skill refresh must never block a launch
         print_note(f"Skipped checking for skill updates: {exc}")
 
