@@ -184,14 +184,17 @@ These unmanaged journeys require a workspace that publishes no CodingAgentConfig
 Before any of them configures or launches an agent, a session-scoped, read-only
 List request checks that prerequisite. A published config fails with its resource
 name; the suite does not delete it, inject a null config, or bypass admin policy.
-The shared CI workspace was observed to publish a config on 2026-09-21, so it
-currently does not meet this prerequisite. A code/collection pass does not resolve
-that external fixture requirement.
+A code/collection pass does not establish that the live workspace meets this
+prerequisite; the live check must pass on each run.
 
 Current main enables discovery automatically; it has no `UG_ENABLE_MODEL_DISCOVERY`
 switch or configure-time `--model-location`. Cases 13/15 now cover configured/fresh
-Claude default discovery, including its real gateway cache and picker; Cases 14/16
-cover Codex's default `system.ai` selection and native catalog without a scoped file.
+Claude default discovery, including its real gateway cache and picker. Claude's
+recognized `anthropic-aigw-<8-hex-digits>-` aliases are unwrapped for `system.ai`
+membership and discovered-family checks; malformed aliases, non-system models,
+and duplicate raw IDs still fail. Cases 14/16 require ug's discovered `system.ai`
+models while leaving Codex's model and reasoning preferences unset, and expose
+Codex's native catalog without a scoped file.
 Cases 17–20 retain the exact provider/parent catalog assertions for supported launch
 overrides. Obsolete disable-flag Cases 21–24 and duplicate managed Cases 3, 4, 9–12
 are removed, not skipped; managed discovery and rejection remain covered by Cases

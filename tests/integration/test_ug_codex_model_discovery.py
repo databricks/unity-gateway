@@ -11,7 +11,8 @@ def _assert_default_models(session, models):
     discovered = session.workspace_state()["codex_models"]
     assert discovered and all(model.startswith("system.ai.") for model in discovered)
     config = tomllib.loads((session.home / ".codex/ucode.config.toml").read_text())
-    assert config["model"] in discovered, (config, discovered)
+    assert "model" not in config, config
+    assert "model_reasoning_effort" not in config, config
     assert "model_catalog_json" not in config, config
     assert models and len(models) == len(set(models)), models
     assert any(model.startswith("gpt-") for model in models), models
@@ -22,8 +23,9 @@ def _assert_default_models(session, models):
 def test_case_14_configured_codex_uses_default_models(live_session, workspace):
     """Scenario: configure Codex, then launch without source overrides.
 
-    Expected: the configured default is a discovered system.ai model; app-server
-    exposes native model entries without a generated provider/parent-scoped catalog.
+    Expected: unmanaged configuration leaves model selection to Codex's native default;
+    ug records system.ai discovery while model and reasoning preferences remain unset;
+    app-server exposes native GPT entries without a generated provider/parent-scoped catalog.
     """
     session = live_session
     session.run(
@@ -46,8 +48,9 @@ def test_case_14_configured_codex_uses_default_models(live_session, workspace):
 def test_case_16_fresh_codex_uses_default_models(live_session, workspace):
     """Scenario: launch fresh Codex with --workspace and no source overrides.
 
-    Expected: the configured default is a discovered system.ai model; app-server
-    exposes native model entries without a generated provider/parent-scoped catalog.
+    Expected: unmanaged fresh launch leaves model selection to Codex's native default;
+    ug records system.ai discovery while model and reasoning preferences remain unset;
+    app-server exposes native GPT entries without a generated provider/parent-scoped catalog.
     """
     session = live_session
     models = session.codex_model_ids(

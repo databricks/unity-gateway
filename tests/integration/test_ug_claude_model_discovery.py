@@ -3,6 +3,7 @@
 import re
 
 import pytest
+from utils.model_discovery import claude_system_model_ids
 from utils.terminal import AgentTerminal
 
 pytestmark = [pytest.mark.claude, pytest.mark.usefixtures("unmanaged_workspace")]
@@ -27,9 +28,7 @@ def _assert_scoped_models_in_picker(session, screen, expected_ids):
 
 def _assert_system_models_in_picker(session, screen):
     models = session.claude_gateway_models()
-    ids = [model.get("id") for model in models]
-    assert ids and all(isinstance(model, str) and model.startswith("system.ai.") for model in ids)
-    assert len(ids) == len(set(ids)), models
+    ids = claude_system_model_ids(models)
     discovered = session.workspace_state()["claude_models"]
     assert discovered, "ug configure found no Claude system.ai models"
     assert set(discovered.values()) <= set(ids), (discovered, models)
@@ -44,7 +43,8 @@ def _assert_system_models_in_picker(session, screen):
 def test_case_13_configured_claude_discovers_system_models(live_session, workspace):
     """Scenario: configure Claude, then launch without source overrides or discovery flags.
 
-    Expected: native discovery caches system.ai models and shows a discovered picker entry.
+    Expected: native discovery caches system.ai models as raw IDs or recognized Claude
+    gateway aliases and shows a discovered picker entry.
     """
     session = live_session
     session.run(
@@ -72,7 +72,8 @@ def test_case_13_configured_claude_discovers_system_models(live_session, workspa
 def test_case_15_fresh_claude_discovers_system_models(live_session, workspace):
     """Scenario: launch fresh Claude with --workspace and no discovery flags.
 
-    Expected: native discovery caches system.ai models and shows a discovered picker entry.
+    Expected: native discovery caches system.ai models as raw IDs or recognized Claude
+    gateway aliases and shows a discovered picker entry.
     """
     session = live_session
     command = [str(session.binary), "claude", "--workspace", workspace]
