@@ -1,10 +1,47 @@
-"""Query a Databricks SQL warehouse through the public Statement Execution API."""
+"""Resolve and query Databricks SQL resources through public APIs."""
 
 from __future__ import annotations
 
 import json
 import time
 import urllib.request
+
+DEFAULT_TRACE_TABLE_PREFIX = "unity_gateway"
+TRACE_TABLE_SUFFIX = "_otel_spans"
+
+
+def resolve_trace_table(workspace: str, bearer: str) -> str:
+    """Resolve the OTel span table from the workspace's tracing configuration."""
+    workspace_request = urllib.request.Request(
+        f"{workspace.rstrip('/')}/api/2.0/preview/scim/v2/Me",
+        headers={"Authorization": f"Bearer {bearer}"},
+    )
+    with urllib.request.urlopen(workspace_request, timeout=30) as response:  # noqa: S310
+        workspace_id = response.headers.get("x-databricks-org-id")
+
+    assert workspace_id, "Workspace response did not include x-databricks-org-id"
+    config_request = urllib.request.Request(
+        f"{workspace.rstrip('/')}/api/ai-gateway/v2/tracing-config/workspace/{workspace_id}",
+        headers={"Authorization": f"Bearer {bearer}"},
+    )
+    with urllib.request.urlopen(config_request, timeout=30) as response:  # noqa: S310
+        config = json.load(response)
+
+    assert config.get("enabled") is True, "Workspace tracing is not enabled"
+    catalog = config.get("catalog_name")
+    schema = config.get("schema_name")
+    prefix = config.get("table_name_prefix") or DEFAULT_TRACE_TABLE_PREFIX
+    assert isinstance(catalog, str) and catalog, "Tracing config has no catalog_name"
+    assert isinstance(schema, str) and schema, "Tracing config has no schema_name"
+    assert isinstance(prefix, str), "Tracing config has an invalid table_name_prefix"
+    return ".".join(
+        _quote_identifier(identifier)
+        for identifier in (catalog, schema, prefix + TRACE_TABLE_SUFFIX)
+    )
+
+
+def _quote_identifier(identifier: str) -> str:
+    return f"`{identifier.replace('`', '``')}`"
 
 
 def resolve_warehouse_id(workspace: str, bearer: str) -> str:
