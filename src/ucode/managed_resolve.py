@@ -97,13 +97,12 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
         static_models = managed_static_models(managed, tool)
         if static_models:
             overrides[f"{tool}_static_models"] = static_models
-    default_model = _str(_agent_model_config(managed, tool).get("default_model"))
-    if default_model:
-        overrides[f"{tool}_default_model"] = default_model
-    if tool in ("claude", "codex"):
         http_headers = _agent_http_headers(managed, tool)
         if http_headers:
             overrides[f"{tool}_http_headers"] = http_headers
+    default_model = _str(_agent_model_config(managed, tool).get("default_model"))
+    if default_model:
+        overrides[f"{tool}_default_model"] = default_model
     if tool in OTEL_TRACING_TOOLS and managed_otel_tracing_enabled(managed, tool):
         overrides[f"{tool}_otel_tracing"] = True
     return overrides
