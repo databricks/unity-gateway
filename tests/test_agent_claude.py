@@ -7,6 +7,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -29,9 +30,26 @@ def _proxy_argv() -> list[str]:
     return build_mcp_proxy_argv(GH_URL, WS, "p")
 
 
+def _managed_config_result(manifest: dict | None) -> SimpleNamespace:
+    """A stand-in for `ManagedConfigResult` exposing only the `.manifest` attribute
+    `write_tool_config` reads."""
+    return SimpleNamespace(manifest=manifest)
+
+
 @pytest.fixture(autouse=True)
 def _avoid_real_managed_settings(monkeypatch):
     monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _default_managed_config_present(monkeypatch):
+    """`write_tool_config` now decides overwrite-vs-preserve itself by calling
+    `refresh_managed_config`. Default every test to "managed present" (current-HEAD wholesale
+    overwrite), matching pre-existing tests that don't care about this axis, so they need no
+    per-test mock; tests exercising the unmanaged path override this explicitly."""
+    monkeypatch.setattr(
+        claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result({"claude": {}})
+    )
 
 
 class TestClaudeSpec:
@@ -1045,6 +1063,71 @@ class TestWriteToolConfigManagedSettings:
         lines = json.loads(managed_writes[0][1])["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
         assert not any(line.startswith("x-team:") for line in lines)
 
+    def test_unmanaged_preserves_foreign_header_and_replaces_ucode_headers_in_place(
+        self, monkeypatch
+    ):
+        # No admin CodingAgentConfig: Lilly's original merge preserves the developer's own headers,
+        # replacing only the header names ug manages, in their existing positions.
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result(None)
+        )
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(claude.CLAUDE_SETTINGS_PATH): {
+                "env": {
+                    "ANTHROPIC_CUSTOM_HEADERS": (
+                        "X-Foreign-Header: keep-me\n"
+                        "x-databricks-use-coding-agent-mode: false\n"
+                        "User-Agent: old-agent"
+                    )
+                }
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        lines = private_writes[0][1]["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+        assert lines == [
+            "X-Foreign-Header: keep-me",  # not ug's, survives untouched
+            "x-databricks-use-coding-agent-mode: true",  # ug-managed name, replaced in place
+            "User-Agent: ucode/1.0 claude/2.0",  # ug-managed name, replaced in place
+        ]
+
+    def test_unmanaged_drops_stale_ucode_managed_header_no_longer_emitted(self, monkeypatch):
+        # No admin CodingAgentConfig: a header name ug manages but no longer emits this run (the
+        # provider-routing header, without a `provider` this run) is dropped, not left stale.
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result(None)
+        )
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(claude.CLAUDE_SETTINGS_PATH): {
+                "env": {
+                    "ANTHROPIC_CUSTOM_HEADERS": (
+                        "x-databricks-use-coding-agent-mode: true\n"
+                        "User-Agent: ucode/1.0 claude/2.0\n"
+                        "Databricks-Model-Provider-Service: old-provider"
+                    )
+                }
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        lines = private_writes[0][1]["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+        assert not any(line.startswith("Databricks-Model-Provider-Service") for line in lines)
+        assert "x-databricks-use-coding-agent-mode: true" in lines
+
     def test_managed_file_wholesale_overwrite_survives_real_reconcile_round_trip(
         self, tmp_path, monkeypatch
     ):
@@ -1072,6 +1155,12 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        # Managed variant: an admin CodingAgentConfig is present, so ug owns the value wholesale.
+        monkeypatch.setattr(
+            claude,
+            "refresh_managed_config",
+            lambda *a, **kw: _managed_config_result({"claude": {}}),
+        )
 
         # A hand edit directly in the managed file, bypassing both ucode and the admin manifest.
         managed_path.write_text(
@@ -1102,6 +1191,58 @@ class TestWriteToolConfigManagedSettings:
         state["claude_http_headers"] = {}
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
         assert not any(line.startswith("x-team:") for line in custom_headers())
+
+    def test_unmanaged_wholesale_preserve_survives_real_reconcile_round_trip(
+        self, tmp_path, monkeypatch
+    ):
+        # Unmanaged variant of the round trip above: with no admin CodingAgentConfig, a hand-added
+        # foreign header in the managed file SURVIVES ug's write, because Lilly's merge only ever
+        # replaces the header names ug itself manages.
+        managed_path = tmp_path / "managed-settings.json"
+        backup_dir = tmp_path / "managed-backups"
+        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backup_dir)
+        monkeypatch.setattr(
+            managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
+        )
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result(None)
+        )
+
+        # A hand edit directly in the managed file; with no admin manifest to claim it, it survives.
+        managed_path.write_text(
+            json.dumps({"env": {"ANTHROPIC_CUSTOM_HEADERS": "X-Direct-Edit: survives"}}),
+            encoding="utf-8",
+        )
+
+        def custom_headers() -> list[str]:
+            written = json.loads(managed_path.read_text())
+            return written["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+
+        state = {"workspace": WS, "codex_models": []}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        first = custom_headers()
+        # Foreign header survives -- no manifest to claim it; ucode's own header is still applied.
+        assert "X-Direct-Edit: survives" in first
+        assert "x-databricks-use-coding-agent-mode: true" in first
+
+        # A no-op re-run leaves the value stable.
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert custom_headers() == first
 
     def test_managed_file_applies_model_default_precedence(self, monkeypatch):
         managed_defaults = self._write_managed_model_defaults(
@@ -1582,6 +1723,39 @@ class TestWriteToolConfigManagedSettings:
         managed_content = json.loads(managed_writes[0][1])
         assert "availableModels" not in managed_content
         assert "modelPicker" not in managed_content
+
+
+class TestMergeAnthropicCustomHeaders:
+    """Focused unit tests for the static-name-set merge used on the no-managed-config path."""
+
+    def test_preserves_unknown_header(self):
+        merged = claude._merge_anthropic_custom_headers(
+            "X-Foreign: keep", "x-databricks-use-coding-agent-mode: true"
+        )
+        assert merged.splitlines() == [
+            "X-Foreign: keep",
+            "x-databricks-use-coding-agent-mode: true",
+        ]
+
+    def test_replaces_ucode_managed_name_in_place(self):
+        merged = claude._merge_anthropic_custom_headers(
+            "A: 1\nUser-Agent: old\nB: 2", "User-Agent: new"
+        )
+        assert merged.splitlines() == ["A: 1", "User-Agent: new", "B: 2"]
+
+    def test_drops_stale_ucode_managed_name_no_longer_emitted(self):
+        merged = claude._merge_anthropic_custom_headers(
+            "Databricks-Model-Provider-Service: old-provider\nA: 1", ""
+        )
+        assert merged.splitlines() == ["A: 1"]
+
+    def test_appends_new_ucode_header_not_already_present(self):
+        merged = claude._merge_anthropic_custom_headers("A: 1", "User-Agent: ucode/1")
+        assert merged.splitlines() == ["A: 1", "User-Agent: ucode/1"]
+
+    def test_passes_through_when_no_existing_headers(self):
+        merged = claude._merge_anthropic_custom_headers(None, "User-Agent: ucode/1")
+        assert merged == "User-Agent: ucode/1"
 
 
 class TestAddClaudeMcpServer:
