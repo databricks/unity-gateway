@@ -51,6 +51,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_smart_routing_claude_route_subagent_hook`, `test_smart_routing_codex_route_subagent_hook` | Pipe a real PreToolUse spawn payload to the installed route-subagent hook with subagent-only routing enabled | Allow decision against the live router; requested model replaced by a routed agent definition (Claude) or bundled catalog slug (Codex) from the offered models; one audited decision matching the session and task |
 | `test_smart_routing_claude_subagent_only_launch_shows_no_first_prompt_banner`, `test_smart_routing_codex_subagent_only_launch_shows_no_first_prompt_banner` | Configure, then launch the real TUI with both the full and subagent-only routing flags set and submit one file prompt | Subagent-only takes precedence: the prompt completes with no smart-routing banner and no first-prompt routing wrapper (PTY/interposer); Claude's SessionStart canary proves the routing hooks armed; normal exit |
 | `test_ug_configure_claude_repeat_and_revert`, `test_ug_configure_codex_repeat_and_revert` | Configure twice over user settings; complete a task; revert twice | Settings preserved; no bearer in ug state; generated config removed; status unconfigured |
+| `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure against a workspace that publishes a managed CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch |
 | `test_case_01_*`, `test_case_03_*` | Launch managed Claude after configure and from fresh state, with personal discovery enabled and disabled | Claude receives the admin MPS header, caches native discovery results, and opens its real model picker |
@@ -70,7 +71,8 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 
 With both agents selected there are **46 live cases** (6 interactive TUI cases),
 **4 managed-workspace cases** (marker `managed`, run against a separate workspace that
-publishes a CodingAgentConfig), **36 managed-fixture cases** (marker `managed_fixture`, with only
+publishes a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
+**36 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected), and **5 installation checks**. The 24 numbered scenarios
 cover configured and fresh state across the Claude and Codex managed-discovery matrix; twelve
 existing collected cases cover focused model, MCP, skills, and lifecycle shapes. Parametrization
@@ -131,6 +133,7 @@ pending. The descriptive jobs provide the actual coverage and diagnostics.
 | --- | --- |
 | Live MCP and skills functionality | Deferred; installation tests cover the local web-search MCP handshake and tool listing, not upstream proxying or a real search request |
 | Broad configure flags, tracing, multiple workspaces, and PAT flows | Deferred while focusing on basic CUJs |
+| Workspace-switch MCP cleanup | The `workspace_switch` CUJ covers real registration, cleanup, repeat configure, and a completed Claude task. Unit/component tests cover duplicate attempts and injected removal failures; the CUJ does not force an agent timeout. It runs in the existing non-blocking managed CI lane. |
 | Provider switching, relayed/subscription MPS | Not covered by the four provider journeys |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |

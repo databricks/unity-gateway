@@ -2709,6 +2709,84 @@ class TestRevertMcpConfigs:
 
 
 class TestPurgeCrossWorkspaceSkillsEntry:
+    @pytest.mark.parametrize("copied_clients", [["claude"], ["claude", "codex"]])
+    def test_workspace_switch_removes_each_client_once(self, monkeypatch, copied_clients):
+        from ucode import state as state_mod
+
+        monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
+        monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
+        foreign = "https://other.databricks.com"
+        skills_entry = mcp._resolve_skills_mcp_servers(
+            foreign, ["claude", "codex"], _by_client(["claude", "codex"], ["a.b"]), []
+        )[0]
+        state_mod.save_state({"workspace": foreign, "mcp_servers": [skills_entry]})
+        # configure_shared_state carries the previous workspace's entries into
+        # the new bucket before invoking cleanup.
+        state = state_mod.load_state()
+        state["workspace"] = WS
+        state["mcp_servers"] = [{**skills_entry, "clients": copied_clients}]
+        state_mod.save_state(state)
+        removed: list[tuple[str, str]] = []
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude", "codex"])
+        monkeypatch.setattr(
+            mcp,
+            "remove_client_mcp_server",
+            lambda client, name: removed.append((client, name)) or ["user"],
+        )
+
+        mcp.purge_cross_workspace_mcp_residue(state, WS)
+
+        assert removed == [
+            ("claude", mcp.SKILLS_MCP_SERVER_NAME),
+            ("codex", mcp.SKILLS_MCP_SERVER_NAME),
+        ]
+        full = state_mod.load_full_state()
+        assert full["workspaces"][WS]["mcp_servers"] == []
+        assert full["workspaces"][foreign]["mcp_servers"] == [skills_entry]
+
+    @pytest.mark.parametrize("copied_to_current", [True, False], ids=["copied", "orphan"])
+    @pytest.mark.parametrize("failure", ["timeout", "missing-binary", "command-error"])
+    def test_removal_failure_warns_and_continues(
+        self, monkeypatch, capsys, copied_to_current, failure
+    ):
+        from ucode import state as state_mod
+
+        monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
+        monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
+        foreign = "https://other.databricks.com"
+        skills_entry = mcp._resolve_skills_mcp_servers(
+            foreign, ["claude", "codex"], _by_client(["claude", "codex"], ["a.b"]), []
+        )[0]
+        state_mod.save_state({"workspace": foreign, "mcp_servers": [skills_entry]})
+        state = {"workspace": WS, "mcp_servers": [skills_entry] if copied_to_current else []}
+        state_mod.save_state(state)
+        calls: list[list[str]] = []
+
+        def run_removal(args, **kwargs):
+            calls.append(args)
+            assert args[1:4] == ["mcp", "remove", mcp.SKILLS_MCP_SERVER_NAME]
+            if args[0] == "claude":
+                if failure == "timeout":
+                    raise mcp.subprocess.TimeoutExpired(args, kwargs["timeout"])
+                if failure == "missing-binary":
+                    raise FileNotFoundError(2, "No such file or directory", "claude")
+                raise mcp.subprocess.CalledProcessError(1, args, stderr="config is locked")
+            assert args[0] == "codex"
+            return mcp.subprocess.CompletedProcess(args, 0, stdout="Removed", stderr="")
+
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude", "codex"])
+        # Exercise the real client dispatch and exception conversion, stopping
+        # only at the subprocess boundary so no installed agent is modified.
+        monkeypatch.setattr(mcp.subprocess, "run", run_removal)
+
+        mcp.purge_cross_workspace_mcp_residue(state, WS)
+
+        assert sorted(args[0] for args in calls) == ["claude", "codex"]
+        output = _unwrap(capsys.readouterr().out)
+        assert output.count("Failed to remove `databricks-skill-registry` from Claude Code") == 1
+        assert state_mod.load_state()["mcp_servers"] == []
+        assert state_mod.load_full_state()["workspaces"][foreign]["mcp_servers"] == [skills_entry]
+
     def test_drops_foreign_workspace_skills_entry(self, monkeypatch):
         removed: list[tuple[str, str]] = []
         saved_states: list[dict] = []

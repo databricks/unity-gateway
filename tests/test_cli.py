@@ -4346,6 +4346,49 @@ class TestConfigureSharedStateMcpCleanup:
         monkeypatch.setattr(cli_mod, "discover_codex_models", lambda w, t: ([], None))
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {})
 
+    def test_workspace_switch_continues_after_skills_cleanup_timeout(self, monkeypatch, capsys):
+        from ucode import mcp
+        from ucode import state as state_mod
+
+        self._stub_external_deps(monkeypatch)
+        monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
+        monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
+        # Use the real writer against the global fixture's temporary state file.
+        monkeypatch.setattr(cli_mod, "save_state", mcp.save_state)
+        old_workspace = "https://old.databricks.com"
+        new_workspace = "https://new.databricks.com"
+        entry = {
+            "name": "databricks-skill-registry",
+            "kind": "skills",
+            "url": f"{old_workspace}/ai-gateway/skills/",
+            "clients": ["claude"],
+        }
+        mcp.save_state({"workspace": old_workspace, "mcp_servers": [entry]})
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
+        calls = []
+
+        def time_out(args, **kwargs):
+            assert args[:4] == ["claude", "mcp", "remove", "databricks-skill-registry"]
+            calls.append(args)
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+        monkeypatch.setattr(mcp.subprocess, "run", time_out)
+
+        state = cli_mod.configure_shared_state(new_workspace, force_login=True)
+
+        assert state["workspace"] == new_workspace
+        assert state["mcp_servers"] == []
+        assert "_discovery_reasons" in state
+        assert len(calls) == 1
+        full = state_mod.load_full_state()
+        assert full["current_workspace"] == new_workspace
+        assert full["workspaces"][new_workspace]["mcp_servers"] == []
+        assert full["workspaces"][old_workspace]["mcp_servers"] == [entry]
+        output = " ".join(_strip_ansi(capsys.readouterr().out).split())
+        assert "Unity Gateway connected" in output
+        assert "Dropping 1 stale MCP entry" in output
+        assert "Failed to remove `databricks-skill-registry` from Claude Code" in output
+
     def test_purges_residue_when_workspace_changes(self, monkeypatch):
         import ucode.cli as cli_mod
 

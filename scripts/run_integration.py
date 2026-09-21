@@ -132,6 +132,11 @@ def arguments():
     parser.add_argument("--npm-registry", default="https://registry.npmjs.org")
     parser.add_argument("--profile", help="Explicit Databricks profile to mint the live bearer.")
     parser.add_argument("--workspace", default=os.environ.get("UCODE_TEST_WORKSPACE"))
+    parser.add_argument(
+        "--second-workspace",
+        default=os.environ.get("UCODE_TEST_SECOND_WORKSPACE"),
+        help="Second real workspace for workspace_switch CUJs; requires DATABRICKS_SECOND_BEARER.",
+    )
     parser.add_argument("--output", type=Path, help="New results directory; never reused.")
     parser.add_argument("--installation-only", action="store_true", help="No workspace calls.")
     parser.add_argument(
@@ -250,10 +255,11 @@ def main() -> int:
     base_env["UV_CACHE_DIR"] = str(output / "cache")
     base_env["UV_DEFAULT_INDEX"] = args.default_index
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
+    second_bearer = os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
 
     def redact(value: str) -> str:
-        for secret in (bearer, oauth_token):
+        for secret in (bearer, second_bearer, oauth_token):
             if secret:
                 value = value.replace(secret, "<redacted>")
         return value
@@ -298,6 +304,7 @@ def main() -> int:
             "parent_schema": args.parent_schema,
             "dependencies": args.dependency,
             "workspace": args.workspace,
+            "second_workspace": args.second_workspace,
         },
         "platform": platform.platform(),
         "installation_only": args.installation_only,
@@ -539,6 +546,8 @@ def main() -> int:
                 "UG_INTEGRATION_PARENT_SCHEMA": args.parent_schema,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
                 "DATABRICKS_BEARER": bearer,
+                "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
+                "DATABRICKS_SECOND_BEARER": second_bearer,
             }
         )
         for agent in agents:

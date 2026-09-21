@@ -1221,6 +1221,18 @@ def _run_client_work(work: dict[str, list[Callable[[], object]]]) -> None:
 
 def purge_cross_workspace_mcp_residue(state: dict, workspace: str) -> None:
     installed = set(available_mcp_clients())
+    attempted_removals: set[tuple[str, str]] = set()
+
+    def remove_stale_server(client: str, name: str) -> list[str] | None:
+        key = (client, name)
+        if key in attempted_removals:
+            return None
+        attempted_removals.add(key)
+        try:
+            return remove_client_mcp_server(client, name)
+        except (RuntimeError, subprocess.TimeoutExpired, OSError) as exc:
+            print_warning(f"Failed to remove `{name}` from {MCP_CLIENTS[client]['display']}: {exc}")
+            return None
 
     raw_mcp_servers = list(state.get("mcp_servers") or [])
     current_mcp_servers, foreign_mcp_servers = _partition_mcp_entries_by_workspace(
@@ -1242,12 +1254,7 @@ def purge_cross_workspace_mcp_residue(state: dict, workspace: str) -> None:
             for client in server.get("clients") or []:
                 if client not in installed or client not in MCP_CLIENTS:
                     continue
-                try:
-                    remove_client_mcp_server(client, name)
-                except RuntimeError as exc:
-                    print_warning(
-                        f"Failed to remove `{name}` from {MCP_CLIENTS[client]['display']}: {exc}"
-                    )
+                remove_stale_server(client, name)
         state["mcp_servers"] = current_mcp_servers
         save_state(state)
 
@@ -1258,13 +1265,7 @@ def purge_cross_workspace_mcp_residue(state: dict, workspace: str) -> None:
         for client in other_ws_mcps[name]:
             if client not in installed or client not in MCP_CLIENTS:
                 continue
-            try:
-                removed_scopes = remove_client_mcp_server(client, name)
-            except RuntimeError as exc:
-                print_warning(
-                    f"Failed to remove `{name}` from {MCP_CLIENTS[client]['display']}: {exc}"
-                )
-                continue
+            removed_scopes = remove_stale_server(client, name)
             if removed_scopes:
                 any_removed = True
         if any_removed:
