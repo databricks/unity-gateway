@@ -259,7 +259,11 @@ def _managed_header_names(
             last_env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(last_env, dict) else None
         )
         prior = _custom_header_names(last_headers)
-    return CLAUDE_MANAGED_CUSTOM_HEADER_NAMES | _custom_header_names(overlay_custom_headers) | prior
+    # set(...) around the union: CLAUDE_MANAGED_CUSTOM_HEADER_NAMES is a frozenset, so the bare
+    # union would be a frozenset[str], which does not satisfy the declared set[str] return type.
+    return set(
+        CLAUDE_MANAGED_CUSTOM_HEADER_NAMES | _custom_header_names(overlay_custom_headers) | prior
+    )
 
 
 def configured_paths(state: dict) -> list[str]:
