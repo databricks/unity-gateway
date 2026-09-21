@@ -1,4 +1,4 @@
-"""Claude managed-config CUJs for Tests-table cases 1, 3, 5, 7, 9, and 11.
+"""Claude managed-config CUJs for Tests-table cases 1, 5, and 7.
 
 The admin CodingAgentConfig is fetched once from the managed workspace, its Claude model source is
 set to the dedicated test MPS, and the result is reused through ``UCODE_MANAGED_CONFIG_STUB`` in
@@ -128,49 +128,6 @@ def test_case_01_fresh_managed_claude_uses_admin_discovery(live_session, workspa
     _assert_managed_provider_in_picker(session, workspace, screen)
 
 
-@pytest.mark.tui
-def test_case_03_managed_claude_ignores_discovery_disable_after_configure(live_session, workspace):
-    """Scenario: configure managed Claude, disable discovery, then launch its model picker.
-
-    Expected: workspace-managed discovery still supplies the admin's catalog.
-    """
-    session = live_session
-    result = session.run(
-        "configure",
-        "--workspace",
-        workspace,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-        timeout=240,
-    )
-    assert "Select coding agents to configure:" not in result.stdout, result.stdout
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-    command = [str(session.binary), "claude"]
-    with AgentTerminal(session, "claude", command, "case-03-managed-disabled") as tui:
-        tui.boot()
-        screen = tui.open_model_picker()
-        tui.exit_normally()
-
-    _assert_managed_provider_in_picker(session, workspace, screen)
-
-
-@pytest.mark.tui
-def test_case_03_fresh_managed_claude_ignores_discovery_disable(live_session, workspace):
-    """Scenario: disable discovery and launch managed Claude's model picker from fresh state.
-
-    Expected: workspace-managed discovery still supplies the admin's catalog.
-    """
-    session = live_session
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-    command = [str(session.binary), "claude", "--workspace", workspace]
-    with AgentTerminal(session, "claude", command, "case-03-fresh-managed-disabled") as tui:
-        tui.boot()
-        screen = tui.open_model_picker()
-        tui.exit_normally()
-
-    _assert_managed_provider_in_picker(session, workspace, screen)
-
-
 def test_case_05_managed_claude_rejects_provider_override(live_session, workspace, claude_provider):
     """Scenario: configure managed Claude, then pass --provider.
 
@@ -264,120 +221,6 @@ def test_case_07_fresh_managed_claude_rejects_model_location_override(
     override before starting Claude.
     """
     session = live_session
-    result = session.run(
-        "claude",
-        "--workspace",
-        workspace,
-        "--model-location",
-        parent_schema,
-        "--",
-        "--version",
-        ok=False,
-        timeout=240,
-    )
-
-    _assert_rejected_before_claude_started(session, result)
-
-
-def test_case_09_managed_claude_rejects_provider_when_discovery_disabled(
-    live_session, workspace, claude_provider
-):
-    """Scenario: configure managed Claude, disable discovery, then pass --provider.
-
-    Expected: ug rejects the override without changing agent-owned state/files.
-    """
-    session = live_session
-    configured_result = session.run(
-        "configure",
-        "--workspace",
-        workspace,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-        timeout=240,
-    )
-    assert "Select coding agents to configure:" not in configured_result.stdout
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-    before = _claude_state_and_agent_files(session)
-    result = session.run(
-        "claude",
-        "--provider",
-        claude_provider,
-        "--",
-        "--version",
-        ok=False,
-        timeout=240,
-    )
-
-    _assert_rejected_before_claude_started(session, result, before)
-
-
-def test_case_09_fresh_managed_claude_rejects_provider_when_discovery_disabled(
-    live_session, workspace, claude_provider
-):
-    """Scenario: disable discovery and pass --provider to managed Claude from fresh state.
-
-    Expected: ug may establish the fresh workspace/agent configuration, then rejects the
-    override before starting Claude.
-    """
-    session = live_session
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-    result = session.run(
-        "claude",
-        "--workspace",
-        workspace,
-        "--provider",
-        claude_provider,
-        "--",
-        "--version",
-        ok=False,
-        timeout=240,
-    )
-
-    _assert_rejected_before_claude_started(session, result)
-
-
-def test_case_11_managed_claude_rejects_model_location_when_discovery_disabled(
-    live_session, workspace, parent_schema
-):
-    """Scenario: configure managed Claude, disable discovery, then pass --model-location.
-
-    Expected: ug rejects the override without changing agent-owned state/files.
-    """
-    session = live_session
-    configured_result = session.run(
-        "configure",
-        "--workspace",
-        workspace,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-        timeout=240,
-    )
-    assert "Select coding agents to configure:" not in configured_result.stdout
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-    before = _claude_state_and_agent_files(session)
-    result = session.run(
-        "claude",
-        "--model-location",
-        parent_schema,
-        "--",
-        "--version",
-        ok=False,
-        timeout=240,
-    )
-
-    _assert_rejected_before_claude_started(session, result, before)
-
-
-def test_case_11_fresh_managed_claude_rejects_model_location_when_discovery_disabled(
-    live_session, workspace, parent_schema
-):
-    """Scenario: disable discovery and pass --model-location to managed Claude from fresh state.
-
-    Expected: ug may establish the fresh workspace/agent configuration, then rejects the
-    override before starting Claude.
-    """
-    session = live_session
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
     result = session.run(
         "claude",
         "--workspace",

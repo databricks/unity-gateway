@@ -110,8 +110,8 @@ test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across tw
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_claude_managed_model_discovery.py # fetched/reused Claude MPS policy cases
 test_ug_codex_managed_model_discovery.py  # fetched/reused Codex MPS policy cases
-test_ug_claude_model_discovery.py       # Tests-tab cases 13, 15, 17, 19, 21, 23
-test_ug_codex_model_discovery.py        # Tests-tab cases 14, 16, 18, 20, 22, 24
+test_ug_claude_model_discovery.py       # current unmanaged cases 13, 15, 17, 19
+test_ug_codex_model_discovery.py        # current unmanaged cases 14, 16, 18, 20
 test_ug_configure_managed.py            # managed workspace: static model list, no agent selector
 test_ug_configure_managed_models.py     # injected model sources, smart-routing banner, Codex fallback metadata
 test_ug_configure_managed_mcp.py        # injected managed MCP list
@@ -180,6 +180,23 @@ Scoped discovery additionally requires Model Services
 `--parent-schema`, `--claude-parent-model`, or `--codex-parent-model`. The tests
 consume but never create or modify them.
 
+These unmanaged journeys require a workspace that publishes no CodingAgentConfig.
+Before any of them configures or launches an agent, a session-scoped, read-only
+List request checks that prerequisite. A published config fails with its resource
+name; the suite does not delete it, inject a null config, or bypass admin policy.
+The shared CI workspace was observed to publish a config on 2026-09-21, so it
+currently does not meet this prerequisite. A code/collection pass does not resolve
+that external fixture requirement.
+
+Current main enables discovery automatically; it has no `UG_ENABLE_MODEL_DISCOVERY`
+switch or configure-time `--model-location`. Cases 13/15 now cover configured/fresh
+Claude default discovery, including its real gateway cache and picker; Cases 14/16
+cover Codex's default `system.ai` selection and native catalog without a scoped file.
+Cases 17–20 retain the exact provider/parent catalog assertions for supported launch
+overrides. Obsolete disable-flag Cases 21–24 and duplicate managed Cases 3, 4, 9–12
+are removed, not skipped; managed discovery and rejection remain covered by Cases
+1, 2, 5–8. Case numbers remain historical references, with gaps for retired behavior.
+
 The parent-schema catalog is API-specific: Claude's cache must contain exactly
 the Claude service, while Codex's app-server catalog must contain exactly both
 services, independent of order. Extra, missing, or duplicate entries fail.
@@ -187,31 +204,31 @@ Claude provider discovery still requires the exact `--claude-provider-model` ID
 in its cache. For the default `claude-haiku-4-5-20251001` fixture, Claude deduplicates
 it into the native Haiku picker row (Haiku 4.5), so the assertion checks that row
 instead of requiring the gateway's raw display name. Custom Model Services must
-still appear by their gateway display names. Cases 13–24 send no inference prompts;
+still appear by their gateway display names. Cases 13–20 send no inference prompts;
 they only configure, list models, and open/close the picker. Other live CUJs perform
 real model tasks.
 
-There are **66 live cases** (including 16 TUI journeys) and **7 installation
+There are **58 live cases** (including 12 TUI journeys) and **7 installation
 checks** with both agents. A separate **4 managed-workspace cases** (one per agent, an idempotent
 re-configure, and a cache-TTL journey; marker `managed`) run against a workspace that publishes a
 CodingAgentConfig; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
-A further **38 `managed_fixture`
-cases** use `UCODE_MANAGED_CONFIG_STUB`. Twenty-four explicit configured/fresh Claude and Codex
+A further **26 `managed_fixture`
+cases** use `UCODE_MANAGED_CONFIG_STUB`. Twelve explicit configured/fresh Claude and Codex
 discovery and source-override journeys fetch the published config once per agent, replace that
 agent's static source with its dedicated MPS, and reuse the result. Fourteen existing collected cases
 cover focused model, MCP, skills, and lifecycle shapes, including per-agent model reconciliation
 and managed skill cleanup. The two Claude default-model cases launch with injected MPS and Unity
 Catalog sources and verify both generated settings files retain all admin-authored family defaults.
-The 24 numbered scenarios comprise 44 explicit journeys: 24 managed and 20 unmanaged
-executions; the complete integration suite collects 116 executions. See the named coverage and gaps matrix in
+The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
+executions; the complete integration suite collects 96 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
 # Append one of these selections to the runner command:
 -- -m live         # default: all live user journeys
 -- -m smoke        # six Hosted, custom OAuth CLI TUI, and headless journeys
--- -m 'live and tui'  # sixteen interactive live configuration/model-discovery journeys
+-- -m 'live and tui'  # twelve interactive live configuration/model-discovery journeys
 -- -k test_ug_codex_app_server_client_initializes  # one named journey and its variants
 # Use --installation-only before -- for package checks without credentials.
 ```
@@ -313,13 +330,13 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 66 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 58 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 29 |
-| Codex | `live and codex` | 37 |
+| Claude | `live and claude` | 25 |
+| Codex | `live and codex` | 33 |
 
 Each lane installs only its agent CLI, once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
@@ -344,7 +361,7 @@ cannot still be running when that gate passes. Full coverage on PRs needs no lab
 
 `test_ug_configure_managed.py` (marker `managed`, not `live`) runs in its own per-agent
 **Managed config** jobs against a second workspace that publishes an admin CodingAgentConfig,
-which the shared `live` workspace deliberately does not. `ug configure` applies the admin config
+whereas unmanaged live cases require a workspace without one. `ug configure` applies the admin config
 with no agent selector, and each agent's generated config exposes exactly the admin's static
 `model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog).
 
@@ -416,7 +433,7 @@ comment removes the label and reruns the gate; manually adding the label does no
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
 and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
 alias for `full`. Manual subsets are explicit: `smoke` runs just the six smoke
-cases; `tui` adds `and tui` to each agent lane's marker and runs all 16 live TUI cases. Installation
+cases; `tui` adds `and tui` to each agent lane's marker and runs all 12 live TUI cases. Installation
 checks always run. Set the ug/agent versions. From the CLI:
 
 ```bash
@@ -587,7 +604,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 66 live cases. For the seven installation checks, run the same
+This runs all 58 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

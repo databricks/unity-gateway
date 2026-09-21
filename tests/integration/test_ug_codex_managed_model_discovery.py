@@ -1,4 +1,4 @@
-"""Codex managed-config CUJs for Tests-table cases 2, 4, 6, 8, 10, and 12.
+"""Codex managed-config CUJs for Tests-table cases 2, 6, and 8.
 
 The admin CodingAgentConfig is fetched once from the managed workspace, its Codex model source is
 set to the dedicated test MPS, and the result is reused through ``UCODE_MANAGED_CONFIG_STUB`` in
@@ -132,43 +132,6 @@ def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(live_sessio
     _assert_managed_provider_catalog(session, models)
 
 
-def test_case_04_managed_codex_ignores_discovery_disable_after_configure(live_session, workspace):
-    """Scenario: configure managed Codex, disable discovery, then launch its app server.
-
-    Expected: workspace-managed discovery still supplies the admin's catalog.
-    """
-    session = live_session
-    configured = session.run(
-        "configure",
-        "--workspace",
-        workspace,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-        timeout=240,
-    )
-    assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-
-    models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
-
-    _assert_managed_provider_catalog(session, models)
-
-
-def test_case_04_managed_codex_ignores_discovery_disable_from_fresh_state(live_session, workspace):
-    """Scenario: disable discovery and launch managed Codex with --workspace from fresh state.
-
-    Expected: workspace-managed discovery still supplies the admin's catalog.
-    """
-    session = live_session
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-
-    models = session.codex_model_ids(
-        ["--workspace", workspace, "--", "app-server", "--listen", "stdio://"]
-    )
-
-    _assert_managed_provider_catalog(session, models)
-
-
 def test_case_06_managed_codex_rejects_provider_override_after_configure(
     live_session, workspace, codex_provider
 ):
@@ -266,122 +229,6 @@ def test_case_08_managed_codex_rejects_model_location_override_from_fresh_state(
     override before starting Codex.
     """
     session = live_session
-    result = session.run(
-        "codex",
-        "--workspace",
-        workspace,
-        "--model-location",
-        parent_schema,
-        "--",
-        "--version",
-        ok=False,
-        timeout=240,
-    )
-
-    _assert_rejected_before_codex_started(session, result)
-
-
-def test_case_10_managed_codex_rejects_provider_when_discovery_disabled_after_configure(
-    live_session, workspace, codex_provider
-):
-    """Scenario: configure managed Codex, disable discovery, then pass a --provider override.
-
-    Expected: ug rejects the override without changing agent-owned state or files.
-    """
-    session = live_session
-    configured = session.run(
-        "configure",
-        "--workspace",
-        workspace,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-        timeout=240,
-    )
-    assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-    before = _codex_state_and_agent_files(session)
-
-    result = session.run(
-        "codex",
-        "--provider",
-        codex_provider,
-        "--",
-        "--version",
-        ok=False,
-        timeout=240,
-    )
-
-    _assert_rejected_before_codex_started(session, result, before)
-
-
-def test_case_10_managed_codex_rejects_provider_when_discovery_disabled_from_fresh_state(
-    live_session, workspace, codex_provider
-):
-    """Scenario: disable discovery and pass --workspace plus --provider from fresh state.
-
-    Expected: ug may establish the fresh workspace/agent configuration, then rejects the
-    override before starting Codex.
-    """
-    session = live_session
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-    result = session.run(
-        "codex",
-        "--workspace",
-        workspace,
-        "--provider",
-        codex_provider,
-        "--",
-        "--version",
-        ok=False,
-        timeout=240,
-    )
-
-    _assert_rejected_before_codex_started(session, result)
-
-
-def test_case_12_managed_codex_rejects_model_location_when_discovery_disabled_after_configure(
-    live_session, workspace, parent_schema
-):
-    """Scenario: configure managed Codex, disable discovery, then pass --model-location.
-
-    Expected: ug rejects the override without changing agent-owned state or files.
-    """
-    session = live_session
-    configured = session.run(
-        "configure",
-        "--workspace",
-        workspace,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-        timeout=240,
-    )
-    assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-    before = _codex_state_and_agent_files(session)
-
-    result = session.run(
-        "codex",
-        "--model-location",
-        parent_schema,
-        "--",
-        "--version",
-        ok=False,
-        timeout=240,
-    )
-
-    _assert_rejected_before_codex_started(session, result, before)
-
-
-def test_case_12_managed_codex_rejects_model_location_when_discovery_disabled_from_fresh_state(
-    live_session, workspace, parent_schema
-):
-    """Scenario: disable discovery and pass --workspace plus --model-location from fresh state.
-
-    Expected: ug may establish the fresh workspace/agent configuration, then rejects the
-    override before starting Codex.
-    """
-    session = live_session
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
     result = session.run(
         "codex",
         "--workspace",

@@ -1,17 +1,29 @@
-"""Codex CUJs for Tests-table cases 14, 16, 18, 20, 22, and 24."""
+"""Codex CUJs for Tests-table cases 14, 16, 18, and 20."""
+
+import tomllib
 
 import pytest
 
-pytestmark = pytest.mark.codex
+pytestmark = [pytest.mark.codex, pytest.mark.usefixtures("unmanaged_workspace")]
+
+
+def _assert_default_models(session, models):
+    discovered = session.workspace_state()["codex_models"]
+    assert discovered and all(model.startswith("system.ai.") for model in discovered)
+    config = tomllib.loads((session.home / ".codex/ucode.config.toml").read_text())
+    assert config["model"] in discovered, (config, discovered)
+    assert "model_catalog_json" not in config, config
+    assert models and len(models) == len(set(models)), models
+    assert any(model.startswith("gpt-") for model in models), models
+    assert not list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
 
 
 @pytest.mark.live
-def test_case_14_configured_codex_reuses_saved_model_location(
-    live_session, workspace, parent_schema, claude_parent_model, codex_parent_model
-):
-    """Scenario: configure Codex with --model-location, then launch without options.
+def test_case_14_configured_codex_uses_default_models(live_session, workspace):
+    """Scenario: configure Codex, then launch without source overrides.
 
-    Expected: the saved parent supplies exactly both Claude and Codex Model Services.
+    Expected: the configured default is a discovered system.ai model; app-server
+    exposes native model entries without a generated provider/parent-scoped catalog.
     """
     session = live_session
     session.run(
@@ -20,8 +32,6 @@ def test_case_14_configured_codex_reuses_saved_model_location(
         "codex",
         "--workspace",
         workspace,
-        "--model-location",
-        parent_schema,
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
         timeout=240,
@@ -29,26 +39,22 @@ def test_case_14_configured_codex_reuses_saved_model_location(
 
     models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
 
-    assert sorted(models) == sorted([claude_parent_model, codex_parent_model])
+    _assert_default_models(session, models)
 
 
 @pytest.mark.live
-def test_case_16_fresh_codex_uses_system_models_when_discovery_disabled(live_session, workspace):
-    """Scenario: launch fresh Codex with UG_ENABLE_MODEL_DISCOVERY=0.
+def test_case_16_fresh_codex_uses_default_models(live_session, workspace):
+    """Scenario: launch fresh Codex with --workspace and no source overrides.
 
-    Expected: ug uses its discovered system.ai models without a scoped catalog.
+    Expected: the configured default is a discovered system.ai model; app-server
+    exposes native model entries without a generated provider/parent-scoped catalog.
     """
     session = live_session
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
     models = session.codex_model_ids(
         ["--workspace", workspace, "--", "app-server", "--listen", "stdio://"]
     )
 
-    discovered = session.workspace_state()["codex_models"]
-    assert models
-    assert discovered
-    assert all(model.startswith("system.ai.") for model in discovered)
-    assert not list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
+    _assert_default_models(session, models)
 
 
 @pytest.mark.live
@@ -159,120 +165,3 @@ def test_case_20_fresh_codex_model_location_overrides_saved_setup(
     )
 
     assert sorted(models) == sorted([claude_parent_model, codex_parent_model])
-
-
-@pytest.mark.live
-def test_case_22_configured_codex_provider_uses_native_models_when_discovery_disabled(
-    live_session, workspace, codex_provider
-):
-    """Scenario: configure Codex, disable discovery, then launch with --provider.
-
-    Expected: Codex uses the native catalog and ug writes no scoped catalog.
-    """
-    session = live_session
-    session.run(
-        "configure",
-        "--agents",
-        "codex",
-        "--workspace",
-        workspace,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-        timeout=240,
-    )
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-    models = session.codex_model_ids(
-        ["--provider", codex_provider, "--", "app-server", "--listen", "stdio://"]
-    )
-
-    assert models
-    assert not list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
-
-
-@pytest.mark.live
-def test_case_22_fresh_codex_provider_uses_native_models_when_discovery_disabled(
-    live_session, workspace, codex_provider
-):
-    """Scenario: disable discovery, then launch fresh Codex with a provider.
-
-    Expected: Codex uses the native catalog and ug writes no scoped catalog.
-    """
-    session = live_session
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-    models = session.codex_model_ids(
-        [
-            "--workspace",
-            workspace,
-            "--provider",
-            codex_provider,
-            "--",
-            "app-server",
-            "--listen",
-            "stdio://",
-        ]
-    )
-
-    assert models
-    assert not list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
-
-
-@pytest.mark.live
-def test_case_24_configured_codex_location_uses_native_models_when_discovery_disabled(
-    live_session, workspace, parent_schema
-):
-    """Scenario: configure Codex, disable discovery, then launch with a parent.
-
-    Expected: Codex uses the native catalog and ug writes no scoped catalog.
-    """
-    session = live_session
-    session.run(
-        "configure",
-        "--agents",
-        "codex",
-        "--workspace",
-        workspace,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-        timeout=240,
-    )
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-    models = session.codex_model_ids(
-        ["--model-location", parent_schema, "--", "app-server", "--listen", "stdio://"]
-    )
-
-    discovered = session.workspace_state()["codex_models"]
-    assert models
-    assert discovered
-    assert all(model.startswith("system.ai.") for model in discovered)
-    assert not list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
-
-
-@pytest.mark.live
-def test_case_24_fresh_codex_location_uses_native_models_when_discovery_disabled(
-    live_session, workspace, parent_schema
-):
-    """Scenario: disable discovery, then launch fresh Codex with a parent.
-
-    Expected: Codex uses the native catalog and ug writes no scoped catalog.
-    """
-    session = live_session
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-
-    models = session.codex_model_ids(
-        [
-            "--workspace",
-            workspace,
-            "--model-location",
-            parent_schema,
-            "--",
-            "app-server",
-            "--listen",
-            "stdio://",
-        ]
-    )
-
-    discovered = session.workspace_state()["codex_models"]
-    assert models
-    assert discovered
-    assert all(model.startswith("system.ai.") for model in discovered)
-    assert not list((session.home / ".ucode").glob("codex-model-catalog-*.json"))

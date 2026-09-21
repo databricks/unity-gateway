@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
 from utils.harness import UserSession
+from utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
 from utils.terminal import TerminalProcess
 
 
@@ -43,6 +47,26 @@ def workspace():
     if not value.startswith("https://") or not os.environ.get("DATABRICKS_BEARER", "").strip():
         pytest.fail("Live integration requires UCODE_TEST_WORKSPACE and DATABRICKS_BEARER.")
     return value
+
+
+@pytest.fixture(scope="session")
+def unmanaged_workspace(workspace):
+    """Require a real no-config workspace, without injecting or changing its policy."""
+    request = urllib.request.Request(
+        workspace + MANAGED_CONFIGS_PATH,
+        headers={"Authorization": f"Bearer {os.environ['DATABRICKS_BEARER']}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        # Like the product, accept NOT_FOUND as no published config. Auth failures
+        # and other HTTP errors do not establish the unmanaged prerequisite.
+        if error.code != 404:
+            raise
+        return workspace
+    assert_no_managed_config(payload)
+    return workspace
 
 
 @pytest.fixture(scope="session")
