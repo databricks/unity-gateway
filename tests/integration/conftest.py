@@ -7,6 +7,7 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 from utils.harness import UserSession
@@ -41,6 +42,24 @@ def workspace():
     value = os.environ.get("UCODE_TEST_WORKSPACE", "").strip().rstrip("/")
     if not value.startswith("https://") or not os.environ.get("DATABRICKS_BEARER", "").strip():
         pytest.fail("Live integration requires UCODE_TEST_WORKSPACE and DATABRICKS_BEARER.")
+    return value
+
+
+@pytest.fixture(scope="session")
+def second_workspace(workspace):
+    value = os.environ.get("UCODE_TEST_SECOND_WORKSPACE", "").strip().rstrip("/")
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or not os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
+    ):
+        pytest.fail(
+            "Workspace-switch CUJs require --second-workspace (or UCODE_TEST_SECOND_WORKSPACE) "
+            "and DATABRICKS_SECOND_BEARER for that workspace."
+        )
+    if parsed.hostname == urlparse(workspace).hostname:
+        pytest.fail("Workspace-switch CUJs require two distinct workspace hosts.")
     return value
 
 

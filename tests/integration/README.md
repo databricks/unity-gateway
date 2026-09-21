@@ -16,6 +16,9 @@ installs the requested agents into a new npm prefix and ug into a new virtualenv
 Pytest and the PTY/screen libraries (pexpect and pyte) live in a different virtualenv, so they cannot accidentally supply a
 missing application dependency. No packages are installed into your existing
 agent installations or checkout's `.venv`.
+CI pins Databricks CLI 1.17.0 in the live and managed integration lanes. The
+runner's isolated `PATH` exposes that selected CLI, so skills journeys meet ug's
+CLI minimum without falling back to another version installed on the machine.
 Native live runs refuse existing machine-wide Claude/Codex configuration, which
 could override the selected workspace even with a fresh home. Use a clean VM
 in that case; the runner never edits or bypasses those managed settings.
@@ -103,6 +106,7 @@ test_ug_codex_commands.py               # command help and parser error forwardi
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_smart_routing_hooks.py           # route-subagent hook contract against the live router
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
+test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_claude_managed_model_discovery.py # fetched/reused Claude MPS policy cases
 test_ug_codex_managed_model_discovery.py  # fetched/reused Codex MPS policy cases
@@ -172,7 +176,9 @@ fails the selected CUJ, rather than skipping it.
 There are **46 live cases** (including 6 TUI journeys) and **5 installation
 checks** with both agents. A separate **4 managed-workspace cases** (one per agent, an idempotent
 re-configure, and a cache-TTL journey; marker `managed`) run against a workspace that publishes a
-CodingAgentConfig; see "Managed-workspace journeys" below. A further **36 `managed_fixture`
+CodingAgentConfig; see "Managed-workspace journeys" below. One **`workspace_switch` case**
+uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
+A further **36 `managed_fixture`
 cases** use `UCODE_MANAGED_CONFIG_STUB`. Twenty-four explicit configured/fresh Claude and Codex
 discovery and source-override journeys fetch the published config once per agent, replace that
 agent's static source with its dedicated MPS, and reuse the result. Twelve existing collected cases
@@ -197,6 +203,36 @@ configuration TUI journeys. Real failures, including generated
 config left after revert and banners on app-server stdout, remain assertions.
 Live MCP/skills functionality, tracing, the broad configure-option matrix, and other
 agents are outside this focused revision.
+
+The workspace-switch CUJ is an exception to that deferred multi-workspace scope:
+it configures the first workspace and registers its skills MCP through `ug skills`,
+switches to a second real host using that host's bearer, and verifies the stale
+registration is removed from Claude and the target workspace state. It preserves
+the first workspace's saved bucket, repeats configure, and requires a completed
+Claude file task on the second workspace. This exercises real commands, state,
+and agents without injected configuration. Deterministic duplicate-attempt and
+timeout/missing-executable regressions remain in `../test_mcp.py` and `../test_cli.py`;
+the CUJ does not force an agent failure.
+
+Run this case with both agents installed if either workspace's managed config
+enables both. Supply the second workspace and its bearer explicitly:
+
+```bash
+# DATABRICKS_SECOND_BEARER must already contain a token for SECOND_WORKSPACE_URL.
+python3.12 scripts/run_integration.py \
+  --ug-version checkout --claude-version 2.1.268 --codex-version 0.154.0 \
+  --workspace FIRST_WORKSPACE_URL --profile FIRST_WORKSPACE_PROFILE \
+  --second-workspace SECOND_WORKSPACE_URL -- -m workspace_switch
+```
+
+`UCODE_TEST_SECOND_WORKSPACE` is the environment equivalent of `--second-workspace`.
+Missing credentials or equal workspace hosts fail the selected test. The runner
+records both URLs in `versions.json`, redacts both bearers in evidence, and passes
+only the active workspace's bearer to each tested command. CI runs the case in
+the existing **Managed config · Claude** lane: the first host uses
+`E2E_ADMIN_WORKSPACE` and its service-principal credentials; the second uses the
+existing `UCODE_TEST_WORKSPACE` / `DATABRICKS_BEARER` secrets. That lane remains
+non-blocking under its existing policy. Collection or lint success is not a live pass.
 
 The configure terminal helper recognizes `[✓]` / `[ ]` agent checkboxes as well
 as legacy markers in older pinned ug releases. It explicitly toggles
