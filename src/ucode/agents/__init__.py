@@ -394,6 +394,7 @@ def configure_tool(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
+    custom_headers: dict[str, str] | None = None,
 ) -> dict:
     result: dict | tuple[dict, str]
     if tool == "codex":
@@ -416,6 +417,7 @@ def configure_tool(
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
             picker_catalog=picker_catalog,
+            custom_headers=custom_headers,
         )
     else:
         # Every tool in this branch needs a model — including gemini under a provider,

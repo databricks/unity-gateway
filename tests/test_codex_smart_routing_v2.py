@@ -76,6 +76,35 @@ class TestLaunchCodex:
             )
         ]
 
+    def test_codex_smart_routing_preserves_custom_header(self, monkeypatch):
+        captured = {}
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: "gpt-start")
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+
+        def launch_v2(state, tool_args, **kwargs):
+            captured.update(kwargs)
+            raise SystemExit(0)
+
+        monkeypatch.setattr(v2, "launch_codex", launch_v2)
+        custom_headers = {"X-Development-Route": "route://development/test"}
+
+        with pytest.raises(SystemExit):
+            codex.launch(
+                {"workspace": WS},
+                [],
+                options=LaunchOptions(
+                    launch_smart_routing=True,
+                    custom_headers=tuple(custom_headers.items()),
+                ),
+            )
+
+        overlay = captured["render_overlay"](WS, "gpt-start")
+        headers = overlay["model_providers"]["Databricks"]["env_http_headers"]
+        env_name = headers["X-Development-Route"]
+        assert os.environ[env_name] == custom_headers["X-Development-Route"]
+        monkeypatch.delenv(env_name)
+
     @pytest.mark.parametrize(
         "tool_args",
         [
