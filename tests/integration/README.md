@@ -16,6 +16,9 @@ installs the requested agents into a new npm prefix and ug into a new virtualenv
 Pytest and the PTY/screen libraries (pexpect and pyte) live in a different virtualenv, so they cannot accidentally supply a
 missing application dependency. No packages are installed into your existing
 agent installations or checkout's `.venv`.
+CI pins Databricks CLI 1.17.0 in the live and managed integration lanes. The
+runner's isolated `PATH` exposes that selected CLI, so skills journeys meet ug's
+CLI minimum without falling back to another version installed on the machine.
 Native live runs refuse existing machine-wide Claude/Codex configuration, which
 could override the selected workspace even with a fresh home. Use a clean VM
 in that case; the runner never edits or bypasses those managed settings.

@@ -1,6 +1,7 @@
 """Keep the black-box suite independent of application internals and test doubles."""
 
 import ast
+import re
 from pathlib import Path
 
 
@@ -15,6 +16,21 @@ def _markers(nodes):
         and node.value.value.id == "pytest"
         and node.value.attr == "mark"
     }
+
+
+def test_integration_ci_pins_a_skills_capable_databricks_cli():
+    from ucode.databricks import SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
+
+    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+    setup_blocks = re.findall(
+        r"(?m)^      - uses: databricks/setup-cli@[^\n]+\n((?:        [^\n]*\n)*)",
+        workflow.read_text(),
+    )
+    assert setup_blocks, "Integration CI must install the Databricks CLI explicitly"
+    for block in setup_blocks:
+        version = re.search(r"(?m)^          version: (\d+)\.(\d+)\.(\d+)\s*$", block)
+        assert version, "Every integration setup-cli step must pin an exact CLI version"
+        assert tuple(map(int, version.groups())) >= SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
 
 
 def test_integration_suite_uses_only_public_process_boundaries():
