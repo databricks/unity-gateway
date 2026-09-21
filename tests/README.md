@@ -61,6 +61,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_case_06_*`, `test_case_08_*` | Pass a provider or model-location override to managed Codex after configure and from fresh state | ug rejects the override before Codex starts and preserves agent-owned state |
 | `test_case_10_*`, `test_case_12_*` | Disable discovery and pass a provider or model-location override to managed Codex | ug still rejects both configured and fresh launches |
 | `test_ug_configure_managed_codex_catalog_fallback` | Configure from an injected managed response containing a GPT model absent from Codex's bundled catalog | Actionable metadata warning; conservative catalog entry for the unknown model; real Codex prompt on the valid default model |
+| `test_managed_fixture_codex_http_headers_in_managed_file` | Interactive PTY configure with injected managed `http_headers` for Codex | The specified header (`x-databricks-workspace`) lands in `model_providers.Databricks.http_headers` in `/etc/codex/managed_config.toml` with the exact admin value |
 | `test_managed_fixture_claude_mps_defaults_accompany_discovery`, `test_managed_fixture_claude_parent_schema_defaults_accompany_discovery` | Launch Claude from injected managed defaults with MPS and Unity Catalog discovery | Both generated settings files retain every admin-authored default alongside the source header; only UC Opus/Sonnet family ids gain `[1m]` |
 | `test_managed_fixture_claude_model_lifecycle`, `test_managed_fixture_codex_model_lifecycle` | Configure across no config -> static A -> static B -> MPS -> no config (stub-injected, `null` for no-config; MPS via a real provider service) | Each agent's model files reconcile to each static config (removed models pruned); switching to an MPS and a workspace with no managed config both clear ug's managed model settings so no stale list is enforced |
 | `test_ug_installed_wheel_exposes_help_and_version` | Invoke freshly installed console command | Package version matches; public help works |
@@ -72,9 +73,9 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 With both agents selected there are **46 live cases** (6 interactive TUI cases),
 **4 managed-workspace cases** (marker `managed`, run against a separate workspace that
 publishes a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
-**36 managed-fixture cases** (marker `managed_fixture`, with only
+**37 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected), and **5 installation checks**. The 24 numbered scenarios
-cover configured and fresh state across the Claude and Codex managed-discovery matrix; twelve
+cover configured and fresh state across the Claude and Codex managed-discovery matrix; thirteen
 existing collected cases cover focused model, MCP, skills, and lifecycle shapes. Parametrization
 varies
 argument spelling or routing mode, never hides the agent/provider in the test name. Duplicate boot-only cases

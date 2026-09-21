@@ -93,14 +93,10 @@ LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
 CODEX_MODEL_PROVIDER_NAME = "Databricks"
 LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
-_MODEL_SERVICE_ROUTING_KEY_PATHS = [
-    ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers", MODEL_PROVIDER_SERVICE_HEADER],
-    [
-        "model_providers",
-        CODEX_MODEL_PROVIDER_NAME,
-        "http_headers",
-        MODEL_SERVICE_PARENT_SCHEMA_HEADER,
-    ],
+# ug owns the whole provider http_headers table, so it is pruned before each merge and rewritten
+# from render_overlay — dropping stale routing and admin headers that deep_merge cannot delete.
+_PROVIDER_HTTP_HEADERS_KEY_PATHS = [
+    ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers"],
 ]
 MINIMUM_CODEX_VERSION = (0, 145, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
@@ -180,6 +176,14 @@ def has_ucode_config() -> bool:
     )
 
 
+def _apply_managed_headers(http_headers: dict[str, str], managed: dict[str, str] | None) -> None:
+    """Merge admin ``managed`` headers into ``http_headers`` in place; admin wins case-insensitively."""
+    for name, value in (managed or {}).items():
+        for existing in [key for key in http_headers if key.casefold() == name.casefold()]:
+            del http_headers[existing]
+        http_headers[name] = value
+
+
 def _provider_block(
     workspace: str,
     databricks_profile: str | None,
@@ -187,6 +191,7 @@ def _provider_block(
     provider: str | None = None,
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    managed_http_headers: dict[str, str] | None = None,
 ) -> dict:
     if custom_oauth:
         auth_argv = build_custom_auth_token_argv(workspace, custom_oauth)
@@ -202,6 +207,7 @@ def _provider_block(
         http_headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
     if smart_routing_v2.smart_routing_enabled():
         http_headers[SMART_ROUTER_RECIPE_HEADER] = configured_router_name()
+    _apply_managed_headers(http_headers, managed_http_headers)
     return {
         "name": "Databricks AI Gateway",
         "base_url": base_url,
@@ -226,6 +232,7 @@ def render_overlay(
     provider: str | None = None,
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    managed_http_headers: dict[str, str] | None = None,
 ) -> dict:
     overlay: dict = {"model_provider": CODEX_MODEL_PROVIDER_NAME}
     if model:
@@ -238,6 +245,7 @@ def render_overlay(
             provider=provider,
             parent_schema=parent_schema,
             custom_oauth=custom_oauth,
+            managed_http_headers=managed_http_headers,
         ),
     }
     return overlay
@@ -251,6 +259,7 @@ def render_legacy_overlay(
     provider: str | None = None,
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    managed_http_headers: dict[str, str] | None = None,
 ) -> dict:
     """Overlay for Codex CLI < 0.134.0, which only reads `~/.codex/config.toml`.
 
@@ -271,6 +280,7 @@ def render_legacy_overlay(
                 provider=provider,
                 parent_schema=parent_schema,
                 custom_oauth=custom_oauth,
+                managed_http_headers=managed_http_headers,
             ),
         },
     }
@@ -420,9 +430,10 @@ def write_tool_config(
             provider=provider,
             parent_schema=parent_schema,
             custom_oauth=state.get("custom_oauth"),
+            managed_http_headers=state.get("codex_http_headers"),
         )
         doc = read_toml_safe(LEGACY_CODEX_CONFIG_PATH)
-        prune_key_paths(doc, _MODEL_SERVICE_ROUTING_KEY_PATHS)
+        prune_key_paths(doc, _PROVIDER_HTTP_HEADERS_KEY_PATHS)
         deep_merge_dict(doc, overlay)
         # deep_merge can't drop keys, so clear model preferences from an earlier run.
         profiles = doc.get("profiles")
@@ -462,10 +473,11 @@ def write_tool_config(
         provider=provider,
         parent_schema=parent_schema,
         custom_oauth=state.get("custom_oauth"),
+        managed_http_headers=state.get("codex_http_headers"),
     )
 
     def compose(base: dict, *, include_catalog: bool = True) -> dict:
-        prune_key_paths(base, _MODEL_SERVICE_ROUTING_KEY_PATHS)
+        prune_key_paths(base, _PROVIDER_HTTP_HEADERS_KEY_PATHS)
         deep_merge_dict(base, copy.deepcopy(overlay))
         # deep_merge can't drop keys, so clear model preferences from an earlier run.
         if chosen_model is None and not smart_routing_v2.smart_routing_enabled():
