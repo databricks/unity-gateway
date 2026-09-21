@@ -1322,6 +1322,9 @@ class TestRefreshOnLaunch:
         sd.refresh_downloaded_skills_on_launch({"workspace": WS})
 
         assert any("boom" in note for note in notes)
+        # The stamp advances even though the sweep failed, so a persistent failure does not re-run
+        # the check on every launch.
+        assert skills_state.last_update_check() is not None
 
     def test_manually_deleted_skill_is_forgotten_not_redownloaded(self, tmp_path, monkeypatch):
         _record_download(tmp_path / "home", monkeypatch, on_disk=False)
