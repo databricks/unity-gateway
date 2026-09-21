@@ -1,4 +1,4 @@
-"""Claude CUJs for Tests-table cases 13, 15, 17, and 19."""
+"""Claude model-discovery CUJs for repository scenarios 7, 9, 11, and 13."""
 
 import re
 
@@ -40,7 +40,7 @@ def _assert_system_models_in_picker(session, screen):
 
 @pytest.mark.live
 @pytest.mark.tui
-def test_case_13_configured_claude_discovers_system_models(live_session, workspace):
+def test_case_07_configured_claude_discovers_system_models(live_session, workspace):
     """Scenario: configure Claude, then launch without source overrides or discovery flags.
 
     Expected: native discovery caches system.ai models as raw IDs or recognized Claude
@@ -59,7 +59,7 @@ def test_case_13_configured_claude_discovers_system_models(live_session, workspa
     )
 
     command = [str(session.binary), "claude"]
-    with AgentTerminal(session, "claude", command, "case-13-system-models") as tui:
+    with AgentTerminal(session, "claude", command, "case-07-system-models") as tui:
         tui.boot()
         screen = tui.open_model_picker()
         tui.exit_normally()
@@ -69,7 +69,7 @@ def test_case_13_configured_claude_discovers_system_models(live_session, workspa
 
 @pytest.mark.live
 @pytest.mark.tui
-def test_case_15_fresh_claude_discovers_system_models(live_session, workspace):
+def test_case_09_fresh_claude_discovers_system_models(live_session, workspace):
     """Scenario: launch fresh Claude with --workspace and no discovery flags.
 
     Expected: native discovery caches system.ai models as raw IDs or recognized Claude
@@ -77,7 +77,7 @@ def test_case_15_fresh_claude_discovers_system_models(live_session, workspace):
     """
     session = live_session
     command = [str(session.binary), "claude", "--workspace", workspace]
-    with AgentTerminal(session, "claude", command, "case-15-system-models") as tui:
+    with AgentTerminal(session, "claude", command, "case-09-system-models") as tui:
         tui.boot()
         screen = tui.open_model_picker()
         tui.exit_normally()
@@ -87,7 +87,7 @@ def test_case_15_fresh_claude_discovers_system_models(live_session, workspace):
 
 @pytest.mark.live
 @pytest.mark.tui
-def test_case_17_configured_claude_provider_discovers_models_by_default(
+def test_case_11_configured_claude_provider_discovers_models_by_default(
     live_session, workspace, claude_provider, claude_provider_model
 ):
     """Scenario: configure Claude, then launch with --provider and no opt-in flag.
@@ -108,7 +108,7 @@ def test_case_17_configured_claude_provider_discovers_models_by_default(
     )
 
     command = [str(session.binary), "claude", "--provider", claude_provider]
-    with AgentTerminal(session, "claude", command, "case-17-provider-default") as tui:
+    with AgentTerminal(session, "claude", command, "case-11-provider-default") as tui:
         tui.boot()
         screen = tui.open_model_picker()
         tui.exit_normally()
@@ -118,7 +118,7 @@ def test_case_17_configured_claude_provider_discovers_models_by_default(
 
 @pytest.mark.live
 @pytest.mark.tui
-def test_case_17_fresh_claude_provider_discovers_models_by_default(
+def test_case_11_fresh_claude_provider_discovers_models_by_default(
     live_session, workspace, claude_provider, claude_provider_model
 ):
     """Scenario: launch fresh Claude with --provider and no opt-in flag.
@@ -135,7 +135,7 @@ def test_case_17_fresh_claude_provider_discovers_models_by_default(
         "--provider",
         claude_provider,
     ]
-    with AgentTerminal(session, "claude", command, "case-17-provider-default") as tui:
+    with AgentTerminal(session, "claude", command, "case-11-provider-default") as tui:
         tui.boot()
         screen = tui.open_model_picker()
         tui.exit_normally()
@@ -145,7 +145,7 @@ def test_case_17_fresh_claude_provider_discovers_models_by_default(
 
 @pytest.mark.live
 @pytest.mark.tui
-def test_case_19_configured_claude_model_location_overrides_saved_setup(
+def test_case_13_configured_claude_model_location_overrides_saved_setup(
     live_session, workspace, parent_schema, claude_parent_model
 ):
     """Scenario: configure Claude, then launch with --model-location.
@@ -165,7 +165,7 @@ def test_case_19_configured_claude_model_location_overrides_saved_setup(
     )
 
     command = [str(session.binary), "claude", "--model-location", parent_schema]
-    with AgentTerminal(session, "claude", command, "case-19-location-default") as tui:
+    with AgentTerminal(session, "claude", command, "case-13-location-default") as tui:
         tui.boot()
         screen = tui.open_model_picker()
         tui.exit_normally()
@@ -175,7 +175,7 @@ def test_case_19_configured_claude_model_location_overrides_saved_setup(
 
 @pytest.mark.live
 @pytest.mark.tui
-def test_case_19_fresh_claude_model_location_discovers_parent_models(
+def test_case_13_fresh_claude_model_location_discovers_parent_models(
     live_session, workspace, parent_schema, claude_parent_model
 ):
     """Scenario: launch fresh Claude with --model-location.
@@ -191,7 +191,7 @@ def test_case_19_fresh_claude_model_location_discovers_parent_models(
         "--model-location",
         parent_schema,
     ]
-    with AgentTerminal(session, "claude", command, "case-19-location-default") as tui:
+    with AgentTerminal(session, "claude", command, "case-13-location-default") as tui:
         tui.boot()
         screen = tui.open_model_picker()
         tui.exit_normally()

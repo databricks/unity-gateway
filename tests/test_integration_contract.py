@@ -123,16 +123,22 @@ def test_model_discovery_cases_match_current_launch_contract():
             case = int(match.group(1))
             seen.append(case)
             marks = module_marks | _markers(node.decorator_list)
-            expected = {"managed_fixture"} if case <= 12 else {"live"}
+            expected = {"managed_fixture"} if case <= 6 else {"live"}
             assert marks & {"managed_fixture", "managed", "live"} == expected, node.name
+            assert marks & {"claude", "codex"} == ({"claude"} if case % 2 else {"codex"}), node.name
             assert not any(arg.arg == "configured" for arg in node.args.args), node.name
-    # Preserve case numbers as historical references, not a requirement to test
-    # the removed discovery-disable flag. Default launches now cover 13–16.
-    expected_cases = {1, 2, 5, 6, 7, 8, 13, 14, 15, 16, 17, 18, 19, 20}
+            for value in ast.walk(node):
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    artifact = re.match(r"case-(\d{2})-", value.value)
+                    if artifact:
+                        assert int(artifact.group(1)) == case, (node.name, value.value)
+    # Repository scenario numbers are consecutive, independent of the external
+    # design document. Configured/fresh variants share their scenario number.
+    expected_cases = set(range(1, 15))
     assert set(seen) == expected_cases
     assert len(seen) == 24
     for case in expected_cases:
-        assert seen.count(case) == (1 if 13 <= case <= 16 else 2), case
+        assert seen.count(case) == (1 if 7 <= case <= 10 else 2), case
 
 
 @pytest.mark.parametrize("payload", [{}, {"coding_agent_configs": []}, []])

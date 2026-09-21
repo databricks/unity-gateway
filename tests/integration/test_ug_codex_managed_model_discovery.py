@@ -1,4 +1,4 @@
-"""Codex managed-config CUJs for Tests-table cases 2, 6, and 8.
+"""Codex managed-config CUJs for repository scenarios 2, 4, and 6.
 
 The admin CodingAgentConfig is fetched once from the managed workspace, its Codex model source is
 set to the dedicated test MPS, and the result is reused through ``UCODE_MANAGED_CONFIG_STUB`` in
@@ -132,7 +132,7 @@ def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(live_sessio
     _assert_managed_provider_catalog(session, models)
 
 
-def test_case_06_managed_codex_rejects_provider_override_after_configure(
+def test_case_04_managed_codex_rejects_provider_override_after_configure(
     live_session, workspace, codex_provider
 ):
     """Scenario: configure managed Codex, then pass a --provider override.
@@ -164,7 +164,7 @@ def test_case_06_managed_codex_rejects_provider_override_after_configure(
     _assert_rejected_before_codex_started(session, result, before)
 
 
-def test_case_06_managed_codex_rejects_provider_override_from_fresh_state(
+def test_case_04_managed_codex_rejects_provider_override_from_fresh_state(
     live_session, workspace, codex_provider
 ):
     """Scenario: pass --workspace and a --provider override from fresh state.
@@ -188,7 +188,7 @@ def test_case_06_managed_codex_rejects_provider_override_from_fresh_state(
     _assert_rejected_before_codex_started(session, result)
 
 
-def test_case_08_managed_codex_rejects_model_location_override_after_configure(
+def test_case_06_managed_codex_rejects_model_location_override_after_configure(
     live_session, workspace, parent_schema
 ):
     """Scenario: configure managed Codex, then pass a --model-location override.
@@ -220,7 +220,7 @@ def test_case_08_managed_codex_rejects_model_location_override_after_configure(
     _assert_rejected_before_codex_started(session, result, before)
 
 
-def test_case_08_managed_codex_rejects_model_location_override_from_fresh_state(
+def test_case_06_managed_codex_rejects_model_location_override_from_fresh_state(
     live_session, workspace, parent_schema
 ):
     """Scenario: pass --workspace and a --model-location override from fresh state.

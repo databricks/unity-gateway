@@ -38,12 +38,12 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_configure_codex_databricks` | Configure Databricks Hosted; execute the generated auth helper; open Codex TUI and read a file | Generated helper invokes `ug` with clean token stdout; completed assistant answer contains the file value; normal exit and reopen |
 | `test_ug_configure_codex_openai_mps` | Select OpenAI MPS in the real configure picker; launch Codex | Saved provider in status; completed TUI file task; normal exit |
 | `test_ug_claude_custom_oauth_cli_boots`, `test_ug_codex_custom_oauth_cli_boots` | Launch with `ENABLE_CUSTOM_OAUTH_FROM_CLI=1`, `--workspace`, and `--client-id databricks-cli` | Real TUI reaches a usable prompt, accepts keyboard input, exits normally, and saves `client_id = databricks-cli` in its generated CLI profile; Claude also reads the OS-managed settings and requires a profile-only `apiKeyHelper` |
-| `test_case_13_configured_claude_discovers_system_models`, `test_case_15_fresh_claude_discovers_system_models` | Launch configured/fresh Claude with no discovery flag or source override | Claude caches `system.ai` models (including recognized Anthropic gateway aliases), includes ug's discovered family defaults, and shows a discovered picker entry |
-| `test_case_14_configured_codex_uses_default_models`, `test_case_16_fresh_codex_uses_default_models` | Launch configured/fresh Codex with no source override | ug discovers `system.ai` models but leaves model/reasoning preferences unset; app-server exposes native GPT entries without a generated scoped catalog |
-| `test_case_17_*` | Launch configured and fresh Claude with a provider | The cache contains exactly the provider model; the picker shows its row, including native Haiku 4.5 deduplication |
-| `test_case_18_*` | Launch configured and fresh Codex with a provider | The provider supplies exactly its model catalog |
-| `test_case_19_*` | Launch configured and fresh Claude with a model location | The explicit parent supplies exactly its picker catalog |
-| `test_case_20_*` | Launch configured and fresh Codex with a model location | The explicit parent supplies exactly the Claude and Codex Model Services, independent of order |
+| `test_case_07_configured_claude_discovers_system_models`, `test_case_09_fresh_claude_discovers_system_models` | Launch configured/fresh Claude with no discovery flag or source override | Claude caches `system.ai` models (including recognized Anthropic gateway aliases), includes ug's discovered family defaults, and shows a discovered picker entry |
+| `test_case_08_configured_codex_uses_default_models`, `test_case_10_fresh_codex_uses_default_models` | Launch configured/fresh Codex with no source override | ug discovers `system.ai` models but leaves model/reasoning preferences unset; app-server exposes native GPT entries without a generated scoped catalog |
+| `test_case_11_*` | Launch configured and fresh Claude with a provider | The cache contains exactly the provider model; the picker shows its row, including native Haiku 4.5 deduplication |
+| `test_case_12_*` | Launch configured and fresh Codex with a provider | The provider supplies exactly its model catalog |
+| `test_case_13_*` | Launch configured and fresh Claude with a model location | The explicit parent supplies exactly its picker catalog |
+| `test_case_14_*` | Launch configured and fresh Codex with a model location | The explicit parent supplies exactly the Claude and Codex Model Services, independent of order |
 | `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` with routing enabled | Real file task completes; no routing wrapper |
@@ -61,9 +61,9 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure against a workspace that publishes a managed CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch |
 | `test_case_01_*` | Launch managed Claude after configure and from fresh state | Claude receives the admin MPS header, caches native discovery results, and opens its real model picker |
-| `test_case_05_*`, `test_case_07_*` | Pass a provider or model-location override to managed Claude after configure and from fresh state | ug rejects the override before Claude starts and preserves agent-owned state |
+| `test_case_03_*`, `test_case_05_*` | Pass a provider or model-location override to managed Claude after configure and from fresh state | ug rejects the override before Claude starts and preserves agent-owned state |
 | `test_case_02_*` | Launch managed Codex after configure and from fresh state | Codex exposes exactly the admin MPS-scoped catalog |
-| `test_case_06_*`, `test_case_08_*` | Pass a provider or model-location override to managed Codex after configure and from fresh state | ug rejects the override before Codex starts and preserves agent-owned state |
+| `test_case_04_*`, `test_case_06_*` | Pass a provider or model-location override to managed Codex after configure and from fresh state | ug rejects the override before Codex starts and preserves agent-owned state |
 | `test_ug_configure_managed_codex_catalog_fallback` | Configure from an injected managed response containing a GPT model absent from Codex's bundled catalog | Actionable metadata warning; conservative catalog entry for the unknown model; real Codex prompt on the valid default model |
 | `test_managed_fixture_claude_mps_defaults_accompany_discovery`, `test_managed_fixture_claude_parent_schema_defaults_accompany_discovery` | Launch Claude from injected managed defaults with MPS and Unity Catalog discovery | Both generated settings files retain every admin-authored default alongside the source header; only UC Opus/Sonnet family ids gain `[1m]` |
 | `test_managed_fixture_claude_model_lifecycle`, `test_managed_fixture_codex_model_lifecycle` | Configure across no config -> static A -> static B -> MPS -> no config (stub-injected, `null` for no-config; MPS via a real provider service) | Each agent's model files reconcile to each static config (removed models pruned); switching to an MPS and a workspace with no managed config both clear ug's managed model settings so no stale list is enforced |
@@ -84,15 +84,17 @@ and lifecycle shapes. Parametrization varies
 argument spelling or routing mode, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
 Generated-file cleanup and strict app-server stdout assertions remain enforced.
-Unmanaged discovery Cases 13–20 configure, list models, or open the picker without
+Unmanaged discovery Cases 7–14 configure, list models, or open the picker without
 submitting inference prompts; separate task journeys still perform inference.
 They require a real workspace with no CodingAgentConfig; a read-only prerequisite
 check reports any published config rather than bypassing it. `UG_ENABLE_MODEL_DISCOVERY`
-is not supported on current main. Its duplicate managed Cases 3, 4, and 9–12 and
-unmanaged disable Cases 21–24 are removed; retained Cases 1, 2, and 5–8 cover managed
-discovery and override rejection. Cases 13–16 now cover automatic/default launches.
-Configure-time model locations are also unsupported; Cases 19–20 cover the supported
-launch-time `--model-location`. Historical case numbers are retained with these gaps.
+is not supported on current main. Its duplicate managed variants and obsolete
+unmanaged disable scenarios are removed; Cases 1–6 cover managed discovery and
+override rejection. Cases 7–10 cover automatic/default launches.
+Configure-time model locations are also unsupported; Cases 13–14 cover the supported
+launch-time `--model-location`. Repository scenario numbers run consecutively from
+01 to 14; configured/fresh variants share a number. External design-document
+numbering is unchanged and is not the source of these repository IDs.
 Managed Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable
 links recreated by Codex version checks; persistent agent files remain compared.
 

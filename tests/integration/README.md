@@ -110,8 +110,8 @@ test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across tw
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_claude_managed_model_discovery.py # fetched/reused Claude MPS policy cases
 test_ug_codex_managed_model_discovery.py  # fetched/reused Codex MPS policy cases
-test_ug_claude_model_discovery.py       # current unmanaged cases 13, 15, 17, 19
-test_ug_codex_model_discovery.py        # current unmanaged cases 14, 16, 18, 20
+test_ug_claude_model_discovery.py       # unmanaged scenarios 7, 9, 11, 13
+test_ug_codex_model_discovery.py        # unmanaged scenarios 8, 10, 12, 14
 test_ug_configure_managed.py            # managed workspace: static model list, no agent selector
 test_ug_configure_managed_models.py     # injected model sources, smart-routing banner, Codex fallback metadata
 test_ug_configure_managed_mcp.py        # injected managed MCP list
@@ -188,17 +188,19 @@ A code/collection pass does not establish that the live workspace meets this
 prerequisite; the live check must pass on each run.
 
 Current main enables discovery automatically; it has no `UG_ENABLE_MODEL_DISCOVERY`
-switch or configure-time `--model-location`. Cases 13/15 now cover configured/fresh
+switch or configure-time `--model-location`. Cases 7/9 cover configured/fresh
 Claude default discovery, including its real gateway cache and picker. Claude's
 recognized `anthropic-aigw-<8-hex-digits>-` aliases are unwrapped for `system.ai`
 membership and discovered-family checks; malformed aliases, non-system models,
-and duplicate raw IDs still fail. Cases 14/16 require ug's discovered `system.ai`
+and duplicate raw IDs still fail. Cases 8/10 require ug's discovered `system.ai`
 models while leaving Codex's model and reasoning preferences unset, and expose
 Codex's native catalog without a scoped file.
-Cases 17–20 retain the exact provider/parent catalog assertions for supported launch
-overrides. Obsolete disable-flag Cases 21–24 and duplicate managed Cases 3, 4, 9–12
-are removed, not skipped; managed discovery and rejection remain covered by Cases
-1, 2, 5–8. Case numbers remain historical references, with gaps for retired behavior.
+Cases 11–14 retain the exact provider/parent catalog assertions for supported launch
+overrides. Obsolete disable-flag scenarios and duplicate managed variants are
+removed, not skipped; managed discovery and rejection remain covered by Cases
+1–6. Repository scenario numbers run consecutively from 01 to 14, with
+configured/fresh variants sharing a number. External design-document numbering
+remains unchanged and is independent of these repository IDs.
 
 The parent-schema catalog is API-specific: Claude's cache must contain exactly
 the Claude service, while Codex's app-server catalog must contain exactly both
@@ -207,7 +209,7 @@ Claude provider discovery still requires the exact `--claude-provider-model` ID
 in its cache. For the default `claude-haiku-4-5-20251001` fixture, Claude deduplicates
 it into the native Haiku picker row (Haiku 4.5), so the assertion checks that row
 instead of requiring the gateway's raw display name. Custom Model Services must
-still appear by their gateway display names. Cases 13–20 send no inference prompts;
+still appear by their gateway display names. Cases 7–14 send no inference prompts;
 they only configure, list models, and open/close the picker. Other live CUJs perform
 real model tasks.
 

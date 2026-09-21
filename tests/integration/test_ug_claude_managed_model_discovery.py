@@ -1,4 +1,4 @@
-"""Claude managed-config CUJs for Tests-table cases 1, 5, and 7.
+"""Claude managed-config CUJs for repository scenarios 1, 3, and 5.
 
 The admin CodingAgentConfig is fetched once from the managed workspace, its Claude model source is
 set to the dedicated test MPS, and the result is reused through ``UCODE_MANAGED_CONFIG_STUB`` in
@@ -128,7 +128,7 @@ def test_case_01_fresh_managed_claude_uses_admin_discovery(live_session, workspa
     _assert_managed_provider_in_picker(session, workspace, screen)
 
 
-def test_case_05_managed_claude_rejects_provider_override(live_session, workspace, claude_provider):
+def test_case_03_managed_claude_rejects_provider_override(live_session, workspace, claude_provider):
     """Scenario: configure managed Claude, then pass --provider.
 
     Expected: ug rejects the override without changing agent-owned state/files.
@@ -157,7 +157,7 @@ def test_case_05_managed_claude_rejects_provider_override(live_session, workspac
     _assert_rejected_before_claude_started(session, result, before)
 
 
-def test_case_05_fresh_managed_claude_rejects_provider_override(
+def test_case_03_fresh_managed_claude_rejects_provider_override(
     live_session, workspace, claude_provider
 ):
     """Scenario: pass --provider while launching managed Claude from fresh state.
@@ -181,7 +181,7 @@ def test_case_05_fresh_managed_claude_rejects_provider_override(
     _assert_rejected_before_claude_started(session, result)
 
 
-def test_case_07_managed_claude_rejects_model_location_override(
+def test_case_05_managed_claude_rejects_model_location_override(
     live_session, workspace, parent_schema
 ):
     """Scenario: configure managed Claude, then pass --model-location.
@@ -212,7 +212,7 @@ def test_case_07_managed_claude_rejects_model_location_override(
     _assert_rejected_before_claude_started(session, result, before)
 
 
-def test_case_07_fresh_managed_claude_rejects_model_location_override(
+def test_case_05_fresh_managed_claude_rejects_model_location_override(
     live_session, workspace, parent_schema
 ):
     """Scenario: pass --model-location while launching managed Claude from fresh state.

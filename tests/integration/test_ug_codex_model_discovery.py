@@ -1,4 +1,4 @@
-"""Codex CUJs for Tests-table cases 14, 16, 18, and 20."""
+"""Codex model-discovery CUJs for repository scenarios 8, 10, 12, and 14."""
 
 import tomllib
 
@@ -20,7 +20,7 @@ def _assert_default_models(session, models):
 
 
 @pytest.mark.live
-def test_case_14_configured_codex_uses_default_models(live_session, workspace):
+def test_case_08_configured_codex_uses_default_models(live_session, workspace):
     """Scenario: configure Codex, then launch without source overrides.
 
     Expected: unmanaged configuration leaves model selection to Codex's native default;
@@ -45,7 +45,7 @@ def test_case_14_configured_codex_uses_default_models(live_session, workspace):
 
 
 @pytest.mark.live
-def test_case_16_fresh_codex_uses_default_models(live_session, workspace):
+def test_case_10_fresh_codex_uses_default_models(live_session, workspace):
     """Scenario: launch fresh Codex with --workspace and no source overrides.
 
     Expected: unmanaged fresh launch leaves model selection to Codex's native default;
@@ -61,7 +61,7 @@ def test_case_16_fresh_codex_uses_default_models(live_session, workspace):
 
 
 @pytest.mark.live
-def test_case_18_configured_codex_provider_discovers_models_by_default(
+def test_case_12_configured_codex_provider_discovers_models_by_default(
     live_session, workspace, codex_provider, codex_provider_model
 ):
     """Scenario: configure Codex, then launch with --provider.
@@ -88,7 +88,7 @@ def test_case_18_configured_codex_provider_discovers_models_by_default(
 
 
 @pytest.mark.live
-def test_case_18_fresh_codex_provider_discovers_models_by_default(
+def test_case_12_fresh_codex_provider_discovers_models_by_default(
     live_session, workspace, codex_provider, codex_provider_model
 ):
     """Scenario: launch fresh Codex with --workspace and --provider.
@@ -113,7 +113,7 @@ def test_case_18_fresh_codex_provider_discovers_models_by_default(
 
 
 @pytest.mark.live
-def test_case_20_configured_codex_model_location_overrides_saved_setup(
+def test_case_14_configured_codex_model_location_overrides_saved_setup(
     live_session, workspace, parent_schema, claude_parent_model, codex_parent_model
 ):
     """Scenario: configure Codex, then launch with --model-location.
@@ -146,7 +146,7 @@ def test_case_20_configured_codex_model_location_overrides_saved_setup(
 
 
 @pytest.mark.live
-def test_case_20_fresh_codex_model_location_overrides_saved_setup(
+def test_case_14_fresh_codex_model_location_overrides_saved_setup(
     live_session, workspace, parent_schema, claude_parent_model, codex_parent_model
 ):
     """Scenario: launch fresh Codex with --workspace and --model-location.
