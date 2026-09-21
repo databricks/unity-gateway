@@ -208,8 +208,6 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
         SMART_ROUTER_RECIPE_HEADER.casefold(),
     }
 )
-# Header names ucode wrote last launch, tracked so a removed managed header is dropped next launch.
-CLAUDE_MANAGED_HEADER_NAMES_STATE_KEY = "claude_managed_header_names"
 # Relayed drops the user scope to deliberately omit the stale apiKeyHelper. Only applied to relayed
 # launches — normal launches keep loading user settings (hooks/permissions) as before.
 _RELAYED_SETTING_SOURCES = "project,local"
@@ -238,6 +236,30 @@ def _custom_header_names(custom_headers: object) -> set[str]:
         if separator:
             names.add(name.strip().casefold())
     return names
+
+
+def _managed_header_names(
+    existing_custom_headers: object,
+    overlay_custom_headers: str,
+    snapshots: ManagedFileSnapshots | None,
+) -> set[str]:
+    """Header names ucode owns in this file, so a managed header it no longer emits is dropped.
+
+    Derived from the files themselves, never from ucode state (which is not preserved across runs).
+    For ucode's own settings file (``snapshots is None``) every existing header is ucode's. For the
+    OS-managed file, only the names ucode last wrote (``last_applied_by_ug``) are its own — an
+    administrator's own headers are left untouched.
+    """
+    if snapshots is None:
+        prior = _custom_header_names(existing_custom_headers)
+    else:
+        last_applied = snapshots.last_applied_by_ug or {}
+        last_env = last_applied.get("env") if isinstance(last_applied, dict) else None
+        last_headers = (
+            last_env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(last_env, dict) else None
+        )
+        prior = _custom_header_names(last_headers)
+    return CLAUDE_MANAGED_CUSTOM_HEADER_NAMES | _custom_header_names(overlay_custom_headers) | prior
 
 
 def configured_paths(state: dict) -> list[str]:
@@ -929,19 +951,6 @@ def write_tool_config(
         picker_catalog=picker_catalog,
         managed_http_headers=state.get("claude_http_headers"),
     )
-    # Names ucode owns this launch, unioned with last launch's, so a removed managed header is
-    # dropped while hand-added user headers are left alone.
-    current_header_names = _custom_header_names(
-        overlay["env"].get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY)
-    )
-    previous_header_names = {
-        name.casefold()
-        for name in (state.get(CLAUDE_MANAGED_HEADER_NAMES_STATE_KEY) or [])
-        if isinstance(name, str)
-    }
-    managed_header_names = (
-        CLAUDE_MANAGED_CUSTOM_HEADER_NAMES | current_header_names | previous_header_names
-    )
     source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
     # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
     # written by this launch, and remove only previously owned picker keys that no longer apply.
@@ -1028,7 +1037,11 @@ def write_tool_config(
             merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
         merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
-            existing_custom_headers, overlay_custom_headers, managed_header_names
+            existing_custom_headers,
+            overlay_custom_headers,
+            _managed_header_names(
+                existing_custom_headers, overlay_custom_headers, managed_settings_snapshots
+            ),
         )
         # Drop any apiKeyHelper a prior non-relayed launch left in the file; relayed
         # must not carry one (it would outrank the subscription OAuth).
@@ -1116,10 +1129,6 @@ def write_tool_config(
     else:
         state.pop("claude_relayed", None)
         state.pop("relayed_proxy_port", None)
-    if current_header_names:
-        state[CLAUDE_MANAGED_HEADER_NAMES_STATE_KEY] = sorted(current_header_names)
-    else:
-        state.pop(CLAUDE_MANAGED_HEADER_NAMES_STATE_KEY, None)
     state = mark_tool_managed(state, "claude", managed_keys)
     save_state(state)
     return state
