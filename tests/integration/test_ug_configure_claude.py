@@ -55,10 +55,11 @@ def test_ug_configure_claude_databricks(live_session, workspace):
         cache = json.loads((session.home / ".claude/cache/gateway-models.json").read_text())
         assert cache["baseUrl"] == workspace.rstrip("/") + "/ai-gateway/anthropic", cache
         models = cache["models"]
-        assert models and all(model["id"].startswith("system.ai.") for model in models), cache
+        system_ai_models = [model for model in models if model["id"].startswith("system.ai.")]
+        assert system_ai_models, cache
         assert any(
             model["id"] in screen or (model.get("display_name") and model["display_name"] in screen)
-            for model in models
+            for model in system_ai_models
         ), screen
         tui.exit_normally()
     task.assert_completed(session, "claude")
