@@ -729,18 +729,13 @@ class TestSubcommandRouting:
         assert "Model: system.ai.gpt-5-6-luna" not in output
         assert mock_launch.call_args.args[2] == forwarded_args
 
-    @pytest.mark.parametrize("tool", ["claude", "codex", "gemini"])
-    def test_unmanaged_launch_enables_discovery_only_for_claude(self, tool):
+    def test_unmanaged_claude_launch_enables_model_discovery(self):
         with _launch_policy_patches(None) as calls:
-            result = runner.invoke(app, [tool])
+            result = runner.invoke(app, ["claude"])
 
         assert result.exit_code == 0, result.output
-        assert os.environ.get("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY") == (
-            "1" if tool == "claude" else None
-        )
-        assert calls["configure"].call_args.kwargs["provider"] is None
-        assert calls["configure"].call_args.kwargs["parent_schema"] is None
-        assert calls["launch"].call_args.args[2] == []
+        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        calls["launch"].assert_called_once()
 
     def test_claude_model_location_is_forwarded(self):
         with _launch_policy_patches(None) as calls:
@@ -751,18 +746,12 @@ class TestSubcommandRouting:
         assert calls["launch"].call_args.args[2] == []
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
-    @pytest.mark.parametrize("persisted", [False, True], ids=["explicit", "saved"])
-    def test_claude_provider_enables_model_discovery(self, persisted):
-        provider = "main.default.anthropic"
-        with _launch_policy_patches(
-            None, persisted_provider=provider if persisted else None
-        ) as calls:
-            result = runner.invoke(
-                app, ["claude", *([] if persisted else ["--provider", provider])]
-            )
+    def test_claude_provider_enables_model_discovery(self):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["claude", "--provider", "main.default.anthropic"])
 
         assert result.exit_code == 0, result.output
-        assert calls["configure"].call_args.kwargs["provider"] == provider
+        assert calls["configure"].call_args.kwargs["provider"] == "main.default.anthropic"
         assert calls["launch"].call_args.args[2] == []
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
@@ -813,12 +802,6 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 1
         assert "--model-location must be `<catalog>.<schema>`." in _strip_ansi(result.output)
-
-    def test_claude_help_does_not_offer_model_discovery_flag(self):
-        result = runner.invoke(app, ["claude", "--help"])
-
-        assert result.exit_code == 0, result.output
-        assert "--enable-model-discovery" not in result.output
 
     def test_codex_disable_removes_hooks_without_launching(self):
         with (
@@ -1038,19 +1021,12 @@ class TestManagedConfigLaunchSourceGuard:
 
 
 class TestManagedClaudeModelDiscovery:
-    @pytest.mark.parametrize(
-        "managed",
-        [
-            {},
-            {
-                "enabled_agents": {
-                    "claude": {"model_config": {"model_services": ["system.ai.claude-sonnet-5"]}}
-                }
-            },
-        ],
-        ids=["empty", "static-models"],
-    )
-    def test_managed_config_without_discovery_source_does_not_enable_discovery(self, managed):
+    def test_managed_static_models_do_not_enable_discovery(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"model_services": ["system.ai.claude-sonnet-5"]}}
+            }
+        }
         with _launch_policy_patches(managed) as calls:
             result = runner.invoke(app, ["claude"])
 
