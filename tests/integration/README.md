@@ -218,15 +218,15 @@ checks** with both agents. A separate **4 managed-workspace cases** (one per age
 re-configure, and a cache-TTL journey; marker `managed`) run against a workspace that publishes a
 CodingAgentConfig; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
-A further **26 `managed_fixture`
+A further **27 `managed_fixture`
 cases** use `UCODE_MANAGED_CONFIG_STUB`. Twelve explicit configured/fresh Claude and Codex
 discovery and source-override journeys fetch the published config once per agent, replace that
-agent's static source with its dedicated MPS, and reuse the result. Fourteen existing collected cases
+agent's static source with its dedicated MPS, and reuse the result. Fifteen existing collected cases
 cover focused model, MCP, skills, and lifecycle shapes, including per-agent model reconciliation
 and managed skill cleanup. The two Claude default-model cases launch with injected MPS and Unity
 Catalog sources and verify both generated settings files retain all admin-authored family defaults.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 96 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 97 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash

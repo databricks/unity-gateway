@@ -281,6 +281,59 @@ class TestLaunchCodex:
         assert stopped == [True]
         assert processes[0].terminated is True
 
+    def test_managed_http_headers_reach_app_server_config(self, monkeypatch):
+        # Smart routing rebuilds the overlay and passes it to the app-server as `-c` overrides that
+        # replace the whole provider block, so the admin headers must be threaded through here too —
+        # otherwise they are written to config.toml but stripped from the launched inference calls.
+        processes = []
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
+        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
+
+        class FakeProcess:
+            def __init__(self, argv, **kwargs):
+                self.argv = argv
+                processes.append(self)
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                pass
+
+            def send_signal(self, _signal):
+                pass
+
+        monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
+        monkeypatch.setattr(v2, "get_databricks_token", lambda *_a, **_k: "token")
+        monkeypatch.setattr(v2, "_free_port", lambda: 41001)
+        monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
+        monkeypatch.setattr(
+            codex_interposer,
+            "start_interposer_thread",
+            lambda *_a, **_k: (41002, lambda: None),
+        )
+
+        with pytest.raises(SystemExit):
+            v2.launch_codex(
+                {
+                    "workspace": WS,
+                    "codex_models": ["system.ai.gpt-5-6-sol"],
+                    "codex_http_headers": {"x-databricks-workspace": "eng-ml-inference"},
+                },
+                [],
+                binary="codex",
+                start_model="gpt-start",
+                render_overlay=codex.render_overlay,
+            )
+
+        provider_arg = next(
+            arg for arg in processes[0].argv if arg.startswith("model_providers.Databricks=")
+        )
+        assert "x-databricks-workspace" in provider_arg
+        assert "eng-ml-inference" in provider_arg
+
     def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))

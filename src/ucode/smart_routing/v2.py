@@ -594,6 +594,7 @@ def launch_codex(
         state.get("profile"),
         use_pat=bool(state.get("use_pat")),
         custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
+        managed_http_headers=state.get("codex_http_headers"),
     )
     catalog_path = custom_catalog_path()
     if catalog_path is not None:
