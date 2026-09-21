@@ -281,6 +281,16 @@ class TestConfigureSubset:
 
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
 
+        # These tests exercise the INTERACTIVE tool-selection branch of
+        # configure_workspace_command() (prompt_for_tools honored). Force "no managed
+        # config" via the sanctioned UCODE_MANAGED_CONFIG_STUB hook (an explicit JSON
+        # `null`) so a managed CodingAgentConfig the live workspace happens to publish
+        # can't hijack these tests onto the managed auto-apply branch instead, which
+        # ignores prompt_for_tools and would try to build a real codex model catalog.
+        managed_stub = tmp_path / "managed-config-stub.json"
+        managed_stub.write_text("null")
+        monkeypatch.setenv("UCODE_MANAGED_CONFIG_STUB", str(managed_stub))
+
         codex_dir = tmp_path / "codex_home" / ".codex"
         codex_dir.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", codex_dir / "ucode.config.toml")
