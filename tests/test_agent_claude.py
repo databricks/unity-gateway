@@ -381,6 +381,28 @@ class TestRenderOverlay:
         assert "ANTHROPIC_DEFAULT_SONNET_MODEL" not in overlay["env"]
         assert "availableModels" not in overlay
 
+    def test_managed_http_headers_added(self):
+        overlay, _ = claude.render_overlay(
+            WS, "s4", managed_http_headers={"x-databricks-workspace": "eng-ml-inference"}
+        )
+        lines = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+        assert "x-databricks-workspace: eng-ml-inference" in lines
+        # ucode's own headers are still emitted alongside the admin header.
+        assert "x-databricks-use-coding-agent-mode: true" in lines
+
+    def test_managed_http_headers_override_ucode_header_in_place(self, monkeypatch):
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
+        overlay, _ = claude.render_overlay(
+            WS, "s4", managed_http_headers={"User-Agent": "admin-agent/9"}
+        )
+        lines = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+        # Admin wins on a case-insensitive name collision, replacing ucode's line in its position.
+        assert lines == [
+            "x-databricks-use-coding-agent-mode: true",
+            "User-Agent: admin-agent/9",
+        ]
+
     def test_bedrock_provider_pins_model_ids(self):
         provider_models = {
             "opus": "global.anthropic.claude-opus-4-8",
@@ -599,6 +621,37 @@ class TestMergeAnthropicCustomHeaders:
             "x-databricks-use-coding-agent-mode: true",  # From ucode; overwrites existing.
             "User-Agent: ucode/1.0 claude/2.0",  # From ucode; overwrites existing.
             "meep: lala",  # Preserved from existing settings in its original position.
+        ]
+
+    def test_managed_names_drops_removed_admin_header(self):
+        # A managed (admin-supplied) header ucode wrote last launch but no longer emits is dropped
+        # when its name stays in the managed set; a hand-added user header is left untouched.
+        existing = "x-databricks-workspace: old-ws\nX-User: keep"
+        managed = "x-databricks-use-coding-agent-mode: true"
+
+        merged = claude._merge_anthropic_custom_headers(
+            existing,
+            managed,
+            {"x-databricks-use-coding-agent-mode", "x-databricks-workspace"},
+        )
+
+        lines = merged.splitlines()
+        assert (
+            "x-databricks-workspace: old-ws" not in lines
+        )  # managed, no longer emitted -> dropped
+        assert "X-User: keep" in lines  # not managed -> preserved
+
+    def test_managed_names_replaces_admin_header_in_place(self):
+        existing = "x-databricks-workspace: old-ws\nX-User: keep"
+        managed = "x-databricks-workspace: new-ws"
+
+        merged = claude._merge_anthropic_custom_headers(
+            existing, managed, {"x-databricks-workspace"}
+        )
+
+        assert merged.splitlines() == [
+            "x-databricks-workspace: new-ws",  # replaced in its existing position
+            "X-User: keep",  # untouched
         ]
 
 
@@ -988,6 +1041,64 @@ class TestWriteToolConfigManagedSettings:
             "User-Agent: ucode/1.0 claude/2.0",  # From ucode; overwrites existing.
             "x-databricks-use-coding-agent-mode: true",  # Newly added by ucode.
         ]
+
+    def test_writes_admin_http_headers_and_tracks_names(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_http_headers": {"x-databricks-workspace": "eng-ml-inference"},
+        }
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        _, payload = private_writes[0]
+        lines = payload["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+        assert "x-databricks-workspace: eng-ml-inference" in lines  # admin header applied
+        assert "x-databricks-use-coding-agent-mode: true" in lines  # ucode's own header kept
+        # The admin header name is tracked so a later removal can drop it.
+        assert "x-databricks-workspace" in state[claude.CLAUDE_MANAGED_HEADER_NAMES_STATE_KEY]
+
+    def test_drops_admin_http_header_after_removal(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(claude.CLAUDE_SETTINGS_PATH): {
+                "env": {
+                    "ANTHROPIC_CUSTOM_HEADERS": (
+                        "x-databricks-use-coding-agent-mode: true\n"
+                        "x-databricks-workspace: eng-ml-inference\n"
+                        "X-User: keep"
+                    )
+                }
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
+        # The admin previously published x-databricks-workspace; it is gone from managed config now.
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            claude.CLAUDE_MANAGED_HEADER_NAMES_STATE_KEY: [
+                "user-agent",
+                "x-databricks-use-coding-agent-mode",
+                "x-databricks-workspace",
+            ],
+        }
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        _, payload = private_writes[0]
+        lines = payload["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+        assert "x-databricks-workspace: eng-ml-inference" not in lines  # dropped on removal
+        assert "X-User: keep" in lines  # hand-added user header preserved
+        # State no longer tracks the removed admin header.
+        assert "x-databricks-workspace" not in state[claude.CLAUDE_MANAGED_HEADER_NAMES_STATE_KEY]
 
     def test_managed_file_applies_model_default_precedence(self, monkeypatch):
         managed_defaults = self._write_managed_model_defaults(

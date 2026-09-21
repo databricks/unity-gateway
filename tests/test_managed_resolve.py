@@ -88,6 +88,30 @@ class TestOtelTracing:
         assert resolve_state(managed, _state(), "codex")["codex_otel_tracing"] is True
 
 
+class TestHttpHeaders:
+    def test_state_override_carries_manifest_headers(self):
+        for tool in ("claude", "codex"):
+            managed = {
+                "enabled_agents": {tool: {"http_headers": {"x-databricks-workspace": "eng-ml"}}}
+            }
+            assert managed_state_overrides(managed, tool)[f"{tool}_http_headers"] == {
+                "x-databricks-workspace": "eng-ml"
+            }
+
+    def test_no_headers_adds_no_override(self):
+        assert "claude_http_headers" not in managed_state_overrides(MANAGED, "claude")
+
+    def test_non_string_values_are_dropped(self):
+        managed = {"enabled_agents": {"claude": {"http_headers": {"ok": "v", "bad": 1}}}}
+        assert managed_state_overrides(managed, "claude")["claude_http_headers"] == {"ok": "v"}
+
+    def test_resolve_state_layers_headers(self):
+        managed = {"enabled_agents": {"claude": {"http_headers": {"x-team": "aig"}}}}
+        assert resolve_state(managed, _state(), "claude")["claude_http_headers"] == {
+            "x-team": "aig"
+        }
+
+
 class TestClaudeModels:
     def test_proto_slots_map_to_families(self):
         # The manifest keeps proto spelling (`default_opus_model`); render_overlay reads `opus`.
