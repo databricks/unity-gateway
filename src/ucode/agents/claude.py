@@ -10,7 +10,7 @@ import signal
 import socket
 import subprocess
 import threading
-from collections.abc import Callable, Collection
+from collections.abc import Callable
 from pathlib import Path
 
 from ucode import gateway_proxy
@@ -199,15 +199,6 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
 ANTHROPIC_CUSTOM_HEADERS_ENV_KEY = "ANTHROPIC_CUSTOM_HEADERS"
-CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
-    {
-        "x-databricks-use-coding-agent-mode",
-        "user-agent",
-        MODEL_PROVIDER_SERVICE_HEADER.casefold(),
-        MODEL_SERVICE_PARENT_SCHEMA_HEADER.casefold(),
-        SMART_ROUTER_RECIPE_HEADER.casefold(),
-    }
-)
 # Relayed drops the user scope to deliberately omit the stale apiKeyHelper. Only applied to relayed
 # launches — normal launches keep loading user settings (hooks/permissions) as before.
 _RELAYED_SETTING_SOURCES = "project,local"
@@ -224,46 +215,6 @@ def _apply_managed_header_lines(
     for name, value in (managed_http_headers or {}).items():
         lines_by_name[name.strip().casefold()] = f"{name}: {value}"
     return list(lines_by_name.values())
-
-
-def _custom_header_names(custom_headers: object) -> set[str]:
-    """Case-folded names of every ``key: value`` line in an ANTHROPIC_CUSTOM_HEADERS string."""
-    if not isinstance(custom_headers, str):
-        return set()
-    names: set[str] = set()
-    for line in custom_headers.splitlines():
-        name, separator, _value = line.partition(":")
-        if separator:
-            names.add(name.strip().casefold())
-    return names
-
-
-def _managed_header_names(
-    existing_custom_headers: object,
-    overlay_custom_headers: str,
-    snapshots: ManagedFileSnapshots | None,
-) -> set[str]:
-    """Header names ucode owns in this file, so a managed header it no longer emits is dropped.
-
-    Derived from the files themselves, never from ucode state (which is not preserved across runs).
-    For ucode's own settings file (``snapshots is None``) every existing header is ucode's. For the
-    OS-managed file, only the names ucode last wrote (``last_applied_by_ug``) are its own — an
-    administrator's own headers are left untouched.
-    """
-    if snapshots is None:
-        prior = _custom_header_names(existing_custom_headers)
-    else:
-        last_applied = snapshots.last_applied_by_ug or {}
-        last_env = last_applied.get("env") if isinstance(last_applied, dict) else None
-        last_headers = (
-            last_env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(last_env, dict) else None
-        )
-        prior = _custom_header_names(last_headers)
-    # set(...) around the union: CLAUDE_MANAGED_CUSTOM_HEADER_NAMES is a frozenset, so the bare
-    # union would be a frozenset[str], which does not satisfy the declared set[str] return type.
-    return set(
-        CLAUDE_MANAGED_CUSTOM_HEADER_NAMES | _custom_header_names(overlay_custom_headers) | prior
-    )
 
 
 def configured_paths(state: dict) -> list[str]:
@@ -985,9 +936,6 @@ def write_tool_config(
         managed_settings_snapshots: ManagedFileSnapshots | None,
     ) -> dict:
         base_env = base.get("env")
-        existing_custom_headers = (
-            base_env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(base_env, dict) else None
-        )
         # Copy the overlay per file so merging into one base cannot affect the other.
         overlay_for_merge = copy.deepcopy(overlay)
         if enforce_model_default_hierarchy:
@@ -1039,14 +987,14 @@ def write_tool_config(
         merged = deep_merge_dict(base, overlay_for_merge)
         for key in stale_picker_keys:
             merged.pop(key, None)
-        overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
-        merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
-            existing_custom_headers,
-            overlay_custom_headers,
-            _managed_header_names(
-                existing_custom_headers, overlay_custom_headers, managed_settings_snapshots
-            ),
-        )
+        # ug owns the entire ANTHROPIC_CUSTOM_HEADERS value: ug's static headers plus the admin's
+        # managed http_headers, already merged by render_overlay. Overwrite it wholesale in every
+        # managed file so a header ug no longer emits is dropped and no stale or foreign header
+        # lingers inside the value. (deep_merge already set this; the explicit assignment states
+        # the contract.)
+        merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = overlay_for_merge["env"][
+            ANTHROPIC_CUSTOM_HEADERS_ENV_KEY
+        ]
         # Drop any apiKeyHelper a prior non-relayed launch left in the file; relayed
         # must not carry one (it would outrank the subscription OAuth).
         if relayed:
@@ -1136,53 +1084,6 @@ def write_tool_config(
     state = mark_tool_managed(state, "claude", managed_keys)
     save_state(state)
     return state
-
-
-def _merge_anthropic_custom_headers(
-    existing: object,
-    ucode_headers: str,
-    managed_names: Collection[str] = CLAUDE_MANAGED_CUSTOM_HEADER_NAMES,
-) -> str:
-    """Merge the newline-delimited ``ANTHROPIC_CUSTOM_HEADERS`` string, replacing ucode-owned names.
-
-    A header whose case-folded name is in ``managed_names`` is replaced in place with ucode's value,
-    or dropped when ucode no longer emits it (e.g. an admin-removed header); ucode headers not
-    already present are appended. All other existing lines (hand-added user headers, non-header
-    lines) are preserved. ``managed_names`` is the static set plus admin header names, current and
-    previously written.
-    """
-
-    if not isinstance(existing, str) or not existing:
-        return ucode_headers
-
-    ucode_lines_by_name: dict[str, str] = {}
-    ucode_header_names: list[str] = []
-    for line in ucode_headers.splitlines():
-        name, separator, _value = line.partition(":")
-        normalized_name = name.strip().casefold()
-        if separator and normalized_name not in ucode_lines_by_name:
-            ucode_header_names.append(normalized_name)
-        if separator:
-            ucode_lines_by_name[normalized_name] = line
-
-    merged: list[str] = []
-    replaced_names: set[str] = set()
-    for line in existing.splitlines():
-        name, separator, _value = line.partition(":")
-        normalized_name = name.strip().casefold()
-        if separator and normalized_name in managed_names:
-            replacement = ucode_lines_by_name.get(normalized_name)
-            if replacement is not None and normalized_name not in replaced_names:
-                merged.append(replacement)
-                replaced_names.add(normalized_name)
-            continue
-        if line:
-            merged.append(line)
-
-    for name in ucode_header_names:
-        if name not in replaced_names:
-            merged.append(ucode_lines_by_name[name])
-    return "\n".join(merged)
 
 
 def _reconcile_managed_settings(

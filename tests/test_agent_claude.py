@@ -564,97 +564,6 @@ class TestRenderOverlayUserAgent:
         assert "\n" in self._ua(monkeypatch)
 
 
-class TestMergeAnthropicCustomHeaders:
-    def test_removes_stale_parent_header(self):
-        existing = "X-User: keep\nDatabricks-Model-Service-Parent-Schema: main.default"
-        managed = "x-databricks-use-coding-agent-mode: true"
-
-        merged = claude._merge_anthropic_custom_headers(existing, managed)
-
-        assert "X-User: keep" in merged
-        assert "Databricks-Model-Service-Parent-Schema" not in merged
-
-    def test_merges_existing_settings_with_ucode_managed_headers(self):
-        headers_from_existing_settings = "\n".join(
-            [
-                "X-User-Header: keep-me",
-                "user-agent: custom-agent",
-            ]
-        )
-        headers_managed_by_ucode = "\n".join(
-            [
-                "x-databricks-use-coding-agent-mode: true",
-                "User-Agent: ucode/1.0 claude/2.0",
-            ]
-        )
-
-        merged_headers = claude._merge_anthropic_custom_headers(
-            headers_from_existing_settings, headers_managed_by_ucode
-        )
-
-        assert merged_headers.splitlines() == [
-            "X-User-Header: keep-me",  # Preserved from existing settings.
-            "User-Agent: ucode/1.0 claude/2.0",  # From ucode; overwrites existing.
-            "x-databricks-use-coding-agent-mode: true",  # Newly added by ucode.
-        ]
-
-    def test_preserves_existing_header_order(self):
-        headers_from_existing_settings = "\n".join(
-            [
-                "x-databricks-use-coding-agent-mode: true",
-                "User-Agent: ucode/0.1.0+41.gd09c080 claude/2.1.258",
-                "meep: lala",
-            ]
-        )
-        headers_managed_by_ucode = "\n".join(
-            [
-                "x-databricks-use-coding-agent-mode: true",
-                "User-Agent: ucode/1.0 claude/2.0",
-            ]
-        )
-
-        merged_headers = claude._merge_anthropic_custom_headers(
-            headers_from_existing_settings, headers_managed_by_ucode
-        )
-
-        assert merged_headers.splitlines() == [
-            "x-databricks-use-coding-agent-mode: true",  # From ucode; overwrites existing.
-            "User-Agent: ucode/1.0 claude/2.0",  # From ucode; overwrites existing.
-            "meep: lala",  # Preserved from existing settings in its original position.
-        ]
-
-    def test_managed_names_drops_removed_admin_header(self):
-        # A managed (admin-supplied) header ucode wrote last launch but no longer emits is dropped
-        # when its name stays in the managed set; a hand-added user header is left untouched.
-        existing = "x-databricks-workspace: old-ws\nX-User: keep"
-        managed = "x-databricks-use-coding-agent-mode: true"
-
-        merged = claude._merge_anthropic_custom_headers(
-            existing,
-            managed,
-            {"x-databricks-use-coding-agent-mode", "x-databricks-workspace"},
-        )
-
-        lines = merged.splitlines()
-        assert (
-            "x-databricks-workspace: old-ws" not in lines
-        )  # managed, no longer emitted -> dropped
-        assert "X-User: keep" in lines  # not managed -> preserved
-
-    def test_managed_names_replaces_admin_header_in_place(self):
-        existing = "x-databricks-workspace: old-ws\nX-User: keep"
-        managed = "x-databricks-workspace: new-ws"
-
-        merged = claude._merge_anthropic_custom_headers(
-            existing, managed, {"x-databricks-workspace"}
-        )
-
-        assert merged.splitlines() == [
-            "x-databricks-workspace: new-ws",  # replaced in its existing position
-            "X-User: keep",  # untouched
-        ]
-
-
 class TestRenderOverlayWebSearchDisable:
     def test_settings_overlay_never_includes_mcp_servers(self):
         # MCP servers belong in ~/.claude.json, not settings.json.
@@ -1019,7 +928,10 @@ class TestWriteToolConfigManagedSettings:
             not in json.loads(managed_writes[0][1])["env"]
         )
 
-    def test_managed_file_merges_anthropic_custom_headers(self, monkeypatch):
+    def test_managed_file_overwrites_anthropic_custom_headers_wholesale(self, monkeypatch):
+        # ug owns the entire ANTHROPIC_CUSTOM_HEADERS value; a header hand-placed in the managed
+        # file directly (not through ug's static set nor the admin http_headers manifest) is not
+        # ug's to infer ownership over, so it does not survive the overwrite.
         private_writes: list = []
         managed_writes: list = []
         existing_managed_settings = {
@@ -1037,9 +949,8 @@ class TestWriteToolConfigManagedSettings:
         _, text = managed_writes[0]
         merged_headers = json.loads(text)["env"]["ANTHROPIC_CUSTOM_HEADERS"]
         assert merged_headers.splitlines() == [
-            "X-Enterprise-Header: retain",  # Preserved from existing managed settings.
+            "x-databricks-use-coding-agent-mode: true",
             "User-Agent: ucode/1.0 claude/2.0",  # From ucode; overwrites existing.
-            "x-databricks-use-coding-agent-mode: true",  # Newly added by ucode.
         ]
 
     def test_writes_admin_http_headers(self, monkeypatch):
@@ -1090,18 +1001,21 @@ class TestWriteToolConfigManagedSettings:
         assert "x-databricks-workspace: eng-ml-inference" not in lines  # dropped on removal
         assert "x-databricks-use-coding-agent-mode: true" in lines  # ucode's own header kept
 
-    def test_managed_file_preserves_admin_headers_and_drops_removed(self, monkeypatch):
-        # The OS-managed file may hold IT-authored headers ucode must never touch; only headers
-        # ucode itself last wrote (last_applied_by_ug) are dropped when no longer emitted.
+    def test_managed_file_overwrites_dropping_foreign_and_removed_headers(self, monkeypatch):
+        # Wholesale overwrite: the written value is exactly ucode's static headers plus the admin's
+        # CURRENT http_headers manifest, nothing else. A header that only exists directly in the
+        # managed file's ANTHROPIC_CUSTOM_HEADERS -- not in ucode's static set and not in the
+        # manifest -- is dropped just like a stale ucode-written one; a manifest header is present,
+        # and removing it from the manifest on a later run drops it too.
         private_writes: list = []
         managed_writes: list = []
         existing = {
             str(FAKE_MANAGED_PATH): {
                 "env": {
                     "ANTHROPIC_CUSTOM_HEADERS": (
-                        "X-Enterprise-Header: retain\n"
+                        "X-Foreign-Header: keep-me\n"
                         "x-databricks-use-coding-agent-mode: true\n"
-                        "x-team: old-team"
+                        "x-team: stale-team"
                     )
                 }
             }
@@ -1109,27 +1023,85 @@ class TestWriteToolConfigManagedSettings:
         self._patch(monkeypatch, private_writes, managed_writes, existing)
         monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
-        monkeypatch.setattr(
-            claude,
-            "managed_file_snapshots",
-            lambda tool, parser: managed_files.ManagedFileSnapshots(
-                None,
-                {
-                    "env": {
-                        "ANTHROPIC_CUSTOM_HEADERS": (
-                            "x-databricks-use-coding-agent-mode: true\nx-team: old-team"
-                        )
-                    }
-                },
-            ),
-        )
-        state = {"workspace": WS, "codex_models": []}
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_http_headers": {"x-team": "eng-ml"},
+        }
 
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
 
         lines = json.loads(managed_writes[0][1])["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
-        assert "X-Enterprise-Header: retain" in lines  # IT header, never ucode's -> preserved
-        assert "x-team: old-team" not in lines  # ucode's prior admin header -> dropped
+        assert "X-Foreign-Header: keep-me" not in lines  # not ucode's, not in the manifest
+        assert "x-team: eng-ml" in lines  # current manifest header -> present
+
+        # A later run without the manifest header drops it too.
+        existing[str(FAKE_MANAGED_PATH)] = json.loads(managed_writes[0][1])
+        managed_writes.clear()
+        state["claude_http_headers"] = {}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        lines = json.loads(managed_writes[0][1])["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+        assert not any(line.startswith("x-team:") for line in lines)
+
+    def test_managed_file_wholesale_overwrite_survives_real_reconcile_round_trip(
+        self, tmp_path, monkeypatch
+    ):
+        # Drives the REAL managed_files snapshot/reconcile flow (not a hand-mocked snapshot) across
+        # three launches: a header hand-placed directly in the managed file -- never ucode's, never
+        # in the admin manifest -- never survives a write; a manifest header is stable across a
+        # no-op re-run; and removing it from the manifest drops it on the next run.
+        managed_path = tmp_path / "managed-settings.json"
+        backup_dir = tmp_path / "managed-backups"
+        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backup_dir)
+        monkeypatch.setattr(
+            managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
+        )
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+
+        # A hand edit directly in the managed file, bypassing both ucode and the admin manifest.
+        managed_path.write_text(
+            json.dumps({"env": {"ANTHROPIC_CUSTOM_HEADERS": "X-Direct-Edit: should-not-survive"}}),
+            encoding="utf-8",
+        )
+
+        def custom_headers() -> list[str]:
+            written = json.loads(managed_path.read_text())
+            return written["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_http_headers": {"x-team": "eng-ml"},
+        }
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        first = custom_headers()
+        assert "X-Direct-Edit: should-not-survive" not in first  # hand edit -> dropped
+        assert "x-team: eng-ml" in first  # current manifest header -> present
+
+        # A no-op re-run (same manifest) leaves the value stable.
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert custom_headers() == first
+
+        # The admin removes the header from the manifest; the next run drops it.
+        state["claude_http_headers"] = {}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert not any(line.startswith("x-team:") for line in custom_headers())
 
     def test_managed_file_applies_model_default_precedence(self, monkeypatch):
         managed_defaults = self._write_managed_model_defaults(
