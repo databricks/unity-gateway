@@ -1322,8 +1322,6 @@ class TestRefreshOnLaunch:
         sd.refresh_downloaded_skills_on_launch({"workspace": WS})
 
         assert any("boom" in note for note in notes)
-        # The stamp advances even though the sweep failed, so a persistent failure does not re-run
-        # the check on every launch.
         assert skills_state.last_update_check() is not None
 
     def test_manually_deleted_skill_is_forgotten_not_redownloaded(self, tmp_path, monkeypatch):
@@ -1335,6 +1333,28 @@ class TestRefreshOnLaunch:
 
         assert skills_state.list_downloaded() == []
         assert skills_state.last_update_check() is not None
+
+    def test_partially_deleted_skill_is_redownloaded_to_restore_mirror(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        _record_download(home, monkeypatch)
+        removed = home / ".agents/skills/triage"
+        (removed / "SKILL.md").unlink()
+        removed.rmdir()
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(
+            sd, "get_skill", lambda ws, tok, fqn: _skill("triage", "2026-01-01T00:00:00Z")
+        )
+        monkeypatch.setattr(
+            sd,
+            "_fetch_bundles",
+            lambda ws, tok, refs, label: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
+        )
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert (home / ".claude/skills/triage/SKILL.md").read_bytes() == b"fresh"
+        assert (home / ".agents/skills/triage/SKILL.md").read_bytes() == b"fresh"
+        assert skills_state.list_downloaded()[0]["fqn"] == "main.default.triage"
 
     def test_updates_changed_skill_end_to_end(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
