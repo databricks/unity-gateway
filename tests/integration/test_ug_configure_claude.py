@@ -13,10 +13,12 @@ pytestmark = [pytest.mark.live, pytest.mark.tui, pytest.mark.claude]
 
 @pytest.mark.smoke
 def test_ug_configure_claude_databricks(live_session, workspace):
-    """Scenario: configure Claude with Databricks Hosted and use its TUI.
+    """Scenario: configure Databricks Hosted, launch plain ug claude, and open /model.
 
-    Expected: configure succeeds, Claude returns a file value through the real
-    gateway, exits normally, and can reopen the configuration ug created.
+    Expected: without managed config, a provider, a model location, or a discovery
+    flag, Claude caches system.ai models from the gateway and shows a discovered
+    model in its real picker. It returns a file value through the real gateway,
+    exits normally, and can reopen the configuration ug created.
     The generated auth helper uses ug and prints only the supplied bearer.
     Optional AI Tools are disabled; the selected agent version is kept pinned.
     """
@@ -49,6 +51,15 @@ def test_ug_configure_claude_databricks(live_session, workspace):
         tui.boot()
         tui.submit(task.prompt)
         tui.wait_for_task(task)
+        screen = tui.open_model_picker()
+        cache = json.loads((session.home / ".claude/cache/gateway-models.json").read_text())
+        assert cache["baseUrl"] == workspace.rstrip("/") + "/ai-gateway/anthropic", cache
+        models = cache["models"]
+        assert models and all(model["id"].startswith("system.ai.") for model in models), cache
+        assert any(
+            model["id"] in screen or (model.get("display_name") and model["display_name"] in screen)
+            for model in models
+        ), screen
         tui.exit_normally()
     task.assert_completed(session, "claude")
     session.assert_not_routed()

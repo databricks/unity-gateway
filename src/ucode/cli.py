@@ -2600,7 +2600,10 @@ def _launch_tool(
             # rewriting it; the admin's location exists only for this launch.
             provider = None
             parent_schema = managed_parent_schema
-        if tool == "claude" and (managed_provider or managed_parent_schema):
+        # Unmanaged Claude launches discover gateway models automatically; with no
+        # provider or parent header the gateway defaults to system.ai. Managed
+        # configs opt into discovery by selecting an MPS or Unity Catalog location.
+        if tool == "claude" and (managed is None or managed_provider or managed_parent_schema):
             os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         # The environment switch remains a developer override; managed config is the workspace
         # policy equivalent and must take effect before launch options are computed.
@@ -3151,14 +3154,6 @@ def claude_cmd(
         str | None,
         typer.Option("--scopes", hidden=True, help="Comma-separated custom OAuth scopes."),
     ] = None,
-    enable_model_discovery: Annotated[
-        bool,
-        typer.Option(
-            "--enable-model-discovery",
-            hidden=True,
-            help="Enable AI Gateway models in Claude Code's model picker.",
-        ),
-    ] = False,
     enable_smart_routing_flag: Annotated[
         bool,
         typer.Option(
@@ -3188,8 +3183,6 @@ def claude_cmd(
         claude_agent.disable_smart_routing(load_state())
         print_success("Claude Code smart routing disabled; ug routing hooks removed")
         return
-    if enable_model_discovery or model_location is not None or provider is not None:
-        os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
     with _smart_routing_v2_flag(enable_smart_routing_flag):
         with _disable_smart_routing_for_subcommand("claude", ctx):
             _launch_tool(

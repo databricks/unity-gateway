@@ -80,6 +80,11 @@ bearer override and drive their real local web-search MCP handshake/tool listing
 These assert protocol stdout without stripping ANSI escapes and make no workspace
 requests. The live Hosted configure journeys additionally execute the actual `ug`
 auth helper written into each agent's configuration before completing a real TUI task.
+The Claude journey also opens `/model` after a plain `ug claude` launch, requires
+its native gateway cache to contain `system.ai` models, and checks that a discovered
+model appears in the picker. No managed config, provider, model location, discovery
+flag, or inherited discovery environment variable enables this path. This runs with
+the pinned Claude version (currently 2.1.268 in CI).
 
 ## Test layout and format
 

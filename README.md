@@ -51,6 +51,11 @@ On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
 
+Without a managed workspace config, `ug claude` automatically discovers gateway
+models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
+no provider or model location is selected. Use `--provider` or `--model-location`
+to select another model source; managed workspace configs control their own sources.
+
 ## Configure
 
 ```bash

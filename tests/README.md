@@ -33,7 +33,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 
 | Test | User action | Expected evidence |
 | --- | --- | --- |
-| `test_ug_configure_claude_databricks` | Configure Databricks Hosted; execute the generated auth helper; open Claude TUI and read a file | Generated helper invokes `ug` with clean token stdout; assistant returns an unpredictable file value; normal exit; reopen with working keyboard input |
+| `test_ug_configure_claude_databricks` | Configure Databricks Hosted; execute the generated auth helper; launch plain `ug claude`, read a file, and open `/model` | Generated helper invokes `ug` with clean token stdout; assistant returns an unpredictable file value; native discovery caches `system.ai` models and the picker shows a discovered model without an opt-in flag; normal exit; reopen with working keyboard input |
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task; normal exit |
 | `test_ug_configure_codex_databricks` | Configure Databricks Hosted; execute the generated auth helper; open Codex TUI and read a file | Generated helper invokes `ug` with clean token stdout; completed assistant answer contains the file value; normal exit and reopen |
 | `test_ug_configure_codex_openai_mps` | Select OpenAI MPS in the real configure picker; launch Codex | Saved provider in status; completed TUI file task; normal exit |
