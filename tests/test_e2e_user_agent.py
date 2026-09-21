@@ -273,6 +273,39 @@ class TestCodexUserAgent:
         assert req is not None, _no_request_msg(capture_server, result)
         _assert_ua(req, _expected_ua("codex", "codex"))
 
+    def test_managed_http_header_arrives_at_gateway(self, tmp_path, monkeypatch, capture_server):
+        import ucode.config_io as config_io_mod
+        from ucode.agents import codex
+
+        _require_binary("codex")
+        config_dir = tmp_path / "codex_home" / ".codex"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "ucode.config.toml"
+
+        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "codex.backup.toml")
+
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr("ucode.state.save_state", lambda s: None)
+            codex.write_tool_config(
+                {
+                    "workspace": capture_server.base_url,
+                    "codex_http_headers": {"x-databricks-workspace": "eng-ml-inference"},
+                }
+            )
+
+        env = {
+            **os.environ,
+            "CODEX_HOME": str(config_dir),
+            "OPENAI_API_KEY": "test-key-not-real",
+        }
+        result = _run_until_first_request(codex.validate_cmd("codex"), env)
+
+        req = capture_server.first_request_with_path_prefix("/ai-gateway/codex")
+        assert req is not None, _no_request_msg(capture_server, result)
+        assert _header(req, "x-databricks-workspace") == "eng-ml-inference"
+
 
 class TestOpencodeUserAgent:
     def test_user_agent_arrives_at_gateway(self, tmp_path, monkeypatch, capture_server):
