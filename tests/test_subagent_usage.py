@@ -9,40 +9,25 @@ from ucode import subagent_usage as usage
 
 
 def _row(*, session_id: str = "session-1", agent_id: str = "agent-1"):
-    row = usage.SubagentUsageRow.build(
-        {
-            "session_id": session_id,
-            "agent_id": agent_id,
-            "subagent_name": "worker",
-            "main_model": "main-model",
-            "subagent_model": "child-model",
-            "input_tokens": 2,
-            "cache_creation_input_tokens": 3,
-            "cache_read_input_tokens": 5,
-            "output_tokens": 7,
-            "status": "ok",
-        },
-        now=1_800_000_000,
+    return usage.SubagentUsageRow(
+        recorded_at_utc="2027-01-15T08:00:00+00:00",
+        session_id=session_id,
+        agent_id=agent_id,
+        subagent_name="worker",
+        main_model="main-model",
+        subagent_model="child-model",
+        input_tokens=2,
+        cache_creation_input_tokens=3,
+        cache_read_input_tokens=5,
+        output_tokens=7,
+        total_tokens=17,
+        status="ok",
     )
-    assert row is not None
-    return row
 
 
 def _read_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
-
-
-def test_builds_typed_row_and_derives_total():
-    row = _row()
-
-    assert row.recorded_at_utc == "2027-01-15T08:00:00+00:00"
-    assert row.total_tokens == 17
-
-
-def test_build_requires_session_and_agent_ids():
-    assert usage.SubagentUsageRow.build({}) is None
-    assert usage.SubagentUsageRow.build({"session_id": "session-1"}) is None
 
 
 def test_default_directory_is_ucode_token_logs(tmp_path, monkeypatch):
