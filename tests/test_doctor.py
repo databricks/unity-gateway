@@ -211,10 +211,10 @@ class TestAnthropicEnvCollision:
         assert _check_anthropic_env_collision() is None
 
 
-class TestUcodeCheck:
+class TestUgCheck:
     def test_reports_version_without_optional_reinstall(self):
         with patch.object(doctor_mod, "ug_version", return_value="1.2.3"):
-            check = doctor_mod._check_ucode()
+            check = doctor_mod._check_ug()
         assert "1.2.3" in check.detail
         assert check.suggestion is None
 

@@ -112,7 +112,7 @@ test_ug_claude_managed_model_discovery.py # fetched/reused Claude MPS policy cas
 test_ug_codex_managed_model_discovery.py  # fetched/reused Codex MPS policy cases
 test_ug_claude_model_discovery.py       # unmanaged scenarios 7, 9, 11, 13
 test_ug_codex_model_discovery.py        # unmanaged scenarios 8, 10, 12, 14
-test_ug_configure_managed.py            # managed workspace: static model list, no agent selector
+test_ug_configure_managed.py            # managed workspace: static model list/catalog pointer, no agent selector
 test_ug_configure_managed_models.py     # injected model sources, smart-routing banner, Codex fallback metadata
 test_ug_configure_managed_mcp.py        # injected managed MCP list
 test_ug_configure_managed_skills.py     # injected managed skills: download, coexist, reconcile away
@@ -371,7 +371,11 @@ cannot still be running when that gate passes. Full coverage on PRs needs no lab
 **Managed config** jobs against a second workspace that publishes an admin CodingAgentConfig,
 whereas unmanaged live cases require a workspace without one. `ug configure` applies the admin config
 with no agent selector, and each agent's generated config exposes exactly the admin's static
-`model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog).
+`model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog). The managed
+Codex case also checks stderr guidance to restart the daemon after publication,
+that the shared app config points at the stable catalog, and that a fresh
+bare Codex app-server returns the expected visible model before the existing TUI prompt/input
+assertion. It does not claim GUI rendering or inference coverage.
 
 Treat that published CodingAgentConfig as shared CI fixture state. The managed lanes assert its
 exact model ids and its both-agent enablement, so editing the managed workspace's config (models,
@@ -386,9 +390,12 @@ across all configured/fresh scenarios. The Codex module does the same with
 `main.default.ci_e2e_openai_mps`. Separate read-only, provider-scoped model-list requests
 establish expected IDs independently of the generated agent files. The tests require Claude's
 native cache to match those IDs and a cached model to appear in a numbered picker row
-(including native Haiku 4.5, Opus 5, and Sonnet 5 deduplication), alongside its admin header. Codex's generated catalog
-and app-server list must match its independently fetched IDs. These requests send no inference
-prompts. Both agents must reject personal source overrides.
+(including native Haiku 4.5, Opus 5, and Sonnet 5 deduplication), alongside its admin header.
+Codex's scoped and stable catalogs, ug-launched app server, and fresh bare app server must match
+its independently fetched IDs. The configured Codex journey subsequently runs real `ug revert`,
+verifies that the shared pointer and stable catalog are gone, and checks that a user-owned setting
+survives. These requests send no inference prompts. Both agents must reject personal source
+overrides. This checks desktop startup configuration and cleanup, not GUI rendering or inference.
 Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable links
 recreated by version checks, while continuing to compare persistent agent files.
 In addition, `test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent

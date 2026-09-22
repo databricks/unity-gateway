@@ -2680,6 +2680,39 @@ class TestRunDatabricksCliInstaller:
         # unrelated `databricks` cask.
         assert calls == [["brew", brew_subcommand, "databricks/tap/databricks"]]
 
+    def _fail_installer(self, monkeypatch):
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: "/opt/homebrew/bin/brew")
+
+        def boom(cmd, **kw):
+            raise subprocess.CalledProcessError(1, cmd)
+
+        monkeypatch.setattr(db_mod, "run", boom)
+
+    def test_failure_points_at_local_bin_when_present(self, monkeypatch, tmp_path):
+        # A stale databricks in ~/.local/bin shadows the official install target;
+        # the failure message must call it out so users know to remove it too.
+        local_bin = tmp_path / ".local" / "bin" / "databricks"
+        local_bin.parent.mkdir(parents=True)
+        local_bin.write_text("stale")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._fail_installer(monkeypatch)
+
+        with pytest.raises(RuntimeError) as exc:
+            _run_databricks_cli_installer()
+
+        assert str(local_bin) in str(exc.value)
+        assert "remove it" in str(exc.value)
+
+    def test_failure_omits_local_bin_when_absent(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._fail_installer(monkeypatch)
+
+        with pytest.raises(RuntimeError) as exc:
+            _run_databricks_cli_installer()
+
+        assert ".local/bin/databricks" not in str(exc.value)
+
 
 class TestHttpGetJsonTimeout:
     """A socket read timeout raises a bare TimeoutError (an OSError), not a
