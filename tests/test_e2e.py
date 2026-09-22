@@ -433,6 +433,8 @@ E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     "gpt-5-6-sol": frozenset({"copilot", "pi"}),
     "gpt-5-6-terra": frozenset({"copilot"}),
     "gpt-6-astra": frozenset({"copilot"}),
+    "gpt-6-luna": frozenset({"copilot", "pi"}),
+    "gpt-6-sol": frozenset({"copilot", "pi"}),
 }
 
 
@@ -1155,6 +1157,8 @@ class TestCopilotLaunch:
                 "databricks-gpt-5-6-sol",
                 "databricks-gpt-5-6-terra",
                 "databricks-gpt-6-astra",
+                "databricks-gpt-6-luna",
+                "databricks-gpt-6-sol",
                 "databricks-gpt-5-4",
                 "databricks-gpt-5-6",
             ]
@@ -1230,6 +1234,8 @@ class TestPiLaunch:
             "codex_models": [
                 "databricks-gpt-5-6-luna",
                 "databricks-gpt-5-6-sol",
+                "databricks-gpt-6-luna",
+                "databricks-gpt-6-sol",
                 "databricks-gpt-5-4",
             ]
         }
