@@ -14,7 +14,7 @@ from typing import Any
 
 from ucode.databricks import ug_binary
 from ucode.smart_routing import hooks
-from ucode.subagent_usage import SubagentUsageRow, write_subagent_usage
+from ucode.subagent_usage import SubagentUsageRow
 
 HOOK_COMMAND_MARKER = "codex-subagent-usage-hook"
 
@@ -261,11 +261,3 @@ class CodexSubagentUsageRow(SubagentUsageRow):
             total_tokens=sum(totals.values()),
             status="ok" if not missing else f"partial:{'|'.join(missing)}",
         )
-
-
-def record(payload: Mapping[str, Any], *, now: float | None = None) -> Path | None:
-    recorded_at = now if now is not None else time.time()
-    row = CodexSubagentUsageRow.build(payload, now=recorded_at)
-    if row is None:
-        return None
-    return write_subagent_usage(row, now=recorded_at)

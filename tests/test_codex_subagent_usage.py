@@ -113,7 +113,9 @@ def test_builds_and_records_codex_row(tmp_path, monkeypatch):
     row = codex_subagent_usage.CodexSubagentUsageRow.build(
         _payload(parent, child), now=1_800_000_000
     )
-    path = codex_subagent_usage.record(_payload(parent, child), now=1_800_000_000)
+    path = codex_subagent_usage.CodexSubagentUsageRow.record(
+        _payload(parent, child), now=1_800_000_000
+    )
 
     assert isinstance(row, codex_subagent_usage.CodexSubagentUsageRow)
     assert isinstance(row, subagent_usage.SubagentUsageRow)
@@ -185,12 +187,12 @@ def test_hook_config_preserves_user_hooks():
 def test_hidden_hook_always_emits_json_and_fails_open():
     runner = CliRunner()
     payload = {"session_id": "session-1", "agent_id": "agent-1"}
-    with patch("ucode.agents.codex_subagent_usage.record") as record:
+    with patch.object(codex_subagent_usage.CodexSubagentUsageRow, "record") as record:
         result = runner.invoke(
             app,
             [codex_subagent_usage.HOOK_COMMAND_MARKER],
             input=json.dumps(payload),
-            env={subagent_usage.ENABLE_ENV_VAR: "1"},
+            env={subagent_usage.ENABLE_SUBAGENT_USAGE_CSV: "1"},
         )
 
     assert result.exit_code == 0
@@ -201,7 +203,7 @@ def test_hidden_hook_always_emits_json_and_fails_open():
         app,
         [codex_subagent_usage.HOOK_COMMAND_MARKER],
         input="not json",
-        env={subagent_usage.ENABLE_ENV_VAR: "1"},
+        env={subagent_usage.ENABLE_SUBAGENT_USAGE_CSV: "1"},
     )
     assert invalid.exit_code == 0
     assert invalid.output == "{}\n"
@@ -211,7 +213,7 @@ def test_normal_codex_launch_receives_transient_hook(tmp_path, monkeypatch):
     launches: list[list[str]] = []
     profile_path = tmp_path / "ucode.config.toml"
     profile_path.write_text('model_provider = "ucode-databricks"\n', encoding="utf-8")
-    monkeypatch.setenv(subagent_usage.ENABLE_ENV_VAR, "1")
+    monkeypatch.setenv(subagent_usage.ENABLE_SUBAGENT_USAGE_CSV, "1")
     monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
     monkeypatch.delenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", raising=False)
     monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)

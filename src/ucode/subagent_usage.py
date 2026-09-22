@@ -19,7 +19,7 @@ from typing import Any
 
 from ucode.config_io import APP_DIR
 
-ENABLE_ENV_VAR = "ENABLE_SUBAGENT_USAGE_CSV"
+ENABLE_SUBAGENT_USAGE_CSV = "ENABLE_SUBAGENT_USAGE_CSV"
 RETENTION_SECONDS = 7 * 24 * 60 * 60
 MAX_SESSION_CSV_BYTES = 10 * 1024 * 1024
 LOCK_TIMEOUT_SECONDS = 2.0
@@ -66,7 +66,7 @@ CSV_FIELDS = tuple(field.name for field in fields(SubagentUsageRow))
 
 def enabled(env: MutableMapping[str, str] | None = None) -> bool:
     source = os.environ if env is None else env
-    return source.get(ENABLE_ENV_VAR) == "1"
+    return source.get(ENABLE_SUBAGENT_USAGE_CSV) == "1"
 
 
 def usage_directory() -> Path:

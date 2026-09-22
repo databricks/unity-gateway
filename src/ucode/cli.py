@@ -2038,7 +2038,7 @@ def codex_subagent_usage_hook_cmd() -> None:
     try:
         payload = json.loads(sys.stdin.read() or "{}")
         if subagent_usage.enabled() and isinstance(payload, dict):
-            codex_subagent_usage.record(payload)
+            codex_subagent_usage.CodexSubagentUsageRow.record(payload)
     except Exception:  # noqa: BLE001 - observability hooks must never block an agent
         pass
     sys.stdout.write("{}\n")
