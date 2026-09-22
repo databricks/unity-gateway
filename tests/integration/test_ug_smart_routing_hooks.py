@@ -1,17 +1,18 @@
-"""CUJs for the subagent-only smart-routing hook commands against the live workspace router.
+"""CUJs for subagent-only routing and hook behavior against the live workspace router.
 
 The agent harness invokes ``ug claude-router-hook route-subagent`` /
 ``ug codex-router-hook route-subagent`` on its PreToolUse event with a JSON payload on
 stdin. These journeys drive the real installed hook commands through that stdin contract,
 so the routing decision, response shape, and audit trail are asserted without relying on
-an agent choosing to spawn a subagent. The interactive spawn decision itself remains
-uncovered; see the gaps matrix in tests/README.md.
+an agent choosing to spawn a subagent. The Codex launch journey additionally delegates a
+real task and verifies the CSV written from Codex's native SubagentStop payload.
 """
 
+import csv
 import json
 
 import pytest
-from utils.evidence import FileTask
+from utils.evidence import FileTask, agent_sessions, assert_subagent_routed, is_child_session
 from utils.terminal import AgentTerminal
 
 # The same model lists as the managed_fixture smart-routing banner journeys, which are
@@ -198,21 +199,20 @@ def test_smart_routing_claude_subagent_only_launch_shows_no_first_prompt_banner(
 
 @pytest.mark.live
 @pytest.mark.codex
-def test_smart_routing_codex_subagent_only_launch_shows_no_first_prompt_banner(
+def test_smart_routing_codex_subagent_only_launch_records_usage(
     live_session, workspace
 ):
-    """Scenario: configure Codex, then launch the real TUI with both the full and the
-    subagent-only routing flags set and submit one file prompt.
+    """Scenario: configure Codex, then ask its real TUI to delegate a file task while
+    both the full and subagent-only routing flags are set.
 
-    Expected: subagent-only takes precedence over the ambient full flag: the prompt
-    completes with no smart-routing banner and no interposer first-prompt routing wrapper
-    anywhere in the session, and the TUI exits normally. Only first-prompt silence is
-    asserted here; subagent routing engagement is covered by the route-subagent hook
-    journey above.
+    Expected: subagent-only takes precedence over the ambient full flag, a native child
+    completes the task, Codex fires the installed SubagentStop usage hook, and that hook
+    writes one row correlated with the native child under token-logs/codex.
     """
     session = live_session
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
+    session.env["ENABLE_SUBAGENT_USAGE_CSV"] = "1"
     session.run(
         "configure",
         "--agents",
@@ -228,10 +228,45 @@ def test_smart_routing_codex_subagent_only_launch_shows_no_first_prompt_banner(
         session, "codex", [str(session.binary), "codex"], "subagent-only-launch"
     ) as tui:
         tui.boot()
-        tui.submit(task.prompt)
+        tui.submit(task.delegate_prompt)
         tui.wait_for_task(task)
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
     session.assert_not_routed()
     task.assert_completed(session, "codex")
+    task.assert_completed(session, "codex", child=True)
+    assert_subagent_routed(session, "codex", task)
+
+    usage_directory = session.home / ".ucode" / "token-logs" / "codex"
+    usage_paths = list(usage_directory.glob("*.csv"))
+    assert len(usage_paths) == 1, f"Expected one Codex usage CSV, found {usage_paths}"
+    with usage_paths[0].open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    session.record("codex-subagent-usage.csv", rows)
+    assert len(rows) == 1, rows
+
+    child_ids = set()
+    for path, records in agent_sessions(session, "codex").items():
+        if not is_child_session("codex", path, records):
+            continue
+        metadata = next(
+            (row["payload"] for row in records if row.get("type") == "session_meta"), {}
+        )
+        if metadata.get("id"):
+            child_ids.add(metadata["id"])
+
+    row = rows[0]
+    assert row["agent_id"] in child_ids, (row, child_ids)
+    assert row["subagent_name"], row
+    assert row["main_model"], row
+    assert row["subagent_model"], row
+    token_fields = (
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
+    )
+    assert int(row["total_tokens"]) == sum(int(row[field]) for field in token_fields), row
+    assert int(row["total_tokens"]) > 0, row
+    assert row["status"] in {"ok", "partial:exact_parent_link"}, row
