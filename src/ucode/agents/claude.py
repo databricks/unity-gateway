@@ -1525,6 +1525,7 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
+    smart_routing_v2.cleanup_stale_claude_routing_plugins()
     tool_args = _with_debug_log(tool_args)
     binary = SPEC["binary"]
     workspace = state.get("workspace")

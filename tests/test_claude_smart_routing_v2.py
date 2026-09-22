@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import select
+import subprocess
 import sys
 import threading
 import time
@@ -11,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from ucode.agents import claude
+from ucode.agents import LaunchOptions, claude
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import claude_hooks, claude_pty, routing, v2
 
@@ -469,6 +471,142 @@ class TestV2Launch:
         assert json.loads(user_settings.read_text()) == {"model": "opus"}
 
 
+class TestRoutingPluginCleanup:
+    @staticmethod
+    def owner_exited(_pid, _signal):
+        raise ProcessLookupError
+
+    @pytest.mark.parametrize("flag_value", [None, "0"])
+    def test_disabled_launch_removes_abandoned_plugins(self, tmp_path, monkeypatch, flag_value):
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(v2.os, "kill", self.owner_exited)
+        for flag in (v2.ENABLE_SMART_ROUTING_ENV_VAR, v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR):
+            if flag_value is None:
+                monkeypatch.delenv(flag, raising=False)
+            else:
+                monkeypatch.setenv(flag, flag_value)
+        stale = tmp_path / "claude-v2-123-deadbeef-plugin"
+        v2._write_routed_claude_plugin(stale, ["system.ai.glm-5-3"])
+        captured = []
+        monkeypatch.setattr(claude, "exec_or_spawn", captured.append)
+
+        claude.launch({}, [], options=LaunchOptions())
+
+        assert not stale.exists()
+        assert len(captured) == 1
+        assert "--plugin-dir" not in captured[0]
+        assert not list(tmp_path.glob("claude-v2-*-plugin"))
+
+    def test_live_owner_and_unrelated_plugins_are_preserved(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        live = tmp_path / f"claude-v2-{os.getpid()}-deadbeef-plugin"
+        v2._write_routed_claude_plugin(live, ["system.ai.glm-5-3"])
+        unrelated = tmp_path / "claude-v2-123-12345678-plugin"
+        manifest = unrelated / ".claude-plugin/plugin.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({"name": "user-plugin"}))
+        custom = tmp_path / "custom-plugin"
+        custom.mkdir()
+        link = tmp_path / "claude-v2-123-aaaaaaaa-plugin"
+        link.symlink_to(custom, target_is_directory=True)
+
+        v2.cleanup_stale_claude_routing_plugins()
+
+        assert live.exists()
+        assert unrelated.exists()
+        assert custom.exists()
+        assert link.is_symlink()
+
+    def test_inherited_lease_protects_orphaned_claude(self, tmp_path, monkeypatch):
+        import fcntl
+
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        plugin = tmp_path / "claude-v2-123-deadbeef-plugin"
+        v2._write_routed_claude_plugin(plugin, ["system.ai.glm-5-3"])
+        with (plugin / ".lease").open("w") as lease:
+            fcntl.flock(lease, fcntl.LOCK_EX)
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import sys; print('ready', flush=True); sys.stdin.read()"],
+                pass_fds=(lease.fileno(),),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+        try:
+            assert select.select([child.stdout], [], [], 5)[0], "child failed to start"
+            assert child.stdout.readline().strip() == "ready"
+            with monkeypatch.context() as scope:
+                scope.setattr(v2.os, "kill", self.owner_exited)
+                v2.cleanup_stale_claude_routing_plugins()
+            assert plugin.is_dir()
+        finally:
+            try:
+                child.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.communicate(timeout=5)
+        with monkeypatch.context() as scope:
+            scope.setattr(v2.os, "kill", self.owner_exited)
+            v2.cleanup_stale_claude_routing_plugins()
+        assert not plugin.exists()
+
+    @pytest.mark.parametrize("mode", ["full", "subagent"])
+    @pytest.mark.parametrize("failure", [None, "plugin-write", "launch"])
+    def test_plugin_lifetime_covers_setup_and_process_errors(
+        self, tmp_path, monkeypatch, mode, failure
+    ):
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1" if mode == "full" else "0")
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1" if mode == "subagent" else "0")
+        monkeypatch.setattr(v2, "_launch_token", lambda *_args: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        monkeypatch.setattr(
+            v2,
+            "_model_picker_catalog",
+            lambda: AnthropicModelCatalog(
+                model_ids=["system.ai.glm-5-3"], model_id_to_display_name={}
+            ),
+        )
+        original_write = v2._write_routed_claude_plugin
+
+        def write_plugin(path, models):
+            original_write(path, models)
+            if failure == "plugin-write":
+                raise RuntimeError("plugin write failed")
+
+        def launch_process(argv, **kwargs):
+            plugin = Path(argv[argv.index("--plugin-dir") + 1])
+            assert plugin.is_dir()
+            assert len(kwargs["pass_fds"]) == 1
+            os.fstat(kwargs["pass_fds"][0])
+            if failure == "launch":
+                raise RuntimeError("process launch failed")
+            return 0
+
+        class Process:
+            def __init__(self, argv, **kwargs):
+                launch_process(argv, **kwargs)
+
+            def wait(self):
+                return 0
+
+        monkeypatch.setattr(v2, "_write_routed_claude_plugin", write_plugin)
+        monkeypatch.setattr(v2.subprocess, "Popen", Process)
+        monkeypatch.setattr(claude_pty, "run_claude_pty", launch_process)
+        with pytest.raises(RuntimeError if failure else SystemExit):
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                [],
+                binary="claude",
+                user_settings_path=tmp_path / "user-settings.json",
+                launch_model=None,
+                compose_settings=lambda args: ({}, args),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+        assert not list(tmp_path.glob("claude-v2-*"))
+
+
 class TestV2ModelPickerDiscovery:
     """modelPicker takes priority over gateway model discovery for smart routing."""
 
@@ -708,6 +846,25 @@ class TestSubagentRouting:
 
 
 class TestPtyFlow:
+    def test_passed_lease_descriptor_survives_exec(self, tmp_path):
+        capture = tmp_path / "descriptor.txt"
+        with (tmp_path / "lease").open("w") as lease:
+            result = claude_pty.run_claude_pty(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os, sys; from pathlib import Path; "
+                    "Path(sys.argv[2]).write_text(str(os.fstat(int(sys.argv[1])).st_ino))",
+                    str(lease.fileno()),
+                    str(capture),
+                ],
+                route_prompt=lambda _prompt: pytest.fail("no prompt expected"),
+                socket_path=tmp_path / "first.sock",
+                pass_fds=(lease.fileno(),),
+            )
+            assert result == 0
+            assert int(capture.read_text()) == os.fstat(lease.fileno()).st_ino
+
     def test_does_not_launch_when_socket_startup_fails(self, tmp_path, monkeypatch):
         class StoppedThread:
             @staticmethod

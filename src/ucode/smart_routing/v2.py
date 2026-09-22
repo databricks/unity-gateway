@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -11,7 +12,8 @@ import sys
 import time
 import urllib.request
 import uuid
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable, Iterator, MutableMapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import NoReturn, TextIO
 
@@ -293,6 +295,65 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
         )
 
 
+def cleanup_stale_claude_routing_plugins() -> None:
+    """Remove abandoned launch plugins without touching active Claude sessions."""
+    if os.name == "nt":
+        return
+    import fcntl
+
+    for plugin_dir in APP_DIR.glob("claude-v2-*-plugin"):
+        match = re.fullmatch(r"claude-v2-([1-9][0-9]*)-[0-9a-f]{8}-plugin", plugin_dir.name)
+        if match is None or plugin_dir.is_symlink() or not plugin_dir.is_dir():
+            continue
+        manifest = read_json_safe(plugin_dir / ".claude-plugin" / "plugin.json")
+        if manifest and manifest.get("name") != CLAUDE_ROUTING_PLUGIN_NAME:
+            continue
+        try:
+            os.kill(int(match[1]), 0)
+        except ProcessLookupError:
+            pass
+        except (OSError, OverflowError):
+            continue
+        else:
+            continue
+        lease_path = plugin_dir / ".lease"
+        try:
+            if lease_path.is_symlink():
+                continue
+            if lease_path.exists():
+                with lease_path.open("r+") as lease:
+                    try:
+                        fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    shutil.rmtree(plugin_dir)
+            else:
+                shutil.rmtree(plugin_dir)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print_warning(f"Could not remove stale Claude routing plugin {plugin_dir}: {exc}")
+
+
+@contextmanager
+def _routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> Iterator[int]:
+    import fcntl
+
+    plugin_dir.mkdir(parents=True)
+    try:
+        with (plugin_dir / ".lease").open("w") as lease:
+            fcntl.flock(lease, fcntl.LOCK_EX)
+            _write_routed_claude_plugin(plugin_dir, model_ids)
+            yield lease.fileno()
+    finally:
+        try:
+            shutil.rmtree(plugin_dir)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print_warning(f"Could not remove Claude routing plugin {plugin_dir}: {exc}")
+
+
 def _request_claude_routing_decision(
     workspace: str,
     token: str,
@@ -497,33 +558,6 @@ def launch_claude(
     sync_smart_routing_hooks(settings, routing_state, enabled=True)
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)
-    write_json_file(settings_path, settings)
-    _write_routed_claude_plugin(plugin_dir, model_ids)
-    model_args = launch_model_args(remaining, launch_model)
-    argv = [
-        binary,
-        "--settings",
-        str(settings_path),
-        *model_args,
-        "--plugin-dir",
-        str(plugin_dir),
-        *remaining,
-    ]
-
-    if not route_first_prompt:
-        # Subagent-only routing needs no PTY: the PreToolUse hooks ride in the
-        # per-launch settings, so spawn Claude directly and clean up after it.
-        proc = subprocess.Popen(argv)
-        try:
-            returncode = proc.wait()
-        except KeyboardInterrupt:
-            proc.send_signal(signal.SIGINT)
-            returncode = proc.wait()
-        finally:
-            settings_path.unlink(missing_ok=True)
-            shutil.rmtree(plugin_dir, ignore_errors=True)
-        sys.exit(returncode)
-
     model_setting = _ClaudeModelSettingGuard(user_settings_path)
 
     def route_prompt(prompt: str) -> claude_pty.FirstPromptRoute:
@@ -535,20 +569,40 @@ def launch_claude(
         )
 
     try:
-        returncode = claude_pty.run_claude_pty(
-            argv,
-            route_prompt=route_prompt,
-            socket_path=socket_path,
-            prepare_model_switch=model_setting.begin,
-            model_switch_persisted=model_setting.is_routed,
-            restore_model_setting=model_setting.restore,
-            log_path=CLAUDE_PTY_LOG,
-        )
+        write_json_file(settings_path, settings)
+        with _routed_claude_plugin(plugin_dir, model_ids) as lease_fd:
+            model_args = launch_model_args(remaining, launch_model)
+            argv = [
+                binary,
+                "--settings",
+                str(settings_path),
+                *model_args,
+                "--plugin-dir",
+                str(plugin_dir),
+                *remaining,
+            ]
+            if route_first_prompt:
+                returncode = claude_pty.run_claude_pty(
+                    argv,
+                    route_prompt=route_prompt,
+                    socket_path=socket_path,
+                    prepare_model_switch=model_setting.begin,
+                    model_switch_persisted=model_setting.is_routed,
+                    restore_model_setting=model_setting.restore,
+                    log_path=CLAUDE_PTY_LOG,
+                    pass_fds=(lease_fd,),
+                )
+            else:
+                proc = subprocess.Popen(argv, pass_fds=(lease_fd,))
+                try:
+                    returncode = proc.wait()
+                except KeyboardInterrupt:
+                    proc.send_signal(signal.SIGINT)
+                    returncode = proc.wait()
     finally:
         model_setting.restore()
         settings_path.unlink(missing_ok=True)
         socket_path.unlink(missing_ok=True)
-        shutil.rmtree(plugin_dir, ignore_errors=True)
     sys.exit(returncode)
 
 

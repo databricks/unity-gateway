@@ -34,11 +34,13 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.managed_files as managed_files_mod
     import ucode.state as state_mod
     from ucode.agents import codex as codex_mod
+    from ucode.smart_routing import v2 as smart_routing_v2
 
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
     monkeypatch.setattr(state_mod, "STATE_PATH", state_dir / "state.json")
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
+    monkeypatch.setattr(smart_routing_v2, "APP_DIR", state_dir)
     # MANAGED_CONFIG_PATH is bound from APP_DIR at import, so patching APP_DIR alone doesn't move it;
     # rebind it or save_managed_state writes to the developer's real ~/.ucode/managed-config.json.
     monkeypatch.setattr(
