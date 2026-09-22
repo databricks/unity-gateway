@@ -31,6 +31,7 @@ from ucode.config_io import (
     deep_merge_dict,
     is_dry_run,
     prune_key_paths,
+    read_json_safe,
     read_toml_safe,
     write_json_file,
     write_toml_file,
@@ -82,7 +83,7 @@ from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
-from .codex_catalog import prepare_codex_catalog
+from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
 
 CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"
@@ -369,9 +370,14 @@ def revert_legacy_shared_config() -> bool:
     through the workspace gateway. ``ucode revert`` only restored the
     per-profile file, leaving those edits in place. Surgically strip them here.
 
+    Also remove the shared app catalog reference installed by modern ucode.
     Returns True if anything was removed.
     """
-    return _strip_legacy_ucode_entries(_legacy_config_path())
+    legacy_changed = _strip_legacy_ucode_entries(_legacy_config_path())
+    app_catalog_changed = detach_app_model_catalog()
+    if app_catalog_changed and CODEX_MODEL_CATALOG_PATH.exists():
+        CODEX_MODEL_CATALOG_PATH.unlink()
+    return legacy_changed or app_catalog_changed
 
 
 def configured_paths(state: dict) -> list[str]:
@@ -448,11 +454,15 @@ def write_tool_config(
     catalog_path = str(CODEX_MODEL_CATALOG_PATH) if static_models and not provider else None
     # Build and validate before modifying config so failure cannot leave a stale
     # catalog enabled or partially rewrite the user's configuration.
-    catalog = (
-        prepare_codex_catalog(SPEC["binary"], static_models)
-        if static_models and not provider
-        else None
-    )
+    try:
+        catalog = (
+            prepare_codex_catalog(SPEC["binary"], static_models)
+            if static_models and not provider
+            else None
+        )
+    except RuntimeError:
+        _detach_app_catalog_after_failure()
+        raise
 
     _remove_legacy_ucode_profile()
     # Back up only a file that predates ucode's management of the tool. A
@@ -487,9 +497,11 @@ def write_tool_config(
         return base
 
     if catalog is not None:
-        write_json_file(CODEX_MODEL_CATALOG_PATH, catalog)
-    elif CODEX_MODEL_CATALOG_PATH.exists() and not is_dry_run():
-        CODEX_MODEL_CATALOG_PATH.unlink()
+        sync_app_model_catalog(catalog)
+    elif not is_dry_run():
+        detach_app_model_catalog()
+        if CODEX_MODEL_CATALOG_PATH.exists():
+            CODEX_MODEL_CATALOG_PATH.unlink()
 
     doc = read_toml_safe(CODEX_CONFIG_PATH)
     compose(doc)
@@ -783,6 +795,9 @@ def _model_catalog_path(workspace: str, scope: str) -> Path:
 
 
 def _write_model_catalog(path: Path, catalog: dict) -> None:
+    if is_dry_run():
+        write_json_file(path, catalog)
+        return
     temp_path = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -801,6 +816,87 @@ def _write_model_catalog(path: Path, catalog: dict) -> None:
                 temp_path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def _is_ucode_catalog_reference(value: object) -> bool:
+    return isinstance(value, str) and Path(value).expanduser() == CODEX_MODEL_CATALOG_PATH
+
+
+def _read_app_config() -> tomlkit.TOMLDocument:
+    path = _legacy_config_path()
+    try:
+        return tomlkit.parse(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return tomlkit.document()
+    except (OSError, UnicodeError, ParseError) as exc:
+        raise RuntimeError(f"Cannot update Codex App settings at {path}: {exc}") from exc
+
+
+def detach_app_model_catalog() -> bool:
+    """Remove only a shared catalog reference owned by ucode."""
+    if is_dry_run():
+        return False
+    doc = _read_app_config()
+    if not _is_ucode_catalog_reference(doc.get("model_catalog_json")):
+        return False
+    doc.pop("model_catalog_json", None)
+    write_toml_file(_legacy_config_path(), doc)
+    _print_app_catalog_restart_notice()
+    return True
+
+
+def _detach_app_catalog_after_failure() -> None:
+    """Keep the original catalog error when shared settings cannot be edited."""
+    try:
+        detach_app_model_catalog()
+    except RuntimeError as exc:
+        print_warning_err(str(exc))
+
+
+def _print_app_catalog_restart_notice() -> None:
+    # A desktop reconnect can reuse a daemon whose model manager still holds
+    # the startup catalog. Never restart it here: it may be running tasks.
+    print_warning_err(
+        "Codex App model catalog changed. Existing app servers keep their startup "
+        "model list. After active tasks finish, restart the app server on the connected "
+        "host, then reconnect. For a Codex standalone daemon, run "
+        "`codex app-server daemon restart`; otherwise restart the process or application "
+        "that owns the app server. Reconnecting alone does not reload the catalog."
+    )
+
+
+def sync_app_model_catalog(catalog: dict) -> None:
+    """Publish a validated catalog without overwriting unreadable app settings."""
+    if is_dry_run():
+        return
+    doc = _read_app_config()
+    catalog_changed = read_json_safe(CODEX_MODEL_CATALOG_PATH) != catalog
+    _write_model_catalog(CODEX_MODEL_CATALOG_PATH, catalog)
+
+    existing = doc.get("model_catalog_json")
+    if existing is not None and not _is_ucode_catalog_reference(existing):
+        print_warning_err(
+            f"Codex App already uses the custom model catalog {existing}; leaving it unchanged."
+        )
+        return
+
+    catalog_path = str(CODEX_MODEL_CATALOG_PATH)
+    provider = doc.get("model_provider")
+    if provider not in (None, CODEX_MODEL_PROVIDER_NAME, LEGACY_CODEX_MODEL_PROVIDER_NAME):
+        print_warning_err(
+            f"Codex App uses the custom provider {provider}; leaving its model catalog unmanaged."
+        )
+        catalog_path = None
+
+    reference_changed = existing != catalog_path
+    if reference_changed:
+        if catalog_path is None:
+            doc.pop("model_catalog_json", None)
+        else:
+            doc["model_catalog_json"] = catalog_path
+        write_toml_file(_legacy_config_path(), doc)
+    if reference_changed or (catalog_path is not None and catalog_changed):
+        _print_app_catalog_restart_notice()
 
 
 def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:
@@ -905,6 +1001,9 @@ def _run_codex(
     workspace: str | None,
 ) -> None:
     """Launch Codex — via the loopback proxy when OTLP tracing is on, else exec-replace."""
+    if tool_args[:1] == ["update"]:
+        # exec replaces ug, so reattach only on a later validated refresh.
+        detach_app_model_catalog()
     if otel_tracing and workspace:
         _launch_codex_with_otel_proxy(state, base_argv, tool_args, workspace)
     else:
@@ -973,7 +1072,10 @@ def launch(
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
-    if workspace and token and (provider or parent_schema):
+    updating = tool_args[:1] == ["update"]
+    if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
+        profile_doc.pop("model_catalog_json")
+    if workspace and token and (provider or parent_schema) and not updating:
         try:
             if provider is not None:
                 catalog_source = CodexCatalogSource.PROVIDER
@@ -991,11 +1093,18 @@ def launch(
                 source=catalog_source,
                 identifier=catalog_identifier,
             )
+            validate_codex_catalog(binary, catalog)
         except CodexMpsModelCatalogUnavailable:
-            pass
+            detach_app_model_catalog()
+        except RuntimeError:
+            # A failed discovery/validation must not leave a previous workspace's
+            # catalog active in independently launched app servers.
+            _detach_app_catalog_after_failure()
+            raise
         else:
             catalog_path = _model_catalog_path(workspace, catalog_scope)
             _write_model_catalog(catalog_path, catalog)
+            sync_app_model_catalog(catalog)
             profile_doc["model_catalog_json"] = str(catalog_path)
             # Codex otherwise boots on its bundled default model (e.g. gpt-5.6-sol),
             # which an MPS's allowlist doesn't route, so the first request 403s. Pin
