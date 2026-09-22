@@ -10,10 +10,12 @@ import os
 import re
 import tempfile
 import time
-from collections.abc import Callable, Iterator, MutableMapping
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterator, Mapping, MutableMapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
+from typing import Any
 
 from ucode.config_io import APP_DIR
 
@@ -25,7 +27,7 @@ LOCK_RETRY_SECONDS = 0.05
 
 
 @dataclass(frozen=True, slots=True)
-class SubagentUsageRow:
+class SubagentUsageRow(ABC):
     recorded_at_utc: str
     session_id: str
     agent_id: str
@@ -38,6 +40,25 @@ class SubagentUsageRow:
     output_tokens: int
     total_tokens: int
     status: str
+
+    @staticmethod
+    @abstractmethod
+    def build(
+        payload: Mapping[str, Any], *, now: float | None = None
+    ) -> SubagentUsageRow | None:
+        """Build one harness-specific usage row from a hook payload."""
+        raise NotImplementedError
+
+    @classmethod
+    def record(
+        cls, payload: Mapping[str, Any], *, now: float | None = None
+    ) -> Path | None:
+        """Build and persist one harness-specific usage row."""
+        recorded_at = now if now is not None else time.time()
+        row = cls.build(payload, now=recorded_at)
+        if row is None:
+            return None
+        return write_subagent_usage(row, now=recorded_at)
 
 
 CSV_FIELDS = tuple(field.name for field in fields(SubagentUsageRow))

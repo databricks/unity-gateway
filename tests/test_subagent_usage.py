@@ -4,6 +4,7 @@ import csv
 import multiprocessing
 import os
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -11,8 +12,16 @@ import pytest
 from ucode import subagent_usage as usage
 
 
+class _TestSubagentUsageRow(usage.SubagentUsageRow):
+    __slots__ = ()
+
+    @staticmethod
+    def build(payload, *, now=None):
+        return _TestSubagentUsageRow(**payload)
+
+
 def _row(*, session_id: str = "session-1", agent_id: str = "agent-1"):
-    return usage.SubagentUsageRow(
+    return _TestSubagentUsageRow(
         recorded_at_utc="2027-01-15T08:00:00+00:00",
         session_id=session_id,
         agent_id=agent_id,
@@ -45,6 +54,11 @@ def _hold_directory_lock(app_dir: str, acquired_event, release_event) -> None:
     with usage._directory_lock(directory):
         acquired_event.set()
         release_event.wait(timeout=10)
+
+
+def test_base_row_requires_harness_builder():
+    with pytest.raises(TypeError, match="abstract method.*build"):
+        usage.SubagentUsageRow(**asdict(_row()))
 
 
 def test_default_directory_is_ucode_token_logs(tmp_path, monkeypatch):
@@ -84,11 +98,12 @@ def test_appends_rows_to_session_csv(tmp_path, monkeypatch):
     }
     expected_second = {**expected_first, "agent_id": "agent-2"}
 
-    path = usage.write_subagent_usage(first, now=1_800_000_000)
+    path = _TestSubagentUsageRow.record(asdict(first), now=1_800_000_000)
 
+    assert path is not None
     assert _read_rows(path) == [expected_first]
 
-    usage.write_subagent_usage(second, now=1_800_000_001)
+    _TestSubagentUsageRow.record(asdict(second), now=1_800_000_001)
 
     assert _read_rows(path) == [expected_first, expected_second]
 
