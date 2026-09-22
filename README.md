@@ -155,6 +155,34 @@ Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
 with `ug configure` to control installation.
 
+## Claude Debug Logs
+
+To capture Claude's native debug logs, including plugin refresh and agent-routing
+events, set a directory for the next launch:
+
+```bash
+UG_CLAUDE_DEBUG_LOG_DIR="$HOME/ug-debug" isaac
+# Or launch directly:
+UG_CLAUDE_DEBUG_LOG_DIR="$HOME/ug-debug" ug claude
+```
+
+This requires a UG version containing this option. Each launch creates a unique
+`claude-*.log` file, prints its absolute path to stderr, and retains the file after
+exit. Files are created with owner-only permissions. The option applies to normal,
+smart-routed, and relayed Claude launches. An explicit `--debug-file` takes
+precedence. Unset the variable to stop creating logs; remove retained files when
+finished investigating.
+
+To locate evidence of the missing-agent failure:
+
+```bash
+rg -n 'Auto-refreshing plugins|refreshActivePlugins|Agent type .*not found' "$HOME/ug-debug"/claude-*.log
+```
+
+This is local capture, not automatic upload or recovery of previous sessions.
+Review logs before sharing: Claude debug output can contain prompts, paths, and
+other sensitive session details.
+
 ## Managed Files
 
 `ug` backs up files before overwriting them. `ug revert` restores backups.

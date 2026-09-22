@@ -9,6 +9,7 @@ import re
 import signal
 import socket
 import subprocess
+import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -75,11 +76,12 @@ from ucode.smart_routing.claude_hooks import (
 from ucode.smart_routing.routing import configured_router_name
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
-from ucode.ui import print_note, print_success, print_warning
+from ucode.ui import err_console, print_note, print_success, print_warning
 
 from .args import LaunchOptions, has_explicit_model_arg
 
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
+DEBUG_LOG_DIR_ENV_VAR = "UG_CLAUDE_DEBUG_LOG_DIR"
 # If set, Claude Code launches in headless mode instead of the interactive login flow.
 CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
@@ -1492,12 +1494,38 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     raise SystemExit(returncode)
 
 
+def _with_debug_log(tool_args: list[str]) -> list[str]:
+    directory = os.environ.get(DEBUG_LOG_DIR_ENV_VAR, "").strip()
+    if not directory:
+        return tool_args
+    for arg in tool_args:
+        if arg == "--":
+            break
+        if arg == "--debug-file" or arg.startswith("--debug-file="):
+            return tool_args
+    try:
+        log_dir = Path(directory).expanduser().resolve()
+        log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor, filename = tempfile.mkstemp(
+            prefix=f"claude-{os.getpid()}-", suffix=".log", dir=log_dir
+        )
+        os.close(descriptor)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Cannot create Claude debug log in {directory!r}: {exc}. "
+            f"Set {DEBUG_LOG_DIR_ENV_VAR} to a writable directory or unset it."
+        ) from exc
+    err_console.print(f"Claude debug log: {filename}", style="dim", markup=False)
+    return ["--debug-file", filename, *tool_args]
+
+
 def launch(
     state: dict,
     tool_args: list[str],
     *,
     options: LaunchOptions,
 ) -> None:
+    tool_args = _with_debug_log(tool_args)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":

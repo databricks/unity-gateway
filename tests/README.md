@@ -23,6 +23,12 @@ keyboard selection: nothing is selected by default, selecting Codex installs onl
 Codex, and submitting an empty selection installs nothing. Rendering checks cover
 the selected and empty checkboxes. These are local component checks, not live gateway tests.
 
+`TestClaudeDebugLogs` in `test_agent_claude.py` covers opt-in native debug-log
+capture through `UG_CLAUDE_DEBUG_LOG_DIR`: unique private files, caller flag
+precedence, stderr-only notices, actionable filesystem errors, and forwarding
+through normal, smart-routed, and relayed launches. These are component checks;
+they do not claim remote log retrieval or a live Claude session.
+
 ## CUJ coverage matrix
 
 `test_repro_stale_claude_subagent.py` checks the diagnostic script's evidence
