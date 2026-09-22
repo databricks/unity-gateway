@@ -9,10 +9,9 @@ import os
 import re
 import tempfile
 import time
-from collections.abc import Iterator, Mapping, MutableMapping
+from collections.abc import Iterator, MutableMapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields
-from datetime import UTC, datetime
 from pathlib import Path
 
 from ucode.config_io import APP_DIR
@@ -20,15 +19,6 @@ from ucode.config_io import APP_DIR
 ENABLE_ENV_VAR = "ENABLE_SUBAGENT_USAGE_CSV"
 RETENTION_SECONDS = 7 * 24 * 60 * 60
 MAX_SESSION_CSV_BYTES = 10 * 1024 * 1024
-
-
-def _nonnegative_int(value: object) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
-
-def _text(payload: Mapping[str, object], field: str) -> str:
-    value = payload.get(field)
-    return value if isinstance(value, str) else ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,50 +35,6 @@ class SubagentUsageRow:
     output_tokens: int
     total_tokens: int
     status: str
-
-    @staticmethod
-    def build(
-        payload: Mapping[str, object], *, now: float | None = None
-    ) -> SubagentUsageRow | None:
-        """Validate normalized harness output and build one typed CSV row."""
-        session_id = payload.get("session_id")
-        agent_id = payload.get("agent_id")
-        if (
-            not isinstance(session_id, str)
-            or not session_id
-            or not isinstance(agent_id, str)
-            or not agent_id
-        ):
-            return None
-
-        input_tokens = _nonnegative_int(payload.get("input_tokens"))
-        cache_creation_input_tokens = _nonnegative_int(payload.get("cache_creation_input_tokens"))
-        cache_read_input_tokens = _nonnegative_int(payload.get("cache_read_input_tokens"))
-        output_tokens = _nonnegative_int(payload.get("output_tokens"))
-        recorded_at_utc = _text(payload, "recorded_at_utc")
-        if not recorded_at_utc:
-            recorded_at = now if now is not None else time.time()
-            recorded_at_utc = datetime.fromtimestamp(recorded_at, UTC).isoformat()
-
-        return SubagentUsageRow(
-            recorded_at_utc=recorded_at_utc,
-            session_id=session_id,
-            agent_id=agent_id,
-            subagent_name=_text(payload, "subagent_name"),
-            main_model=_text(payload, "main_model"),
-            subagent_model=_text(payload, "subagent_model"),
-            input_tokens=input_tokens,
-            cache_creation_input_tokens=cache_creation_input_tokens,
-            cache_read_input_tokens=cache_read_input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=(
-                input_tokens + cache_creation_input_tokens + cache_read_input_tokens + output_tokens
-            ),
-            status=_text(payload, "status") or "ok",
-        )
-
-    def to_csv_dict(self) -> dict[str, object]:
-        return asdict(self)
 
 
 CSV_FIELDS = tuple(field.name for field in fields(SubagentUsageRow))
@@ -206,18 +152,11 @@ def _compact(path: Path) -> None:
     _write_rows_atomically(path, list(reversed(kept)))
 
 
-def _recorded_at_timestamp(row: SubagentUsageRow) -> float:
-    try:
-        return datetime.fromisoformat(row.recorded_at_utc.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return time.time()
-
-
 def write_subagent_usage(row: SubagentUsageRow, *, now: float | None = None) -> Path:
     """Append one typed row, deduplicating by agent id and cleaning up best effort."""
     path = session_csv_path(row.session_id)
     directory = _ensure_usage_directory()
-    write_at = now if now is not None else _recorded_at_timestamp(row)
+    write_at = now if now is not None else time.time()
     with _directory_lock(directory):
         _cleanup_stale_csvs(directory, path, write_at)
         if path.exists() and row.agent_id in _existing_agent_ids(path):
@@ -227,7 +166,7 @@ def write_subagent_usage(row: SubagentUsageRow, *, now: float | None = None) -> 
             writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
             if write_header:
                 writer.writeheader()
-            writer.writerow(row.to_csv_dict())
+            writer.writerow(asdict(row))
         if os.name != "nt":
             path.chmod(0o600)
         _compact(path)
