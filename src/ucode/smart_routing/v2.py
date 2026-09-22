@@ -19,7 +19,7 @@ from ucode.codex_config import (
     custom_catalog_models,
     custom_catalog_path,
 )
-from ucode.config_io import APP_DIR, read_json_safe, read_toml_safe, write_json_file
+from ucode.config_io import APP_DIR, read_json_safe, write_json_file
 from ucode.constants import LOOPBACK_HOST
 from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
 from ucode.databricks import (
@@ -36,7 +36,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
 )
-from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
+from ucode.smart_routing.codex_hooks import routing_models
 from ucode.ui import print_warning
 
 ENABLE_SMART_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_V2"
@@ -543,24 +543,6 @@ def _cached_routing_models(state: dict) -> list[str]:
     return routing_models(state)
 
 
-def _codex_home_config_path() -> Path:
-    codex_home = os.environ.get("CODEX_HOME")
-    if codex_home:
-        return Path(codex_home).expanduser() / "config.toml"
-    return Path.home() / ".codex" / "config.toml"
-
-
-def _v2_pre_tool_use_hooks(state: dict, available_models: list[str]) -> list[dict]:
-    doc = read_toml_safe(_codex_home_config_path())
-    configured_hooks = doc.get("hooks")
-    existing = configured_hooks.get("PreToolUse") if isinstance(configured_hooks, dict) else None
-    return merge_pre_tool_use_hooks(
-        existing if isinstance(existing, list) else [],
-        state,
-        available_models=available_models,
-    )
-
-
 def launch_codex(
     state: dict,
     tool_args: list[str],
@@ -599,13 +581,10 @@ def launch_codex(
     catalog_path = custom_catalog_path()
     if catalog_path is not None:
         overlay["model_catalog_json"] = str(catalog_path)
-    overlay["hooks"] = {
-        "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
-    }
     config_args = codex_config_args(overlay)
     if not first_prompt_routing_enabled():
         # Subagent-only routing needs neither the app-server nor the interposer:
-        # the hooks ride in the CLI config, so launch the TUI directly.
+        # the reconciled user hooks handle subagents, so launch the TUI directly.
         exec_or_spawn([binary, *config_args, *tool_args])
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)

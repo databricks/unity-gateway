@@ -7,7 +7,7 @@ import pytest
 
 from ucode import codex_config
 from ucode.agents import LaunchOptions, codex
-from ucode.smart_routing import codex_interposer, codex_routing, v2
+from ucode.smart_routing import codex_hooks, codex_interposer, codex_routing, v2
 
 WS = "https://example.databricks.com"
 
@@ -245,16 +245,7 @@ class TestLaunchCodex:
             "--config",
         ]
         assert processes[0].argv[7].startswith("model_providers.Databricks={")
-        assert processes[0].argv[8] == "--config"
-        hook_override = processes[0].argv[9]
-        assert hook_override.startswith("hooks.PreToolUse=[{")
-        assert 'matcher = "Agent|.*spawn_agent$"' in hook_override
-        assert "codex-router-hook route-subagent" in hook_override
-        assert f"--host {WS}" in hook_override
-        assert "--profile myprof" in hook_override
-        assert "--model system.ai.gpt-5-6-sol" in hook_override
-        assert "--model system.ai.glm-5-2" in hook_override
-        assert processes[0].argv[10:] == [
+        assert processes[0].argv[8:] == [
             "--listen",
             "ws://127.0.0.1:41001",
         ]
@@ -372,64 +363,43 @@ class TestLaunchCodex:
         assert argv[0] == "codex"
         assert argv[-1] == "--search"
         assert 'model="gpt-start"' in argv
-        hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
-        assert "codex-router-hook route-subagent" in hook_override
-        assert "--model system.ai.gpt-5-6-sol" in hook_override
         # The hook subprocesses inherit the launch environment and pass the routing gate.
         assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
 
-    def test_v2_pre_tool_hook_preserves_user_hooks(self, tmp_path, monkeypatch):
-        codex_home = tmp_path / ".codex"
-        codex_home.mkdir()
-        (codex_home / "config.toml").write_text(
-            "[[hooks.PreToolUse]]\n"
-            'matcher = "Bash"\n'
-            "[[hooks.PreToolUse.hooks]]\n"
-            'type = "command"\n'
-            'command = "user-policy"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    def test_user_hook_file_follows_routing_lifecycle(self, tmp_path):
+        hooks_path = tmp_path / "hooks.json"
+        user_group = {
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": "user-policy"}],
+        }
+        hooks_path.write_text(json.dumps({"hooks": {"PreToolUse": [user_group]}}))
+        state = {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]}
 
-        configured = v2._v2_pre_tool_use_hooks(
-            {"workspace": WS, "profile": "myprof"},
-            ["system.ai.gpt-5-6-sol"],
-        )
+        codex_hooks.reconcile_smart_routing_hooks_file(hooks_path, state, enabled=True)
+        codex_hooks.reconcile_smart_routing_hooks_file(hooks_path, state, enabled=True)
 
-        assert configured[0]["hooks"][0]["command"] == "user-policy"
-        assert configured[1]["matcher"] == "Agent|.*spawn_agent$"
-        assert "--model system.ai.gpt-5-6-sol" in configured[1]["hooks"][0]["command"]
-
-    def test_v2_pre_tool_hook_replaces_existing_ucode_hook(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
-        codex_home = tmp_path / ".codex"
-        codex_home.mkdir()
-        (codex_home / "config.toml").write_text(
-            "[[hooks.PreToolUse]]\n"
-            'matcher = "Agent|.*spawn_agent$"\n'
-            "[[hooks.PreToolUse.hooks]]\n"
-            'type = "command"\n'
-            'command = "ucode codex-router-hook route-subagent --model old"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("CODEX_HOME", str(codex_home))
-
-        configured = v2._v2_pre_tool_use_hooks(
-            {"workspace": WS, "profile": "myprof"},
-            ["system.ai.gpt-5-6-sol"],
-        )
-
+        configured = json.loads(hooks_path.read_text())["hooks"]
+        assert configured["PreToolUse"][0] == user_group
         routing_commands = [
             hook["command"]
-            for group in configured
+            for groups in configured.values()
+            for group in groups
             for hook in group["hooks"]
-            if "codex-router-hook" in hook["command"]
+            if codex_hooks.SMART_ROUTING_HOOK_OWNER in hook["command"]
         ]
-        assert len(routing_commands) == 1
-        assert routing_commands[0].startswith("/bin/ug codex-router-hook route-subagent ")
-        assert "--model system.ai.gpt-5-6-sol" in routing_commands[0]
-        assert "--model old" not in routing_commands[0]
+        assert len(routing_commands) == 3
+        route_command = next(command for command in routing_commands if "route-subagent" in command)
+        assert "--model system.ai.gpt-5-6-sol" in route_command
+
+        codex_hooks.reconcile_smart_routing_hooks_file(hooks_path, state, enabled=False)
+
+        assert json.loads(hooks_path.read_text()) == {"hooks": {"PreToolUse": [user_group]}}
+
+        owned_only_path = tmp_path / "owned-only.json"
+        codex_hooks.reconcile_smart_routing_hooks_file(owned_only_path, state, enabled=True)
+        codex_hooks.reconcile_smart_routing_hooks_file(owned_only_path, state, enabled=False)
+        assert not owned_only_path.exists()
 
     def test_missing_cached_models_starts_with_bootstrap_model(self, monkeypatch):
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
@@ -616,10 +586,6 @@ class TestCustomCatalogModels:
         assert interposer_kwargs["available_models"] == ["gpt-6-astra", "gpt-6-b"]
         catalog_override = next(arg for arg in launched[0] if arg.startswith("model_catalog_json="))
         assert catalog_override == f'model_catalog_json="{tmp_path / "cli.json"}"'
-        hook_override = next(arg for arg in launched[0] if arg.startswith("hooks.PreToolUse="))
-        assert "--model gpt-6-astra" in hook_override
-        assert "--model gpt-6-b" in hook_override
-        assert "gpt-5-6-sol" not in hook_override
         assert "Smart routing:" not in capsys.readouterr().out
 
     def test_start_model_comes_from_custom_catalog(self, monkeypatch):

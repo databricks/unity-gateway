@@ -28,6 +28,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     it can never touch the developer's real ~/.ucode/state.json or invoke the
     privileged writer for an OS-managed agent config.
     """
+    import ucode.codex_config as codex_config_mod
     import ucode.config_io as config_io_mod
     import ucode.databricks as databricks_mod
     import ucode.managed_config as managed_config_mod
@@ -50,6 +51,13 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         managed_files_mod, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
     )
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
+    monkeypatch.setattr(codex_mod, "CODEX_HOOKS_PATH", tmp_path / ".codex" / "hooks.json")
+    monkeypatch.setattr(
+        codex_config_mod,
+        "DEFAULT_CODEX_CONFIG_PATH",
+        tmp_path / ".codex" / "ucode.config.toml",
+    )
+    monkeypatch.setattr(codex_config_mod, "codex_managed_config_path", lambda: None)
 
     def reject_privileged_write(path, _desired_text):
         pytest.fail(

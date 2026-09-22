@@ -71,6 +71,7 @@ from ucode.managed_files import (
 )
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.codex_hooks import (
+    reconcile_smart_routing_hooks_file,
     remove_smart_routing_hooks,
     routing_models,
     sync_smart_routing_hooks,
@@ -87,6 +88,7 @@ from .codex_catalog import prepare_codex_catalog
 CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"
 CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / f"{CODEX_PROFILE_NAME}.config.toml"
+CODEX_HOOKS_PATH = CODEX_CONFIG_DIR / "hooks.json"
 CODEX_BACKUP_PATH = APP_DIR / "codex-ucode-config.backup.toml"
 CODEX_MODEL_CATALOG_PATH = APP_DIR / "codex-model-catalog.json"
 LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
@@ -106,6 +108,12 @@ LEGACY_LAYOUT_CODEX_VERSION_TEXT = "0.134.0"
 # Retained only to identify and remove state written by the legacy persisted opt-in.
 SMART_ROUTING_STATE_KEY = smart_routing_v2.LEGACY_STATE_KEY
 APP_SERVER_SMART_ROUTING_STARTING_MODEL = "gpt-5.6-luna"
+
+
+def _codex_hooks_path() -> Path:
+    codex_home = os.environ.get("CODEX_HOME")
+    return Path(codex_home).expanduser() / "hooks.json" if codex_home else CODEX_HOOKS_PATH
+
 
 SPEC: ToolSpec = {
     "binary": "codex",
@@ -917,6 +925,11 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
+    reconcile_smart_routing_hooks_file(
+        _codex_hooks_path(),
+        state,
+        enabled=smart_routing_v2.smart_routing_enabled(),
+    )
     if options.launch_smart_routing:
         _launch_smart_routing(state, tool_args)
         return

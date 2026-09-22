@@ -1,11 +1,17 @@
 """CUJs for inspecting codex commands through ug."""
 
+import json
+
 import pytest
 
 pytestmark = [pytest.mark.live, pytest.mark.codex]
 
 
-@pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
+@pytest.mark.parametrize(
+    "routing",
+    ["off", "full", "subagent"],
+    ids=["routing-off", "routing-on", "subagent-only"],
+)
 def test_ug_codex_app_help(live_session, workspace, routing):
     """Scenario: configure codex, then ask ug for app subcommand help.
 
@@ -23,10 +29,19 @@ def test_ug_codex_app_help(live_session, workspace, routing):
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
-    session.env["ENABLE_SMART_ROUTING_V2"] = routing
+    session.env["ENABLE_SMART_ROUTING_V2"] = "1" if routing == "full" else "0"
+    session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1" if routing == "subagent" else "0"
     expected = session.run("app", "--help", binary="codex").stdout.strip()
     actual = session.run("codex", "--", "app", "--help").stdout
     assert expected and expected in actual, actual
+    if routing in {"full", "subagent"}:
+        hooks_path = session.home / ".codex" / "hooks.json"
+        hooks = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+        assert any(
+            "codex-router-hook route-subagent" in hook.get("command", "")
+            for group in hooks["PreToolUse"]
+            for hook in group["hooks"]
+        )
     session.assert_not_routed()
 
 
