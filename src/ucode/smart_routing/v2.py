@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import NoReturn, TextIO
 
 from ucode import subagent_usage
-from ucode.agents import codex_subagent_usage
+from ucode.agents import claude_subagent_usage, codex_subagent_usage
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
@@ -492,6 +492,7 @@ def launch_claude(
         "claude_models": {str(index): model for index, model in enumerate(model_ids)},
     }
     sync_smart_routing_hooks(settings, routing_state, enabled=True)
+    claude_subagent_usage.sync_hook(settings, hook_enabled=subagent_usage.enabled())
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)
     write_json_file(settings_path, settings)

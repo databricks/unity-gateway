@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from ucode.agents import claude
+from ucode import subagent_usage
+from ucode.agents import claude, claude_subagent_usage
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import claude_hooks, claude_pty, routing, v2
 
@@ -387,6 +388,7 @@ class TestV2Launch:
         }
 
     def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(subagent_usage.ENABLE_ENV_VAR, "1")
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
@@ -448,6 +450,7 @@ class TestV2Launch:
         # Subagent routing is fully wired; only the first-prompt machinery is absent.
         assert "UserPromptSubmit" not in settings["hooks"]
         assert "route-subagent" in str(settings["hooks"]["PreToolUse"])
+        assert claude_subagent_usage.HOOK_COMMAND_MARKER in str(settings["hooks"]["SubagentStop"])
         assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
         assert {definition["model"] for definition in captured["agents"].values()} == {
             "system.ai.claude-opus-4-8"
