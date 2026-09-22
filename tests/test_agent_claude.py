@@ -2141,6 +2141,7 @@ class TestClaudeLaunch:
         calls: list[list[str]] = []
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
+        monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
@@ -2148,24 +2149,47 @@ class TestClaudeLaunch:
         claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
 
         assert os.environ["OAUTH_TOKEN"] == "token"
+        assert "ANTHROPIC_DEFAULT_MODEL" not in os.environ
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
 
     def test_launch_model_is_only_set_for_current_process(self, monkeypatch):
         calls: list[list[str]] = []
         monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+        monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
 
         claude.launch(
-            {"workspace": WS, "profile": "test"},
+            {
+                "workspace": WS,
+                "profile": "test",
+                "_claude_launch_default_model": "main.default.claude-sonnet-5",
+            },
             [],
             options=LaunchOptions(user_pinned_model="cat.schema.model"),
         )
 
         assert os.environ["ANTHROPIC_MODEL"] == "cat.schema.model"
+        assert os.environ["ANTHROPIC_DEFAULT_MODEL"] == "main.default.claude-sonnet-5"
         assert calls[0][:2] == ["claude", "--settings"]
         settings = json.loads(calls[0][2])
         assert settings["env"]["ANTHROPIC_MODEL"] == "cat.schema.model"
+
+    def test_launch_default_model_is_inherited_by_smart_routing(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
+        monkeypatch.setattr(v2, "launch_claude", Mock())
+
+        claude.launch(
+            {
+                "workspace": WS,
+                "_claude_launch_default_model": "main.default.claude-sonnet-5",
+            },
+            ["fix this bug"],
+            options=LaunchOptions(launch_smart_routing=True),
+        )
+
+        assert os.environ["ANTHROPIC_DEFAULT_MODEL"] == "main.default.claude-sonnet-5"
+        v2.launch_claude.assert_called_once()
 
     def test_managed_picker_replaces_stale_saved_model_for_this_launch(self, monkeypatch):
         calls: list[list[str]] = []

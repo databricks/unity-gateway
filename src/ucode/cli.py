@@ -70,6 +70,7 @@ from ucode.databricks import (
     list_anthropic_model_catalog,
     list_profile_entries,
     list_tool_provider_services,
+    map_claude_family_models,
     normalize_workspace_url,
     probe_unity_gateway_capabilities,
     resolve_pat_token,
@@ -2846,6 +2847,14 @@ def _launch_tool(
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
             # replaced. Keep the catalog launch-scoped and leave the user's settings alone.
             state["_claude_launch_picker_models"] = picker_catalog.model_ids
+            if managed is None and (explicit_provider or parent_schema):
+                # The permanent Default row should also resolve within the selected catalog.
+                state["_claude_launch_default_model"] = (
+                    claude_agent.default_model(
+                        {"claude_models": map_claude_family_models(picker_catalog.model_ids)}
+                    )
+                    or picker_catalog.model_ids[0]
+                )
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
             tool == "claude"

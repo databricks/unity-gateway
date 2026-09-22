@@ -1663,6 +1663,9 @@ def launch(
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return
+    launch_default_model = state.get("_claude_launch_default_model")
+    if isinstance(launch_default_model, str) and launch_default_model:
+        os.environ["ANTHROPIC_DEFAULT_MODEL"] = launch_default_model
     # Smart routing needs Unix PTY support, which Windows does not provide.
     if options.launch_smart_routing and os.name == "nt":
         raise RuntimeError(

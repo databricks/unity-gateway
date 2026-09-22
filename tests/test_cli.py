@@ -751,6 +751,7 @@ class TestSubcommandRouting:
         calls["list_catalog"].assert_not_called()
         assert calls["configure"].call_args.kwargs["picker_catalog"] is None
         assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
+        assert "_claude_launch_default_model" not in calls["launch"].call_args.args[1]
         if persisted_provider:
             calls["resolve_model"].assert_not_called()
         else:
@@ -775,6 +776,9 @@ class TestSubcommandRouting:
         assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == [
             "main.default.claude-sonnet-5"
         ]
+        assert calls["launch"].call_args.args[1]["_claude_launch_default_model"] == (
+            "main.default.claude-sonnet-5"
+        )
         calls["resolve_model"].assert_not_called()
         assert calls["launch"].call_args.args[2] == []
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
@@ -826,7 +830,16 @@ class TestSubcommandRouting:
         calls["launch"].assert_not_called()
 
     def test_claude_provider_replaces_builtin_models(self):
-        with _launch_policy_patches(None) as calls:
+        catalog = db_mod.AnthropicModelCatalog(
+            model_ids=[
+                "claude-haiku-4-5",
+                "claude-sonnet-5",
+                "claude-opus-4-8",
+                "claude-opus-4-7",
+            ],
+            model_id_to_display_name={},
+        )
+        with _launch_policy_patches(None, picker_catalog=catalog) as calls:
             result = runner.invoke(app, ["claude", "--provider", "main.default.anthropic"])
 
         assert result.exit_code == 0, result.output
@@ -838,9 +851,12 @@ class TestSubcommandRouting:
             calls["configure"].call_args.kwargs["picker_catalog"]
             is calls["list_catalog"].return_value
         )
-        assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == [
-            "main.default.claude-sonnet-5"
-        ]
+        assert (
+            calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == catalog.model_ids
+        )
+        assert (
+            calls["launch"].call_args.args[1]["_claude_launch_default_model"] == "claude-opus-4-8"
+        )
         assert calls["launch"].call_args.args[2] == []
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
@@ -853,6 +869,7 @@ class TestSubcommandRouting:
         calls["list_catalog"].assert_not_called()
         assert calls["configure"].call_args.kwargs["picker_catalog"] is None
         assert calls["configure"].call_args.kwargs["relayed"] is True
+        assert "_claude_launch_default_model" not in calls["launch"].call_args.args[1]
 
     def test_codex_model_location_is_forwarded(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
@@ -1216,6 +1233,7 @@ class TestManagedClaudeModelDiscovery:
         calls = self._invoke(monkeypatch, managed)
 
         assert calls["result"].exit_code == 0, calls["result"].output
+        assert "_claude_launch_default_model" not in calls["launch"].call_args.args[1]
         assert calls["shared"].call_args.kwargs["skip_model_discovery"] is True
         calls["resolve_model"].assert_not_called()
         if expected_provider:
