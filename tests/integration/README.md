@@ -100,7 +100,9 @@ test_ug_claude_custom_oauth.py           # CLI custom-OAuth launch, profile, and
 test_ug_codex_custom_oauth.py            # CLI custom-OAuth launch and profile
 test_ug_claude_headless.py              # script prompts, models, caller settings
 test_ug_claude_relayed.py               # relayed session: subscription + Databricks-hosted models
+test_ug_claude_tracing.py               # Claude OTLP export reaches the configured trace table
 test_ug_codex_headless.py               # script prompts and model arguments
+test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
 test_ug_codex_app_server.py             # actual client/server initialize exchange
@@ -175,6 +177,15 @@ reproduce another existing service. Use `--claude-provider-model` /
 No service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
 
+The tracing journeys are part of their respective Full agent lanes and use the existing
+e2e workspace and bearer. Because that workspace deliberately has no published managed
+configuration, each journey injects only a tracing-enabled CodingAgentConfig input through
+the suite's managed-config stub seam; the agents, inference, OTLP export, and table
+verification remain real. Each adds the prompt's UUID as a trace-safe
+`ug_integration_marker` attribute, resolves the destination table from the workspace tracing
+configuration, waits 30 seconds, and queries that table through an existing SQL warehouse.
+The tests assert that a span with the marker arrived and identifies the requested model.
+
 Scoped discovery additionally requires Model Services
 `main.ucode.ci_e2e_claude` and `main.ucode.ci_e2e_codex`. Override them with
 `--parent-schema`, `--claude-parent-model`, or `--codex-parent-model`. The tests
@@ -216,7 +227,7 @@ startup banners and footer text cannot satisfy discovery assertions. Cases 7–1
 they only configure, list models, and open/close the picker. Other live CUJs perform
 real model tasks.
 
-There are **58 live cases** (including 12 TUI journeys) and **7 installation
+There are **60 live cases** (including 12 TUI journeys) and **7 installation
 checks** with both agents. A separate **4 managed-workspace cases** (one per agent, an idempotent
 re-configure, and a cache-TTL journey; marker `managed`) run against a workspace that publishes a
 CodingAgentConfig; see "Managed-workspace journeys" below. One **`workspace_switch` case**
@@ -229,7 +240,7 @@ cover focused model, MCP, skills, and lifecycle shapes, including per-agent mode
 and managed skill cleanup. The two Claude default-model cases launch with injected MPS and Unity
 Catalog sources and verify both generated settings files retain all admin-authored family defaults.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 97 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 99 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -237,6 +248,8 @@ executions; the complete integration suite collects 97 executions. See the named
 -- -m live         # default: all live user journeys
 -- -m smoke        # six Hosted, custom OAuth CLI TUI, and headless journeys
 -- -m 'live and tui'  # twelve interactive live configuration/model-discovery journeys
+-- -m 'live and claude' -k trace  # installed Claude -> gateway -> configured trace table
+-- -m 'live and codex' -k trace  # installed Codex -> gateway -> configured trace table
 -- -k test_ug_codex_app_server_client_initializes  # one named journey and its variants
 # Use --installation-only before -- for package checks without credentials.
 ```
@@ -245,7 +258,7 @@ The old focused checks are now descriptive CUJs with setup and outcomes visible
 in each test. Duplicate boot-only checks are incorporated into the Databricks
 configuration TUI journeys. Real failures, including generated
 config left after revert and banners on app-server stdout, remain assertions.
-Live MCP/skills functionality, tracing, the broad configure-option matrix, and other
+Live MCP/skills functionality, the broad configure-option matrix, and other
 agents are outside this focused revision.
 
 The workspace-switch CUJ is an exception to that deferred multi-workspace scope:
@@ -338,13 +351,13 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 58 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 60 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 25 |
-| Codex | `live and codex` | 33 |
+| Claude | `live and claude` | 26 |
+| Codex | `live and codex` | 34 |
 
 Each lane installs only its agent CLI, once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
@@ -358,7 +371,7 @@ No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, workspace validation, smoke, and
-both full lanes to pass. The **Managed config** lanes run for signal but are temporarily
+both full lanes to pass; each tracing journey is included in its agent's Full lane. The **Managed config** lanes run for signal but are temporarily
 non-blocking (`continue-on-error`): the managed workspace is now runner-reachable, but the lanes
 stay non-blocking until the managed-config apply path is proven stable. They neither fail the
 workflow nor gate merges until then. The
@@ -623,7 +636,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 58 live cases. For the seven installation checks, run the same
+This runs all 60 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

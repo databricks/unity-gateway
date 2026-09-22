@@ -114,6 +114,7 @@ def build_claude_agent_config(
     *,
     family_defaults: dict[str, str] | None = None,
     smart_routing: bool = False,
+    otel_tracing_enabled: bool | None = None,
 ) -> dict:
     default_models = {"default_model": models[0]}
     if family_defaults:
@@ -126,6 +127,8 @@ def build_claude_agent_config(
     }
     if smart_routing:
         config["smart_routing"] = {"enabled": True}
+    if otel_tracing_enabled is not None:
+        config["tracing"] = {"enabled": otel_tracing_enabled}
     return {"agent": "CODING_AGENT_CLAUDE_CODE", "config": config}
 
 
