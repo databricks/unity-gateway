@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import multiprocessing
 import os
 import time
 from pathlib import Path
@@ -28,6 +29,12 @@ def _row(*, session_id: str = "session-1", agent_id: str = "agent-1"):
 def _read_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def _write_row_in_process(app_dir: str, agent_id: str, start_event) -> None:
+    usage.APP_DIR = Path(app_dir)
+    start_event.wait()
+    usage.write_subagent_usage(_row(agent_id=agent_id))
 
 
 def test_default_directory_is_ucode_token_logs(tmp_path, monkeypatch):
@@ -74,6 +81,33 @@ def test_appends_rows_to_session_csv(tmp_path, monkeypatch):
     usage.write_subagent_usage(second, now=1_800_000_001)
 
     assert _read_rows(path) == [expected_first, expected_second]
+
+
+def test_concurrent_processes_append_complete_rows(tmp_path):
+    context = multiprocessing.get_context("spawn")
+    start_event = context.Event()
+    app_dir = tmp_path / ".ucode"
+    processes = [
+        context.Process(
+            target=_write_row_in_process,
+            args=(str(app_dir), f"agent-{index}", start_event),
+        )
+        for index in range(3)
+    ]
+    for process in processes:
+        process.start()
+    start_event.set()
+    for process in processes:
+        process.join(timeout=10)
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+            process.join()
+
+    assert [process.exitcode for process in processes] == [0, 0, 0]
+    rows = _read_rows(app_dir / "token-logs" / "session-1.csv")
+    assert sorted(row["agent_id"] for row in rows) == ["agent-0", "agent-1", "agent-2"]
+    assert all(row["total_tokens"] == "17" and row["status"] == "ok" for row in rows)
 
 
 def test_uses_independent_session_files(tmp_path, monkeypatch):
