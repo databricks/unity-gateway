@@ -26,6 +26,25 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_PACKAGES = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}
+WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
+
+
+def process_group_options() -> dict:
+    if os.name == "posix":
+        return {"start_new_session": True}
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    raise RuntimeError(f"Unsupported process platform: {os.name}")
+
+
+def venv_executable(environment: Path, name: str) -> Path:
+    if os.name == "nt":
+        return environment / "Scripts" / f"{name}.exe"
+    return environment / "bin" / name
+
+
+def npm_executable(bin_dir: Path, name: str) -> Path:
+    return bin_dir / (f"{name}.cmd" if os.name == "nt" else name)
 
 
 def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
@@ -57,22 +76,43 @@ def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
 @contextlib.contextmanager
 def managed_process(command, *, interrupt=False, **kwargs):
     """Bound child lifetimes, including descendants that outlive their parent."""
-    proc = subprocess.Popen(command, start_new_session=True, **kwargs)
+    proc = subprocess.Popen(command, **process_group_options(), **kwargs)
     try:
         yield proc
     finally:
-        # Give pytest a KeyboardInterrupt so its fixtures can clean up the
-        # separate process groups used by agent commands before pytest exits.
-        first_signal = signal.SIGINT if interrupt else signal.SIGTERM
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, first_signal)
-        try:
-            proc.wait(timeout=15 if interrupt else 5)
-        except subprocess.TimeoutExpired:
-            pass
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        proc.wait(timeout=5)
+        if os.name == "posix":
+            # Give pytest a KeyboardInterrupt so its fixtures can clean up the
+            # separate process groups used by agent commands before pytest exits.
+            first_signal = signal.SIGINT if interrupt else signal.SIGTERM
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, first_signal)
+            try:
+                proc.wait(timeout=15 if interrupt else 5)
+            except subprocess.TimeoutExpired:
+                pass
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=5)
+        elif os.name == "nt":
+            if proc.poll() is None and interrupt:
+                # CREATE_NEW_PROCESS_GROUP lets pytest and its children receive
+                # Ctrl+Break and unwind fixtures before forced tree cleanup.
+                with contextlib.suppress(OSError):
+                    proc.send_signal(signal.CTRL_BREAK_EVENT)
+                try:
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    pass
+            if proc.poll() is None:
+                # taskkill /T handles descendants; proc.kill() only handles the
+                # direct child on Windows.
+                subprocess.run(
+                    [shutil.which("taskkill") or "taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            proc.wait(timeout=5)
 
 
 def exact_npm_version(value: str) -> str:
@@ -158,6 +198,11 @@ def arguments():
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
     )
     args = parser.parse_args()
+    if os.name != "posix" and not args.installation_only:
+        parser.error(
+            "Live agent/TUI integration requires POSIX PTY, managed-settings, and signal "
+            "support. Use --installation-only on Windows."
+        )
     # Only selection/early-stop controls are accepted. Pytest configuration,
     # plugins and report destinations are part of the suite's isolation contract.
     filters = argparse.ArgumentParser(add_help=False)
@@ -208,8 +253,8 @@ def arguments():
 
 def main() -> int:
     args = arguments()
-    if os.name != "posix":
-        raise SystemExit("This runner supports Linux and macOS. Use the container on other hosts.")
+    if os.name not in {"nt", "posix"}:
+        raise SystemExit("This runner supports Windows, Linux, and macOS.")
 
     def terminate(signum, frame):
         raise KeyboardInterrupt
@@ -249,6 +294,10 @@ def main() -> int:
     # Python optimization, agent credentials, or npm settings from the caller.
     keep = (
         "PATH",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
         "LANG",
         "LC_ALL",
         "SSL_CERT_FILE",
@@ -262,6 +311,22 @@ def main() -> int:
     base_env = {key: os.environ[key] for key in keep if key in os.environ}
     build_home = output / "build-home"
     build_home.mkdir()
+    if os.name == "nt":
+        temporary = output / "temp"
+        local_app_data = build_home / "AppData/Local"
+        roaming_app_data = build_home / "AppData/Roaming"
+        for path in (temporary, local_app_data, roaming_app_data):
+            path.mkdir(parents=True)
+        base_env.update(
+            {
+                "APPDATA": str(roaming_app_data),
+                "LOCALAPPDATA": str(local_app_data),
+                "TEMP": str(temporary),
+                "TMP": str(temporary),
+                "TMPDIR": str(temporary),
+                "PATHEXT": base_env.get("PATHEXT", WINDOWS_PATHEXT),
+            }
+        )
     base_env["HOME"] = str(build_home)
     base_env["USERPROFILE"] = str(build_home)
     base_env["npm_config_cache"] = str(output / "npm-cache")
@@ -335,7 +400,8 @@ def main() -> int:
         runtime, testenv = output / "ug-runtime", output / "test-runtime"
         for path in (runtime, testenv):
             run([uv, "venv", "--python", args.python, path])
-        python = runtime / "bin/python"
+        python = venv_executable(runtime, "python")
+        test_python = venv_executable(testenv, "python")
         report["python"] = run([python, "--version"])
         report["uv"] = run([uv, "--version"])
         report["node"] = run([binaries["node"], "--version"])
@@ -420,7 +486,8 @@ def main() -> int:
             raise RuntimeError(
                 f"Application was imported outside its isolated environment: {package_path}"
             )
-        binary = runtime / "bin" / args.entry_point
+        runtime_bin = python.parent
+        binary = venv_executable(runtime, args.entry_point)
         if not binary.is_file():
             raise RuntimeError(
                 f"Selected release has no {args.entry_point} entry point; try --entry-point ucode."
@@ -487,14 +554,30 @@ def main() -> int:
         tool_bin.mkdir()
         for name in ("node", "databricks"):
             if binaries[name]:
-                (tool_bin / name).symlink_to(binaries[name])
+                source = Path(binaries[name]).resolve()
+                if os.name == "nt":
+                    # Windows runner accounts cannot be assumed to hold the
+                    # privilege required for symlinks. Prefer a hard link and
+                    # fall back to a copy when tool and output are on different volumes.
+                    destination = tool_bin / source.name
+                    try:
+                        os.link(source, destination)
+                    except OSError:
+                        shutil.copy2(source, destination)
+                else:
+                    (tool_bin / name).symlink_to(source)
         runtime_env = dict(base_env)
-        runtime_env["PATH"] = os.pathsep.join(
-            map(str, [runtime / "bin", agent_bin, tool_bin, "/usr/bin", "/bin"])
-        )
+        runtime_paths = [runtime_bin, agent_bin, tool_bin]
+        if os.name == "nt":
+            system_root = Path(base_env["SYSTEMROOT"])
+            runtime_paths.extend([system_root / "System32", system_root])
+        else:
+            runtime_paths.extend([Path("/usr/bin"), Path("/bin")])
+        runtime_env["PATH"] = os.pathsep.join(map(str, runtime_paths))
         report["agents"] = {}
         for agent in agents:
-            version = run([agent_bin / agent, "--version"], env=runtime_env, timeout=30)
+            agent_command = npm_executable(agent_bin, agent)
+            version = run([agent_command, "--version"], env=runtime_env, timeout=30)
             expected = getattr(args, f"{agent}_version")
             if not re.search(rf"(?<![\w.]){re.escape(expected)}(?![\w.])", version):
                 raise RuntimeError(f"Expected {agent} {expected}, got {version!r}")
@@ -534,22 +617,23 @@ def main() -> int:
             if client_id and client_secret:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
+        test_dependencies = ["pytest==9.0.3"]
+        if os.name == "posix":
+            test_dependencies.extend(["pexpect==4.9.0", "pyte==0.8.2"])
         run(
             [
                 uv,
                 "pip",
                 "install",
                 "--python",
-                testenv / "bin/python",
+                test_python,
                 "--default-index",
                 args.default_index,
-                "pytest==9.0.3",
-                "pexpect==4.9.0",
-                "pyte==0.8.2",
+                *test_dependencies,
             ]
         )
         (output / "test-dependencies.txt").write_text(
-            run([uv, "pip", "freeze", "--python", testenv / "bin/python"]) + "\n"
+            run([uv, "pip", "freeze", "--python", test_python]) + "\n"
         )
         runtime_env.update(
             {
@@ -584,15 +668,18 @@ def main() -> int:
         report["pytest_args"] = extra
         manifest.write_text(redact(json.dumps(report, indent=2)) + "\n")
         print("Running integration tests against the installed package.", flush=True)
+        test_target = (
+            suite / "test_installation.py" if os.name == "nt" and args.installation_only else suite
+        )
         with managed_process(
             [
-                testenv / "bin/python",
+                test_python,
                 "-m",
                 "pytest",
                 "-c",
                 suite / "pytest.ini",
                 f"--confcutdir={suite}",
-                suite,
+                test_target,
                 "-v",
                 "-o",
                 f"cache_dir={output / 'pytest-cache'}",
@@ -624,7 +711,11 @@ def main() -> int:
             raise RuntimeError("Pytest returned success without a test report.")
         # A bootstrap/update path must not silently alter the selected agent version.
         for agent in agents:
-            after = run([agent_bin / agent, "--version"], env=runtime_env, timeout=30)
+            after = run(
+                [npm_executable(agent_bin, agent), "--version"],
+                env=runtime_env,
+                timeout=30,
+            )
             if after != report["agents"][agent]:
                 raise RuntimeError(f"{agent} changed version during the suite: {after}")
     except KeyboardInterrupt:

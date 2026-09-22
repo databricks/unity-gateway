@@ -9,7 +9,7 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Unit/component | Existing `test_*.py` files | Individual behavior; dependencies may be mocked |
 | Existing e2e | `test_e2e*.py` | Real workspace behavior with some patched setup/internal calls |
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
-| Installation | `integration/test_installation.py` | Fresh installed package without credentials |
+| Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.
@@ -128,6 +128,9 @@ for the same agent overlap within a run.
 CI starts integration alongside unit tests and the existing e2e shards. Integration
 does not wait for agent e2e or get skipped when an agent shard fails. These suites
 share workspace capacity; overlapping their requests can still encounter rate limits.
+An advisory Windows Server 2022 lane runs the same seven fresh-install, CLI, auth-helper,
+and local MCP checks without credentials. It uploads separate evidence but remains
+non-blocking while initial native Windows issues are diagnosed.
 The `All integration tests` check requires every selected integration job to pass; full coverage
 does not depend on a label or a manual request.
 
@@ -145,7 +148,8 @@ The small `test` and `e2e` compatibility gates retain the exact status contexts
 required by the repository's branch rules. `test` requires `Unit tests`; `e2e`
 requires both `All agent tests` and the complete integration workflow. A failed
 or skipped dependency fails the gate, and a running integration suite keeps it
-pending. The descriptive jobs provide the actual coverage and diagnostics.
+pending. The advisory Windows installation lane is not part of `All integration
+tests` yet. The descriptive jobs provide the actual coverage and diagnostics.
 
 ## Gaps and deferred scope
 
@@ -161,7 +165,7 @@ pending. The descriptive jobs provide the actual coverage and diagnostics.
 | Claude/Codex interactive smart routing | First-prompt routing covered by the `managed_fixture` smart-routing banner journeys; subagent routing covered at the hook protocol level by the route-subagent hook journeys, which drive the real installed hook commands with a harness-shaped payload against the live router; the subagent-only launch journeys assert the first-prompt banner and routing wrappers stay silent while the routing hooks arm. The agent's interactive spawn decision, interactive explicit-model bypass, and dedicated routing CI shards remain deferred. Unit/component routing tests do not establish live routing behavior. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
-| Native macOS/Windows managed settings, resize/signals | Separate platform coverage needed |
+| Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, and local helper coverage is advisory; live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |
 | Other agents | Current scope is Claude Code and Codex |
 
 See [integration/README.md](integration/README.md) for commands, CI, artifacts,
