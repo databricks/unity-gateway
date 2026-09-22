@@ -107,7 +107,11 @@ def _read_rows(path: Path) -> list[dict[str, str]]:
 
 
 def test_builds_and_records_codex_row(tmp_path, monkeypatch):
-    monkeypatch.setattr(subagent_usage, "usage_directory", lambda: tmp_path / "usage")
+    monkeypatch.setattr(
+        subagent_usage,
+        "usage_directory",
+        lambda subdirectory: tmp_path / "usage" / subdirectory,
+    )
     parent, child = _transcripts(tmp_path)
 
     row = codex_subagent_usage.CodexSubagentUsageRow.build(
@@ -120,6 +124,7 @@ def test_builds_and_records_codex_row(tmp_path, monkeypatch):
     assert isinstance(row, codex_subagent_usage.CodexSubagentUsageRow)
     assert isinstance(row, subagent_usage.SubagentUsageRow)
     assert path is not None
+    assert path.parent == tmp_path / "usage" / "codex"
     assert _read_rows(path) == [
         {
             "recorded_at_utc": "2027-01-15T08:00:00+00:00",

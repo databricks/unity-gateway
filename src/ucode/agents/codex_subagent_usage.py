@@ -198,6 +198,8 @@ def _parent_model(
 
 @dataclass(frozen=True, slots=True)
 class CodexSubagentUsageRow(SubagentUsageRow):
+    token_log_subdirectory = "codex"
+
     @staticmethod
     def build(
         payload: Mapping[str, Any], *, now: float | None = None
