@@ -92,9 +92,12 @@ jobs:
     runs-on: windows-server-latest
     continue-on-error: true
     timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
     env:
-      PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple
-      NPM_REGISTRY: https://npm-proxy.cloud.databricks.com/
+      PACKAGE_INDEX: https://databricks.jfrog.io/artifactory/api/pypi/db-pypi/simple
+      NPM_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -105,21 +108,22 @@ jobs:
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           version: 0.9.8
-      - name: Diagnose package index connectivity
+      - name: Authenticate to JFrog with GitHub OIDC
+        id: jfrog
+        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5  # v4.9.1
+        env:
+          JF_URL: https://databricks.jfrog.io
+        with:
+          oidc-provider-name: github-actions
+      - name: Test a fresh installed package without workspace credentials
         shell: pwsh
-        run: |
-          foreach ($proxyName in @("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")) {
-            $isSet = -not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($proxyName))
-            Write-Host "${proxyName} configured: $isSet"
-          }
-          foreach ($endpoint in @("https://pypi-proxy.cloud.databricks.com/simple/hatchling/", "https://npm-proxy.cloud.databricks.com/npm")) {
-            Write-Host "Checking $endpoint with Windows TLS"
-            curl.exe --silent --show-error --output NUL --max-time 15 --write-out "HTTP %{http_code}\n" $endpoint
-            Write-Host "curl exit code: $LASTEXITCODE"
-          }
-          exit 0
-      - name: Test a fresh installed package without credentials
-        shell: pwsh
+        env:
+          # uv 0.9.8 resolves credentials for the named default index from
+          # UV_INDEX_<NAME>_USERNAME/PASSWORD without placing them in its URL.
+          UV_DEFAULT_INDEX: databricks-pypi=${{ env.PACKAGE_INDEX }}
+          UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
+          UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
+          UG_INTEGRATION_NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
         run: |
           $output = Join-Path $env:RUNNER_TEMP "ug-integration"
           $runnerArgs = @(
@@ -128,7 +132,7 @@ jobs:
             "--entry-point", $env:ENTRY_POINT,
             "--claude-version", $env:CLAUDE_VERSION,
             "--codex-version", $env:CODEX_VERSION,
-            "--default-index", $env:PACKAGE_INDEX,
+            "--default-index", $env:UV_DEFAULT_INDEX,
             "--npm-registry", $env:NPM_REGISTRY,
             "--installation-only",
             "--output", $output
