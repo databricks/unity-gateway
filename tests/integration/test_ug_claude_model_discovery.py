@@ -1,5 +1,7 @@
 """Claude model-discovery CUJs for repository scenarios 7, 9, 11, and 13."""
 
+import json
+
 import pytest
 from utils.model_discovery import claude_model_in_picker, claude_system_model_ids
 from utils.terminal import AgentTerminal
@@ -33,6 +35,14 @@ def _assert_system_models_in_picker(session, screen):
     assert any(
         claude_model_in_picker(screen, model["id"], model.get("display_name")) for model in models
     ), screen
+
+
+def _assert_replacement_picker(session, expected_ids):
+    settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
+    assert not {"availableModels", "enforceAvailableModels"} & settings.keys(), settings
+    picker = settings["modelPicker"]
+    assert picker["replaceBuiltInOptions"] is True, picker
+    assert [option["model"] for option in picker["options"]] == expected_ids, picker
 
 
 @pytest.mark.live
@@ -147,7 +157,7 @@ def test_case_13_configured_claude_model_location_overrides_saved_setup(
 ):
     """Scenario: configure Claude, then launch with --model-location.
 
-    Expected: the explicit parent overrides saved setup with its exact picker catalog.
+    Expected: the explicit parent's catalog replaces built-in picker rows and is visible in /model.
     """
     session = live_session
     session.run(
@@ -168,6 +178,7 @@ def test_case_13_configured_claude_model_location_overrides_saved_setup(
         tui.exit_normally()
 
     _assert_scoped_models_in_picker(session, screen, [claude_parent_model])
+    _assert_replacement_picker(session, [claude_parent_model])
 
 
 @pytest.mark.live
@@ -177,7 +188,7 @@ def test_case_13_fresh_claude_model_location_discovers_parent_models(
 ):
     """Scenario: launch fresh Claude with --model-location.
 
-    Expected: the explicit parent supplies its exact picker catalog.
+    Expected: the explicit parent's catalog replaces built-in picker rows and is visible in /model.
     """
     session = live_session
     command = [
@@ -194,3 +205,4 @@ def test_case_13_fresh_claude_model_location_discovers_parent_models(
         tui.exit_normally()
 
     _assert_scoped_models_in_picker(session, screen, [claude_parent_model])
+    _assert_replacement_picker(session, [claude_parent_model])

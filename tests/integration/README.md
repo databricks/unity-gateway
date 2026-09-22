@@ -213,7 +213,8 @@ and duplicate raw IDs still fail. Cases 8/10 require ug's discovered `system.ai`
 models while leaving Codex's model and reasoning preferences unset, and expose
 Codex's native catalog without a scoped file.
 Cases 11–14 retain the exact provider/parent catalog assertions for supported launch
-overrides. Obsolete disable-flag scenarios and duplicate managed variants are
+overrides. Case 13 also requires the explicit Claude model location to replace built-in
+picker rows when no managed config exists. Obsolete disable-flag scenarios and duplicate managed variants are
 removed, not skipped; managed discovery and rejection remain covered by Cases
 1–6. Repository scenario numbers run consecutively from 01 to 14, with
 configured/fresh variants sharing a number. External design-document numbering

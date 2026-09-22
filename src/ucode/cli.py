@@ -2737,19 +2737,22 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
-        if managed_claude_source_without_defaults and not relayed:
+        if (
+            managed_claude_source_without_defaults
+            or (tool == "claude" and managed is None and parent_schema)
+        ) and not relayed:
             token = get_databricks_token(state["workspace"], state.get("profile"))
             picker_catalog = list_anthropic_model_catalog(
                 state["workspace"],
                 token,
-                **({"provider": provider} if provider else {"parent_schema": managed_parent_schema}),
+                **({"provider": provider} if provider else {"parent_schema": parent_schema}),
             )
             error = picker_catalog.error_msg
             if error:
                 source = (
                     f"Model Provider Service {provider}"
                     if provider
-                    else f"managed Unity Catalog location {managed_parent_schema}"
+                    else f"Unity Catalog location {parent_schema}"
                 )
                 raise RuntimeError(f"Could not discover Claude models for {source}: {error}")
         # The router's per-launch pick for the root session. Codex pins it as the
@@ -2757,9 +2760,9 @@ def _launch_tool(
         route_root_model = None
         managed_model = None
         relayed_forward_model = None  # forwarded to Claude Code's --model for a relayed provider
-        if provider or managed_parent_schema:
+        if provider or managed_parent_schema or picker_catalog:
             # Routing through a Model Provider Service pins no Databricks model;
-            # managed UC discovery likewise lets the agent select from the parent schema. Skip model
+            # scoped UC discovery likewise lets the agent select from the parent schema. Skip model
             # resolution, which would otherwise fail when global discovery found no models.
             resolved_model = None
             managed_source_model = (
@@ -2833,7 +2836,7 @@ def _launch_tool(
         )
         if picker_catalog and picker_catalog.model_ids:
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
-            # replaced. Keep the managed catalog launch-scoped and leave the user's settings alone.
+            # replaced. Keep the catalog launch-scoped and leave the user's settings alone.
             state["_claude_launch_picker_models"] = picker_catalog.model_ids
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
