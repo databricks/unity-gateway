@@ -99,8 +99,8 @@ def test_case_11_configured_claude_provider_discovers_models_by_default(
 ):
     """Scenario: configure Claude, then launch with --provider and no opt-in flag.
 
-    Expected: the cache contains exactly the provider model and the picker shows
-    its row (the native Haiku 4.5 row for the default provider fixture).
+    Expected: the cache contains exactly the provider model and the replacement
+    picker contains exactly that provider catalog row.
     """
     session = live_session
     session.run(
@@ -121,6 +121,7 @@ def test_case_11_configured_claude_provider_discovers_models_by_default(
         tui.exit_normally()
 
     _assert_scoped_models_in_picker(session, screen, [claude_provider_model])
+    _assert_replacement_picker(session, [claude_provider_model])
 
 
 @pytest.mark.live
@@ -130,8 +131,8 @@ def test_case_11_fresh_claude_provider_discovers_models_by_default(
 ):
     """Scenario: launch fresh Claude with --provider and no opt-in flag.
 
-    Expected: the cache contains exactly the provider model and the picker shows
-    its row (the native Haiku 4.5 row for the default provider fixture).
+    Expected: the cache contains exactly the provider model and the replacement
+    picker contains exactly that provider catalog row.
     """
     session = live_session
     command = [
@@ -148,6 +149,7 @@ def test_case_11_fresh_claude_provider_discovers_models_by_default(
         tui.exit_normally()
 
     _assert_scoped_models_in_picker(session, screen, [claude_provider_model])
+    _assert_replacement_picker(session, [claude_provider_model])
 
 
 @pytest.mark.live

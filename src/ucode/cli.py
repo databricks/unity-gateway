@@ -2740,7 +2740,7 @@ def _launch_tool(
         if (
             managed_claude_source_without_defaults
             or (tool == "claude" and managed_provider)
-            or (tool == "claude" and managed is None and parent_schema)
+            or (tool == "claude" and managed is None and (explicit_provider or parent_schema))
         ) and not relayed:
             token = get_databricks_token(state["workspace"], state.get("profile"))
             picker_catalog = list_anthropic_model_catalog(
