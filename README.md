@@ -1,5 +1,7 @@
 # Unity Gateway (`ug`)
 
+<!-- CI verification marker. -->
+
 Unity Gateway runs coding agents through Databricks AI Gateway. It configures
 Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, and Pi, and can
 register Databricks MCP servers for Cursor Agent.
