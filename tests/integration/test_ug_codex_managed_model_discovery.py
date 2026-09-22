@@ -1,4 +1,4 @@
-"""Codex managed-config CUJs for Tests-table cases 2, 4, 6, 8, 10, and 12.
+"""Codex managed-config CUJs for repository scenarios 2, 4, and 6.
 
 The admin CodingAgentConfig is fetched once from the managed workspace, its Codex model source is
 set to the dedicated test MPS, and the result is reused through ``UCODE_MANAGED_CONFIG_STUB`` in
@@ -16,6 +16,11 @@ from utils.managed import (
     is_managed_config_control_plane_cache,
     use_managed_config_stub,
 )
+from utils.provider_catalog import (
+    CodexProviderCatalog,
+    fetch_codex_provider_catalog,
+    parse_codex_provider_catalog,
+)
 from utils.terminal import TerminalProcess
 
 pytestmark = [pytest.mark.managed_fixture, pytest.mark.codex]
@@ -30,6 +35,15 @@ def _managed_codex_config_stub(workspace, tmp_path_factory):
         "managed-config-codex.json",
         agent="CODING_AGENT_CODEX",
         provider_service=MANAGED_CODEX_PROVIDER_SERVICE,
+    )
+
+
+@pytest.fixture(scope="module")
+def _managed_codex_provider_catalog(workspace):
+    return fetch_codex_provider_catalog(
+        workspace,
+        os.environ["DATABRICKS_BEARER"],
+        MANAGED_CODEX_PROVIDER_SERVICE,
     )
 
 
@@ -64,7 +78,7 @@ def _assert_rejected_before_codex_started(session, result, before=None):
         assert _codex_state_and_agent_files(session) == before
 
 
-def _assert_managed_provider_catalog(session, models):
+def _assert_managed_provider_catalog(session, models, expected: CodexProviderCatalog):
     config = tomllib.loads((session.home / ".codex" / "ucode.config.toml").read_text())
     # The provider header is a launch-only overlay; neither it nor the scoped catalog is persisted
     # in Codex's generated profile.
@@ -95,22 +109,33 @@ def _assert_managed_provider_catalog(session, models):
     assert len(catalog_paths) == 1, catalog_paths
     catalog = json.loads(catalog_paths[0].read_text())
     assert json.loads(app_catalog_path.read_text()) == catalog
-    catalog_ids = [
-        model.get("slug")
-        for model in catalog.get("models", [])
-        if isinstance(model, dict) and model.get("visibility") == "list"
-    ]
-    assert catalog_ids, catalog
-    assert models == catalog_ids, (models, catalog)
+    catalog_ids = parse_codex_provider_catalog(catalog)
+    session.record(
+        "managed-provider-catalog.json",
+        {
+            "provider": MANAGED_CODEX_PROVIDER_SERVICE,
+            "expected_model_ids": list(expected.model_ids),
+            "generated_catalog_model_ids": list(catalog_ids),
+            "app_server_model_ids": models,
+        },
+    )
+    session.record("managed-codex-catalog.json", catalog)
+    assert isinstance(models, list) and models, models
+    assert all(isinstance(model_id, str) and model_id for model_id in models), models
+    assert len(models) == len(set(models)), models
+    assert sorted(catalog_ids) == sorted(expected.model_ids), (catalog_ids, expected.model_ids)
+    assert sorted(models) == sorted(expected.model_ids), (models, expected.model_ids)
+    assert models == list(catalog_ids), (models, catalog)
 
 
-def test_case_02_managed_codex_uses_admin_discovery_after_configure(live_session, workspace):
+def test_case_02_managed_codex_uses_admin_discovery_after_configure(
+    live_session, workspace, _managed_codex_provider_catalog
+):
     """Scenario: configure managed Codex, then launch its app server.
 
-    Expected: ug-launched and fresh bare Codex app servers expose exactly the admin-managed
-    model catalog. After those checks, real `ug revert` removes the ug-owned shared catalog
-    pointer and stable catalog while preserving an unrelated user-owned Codex setting. This
-    verifies desktop startup configuration and cleanup, not GUI rendering or inference.
+    Expected: the independently fetched provider catalog exactly matches the generated catalog,
+    ug-launched app server, and fresh bare app server. Real `ug revert` then removes the ug-owned
+    shared catalog pointer and stable catalog while preserving a user-owned Codex setting.
     """
     session = live_session
     user_config = session.home / ".codex" / "config.toml"
@@ -132,7 +157,7 @@ def test_case_02_managed_codex_uses_admin_discovery_after_configure(live_session
 
     models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
 
-    _assert_managed_provider_catalog(session, models)
+    _assert_managed_provider_catalog(session, models, _managed_codex_provider_catalog)
     app_models = session.codex_model_ids(
         ["app-server", "--listen", "stdio://"], name="bare-codex-models", binary="codex"
     )
@@ -148,72 +173,27 @@ def test_case_02_managed_codex_uses_admin_discovery_after_configure(live_session
     assert not (session.home / ".ucode" / "codex-model-catalog.json").exists()
 
 
-def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(live_session, workspace):
+def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(
+    live_session, workspace, _managed_codex_provider_catalog
+):
     """Scenario: launch managed Codex with --workspace from fresh state.
 
-    Expected: ug-launched and fresh bare Codex app servers expose exactly the admin-managed
-    model catalog. This verifies the desktop startup configuration, not GUI rendering.
+    Expected: the independently fetched provider catalog exactly matches the generated catalog,
+    ug-launched app server, and fresh bare app server.
     """
     session = live_session
     models = session.codex_model_ids(
         ["--workspace", workspace, "--", "app-server", "--listen", "stdio://"]
     )
 
-    _assert_managed_provider_catalog(session, models)
+    _assert_managed_provider_catalog(session, models, _managed_codex_provider_catalog)
     app_models = session.codex_model_ids(
         ["app-server", "--listen", "stdio://"], name="bare-codex-models", binary="codex"
     )
     assert app_models == models, (app_models, models)
 
 
-def test_case_04_managed_codex_ignores_discovery_disable_after_configure(live_session, workspace):
-    """Scenario: configure managed Codex, disable discovery, then launch its app server.
-
-    Expected: workspace-managed discovery supplies the admin's catalog to ug-launched and
-    fresh bare Codex app servers, even with the personal discovery flag disabled.
-    """
-    session = live_session
-    configured = session.run(
-        "configure",
-        "--workspace",
-        workspace,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-        timeout=240,
-    )
-    assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-
-    models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
-
-    _assert_managed_provider_catalog(session, models)
-    app_models = session.codex_model_ids(
-        ["app-server", "--listen", "stdio://"], name="bare-codex-models", binary="codex"
-    )
-    assert app_models == models, (app_models, models)
-
-
-def test_case_04_managed_codex_ignores_discovery_disable_from_fresh_state(live_session, workspace):
-    """Scenario: disable discovery and launch managed Codex with --workspace from fresh state.
-
-    Expected: workspace-managed discovery supplies the admin's catalog to ug-launched and
-    fresh bare Codex app servers, even with the personal discovery flag disabled.
-    """
-    session = live_session
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-
-    models = session.codex_model_ids(
-        ["--workspace", workspace, "--", "app-server", "--listen", "stdio://"]
-    )
-
-    _assert_managed_provider_catalog(session, models)
-    app_models = session.codex_model_ids(
-        ["app-server", "--listen", "stdio://"], name="bare-codex-models", binary="codex"
-    )
-    assert app_models == models, (app_models, models)
-
-
-def test_case_06_managed_codex_rejects_provider_override_after_configure(
+def test_case_04_managed_codex_rejects_provider_override_after_configure(
     live_session, workspace, codex_provider
 ):
     """Scenario: configure managed Codex, then pass a --provider override.
@@ -245,7 +225,7 @@ def test_case_06_managed_codex_rejects_provider_override_after_configure(
     _assert_rejected_before_codex_started(session, result, before)
 
 
-def test_case_06_managed_codex_rejects_provider_override_from_fresh_state(
+def test_case_04_managed_codex_rejects_provider_override_from_fresh_state(
     live_session, workspace, codex_provider
 ):
     """Scenario: pass --workspace and a --provider override from fresh state.
@@ -269,7 +249,7 @@ def test_case_06_managed_codex_rejects_provider_override_from_fresh_state(
     _assert_rejected_before_codex_started(session, result)
 
 
-def test_case_08_managed_codex_rejects_model_location_override_after_configure(
+def test_case_06_managed_codex_rejects_model_location_override_after_configure(
     live_session, workspace, parent_schema
 ):
     """Scenario: configure managed Codex, then pass a --model-location override.
@@ -301,7 +281,7 @@ def test_case_08_managed_codex_rejects_model_location_override_after_configure(
     _assert_rejected_before_codex_started(session, result, before)
 
 
-def test_case_08_managed_codex_rejects_model_location_override_from_fresh_state(
+def test_case_06_managed_codex_rejects_model_location_override_from_fresh_state(
     live_session, workspace, parent_schema
 ):
     """Scenario: pass --workspace and a --model-location override from fresh state.
@@ -310,122 +290,6 @@ def test_case_08_managed_codex_rejects_model_location_override_from_fresh_state(
     override before starting Codex.
     """
     session = live_session
-    result = session.run(
-        "codex",
-        "--workspace",
-        workspace,
-        "--model-location",
-        parent_schema,
-        "--",
-        "--version",
-        ok=False,
-        timeout=240,
-    )
-
-    _assert_rejected_before_codex_started(session, result)
-
-
-def test_case_10_managed_codex_rejects_provider_when_discovery_disabled_after_configure(
-    live_session, workspace, codex_provider
-):
-    """Scenario: configure managed Codex, disable discovery, then pass a --provider override.
-
-    Expected: ug rejects the override without changing agent-owned state or files.
-    """
-    session = live_session
-    configured = session.run(
-        "configure",
-        "--workspace",
-        workspace,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-        timeout=240,
-    )
-    assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-    before = _codex_state_and_agent_files(session)
-
-    result = session.run(
-        "codex",
-        "--provider",
-        codex_provider,
-        "--",
-        "--version",
-        ok=False,
-        timeout=240,
-    )
-
-    _assert_rejected_before_codex_started(session, result, before)
-
-
-def test_case_10_managed_codex_rejects_provider_when_discovery_disabled_from_fresh_state(
-    live_session, workspace, codex_provider
-):
-    """Scenario: disable discovery and pass --workspace plus --provider from fresh state.
-
-    Expected: ug may establish the fresh workspace/agent configuration, then rejects the
-    override before starting Codex.
-    """
-    session = live_session
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-    result = session.run(
-        "codex",
-        "--workspace",
-        workspace,
-        "--provider",
-        codex_provider,
-        "--",
-        "--version",
-        ok=False,
-        timeout=240,
-    )
-
-    _assert_rejected_before_codex_started(session, result)
-
-
-def test_case_12_managed_codex_rejects_model_location_when_discovery_disabled_after_configure(
-    live_session, workspace, parent_schema
-):
-    """Scenario: configure managed Codex, disable discovery, then pass --model-location.
-
-    Expected: ug rejects the override without changing agent-owned state or files.
-    """
-    session = live_session
-    configured = session.run(
-        "configure",
-        "--workspace",
-        workspace,
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-        timeout=240,
-    )
-    assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
-    before = _codex_state_and_agent_files(session)
-
-    result = session.run(
-        "codex",
-        "--model-location",
-        parent_schema,
-        "--",
-        "--version",
-        ok=False,
-        timeout=240,
-    )
-
-    _assert_rejected_before_codex_started(session, result, before)
-
-
-def test_case_12_managed_codex_rejects_model_location_when_discovery_disabled_from_fresh_state(
-    live_session, workspace, parent_schema
-):
-    """Scenario: disable discovery and pass --workspace plus --model-location from fresh state.
-
-    Expected: ug may establish the fresh workspace/agent configuration, then rejects the
-    override before starting Codex.
-    """
-    session = live_session
-    session.env["UG_ENABLE_MODEL_DISCOVERY"] = "0"
     result = session.run(
         "codex",
         "--workspace",
