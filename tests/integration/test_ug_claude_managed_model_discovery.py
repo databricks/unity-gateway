@@ -82,10 +82,14 @@ def _assert_managed_provider_in_picker(
     headers = (settings.get("env") or {}).get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
     expected_header = f"Databricks-Model-Provider-Service: {MANAGED_CLAUDE_PROVIDER_SERVICE}"
     assert headers.count(expected_header) == 1, settings
-    # MPS models come from Claude Code's native gateway discovery, not a static managed picker.
-    assert not {"availableModels", "enforceAvailableModels", "modelPicker"} & settings.keys(), (
-        settings
-    )
+    # Without authored defaults, replace built-in rows with the discovered MPS catalog.
+    assert not {"availableModels", "enforceAvailableModels"} & settings.keys(), settings
+    picker = settings["modelPicker"]
+    assert picker["replaceBuiltInOptions"] is True, picker
+    assert sorted(option["model"] for option in picker["options"]) == sorted(expected.model_ids)
+    for option in picker["options"]:
+        if display_name := expected.display_names.get(option["model"]):
+            assert option["label"] == display_name, option
     cache = json.loads((session.home / ".claude/cache/gateway-models.json").read_text())
     assert cache.get("baseUrl") == workspace.rstrip("/") + "/ai-gateway/anthropic", cache
     assert isinstance(cache.get("fetchedAt"), int) and cache["fetchedAt"] > 0, cache
@@ -126,8 +130,8 @@ def test_case_01_managed_claude_uses_admin_discovery_after_configure(
 ):
     """Scenario: configure managed Claude, then launch its model picker.
 
-    Expected: the independently fetched provider catalog exactly matches Claude's gateway cache,
-    and at least one expected cached model is visible in a numbered picker row.
+    Expected: the independently fetched provider catalog matches Claude's gateway cache and
+    replacement picker, and at least one expected model is visible in a numbered picker row.
     """
     session = live_session
     result = session.run(
@@ -162,8 +166,8 @@ def test_case_01_fresh_managed_claude_uses_admin_discovery(
 ):
     """Scenario: launch managed Claude's model picker from fresh state.
 
-    Expected: the independently fetched provider catalog exactly matches Claude's gateway cache,
-    and at least one expected cached model is visible in a numbered picker row.
+    Expected: the independently fetched provider catalog matches Claude's gateway cache and
+    replacement picker, and at least one expected model is visible in a numbered picker row.
     """
     session = live_session
     command = [str(session.binary), "claude", "--workspace", workspace]

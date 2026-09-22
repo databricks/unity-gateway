@@ -2762,12 +2762,18 @@ def list_all_mcp_services(
 
 
 def _get_anthropic_models_json(
-    workspace: str, token: str, *, parent_schema: str | None = None
+    workspace: str,
+    token: str,
+    *,
+    parent_schema: str | None = None,
+    provider: str | None = None,
 ) -> tuple[dict | list | None, str | None]:
     hostname = workspace_hostname(workspace)
-    headers = (
-        {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema} if parent_schema is not None else None
-    )
+    headers = None
+    if provider is not None:
+        headers = {MODEL_PROVIDER_SERVICE_HEADER: provider}
+    elif parent_schema is not None:
+        headers = {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema}
     return _http_get_json(
         f"https://{hostname}{ANTHROPIC_MODELS_PATH}",
         token,
@@ -2788,10 +2794,19 @@ def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | 
 
 
 def list_anthropic_model_catalog(
-    workspace: str, token: str, *, parent_schema: str | None = None
+    workspace: str,
+    token: str,
+    *,
+    parent_schema: str | None = None,
+    provider: str | None = None,
 ) -> AnthropicModelCatalog:
     """Return advertised Anthropic model ids and their optional display metadata."""
-    payload, reason = _get_anthropic_models_json(workspace, token, parent_schema=parent_schema)
+    payload, reason = _get_anthropic_models_json(
+        workspace,
+        token,
+        parent_schema=parent_schema,
+        provider=provider,
+    )
     if payload is None:
         return AnthropicModelCatalog(model_ids=[], model_id_to_display_name={}, error_msg=reason)
 

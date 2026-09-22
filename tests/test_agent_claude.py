@@ -1323,7 +1323,12 @@ class TestWriteToolConfigManagedSettings:
         assert not set(claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.values()) & env.keys()
 
     @pytest.mark.parametrize("with_catalog", [False, True])
-    def test_parent_schema_prunes_previous_static_picker(self, monkeypatch, with_catalog):
+    @pytest.mark.parametrize(
+        "source", [{"parent_schema": "main.default"}, {"provider": "main.default.anthropic"}]
+    )
+    def test_discovery_source_prunes_previous_static_picker(
+        self, monkeypatch, with_catalog, source
+    ):
         private_writes: list = []
         managed_writes: list = []
         picker = {
@@ -1353,9 +1358,7 @@ class TestWriteToolConfigManagedSettings:
             if with_catalog
             else None
         )
-        updated = claude.write_tool_config(
-            state, None, parent_schema="main.default", picker_catalog=catalog
-        )
+        updated = claude.write_tool_config(state, None, **source, picker_catalog=catalog)
 
         for written in (private_writes[0][1], json.loads(managed_writes[0][1])):
             assert "availableModels" not in written

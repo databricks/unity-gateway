@@ -2706,10 +2706,10 @@ def _launch_tool(
             if tool == "claude" and managed is not None
             else {}
         )
-        managed_claude_uc_without_defaults = (
+        managed_claude_source_without_defaults = (
             tool == "claude"
             and managed is not None
-            and bool(managed_parent_schema)
+            and bool(managed_parent_schema or managed_provider)
             and managed_default_model(managed, tool) is None
             and not coding_agent_config_defaults
         )
@@ -2737,17 +2737,21 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
-        elif managed_claude_uc_without_defaults:
+        if managed_claude_source_without_defaults and not relayed:
             token = get_databricks_token(state["workspace"], state.get("profile"))
             picker_catalog = list_anthropic_model_catalog(
-                state["workspace"], token, parent_schema=managed_parent_schema
+                state["workspace"],
+                token,
+                **({"provider": provider} if provider else {"parent_schema": managed_parent_schema}),
             )
             error = picker_catalog.error_msg
             if error:
-                raise RuntimeError(
-                    f"Could not discover Claude models for managed Unity Catalog location "
-                    f"{managed_parent_schema}: {error}"
+                source = (
+                    f"Model Provider Service {provider}"
+                    if provider
+                    else f"managed Unity Catalog location {managed_parent_schema}"
                 )
+                raise RuntimeError(f"Could not discover Claude models for {source}: {error}")
         # The router's per-launch pick for the root session. Codex pins it as the
         # resolved model; claude pins it via ANTHROPIC_MODEL (route_root_model).
         route_root_model = None

@@ -1046,9 +1046,14 @@ class TestManagedClaudeModelDiscovery:
     UC_CONFIG = {
         "enabled_agents": {"claude": {"model_config": {"unity_catalog_location": "main.default"}}}
     }
+    MPS_WITHOUT_DEFAULTS_CONFIG = {
+        "enabled_agents": {
+            "claude": {"model_config": {"model_provider_service": "main.default.anthropic-mps"}}
+        }
+    }
 
     @staticmethod
-    def _invoke(monkeypatch, managed):
+    def _invoke(monkeypatch, managed, *, provider_models=None, relayed=False, catalog_error=None):
         state = {
             **MINIMAL_STATE,
             "claude_models": {},
@@ -1064,7 +1069,7 @@ class TestManagedClaudeModelDiscovery:
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
         monkeypatch.setattr(cli_mod, "get_provider_service", lambda *_a: "main.developer.provider")
         monkeypatch.setattr(cli_mod, "configure_shared_state", shared)
-        resolve_provider = MagicMock(return_value=(None, None, False))
+        resolve_provider = MagicMock(return_value=(provider_models, None, relayed))
         monkeypatch.setattr(cli_mod, "resolve_provider_models", resolve_provider)
         picker_catalog = db_mod.AnthropicModelCatalog(
             model_ids=["main.default.claude-sonnet-5"],
@@ -1072,6 +1077,7 @@ class TestManagedClaudeModelDiscovery:
             model_id_to_description={
                 "main.default.claude-sonnet-5": "Recommended for everyday use"
             },
+            error_msg=catalog_error,
         )
         list_anthropic_model_catalog = MagicMock(return_value=picker_catalog)
         monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", list_anthropic_model_catalog)
@@ -1094,15 +1100,16 @@ class TestManagedClaudeModelDiscovery:
         }
 
     @pytest.mark.parametrize(
-        ("managed", "expected_provider", "expected_parent"),
+        ("managed", "expected_provider", "expected_parent", "expected_picker"),
         [
-            (MPS_CONFIG, "main.default.anthropic-mps", None),
-            (UC_CONFIG, None, "main.default"),
+            (MPS_CONFIG, "main.default.anthropic-mps", None, False),
+            (MPS_WITHOUT_DEFAULTS_CONFIG, "main.default.anthropic-mps", None, True),
+            (UC_CONFIG, None, "main.default", True),
         ],
-        ids=["mps", "uc-parent"],
+        ids=["mps-defaults", "mps-no-defaults", "uc-parent"],
     )
     def test_launch_uses_managed_source_and_native_discovery(
-        self, monkeypatch, managed, expected_provider, expected_parent
+        self, monkeypatch, managed, expected_provider, expected_parent, expected_picker
     ):
         calls = self._invoke(monkeypatch, managed)
 
@@ -1118,11 +1125,15 @@ class TestManagedClaudeModelDiscovery:
         assert calls["configure"].call_args.args[1]["provider_services"]["claude"] == (
             expected_provider or "main.developer.provider"
         )
-        if expected_parent:
+        if expected_picker:
             calls["list_anthropic_model_catalog"].assert_called_once_with(
                 calls["state"]["workspace"],
                 "token",
-                parent_schema=expected_parent,
+                **(
+                    {"provider": expected_provider}
+                    if expected_provider
+                    else {"parent_schema": expected_parent}
+                ),
             )
             assert calls["configure"].call_args.kwargs["picker_catalog"] is calls["picker_catalog"]
             assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == [
@@ -1133,6 +1144,67 @@ class TestManagedClaudeModelDiscovery:
             assert calls["configure"].call_args.kwargs["picker_catalog"] is None
             assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+
+    @pytest.mark.parametrize(
+        "defaults",
+        [
+            {"default_model": "claude-sonnet-5"},
+            {"default_models_by_model_family": {"default_sonnet_model": "claude-sonnet-5"}},
+        ],
+        ids=["default-model", "family-default"],
+    )
+    def test_managed_mps_with_any_default_keeps_native_picker(self, monkeypatch, defaults):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "model_provider_service": "main.default.anthropic-mps",
+                        **defaults,
+                    }
+                }
+            }
+        }
+        calls = self._invoke(monkeypatch, managed)
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        calls["list_anthropic_model_catalog"].assert_not_called()
+        assert calls["configure"].call_args.kwargs["picker_catalog"] is None
+
+    @pytest.mark.parametrize("relayed", [False, True])
+    def test_managed_mps_picker_preserves_provider_model_resolution(self, monkeypatch, relayed):
+        provider_models = {"haiku": "claude-haiku-4-5"}
+        calls = self._invoke(
+            monkeypatch,
+            self.MPS_WITHOUT_DEFAULTS_CONFIG,
+            provider_models=provider_models,
+            relayed=relayed,
+        )
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        configured = calls["configure"].call_args.kwargs
+        assert configured["provider_models"] == provider_models
+        if relayed:
+            calls["list_anthropic_model_catalog"].assert_not_called()
+            assert configured["picker_catalog"] is None
+            assert calls["launch"].call_args.args[2] == ["--model", "claude-haiku-4-5"]
+        else:
+            assert configured["picker_catalog"] is calls["picker_catalog"]
+            assert configured["route_root_model"] == "claude-haiku-4-5"
+
+    def test_managed_mps_catalog_error_blocks_launch(self, monkeypatch):
+        calls = self._invoke(
+            monkeypatch,
+            self.MPS_WITHOUT_DEFAULTS_CONFIG,
+            catalog_error="AI Gateway returned no Anthropic model ids",
+        )
+
+        assert calls["result"].exit_code == 1
+        output = _strip_ansi(calls["result"].output)
+        assert "Could not discover Claude models for Model Provider Service" in output
+        assert "main.default.anthropic-mps" in output
+        assert "AI Gateway returned no Anthropic model ids" in output
+        calls["configure"].assert_not_called()
+        calls["launch"].assert_not_called()
 
 
 def test_claude_discovery_changes_do_not_break_other_managed_providers():
