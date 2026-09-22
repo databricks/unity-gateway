@@ -56,6 +56,23 @@ models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
 to select another model source; managed workspace configs control their own sources.
 
+`ug codex` validates discovered models with the installed Codex binary and publishes
+them to `~/.ucode/codex-model-catalog.json`, referenced by shared `~/.codex/config.toml`
+for Codex App. Managed static lists use the same path during `ug configure`. The
+latest refresh supplies the app's catalog; custom catalogs (including Isaac's) and
+custom providers are preserved. The app's gateway provider and authentication must
+already be configured. Validation covers the local Codex binary.
+
+Codex loads the catalog at app-server startup. When ug reports a catalog change,
+finish active tasks, restart the app server on the **connected host**, then reconnect.
+Use `codex app-server daemon restart` for a standalone managed daemon; otherwise
+restart the process or application that owns the server. Reconnecting or reopening
+the desktop app can reuse a remote server with the old list.
+
+ug removes its shared reference on discovery/validation failure, reconfiguration,
+revert, or before installing/updating Codex. After an update, run `ug codex` to refresh
+discovery or `ug configure` for a managed static list, then restart the app server.
+
 ## Configure
 
 ```bash
@@ -166,7 +183,7 @@ with `ug configure` to control installation.
 
 | Tool | Managed files |
 |------|---------------|
-| Codex | `~/.codex/ucode.config.toml`, legacy `~/.codex/config.toml`, `/etc/codex/managed_config.toml` (Linux and macOS) |
+| Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS) |
 | Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |

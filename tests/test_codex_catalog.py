@@ -166,6 +166,7 @@ def test_extract_and_validate_with_same_binary_in_isolation(monkeypatch, bundled
         homes.append(home)
         assert kwargs["cwd"] == str(home)
         assert home.exists()
+        assert kwargs["stdin"] is subprocess.DEVNULL
         assert kwargs["timeout"] == 30
         assert kwargs["check"] is True
         if len(calls) == 1:
@@ -184,6 +185,75 @@ def test_extract_and_validate_with_same_binary_in_isolation(monkeypatch, bundled
     assert len(calls) == 2
     assert homes[0] == homes[1]
     assert not homes[0].exists()
+
+
+def test_validate_discovered_catalog_with_same_binary_in_isolation(monkeypatch):
+    discovered = {
+        "models": [
+            {
+                "slug": "system.ai.gpt-6-astra",
+                "future_field": {"nested": [1, "keep"]},
+                "visibility": "list",
+            }
+        ],
+        "future_catalog_field": {"enabled": True},
+    }
+    original = copy.deepcopy(discovered)
+    calls = []
+    homes = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        home = Path(kwargs["env"]["CODEX_HOME"])
+        homes.append(home)
+        assert argv[0] == "/selected/codex"
+        assert argv[-2:] == ["debug", "models"]
+        assert kwargs["cwd"] == str(home)
+        assert kwargs["env"]["CODEX_HOME"] != "/user/codex-home"
+        assert kwargs["stdin"] is subprocess.DEVNULL
+        assert kwargs["timeout"] == 30
+        assert kwargs["check"] is True
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        setting = json.loads(argv[2].split("=", 1)[1])
+        candidate = Path(setting)
+        assert candidate.parent == home
+        assert json.loads(candidate.read_text()) == discovered
+        return subprocess.CompletedProcess(argv, 0, "")
+
+    monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
+    monkeypatch.setattr(catalog.subprocess, "run", run)
+
+    assert catalog.validate_codex_catalog("/selected/codex", discovered) is None
+
+    assert len(calls) == 1
+    assert calls[0][1] == "-c"
+    assert discovered == original
+    assert not homes[0].exists()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        FileNotFoundError("codex not found"),
+        subprocess.TimeoutExpired("codex", 30),
+        subprocess.CalledProcessError(1, ["codex"], stderr="catalog secret"),
+    ],
+    ids=["missing-binary", "timeout", "rejected-catalog"],
+)
+def test_validate_discovered_catalog_failure_is_actionable_without_payload(monkeypatch, error):
+    catalog_payload = {"models": [{"slug": "system.ai.secret-model"}]}
+
+    def run(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(catalog.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError, match="Update Codex") as raised:
+        catalog.validate_codex_catalog("/selected/codex", catalog_payload)
+
+    assert "secret-model" not in str(raised.value)
+    assert "catalog secret" not in str(raised.value)
 
 
 def test_missing_gpt_warning_is_printed_after_validation(monkeypatch, bundled):

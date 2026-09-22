@@ -708,7 +708,17 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
         else:
             raise RuntimeError("Neither curl nor wget is available.")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
-        raise RuntimeError("Failed to install/upgrade Databricks CLI automatically.") from exc
+        message = "Failed to install/upgrade Databricks CLI automatically."
+        # The official installer only tells you to remove /usr/local/bin/databricks,
+        # but a stale copy in ~/.local/bin can shadow it and break the install. Point
+        # at it explicitly so users know to delete that one too.
+        local_bin = Path("~/.local/bin/databricks").expanduser()
+        if local_bin.exists():
+            message += (
+                f"\nIf you have an existing Databricks CLI installation, please first "
+                f"remove it using\n  rm '{local_bin}'"
+            )
+        raise RuntimeError(message) from exc
 
 
 def ensure_databricks_cli_version(
