@@ -122,6 +122,12 @@ def smart_routing_enabled(env: MutableMapping[str, str] | None = None) -> bool:
     return any(source.get(var) == "1" for var in _SMART_ROUTING_ENV_VARS)
 
 
+def subagent_only_routing_enabled(env: MutableMapping[str, str] | None = None) -> bool:
+    """Whether only spawned subagents should be routed."""
+    source = os.environ if env is None else env
+    return source.get(ENABLE_SUBAGENT_ROUTING_ENV_VAR) == "1"
+
+
 def first_prompt_routing_enabled(env: MutableMapping[str, str] | None = None) -> bool:
     """Whether the first prompt is routed. Subagent-only wins over the full V2 flag."""
     source = os.environ if env is None else env

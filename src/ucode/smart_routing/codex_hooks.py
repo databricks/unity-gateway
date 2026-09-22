@@ -10,6 +10,7 @@ from ucode.databricks import build_auth_token_argv
 from ucode.smart_routing import hooks
 
 ROUTING_HOOK_COMMAND_MARKER = "codex-router-hook"
+APP_SUBAGENT_ROUTING_HOOK_OWNER = "ug-codex-app-subagent-only"
 
 
 def routing_models(state: dict) -> list[str]:
@@ -22,10 +23,17 @@ def routing_models(state: dict) -> list[str]:
     return list(dict.fromkeys(models))
 
 
-def sync_smart_routing_hooks(doc: dict, state: dict, *, enabled: bool) -> None:
+def sync_smart_routing_hooks(
+    doc: dict,
+    state: dict,
+    *,
+    enabled: bool,
+    owner: str | None = None,
+) -> None:
     """Synchronize ucode-managed routing hooks in a Codex config document."""
-    groups = _routing_hook_groups(state) if enabled else {}
-    hooks.sync_managed_hooks(doc, ROUTING_HOOK_COMMAND_MARKER, groups)
+    marker = owner or ROUTING_HOOK_COMMAND_MARKER
+    groups = _routing_hook_groups(state, owner=owner) if enabled else {}
+    hooks.sync_managed_hooks(doc, marker, groups)
 
 
 def remove_smart_routing_hooks(doc: dict) -> bool:
@@ -33,11 +41,11 @@ def remove_smart_routing_hooks(doc: dict) -> bool:
     return hooks.remove_managed_hooks(doc, ROUTING_HOOK_COMMAND_MARKER)
 
 
-def _routing_hook_groups(state: dict) -> dict[str, list[dict]]:
-    session_argv = _routing_hook_argv(state, "session-start")
-    subagent_argv = _routing_hook_argv(state, "record-subagent")
+def _routing_hook_groups(state: dict, *, owner: str | None = None) -> dict[str, list[dict]]:
+    session_argv = _routing_hook_argv(state, "session-start", owner=owner)
+    subagent_argv = _routing_hook_argv(state, "record-subagent", owner=owner)
     return {
-        "PreToolUse": [_pre_tool_use_hook_group(state)],
+        "PreToolUse": [_pre_tool_use_hook_group(state, owner=owner)],
         "SessionStart": [
             {
                 "matcher": "startup|resume|clear",
@@ -65,11 +73,17 @@ def merge_pre_tool_use_hooks(
     return doc["hooks"]["PreToolUse"]
 
 
-def _pre_tool_use_hook_group(state: dict, *, available_models: list[str] | None = None) -> dict:
+def _pre_tool_use_hook_group(
+    state: dict,
+    *,
+    available_models: list[str] | None = None,
+    owner: str | None = None,
+) -> dict:
     route_argv = _routing_hook_argv(
         state,
         "route-subagent",
         available_models=available_models,
+        owner=owner,
     )
     return {
         "matcher": "Agent|.*spawn_agent$",
@@ -78,7 +92,11 @@ def _pre_tool_use_hook_group(state: dict, *, available_models: list[str] | None 
 
 
 def _routing_hook_argv(
-    state: dict, event: str, *, available_models: list[str] | None = None
+    state: dict,
+    event: str,
+    *,
+    available_models: list[str] | None = None,
+    owner: str | None = None,
 ) -> list[str]:
     workspace = str(state.get("workspace") or "")
     argv = [
@@ -88,6 +106,8 @@ def _routing_hook_argv(
         ROUTING_HOOK_COMMAND_MARKER,
         event,
     ]
+    if owner:
+        argv += ["--hook-owner", owner]
     if event != "route-subagent":
         return argv
     argv += ["--host", workspace]

@@ -849,6 +849,120 @@ class TestCodexLaunch:
         assert os.environ["OAUTH_TOKEN"] == "fresh-token"
         assert launches[0][-1] == "--search"
 
+    def test_app_subagent_routing_installs_normal_hooks_and_uses_native_launch(
+        self, tmp_path, monkeypatch
+    ):
+        launches = self._patch(tmp_path, monkeypatch)
+        hooks_path = tmp_path / "hooks.json"
+        hooks_path.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [{"type": "command", "command": "user-policy"}],
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(codex, "CODEX_HOOKS_PATH", hooks_path)
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+
+        codex.launch(
+            {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
+            ["app"],
+            options=LaunchOptions(launch_smart_routing=False),
+        )
+
+        assert launches[0][-1] == "app"
+        hooks = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+        assert hooks["PreToolUse"][0]["hooks"][0]["command"] == "user-policy"
+        routing_commands = [
+            hook["command"]
+            for group in hooks["PreToolUse"]
+            for hook in group["hooks"]
+            if "codex-router-hook route-subagent" in hook["command"]
+        ]
+        assert len(routing_commands) == 1
+        assert "--hook-owner ug-codex-app-subagent-only" in routing_commands[0]
+        assert "--model system.ai.gpt-5-6-sol" in routing_commands[0]
+        assert "SessionStart" in hooks
+        assert "SubagentStart" in hooks
+
+    def test_app_subagent_routing_refuses_invalid_hooks_json(self, tmp_path, monkeypatch):
+        self._patch(tmp_path, monkeypatch)
+        hooks_path = tmp_path / "hooks.json"
+        hooks_path.write_text("not-json", encoding="utf-8")
+        monkeypatch.setattr(codex, "CODEX_HOOKS_PATH", hooks_path)
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+
+        with pytest.raises(RuntimeError, match="is not valid JSON"):
+            codex.launch(
+                {"workspace": WS},
+                ["app"],
+                options=LaunchOptions(launch_smart_routing=False),
+            )
+
+        assert hooks_path.read_text(encoding="utf-8") == "not-json"
+
+    def test_app_without_subagent_routing_removes_only_app_subagent_hooks(
+        self, tmp_path, monkeypatch
+    ):
+        launches = self._patch(tmp_path, monkeypatch)
+        hooks_path = tmp_path / "hooks.json"
+        monkeypatch.setattr(codex, "CODEX_HOOKS_PATH", hooks_path)
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+        state = {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]}
+        codex._sync_codex_app_smart_routing_hooks(state, enabled=True)
+        doc = json.loads(hooks_path.read_text(encoding="utf-8"))
+        doc["hooks"]["PreToolUse"].insert(
+            0,
+            {
+                "matcher": "Bash",
+                "hooks": [{"type": "command", "command": "user-policy"}],
+            },
+        )
+        doc["hooks"]["PreToolUse"].insert(
+            1,
+            {
+                "matcher": "Agent|.*spawn_agent$",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "ug codex-router-hook route-subagent --host full-routing",
+                    }
+                ],
+            },
+        )
+        hooks_path.write_text(json.dumps(doc), encoding="utf-8")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
+
+        codex.launch(state, ["app"], options=LaunchOptions(launch_smart_routing=False))
+
+        assert launches[0][-1] == "app"
+        hooks = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+        assert hooks == {
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [{"type": "command", "command": "user-policy"}],
+                },
+                {
+                    "matcher": "Agent|.*spawn_agent$",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "ug codex-router-hook route-subagent --host full-routing",
+                        }
+                    ],
+                },
+            ]
+        }
+
     def test_provider_discovery_uses_authoritative_catalog(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
         catalog_path = tmp_path / "models.json"

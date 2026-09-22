@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import os
 import re
 import signal
@@ -71,6 +72,7 @@ from ucode.managed_files import (
 )
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.codex_hooks import (
+    APP_SUBAGENT_ROUTING_HOOK_OWNER,
     remove_smart_routing_hooks,
     routing_models,
     sync_smart_routing_hooks,
@@ -87,6 +89,7 @@ from .codex_catalog import prepare_codex_catalog
 CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"
 CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / f"{CODEX_PROFILE_NAME}.config.toml"
+CODEX_HOOKS_PATH = CODEX_CONFIG_DIR / "hooks.json"
 CODEX_BACKUP_PATH = APP_DIR / "codex-ucode-config.backup.toml"
 CODEX_MODEL_CATALOG_PATH = APP_DIR / "codex-model-catalog.json"
 LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
@@ -911,6 +914,32 @@ def _run_codex(
         exec_or_spawn([*base_argv, *tool_args])
 
 
+def _sync_codex_app_smart_routing_hooks(state: dict, *, enabled: bool) -> None:
+    """Reconcile ug's routing hooks in the desktop app's normal user hook file."""
+    if not enabled and not CODEX_HOOKS_PATH.exists():
+        return
+    try:
+        if CODEX_HOOKS_PATH.exists():
+            doc = json.loads(CODEX_HOOKS_PATH.read_text(encoding="utf-8"))
+            if not isinstance(doc, dict):
+                raise ValueError("top-level value is not an object")
+        else:
+            doc = {}
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RuntimeError(
+            f"Cannot update Codex app smart-routing hooks because {CODEX_HOOKS_PATH} "
+            f"is not valid JSON: {exc}"
+        ) from exc
+
+    sync_smart_routing_hooks(
+        doc,
+        state,
+        enabled=enabled,
+        owner=APP_SUBAGENT_ROUTING_HOOK_OWNER,
+    )
+    write_json_file(CODEX_HOOKS_PATH, doc)
+
+
 def launch(
     state: dict,
     tool_args: list[str],
@@ -920,6 +949,11 @@ def launch(
     if options.launch_smart_routing:
         _launch_smart_routing(state, tool_args)
         return
+    if tool_args[:1] == ["app"]:
+        _sync_codex_app_smart_routing_hooks(
+            state,
+            enabled=smart_routing_v2.subagent_only_routing_enabled(),
+        )
     clear_model_preferences(state)
     binary = SPEC["binary"]
     workspace = state.get("workspace")

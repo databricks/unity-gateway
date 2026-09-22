@@ -579,9 +579,12 @@ class TestSubcommandRouting:
         assert observed == [None]
         assert os.environ[cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR] == "1"
 
-    @pytest.mark.parametrize("tool, subcommand", [("codex", "app"), ("claude", "update")])
+    @pytest.mark.parametrize(
+        ("tool", "subcommand", "expected"),
+        [("codex", "app", "1"), ("claude", "update", None)],
+    )
     def test_native_subcommand_suppresses_inherited_subagent_routing(
-        self, monkeypatch, tool, subcommand
+        self, monkeypatch, tool, subcommand, expected
     ):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
         observed = []
@@ -595,7 +598,7 @@ class TestSubcommandRouting:
             result = runner.invoke(app, [tool, subcommand])
 
         assert result.exit_code == 0, result.output
-        assert observed == [None]
+        assert observed == [expected]
         assert os.environ[cli_mod.smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
 
     def test_claude_enable_smart_routing_forwards_positional_prompt_to_v2(self):
@@ -662,6 +665,35 @@ class TestSubcommandRouting:
         )
 
         assert options.launch_smart_routing is expected
+
+    def test_codex_app_keeps_native_launch_for_subagent_only_routing(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+
+        options = cli_mod._launch_options(
+            "codex",
+            ["app"],
+            smart_routing_enabled=True,
+            explicit_prompt=False,
+            user_pinned_model=None,
+            provider=None,
+        )
+
+        assert options.launch_smart_routing is False
+
+    def test_codex_app_is_not_supported_for_full_smart_routing(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        monkeypatch.delenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", raising=False)
+
+        options = cli_mod._launch_options(
+            "codex",
+            ["app"],
+            smart_routing_enabled=True,
+            explicit_prompt=False,
+            user_pinned_model=None,
+            provider=None,
+        )
+
+        assert options.launch_smart_routing is False
 
     @pytest.mark.parametrize(
         ("tool_args", "expected"),
@@ -898,6 +930,8 @@ class TestSubcommandRouting:
                 [
                     "codex-router-hook",
                     "route-subagent",
+                    "--hook-owner",
+                    "ug-codex-app-subagent-only",
                     "--host",
                     "https://example.com",
                     "--profile",
@@ -947,6 +981,37 @@ class TestSubcommandRouting:
 
         mock_token.assert_not_called()
         assert mock_route.call_args.kwargs["token"] == "pat-token"
+
+    def test_owned_codex_app_hook_runs_without_routing_environment(self, monkeypatch):
+        monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
+        monkeypatch.delenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", raising=False)
+        with patch("ucode.smart_routing.codex_routing.record_session_start") as mock_record:
+            result = runner.invoke(
+                app,
+                [
+                    "codex-router-hook",
+                    "session-start",
+                    "--hook-owner",
+                    "ug-codex-app-subagent-only",
+                ],
+                input='{"session_id":"app-session"}',
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_record.assert_called_once_with({"session_id": "app-session"})
+
+    def test_unowned_codex_hook_stays_disabled_without_routing_environment(self, monkeypatch):
+        monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
+        monkeypatch.delenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", raising=False)
+        with patch("ucode.smart_routing.codex_routing.record_session_start") as mock_record:
+            result = runner.invoke(
+                app,
+                ["codex-router-hook", "session-start"],
+                input='{"session_id":"cli-session"}',
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_record.assert_not_called()
 
     def test_claude_v2_subagent_hook_uses_v2_router(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
