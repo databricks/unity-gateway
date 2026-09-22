@@ -692,10 +692,14 @@ class TestInstallToolBinary:
         assert agents_mod._update_installed_tool_binary("codex") is True
         assert calls == [["codex", "update"]]
 
-    def test_codex_update_failure_leaves_ug_catalog_detached(self, monkeypatch):
+    @pytest.mark.parametrize("installed", [False, True], ids=["install", "update"])
+    def test_codex_install_or_update_failure_leaves_catalog_detached(self, monkeypatch, installed):
         shared_path = self._seed_codex_catalog_reference()
 
-        monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr(
+            "ucode.agents.shutil.which",
+            lambda binary: f"/usr/bin/{binary}" if installed or binary == "npm" else None,
+        )
         monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: "must upgrade")
         monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
 
@@ -705,23 +709,10 @@ class TestInstallToolBinary:
 
         monkeypatch.setattr("ucode.agents.subprocess.run", fail_run)
 
-        assert agents_mod._update_installed_tool_binary("codex") is False
-        assert "model_catalog_json" not in shared_path.read_text(encoding="utf-8")
-
-    def test_codex_install_failure_leaves_ug_catalog_detached(self, monkeypatch):
-        shared_path = self._seed_codex_catalog_reference()
-
-        def fake_which(binary: str) -> str | None:
-            return "/usr/bin/npm" if binary == "npm" else None
-
-        def fail_run(args, **kwargs):
-            assert "model_catalog_json" not in shared_path.read_text(encoding="utf-8")
-            raise subprocess.CalledProcessError(1, args)
-
-        monkeypatch.setattr("ucode.agents.shutil.which", fake_which)
-        monkeypatch.setattr("ucode.agents.subprocess.run", fail_run)
-
-        assert install_tool_binary("codex", strict=False) is False
+        if installed:
+            assert agents_mod._update_installed_tool_binary("codex") is False
+        else:
+            assert install_tool_binary("codex", strict=False) is False
         assert "model_catalog_json" not in shared_path.read_text(encoding="utf-8")
 
     def test_catalog_detach_failure_blocks_codex_binary_mutation(self, monkeypatch):

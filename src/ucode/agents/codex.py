@@ -832,50 +832,15 @@ def _read_app_config() -> tomlkit.TOMLDocument:
         raise RuntimeError(f"Cannot update Codex App settings at {path}: {exc}") from exc
 
 
-def _install_app_catalog_reference() -> bool:
-    """Point Codex App at ucode's stable catalog without replacing a user catalog."""
-    if is_dry_run():
-        return False
-    path = _legacy_config_path()
-    doc = _read_app_config()
-    existing = doc.get("model_catalog_json")
-    if existing is not None and not _is_ucode_catalog_reference(existing):
-        print_warning_err(
-            f"Codex App already uses the custom model catalog {existing}; leaving it unchanged."
-        )
-        return False
-    provider = doc.get("model_provider")
-    if provider not in (None, CODEX_MODEL_PROVIDER_NAME, LEGACY_CODEX_MODEL_PROVIDER_NAME):
-        if _is_ucode_catalog_reference(existing):
-            doc.pop("model_catalog_json", None)
-            write_toml_file(path, doc)
-            changed = True
-        else:
-            changed = False
-        print_warning_err(
-            f"Codex App uses the custom provider {provider}; leaving its model catalog unmanaged."
-        )
-        return changed
-    catalog_path = str(CODEX_MODEL_CATALOG_PATH)
-    if existing == catalog_path:
-        return False
-    doc["model_catalog_json"] = catalog_path
-    write_toml_file(path, doc)
-    return True
-
-
 def detach_app_model_catalog() -> bool:
     """Remove only a shared catalog reference owned by ucode."""
     if is_dry_run():
-        return False
-    path = _legacy_config_path()
-    if not path.exists():
         return False
     doc = _read_app_config()
     if not _is_ucode_catalog_reference(doc.get("model_catalog_json")):
         return False
     doc.pop("model_catalog_json", None)
-    write_toml_file(path, doc)
+    write_toml_file(_legacy_config_path(), doc)
     _print_app_catalog_restart_notice()
     return True
 
@@ -907,13 +872,30 @@ def _sync_app_model_catalog(catalog: dict) -> None:
     doc = _read_app_config()
     catalog_changed = read_json_safe(CODEX_MODEL_CATALOG_PATH) != catalog
     _write_model_catalog(CODEX_MODEL_CATALOG_PATH, catalog)
-    reference_changed = _install_app_catalog_reference()
-    app_uses_catalog = reference_changed or (
-        _is_ucode_catalog_reference(doc.get("model_catalog_json"))
-        and doc.get("model_provider")
-        in (None, CODEX_MODEL_PROVIDER_NAME, LEGACY_CODEX_MODEL_PROVIDER_NAME)
-    )
-    if reference_changed or (app_uses_catalog and catalog_changed):
+
+    existing = doc.get("model_catalog_json")
+    if existing is not None and not _is_ucode_catalog_reference(existing):
+        print_warning_err(
+            f"Codex App already uses the custom model catalog {existing}; leaving it unchanged."
+        )
+        return
+
+    catalog_path = str(CODEX_MODEL_CATALOG_PATH)
+    provider = doc.get("model_provider")
+    if provider not in (None, CODEX_MODEL_PROVIDER_NAME, LEGACY_CODEX_MODEL_PROVIDER_NAME):
+        print_warning_err(
+            f"Codex App uses the custom provider {provider}; leaving its model catalog unmanaged."
+        )
+        catalog_path = None
+
+    reference_changed = existing != catalog_path
+    if reference_changed:
+        if catalog_path is None:
+            doc.pop("model_catalog_json", None)
+        else:
+            doc["model_catalog_json"] = catalog_path
+        write_toml_file(_legacy_config_path(), doc)
+    if reference_changed or (catalog_path is not None and catalog_changed):
         _print_app_catalog_restart_notice()
 
 

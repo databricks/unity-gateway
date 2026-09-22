@@ -56,41 +56,22 @@ models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
 to select another model source; managed workspace configs control their own sources.
 
-When `ug codex` discovers a model catalog, it validates it with the installed
-Codex binary, then refreshes
-`~/.ucode/codex-model-catalog.json` and points the shared `~/.codex/config.toml`
-at it. Managed static model lists use the same path. The app's provider and
-authentication must already be configured for the corresponding gateway.
-The most recently refreshed workspace supplies
-the app catalog. Existing custom catalog settings (including Isaac's catalog)
-and custom providers are preserved; catalogs are not combined. `ug revert`
-removes the shared catalog reference installed by ug.
+`ug codex` validates discovered models with the installed Codex binary and publishes
+them to `~/.ucode/codex-model-catalog.json`, referenced by shared `~/.codex/config.toml`
+for Codex App. Managed static lists use the same path during `ug configure`. The
+latest refresh supplies the app's catalog; custom catalogs (including Isaac's) and
+custom providers are preserved. The app's gateway provider and authentication must
+already be configured. Validation covers the local Codex binary.
 
-Codex loads the catalog when its app server starts. An already-running server
-keeps its old list, even if you reconnect or open a new task. After active tasks
-finish, restart the app server on the **connected host**, then reconnect the app.
-If the host uses Codex's standalone managed daemon, run:
+Codex loads the catalog at app-server startup. When ug reports a catalog change,
+finish active tasks, restart the app server on the **connected host**, then reconnect.
+Use `codex app-server daemon restart` for a standalone managed daemon; otherwise
+restart the process or application that owns the server. Reconnecting or reopening
+the desktop app can reuse a remote server with the old list.
 
-```bash
-codex app-server daemon restart
-```
-
-The daemon command requires a standalone Codex installation. For an app server
-started by npm Codex or by the desktop app, restart the process or application
-that owns `codex app-server --listen unix://`; the daemon command cannot manage
-it. Restarting the desktop app alone can reconnect to the same remote server.
-ug reports the restart step when it changes the app catalog; it does not restart
-active servers automatically. Checking out this branch alone does not refresh
-the catalog: run `uv run ug codex` from the checkout for discovery, or
-`uv run ug configure` for a managed static list, before restarting the server.
-
-Before installing or updating Codex, ug detaches its shared catalog reference.
-Run `ug codex` again to refresh discovery, or rerun `ug configure` for a managed
-static list, then restart the app server as described above. Do the same after
-updating Codex outside ug. A failed catalog validation removes ug's shared
-reference and reports an error rather than publishing an incompatible catalog.
-Validation uses the Codex binary on this host; it does not verify a desktop
-app's separate bundled binary on another machine.
+ug removes its shared reference on discovery/validation failure, reconfiguration,
+revert, or before installing/updating Codex. After an update, run `ug codex` to refresh
+discovery or `ug configure` for a managed static list, then restart the app server.
 
 ## Configure
 

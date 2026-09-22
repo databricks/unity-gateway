@@ -758,31 +758,39 @@ class TestCodexRevertLegacySharedConfig:
 
         assert codex.revert_legacy_shared_config() is False
 
-    def test_strips_ucode_app_catalog_reference(self, tmp_path, monkeypatch):
-        config_dir = tmp_path / ".codex"
-        config_dir.mkdir()
-        profile_path = config_dir / "ucode.config.toml"
-        shared_path = config_dir / "config.toml"
-        catalog_path = tmp_path / ".ucode" / "codex-model-catalog.json"
-        catalog_path.parent.mkdir(exist_ok=True)
+    def test_strips_ucode_app_catalog_reference(self, capsys):
+        shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
+        shared_path.parent.mkdir()
+        catalog_path = codex.CODEX_MODEL_CATALOG_PATH
         catalog_path.write_text("{}", encoding="utf-8")
         shared_path.write_text(
             f'model_catalog_json = "{catalog_path}"\npersonality = "friendly"\n',
             encoding="utf-8",
         )
-        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
-        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", catalog_path)
-
         assert codex.revert_legacy_shared_config() is True
 
         assert read_toml_safe(shared_path) == {"personality": "friendly"}
         assert not catalog_path.exists()
+        assert "codex app-server daemon restart" in " ".join(capsys.readouterr().err.split())
 
 
 class TestCodexAppCatalog:
-    def test_catalog_changes_report_server_restart_on_stderr(self, capsys):
+    def test_publish_refresh_and_reattach_preserve_settings_and_report_restart(self, capsys):
+        shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
+        shared_path.parent.mkdir()
+        original = '# User settings\nmodel = "gpt-user"\n'
+        shared_path.write_text(original, encoding="utf-8")
         first_catalog = {"models": [{"slug": "first-model"}]}
+        second_catalog = {"models": [{"slug": "second-model"}]}
+
         codex._sync_app_model_catalog(first_catalog)
+        first_config = shared_path.read_text()
+        assert "# User settings" in first_config
+        assert read_toml_safe(shared_path) == {
+            "model": "gpt-user",
+            "model_catalog_json": str(codex.CODEX_MODEL_CATALOG_PATH),
+        }
+        assert json.loads(codex.CODEX_MODEL_CATALOG_PATH.read_text()) == first_catalog
         published = capsys.readouterr()
         assert published.out == ""
         assert "codex app-server daemon restart" in " ".join(published.err.split())
@@ -792,56 +800,18 @@ class TestCodexAppCatalog:
         unchanged = capsys.readouterr()
         assert unchanged.out == unchanged.err == ""
 
-        codex._sync_app_model_catalog({"models": [{"slug": "second-model"}]})
+        codex._sync_app_model_catalog(second_catalog)
+        assert shared_path.read_text() == first_config
+        assert json.loads(codex.CODEX_MODEL_CATALOG_PATH.read_text()) == second_catalog
         refreshed = capsys.readouterr()
         assert refreshed.out == ""
         assert "codex app-server daemon restart" in " ".join(refreshed.err.split())
 
-    def test_attaching_existing_catalog_reports_server_restart(self, capsys):
-        catalog = {"models": [{"slug": "first-model"}]}
-        codex._write_model_catalog(codex.CODEX_MODEL_CATALOG_PATH, catalog)
-
-        codex._sync_app_model_catalog(catalog)
-
-        assert "codex app-server daemon restart" in " ".join(capsys.readouterr().err.split())
-
-    def test_detaching_catalog_reports_server_restart(self, capsys):
-        codex._sync_app_model_catalog({"models": [{"slug": "first-model"}]})
-        capsys.readouterr()
-
-        assert codex.detach_app_model_catalog()
-
-        assert "codex app-server daemon restart" in " ".join(capsys.readouterr().err.split())
-
-    def test_custom_app_catalog_does_not_report_ug_restart(self, capsys):
-        shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
-        shared_path.parent.mkdir()
-        shared_path.write_text('model_catalog_json = "/user/models.json"\n')
-
-        codex._sync_app_model_catalog({"models": [{"slug": "gateway-model"}]})
-
-        output = capsys.readouterr()
-        assert "leaving it unchanged" in " ".join(output.err.split())
-        assert "daemon restart" not in output.err
-
-    def test_refresh_keeps_stable_pointer_and_preserves_settings(self, tmp_path):
-        shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
-        shared_path.parent.mkdir()
-        shared_path.write_text('# User settings\nmodel = "gpt-user"\n', encoding="utf-8")
-        first_catalog = {"models": [{"slug": "first-model"}]}
-        second_catalog = {"models": [{"slug": "second-model"}]}
-
-        codex._sync_app_model_catalog(first_catalog)
-        first_config = shared_path.read_text()
+        # Reattaching an unchanged catalog also requires a server restart.
+        shared_path.write_text(original, encoding="utf-8")
         codex._sync_app_model_catalog(second_catalog)
-
         assert shared_path.read_text() == first_config
-        assert "# User settings" in first_config
-        assert read_toml_safe(shared_path) == {
-            "model": "gpt-user",
-            "model_catalog_json": str(codex.CODEX_MODEL_CATALOG_PATH),
-        }
-        assert json.loads(codex.CODEX_MODEL_CATALOG_PATH.read_text()) == second_catalog
+        assert "codex app-server daemon restart" in " ".join(capsys.readouterr().err.split())
 
     def test_invalid_shared_config_is_not_overwritten(self):
         shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
@@ -1071,8 +1041,9 @@ class TestCodexLaunch:
         launches = self._patch(tmp_path, monkeypatch)
         catalog_path = tmp_path / "models.json"
         app_catalog_path = tmp_path / "codex-model-catalog.json"
-        catalog = {"models": [{"slug": "gpt-mps"}]}
+        catalog = {"models": [{"slug": "gpt-mps", "future_metadata": {"tools": True}}]}
         fetch_kwargs = {}
+        validations = []
         monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", app_catalog_path)
         monkeypatch.setattr(codex, "_model_catalog_path", lambda workspace, provider: catalog_path)
         monkeypatch.setattr(
@@ -1081,13 +1052,20 @@ class TestCodexLaunch:
             lambda workspace, token, **kwargs: fetch_kwargs.update(kwargs) or catalog,
         )
 
+        def validate(binary, candidate):
+            assert not catalog_path.exists()
+            assert not app_catalog_path.exists()
+            validations.append((binary, candidate))
+
+        monkeypatch.setattr(codex, "validate_codex_catalog", validate)
         codex.launch(
             {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
             [],
             options=LaunchOptions(),
         )
 
-        assert catalog_path.exists()
+        assert validations == [(codex.SPEC["binary"], catalog)]
+        assert json.loads(catalog_path.read_text()) == catalog
         assert json.loads(app_catalog_path.read_text()) == catalog
         assert read_toml_safe(tmp_path / "config.toml")["model_catalog_json"] == str(
             app_catalog_path
@@ -1104,30 +1082,6 @@ class TestCodexLaunch:
             arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
         )
         assert 'Databricks-Model-Provider-Service = "main.default.openai"' in provider_arg
-
-    def test_discovery_is_validated_before_catalogs_are_published(self, tmp_path, monkeypatch):
-        launches = self._patch(tmp_path, monkeypatch)
-        catalog = {"models": [{"slug": "gpt-mps", "future_metadata": {"tools": True}}]}
-        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", lambda *a, **k: catalog)
-        validations = []
-
-        def validate(binary, candidate):
-            assert not codex.CODEX_MODEL_CATALOG_PATH.exists()
-            assert not list(
-                codex.CODEX_MODEL_CATALOG_PATH.parent.glob("codex-model-catalog-*.json")
-            )
-            validations.append((binary, candidate))
-
-        monkeypatch.setattr(codex, "validate_codex_catalog", validate)
-        codex.launch(
-            {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
-            [],
-            options=LaunchOptions(),
-        )
-
-        assert validations == [(codex.SPEC["binary"], catalog)]
-        assert json.loads(codex.CODEX_MODEL_CATALOG_PATH.read_text()) == catalog
-        assert launches
 
     @pytest.mark.parametrize("custom_catalog", [None, "/user/isaac-app-model-catalog.json"])
     def test_incompatible_discovery_removes_only_ug_reference(
@@ -1182,7 +1136,9 @@ class TestCodexLaunch:
 
         assert launches
         assert read_toml_safe(shared_path)["model_catalog_json"] == "/user/models.json"
-        assert "leaving it unchanged" in " ".join(capsys.readouterr().err.split())
+        output = capsys.readouterr()
+        assert "leaving it unchanged" in " ".join(output.err.split())
+        assert "daemon restart" not in output.err
 
     def test_provider_pins_first_catalog_model(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
