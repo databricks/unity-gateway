@@ -351,12 +351,14 @@ runner label. The two POSIX version-floor journeys are outside this Windows subs
 It installs only Claude as the runner prerequisite; the five selected checks
 exercise ug and its local helpers, not either agent's inference path.
 
-Separate advisory **Windows headless journey** jobs run Claude and Codex on
-independent native Windows runners. Each installs one pinned agent using the
-same authenticated package proxies, reuses the existing e2e workspace/bearer,
+An advisory **Windows headless journey · Claude** job installs pinned Claude
+on a native Windows runner using the same authenticated package proxies,
+reuses the existing e2e workspace/bearer,
 and requires the unpredictable file value in the agent's structured final answer.
-They upload `integration-headless-windows-claude` / `integration-headless-windows-codex`
-evidence and remain outside the required gate while native failures are diagnosed.
+It uploads `integration-headless-windows-claude` evidence and remains outside
+the required gate while native failures are diagnosed. Codex's Windows CI
+journey is deferred while the npm proxy rejects its package metadata; the runner
+still supports explicitly selecting it once the requested package is available.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
 Installation jobs need no workspace credentials. For same-repository PRs, the live jobs
@@ -514,7 +516,7 @@ gh run download RUN_ID -R databricks/unity-gateway \
 Use `integration-full-AGENT` for a full lane, `integration-smoke-AGENT` for
 smoke, `integration-installation` for Linux package failures, or
 `integration-installation-windows` for native Windows package failures, or
-`integration-headless-windows-AGENT` for a Windows gateway journey. Older runs used
+`integration-headless-windows-claude` for the Windows gateway journey. Older runs used
 `integration-full-AGENT-GROUP`, `integration-cujs`, or numbered `integration-live-*`
 artifacts; download the name
 shown on that run. Read `versions.json` for the
