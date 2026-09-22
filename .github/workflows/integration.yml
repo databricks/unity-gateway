@@ -47,8 +47,6 @@ env:
   UG_VERSION: ${{ inputs.ug_version || 'checkout' }}
   ENTRY_POINT: ${{ inputs.entry_point || 'ug' }}
   CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.280' }}
-  # TODO: Remove after the JFrog exemption reaches the authenticated db-npm endpoint.
-  WINDOWS_CLAUDE_VERSION: 2.1.278
   CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
 
@@ -132,7 +130,7 @@ jobs:
             "--python", "3.12",
             "--ug-version", $env:UG_VERSION,
             "--entry-point", $env:ENTRY_POINT,
-            "--claude-version", $env:WINDOWS_CLAUDE_VERSION,
+            "--claude-version", $env:CLAUDE_VERSION,
             "--default-index", $env:UV_DEFAULT_INDEX,
             "--npm-registry", $env:NPM_REGISTRY,
             "--installation-only",
@@ -294,7 +292,7 @@ jobs:
             "--python", "3.12",
             "--ug-version", $env:UG_VERSION,
             "--entry-point", $env:ENTRY_POINT,
-            "--claude-version", $env:WINDOWS_CLAUDE_VERSION,
+            "--claude-version", $env:CLAUDE_VERSION,
             "--default-index", $env:UV_DEFAULT_INDEX,
             "--npm-registry", $env:NPM_REGISTRY,
             "--headless-only",
