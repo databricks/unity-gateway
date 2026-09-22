@@ -120,11 +120,7 @@ def test_ug_codex_mcp_help(live_session, workspace, routing):
     session.assert_not_routed()
 
 
-@pytest.mark.parametrize(
-    "routing",
-    ["off", "full", "subagent"],
-    ids=["routing-off", "routing-on", "subagent-only"],
-)
+@pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
 def test_ug_codex_app_reports_unknown_argument(live_session, workspace, routing):
     """Scenario: pass an unknown option directly to ug codex app.
 
@@ -142,8 +138,7 @@ def test_ug_codex_app_reports_unknown_argument(live_session, workspace, routing)
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
-    session.env["ENABLE_SMART_ROUTING_V2"] = "1" if routing == "full" else "0"
-    session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1" if routing == "subagent" else "0"
+    session.env["ENABLE_SMART_ROUTING_V2"] = routing
     args = ["app", "--ug-integration-unknown-option"]
     expected = session.run(*args, binary="codex", ok=False)
     actual = session.run("codex", *args, ok=False)

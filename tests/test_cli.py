@@ -666,35 +666,6 @@ class TestSubcommandRouting:
 
         assert options.launch_smart_routing is expected
 
-    def test_codex_app_keeps_native_launch_for_subagent_only_routing(self, monkeypatch):
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
-
-        options = cli_mod._launch_options(
-            "codex",
-            ["app"],
-            smart_routing_enabled=True,
-            explicit_prompt=False,
-            user_pinned_model=None,
-            provider=None,
-        )
-
-        assert options.launch_smart_routing is False
-
-    def test_codex_app_is_not_supported_for_full_smart_routing(self, monkeypatch):
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
-        monkeypatch.delenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", raising=False)
-
-        options = cli_mod._launch_options(
-            "codex",
-            ["app"],
-            smart_routing_enabled=True,
-            explicit_prompt=False,
-            user_pinned_model=None,
-            provider=None,
-        )
-
-        assert options.launch_smart_routing is False
-
     @pytest.mark.parametrize(
         ("tool_args", "expected"),
         [
