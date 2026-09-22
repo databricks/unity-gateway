@@ -192,6 +192,28 @@ class UserSession:
         for name in ("codex-v2-interposer.log", "claude-v2-pty.log"):
             assert not (self.home / ".ucode" / name).exists(), f"Unexpected routing: {name}"
 
+    def claude_gateway_models(self, name: str = "claude-gateway-models") -> list[dict]:
+        """Inspect Claude Code's own cache after its model picker launched and exited."""
+        path = Path(self.env["CLAUDE_CONFIG_DIR"]) / "cache/gateway-models.json"
+        assert path.is_file(), f"Claude Code did not create its gateway model cache: {path}"
+        payload = json.loads(path.read_text())
+        models = payload.get("models") if isinstance(payload, dict) else None
+        assert isinstance(models, list), f"Invalid Claude gateway model cache: {payload!r}"
+        assert all(isinstance(model, dict) for model in models), (
+            f"Invalid Claude gateway model entries: {models!r}"
+        )
+        self.record(f"{name}.json", payload)
+        return models
+
+    def claude_gateway_model_ids(self, name: str = "claude-gateway-models") -> list[str]:
+        """Read IDs from Claude Code's own post-launch gateway catalog cache."""
+        models = self.claude_gateway_models(name)
+        ids = [model.get("id") for model in models if isinstance(model, dict)]
+        assert len(ids) == len(models) and all(isinstance(model_id, str) for model_id in ids), (
+            f"Invalid Claude gateway model entries: {models!r}"
+        )
+        return ids
+
     def app_server_handshake(
         self,
         args: list[str],

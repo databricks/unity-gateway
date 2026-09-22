@@ -110,6 +110,8 @@ test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across tw
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_claude_managed_model_discovery.py # fetched/reused Claude MPS policy cases
 test_ug_codex_managed_model_discovery.py  # fetched/reused Codex MPS policy cases
+test_ug_claude_model_discovery.py       # unmanaged scenarios 7, 9, 11, 13
+test_ug_codex_model_discovery.py        # unmanaged scenarios 8, 10, 12, 14
 test_ug_configure_managed.py            # managed workspace: static model list, no agent selector
 test_ug_configure_managed_models.py     # injected model sources, smart-routing banner, Codex fallback metadata
 test_ug_configure_managed_mcp.py        # injected managed MCP list
@@ -168,31 +170,73 @@ MPS CUJs select the existing services already used by e2e:
 - Codex: `main.ucode.ci_openai_mps`, using its allowed `gpt-5-nano` model.
 
 Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` to
-reproduce another existing service. Use `--codex-provider-model` when that OpenAI
-service allows a different model. Those choices are recorded in `versions.json`.
+reproduce another existing service. Use `--claude-provider-model` /
+`--codex-provider-model` when it allows a different model. Those choices are recorded in `versions.json`.
 No service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
 
-There are **46 live cases** (including 6 TUI journeys) and **5 installation
+Scoped discovery additionally requires Model Services
+`main.ucode.ci_e2e_claude` and `main.ucode.ci_e2e_codex`. Override them with
+`--parent-schema`, `--claude-parent-model`, or `--codex-parent-model`. The tests
+consume but never create or modify them.
+
+These unmanaged journeys require a workspace that publishes no CodingAgentConfig.
+Before any of them configures or launches an agent, a session-scoped, read-only
+List request checks that prerequisite. A published config fails with its resource
+name; the suite does not delete it, inject a null config, or bypass admin policy.
+A code/collection pass does not establish that the live workspace meets this
+prerequisite; the live check must pass on each run.
+
+Current main enables discovery automatically; it has no `UG_ENABLE_MODEL_DISCOVERY`
+switch or configure-time `--model-location`. Cases 7/9 cover configured/fresh
+Claude default discovery, including its real gateway cache and picker. Claude's
+recognized `anthropic-aigw-<8-hex-digits>-` aliases are unwrapped for `system.ai`
+membership and discovered-family checks; malformed aliases, non-system models,
+and duplicate raw IDs still fail. Cases 8/10 require ug's discovered `system.ai`
+models while leaving Codex's model and reasoning preferences unset, and expose
+Codex's native catalog without a scoped file.
+Cases 11–14 retain the exact provider/parent catalog assertions for supported launch
+overrides. Obsolete disable-flag scenarios and duplicate managed variants are
+removed, not skipped; managed discovery and rejection remain covered by Cases
+1–6. Repository scenario numbers run consecutively from 01 to 14, with
+configured/fresh variants sharing a number. External design-document numbering
+remains unchanged and is independent of these repository IDs.
+
+The parent-schema catalog is API-specific: Claude's cache must contain exactly
+the Claude service. Codex's app-server catalog must exactly match a separate read-only
+Codex model-list request with the parent-schema header, including the dedicated Codex
+service and no out-of-schema models. A Claude service is included only if that API
+advertises it as compatible. Extra, missing, or duplicate app-server entries fail.
+Claude provider discovery still requires the exact `--claude-provider-model` ID
+in its cache. For the default `claude-haiku-4-5-20251001` fixture, Claude deduplicates
+it into the native Haiku picker row (Haiku 4.5), so the assertion checks that row
+instead of requiring the gateway's raw display name. Custom Model Services must
+still appear by their gateway IDs or display names in a numbered picker row;
+startup banners and footer text cannot satisfy discovery assertions. Cases 7–14 send no inference prompts;
+they only configure, list models, and open/close the picker. Other live CUJs perform
+real model tasks.
+
+There are **58 live cases** (including 12 TUI journeys) and **7 installation
 checks** with both agents. A separate **4 managed-workspace cases** (one per agent, an idempotent
 re-configure, and a cache-TTL journey; marker `managed`) run against a workspace that publishes a
 CodingAgentConfig; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
-A further **37 `managed_fixture`
-cases** use `UCODE_MANAGED_CONFIG_STUB`. Twenty-four explicit configured/fresh Claude and Codex
+A further **27 `managed_fixture`
+cases** use `UCODE_MANAGED_CONFIG_STUB`. Twelve explicit configured/fresh Claude and Codex
 discovery and source-override journeys fetch the published config once per agent, replace that
-agent's static source with its dedicated MPS, and reuse the result. Thirteen existing collected cases
+agent's static source with its dedicated MPS, and reuse the result. Fifteen existing collected cases
 cover focused model, MCP, skills, and lifecycle shapes, including per-agent model reconciliation
 and managed skill cleanup. The two Claude default-model cases launch with injected MPS and Unity
 Catalog sources and verify both generated settings files retain all admin-authored family defaults.
-See the named coverage and gaps matrix in
+The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
+executions; the complete integration suite collects 97 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
 # Append one of these selections to the runner command:
 -- -m live         # default: all live user journeys
 -- -m smoke        # six Hosted, custom OAuth CLI TUI, and headless journeys
--- -m tui          # six interactive TUI journeys
+-- -m 'live and tui'  # twelve interactive live configuration/model-discovery journeys
 -- -k test_ug_codex_app_server_client_initializes  # one named journey and its variants
 # Use --installation-only before -- for package checks without credentials.
 ```
@@ -286,20 +330,21 @@ cannot receive those secrets.
 
 The workspace check requires the secret to match
 `https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash
-is accepted). It never changes the secret or switches workspaces. There is no CI
-model-discovery or model-selection job. Real `ug configure` performs its normal
-workspace discovery inside each test; only explicit-model scenarios choose and
-record a discovered `system.ai` model as a test argument.
+is accepted). It never changes the secret or switches workspaces. There is no
+separate CI model-selection job; the full agent lanes include scoped model
+discovery. Real `ug configure` performs its normal workspace discovery inside
+each test; only explicit-model scenarios choose and record a discovered
+`system.ai` model as a test argument.
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 46 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 58 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 19 |
-| Codex | `live and codex` | 27 |
+| Claude | `live and claude` | 25 |
+| Codex | `live and codex` | 33 |
 
 Each lane installs only its agent CLI, once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
@@ -324,7 +369,7 @@ cannot still be running when that gate passes. Full coverage on PRs needs no lab
 
 `test_ug_configure_managed.py` (marker `managed`, not `live`) runs in its own per-agent
 **Managed config** jobs against a second workspace that publishes an admin CodingAgentConfig,
-which the shared `live` workspace deliberately does not. `ug configure` applies the admin config
+whereas unmanaged live cases require a workspace without one. `ug configure` applies the admin config
 with no agent selector, and each agent's generated config exposes exactly the admin's static
 `model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog).
 
@@ -338,9 +383,13 @@ managed-config HTTP read for config shapes that workspace does not publish. The 
 module fetches the workspace's published config once, replaces Claude's static model source with
 `main.default.ci_e2e_anthropic_mps`, drops incompatible static defaults, and reuses that fixture
 across all configured/fresh scenarios. The Codex module does the same with
-`main.default.ci_e2e_openai_mps`. The tests verify Claude's admin header, native cache and real
-model picker, Codex's exact app-server catalog, and both agents' rejection of personal source
-overrides. Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable links
+`main.default.ci_e2e_openai_mps`. Separate read-only, provider-scoped model-list requests
+establish expected IDs independently of the generated agent files. The tests require Claude's
+native cache to match those IDs and a cached model to appear in a numbered picker row
+(including native Haiku 4.5, Opus 5, and Sonnet 5 deduplication), alongside its admin header. Codex's generated catalog
+and app-server list must match its independently fetched IDs. These requests send no inference
+prompts. Both agents must reject personal source overrides.
+Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable links
 recreated by version checks, while continuing to compare persistent agent files.
 In addition, `test_ug_configure_managed_codex_catalog_fallback` injects the intentionally nonexistent
 `system.ai.gpt-99`, keeping it out of the real workspace while launching Codex through that
@@ -396,7 +445,7 @@ comment removes the label and reruns the gate; manually adding the label does no
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
 and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
 alias for `full`. Manual subsets are explicit: `smoke` runs just the six smoke
-cases; `tui` adds `and tui` to each agent lane's marker and runs all six TUI cases. Installation
+cases; `tui` adds `and tui` to each agent lane's marker and runs all 12 live TUI cases. Installation
 checks always run. Set the ug/agent versions. From the CLI:
 
 ```bash
@@ -567,7 +616,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 46 live cases. For the five installation checks, run the same
+This runs all 58 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.
