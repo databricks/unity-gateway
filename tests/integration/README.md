@@ -326,9 +326,13 @@ no dependency on agent e2e; a failure there does not prevent integration from ru
 The final required `e2e` check waits for both suites and requires both to succeed.
 The required installation and live jobs run directly on fresh GitHub Ubuntu VMs,
 not inside the optional Docker image. An advisory `windows-server-latest` job runs
-the same credential-free installation, CLI, auth-helper, and local MCP checks and
+the five credential-free checks in `test_installation.py` (installation, CLI,
+auth-helper, and local MCP) and
 uploads `integration-installation-windows` evidence. It uses `continue-on-error`
 and is not part of `All integration tests` until the initial Windows issues are fixed.
+The Windows job uses the Databricks Python/npm mirrors. Its actual OS image is
+recorded in `versions.json`; the organization can update the image behind the
+runner label. The two POSIX version-floor journeys are outside this Windows subset.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
 Installation jobs need no credentials. For same-repository PRs, the live jobs

@@ -128,8 +128,9 @@ for the same agent overlap within a run.
 CI starts integration alongside unit tests and the existing e2e shards. Integration
 does not wait for agent e2e or get skipped when an agent shard fails. These suites
 share workspace capacity; overlapping their requests can still encounter rate limits.
-An advisory Windows Server 2022 lane runs the same seven fresh-install, CLI, auth-helper,
-and local MCP checks without credentials. It uploads separate evidence but remains
+An advisory native Windows lane runs the five fresh-install, CLI, auth-helper,
+and local MCP checks in `test_installation.py` without credentials. The two POSIX
+version-floor journeys are outside this Windows subset. It uploads separate evidence but remains
 non-blocking while initial native Windows issues are diagnosed.
 The `All integration tests` check requires every selected integration job to pass; full coverage
 does not depend on a label or a manual request.
