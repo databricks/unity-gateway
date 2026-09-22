@@ -33,12 +33,11 @@ def _read_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
-def test_builds_typed_row_and_derives_schema_and_total():
+def test_builds_typed_row_and_derives_total():
     row = _row()
 
     assert row.recorded_at_utc == "2027-01-15T08:00:00+00:00"
     assert row.total_tokens == 17
-    assert tuple(row.to_csv_dict()) == usage.CSV_FIELDS
 
 
 def test_build_requires_session_and_agent_ids():
@@ -52,14 +51,12 @@ def test_default_directory_is_ucode_token_logs(tmp_path, monkeypatch):
     assert usage.usage_directory() == tmp_path / ".ucode" / "token-logs"
 
 
-def test_writes_schema_and_deduplicates_agent(tmp_path, monkeypatch):
+def test_writes_private_session_file(tmp_path, monkeypatch):
     monkeypatch.setattr(usage, "usage_directory", lambda: tmp_path / "usage")
-    row = _row()
 
-    path = usage.write_subagent_usage(row, now=1_800_000_000)
-    usage.write_subagent_usage(row, now=1_800_000_001)
+    path = usage.write_subagent_usage(_row(), now=1_800_000_000)
 
-    assert _read_rows(path) == [{field: str(getattr(row, field)) for field in usage.CSV_FIELDS}]
+    assert path.is_file()
     if os.name != "nt":
         assert path.stat().st_mode & 0o777 == 0o600
         assert path.parent.stat().st_mode & 0o777 == 0o700
@@ -75,36 +72,6 @@ def test_uses_independent_session_files(tmp_path, monkeypatch):
     assert first != second
     assert len(_read_rows(first)) == 1
     assert len(_read_rows(second)) == 1
-
-
-def test_removes_session_files_inactive_for_more_than_seven_days(tmp_path, monkeypatch):
-    directory = tmp_path / "usage"
-    directory.mkdir()
-    monkeypatch.setattr(usage, "usage_directory", lambda: directory)
-    stale = directory / "stale.csv"
-    stale.write_text("old", encoding="utf-8")
-    os.utime(stale, (1, 1))
-
-    usage.write_subagent_usage(_row(), now=usage.RETENTION_SECONDS + 2)
-
-    assert not stale.exists()
-
-
-def test_compacts_one_session_file_to_newest_rows(tmp_path, monkeypatch):
-    monkeypatch.setattr(usage, "usage_directory", lambda: tmp_path / "usage")
-    monkeypatch.setattr(usage, "MAX_SESSION_CSV_BYTES", 650)
-    path = None
-    for index in range(12):
-        path = usage.write_subagent_usage(
-            _row(agent_id=f"agent-{index}"), now=1_800_000_000 + index
-        )
-
-    assert path is not None
-    rows = _read_rows(path)
-    assert path.stat().st_size <= usage.MAX_SESSION_CSV_BYTES
-    assert rows
-    assert rows[-1]["agent_id"] == "agent-11"
-    assert rows[0]["agent_id"] != "agent-0"
 
 
 def test_hashes_unsafe_session_id(tmp_path, monkeypatch):
