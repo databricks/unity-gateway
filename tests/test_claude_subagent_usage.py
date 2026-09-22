@@ -111,7 +111,7 @@ def test_builds_and_records_claude_row(tmp_path, monkeypatch):
     monkeypatch.setattr(subagent_usage, "usage_directory", lambda: tmp_path / "usage")
     parent, child = _transcripts(tmp_path)
 
-    row = claude_subagent_usage.build_row(_payload(parent, child), now=1_800_000_000)
+    row = claude_subagent_usage.build_from_claude(_payload(parent, child), now=1_800_000_000)
     path = claude_subagent_usage.record(_payload(parent, child), now=1_800_000_000)
 
     assert isinstance(row, subagent_usage.SubagentUsageRow)
@@ -139,7 +139,7 @@ def test_falls_back_to_prompt_before_parent_receives_result(tmp_path):
     parent_rows = [json.loads(line) for line in parent.read_text().splitlines()]
     _write_jsonl(parent, parent_rows[:1])
 
-    row = claude_subagent_usage.build_row(_payload(parent, child), now=1_800_000_000)
+    row = claude_subagent_usage.build_from_claude(_payload(parent, child), now=1_800_000_000)
 
     assert row is not None
     assert row.main_model == "system.ai.claude-opus-5"
@@ -147,7 +147,7 @@ def test_falls_back_to_prompt_before_parent_receives_result(tmp_path):
 
 
 def test_missing_transcripts_build_partial_row(tmp_path):
-    row = claude_subagent_usage.build_row(
+    row = claude_subagent_usage.build_from_claude(
         _payload(tmp_path / "missing-parent", tmp_path / "missing-child"),
         now=1_800_000_000,
     )

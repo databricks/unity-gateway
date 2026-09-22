@@ -8,7 +8,7 @@ import shlex
 import subprocess
 import time
 from collections.abc import Iterable, Iterator, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -195,12 +195,17 @@ def _parent_model(
     return None, False
 
 
-def build_row(
+def build_from_claude(
     payload: Mapping[str, Any], *, now: float | None = None
 ) -> subagent_usage.SubagentUsageRow | None:
     session_id = payload.get("session_id")
     agent_id = payload.get("agent_id")
-    if not isinstance(session_id, str) or not isinstance(agent_id, str):
+    if (
+        not isinstance(session_id, str)
+        or not session_id
+        or not isinstance(agent_id, str)
+        or not agent_id
+    ):
         return None
     agent_type = payload.get("agent_type")
     subagent_name = agent_type if isinstance(agent_type, str) else ""
@@ -236,23 +241,26 @@ def build_row(
     elif not exact_parent_link:
         missing.append("exact_parent_link")
 
-    return subagent_usage.SubagentUsageRow.build(
-        {
-            "session_id": session_id,
-            "agent_id": agent_id,
-            "subagent_name": subagent_name,
-            "main_model": main_model or "",
-            "subagent_model": "|".join(models),
-            **totals,
-            "status": "ok" if not missing else f"partial:{'|'.join(missing)}",
-        },
-        now=now,
+    recorded_at = now if now is not None else time.time()
+    return subagent_usage.SubagentUsageRow(
+        recorded_at_utc=datetime.fromtimestamp(recorded_at, UTC).isoformat(),
+        session_id=session_id,
+        agent_id=agent_id,
+        subagent_name=subagent_name,
+        main_model=main_model or "",
+        subagent_model="|".join(models),
+        input_tokens=totals["input_tokens"],
+        cache_creation_input_tokens=totals["cache_creation_input_tokens"],
+        cache_read_input_tokens=totals["cache_read_input_tokens"],
+        output_tokens=totals["output_tokens"],
+        total_tokens=sum(totals.values()),
+        status="ok" if not missing else f"partial:{'|'.join(missing)}",
     )
 
 
 def record(payload: Mapping[str, Any], *, now: float | None = None) -> Path | None:
     recorded_at = now if now is not None else time.time()
-    row = build_row(payload, now=recorded_at)
+    row = build_from_claude(payload, now=recorded_at)
     if row is None:
         return None
     return subagent_usage.write_subagent_usage(row, now=recorded_at)
