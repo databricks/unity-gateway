@@ -738,7 +738,14 @@ class TestSubcommandRouting:
         calls["launch"].assert_called_once()
 
     def test_claude_model_location_is_forwarded(self):
-        with _launch_policy_patches(None) as calls:
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.get_databricks_token", return_value="token"),
+            patch(
+                "ucode.databricks._http_get_json",
+                return_value=({"data": [{"id": "main.default.claude-sonnet-5"}]}, None),
+            ),
+        ):
             result = runner.invoke(app, ["claude", "--model-location", "main.default"])
 
         assert result.exit_code == 0, result.output
@@ -1146,6 +1153,96 @@ def test_claude_discovery_changes_do_not_break_other_managed_providers():
 
     assert result.exit_code == 0, result.output
     assert "main.default.gemini-mps" in _strip_ansi(result.output)
+
+
+class TestScopedModelDiscovery:
+    @pytest.mark.parametrize("source", ["cli", "managed", "managed-default", "managed-families"])
+    @pytest.mark.parametrize("empty", [True, False], ids=["empty", "nonempty"])
+    def test_claude_requires_models_before_launch(self, source, empty):
+        model_config = {"unity_catalog_location": "main.default"}
+        if source == "managed-default":
+            model_config["default_model"] = "main.default.claude-sonnet-5"
+        elif source == "managed-families":
+            model_config["default_models_by_model_family"] = {
+                "default_sonnet_model": "main.default.claude-sonnet-5"
+            }
+        managed = (
+            {"enabled_agents": {"claude": {"model_config": model_config}}}
+            if source != "cli"
+            else None
+        )
+        args = ["claude"]
+        if source == "cli":
+            args += ["--model-location", "main.default", "--model", "main.default.claude-sonnet-5"]
+        payload = {"data": [] if empty else [{"id": "main.default.claude-sonnet-5"}]}
+
+        with (
+            _launch_policy_patches(managed) as calls,
+            patch("ucode.cli.get_databricks_token", return_value="token"),
+            patch("ucode.databricks._http_get_json", return_value=(payload, None)) as discovery,
+        ):
+            result = runner.invoke(app, args)
+
+        discovery.assert_called_once()
+        assert discovery.call_args.kwargs["headers"] == {
+            "Databricks-Model-Service-Parent-Schema": "main.default"
+        }
+        if empty:
+            assert result.exit_code == 1, result.output
+            output = _strip_ansi(result.output)
+            assert "main.default" in output
+            assert "no Anthropic model ids" in output
+            calls["configure"].assert_not_called()
+            calls["launch"].assert_not_called()
+        else:
+            assert result.exit_code == 0, result.output
+            calls["launch"].assert_called_once()
+            # Only the existing managed-without-defaults flow replaces the picker.
+            assert bool(calls["configure"].call_args.kwargs["picker_catalog"]) is (
+                source == "managed"
+            )
+            if source == "managed-default":
+                assert calls["configure"].call_args.kwargs["route_root_model"] == (
+                    "main.default.claude-sonnet-5"
+                )
+            elif source == "managed-families":
+                assert calls["configure"].call_args.kwargs["coding_agent_config_defaults"] == {
+                    "sonnet": "main.default.claude-sonnet-5"
+                }
+
+    @pytest.mark.parametrize("source", ["cli", "managed", "managed-default"])
+    def test_codex_empty_discovery_exits_without_starting_client(self, source):
+        model_config = {"unity_catalog_location": "main.default"}
+        if source == "managed-default":
+            model_config["default_model"] = "main.default.gpt-5"
+        managed = (
+            {"enabled_agents": {"codex": {"model_config": model_config}}}
+            if source != "cli"
+            else None
+        )
+        args = ["codex"]
+        if source == "cli":
+            args += ["--model-location", "main.default"]
+
+        with (
+            _launch_policy_patches(managed) as calls,
+            patch("ucode.agents.codex.clear_model_preferences"),
+            patch("ucode.agents.codex._launch_token", return_value="token"),
+            patch("ucode.agents.codex._use_legacy_layout", return_value=False),
+            patch(
+                "ucode.agents.codex.read_toml_safe", return_value={"model_provider": "Databricks"}
+            ),
+            patch("ucode.databricks._http_get_json", return_value=({"models": []}, None)),
+            patch("ucode.agents.codex._run_codex") as run_codex,
+        ):
+            calls["launch"].side_effect = lambda _tool, state, tool_args, **kwargs: (
+                cli_mod.codex_agent.launch(state, tool_args, **kwargs)
+            )
+            result = runner.invoke(app, args)
+
+        assert result.exit_code == 1, result.output
+        assert "main.default returned no Codex models" in _strip_ansi(result.output)
+        run_codex.assert_not_called()
 
 
 class TestManagedCodexModelSource:

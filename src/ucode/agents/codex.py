@@ -820,6 +820,31 @@ def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -
     return get_databricks_token(workspace, state.get("profile"), force_refresh=force_refresh)
 
 
+def _preflight_parent_schema_catalog(
+    workspace: str | None,
+    token: str | None,
+    parent_schema: str | None,
+) -> None:
+    """Validate a transient parent catalog before an early launch path.
+
+    Smart routing and legacy-layout launches return before the normal profile
+    setup, so they need the same empty-catalog guard before starting Codex.
+    The unavailable-endpoint fallback remains launchable, as it does on the
+    normal path.
+    """
+    if not workspace or not token or not parent_schema:
+        return
+    try:
+        _fetch_codex_model_catalog(
+            workspace,
+            token,
+            source=CodexCatalogSource.PARENT_SCHEMA,
+            identifier=parent_schema,
+        )
+    except CodexMpsModelCatalogUnavailable:
+        pass
+
+
 def _tool_args_select_model(tool_args: list[str]) -> bool:
     """Whether the passthrough args already pin a model via ``-m``/``--model``."""
     return any(arg in ("-m", "--model") or arg.startswith(("--model=", "-m=")) for arg in tool_args)
@@ -917,11 +942,6 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
-    if options.launch_smart_routing:
-        _launch_smart_routing(state, tool_args)
-        return
-    clear_model_preferences(state)
-    binary = SPEC["binary"]
     workspace = state.get("workspace")
     launch_provider = state.get("_codex_launch_provider")
     transient_provider = (
@@ -935,6 +955,17 @@ def launch(
         if isinstance(launch_parent_schema, str) and launch_parent_schema.strip()
         else None
     )
+    if options.launch_smart_routing:
+        # Parent-schema discovery must still reject an empty catalog before smart routing's
+        # early launch. A transient provider, when both markers are present, remains more specific
+        # and therefore keeps provider precedence.
+        if parent_schema and not transient_provider:
+            token = _launch_token(state, workspace) if workspace else None
+            _preflight_parent_schema_catalog(workspace, token, parent_schema)
+        _launch_smart_routing(state, tool_args)
+        return
+    clear_model_preferences(state)
+    binary = SPEC["binary"]
     # Launch-scoped admin routing wins over persisted developer configuration. A transient provider
     # is most specific; otherwise a transient UC parent must suppress a saved provider.
     provider = transient_provider or (
@@ -948,6 +979,11 @@ def launch(
         token = _launch_token(state, workspace)
         os.environ["OAUTH_TOKEN"] = token
     if _use_legacy_layout():
+        _preflight_parent_schema_catalog(
+            workspace,
+            token,
+            parent_schema if not transient_provider else None,
+        )
         print_warning_err(
             f"Codex {agent_version(binary)} is outdated. Upgrade Codex to "
             f"{LEGACY_LAYOUT_CODEX_VERSION_TEXT} or newer, then run `codex --version` to verify "

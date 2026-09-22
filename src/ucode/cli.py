@@ -2697,17 +2697,19 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
-        elif managed_claude_uc_without_defaults:
+        elif tool == "claude" and parent_schema:
             token = get_databricks_token(state["workspace"], state.get("profile"))
-            picker_catalog = list_anthropic_model_catalog(
-                state["workspace"], token, parent_schema=managed_parent_schema
+            catalog = list_anthropic_model_catalog(
+                state["workspace"], token, parent_schema=parent_schema
             )
-            error = picker_catalog.error_msg
-            if error:
+            if catalog.error_msg or not catalog.model_ids:
+                error = catalog.error_msg or "AI Gateway returned no Anthropic model ids"
                 raise RuntimeError(
-                    f"Could not discover Claude models for managed Unity Catalog location "
-                    f"{managed_parent_schema}: {error}"
+                    f"Could not discover Claude models for Unity Catalog location "
+                    f"{parent_schema}: {error}"
                 )
+            if managed_claude_uc_without_defaults:
+                picker_catalog = catalog
         # The router's per-launch pick for the root session. Codex pins it as the
         # resolved model; claude pins it via ANTHROPIC_MODEL (route_root_model).
         route_root_model = None
