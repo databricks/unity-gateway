@@ -2040,7 +2040,7 @@ def claude_subagent_usage_hook_cmd() -> None:
     try:
         payload = json.loads(sys.stdin.read() or "{}")
         if isinstance(payload, dict):
-            claude_subagent_usage.record(payload)
+            claude_subagent_usage.ClaudeSubagentUsageRow.record(payload)
     except Exception:  # noqa: BLE001 - observability hooks must never block an agent
         return
 

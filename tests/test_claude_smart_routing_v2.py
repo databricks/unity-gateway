@@ -388,7 +388,7 @@ class TestV2Launch:
         }
 
     def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch):
-        monkeypatch.setenv(subagent_usage.ENABLE_ENV_VAR, "1")
+        monkeypatch.setenv(subagent_usage.ENABLE_SUBAGENT_USAGE_CSV, "1")
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)

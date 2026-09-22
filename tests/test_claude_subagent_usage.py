@@ -108,14 +108,24 @@ def _read_rows(path: Path) -> list[dict[str, str]]:
 
 
 def test_builds_and_records_claude_row(tmp_path, monkeypatch):
-    monkeypatch.setattr(subagent_usage, "usage_directory", lambda: tmp_path / "usage")
+    monkeypatch.setattr(
+        subagent_usage,
+        "usage_directory",
+        lambda subdirectory: tmp_path / "usage" / subdirectory,
+    )
     parent, child = _transcripts(tmp_path)
 
-    row = claude_subagent_usage.build_from_claude(_payload(parent, child), now=1_800_000_000)
-    path = claude_subagent_usage.record(_payload(parent, child), now=1_800_000_000)
+    row = claude_subagent_usage.ClaudeSubagentUsageRow.build(
+        _payload(parent, child), now=1_800_000_000
+    )
+    path = claude_subagent_usage.ClaudeSubagentUsageRow.record(
+        _payload(parent, child), now=1_800_000_000
+    )
 
+    assert isinstance(row, claude_subagent_usage.ClaudeSubagentUsageRow)
     assert isinstance(row, subagent_usage.SubagentUsageRow)
     assert path is not None
+    assert path.parent == tmp_path / "usage" / "claude"
     assert _read_rows(path) == [
         {
             "recorded_at_utc": "2027-01-15T08:00:00+00:00",
@@ -139,7 +149,9 @@ def test_falls_back_to_prompt_before_parent_receives_result(tmp_path):
     parent_rows = [json.loads(line) for line in parent.read_text().splitlines()]
     _write_jsonl(parent, parent_rows[:1])
 
-    row = claude_subagent_usage.build_from_claude(_payload(parent, child), now=1_800_000_000)
+    row = claude_subagent_usage.ClaudeSubagentUsageRow.build(
+        _payload(parent, child), now=1_800_000_000
+    )
 
     assert row is not None
     assert row.main_model == "system.ai.claude-opus-5"
@@ -147,7 +159,7 @@ def test_falls_back_to_prompt_before_parent_receives_result(tmp_path):
 
 
 def test_missing_transcripts_build_partial_row(tmp_path):
-    row = claude_subagent_usage.build_from_claude(
+    row = claude_subagent_usage.ClaudeSubagentUsageRow.build(
         _payload(tmp_path / "missing-parent", tmp_path / "missing-child"),
         now=1_800_000_000,
     )
@@ -178,7 +190,7 @@ def test_hook_config_preserves_user_hooks():
 
 
 def test_normal_and_relayed_launches_receive_transient_hook(monkeypatch):
-    monkeypatch.setenv(subagent_usage.ENABLE_ENV_VAR, "1")
+    monkeypatch.setenv(subagent_usage.ENABLE_SUBAGENT_USAGE_CSV, "1")
     monkeypatch.setattr(claude, "read_json_safe", lambda _path: {"env": {}})
 
     normal = claude._build_claude_argv("claude", ["-p", "hi"])
@@ -211,9 +223,9 @@ def test_disabled_launch_removes_stale_hook_and_preserves_user_hook(monkeypatch)
 
     for flag_value in (None, "0"):
         if flag_value is None:
-            monkeypatch.delenv(subagent_usage.ENABLE_ENV_VAR, raising=False)
+            monkeypatch.delenv(subagent_usage.ENABLE_SUBAGENT_USAGE_CSV, raising=False)
         else:
-            monkeypatch.setenv(subagent_usage.ENABLE_ENV_VAR, flag_value)
+            monkeypatch.setenv(subagent_usage.ENABLE_SUBAGENT_USAGE_CSV, flag_value)
         argv = claude._build_claude_argv("claude", ["-p", "hi"])
         settings = json.loads(argv[argv.index("--settings") + 1])
         commands = [
@@ -225,7 +237,7 @@ def test_disabled_launch_removes_stale_hook_and_preserves_user_hook(monkeypatch)
 
 
 def test_enabled_launch_replaces_stale_hook_with_one_current_hook(monkeypatch):
-    monkeypatch.setenv(subagent_usage.ENABLE_ENV_VAR, "1")
+    monkeypatch.setenv(subagent_usage.ENABLE_SUBAGENT_USAGE_CSV, "1")
     monkeypatch.setattr(
         claude,
         "read_json_safe",
@@ -259,12 +271,12 @@ def test_enabled_launch_replaces_stale_hook_with_one_current_hook(monkeypatch):
 def test_hidden_hook_is_silent_and_fail_open():
     runner = CliRunner()
     payload = {"session_id": "session-1", "agent_id": "agent-1"}
-    with patch("ucode.agents.claude_subagent_usage.record") as record:
+    with patch.object(claude_subagent_usage.ClaudeSubagentUsageRow, "record") as record:
         result = runner.invoke(
             app,
             [claude_subagent_usage.HOOK_COMMAND_MARKER],
             input=json.dumps(payload),
-            env={subagent_usage.ENABLE_ENV_VAR: "1"},
+            env={subagent_usage.ENABLE_SUBAGENT_USAGE_CSV: "1"},
         )
 
     assert result.exit_code == 0
@@ -275,7 +287,7 @@ def test_hidden_hook_is_silent_and_fail_open():
         app,
         [claude_subagent_usage.HOOK_COMMAND_MARKER],
         input="not json",
-        env={subagent_usage.ENABLE_ENV_VAR: "1"},
+        env={subagent_usage.ENABLE_SUBAGENT_USAGE_CSV: "1"},
     )
     assert invalid.exit_code == 0
     assert invalid.output == ""

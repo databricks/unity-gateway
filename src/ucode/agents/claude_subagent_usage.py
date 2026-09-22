@@ -8,13 +8,14 @@ import shlex
 import subprocess
 import time
 from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ucode import subagent_usage
 from ucode.databricks import ug_binary
 from ucode.smart_routing import hooks
+from ucode.subagent_usage import SubagentUsageRow
 
 HOOK_COMMAND_MARKER = "claude-subagent-usage-hook"
 
@@ -195,72 +196,69 @@ def _parent_model(
     return None, False
 
 
-def build_from_claude(
-    payload: Mapping[str, Any], *, now: float | None = None
-) -> subagent_usage.SubagentUsageRow | None:
-    session_id = payload.get("session_id")
-    agent_id = payload.get("agent_id")
-    if (
-        not isinstance(session_id, str)
-        or not session_id
-        or not isinstance(agent_id, str)
-        or not agent_id
-    ):
-        return None
-    agent_type = payload.get("agent_type")
-    subagent_name = agent_type if isinstance(agent_type, str) else ""
-    child_path = payload.get("agent_transcript_path")
-    parent_path = payload.get("transcript_path")
-    child_records, child_complete = (
-        _read_jsonl(Path(child_path).expanduser())
-        if isinstance(child_path, str) and child_path
-        else ([], False)
-    )
-    parent_records, parent_complete = (
-        _read_jsonl(Path(parent_path).expanduser())
-        if isinstance(parent_path, str) and parent_path
-        else ([], False)
-    )
+@dataclass(frozen=True, slots=True)
+class ClaudeSubagentUsageRow(SubagentUsageRow):
+    token_log_subdirectory = "claude"
 
-    totals, models = _usage(child_records)
-    child_prompt, child_timestamp = _first_child_prompt(child_records)
-    main_model, exact_parent_link = _parent_model(
-        parent_records,
-        agent_id=agent_id,
-        agent_type=subagent_name,
-        child_prompt=child_prompt,
-        child_timestamp=child_timestamp,
-    )
-    missing: list[str] = []
-    if not child_complete or not sum(totals.values()):
-        missing.append("usage")
-    if not models:
-        missing.append("subagent_model")
-    if not parent_complete or not main_model:
-        missing.append("main_model")
-    elif not exact_parent_link:
-        missing.append("exact_parent_link")
+    @staticmethod
+    def build(
+        payload: Mapping[str, Any], *, now: float | None = None
+    ) -> ClaudeSubagentUsageRow | None:
+        session_id = payload.get("session_id")
+        agent_id = payload.get("agent_id")
+        if (
+            not isinstance(session_id, str)
+            or not session_id
+            or not isinstance(agent_id, str)
+            or not agent_id
+        ):
+            return None
+        agent_type = payload.get("agent_type")
+        subagent_name = agent_type if isinstance(agent_type, str) else ""
+        child_path = payload.get("agent_transcript_path")
+        parent_path = payload.get("transcript_path")
+        child_records, child_complete = (
+            _read_jsonl(Path(child_path).expanduser())
+            if isinstance(child_path, str) and child_path
+            else ([], False)
+        )
+        parent_records, parent_complete = (
+            _read_jsonl(Path(parent_path).expanduser())
+            if isinstance(parent_path, str) and parent_path
+            else ([], False)
+        )
 
-    recorded_at = now if now is not None else time.time()
-    return subagent_usage.SubagentUsageRow(
-        recorded_at_utc=datetime.fromtimestamp(recorded_at, UTC).isoformat(),
-        session_id=session_id,
-        agent_id=agent_id,
-        subagent_name=subagent_name,
-        main_model=main_model or "",
-        subagent_model="|".join(models),
-        input_tokens=totals["input_tokens"],
-        cache_creation_input_tokens=totals["cache_creation_input_tokens"],
-        cache_read_input_tokens=totals["cache_read_input_tokens"],
-        output_tokens=totals["output_tokens"],
-        total_tokens=sum(totals.values()),
-        status="ok" if not missing else f"partial:{'|'.join(missing)}",
-    )
+        totals, models = _usage(child_records)
+        child_prompt, child_timestamp = _first_child_prompt(child_records)
+        main_model, exact_parent_link = _parent_model(
+            parent_records,
+            agent_id=agent_id,
+            agent_type=subagent_name,
+            child_prompt=child_prompt,
+            child_timestamp=child_timestamp,
+        )
+        missing: list[str] = []
+        if not child_complete or not sum(totals.values()):
+            missing.append("usage")
+        if not models:
+            missing.append("subagent_model")
+        if not parent_complete or not main_model:
+            missing.append("main_model")
+        elif not exact_parent_link:
+            missing.append("exact_parent_link")
 
-
-def record(payload: Mapping[str, Any], *, now: float | None = None) -> Path | None:
-    recorded_at = now if now is not None else time.time()
-    row = build_from_claude(payload, now=recorded_at)
-    if row is None:
-        return None
-    return subagent_usage.write_subagent_usage(row, now=recorded_at)
+        recorded_at = now if now is not None else time.time()
+        return ClaudeSubagentUsageRow(
+            recorded_at_utc=datetime.fromtimestamp(recorded_at, UTC).isoformat(),
+            session_id=session_id,
+            agent_id=agent_id,
+            subagent_name=subagent_name,
+            main_model=main_model or "",
+            subagent_model="|".join(models),
+            input_tokens=totals["input_tokens"],
+            cache_creation_input_tokens=totals["cache_creation_input_tokens"],
+            cache_read_input_tokens=totals["cache_read_input_tokens"],
+            output_tokens=totals["output_tokens"],
+            total_tokens=sum(totals.values()),
+            status="ok" if not missing else f"partial:{'|'.join(missing)}",
+        )
