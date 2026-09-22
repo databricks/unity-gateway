@@ -428,6 +428,9 @@ E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     "-codex": frozenset({"copilot"}),
     "gpt-5-5": frozenset({"copilot"}),
     "gpt-5-6": frozenset({"copilot"}),
+    # Copilot and Pi currently fail against these GPT-6 variants.
+    "gpt-6-luna": frozenset({"copilot", "pi"}),
+    "gpt-6-sol": frozenset({"copilot", "pi"}),
     # Astra has limited allowance in production and will hit 429s if tested.
     "astra": frozenset({"codex", "copilot", "pi", "web_search"}),
 }
@@ -1145,8 +1148,15 @@ class TestCopilotLaunch:
             out.append(("codex", model))
         return out
 
-    def test_astra_is_skipped(self):
-        state = {"codex_models": ["databricks-gpt-6-astra", "databricks-gpt-5-4"]}
+    def test_incompatible_models_are_skipped(self):
+        state = {
+            "codex_models": [
+                "databricks-gpt-6-astra",
+                "databricks-gpt-6-luna",
+                "databricks-gpt-6-sol",
+                "databricks-gpt-5-4",
+            ]
+        }
         assert self._all_models(state) == [("codex", "databricks-gpt-5-4")]
 
     def test_launch_copilot_per_model(
@@ -1210,8 +1220,15 @@ class TestPiLaunch:
             out.append(("gemini", model))
         return out
 
-    def test_astra_is_skipped(self):
-        state = {"codex_models": ["databricks-gpt-6-astra", "databricks-gpt-5-4"]}
+    def test_incompatible_models_are_skipped(self):
+        state = {
+            "codex_models": [
+                "databricks-gpt-6-astra",
+                "databricks-gpt-6-luna",
+                "databricks-gpt-6-sol",
+                "databricks-gpt-5-4",
+            ]
+        }
         assert self._all_models(state) == [("codex", "databricks-gpt-5-4")]
 
     def test_launch_pi_per_model(self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token):
