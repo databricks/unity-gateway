@@ -14,6 +14,7 @@ from ucode import subagent_usage as usage
 
 class _TestSubagentUsageRow(usage.SubagentUsageRow):
     __slots__ = ()
+    token_log_subdirectory = "test"
 
     @staticmethod
     def build(payload, *, now=None):
@@ -50,7 +51,7 @@ def _write_row_in_process(app_dir: str, agent_id: str, start_event) -> None:
 
 def _hold_directory_lock(app_dir: str, acquired_event, release_event) -> None:
     usage.APP_DIR = Path(app_dir)
-    directory = usage._ensure_usage_directory()
+    directory = usage._ensure_usage_directory(_TestSubagentUsageRow.token_log_subdirectory)
     with usage._directory_lock(directory):
         acquired_event.set()
         release_event.wait(timeout=10)
@@ -61,14 +62,22 @@ def test_base_row_requires_harness_builder():
         usage.SubagentUsageRow(**asdict(_row()))
 
 
-def test_default_directory_is_ucode_token_logs(tmp_path, monkeypatch):
+def test_row_subclass_requires_token_log_subdirectory():
+    with pytest.raises(TypeError, match="token_log_subdirectory"):
+        class MissingDirectoryRow(usage.SubagentUsageRow):
+            @staticmethod
+            def build(payload, *, now=None):
+                return None
+
+
+def test_default_directory_is_harness_specific(tmp_path, monkeypatch):
     monkeypatch.setattr(usage, "APP_DIR", tmp_path / ".ucode")
 
-    assert usage.usage_directory() == tmp_path / ".ucode" / "token-logs"
+    assert usage.usage_directory("test") == tmp_path / ".ucode" / "token-logs" / "test"
 
 
 def test_writes_private_session_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(usage, "usage_directory", lambda: tmp_path / "usage")
+    monkeypatch.setattr(usage, "usage_directory", lambda _subdirectory: tmp_path / "usage")
 
     path = usage.write_subagent_usage(_row(), now=1_800_000_000)
 
@@ -79,7 +88,7 @@ def test_writes_private_session_file(tmp_path, monkeypatch):
 
 
 def test_appends_rows_to_session_csv(tmp_path, monkeypatch):
-    monkeypatch.setattr(usage, "usage_directory", lambda: tmp_path / "usage")
+    monkeypatch.setattr(usage, "usage_directory", lambda _subdirectory: tmp_path / "usage")
     first = _row(agent_id="agent-1")
     second = _row(agent_id="agent-2")
     expected_first = {
@@ -130,7 +139,7 @@ def test_concurrent_processes_append_complete_rows(tmp_path):
             process.join()
 
     assert [process.exitcode for process in processes] == [0, 0, 0]
-    rows = _read_rows(app_dir / "token-logs" / "session-1.csv")
+    rows = _read_rows(app_dir / "token-logs" / "test" / "session-1.csv")
     assert sorted(row["agent_id"] for row in rows) == ["agent-0", "agent-1", "agent-2"]
     assert all(row["total_tokens"] == "17" and row["status"] == "ok" for row in rows)
 
@@ -164,7 +173,7 @@ def test_write_times_out_when_another_process_holds_lock(tmp_path, monkeypatch):
 
 
 def test_uses_independent_session_files(tmp_path, monkeypatch):
-    monkeypatch.setattr(usage, "usage_directory", lambda: tmp_path / "usage")
+    monkeypatch.setattr(usage, "usage_directory", lambda _subdirectory: tmp_path / "usage")
     now = time.time()
 
     first = usage.write_subagent_usage(_row(), now=now)
