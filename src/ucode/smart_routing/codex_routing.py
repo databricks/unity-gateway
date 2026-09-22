@@ -28,7 +28,6 @@ SPAWN_AGENT_TOOL_SUFFIX = "spawn_agent"
 CANARY_PATH = APP_DIR / "codex-smart-routing-canary.json"
 AUDIT_PATH = APP_DIR / "codex-smart-routing-audit.jsonl"
 DECISIONS_PATH = APP_DIR / "codex-smart-routing-decisions.jsonl"
-HOOK_EVENTS_PATH = APP_DIR / "codex-smart-routing-hook-events.jsonl"
 SUBAGENT_NOTICE_CONFIG = routing.SubagentNoticeConfig(
     name_field="task_name",
     prompt_field="message",
@@ -141,20 +140,9 @@ def record_subagent_start(payload: dict[str, Any]) -> dict[str, Any]:
     return routing.record_subagent_start(DECISIONS_PATH, AUDIT_PATH, payload)
 
 
-def record_hook_event(
-    event: str,
-    status: str,
-    payload: dict[str, Any] | None = None,
-    *,
-    detail: str | None = None,
-) -> None:
-    """Record hook progress without persisting prompts, tool input, or credentials."""
-    routing.write_hook_event(HOOK_EVENTS_PATH, event, status, payload, detail=detail)
-
-
 def clear_routing_artifacts() -> None:
     """Remove ucode-owned routing canary and audit files."""
-    routing.clear_artifacts((CANARY_PATH, AUDIT_PATH, DECISIONS_PATH, HOOK_EVENTS_PATH))
+    routing.clear_artifacts((CANARY_PATH, AUDIT_PATH, DECISIONS_PATH))
 
 
 def _parse_gpt(model: str) -> tuple[int, int, int, str] | None:

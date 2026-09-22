@@ -2045,7 +2045,6 @@ def codex_router_hook_cmd(
         return
 
     from ucode.smart_routing.codex_routing import (
-        record_hook_event,
         record_session_start,
         record_subagent_start,
         route_pre_tool_use,
@@ -2054,19 +2053,14 @@ def codex_router_hook_cmd(
     try:
         payload = json.loads(sys.stdin.read() or "{}")
     except ValueError:
-        record_hook_event(event, "invalid-json")
         return
     if not isinstance(payload, dict):
-        record_hook_event(event, "invalid-payload")
         return
-    record_hook_event(event, "received", payload)
     if event == "session-start":
         record_session_start(payload)
-        record_hook_event(event, "recorded", payload)
         return
     if event == "record-subagent":
         record = record_subagent_start(payload)
-        record_hook_event(event, "recorded", payload)
         matched = record.get("matches_router_decision")
         if matched is True:
             sys.stdout.write(
@@ -2091,10 +2085,8 @@ def codex_router_hook_cmd(
         # the PreToolUse hook already injected the routed model, so emit nothing.
         return
     if event != "route-subagent" or not host:
-        record_hook_event(event, "ignored", payload, detail="unsupported event or missing host")
         return
     if use_pat and not ensure_pat_bearer(profile):
-        record_hook_event(event, "auth-failed", payload, detail="PAT bearer unavailable")
         return
     token = os.environ.get("DATABRICKS_BEARER", "").strip()
     if not token:
@@ -2102,8 +2094,7 @@ def codex_router_hook_cmd(
         if not _oauth_token_is_fresh(token):
             try:
                 token = get_databricks_token(host, profile, force_refresh=True)
-            except RuntimeError as exc:
-                record_hook_event(event, "auth-failed", payload, detail=str(exc))
+            except RuntimeError:
                 return
     output = route_pre_tool_use(
         payload,
@@ -2113,11 +2104,7 @@ def codex_router_hook_cmd(
         audit_decision=True,
     )
     if output is not None:
-        updated = output.get("hookSpecificOutput", {}).get("updatedInput", {})
-        record_hook_event(event, "routed", payload, detail=str(updated.get("model") or ""))
         sys.stdout.write(json.dumps(output))
-    else:
-        record_hook_event(event, "not-routed", payload)
 
 
 @app.command("claude-router-hook", hidden=True)
