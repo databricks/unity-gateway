@@ -10,6 +10,7 @@ import anyio
 import httpx
 import pytest
 
+from ucode import mcp_connection_login as mcl
 from ucode import mcp_proxy
 
 WS = "https://example.databricks.com"
@@ -395,12 +396,17 @@ class TestServe:
         with pytest.raises(ValueError, match="some transport bug"):
             mcp_proxy.serve(URL, WS, "p")
 
-    def test_connection_backed_url_logs_in_before_the_bridge(self, monkeypatch):
-        # A connection-backed mcp-services URL drives `databricks auth login
-        # --resource` up front (blocking), then opens the bridge — so the session
-        # is authenticated before AI Gateway is ever called.
+    def test_connection_backed_url_logs_in_before_the_bridge_when_credential_missing(
+        self, monkeypatch
+    ):
+        # A connection-backed mcp-services URL whose credential is MISSING drives
+        # `databricks auth login --resource` up front (blocking), then opens the
+        # bridge — so the session is authenticated before AI Gateway is called.
         order: list = []
         monkeypatch.setattr(mcp_proxy, "_preflight_token", lambda ws, profile: None)
+        monkeypatch.setattr(
+            mcp_proxy, "connection_credential_state", lambda *a, **k: mcp_proxy.CREDENTIAL_MISSING
+        )
         monkeypatch.setattr(
             mcp_proxy,
             "run_connection_login",
@@ -413,6 +419,45 @@ class TestServe:
         mcp_proxy.serve(CONN_URL, WS, "p")
 
         assert order == [("login", CONN_URL, "p"), ("bridge",)]
+
+    def test_present_credential_skips_the_login_and_opens_the_bridge(self, monkeypatch):
+        # The key scaling fix: an already-signed-in connection must NOT re-run the
+        # browser login — otherwise N configured servers pop N browsers per session.
+        logins: list = []
+        opened: list = []
+        monkeypatch.setattr(mcp_proxy, "_preflight_token", lambda ws, profile: None)
+        monkeypatch.setattr(
+            mcp_proxy, "connection_credential_state", lambda *a, **k: mcl.CREDENTIAL_PRESENT
+        )
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: logins.append(1) or (True, "")
+        )
+        monkeypatch.setattr(mcp_proxy.anyio, "run", lambda func, *args: opened.append("bridge"))
+
+        mcp_proxy.serve(CONN_URL, WS, "p")
+
+        assert logins == []  # no browser
+        assert opened == ["bridge"]  # session still comes up
+
+    def test_unknown_or_no_login_state_skips_the_login(self, monkeypatch):
+        # UNKNOWN (probe failed) and NO_LOGIN (non-OAuth connection) both fail safe:
+        # no eager browser — tools/list still works and a tool call can surface it later.
+        for state in (mcl.CREDENTIAL_UNKNOWN, mcl.CREDENTIAL_NO_LOGIN):
+            logins: list = []
+            monkeypatch.setattr(mcp_proxy, "_preflight_token", lambda ws, profile: None)
+            monkeypatch.setattr(
+                mcp_proxy, "connection_credential_state", lambda *a, s=state, **k: s
+            )
+            monkeypatch.setattr(
+                mcp_proxy,
+                "run_connection_login",
+                lambda *a, _l=logins, **k: _l.append(1) or (True, ""),
+            )
+            monkeypatch.setattr(mcp_proxy.anyio, "run", lambda func, *args: None)
+
+            mcp_proxy.serve(CONN_URL, WS, "p")
+
+            assert logins == [], f"state={state} must not open a browser"
 
     def test_non_connection_url_skips_the_login(self, monkeypatch):
         logins: list = []
@@ -429,6 +474,9 @@ class TestServe:
     def test_connection_login_failure_exits_before_the_bridge(self, monkeypatch):
         started: list = []
         monkeypatch.setattr(mcp_proxy, "_preflight_token", lambda ws, profile: None)
+        monkeypatch.setattr(
+            mcp_proxy, "connection_credential_state", lambda *a, **k: mcp_proxy.CREDENTIAL_MISSING
+        )
         monkeypatch.setattr(
             mcp_proxy, "run_connection_login", lambda *a, **k: (False, "user cancelled")
         )

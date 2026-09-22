@@ -43,7 +43,12 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.server.stdio import stdio_server
 
 from ucode.databricks import ensure_pat_bearer, get_databricks_token
-from ucode.mcp_connection_login import connection_from_url, run_connection_login
+from ucode.mcp_connection_login import (
+    CREDENTIAL_MISSING,
+    connection_credential_state,
+    connection_from_url,
+    run_connection_login,
+)
 
 # Exit code used when the proxy cannot continue. MCP clients surface a non-zero
 # exit far more usefully than a timeout, so bail out instead of hanging.
@@ -250,15 +255,23 @@ def serve(url: str, workspace: str, profile: str | None = None, *, use_pat: bool
     # <mcp-url>`, which a resource-aware /oidc routes through the connection's own
     # sign-in (/mcp-service-login) before minting the token. The agent blocks on
     # "connecting…" while it runs (the browser opens, or the URL is printed to this
-    # stderr), then the session comes up already authenticated — so AI Gateway is
-    # only ever called with a valid credential and never has to elicit a login. It
-    # is idempotent: once signed in, the login returns immediately with no prompt.
-    # PAT profiles have no connection OAuth to drive, so they skip it.
+    # stderr), then the session comes up already authenticated.
+    #
+    # But `databricks auth login` always re-runs the browser OAuth — it does NOT
+    # short-circuit on a cached token — so doing it unconditionally would pop a
+    # browser for EVERY connection-backed server on EVERY session. So gate it on
+    # the actual credential state: only log in when the credential is confirmed
+    # missing. When it's already present (or the state can't be determined) we
+    # skip the browser entirely — this is what makes N configured servers not
+    # equal N browser windows per session. PAT profiles have no connection OAuth
+    # to drive, so they skip it too.
     connection = None if use_pat else connection_from_url(url)
     if connection is not None:
-        ok, detail = run_connection_login(url, workspace, profile=profile)
-        if not ok:
-            _fail_fast(f"connection login for '{connection}' failed: {detail}")
+        state = connection_credential_state(url, workspace, profile=profile)
+        if state == CREDENTIAL_MISSING:
+            ok, detail = run_connection_login(url, workspace, profile=profile)
+            if not ok:
+                _fail_fast(f"connection login for '{connection}' failed: {detail}")
 
     # Pre-flight the token before opening the bridge. Without this, the first
     # token failure surfaces from inside the transport's task group, where it can

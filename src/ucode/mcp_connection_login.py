@@ -20,6 +20,14 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from urllib.parse import quote
+
+from ucode.databricks import (
+    _http_get_json,
+    _scim_me,
+    get_databricks_token,
+    workspace_hostname,
+)
 
 # AI Gateway MCP service endpoints look like
 # ``https://<ws>/ai-gateway/mcp-services/<catalog>.<schema>.<service>``.
@@ -28,6 +36,25 @@ AIGW_MCP_SERVICES_SEGMENT = "/ai-gateway/mcp-services/"
 # Login can pop a browser and wait for the user to complete the SaaS login, so
 # allow generously more than a token refresh would take.
 _LOGIN_TIMEOUT_SECONDS = 300
+
+# Connection securable kinds that use a per-user OAuth (U2M) credential — i.e. the
+# service needs a connection sign-in. Anything else (PAT/basic/service-managed)
+# has no per-user login to drive. Mirrors the webapp's known-OAuth-kinds set.
+_OAUTH_U2M_CONNECTION_KINDS = frozenset(
+    {
+        "CONNECTION_HTTP_OAUTH_U2M_MAPPING",
+        "CONNECTION_HTTP_DCR",
+        "CONNECTION_SLACK_OAUTH_U2M_MAPPING",
+    }
+)
+
+# Credential-state outcomes for :func:`connection_credential_state`.
+CREDENTIAL_PRESENT = "present"  # signed in — skip the login
+CREDENTIAL_MISSING = "missing"  # confirmed no credential yet — run the login
+CREDENTIAL_NO_LOGIN = "no_login_needed"  # not an OAuth-U2M connection — skip
+CREDENTIAL_UNKNOWN = (
+    "unknown"  # couldn't determine — skip (don't open a browser we're unsure about)
+)
 
 
 def connection_from_url(url: str) -> str | None:
@@ -44,6 +71,70 @@ def connection_from_url(url: str) -> str | None:
     # Strip any trailing path (``/tools/list``), query, or fragment.
     connection = tail.split("/")[0].split("?")[0].split("#")[0]
     return connection or None
+
+
+def _strip_connections_prefix(name: str | None) -> str | None:
+    """UC returns a connection reference as ``connections/<name>``; the REST path
+    wants the bare name."""
+    if not name:
+        return None
+    prefix = "connections/"
+    return name[len(prefix) :] if name.startswith(prefix) else name
+
+
+def connection_credential_state(
+    resource_url: str, workspace: str, *, profile: str | None = None
+) -> str:
+    """Best-effort per-user credential state for a connection-backed MCP service.
+
+    Gates the connect-time login: the proxy should only run ``databricks auth
+    login`` (which opens a browser) when the credential is genuinely **missing**,
+    not on every session for a service the user already signed in to — otherwise
+    N configured servers would each pop a browser every session.
+
+    Uses the same Unity Catalog REST APIs as ``ug mcp login``: resolve the
+    service's backing connection, then read the current user's credential
+    ``provisioning_info.state``. Returns one of ``CREDENTIAL_{PRESENT,MISSING,
+    NO_LOGIN,UNKNOWN}``. Anything but ``MISSING`` means "don't open a browser":
+    ``PRESENT``/``NO_LOGIN`` are definitive, and ``UNKNOWN`` (any probe failure)
+    deliberately fails safe — ``tools/list`` still works, and a tool call can
+    surface the login later — rather than risk a spurious browser.
+    """
+    full = connection_from_url(resource_url)
+    if not full:
+        return CREDENTIAL_NO_LOGIN
+    try:
+        token = get_databricks_token(workspace, profile)
+    except Exception:  # noqa: BLE001 - a dead token is reported by _preflight_token, not here
+        return CREDENTIAL_UNKNOWN
+    user = (_scim_me(workspace, token) or {}).get("userName")
+    if not user:
+        return CREDENTIAL_UNKNOWN
+    prefix = f"https://{workspace_hostname(workspace)}/api/2.1/unity-catalog"
+    details, err = _http_get_json(f"{prefix}/mcp-services/{quote(full, safe='')}", token)
+    if err is not None or not isinstance(details, dict):
+        return CREDENTIAL_UNKNOWN
+    source = (details.get("config") or {}).get("source_connection") or {}
+    if source.get("securable_kind") not in _OAUTH_U2M_CONNECTION_KINDS:
+        return CREDENTIAL_NO_LOGIN
+    conn = _strip_connections_prefix(source.get("name"))
+    service_id = details.get("id")
+    if not conn or not service_id:
+        return CREDENTIAL_UNKNOWN
+    cred_url = (
+        f"{prefix}/connections/{quote(conn, safe='')}/user-credentials/"
+        f"{quote(user, safe='')}?dependent.mcp_service.id={quote(str(service_id), safe='')}"
+    )
+    cred, cred_err = _http_get_json(cred_url, token)
+    if cred_err is not None:
+        # 404 is the authoritative "no credential yet"; any other error is inconclusive.
+        return CREDENTIAL_MISSING if cred_err.startswith("HTTP 404") else CREDENTIAL_UNKNOWN
+    if not isinstance(cred, dict):
+        return CREDENTIAL_UNKNOWN
+    state = ((cred.get("connection_user_credential") or {}).get("provisioning_info") or {}).get(
+        "state"
+    )
+    return CREDENTIAL_PRESENT if state == "ACTIVE" else CREDENTIAL_MISSING
 
 
 def _cli_supports_resource_flag(login_binary: str) -> bool:
@@ -138,6 +229,11 @@ def run_connection_login(
 
 __all__ = [
     "AIGW_MCP_SERVICES_SEGMENT",
+    "CREDENTIAL_MISSING",
+    "CREDENTIAL_NO_LOGIN",
+    "CREDENTIAL_PRESENT",
+    "CREDENTIAL_UNKNOWN",
+    "connection_credential_state",
     "connection_from_url",
     "run_connection_login",
 ]
