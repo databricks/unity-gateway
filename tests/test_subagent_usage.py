@@ -6,6 +6,8 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from ucode import subagent_usage as usage
 
 
@@ -35,6 +37,14 @@ def _write_row_in_process(app_dir: str, agent_id: str, start_event) -> None:
     usage.APP_DIR = Path(app_dir)
     start_event.wait()
     usage.write_subagent_usage(_row(agent_id=agent_id))
+
+
+def _hold_directory_lock(app_dir: str, acquired_event, release_event) -> None:
+    usage.APP_DIR = Path(app_dir)
+    directory = usage._ensure_usage_directory()
+    with usage._directory_lock(directory):
+        acquired_event.set()
+        release_event.wait(timeout=10)
 
 
 def test_default_directory_is_ucode_token_logs(tmp_path, monkeypatch):
@@ -108,6 +118,34 @@ def test_concurrent_processes_append_complete_rows(tmp_path):
     rows = _read_rows(app_dir / "token-logs" / "session-1.csv")
     assert sorted(row["agent_id"] for row in rows) == ["agent-0", "agent-1", "agent-2"]
     assert all(row["total_tokens"] == "17" and row["status"] == "ok" for row in rows)
+
+
+def test_write_times_out_when_another_process_holds_lock(tmp_path, monkeypatch):
+    context = multiprocessing.get_context("spawn")
+    acquired_event = context.Event()
+    release_event = context.Event()
+    app_dir = tmp_path / ".ucode"
+    holder = context.Process(
+        target=_hold_directory_lock,
+        args=(str(app_dir), acquired_event, release_event),
+    )
+    holder.start()
+    try:
+        assert acquired_event.wait(timeout=10)
+        monkeypatch.setattr(usage, "APP_DIR", app_dir)
+        monkeypatch.setattr(usage, "LOCK_TIMEOUT_SECONDS", 0.1)
+        monkeypatch.setattr(usage, "LOCK_RETRY_SECONDS", 0.01)
+
+        with pytest.raises(TimeoutError, match="token-log lock"):
+            usage.write_subagent_usage(_row())
+    finally:
+        release_event.set()
+        holder.join(timeout=10)
+        if holder.is_alive():
+            holder.terminate()
+            holder.join()
+
+    assert holder.exitcode == 0
 
 
 def test_uses_independent_session_files(tmp_path, monkeypatch):

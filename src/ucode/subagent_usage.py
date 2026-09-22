@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import csv
+import errno
 import hashlib
 import io
 import os
 import re
 import tempfile
 import time
-from collections.abc import Iterator, MutableMapping
+from collections.abc import Callable, Iterator, MutableMapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -19,6 +20,8 @@ from ucode.config_io import APP_DIR
 ENABLE_ENV_VAR = "ENABLE_SUBAGENT_USAGE_CSV"
 RETENTION_SECONDS = 7 * 24 * 60 * 60
 MAX_SESSION_CSV_BYTES = 10 * 1024 * 1024
+LOCK_TIMEOUT_SECONDS = 2.0
+LOCK_RETRY_SECONDS = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +79,7 @@ def _directory_lock(directory: Path) -> Iterator[None]:
                 handle.write(b"\0")
                 handle.flush()
             handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            _acquire_lock_with_deadline(lambda: msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1))
             try:
                 yield
             finally:
@@ -85,11 +88,28 @@ def _directory_lock(directory: Path) -> Iterator[None]:
         else:
             import fcntl
 
-            fcntl.flock(handle, fcntl.LOCK_EX)
+            _acquire_lock_with_deadline(lambda: fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB))
             try:
                 yield
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _acquire_lock_with_deadline(acquire: Callable[[], None]) -> None:
+    deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            acquire()
+            return
+        except OSError as exc:
+            if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Timed out waiting {LOCK_TIMEOUT_SECONDS:g}s for the token-log lock"
+                ) from exc
+            time.sleep(min(LOCK_RETRY_SECONDS, remaining))
 
 
 def _cleanup_stale_csvs(directory: Path, current: Path, now: float) -> None:
