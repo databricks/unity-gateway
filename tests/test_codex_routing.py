@@ -424,6 +424,28 @@ def test_canary_and_audit_are_written(tmp_path, monkeypatch):
     assert json.loads(audit.read_text().strip())["agent_id"] == "a1"
 
 
+def test_hook_event_log_omits_prompt_and_tool_input(tmp_path, monkeypatch):
+    events = tmp_path / "events.jsonl"
+    monkeypatch.setattr(codex_routing, "HOOK_EVENTS_PATH", events)
+
+    codex_routing.record_hook_event(
+        "route-subagent",
+        "received",
+        {
+            "session_id": "s1",
+            "tool_name": "spawn_agent",
+            "tool_input": {"message": "private task"},
+        },
+    )
+
+    record = json.loads(events.read_text().strip())
+    assert record["event"] == "route-subagent"
+    assert record["status"] == "received"
+    assert record["session_id"] == "s1"
+    assert record["tool_name"] == "spawn_agent"
+    assert "private task" not in events.read_text()
+
+
 def test_decision_is_reconciled_with_actual_subagent_model(tmp_path, monkeypatch):
     decisions = tmp_path / "decisions.jsonl"
     audit = tmp_path / "audit.jsonl"

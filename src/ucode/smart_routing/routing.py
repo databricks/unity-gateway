@@ -414,6 +414,27 @@ def write_decision_record(
     )
 
 
+def write_hook_event(
+    path: Path,
+    event: str,
+    status: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    detail: str | None = None,
+) -> None:
+    """Append a privacy-safe lifecycle record for diagnosing hook execution."""
+    record = {
+        "event": event,
+        "status": status,
+        "session_id": payload.get("session_id") if payload else None,
+        "tool_name": payload.get("tool_name") if payload else None,
+        "at": time.time(),
+    }
+    if detail:
+        record["detail"] = detail
+    _append_jsonl(path, record)
+
+
 def clear_artifacts(paths: Iterable[Path]) -> None:
     """Remove ucode-owned routing canary/audit/decision files."""
     for path in paths:

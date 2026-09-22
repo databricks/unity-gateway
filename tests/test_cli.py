@@ -920,6 +920,7 @@ class TestSubcommandRouting:
         }
         with (
             patch("ucode.cli.get_databricks_token", return_value="fresh-token") as mock_token,
+            patch("ucode.smart_routing.codex_routing.record_hook_event") as mock_event,
             patch(
                 "ucode.smart_routing.codex_routing.route_pre_tool_use",
                 return_value=routed,
@@ -945,6 +946,10 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 0, result.output
         assert json.loads(result.output) == routed
+        assert [call.args[:2] for call in mock_event.call_args_list] == [
+            ("route-subagent", "received"),
+            ("route-subagent", "routed"),
+        ]
         return mock_token, mock_route
 
     def test_codex_subagent_hook_reuses_fresh_oauth_token(self, monkeypatch):
@@ -985,7 +990,10 @@ class TestSubcommandRouting:
     def test_owned_codex_app_hook_runs_without_routing_environment(self, monkeypatch):
         monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
         monkeypatch.delenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", raising=False)
-        with patch("ucode.smart_routing.codex_routing.record_session_start") as mock_record:
+        with (
+            patch("ucode.smart_routing.codex_routing.record_session_start") as mock_record,
+            patch("ucode.smart_routing.codex_routing.record_hook_event") as mock_event,
+        ):
             result = runner.invoke(
                 app,
                 [
@@ -999,6 +1007,10 @@ class TestSubcommandRouting:
 
         assert result.exit_code == 0, result.output
         mock_record.assert_called_once_with({"session_id": "app-session"})
+        assert [call.args[:2] for call in mock_event.call_args_list] == [
+            ("session-start", "received"),
+            ("session-start", "recorded"),
+        ]
 
     def test_unowned_codex_hook_stays_disabled_without_routing_environment(self, monkeypatch):
         monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
