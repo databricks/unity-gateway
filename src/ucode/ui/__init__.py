@@ -162,8 +162,18 @@ def print_note(text: str) -> None:
     console.print(f"[dim]•[/dim] {text}")
 
 
+def _success_marker() -> str:
+    """Use ASCII when a redirected Windows console cannot encode the checkmark."""
+    marker = "✔"
+    try:
+        marker.encode(console.encoding)
+    except UnicodeEncodeError:
+        return "+"
+    return marker
+
+
 def print_success(message: str) -> None:
-    console.print(f"[bold green]✔[/bold green] {message}")
+    console.print(f"[bold green]{_success_marker()}[/bold green] {message}")
 
 
 def print_warning(message: str) -> None:
