@@ -16,6 +16,16 @@ from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import claude_hooks, claude_pty, routing, v2
 
 
+def _plugin_agent_models(plugin_dir: Path) -> set[str]:
+    models = set()
+    for agent_path in (plugin_dir / "agents").glob("*.md"):
+        model_line = next(
+            line for line in agent_path.read_text().splitlines() if line.startswith("model: ")
+        )
+        models.add(json.loads(model_line.removeprefix("model: ")))
+    return models
+
+
 class TestManagedModelPicker:
     def test_reads_model_ids_from_managed_picker(self, tmp_path, monkeypatch):
         path = tmp_path / "managed-settings.json"
@@ -235,8 +245,8 @@ class TestV2Launch:
 
         def fake_run(argv, **kwargs):
             captured["argv"] = argv
-            agents_index = argv.index("--agents")
-            captured["agents"] = json.loads(argv[agents_index + 1])
+            plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
+            captured["plugin_models"] = _plugin_agent_models(plugin_dir)
             captured["routed_model"] = kwargs["route_prompt"]("fix the parser")
             generated = Path(argv[argv.index("--settings") + 1])
             captured["settings"] = json.loads(generated.read_text())
@@ -274,7 +284,7 @@ class TestV2Launch:
             display_model="Claude Sonnet 5",
             rationale="Selected for the parser task.",
         )
-        assert {definition["model"] for definition in captured["agents"].values()} == {
+        assert captured["plugin_models"] == {
             "system.ai.claude-opus-4-8",
             "system.ai.claude-sonnet-5",
         }
@@ -417,7 +427,9 @@ class TestV2Launch:
                 settings_path = Path(argv[argv.index("--settings") + 1])
                 captured["settings_path"] = settings_path
                 captured["settings"] = json.loads(settings_path.read_text())
-                captured["agents"] = json.loads(argv[argv.index("--agents") + 1])
+                plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
+                captured["plugin_dir"] = plugin_dir
+                captured["plugin_models"] = _plugin_agent_models(plugin_dir)
 
             def wait(self):
                 return 4
@@ -449,11 +461,10 @@ class TestV2Launch:
         assert "UserPromptSubmit" not in settings["hooks"]
         assert "route-subagent" in str(settings["hooks"]["PreToolUse"])
         assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
-        assert {definition["model"] for definition in captured["agents"].values()} == {
-            "system.ai.claude-opus-4-8"
-        }
+        assert captured["plugin_models"] == {"system.ai.claude-opus-4-8"}
         assert captured["argv"][3:5] == ["--model", "opus"]
         assert not captured["settings_path"].exists()
+        assert not captured["plugin_dir"].exists()
         # The model-setting guard is a first-prompt concern; user settings stay untouched.
         assert json.loads(user_settings.read_text()) == {"model": "opus"}
 
@@ -636,29 +647,17 @@ class TestSubagentRouting:
         decision_record = json.loads(decisions_path.read_text())
         assert decision_record["requested_model"] == "system.ai.claude-opus-4-8"
 
-    def test_merges_caller_agents_with_transient_routed_agents(self):
-        args = v2._with_routed_claude_agents(
-            [
-                "--agents",
-                json.dumps(
-                    {
-                        "reviewer": {
-                            "description": "Reviews code",
-                            "prompt": "Review the requested code.",
-                        }
-                    }
-                ),
-                "--debug",
-            ],
-            ["databricks-claude-opus-4-8"],
-        )
+    def test_writes_routed_agents_as_launch_scoped_plugin(self, tmp_path):
+        plugin_dir = tmp_path / "routing-plugin"
 
-        assert args[0] == "--agents"
-        definitions = json.loads(args[1])
-        assert definitions["reviewer"]["prompt"] == "Review the requested code."
-        routed = definitions[v2._routed_claude_agent_name("system.ai.claude-opus-4-8")]
-        assert routed["model"] == "system.ai.claude-opus-4-8"
-        assert args[2:] == ["--debug"]
+        v2._write_routed_claude_plugin(plugin_dir, ["databricks-claude-opus-4-8"])
+
+        manifest = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text())
+        assert manifest["name"] == v2.CLAUDE_ROUTING_PLUGIN_NAME
+        assert _plugin_agent_models(plugin_dir) == {"system.ai.claude-opus-4-8"}
+        agent = next((plugin_dir / "agents").glob("*.md")).read_text()
+        expected_name = json.dumps(v2._routed_claude_agent_slug("system.ai.claude-opus-4-8"))
+        assert f"name: {expected_name}" in agent
 
     def test_leaves_non_claude_custom_agent_model_unchanged(self):
         definitions = v2._routed_claude_agent_definitions(["catalog.schema.gpt-5"])
@@ -676,6 +675,11 @@ class TestSubagentRouting:
             "claude-opus-4-8": "system.ai.claude-opus-4-8",
             "claude-sonnet-5": "system.ai.claude-sonnet-5",
         }
+
+    def test_routed_agent_uses_plugin_qualified_name(self):
+        assert v2._routed_claude_agent_name("system.ai.glm-5-3") == (
+            "ucode-smart-routing:ucode-route-glm-5-3-982d9f93"
+        )
 
     def test_model_switch_lock_serializes_routed_sessions(self, tmp_path, monkeypatch):
         user_settings = tmp_path / "settings.json"
