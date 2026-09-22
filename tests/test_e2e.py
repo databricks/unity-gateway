@@ -424,15 +424,12 @@ E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     "grok": frozenset({"codex", "copilot", "pi"}),
     # These Gemini endpoints hang OpenCode well past its E2E timeout.
     "databricks-gemini-3-1-flash-lite": frozenset({"opencode"}),
-    # Codex-tuned and newer GPT endpoints do not support Copilot's MLflow chat route.
+    # These endpoints do not support Copilot's MLflow chat route.
     "-codex": frozenset({"copilot"}),
     "gpt-5-5": frozenset({"copilot"}),
-    "gpt-5-6": frozenset({"copilot"}),
     # Copilot and Pi currently fail against these GPT-6 variants.
     "gpt-6-luna": frozenset({"copilot", "pi"}),
     "gpt-6-sol": frozenset({"copilot", "pi"}),
-    # Astra has limited allowance in production and will hit 429s if tested.
-    "astra": frozenset({"codex", "copilot", "pi", "web_search"}),
 }
 
 
@@ -1151,13 +1148,16 @@ class TestCopilotLaunch:
     def test_incompatible_models_are_skipped(self):
         state = {
             "codex_models": [
-                "databricks-gpt-6-astra",
                 "databricks-gpt-6-luna",
                 "databricks-gpt-6-sol",
                 "databricks-gpt-5-4",
+                "databricks-gpt-5-6",
             ]
         }
-        assert self._all_models(state) == [("codex", "databricks-gpt-5-4")]
+        assert self._all_models(state) == [
+            ("codex", "databricks-gpt-5-4"),
+            ("codex", "databricks-gpt-5-6"),
+        ]
 
     def test_launch_copilot_per_model(
         self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
@@ -1223,7 +1223,6 @@ class TestPiLaunch:
     def test_incompatible_models_are_skipped(self):
         state = {
             "codex_models": [
-                "databricks-gpt-6-astra",
                 "databricks-gpt-6-luna",
                 "databricks-gpt-6-sol",
                 "databricks-gpt-5-4",
@@ -1309,9 +1308,9 @@ def _first_codex_model(e2e_state: dict) -> str:
     return models[0]
 
 
-def test_web_search_skips_astra():
+def test_web_search_supports_astra():
     state = {"codex_models": ["databricks-gpt-6-astra", "databricks-gpt-5-4"]}
-    assert _first_codex_model(state) == "databricks-gpt-5-4"
+    assert _first_codex_model(state) == "databricks-gpt-6-astra"
 
 
 class TestWebSearchResponsesApi:
