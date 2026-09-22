@@ -105,6 +105,19 @@ jobs:
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           version: 0.9.8
+      - name: Diagnose package index connectivity
+        shell: pwsh
+        run: |
+          foreach ($proxyName in @("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")) {
+            $isSet = -not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($proxyName))
+            Write-Host "${proxyName} configured: $isSet"
+          }
+          foreach ($endpoint in @("https://pypi-proxy.cloud.databricks.com/simple/hatchling/", "https://npm-proxy.cloud.databricks.com/npm")) {
+            Write-Host "Checking $endpoint with Windows TLS"
+            curl.exe --silent --show-error --output NUL --max-time 15 --write-out "HTTP %{http_code}\n" $endpoint
+            Write-Host "curl exit code: $LASTEXITCODE"
+          }
+          exit 0
       - name: Test a fresh installed package without credentials
         shell: pwsh
         run: |
