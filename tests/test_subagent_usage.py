@@ -47,6 +47,35 @@ def test_writes_private_session_file(tmp_path, monkeypatch):
         assert path.parent.stat().st_mode & 0o777 == 0o700
 
 
+def test_appends_rows_to_session_csv(tmp_path, monkeypatch):
+    monkeypatch.setattr(usage, "usage_directory", lambda: tmp_path / "usage")
+    first = _row(agent_id="agent-1")
+    second = _row(agent_id="agent-2")
+    expected_first = {
+        "recorded_at_utc": "2027-01-15T08:00:00+00:00",
+        "session_id": "session-1",
+        "agent_id": "agent-1",
+        "subagent_name": "worker",
+        "main_model": "main-model",
+        "subagent_model": "child-model",
+        "input_tokens": "2",
+        "cache_creation_input_tokens": "3",
+        "cache_read_input_tokens": "5",
+        "output_tokens": "7",
+        "total_tokens": "17",
+        "status": "ok",
+    }
+    expected_second = {**expected_first, "agent_id": "agent-2"}
+
+    path = usage.write_subagent_usage(first, now=1_800_000_000)
+
+    assert _read_rows(path) == [expected_first]
+
+    usage.write_subagent_usage(second, now=1_800_000_001)
+
+    assert _read_rows(path) == [expected_first, expected_second]
+
+
 def test_uses_independent_session_files(tmp_path, monkeypatch):
     monkeypatch.setattr(usage, "usage_directory", lambda: tmp_path / "usage")
     now = time.time()
