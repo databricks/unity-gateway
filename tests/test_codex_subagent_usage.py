@@ -110,7 +110,7 @@ def test_builds_and_records_codex_row(tmp_path, monkeypatch):
     monkeypatch.setattr(subagent_usage, "usage_directory", lambda: tmp_path / "usage")
     parent, child = _transcripts(tmp_path)
 
-    row = codex_subagent_usage.build_row(_payload(parent, child), now=1_800_000_000)
+    row = codex_subagent_usage.build_from_codex(_payload(parent, child), now=1_800_000_000)
     path = codex_subagent_usage.record(_payload(parent, child), now=1_800_000_000)
 
     assert isinstance(row, subagent_usage.SubagentUsageRow)
@@ -140,7 +140,7 @@ def test_falls_back_to_hook_model_and_marks_inexact_parent_link(tmp_path):
     parent_rows = [json.loads(line) for line in parent.read_text().splitlines()]
     _write_jsonl(parent, parent_rows[:2])
 
-    row = codex_subagent_usage.build_row(_payload(parent, child), now=1_800_000_000)
+    row = codex_subagent_usage.build_from_codex(_payload(parent, child), now=1_800_000_000)
 
     assert row is not None
     assert row.subagent_model == "hook-fallback-model"
@@ -152,7 +152,7 @@ def test_missing_transcripts_build_partial_row(tmp_path):
     payload = _payload(tmp_path / "missing-parent", tmp_path / "missing-child")
     payload.pop("model")
 
-    row = codex_subagent_usage.build_row(payload, now=1_800_000_000)
+    row = codex_subagent_usage.build_from_codex(payload, now=1_800_000_000)
 
     assert row is not None
     assert row.total_tokens == 0
