@@ -31,6 +31,7 @@ from ucode.config_io import (
     deep_merge_dict,
     is_dry_run,
     prune_key_paths,
+    read_json_safe,
     read_toml_safe,
     write_json_file,
     write_toml_file,
@@ -848,10 +849,13 @@ def _install_app_catalog_reference() -> bool:
         if _is_ucode_catalog_reference(existing):
             doc.pop("model_catalog_json", None)
             write_toml_file(path, doc)
+            changed = True
+        else:
+            changed = False
         print_warning_err(
             f"Codex App uses the custom provider {provider}; leaving its model catalog unmanaged."
         )
-        return False
+        return changed
     catalog_path = str(CODEX_MODEL_CATALOG_PATH)
     if existing == catalog_path:
         return False
@@ -872,6 +876,7 @@ def detach_app_model_catalog() -> bool:
         return False
     doc.pop("model_catalog_json", None)
     write_toml_file(path, doc)
+    _print_app_catalog_restart_notice()
     return True
 
 
@@ -883,13 +888,33 @@ def _detach_app_catalog_after_failure() -> None:
         print_warning_err(str(exc))
 
 
+def _print_app_catalog_restart_notice() -> None:
+    # A desktop reconnect can reuse a daemon whose model manager still holds
+    # the startup catalog. Never restart it here: it may be running tasks.
+    print_warning_err(
+        "Codex App model catalog changed. Existing app servers keep their startup "
+        "model list. After active tasks finish, restart the app server on the connected "
+        "host, then reconnect. For a Codex standalone daemon, run "
+        "`codex app-server daemon restart`; otherwise restart the process or application "
+        "that owns the app server. Reconnecting alone does not reload the catalog."
+    )
+
+
 def _sync_app_model_catalog(catalog: dict) -> None:
     """Publish a validated catalog without overwriting unreadable app settings."""
     if is_dry_run():
         return
-    _read_app_config()
+    doc = _read_app_config()
+    catalog_changed = read_json_safe(CODEX_MODEL_CATALOG_PATH) != catalog
     _write_model_catalog(CODEX_MODEL_CATALOG_PATH, catalog)
-    _install_app_catalog_reference()
+    reference_changed = _install_app_catalog_reference()
+    app_uses_catalog = reference_changed or (
+        _is_ucode_catalog_reference(doc.get("model_catalog_json"))
+        and doc.get("model_provider")
+        in (None, CODEX_MODEL_PROVIDER_NAME, LEGACY_CODEX_MODEL_PROVIDER_NAME)
+    )
+    if reference_changed or (app_uses_catalog and catalog_changed):
+        _print_app_catalog_restart_notice()
 
 
 def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:

@@ -780,6 +780,50 @@ class TestCodexRevertLegacySharedConfig:
 
 
 class TestCodexAppCatalog:
+    def test_catalog_changes_report_server_restart_on_stderr(self, capsys):
+        first_catalog = {"models": [{"slug": "first-model"}]}
+        codex._sync_app_model_catalog(first_catalog)
+        published = capsys.readouterr()
+        assert published.out == ""
+        assert "codex app-server daemon restart" in " ".join(published.err.split())
+        assert "After active tasks finish" in published.err
+
+        codex._sync_app_model_catalog(first_catalog)
+        unchanged = capsys.readouterr()
+        assert unchanged.out == unchanged.err == ""
+
+        codex._sync_app_model_catalog({"models": [{"slug": "second-model"}]})
+        refreshed = capsys.readouterr()
+        assert refreshed.out == ""
+        assert "codex app-server daemon restart" in " ".join(refreshed.err.split())
+
+    def test_attaching_existing_catalog_reports_server_restart(self, capsys):
+        catalog = {"models": [{"slug": "first-model"}]}
+        codex._write_model_catalog(codex.CODEX_MODEL_CATALOG_PATH, catalog)
+
+        codex._sync_app_model_catalog(catalog)
+
+        assert "codex app-server daemon restart" in " ".join(capsys.readouterr().err.split())
+
+    def test_detaching_catalog_reports_server_restart(self, capsys):
+        codex._sync_app_model_catalog({"models": [{"slug": "first-model"}]})
+        capsys.readouterr()
+
+        assert codex.detach_app_model_catalog()
+
+        assert "codex app-server daemon restart" in " ".join(capsys.readouterr().err.split())
+
+    def test_custom_app_catalog_does_not_report_ug_restart(self, capsys):
+        shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
+        shared_path.parent.mkdir()
+        shared_path.write_text('model_catalog_json = "/user/models.json"\n')
+
+        codex._sync_app_model_catalog({"models": [{"slug": "gateway-model"}]})
+
+        output = capsys.readouterr()
+        assert "leaving it unchanged" in " ".join(output.err.split())
+        assert "daemon restart" not in output.err
+
     def test_refresh_keeps_stable_pointer_and_preserves_settings(self, tmp_path):
         shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
         shared_path.parent.mkdir()
@@ -813,7 +857,7 @@ class TestCodexAppCatalog:
         assert codex.CODEX_MODEL_CATALOG_PATH.read_text() == "previous catalog"
 
     @pytest.mark.parametrize("previous_catalog", [False, True])
-    def test_custom_provider_keeps_its_own_model_discovery(self, previous_catalog):
+    def test_custom_provider_keeps_its_own_model_discovery(self, previous_catalog, capsys):
         if previous_catalog:
             codex._sync_app_model_catalog({"models": [{"slug": "previous"}]})
         shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
@@ -829,9 +873,15 @@ class TestCodexAppCatalog:
             encoding="utf-8",
         )
 
+        capsys.readouterr()
         codex._sync_app_model_catalog({"models": [{"slug": "gpt-mps"}]})
 
         assert shared_path.read_text() == original
+        output = capsys.readouterr().err
+        if previous_catalog:
+            assert "daemon restart" in " ".join(output.split())
+        else:
+            assert "daemon restart" not in output
 
     def test_dry_run_leaves_config_and_catalog_unchanged(self, monkeypatch):
         codex._sync_app_model_catalog({"models": [{"slug": "previous"}]})

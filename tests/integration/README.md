@@ -327,7 +327,8 @@ cannot still be running when that gate passes. Full coverage on PRs needs no lab
 which the shared `live` workspace deliberately does not. `ug configure` applies the admin config
 with no agent selector, and each agent's generated config exposes exactly the admin's static
 `model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog). The managed
-Codex case also checks that the shared app config points at the stable catalog and that a fresh
+Codex case also checks stderr guidance to restart the daemon after publication,
+that the shared app config points at the stable catalog, and that a fresh
 bare Codex app-server returns the expected visible model before the existing TUI prompt/input
 assertion. It does not claim GUI rendering or inference coverage.
 

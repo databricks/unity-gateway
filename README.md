@@ -59,16 +59,34 @@ to select another model source; managed workspace configs control their own sour
 When `ug codex` discovers a model catalog, it validates it with the installed
 Codex binary, then refreshes
 `~/.ucode/codex-model-catalog.json` and points the shared `~/.codex/config.toml`
-at it. Managed static model lists use the same path. Restart Codex App to load
-the latest list; the app's provider and authentication must already be configured
-for the corresponding gateway. The most recently refreshed workspace supplies
+at it. Managed static model lists use the same path. The app's provider and
+authentication must already be configured for the corresponding gateway.
+The most recently refreshed workspace supplies
 the app catalog. Existing custom catalog settings (including Isaac's catalog)
 and custom providers are preserved; catalogs are not combined. `ug revert`
 removes the shared catalog reference installed by ug.
 
+Codex loads the catalog when its app server starts. An already-running server
+keeps its old list, even if you reconnect or open a new task. After active tasks
+finish, restart the app server on the **connected host**, then reconnect the app.
+If the host uses Codex's standalone managed daemon, run:
+
+```bash
+codex app-server daemon restart
+```
+
+The daemon command requires a standalone Codex installation. For an app server
+started by npm Codex or by the desktop app, restart the process or application
+that owns `codex app-server --listen unix://`; the daemon command cannot manage
+it. Restarting the desktop app alone can reconnect to the same remote server.
+ug reports the restart step when it changes the app catalog; it does not restart
+active servers automatically. Checking out this branch alone does not refresh
+the catalog: run `uv run ug codex` from the checkout for discovery, or
+`uv run ug configure` for a managed static list, before restarting the server.
+
 Before installing or updating Codex, ug detaches its shared catalog reference.
 Run `ug codex` again to refresh discovery, or rerun `ug configure` for a managed
-static list, before restarting or reconnecting the app. Do the same after
+static list, then restart the app server as described above. Do the same after
 updating Codex outside ug. A failed catalog validation removes ug's shared
 reference and reports an error rather than publishing an incompatible catalog.
 Validation uses the Codex binary on this host; it does not verify a desktop

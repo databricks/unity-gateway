@@ -55,13 +55,15 @@ def test_ug_configure_managed_codex(live_session, workspace):
 
     Expected: ug applies the admin config to every enabled agent without showing the
     personal agent selector, Codex's generated model catalog lists exactly the admin's static
-    model_services, and the shared Codex App config points at that stable catalog. A fresh bare
+    model_services, the shared Codex App config points at that stable catalog, and configure
+    reports the daemon restart step on stderr. A fresh bare
     Codex app-server returns the expected visible model, while the existing TUI assertion reaches
     a prompt, accepts input, and exits normally. GUI rendering and inference are not covered.
     """
     session = live_session
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
+    assert "codex app-server daemon restart" in " ".join(result.stderr.split()), result.stderr
 
     catalog = json.loads((session.home / ".ucode" / "codex-model-catalog.json").read_text())
     listed = [
