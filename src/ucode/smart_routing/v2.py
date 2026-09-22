@@ -14,6 +14,8 @@ from collections.abc import Callable, MutableMapping
 from pathlib import Path
 from typing import NoReturn, TextIO
 
+from ucode import subagent_usage
+from ucode.agents import codex_subagent_usage
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
@@ -602,6 +604,7 @@ def launch_codex(
     overlay["hooks"] = {
         "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
     }
+    codex_subagent_usage.sync_hook(overlay, hook_enabled=subagent_usage.enabled())
     config_args = codex_config_args(overlay)
     if not first_prompt_routing_enabled():
         # Subagent-only routing needs neither the app-server nor the interposer:

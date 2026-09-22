@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from ucode import codex_config
-from ucode.agents import LaunchOptions, codex
+from ucode import codex_config, subagent_usage
+from ucode.agents import LaunchOptions, codex, codex_subagent_usage
 from ucode.smart_routing import codex_interposer, codex_routing, v2
 
 WS = "https://example.databricks.com"
@@ -336,6 +336,7 @@ class TestLaunchCodex:
 
     def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv(subagent_usage.ENABLE_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
@@ -375,6 +376,8 @@ class TestLaunchCodex:
         hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
         assert "codex-router-hook route-subagent" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override
+        usage_override = next(arg for arg in argv if arg.startswith("hooks.SubagentStop="))
+        assert codex_subagent_usage.HOOK_COMMAND_MARKER in usage_override
         # The hook subprocesses inherit the launch environment and pass the routing gate.
         assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
