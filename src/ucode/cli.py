@@ -131,7 +131,7 @@ from ucode.skills_list import configured_skill_counts_by_agent, list_configured_
 from ucode.skills_state import records_for_scope
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
-from ucode.smart_routing.codex_hooks import APP_SUBAGENT_ROUTING_HOOK_OWNER
+from ucode.smart_routing.codex_hooks import SMART_ROUTING_HOOK_OWNER
 from ucode.state import (
     clear_state,
     get_provider_service,
@@ -2040,8 +2040,8 @@ def codex_router_hook_cmd(
     import json
     import sys
 
-    app_subagent_hook = hook_owner == APP_SUBAGENT_ROUTING_HOOK_OWNER
-    if not app_subagent_hook and not smart_routing_v2.smart_routing_enabled():
+    owned_routing_hook = hook_owner == SMART_ROUTING_HOOK_OWNER
+    if not owned_routing_hook and not smart_routing_v2.smart_routing_enabled():
         return
 
     from ucode.smart_routing.codex_routing import (
@@ -2258,12 +2258,10 @@ def _disable_smart_routing_for_subcommand(tool: str, ctx: Any) -> Iterator[None]
     must therefore suppress the flag for the whole ucode launch flow. An
     explicit prompt after `--` remains eligible for routing.
     """
-    codex_app_subagent_routing = (
-        tool == "codex"
-        and ctx.args[:1] == ["app"]
-        and smart_routing_v2.subagent_only_routing_enabled()
+    codex_app_smart_routing = (
+        tool == "codex" and ctx.args[:1] == ["app"] and smart_routing_v2.smart_routing_enabled()
     )
-    if codex_app_subagent_routing or _smart_routing_launch_shape(
+    if codex_app_smart_routing or _smart_routing_launch_shape(
         tool, ctx.args, _has_explicit_prompt(ctx)
     ):
         yield

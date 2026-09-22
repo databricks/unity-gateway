@@ -34,7 +34,7 @@ def test_ug_codex_app_help(live_session, workspace, routing):
     expected = session.run("app", "--help", binary="codex").stdout.strip()
     actual = session.run("codex", "--", "app", "--help").stdout
     assert expected and expected in actual, actual
-    if routing == "subagent":
+    if routing in {"full", "subagent"}:
         hooks_path = session.home / ".codex" / "hooks.json"
         hooks = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
         assert any(

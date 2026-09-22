@@ -3,14 +3,49 @@
 from __future__ import annotations
 
 import copy
+import json
 import shlex
 import subprocess
+from pathlib import Path
 
+from ucode.config_io import is_dry_run, write_json_file
 from ucode.databricks import build_auth_token_argv
 from ucode.smart_routing import hooks
 
 ROUTING_HOOK_COMMAND_MARKER = "codex-router-hook"
-APP_SUBAGENT_ROUTING_HOOK_OWNER = "ug-codex-app-subagent-only"
+# Keep the original owner value stable so already-trusted hook definitions stay trusted.
+SMART_ROUTING_HOOK_OWNER = "ug-codex-app-subagent-only"
+
+
+def reconcile_smart_routing_hooks_file(path: Path, state: dict, *, enabled: bool) -> None:
+    """Install or remove UG's user-level Codex hooks for the current routing mode."""
+    if not enabled and not path.exists():
+        return
+    try:
+        if path.exists():
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(doc, dict):
+                raise ValueError("top-level value is not an object")
+        else:
+            doc = {}
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RuntimeError(
+            f"Cannot update Codex smart-routing hooks because {path} is not valid JSON: {exc}"
+        ) from exc
+
+    original = copy.deepcopy(doc)
+    sync_smart_routing_hooks(
+        doc,
+        state,
+        enabled=enabled,
+        owner=SMART_ROUTING_HOOK_OWNER,
+    )
+    if doc == original:
+        return
+    if doc or is_dry_run():
+        write_json_file(path, doc)
+    else:
+        path.unlink(missing_ok=True)
 
 
 def routing_models(state: dict) -> list[str]:
@@ -58,19 +93,6 @@ def _routing_hook_groups(state: dict, *, owner: str | None = None) -> dict[str, 
             }
         ],
     }
-
-
-def merge_pre_tool_use_hooks(
-    existing: list[dict], state: dict, *, available_models: list[str]
-) -> list[dict]:
-    """Add the ucode spawn hook to an existing Codex PreToolUse hook list."""
-    doc = {"hooks": {"PreToolUse": copy.deepcopy(existing)}}
-    hooks.sync_managed_hooks(
-        doc,
-        ROUTING_HOOK_COMMAND_MARKER,
-        {"PreToolUse": [_pre_tool_use_hook_group(state, available_models=available_models)]},
-    )
-    return doc["hooks"]["PreToolUse"]
 
 
 def _pre_tool_use_hook_group(

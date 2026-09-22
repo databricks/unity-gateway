@@ -560,9 +560,12 @@ class TestSubcommandRouting:
         assert cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR not in os.environ
         assert mock_launch.call_args.args[1].args == []
 
-    @pytest.mark.parametrize("tool, subcommand", [("codex", "app"), ("claude", "update")])
+    @pytest.mark.parametrize(
+        ("tool", "subcommand", "expected"),
+        [("codex", "app", "1"), ("claude", "update", None)],
+    )
     def test_native_subcommand_suppresses_inherited_smart_routing(
-        self, monkeypatch, tool, subcommand
+        self, monkeypatch, tool, subcommand, expected
     ):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         observed = []
@@ -576,7 +579,7 @@ class TestSubcommandRouting:
             result = runner.invoke(app, [tool, subcommand])
 
         assert result.exit_code == 0, result.output
-        assert observed == [None]
+        assert observed == [expected]
         assert os.environ[cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR] == "1"
 
     @pytest.mark.parametrize(
