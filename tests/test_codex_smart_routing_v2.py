@@ -336,7 +336,7 @@ class TestLaunchCodex:
 
     def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
-        monkeypatch.setenv(subagent_usage.ENABLE_ENV_VAR, "1")
+        monkeypatch.setenv(subagent_usage.ENABLE_SUBAGENT_USAGE_CSV, "1")
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")

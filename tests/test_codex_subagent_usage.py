@@ -107,14 +107,24 @@ def _read_rows(path: Path) -> list[dict[str, str]]:
 
 
 def test_builds_and_records_codex_row(tmp_path, monkeypatch):
-    monkeypatch.setattr(subagent_usage, "usage_directory", lambda: tmp_path / "usage")
+    monkeypatch.setattr(
+        subagent_usage,
+        "usage_directory",
+        lambda subdirectory: tmp_path / "usage" / subdirectory,
+    )
     parent, child = _transcripts(tmp_path)
 
-    row = codex_subagent_usage.build_from_codex(_payload(parent, child), now=1_800_000_000)
-    path = codex_subagent_usage.record(_payload(parent, child), now=1_800_000_000)
+    row = codex_subagent_usage.CodexSubagentUsageRow.build(
+        _payload(parent, child), now=1_800_000_000
+    )
+    path = codex_subagent_usage.CodexSubagentUsageRow.record(
+        _payload(parent, child), now=1_800_000_000
+    )
 
+    assert isinstance(row, codex_subagent_usage.CodexSubagentUsageRow)
     assert isinstance(row, subagent_usage.SubagentUsageRow)
     assert path is not None
+    assert path.parent == tmp_path / "usage" / "codex"
     assert _read_rows(path) == [
         {
             "recorded_at_utc": "2027-01-15T08:00:00+00:00",
@@ -140,7 +150,9 @@ def test_falls_back_to_hook_model_and_marks_inexact_parent_link(tmp_path):
     parent_rows = [json.loads(line) for line in parent.read_text().splitlines()]
     _write_jsonl(parent, parent_rows[:2])
 
-    row = codex_subagent_usage.build_from_codex(_payload(parent, child), now=1_800_000_000)
+    row = codex_subagent_usage.CodexSubagentUsageRow.build(
+        _payload(parent, child), now=1_800_000_000
+    )
 
     assert row is not None
     assert row.subagent_model == "hook-fallback-model"
@@ -152,7 +164,7 @@ def test_missing_transcripts_build_partial_row(tmp_path):
     payload = _payload(tmp_path / "missing-parent", tmp_path / "missing-child")
     payload.pop("model")
 
-    row = codex_subagent_usage.build_from_codex(payload, now=1_800_000_000)
+    row = codex_subagent_usage.CodexSubagentUsageRow.build(payload, now=1_800_000_000)
 
     assert row is not None
     assert row.total_tokens == 0
@@ -180,12 +192,12 @@ def test_hook_config_preserves_user_hooks():
 def test_hidden_hook_always_emits_json_and_fails_open():
     runner = CliRunner()
     payload = {"session_id": "session-1", "agent_id": "agent-1"}
-    with patch("ucode.agents.codex_subagent_usage.record") as record:
+    with patch.object(codex_subagent_usage.CodexSubagentUsageRow, "record") as record:
         result = runner.invoke(
             app,
             [codex_subagent_usage.HOOK_COMMAND_MARKER],
             input=json.dumps(payload),
-            env={subagent_usage.ENABLE_ENV_VAR: "1"},
+            env={subagent_usage.ENABLE_SUBAGENT_USAGE_CSV: "1"},
         )
 
     assert result.exit_code == 0
@@ -196,7 +208,7 @@ def test_hidden_hook_always_emits_json_and_fails_open():
         app,
         [codex_subagent_usage.HOOK_COMMAND_MARKER],
         input="not json",
-        env={subagent_usage.ENABLE_ENV_VAR: "1"},
+        env={subagent_usage.ENABLE_SUBAGENT_USAGE_CSV: "1"},
     )
     assert invalid.exit_code == 0
     assert invalid.output == "{}\n"
@@ -206,7 +218,7 @@ def test_normal_codex_launch_receives_transient_hook(tmp_path, monkeypatch):
     launches: list[list[str]] = []
     profile_path = tmp_path / "ucode.config.toml"
     profile_path.write_text('model_provider = "ucode-databricks"\n', encoding="utf-8")
-    monkeypatch.setenv(subagent_usage.ENABLE_ENV_VAR, "1")
+    monkeypatch.setenv(subagent_usage.ENABLE_SUBAGENT_USAGE_CSV, "1")
     monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
     monkeypatch.delenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", raising=False)
     monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
