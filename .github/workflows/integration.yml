@@ -115,6 +115,27 @@ jobs:
           JF_URL: https://databricks.jfrog.io
         with:
           oidc-provider-name: github-actions
+      - name: Diagnose older Codex package availability
+        continue-on-error: true
+        shell: pwsh
+        env:
+          UG_INTEGRATION_NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/ug-npm-probe-cache
+        run: |
+          $config = Join-Path $env:RUNNER_TEMP "ug-npm-probe.npmrc"
+          @'
+          registry=https://databricks.jfrog.io/artifactory/api/npm/db-npm/
+          //databricks.jfrog.io/artifactory/api/npm/db-npm/:_authToken=${UG_INTEGRATION_NPM_TOKEN}
+          fetch-retries=0
+          fetch-timeout=30000
+          '@ | Set-Content -LiteralPath $config -Encoding ascii
+          $failed = $false
+          foreach ($version in @("0.145.0", "0.100.0")) {
+            Write-Host "Checking @openai/codex@$version metadata through JFrog (not installing)"
+            npm --userconfig $config view "@openai/codex@$version" version --json
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+          }
+          if ($failed) { exit 1 }
       - name: Test a fresh installed package without workspace credentials
         shell: pwsh
         env:
