@@ -62,14 +62,6 @@ def test_base_row_requires_harness_builder():
         usage.SubagentUsageRow(**asdict(_row()))
 
 
-def test_row_subclass_requires_token_log_subdirectory():
-    with pytest.raises(TypeError, match="token_log_subdirectory"):
-        class MissingDirectoryRow(usage.SubagentUsageRow):
-            @staticmethod
-            def build(payload, *, now=None):
-                return None
-
-
 def test_default_directory_is_harness_specific(tmp_path, monkeypatch):
     monkeypatch.setattr(usage, "APP_DIR", tmp_path / ".ucode")
 

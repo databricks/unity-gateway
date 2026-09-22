@@ -26,14 +26,6 @@ LOCK_TIMEOUT_SECONDS = 2.0
 LOCK_RETRY_SECONDS = 0.05
 
 
-def _validate_token_log_subdirectory(value: object) -> str:
-    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", value):
-        raise TypeError(
-            "SubagentUsageRow subclasses must define a safe token_log_subdirectory"
-        )
-    return value
-
-
 @dataclass(frozen=True, slots=True)
 class SubagentUsageRow(ABC):
     token_log_subdirectory: ClassVar[str]
@@ -50,10 +42,6 @@ class SubagentUsageRow(ABC):
     output_tokens: int
     total_tokens: int
     status: str
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super(SubagentUsageRow, cls).__init_subclass__(**kwargs)
-        _validate_token_log_subdirectory(cls.__dict__.get("token_log_subdirectory"))
 
     @staticmethod
     @abstractmethod
@@ -84,8 +72,7 @@ def enabled(env: MutableMapping[str, str] | None = None) -> bool:
 
 
 def usage_directory(token_log_subdirectory: str) -> Path:
-    subdirectory = _validate_token_log_subdirectory(token_log_subdirectory)
-    return APP_DIR / "token-logs" / subdirectory
+    return APP_DIR / "token-logs" / token_log_subdirectory
 
 
 def session_csv_path(session_id: str, token_log_subdirectory: str) -> Path:
