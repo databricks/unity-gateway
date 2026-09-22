@@ -7,6 +7,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -16,6 +17,14 @@ from pathlib import Path
 from .constants import CODEX_TEST_MODEL
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def process_group_options() -> dict:
+    if os.name == "posix":
+        return {"start_new_session": True}
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {}
 
 
 def clean_environment(home: Path) -> dict[str, str]:
@@ -70,8 +79,19 @@ def stop_process(proc: subprocess.Popen) -> None:
         # The leader may have exited while a grandchild kept running.
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
-    elif proc.poll() is None:
-        proc.kill()
+    elif os.name == "nt" and proc.poll() is None:
+        try:
+            subprocess.run(
+                [shutil.which("taskkill") or "taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        if proc.poll() is None:
+            proc.kill()
     proc.wait(timeout=5)
 
 
@@ -113,7 +133,7 @@ class UserSession:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            start_new_session=os.name == "posix",
+            **process_group_options(),
         )
         timed_out = False
         try:
@@ -235,7 +255,7 @@ class UserSession:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            start_new_session=os.name == "posix",
+            **process_group_options(),
         )
 
         def read_output():

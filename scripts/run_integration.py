@@ -34,6 +34,10 @@ UV_INDEX_CREDENTIAL_ENV = (
 )
 NPM_TOKEN_ENV = "UG_INTEGRATION_NPM_TOKEN"
 INSTALLER_CREDENTIAL_ENV = (*UV_INDEX_CREDENTIAL_ENV, NPM_TOKEN_ENV)
+HEADLESS_TEST_NODES = {
+    "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
+    "codex": "test_ug_codex_headless.py::test_ug_codex_headless_prompt_argument",
+}
 
 
 def installer_environment(
@@ -72,6 +76,86 @@ def redact_secrets(value: str, secrets: Iterable[str]) -> str:
     for secret in sorted({secret for secret in secrets if secret}, key=len, reverse=True):
         value = value.replace(secret, "<redacted>")
     return value
+
+
+def managed_policy_paths(
+    agents: Iterable[str],
+    environment: Mapping[str, str] | None = None,
+    *,
+    platform_name: str | None = None,
+    system_platform: str | None = None,
+) -> tuple[Path, ...]:
+    """Return machine-wide agent settings that can change a live test."""
+    environment = os.environ if environment is None else environment
+    platform_name = os.name if platform_name is None else platform_name
+    system_platform = sys.platform if system_platform is None else system_platform
+    selected = set(agents)
+    paths: list[Path] = []
+    if platform_name == "nt":
+        if "codex" in selected:
+            program_data = environment.get("PROGRAMDATA", "").strip()
+            if not program_data:
+                raise RuntimeError(
+                    "Cannot verify Codex system policy because PROGRAMDATA is unavailable."
+                )
+            codex_system = Path(program_data) / "OpenAI" / "Codex"
+            paths.extend([codex_system / "requirements.toml", codex_system / "config.toml"])
+        if "claude" in selected:
+            program_files = environment.get("PROGRAMFILES", "").strip()
+            if not program_files:
+                raise RuntimeError(
+                    "Cannot verify Claude managed settings because PROGRAMFILES is unavailable."
+                )
+            paths.append(Path(program_files) / "ClaudeCode" / "managed-settings.json")
+    elif platform_name == "posix":
+        if "codex" in selected:
+            paths.extend(
+                [Path("/etc/codex/managed_config.toml"), Path("/etc/codex/requirements.toml")]
+            )
+        if "claude" in selected:
+            paths.append(
+                Path(
+                    "/Library/Application Support/ClaudeCode/managed-settings.json"
+                    if system_platform == "darwin"
+                    else "/etc/claude-code/managed-settings.json"
+                )
+            )
+    return tuple(paths)
+
+
+def present_policy_paths(paths: Iterable[Path]) -> list[str]:
+    """Find policy files, failing closed when a path cannot be inspected."""
+    present = []
+    for path in paths:
+        try:
+            path.stat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise RuntimeError(
+                f"Cannot inspect machine-wide agent settings at {path}: {exc}"
+            ) from exc
+        present.append(str(path))
+    return present
+
+
+def integration_test_targets(
+    suite: Path,
+    agents: Iterable[str],
+    *,
+    platform_name: str,
+    installation_only: bool,
+    headless_only: bool,
+) -> list[str]:
+    if headless_only:
+        targets = []
+        for agent in agents:
+            module, test = HEADLESS_TEST_NODES[agent].split("::", 1)
+            targets.append(f"{suite / module}::{test}")
+        return targets
+    if platform_name == "nt" and installation_only:
+        return [str(suite / "test_installation.py")]
+    return [str(suite)]
 
 
 def process_group_options() -> dict:
@@ -168,7 +252,14 @@ def exact_npm_version(value: str) -> str:
     return value
 
 
-def arguments():
+def arguments(
+    argv: list[str] | None = None,
+    *,
+    platform_name: str | None = None,
+    environment: Mapping[str, str] | None = None,
+):
+    platform_name = os.name if platform_name is None else platform_name
+    environment = os.environ if environment is None else environment
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--ug-version", default="checkout", help="Exact ug release, or checkout.")
@@ -178,8 +269,8 @@ def arguments():
     parser.add_argument("--entry-point", choices=["ug", "ucode"], default="ug")
     parser.add_argument("--claude-version", type=exact_npm_version)
     parser.add_argument("--codex-version", type=exact_npm_version)
-    parser.add_argument("--claude-model", default=os.environ.get("UG_INTEGRATION_CLAUDE_MODEL"))
-    parser.add_argument("--codex-model", default=os.environ.get("UG_INTEGRATION_CODEX_MODEL"))
+    parser.add_argument("--claude-model", default=environment.get("UG_INTEGRATION_CLAUDE_MODEL"))
+    parser.add_argument("--codex-model", default=environment.get("UG_INTEGRATION_CODEX_MODEL"))
     parser.add_argument(
         "--claude-provider",
         default="main.ucode.ci_e2e_anthropic_nonrelay_mps",
@@ -227,26 +318,32 @@ def arguments():
         "--npm-lock", type=Path, help="Replay a previous npm-lock.json with npm ci."
     )
     parser.add_argument(
-        "--default-index", default=os.environ.get("UV_DEFAULT_INDEX", "https://pypi.org/simple")
+        "--default-index", default=environment.get("UV_DEFAULT_INDEX", "https://pypi.org/simple")
     )
     parser.add_argument("--npm-registry", default="https://registry.npmjs.org")
     parser.add_argument("--profile", help="Explicit Databricks profile to mint the live bearer.")
-    parser.add_argument("--workspace", default=os.environ.get("UCODE_TEST_WORKSPACE"))
+    parser.add_argument("--workspace", default=environment.get("UCODE_TEST_WORKSPACE"))
     parser.add_argument(
         "--second-workspace",
-        default=os.environ.get("UCODE_TEST_SECOND_WORKSPACE"),
+        default=environment.get("UCODE_TEST_SECOND_WORKSPACE"),
         help="Second real workspace for workspace_switch CUJs; requires DATABRICKS_SECOND_BEARER.",
     )
     parser.add_argument("--output", type=Path, help="New results directory; never reused.")
-    parser.add_argument("--installation-only", action="store_true", help="No workspace calls.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--installation-only", action="store_true", help="No workspace calls.")
+    mode.add_argument(
+        "--headless-only",
+        action="store_true",
+        help="Run one real noninteractive prompt journey for each selected agent.",
+    )
     parser.add_argument(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
     )
-    args = parser.parse_args()
-    if os.name != "posix" and not args.installation_only:
+    args = parser.parse_args(argv)
+    if platform_name != "posix" and not (args.installation_only or args.headless_only):
         parser.error(
             "Live agent/TUI integration requires POSIX PTY, managed-settings, and signal "
-            "support. Use --installation-only on Windows."
+            "support. Use --installation-only or --headless-only on Windows."
         )
     # Only selection/early-stop controls are accepted. Pytest configuration,
     # plugins and report destinations are part of the suite's isolation contract.
@@ -283,11 +380,11 @@ def arguments():
                 "Set UCODE_TEST_WORKSPACE to the existing e2e workspace, or use --workspace."
             )
         has_client_creds = bool(
-            os.environ.get("DATABRICKS_CLIENT_ID", "").strip()
-            and os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
+            environment.get("DATABRICKS_CLIENT_ID", "").strip()
+            and environment.get("DATABRICKS_CLIENT_SECRET", "").strip()
         )
         if not (
-            args.profile or os.environ.get("DATABRICKS_BEARER", "").strip() or has_client_creds
+            args.profile or environment.get("DATABRICKS_BEARER", "").strip() or has_client_creds
         ):
             parser.error(
                 "Provide the e2e DATABRICKS_BEARER, service-principal "
@@ -305,30 +402,26 @@ def main() -> int:
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, terminate)
+    agents = [agent for agent in AGENT_PACKAGES if getattr(args, f"{agent}_version")]
     binaries = {name: shutil.which(name) for name in ("uv", "npm", "node", "databricks")}
     required = ["uv", "npm", "node"] + ([] if args.installation_only else ["databricks"])
     missing = [name for name in required if not binaries[name]]
     if missing:
         raise SystemExit("Install these prerequisites first: " + ", ".join(missing))
     if not args.installation_only:
-        managed_paths = []
-        if args.codex_version:
-            managed_paths.extend(
-                [Path("/etc/codex/managed_config.toml"), Path("/etc/codex/requirements.toml")]
-            )
-        if args.claude_version:
-            managed_paths.append(
-                Path(
-                    "/Library/Application Support/ClaudeCode/managed-settings.json"
-                    if sys.platform == "darwin"
-                    else "/etc/claude-code/managed-settings.json"
-                )
-            )
-        present = [str(path) for path in managed_paths if path.exists()]
+        try:
+            present = present_policy_paths(managed_policy_paths(agents))
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
         if present:
+            guidance = (
+                "Use a clean Windows runner"
+                if os.name == "nt"
+                else "Use the integration container instead of this host"
+            )
             raise SystemExit(
                 "Machine-wide agent settings can override the selected test workspace. "
-                "Use the integration container instead of this host: " + ", ".join(present)
+                f"{guidance}: " + ", ".join(present)
             )
 
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S.%fZ")
@@ -443,6 +536,7 @@ def main() -> int:
         },
         "platform": platform.platform(),
         "installation_only": args.installation_only,
+        "headless_only": args.headless_only,
     }
     manifest = output / "versions.json"
     exitcode = 1
@@ -550,7 +644,6 @@ def main() -> int:
                 f"Selected release has no {args.entry_point} entry point; try --entry-point ucode."
             )
 
-        agents = [agent for agent in AGENT_PACKAGES if getattr(args, f"{agent}_version")]
         npm_prefix = output / "agents"
         npm_prefix.mkdir()
         if args.npm_lock:
@@ -629,7 +722,13 @@ def main() -> int:
         runtime_paths = [runtime_bin, agent_bin, tool_bin]
         if os.name == "nt":
             system_root = Path(base_env["SYSTEMROOT"])
-            runtime_paths.extend([system_root / "System32", system_root])
+            runtime_paths.extend(
+                [
+                    system_root / "System32",
+                    system_root / "System32/WindowsPowerShell/v1.0",
+                    system_root,
+                ]
+            )
         else:
             runtime_paths.extend([Path("/usr/bin"), Path("/bin")])
         runtime_env["PATH"] = os.pathsep.join(map(str, runtime_paths))
@@ -728,8 +827,12 @@ def main() -> int:
         report["pytest_args"] = extra
         manifest.write_text(redact(json.dumps(report, indent=2)) + "\n")
         print("Running integration tests against the installed package.", flush=True)
-        test_target = (
-            suite / "test_installation.py" if os.name == "nt" and args.installation_only else suite
+        test_targets = integration_test_targets(
+            suite,
+            agents,
+            platform_name=os.name,
+            installation_only=args.installation_only,
+            headless_only=args.headless_only,
         )
         with managed_process(
             [
@@ -739,7 +842,7 @@ def main() -> int:
                 "-c",
                 suite / "pytest.ini",
                 f"--confcutdir={suite}",
-                test_target,
+                *test_targets,
                 "-v",
                 "-o",
                 f"cache_dir={output / 'pytest-cache'}",
@@ -766,6 +869,11 @@ def main() -> int:
             if not totals["tests"] and not exitcode:
                 raise RuntimeError(
                     "No integration tests executed; see the selected pytest filters."
+                )
+            if args.headless_only and totals["tests"] != len(agents):
+                raise RuntimeError(
+                    f"Expected {len(agents)} headless integration tests, "
+                    f"but {totals['tests']} executed; see junit.xml."
                 )
         elif not exitcode:
             raise RuntimeError("Pytest returned success without a test report.")
