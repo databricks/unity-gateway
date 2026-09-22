@@ -2739,6 +2739,7 @@ def _launch_tool(
                     coding_agent_config_defaults = authored
         if (
             managed_claude_source_without_defaults
+            or (tool == "claude" and managed_provider)
             or (tool == "claude" and managed is None and parent_schema)
         ) and not relayed:
             token = get_databricks_token(state["workspace"], state.get("profile"))
@@ -2825,6 +2826,7 @@ def _launch_tool(
                 coding_agent_config_defaults,
                 provider=provider,
                 launch_model=model or forwarded_model or route_root_model,
+                discovered_catalog=picker_catalog,
             )
         state = configure_tool(
             tool,

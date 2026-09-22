@@ -171,6 +171,50 @@ class TestRenderOverlay:
             "anthropic.claude-sonnet-4-6",
         ]
 
+    def test_default_model_picker_catalog_unions_discovered_models_and_metadata(self):
+        discovered = db_mod.AnthropicModelCatalog(
+            model_ids=[
+                "anthropic.claude-sonnet-4-6",
+                "anthropic.claude-opus-4-8",
+            ],
+            model_id_to_display_name={
+                "anthropic.claude-sonnet-4-6": "Gateway Sonnet",
+                "anthropic.claude-opus-4-8": "Gateway Opus",
+            },
+            model_id_to_description={
+                "anthropic.claude-sonnet-4-6": "Configured Sonnet",
+                "anthropic.claude-opus-4-8": "Discovered Opus",
+            },
+        )
+        original_display_names = dict(discovered.model_id_to_display_name)
+        original_descriptions = dict(discovered.model_id_to_description)
+
+        catalog = claude.default_model_picker_catalog(
+            {
+                "sonnet": "anthropic.claude-sonnet-4-6",
+                "fable": "anthropic.claude-fable-5-1",
+            },
+            provider="main.default.anthropic-mps",
+            discovered_catalog=discovered,
+        )
+
+        assert catalog.model_ids == [
+            "anthropic.claude-sonnet-4-6",
+            "anthropic.claude-fable-5-1",
+            "anthropic.claude-opus-4-8",
+        ]
+        assert catalog.model_id_to_display_name == {
+            "anthropic.claude-sonnet-4-6": "Gateway Sonnet",
+            "anthropic.claude-fable-5-1": "Anthropic.Claude Fable 5.1",
+            "anthropic.claude-opus-4-8": "Gateway Opus",
+        }
+        assert catalog.model_id_to_description == {
+            "anthropic.claude-sonnet-4-6": "Configured Sonnet",
+            "anthropic.claude-opus-4-8": "Discovered Opus",
+        }
+        assert discovered.model_id_to_display_name == original_display_names
+        assert discovered.model_id_to_description == original_descriptions
+
     def test_default_model_picker_catalog_deduplicates_values(self):
         catalog = claude.default_model_picker_catalog(
             {

@@ -581,11 +581,13 @@ def default_model_picker_catalog(
     *,
     provider: str | None = None,
     launch_model: str | None = None,
+    discovered_catalog: AnthropicModelCatalog | None = None,
 ) -> AnthropicModelCatalog:
-    """Build a replacement picker catalog from managed Claude family defaults."""
+    """Build a replacement picker catalog from managed defaults and discovered models."""
 
     model_ids: list[str] = []
     display_names: dict[str, str] = {}
+    descriptions: dict[str, str] = {}
     for family, raw_model in defaults.items():
         model = raw_model
         label = _picker_label(model.removesuffix("[1m]"))
@@ -600,9 +602,20 @@ def default_model_picker_catalog(
         model_ids.append(model)
         display_names[model] = label
 
+    if discovered_catalog is not None:
+        for model in discovered_catalog.model_ids:
+            if model not in model_ids:
+                model_ids.append(model)
+            if label := discovered_catalog.model_id_to_display_name.get(model):
+                display_names[model] = label
+            if description := discovered_catalog.model_id_to_description.get(model):
+                descriptions[model] = description
+
     return AnthropicModelCatalog(
         model_ids=model_ids,
         model_id_to_display_name=display_names,
+        model_id_to_description=descriptions,
+        error_msg=discovered_catalog.error_msg if discovered_catalog is not None else None,
     )
 
 
