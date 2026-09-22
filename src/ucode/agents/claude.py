@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -1379,6 +1380,46 @@ def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[s
     return ["--model", launch_model]
 
 
+def _resolve_launch_binary(binary: str) -> str:
+    """Resolve Claude's native executable without sending arguments through a batch shim."""
+    if os.name != "nt":
+        return binary
+
+    resolved = shutil.which(binary)
+    if resolved is None:
+        raise RuntimeError(
+            "Claude Code was not found on PATH. Install Claude Code and ensure its executable "
+            "is available, then retry."
+        )
+    if os.path.splitext(resolved)[1].casefold() not in {".bat", ".cmd"}:
+        return resolved
+
+    shim_dir = os.path.dirname(resolved)
+    node_modules_dirs: list[str] = []
+    if (
+        os.path.basename(shim_dir).casefold() == ".bin"
+        and os.path.basename(os.path.dirname(shim_dir)).casefold() == "node_modules"
+    ):
+        node_modules_dirs.append(os.path.dirname(shim_dir))
+    node_modules_dirs.append(os.path.join(shim_dir, "node_modules"))
+
+    for node_modules in node_modules_dirs:
+        native_binary = os.path.join(
+            node_modules,
+            "@anthropic-ai",
+            "claude-code",
+            "bin",
+            "claude.exe",
+        )
+        if os.path.isfile(native_binary):
+            return native_binary
+
+    raise RuntimeError(
+        f"Found the Claude Code Windows command shim at {resolved}, but its native "
+        "bin/claude.exe was missing. Upgrade or reinstall @anthropic-ai/claude-code and retry."
+    )
+
+
 def _build_claude_argv(
     binary: str,
     tool_args: list[str],
@@ -1554,6 +1595,7 @@ def launch(
             model_name=_maybe_add_1m_suffix,
         )
         return
+    binary = _resolve_launch_binary(binary)
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None

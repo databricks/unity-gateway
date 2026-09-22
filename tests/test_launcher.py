@@ -49,6 +49,21 @@ class TestExecOrSpawn:
                 launcher.exec_or_spawn(["claude.exe"])
         assert exc.value.code == 42
 
+    def test_windows_passes_prompt_metacharacters_without_a_shell(self):
+        proc = MagicMock()
+        proc.wait.return_value = 0
+        prompt = 'keep "quotes" & pipes | and %PATH% literal'
+        argv = [r"C:\Program Files\Claude\claude.exe", "--print", prompt]
+        with (
+            patch.object(launcher.os, "name", "nt"),
+            patch.object(launcher.subprocess, "Popen", return_value=proc) as popen,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                launcher.exec_or_spawn(argv)
+
+        popen.assert_called_once_with(argv)
+        assert exc.value.code == 0
+
     def test_windows_keyboard_interrupt_forwards_sigint(self):
         proc = MagicMock()
         # First wait() is interrupted; after forwarding SIGINT the child exits 130.
