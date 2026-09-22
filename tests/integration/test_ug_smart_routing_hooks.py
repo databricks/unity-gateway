@@ -86,7 +86,7 @@ def test_smart_routing_claude_route_subagent_hook(live_session, workspace):
     assert SMART_ROUTING_SUBAGENT_NOTICE in output["systemMessage"], output
     updated = hook["updatedInput"]
     assert "model" not in updated, updated
-    assert updated["subagent_type"].startswith("ucode-route-"), updated
+    assert updated["subagent_type"].startswith("ucode-smart-routing:ucode-route-"), updated
     assert updated["prompt"] == payload["tool_input"]["prompt"], updated
     assert updated["description"] == payload["tool_input"]["description"], updated
 

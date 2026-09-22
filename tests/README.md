@@ -25,6 +25,12 @@ the selected and empty checkboxes. These are local component checks, not live ga
 
 ## CUJ coverage matrix
 
+`test_repro_stale_claude_subagent.py` checks the diagnostic script's evidence
+classification using synthetic event fixtures. These are parser tests, not a
+reproduction of Claude's missing route-agent incident. The script's
+`--interactive` mode exercises Claude's plugin refresh in a real TUI; its
+headless mode does not. Neither mode exercises Isaac's launcher.
+
 These are **implemented assertions**, not a claim that every version passes.
 Consult the run's JUnit report and artifacts for results. Each function states
 its **Scenario** and **Expected** outcome and shows its configure and launch
