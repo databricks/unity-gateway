@@ -51,6 +51,20 @@ def _upsert_mcp_server(name: str, entry: dict) -> bool:
     return removed
 
 
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
+    """Apply ``add``/``remove`` to Cursor's `mcpServers` in a single read-modify-write, instead of
+    one write per server. Other entries the user configured are preserved."""
+    existing = read_json_safe(CURSOR_MCP_CONFIG_PATH)
+    mcp_servers = existing.get("mcpServers")
+    if not isinstance(mcp_servers, dict):
+        mcp_servers = {}
+    for name in remove:
+        mcp_servers.pop(name, None)
+    mcp_servers.update(add)
+    existing["mcpServers"] = mcp_servers
+    write_json_file(CURSOR_MCP_CONFIG_PATH, existing)
+
+
 def write_mcp_server_config(name: str, argv: list[str]) -> bool:
     """Add (or replace) a stdio (`ug mcp-proxy`) MCP server in ~/.cursor/mcp.json."""
     return _upsert_mcp_server(name, build_mcp_server_entry(argv))

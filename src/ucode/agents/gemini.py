@@ -122,6 +122,26 @@ def _ensure_local_settings_selected_type() -> None:
     write_json_file(GEMINI_SETTINGS_PATH, settings)
 
 
+def build_mcp_server_entry(argv: list[str]) -> dict:
+    """The `mcpServers` stdio entry `gemini mcp add <name> <argv> --type stdio` writes."""
+    return {"command": argv[0], "args": list(argv[1:])}
+
+
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
+    """Apply ``add``/``remove`` to Gemini's `mcpServers` (in ug's Gemini home settings) in a single
+    read-modify-write, instead of one `gemini mcp` subprocess per server. Other settings and the
+    developer's own servers are preserved."""
+    settings = read_json_safe(GEMINI_SETTINGS_PATH)
+    servers = settings.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+    for name in remove:
+        servers.pop(name, None)
+    servers.update(add)
+    settings["mcpServers"] = servers
+    write_json_file(GEMINI_SETTINGS_PATH, settings)
+
+
 def render_env_overlay(
     workspace: str, model: str, token: str, *, provider: str | None = None
 ) -> dict[str, str]:

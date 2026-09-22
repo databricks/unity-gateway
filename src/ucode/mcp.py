@@ -977,8 +977,18 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         if client in _MANAGED_FILE_AGENTS
     }
     fallback_clients = [c for c in clients if c not in _MANAGED_FILE_AGENTS or c in fallback_agents]
+    # The managed set can register a whole `system.ai` schema, so batch every agent into one config
+    # write each instead of a `claude mcp`/`codex mcp`/`gemini mcp` subprocess (or per-server file
+    # write) per server. Interactive `ug mcp` commands keep the per-server path (they change few
+    # servers and their output narrates each).
     apply_mcp_server_changes(
-        previous_fallback, working_fallback, fallback_clients, workspace, profile, use_pat=use_pat
+        previous_fallback,
+        working_fallback,
+        fallback_clients,
+        workspace,
+        profile,
+        use_pat=use_pat,
+        batch_agents=frozenset(fallback_clients),
     )
     state["managed_mcp_servers"] = working_fallback
     save_state(state)
@@ -1149,6 +1159,61 @@ def _discover_selected_mcp_sources(
     }
 
 
+# Every MCP client's module, keyed by client name — the batched-writer dispatch table (the MCP
+# analogue of `configure_tool`'s per-agent `write_tool_config`). Each module exposes
+# ``write_user_mcp_servers(add, remove)`` and an entry builder used by `_managed_mcp_entry`.
+_MCP_CLIENT_MODULES = {
+    "claude": claude,
+    "codex": codex,
+    "gemini": gemini,
+    "copilot": copilot,
+    "cursor": cursor,
+    "opencode": opencode,
+}
+
+
+def _managed_mcp_entry(
+    client: str,
+    url: str,
+    workspace: str,
+    profile: str | None,
+    *,
+    use_pat: bool,
+    always_load: bool,
+) -> dict:
+    """The user-scope config entry one MCP server registers as for ``client``, mirroring the
+    delivery choice in :func:`configure_client_mcp_server`: a native HTTP+OAuth entry for a
+    connection-backed mcp-services URL on an OAuth-capable (Claude/Cursor), non-PAT run, else the
+    stdio ``ug mcp-proxy`` entry. Used by the batched writers so a direct write matches exactly what
+    the per-server CLI/config path would have registered."""
+    oauth_client = AGENT_OAUTH_CLIENT.get(client)
+    use_http = (
+        oauth_client is not None
+        and AIGW_MCP_SERVICES_PATH in url
+        and not use_pat
+        and oauth_client_available(workspace, oauth_client)
+    )
+    if client == "claude":
+        if use_http:
+            return claude.managed_mcp_entry(url)
+        argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
+        return claude.user_stdio_mcp_entry(argv, always_load=always_load)
+    if client == "cursor" and use_http:
+        return cursor.build_http_mcp_server_entry(url, oauth_client)
+    argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
+    if client == "codex":
+        return codex.managed_mcp_entry(argv)
+    if client == "cursor":
+        return cursor.build_mcp_server_entry(argv)
+    if client == "gemini":
+        return gemini.build_mcp_server_entry(argv)
+    if client == "copilot":
+        return copilot.build_mcp_server_entry(argv)
+    if client == "opencode":
+        return opencode.build_mcp_server_entry(argv)
+    raise RuntimeError(f"Unsupported MCP client '{client}'.")
+
+
 def apply_mcp_server_changes(
     original_servers: list[dict],
     working_servers: list[dict],
@@ -1157,25 +1222,34 @@ def apply_mcp_server_changes(
     profile: str | None = None,
     *,
     use_pat: bool = False,
+    batch_agents: frozenset[str] = frozenset(),
 ) -> bool:
     original_by_name = _servers_by_name(original_servers)
     working_by_name = _servers_by_name(working_servers)
 
-    # Build the per-client work lists. Each add/remove shells out to a CLI or
-    # rewrites a config file, so a large diff means hundreds of operations; we
-    # run them concurrently ACROSS clients but SERIALLY within a client, since
-    # every operation for one client mutates that client's single shared config
-    # (`claude mcp add-json` edits ~/.claude.json, etc.) and concurrent
-    # read-modify-writes would clobber each other.
+    # Work runs concurrently ACROSS clients but SERIALLY within a client, since every operation for
+    # one client mutates that client's single shared config and concurrent read-modify-writes would
+    # clobber each other. Each per-server add/remove is a `claude mcp`/`codex mcp`/`gemini mcp`
+    # subprocess (~0.3-0.8s) or its own config read-modify-write, so a large set is dozens of them
+    # run serially. Agents named in ``batch_agents`` (the workspace-managed path, which can register
+    # a whole `system.ai` schema) instead collapse their whole diff into ONE write each via the
+    # per-agent ``write_user_mcp_servers`` (the MCP analogue of models' `write_tool_config`). Every
+    # agent by default, and any agent not listed, keeps the per-server CLI/config path.
     work: dict[str, list[Callable[[], object]]] = {client: [] for client in clients}
+    batched = {c for c in clients if c in batch_agents and c in _MCP_CLIENT_MODULES}
+    batch_add: dict[str, dict[str, dict]] = {c: {} for c in batched}
+    batch_remove: dict[str, set[str]] = {c: set() for c in batched}
     changed = False
 
     for name, server in original_by_name.items():
         if name not in working_by_name:
             for client in _mcp_server_clients(server):
-                work.setdefault(client, []).append(
-                    lambda c=client, n=name: remove_client_mcp_server(c, n)
-                )
+                if client in batched:
+                    batch_remove[client].add(name)
+                else:
+                    work.setdefault(client, []).append(
+                        lambda c=client, n=name: remove_client_mcp_server(c, n)
+                    )
             changed = True
 
     for name, server in working_by_name.items():
@@ -1189,12 +1263,24 @@ def apply_mcp_server_changes(
         # discoverable without an explicit mention; other clients ignore it.
         always_load = server.get("kind") == SKILLS_MCP_KIND
         for client in clients:
-            work[client].append(
-                lambda c=client, n=name, u=url, al=always_load: configure_client_mcp_server(
-                    c, n, u, workspace, profile, use_pat=use_pat, always_load=al
+            if client in batched:
+                batch_add[client][name] = _managed_mcp_entry(
+                    client, url, workspace, profile, use_pat=use_pat, always_load=always_load
                 )
-            )
+            else:
+                work[client].append(
+                    lambda c=client, n=name, u=url, al=always_load: configure_client_mcp_server(
+                        c, n, u, workspace, profile, use_pat=use_pat, always_load=al
+                    )
+                )
         changed = True
+
+    for client in batched:
+        adds, removes = batch_add[client], batch_remove[client]
+        if not adds and not removes:
+            continue
+        module = _MCP_CLIENT_MODULES[client]
+        work[client].append(lambda m=module, a=adds, r=removes: m.write_user_mcp_servers(a, r))
 
     _run_client_work(work)
     return changed

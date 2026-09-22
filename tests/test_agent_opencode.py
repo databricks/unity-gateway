@@ -471,3 +471,23 @@ class TestWriteToolConfigStaleProviderCleanup:
 
         written = json.loads(config_file.read_text())
         assert written["model"] == "databricks-anthropic/claude-sonnet"
+
+
+class TestWriteUserMcpServers:
+    def test_batched_add_remove_preserves_other_keys(self, tmp_path, monkeypatch):
+        path = tmp_path / "opencode.json"
+        path.write_text(
+            json.dumps({"provider": {"p": 1}, "mcp": {"mine": {"type": "local"}, "gone": {}}})
+        )
+        monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", path)
+        monkeypatch.setattr(opencode, "OPENCODE_BACKUP_PATH", tmp_path / "backup.json")
+
+        opencode.write_user_mcp_servers(
+            {"svc": opencode.build_mcp_server_entry(["ug", "mcp-proxy", "u"])}, {"gone"}
+        )
+
+        doc = json.loads(path.read_text())
+        assert doc["provider"] == {"p": 1}
+        assert "gone" not in doc["mcp"]
+        assert doc["mcp"]["mine"] == {"type": "local"}
+        assert doc["mcp"]["svc"]["command"] == ["ug", "mcp-proxy", "u"]

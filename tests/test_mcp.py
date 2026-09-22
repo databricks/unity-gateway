@@ -523,6 +523,58 @@ class TestApplyMcpServerChanges:
 
         assert mcp.apply_mcp_server_changes(servers, servers, ["claude"], WS) is False
 
+    def test_batch_agents_collapse_to_one_write_each(self, monkeypatch):
+        # With batch_agents, each listed agent (any client, not just claude/codex) gets ONE file
+        # write for the whole diff instead of a subprocess/write per server; unlisted clients keep
+        # the per-server path.
+        writes: dict[str, list[tuple[dict, set]]] = {"claude": [], "codex": [], "gemini": []}
+        per_server: list[tuple[str, str]] = []
+        for agent_name in writes:
+            monkeypatch.setattr(
+                getattr(mcp, agent_name),
+                "write_user_mcp_servers",
+                lambda a, r, _n=agent_name: writes[_n].append((a, r)),
+            )
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda c, n, *a, **k: per_server.append((c, n)) or [],
+        )
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda *a, **k: False)
+        working = [
+            self._server("a", ["claude", "codex", "gemini", "cursor"]),
+            self._server("b", ["claude", "codex", "gemini", "cursor"]),
+        ]
+
+        mcp.apply_mcp_server_changes(
+            [],
+            working,
+            ["claude", "codex", "gemini", "cursor"],
+            WS,
+            batch_agents=frozenset({"claude", "codex", "gemini"}),
+        )
+
+        # One batched write per batched agent (claude/codex AND gemini), carrying both servers.
+        for agent_name in writes:
+            assert len(writes[agent_name]) == 1 and set(writes[agent_name][0][0]) == {"a", "b"}
+        # cursor is not in batch_agents, so it keeps the per-server path.
+        assert sorted(per_server) == [("cursor", "a"), ("cursor", "b")]
+
+    def test_without_batch_agents_everything_stays_per_server(self, monkeypatch):
+        monkeypatch.setattr(
+            mcp.claude, "write_user_mcp_servers", lambda a, r: pytest.fail("must not batch")
+        )
+        per_server: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda c, n, *a, **k: per_server.append((c, n)) or [],
+        )
+
+        mcp.apply_mcp_server_changes([], [self._server("a", ["claude"])], ["claude"], WS)
+
+        assert per_server == [("claude", "a")]
+
 
 class TestApplySkillsMcpChanges:
     def _entry(self, by_client):

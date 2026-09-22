@@ -347,6 +347,21 @@ def remove_mcp_server_config(name: str) -> bool:
     return True
 
 
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
+    """Apply ``add``/``remove`` to OpenCode's `mcp` table in a single read-modify-write, instead of
+    one write per server. Other keys and the developer's own servers are preserved."""
+    backup_existing_file(OPENCODE_CONFIG_PATH, OPENCODE_BACKUP_PATH)
+    existing = read_json_safe(OPENCODE_CONFIG_PATH)
+    mcp_servers = existing.get("mcp")
+    if not isinstance(mcp_servers, dict):
+        mcp_servers = {}
+    for name in remove:
+        mcp_servers.pop(name, None)
+    mcp_servers.update(add)
+    existing["mcp"] = mcp_servers
+    write_json_file(OPENCODE_CONFIG_PATH, existing)
+
+
 def default_model(state: dict) -> str | None:
     if isinstance(state.get("opencode_default_model"), str):
         return state.get("opencode_default_model")

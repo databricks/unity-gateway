@@ -142,6 +142,21 @@ def remove_mcp_server_config(name: str) -> bool:
     return True
 
 
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
+    """Apply ``add``/``remove`` to Copilot's `mcpServers` in a single read-modify-write, instead of
+    one write per server. Other keys and the developer's own servers are preserved."""
+    backup_existing_file(COPILOT_MCP_CONFIG_PATH, COPILOT_MCP_BACKUP_PATH)
+    existing = read_json_safe(COPILOT_MCP_CONFIG_PATH)
+    mcp_servers = existing.get("mcpServers")
+    if not isinstance(mcp_servers, dict):
+        mcp_servers = {}
+    for name in remove:
+        mcp_servers.pop(name, None)
+    mcp_servers.update(add)
+    existing["mcpServers"] = mcp_servers
+    write_json_file(COPILOT_MCP_CONFIG_PATH, existing)
+
+
 def write_tool_config(
     state: dict,
     model: str,
