@@ -1909,6 +1909,55 @@ class TestRegisterWebSearchMcp:
         assert result["workspace"] == WS
 
 
+class TestResolveLaunchBinary:
+    def test_posix_preserves_bare_command(self, monkeypatch):
+        which = Mock(side_effect=AssertionError("POSIX launch should use execvp PATH lookup"))
+        monkeypatch.setattr(claude.os, "name", "posix")
+        monkeypatch.setattr(claude.shutil, "which", which)
+
+        assert claude._resolve_launch_binary("claude") == "claude"
+        which.assert_not_called()
+
+    def test_windows_uses_native_executable_from_path(self, monkeypatch, tmp_path):
+        native_binary = tmp_path / "Claude Code" / "claude.exe"
+        monkeypatch.setattr(claude.os, "name", "nt")
+        monkeypatch.setattr(claude.shutil, "which", lambda _binary: str(native_binary))
+
+        assert claude._resolve_launch_binary("claude") == str(native_binary)
+
+    @pytest.mark.parametrize("layout", ["global", "local"])
+    def test_windows_bypasses_npm_command_shim(self, monkeypatch, tmp_path, layout):
+        if layout == "global":
+            npm_dir = tmp_path / "npm prefix with spaces"
+            shim = npm_dir / "claude.CMD"
+            node_modules = npm_dir / "node_modules"
+        else:
+            node_modules = tmp_path / "project with spaces" / "node_modules"
+            shim = node_modules / ".bin" / "claude.cmd"
+        native_binary = node_modules / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+        native_binary.parent.mkdir(parents=True)
+        native_binary.touch()
+        monkeypatch.setattr(claude.os, "name", "nt")
+        monkeypatch.setattr(claude.shutil, "which", lambda _binary: str(shim))
+
+        assert claude._resolve_launch_binary("claude") == str(native_binary)
+
+    def test_windows_missing_command_is_actionable(self, monkeypatch):
+        monkeypatch.setattr(claude.os, "name", "nt")
+        monkeypatch.setattr(claude.shutil, "which", lambda _binary: None)
+
+        with pytest.raises(RuntimeError, match="not found on PATH"):
+            claude._resolve_launch_binary("claude")
+
+    def test_windows_batch_shim_without_native_target_is_actionable(self, monkeypatch, tmp_path):
+        shim = tmp_path / "npm" / "claude.cmd"
+        monkeypatch.setattr(claude.os, "name", "nt")
+        monkeypatch.setattr(claude.shutil, "which", lambda _binary: str(shim))
+
+        with pytest.raises(RuntimeError, match="native bin/claude.exe was missing"):
+            claude._resolve_launch_binary("claude")
+
+
 class TestClaudeLaunch:
     def test_gateway_discovery_enabled_for_relayed_provider(self, monkeypatch):
         calls: list[tuple[dict, str, list[str]]] = []
@@ -2014,6 +2063,26 @@ class TestClaudeLaunch:
 
         assert os.environ["OAUTH_TOKEN"] == "token"
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
+
+    def test_windows_launch_preserves_prompt_as_literal_argv(self, monkeypatch, tmp_path):
+        native_binary = tmp_path / "Claude Code" / "claude.exe"
+        prompt = 'keep "quotes" & pipes | and %PATH% literal'
+        calls: list[list[str]] = []
+        monkeypatch.setattr(claude.os, "name", "nt")
+        monkeypatch.setattr(claude.shutil, "which", lambda _binary: str(native_binary))
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+
+        claude.launch({}, ["--print", prompt], options=LaunchOptions())
+
+        assert calls == [
+            [
+                str(native_binary),
+                "--settings",
+                str(claude.CLAUDE_SETTINGS_PATH),
+                "--print",
+                prompt,
+            ]
+        ]
 
     def test_launch_model_is_only_set_for_current_process(self, monkeypatch):
         calls: list[list[str]] = []
