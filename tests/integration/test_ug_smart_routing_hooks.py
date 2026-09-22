@@ -199,9 +199,7 @@ def test_smart_routing_claude_subagent_only_launch_shows_no_first_prompt_banner(
 
 @pytest.mark.live
 @pytest.mark.codex
-def test_smart_routing_codex_subagent_only_launch_records_usage(
-    live_session, workspace
-):
+def test_smart_routing_codex_subagent_only_launch_records_usage(live_session, workspace):
     """Scenario: configure Codex, then ask its real TUI to delegate a file task while
     both the full and subagent-only routing flags are set.
 

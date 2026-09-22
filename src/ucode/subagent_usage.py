@@ -45,16 +45,12 @@ class SubagentUsageRow(ABC):
 
     @staticmethod
     @abstractmethod
-    def build(
-        payload: Mapping[str, Any], *, now: float | None = None
-    ) -> SubagentUsageRow | None:
+    def build(payload: Mapping[str, Any], *, now: float | None = None) -> SubagentUsageRow | None:
         """Build one harness-specific usage row from a hook payload."""
         raise NotImplementedError
 
     @classmethod
-    def record(
-        cls, payload: Mapping[str, Any], *, now: float | None = None
-    ) -> Path | None:
+    def record(cls, payload: Mapping[str, Any], *, now: float | None = None) -> Path | None:
         """Build and persist one harness-specific usage row."""
         recorded_at = now if now is not None else time.time()
         row = cls.build(payload, now=recorded_at)
