@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterator, Mapping, MutableMapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from ucode.config_io import APP_DIR
 
@@ -26,8 +26,18 @@ LOCK_TIMEOUT_SECONDS = 2.0
 LOCK_RETRY_SECONDS = 0.05
 
 
+def _validate_token_log_subdirectory(value: object) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", value):
+        raise TypeError(
+            "SubagentUsageRow subclasses must define a safe token_log_subdirectory"
+        )
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class SubagentUsageRow(ABC):
+    token_log_subdirectory: ClassVar[str]
+
     recorded_at_utc: str
     session_id: str
     agent_id: str
@@ -40,6 +50,10 @@ class SubagentUsageRow(ABC):
     output_tokens: int
     total_tokens: int
     status: str
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super(SubagentUsageRow, cls).__init_subclass__(**kwargs)
+        _validate_token_log_subdirectory(cls.__dict__.get("token_log_subdirectory"))
 
     @staticmethod
     @abstractmethod
@@ -69,20 +83,21 @@ def enabled(env: MutableMapping[str, str] | None = None) -> bool:
     return source.get(ENABLE_SUBAGENT_USAGE_CSV) == "1"
 
 
-def usage_directory() -> Path:
-    return APP_DIR / "token-logs"
+def usage_directory(token_log_subdirectory: str) -> Path:
+    subdirectory = _validate_token_log_subdirectory(token_log_subdirectory)
+    return APP_DIR / "token-logs" / subdirectory
 
 
-def session_csv_path(session_id: str) -> Path:
+def session_csv_path(session_id: str, token_log_subdirectory: str) -> Path:
     if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", session_id):
         filename = session_id
     else:
         filename = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
-    return usage_directory() / f"{filename}.csv"
+    return usage_directory(token_log_subdirectory) / f"{filename}.csv"
 
 
-def _ensure_usage_directory() -> Path:
-    directory = usage_directory()
+def _ensure_usage_directory(token_log_subdirectory: str) -> Path:
+    directory = usage_directory(token_log_subdirectory)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     if os.name != "nt":
         directory.chmod(0o700)
@@ -195,8 +210,8 @@ def _compact(path: Path) -> None:
 
 def write_subagent_usage(row: SubagentUsageRow, *, now: float | None = None) -> Path:
     """Append one typed row, deduplicating by agent id and cleaning up best effort."""
-    path = session_csv_path(row.session_id)
-    directory = _ensure_usage_directory()
+    path = session_csv_path(row.session_id, row.token_log_subdirectory)
+    directory = _ensure_usage_directory(row.token_log_subdirectory)
     write_at = now if now is not None else time.time()
     with _directory_lock(directory):
         _cleanup_stale_csvs(directory, path, write_at)
