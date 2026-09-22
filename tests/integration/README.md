@@ -334,6 +334,8 @@ The Windows job authenticates to the Databricks JFrog package proxy using
 GitHub OIDC, following the organization's SDK CI setup. Its actual OS image is
 recorded in `versions.json`; the organization can update the image behind the
 runner label. The two POSIX version-floor journeys are outside this Windows subset.
+It installs only Claude as the runner prerequisite; the five selected checks
+exercise ug and its local helpers, not either agent's inference path.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
 Installation jobs need no workspace credentials. For same-repository PRs, the live jobs
