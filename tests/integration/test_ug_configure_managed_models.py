@@ -64,8 +64,8 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session):
     """Scenario: launch Claude with managed defaults and MPS discovery on the west-2 workspace.
 
     Expected: the installed ug launch writes the MPS header and every admin-authored default to
-    both Claude settings files without changing the model ids. This settings reconciliation check
-    does not claim model inference.
+    both Claude settings files without changing the model ids, and replaces built-in picker rows
+    with those family defaults. This settings reconciliation check does not claim model inference.
     """
     session = live_session
     target_bearer = os.environ.get("UG_MPS_DEFAULTS_BEARER", "").strip()
@@ -98,6 +98,11 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session):
         assert env.get("ANTHROPIC_MODEL") == defaults["default_model"], settings
         for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
             assert env.get(env_key) == defaults[config_key], settings
+        picker = settings["modelPicker"]
+        assert picker["replaceBuiltInOptions"] is True, picker
+        assert sorted(option["model"] for option in picker["options"]) == sorted(
+            defaults[key] for key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS
+        ), picker
 
 
 @pytest.mark.managed
@@ -107,7 +112,8 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session)
 
     Expected: the installed ug launch writes the parent-schema header and every admin-authored
     default to both Claude settings files, adding ``[1m]`` only to Opus and Sonnet family defaults.
-    This settings reconciliation check does not claim model inference.
+    The replacement picker contains exactly those family defaults. This settings reconciliation
+    check does not claim model inference.
     """
     session = live_session
     target_bearer = os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_BEARER", "").strip()
@@ -145,11 +151,22 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session)
         expected_header = f"Databricks-Model-Service-Parent-Schema: {parent_schema}"
         assert expected_header in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines(), settings
         assert env.get("ANTHROPIC_MODEL") == defaults["default_model"], settings
+        expected_picker_models = []
         for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
             expected = defaults[config_key]
             if config_key in {"default_opus_model", "default_sonnet_model"}:
                 expected += "[1m]"
             assert env.get(env_key) == expected, settings
+            expected_picker_models.append(
+                defaults[config_key]
+                if defaults[config_key] == defaults["default_model"]
+                else expected
+            )
+        picker = settings["modelPicker"]
+        assert picker["replaceBuiltInOptions"] is True, picker
+        assert sorted(option["model"] for option in picker["options"]) == sorted(
+            expected_picker_models
+        ), picker
 
 
 @pytest.mark.managed_fixture

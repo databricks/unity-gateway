@@ -2820,6 +2820,12 @@ def _launch_tool(
             # Codex keeps an explicit --model in ctx.args and passes it to its CLI verbatim.
             if model and tool != "claude":
                 resolved_model = model
+        if coding_agent_config_defaults and not state.get("claude_static_models") and not relayed:
+            picker_catalog = claude_agent.default_model_picker_catalog(
+                coding_agent_config_defaults,
+                provider=provider,
+                launch_model=model or forwarded_model or route_root_model,
+            )
         state = configure_tool(
             tool,
             state,

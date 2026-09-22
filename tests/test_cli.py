@@ -476,7 +476,7 @@ def _launch_policy_patches(
         patch("ucode.cli.resolve_gemini_provider_model", return_value=("gemini-2.0-flash", None)),
         patch(
             "ucode.cli.resolve_launch_model",
-            return_value=(launch_state, "databricks-claude-sonnet-4"),
+            side_effect=lambda _tool, state, _model: (state, "databricks-claude-sonnet-4"),
         ) as resolve_model,
         patch(
             "ucode.cli.list_anthropic_model_catalog", return_value=picker_catalog
@@ -1086,17 +1086,23 @@ class TestManagedConfigLaunchSourceGuard:
 
 
 class TestManagedClaudeModelDiscovery:
-    def test_managed_static_models_do_not_enable_discovery(self):
+    @pytest.mark.parametrize("with_defaults", [False, True])
+    def test_managed_static_models_do_not_enable_discovery(self, with_defaults):
         managed = {
             "enabled_agents": {
                 "claude": {"model_config": {"model_services": ["system.ai.claude-sonnet-5"]}}
             }
         }
+        if with_defaults:
+            managed["enabled_agents"]["claude"]["model_config"][
+                "default_models_by_model_family"
+            ] = {"default_sonnet_model": "system.ai.claude-sonnet-5"}
         with _launch_policy_patches(managed) as calls:
             result = runner.invoke(app, ["claude"])
 
         assert result.exit_code == 0, result.output
         calls["launch"].assert_called_once()
+        assert calls["configure"].call_args.kwargs["picker_catalog"] is None
         assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
     MPS_CONFIG = {
@@ -1104,7 +1110,7 @@ class TestManagedClaudeModelDiscovery:
             "claude": {
                 "model_config": {
                     "model_provider_service": "main.default.anthropic-mps",
-                    "models": {
+                    "default_models_by_model_family": {
                         "default_sonnet_model": "anthropic.claude-sonnet-4-6",
                         "default_opus_model": "anthropic.claude-opus-4-8",
                         "default_haiku_model": "anthropic.claude-haiku-4-5",
@@ -1180,7 +1186,7 @@ class TestManagedClaudeModelDiscovery:
         ],
         ids=["mps-defaults", "mps-no-defaults", "uc-parent"],
     )
-    def test_launch_uses_managed_source_and_native_discovery(
+    def test_launch_uses_managed_source_and_picker(
         self, monkeypatch, managed, expected_provider, expected_parent, expected_picker
     ):
         calls = self._invoke(monkeypatch, managed)
@@ -1213,8 +1219,18 @@ class TestManagedClaudeModelDiscovery:
             ]
         else:
             calls["list_anthropic_model_catalog"].assert_not_called()
-            assert calls["configure"].call_args.kwargs["picker_catalog"] is None
-            assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
+            expected_models = [
+                "anthropic.claude-opus-4-8",
+                "anthropic.claude-sonnet-4-6",
+                "anthropic.claude-haiku-4-5",
+                "anthropic.claude-fable-5-1",
+            ]
+            assert (
+                calls["configure"].call_args.kwargs["picker_catalog"].model_ids == expected_models
+            )
+            assert (
+                calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == expected_models
+            )
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
     @pytest.mark.parametrize(
@@ -1225,7 +1241,7 @@ class TestManagedClaudeModelDiscovery:
         ],
         ids=["default-model", "family-default"],
     )
-    def test_managed_mps_with_any_default_keeps_native_picker(self, monkeypatch, defaults):
+    def test_managed_mps_with_default_replaces_unmapped_families(self, monkeypatch, defaults):
         managed = {
             "enabled_agents": {
                 "claude": {
@@ -1240,7 +1256,54 @@ class TestManagedClaudeModelDiscovery:
 
         assert calls["result"].exit_code == 0, calls["result"].output
         calls["list_anthropic_model_catalog"].assert_not_called()
+        assert calls["configure"].call_args.kwargs["picker_catalog"].model_ids == [
+            "claude-sonnet-5"
+        ]
+        assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == [
+            "claude-sonnet-5"
+        ]
+
+    @pytest.mark.parametrize("source", [{}, {"unity_catalog_location": "system.ai"}])
+    @pytest.mark.parametrize("model_flag", [[], ["--model"], ["--", "--model"]])
+    @pytest.mark.parametrize("default_model", [None, "system.ai.claude-sonnet-5"])
+    def test_managed_partial_defaults_replace_unmapped_families(
+        self, source, model_flag, default_model
+    ):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        **source,
+                        "default_model": default_model,
+                        "default_models_by_model_family": {
+                            "default_sonnet_model": "system.ai.claude-sonnet-5"
+                        },
+                    }
+                }
+            }
+        }
+        explicit_model = "system.ai.claude-sonnet-5" if model_flag else None
+        argv = ["claude", *model_flag, *([explicit_model] if explicit_model else [])]
+        with _launch_policy_patches(managed) as calls:
+            result = runner.invoke(app, argv)
+
+        assert result.exit_code == 0, result.output
+        calls["list_catalog"].assert_not_called()
+        picker = calls["configure"].call_args.kwargs["picker_catalog"]
+        assert picker.model_ids == [
+            explicit_model or default_model or "system.ai.claude-sonnet-5[1m]"
+        ]
+        assert calls["configure"].call_args.kwargs["route_root_model"] == default_model
+        assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == picker.model_ids
+        assert calls["launch"].call_args.kwargs["options"].user_pinned_model == explicit_model
+
+    def test_relayed_managed_defaults_keep_native_picker(self, monkeypatch):
+        calls = self._invoke(monkeypatch, self.MPS_CONFIG, relayed=True)
+
+        assert calls["result"].exit_code == 0, calls["result"].output
+        calls["list_anthropic_model_catalog"].assert_not_called()
         assert calls["configure"].call_args.kwargs["picker_catalog"] is None
+        assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
 
     @pytest.mark.parametrize("relayed", [False, True])
     def test_managed_mps_picker_preserves_provider_model_resolution(self, monkeypatch, relayed):

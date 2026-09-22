@@ -576,6 +576,36 @@ def _maybe_add_1m_suffix(model: str) -> str:
     return f"{model}[1m]" if should_suffix else model
 
 
+def default_model_picker_catalog(
+    defaults: dict[str, str],
+    *,
+    provider: str | None = None,
+    launch_model: str | None = None,
+) -> AnthropicModelCatalog:
+    """Build a replacement picker catalog from managed Claude family defaults."""
+
+    model_ids: list[str] = []
+    display_names: dict[str, str] = {}
+    for family, raw_model in defaults.items():
+        model = raw_model
+        label = _picker_label(model.removesuffix("[1m]"))
+        if provider is None and family in ("opus", "sonnet"):
+            # Match the current model's exact id so Claude does not append a duplicate row.
+            if launch_model and model.removesuffix("[1m]") == launch_model.removesuffix("[1m]"):
+                model = launch_model
+            else:
+                model = _maybe_add_1m_suffix(model)
+        if model in model_ids:
+            continue
+        model_ids.append(model)
+        display_names[model] = label
+
+    return AnthropicModelCatalog(
+        model_ids=model_ids,
+        model_id_to_display_name=display_names,
+    )
+
+
 def _enforce_model_default_hierarchy(
     family: str,
     *,

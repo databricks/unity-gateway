@@ -137,6 +137,67 @@ class TestRenderOverlay:
         )
         assert overlay["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "system.ai.claude-haiku-4-6"
 
+    def test_default_model_picker_catalog_adds_uc_long_context_suffixes(self):
+        catalog = claude.default_model_picker_catalog(
+            {
+                "opus": "system.ai.claude-opus-4-8",
+                "sonnet": "system.ai.claude-sonnet-4-6",
+                "haiku": "system.ai.claude-haiku-4-5",
+            }
+        )
+
+        assert catalog.model_ids == [
+            "system.ai.claude-opus-4-8[1m]",
+            "system.ai.claude-sonnet-4-6[1m]",
+            "system.ai.claude-haiku-4-5",
+        ]
+        assert catalog.model_id_to_display_name == {
+            "system.ai.claude-opus-4-8[1m]": "Claude Opus 4.8",
+            "system.ai.claude-sonnet-4-6[1m]": "Claude Sonnet 4.6",
+            "system.ai.claude-haiku-4-5": "Claude Haiku 4.5",
+        }
+
+    def test_default_model_picker_catalog_preserves_mps_ids(self):
+        catalog = claude.default_model_picker_catalog(
+            {
+                "opus": "anthropic.claude-opus-4-8",
+                "sonnet": "anthropic.claude-sonnet-4-6",
+            },
+            provider="main.default.anthropic-mps",
+        )
+
+        assert catalog.model_ids == [
+            "anthropic.claude-opus-4-8",
+            "anthropic.claude-sonnet-4-6",
+        ]
+
+    def test_default_model_picker_catalog_deduplicates_values(self):
+        catalog = claude.default_model_picker_catalog(
+            {
+                "opus": "system.ai.claude-opus-4-8",
+                "sonnet": "system.ai.claude-opus-4-8[1m]",
+            }
+        )
+
+        assert catalog.model_ids == ["system.ai.claude-opus-4-8[1m]"]
+
+    @pytest.mark.parametrize(
+        "configured_model", ["system.ai.claude-sonnet-5", "system.ai.claude-sonnet-5[1m]"]
+    )
+    def test_default_model_picker_catalog_keeps_launch_model_exact(self, configured_model):
+        catalog = claude.default_model_picker_catalog(
+            {
+                "opus": "system.ai.claude-opus-4-8",
+                "sonnet": configured_model,
+            },
+            launch_model="system.ai.claude-sonnet-5",
+        )
+
+        assert catalog.model_ids == [
+            "system.ai.claude-opus-4-8[1m]",
+            "system.ai.claude-sonnet-5",
+        ]
+
     def test_custom_model_does_not_persist_model_selection(self):
         # Explicit model selection is launch-scoped and must not be written to settings.
         overlay, _ = claude.render_overlay(
