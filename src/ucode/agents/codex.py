@@ -497,7 +497,7 @@ def write_tool_config(
         return base
 
     if catalog is not None:
-        _sync_app_model_catalog(catalog)
+        sync_app_model_catalog(catalog)
     elif not is_dry_run():
         detach_app_model_catalog()
         if CODEX_MODEL_CATALOG_PATH.exists():
@@ -865,7 +865,7 @@ def _print_app_catalog_restart_notice() -> None:
     )
 
 
-def _sync_app_model_catalog(catalog: dict) -> None:
+def sync_app_model_catalog(catalog: dict) -> None:
     """Publish a validated catalog without overwriting unreadable app settings."""
     if is_dry_run():
         return
@@ -1104,7 +1104,7 @@ def launch(
         else:
             catalog_path = _model_catalog_path(workspace, catalog_scope)
             _write_model_catalog(catalog_path, catalog)
-            _sync_app_model_catalog(catalog)
+            sync_app_model_catalog(catalog)
             profile_doc["model_catalog_json"] = str(catalog_path)
             # Codex otherwise boots on its bundled default model (e.g. gpt-5.6-sol),
             # which an MPS's allowlist doesn't route, so the first request 403s. Pin

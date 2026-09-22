@@ -783,7 +783,7 @@ class TestCodexAppCatalog:
         first_catalog = {"models": [{"slug": "first-model"}]}
         second_catalog = {"models": [{"slug": "second-model"}]}
 
-        codex._sync_app_model_catalog(first_catalog)
+        codex.sync_app_model_catalog(first_catalog)
         first_config = shared_path.read_text()
         assert "# User settings" in first_config
         assert read_toml_safe(shared_path) == {
@@ -796,11 +796,11 @@ class TestCodexAppCatalog:
         assert "codex app-server daemon restart" in " ".join(published.err.split())
         assert "After active tasks finish" in published.err
 
-        codex._sync_app_model_catalog(first_catalog)
+        codex.sync_app_model_catalog(first_catalog)
         unchanged = capsys.readouterr()
         assert unchanged.out == unchanged.err == ""
 
-        codex._sync_app_model_catalog(second_catalog)
+        codex.sync_app_model_catalog(second_catalog)
         assert shared_path.read_text() == first_config
         assert json.loads(codex.CODEX_MODEL_CATALOG_PATH.read_text()) == second_catalog
         refreshed = capsys.readouterr()
@@ -809,7 +809,7 @@ class TestCodexAppCatalog:
 
         # Reattaching an unchanged catalog also requires a server restart.
         shared_path.write_text(original, encoding="utf-8")
-        codex._sync_app_model_catalog(second_catalog)
+        codex.sync_app_model_catalog(second_catalog)
         assert shared_path.read_text() == first_config
         assert "codex app-server daemon restart" in " ".join(capsys.readouterr().err.split())
 
@@ -821,7 +821,7 @@ class TestCodexAppCatalog:
         codex.CODEX_MODEL_CATALOG_PATH.write_text("previous catalog", encoding="utf-8")
 
         with pytest.raises(RuntimeError, match="Cannot update Codex App settings"):
-            codex._sync_app_model_catalog({"models": [{"slug": "gpt-mps"}]})
+            codex.sync_app_model_catalog({"models": [{"slug": "gpt-mps"}]})
 
         assert shared_path.read_text() == original
         assert codex.CODEX_MODEL_CATALOG_PATH.read_text() == "previous catalog"
@@ -829,7 +829,7 @@ class TestCodexAppCatalog:
     @pytest.mark.parametrize("previous_catalog", [False, True])
     def test_custom_provider_keeps_its_own_model_discovery(self, previous_catalog, capsys):
         if previous_catalog:
-            codex._sync_app_model_catalog({"models": [{"slug": "previous"}]})
+            codex.sync_app_model_catalog({"models": [{"slug": "previous"}]})
         shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
         shared_path.parent.mkdir(exist_ok=True)
         original = '# User settings\nmodel_provider = "custom"\nmodel = "user-model"\n'
@@ -844,7 +844,7 @@ class TestCodexAppCatalog:
         )
 
         capsys.readouterr()
-        codex._sync_app_model_catalog({"models": [{"slug": "gpt-mps"}]})
+        codex.sync_app_model_catalog({"models": [{"slug": "gpt-mps"}]})
 
         assert shared_path.read_text() == original
         output = capsys.readouterr().err
@@ -854,19 +854,19 @@ class TestCodexAppCatalog:
             assert "daemon restart" not in output
 
     def test_dry_run_leaves_config_and_catalog_unchanged(self, monkeypatch):
-        codex._sync_app_model_catalog({"models": [{"slug": "previous"}]})
+        codex.sync_app_model_catalog({"models": [{"slug": "previous"}]})
         shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
         original = shared_path.read_bytes()
         catalog_before = codex.CODEX_MODEL_CATALOG_PATH.read_bytes()
         monkeypatch.setattr(codex, "is_dry_run", lambda: True)
 
-        codex._sync_app_model_catalog({"models": [{"slug": "new"}]})
+        codex.sync_app_model_catalog({"models": [{"slug": "new"}]})
 
         assert shared_path.read_bytes() == original
         assert codex.CODEX_MODEL_CATALOG_PATH.read_bytes() == catalog_before
 
     def test_reconfigure_clears_discovered_app_catalog(self, monkeypatch):
-        codex._sync_app_model_catalog({"models": [{"slug": "previous-workspace"}]})
+        codex.sync_app_model_catalog({"models": [{"slug": "previous-workspace"}]})
         monkeypatch.setattr(codex, "agent_version", lambda _: "0.154.0")
         monkeypatch.setattr(codex, "save_state", lambda _: None)
 
@@ -877,7 +877,7 @@ class TestCodexAppCatalog:
         assert not codex.CODEX_MODEL_CATALOG_PATH.exists()
 
     def test_failed_static_validation_detaches_previous_app_catalog(self, monkeypatch):
-        codex._sync_app_model_catalog({"models": [{"slug": "old-model"}]})
+        codex.sync_app_model_catalog({"models": [{"slug": "old-model"}]})
         original_catalog = codex.CODEX_MODEL_CATALOG_PATH.read_bytes()
         monkeypatch.setattr(codex, "agent_version", lambda _: "0.154.0")
 
@@ -894,7 +894,7 @@ class TestCodexAppCatalog:
         assert codex.CODEX_MODEL_CATALOG_PATH.read_bytes() == original_catalog
 
     def test_revert_preserves_subsequent_user_catalog(self, tmp_path):
-        codex._sync_app_model_catalog({"models": [{"slug": "gpt-mps"}]})
+        codex.sync_app_model_catalog({"models": [{"slug": "gpt-mps"}]})
         shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
         original = 'model_catalog_json = "/user/models.json"\n'
         shared_path.write_text(original, encoding="utf-8")
@@ -1001,7 +1001,7 @@ class TestCodexLaunch:
         self, tmp_path, monkeypatch, custom_catalog
     ):
         self._patch(tmp_path, monkeypatch)
-        codex._sync_app_model_catalog({"models": [{"slug": "old-model"}]})
+        codex.sync_app_model_catalog({"models": [{"slug": "old-model"}]})
         shared_path = tmp_path / "config.toml"
         if custom_catalog:
             shared_path.write_text(f'model_catalog_json = "{custom_catalog}"\n')
@@ -1088,7 +1088,7 @@ class TestCodexLaunch:
         self, tmp_path, monkeypatch, custom_catalog
     ):
         launches = self._patch(tmp_path, monkeypatch)
-        codex._sync_app_model_catalog({"models": [{"slug": "old-model"}]})
+        codex.sync_app_model_catalog({"models": [{"slug": "old-model"}]})
         original_catalog = codex.CODEX_MODEL_CATALOG_PATH.read_bytes()
         shared_path = tmp_path / "config.toml"
         if custom_catalog:
@@ -1306,7 +1306,7 @@ class TestCodexLaunch:
         self, tmp_path, monkeypatch, tool_args
     ):
         launches = self._patch(tmp_path, monkeypatch)
-        codex._sync_app_model_catalog({"models": [{"slug": "previous-workspace"}]})
+        codex.sync_app_model_catalog({"models": [{"slug": "previous-workspace"}]})
         monkeypatch.setattr(
             codex,
             "_fetch_codex_model_catalog",
