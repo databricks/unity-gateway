@@ -762,14 +762,18 @@ def _resolve_managed_mcp_servers(
 ) -> list[dict]:
     """Resolve a managed ``mcp_servers`` selector into MCP server entries for ``clients``.
 
-    ``selector`` is the normalized ``NamesOrLocation`` (``{names?, unity_catalog_location?}``): a
-    ``unity_catalog_location`` registers every MCP service discovered under that
-    ``<catalog>.<schema>``; ``names`` registers exactly those services, each a full
-    ``<catalog>.<schema>.<service>`` name. Discovery and narrowing reuse
-    :func:`_resolve_location_mcp_servers` with no ``original_servers``, so the managed set is
-    tracked on its own and never entangles the developer's own servers or the skills connection.
-    A name that isn't a full three-part FQN is skipped with a warning, so an admin's typo in one
-    entry never blocks the developer from the entries that are valid.
+    ``selector`` is the normalized ``NamesOrLocation`` (``{names?, unity_catalog_location?}``), and
+    the two branches resolve differently:
+
+    - a ``unity_catalog_location`` registers every MCP service under that ``<catalog>.<schema>``, so
+      it discovers the set via :func:`_resolve_location_mcp_servers` (with no ``original_servers``);
+    - ``names`` registers exactly those services. Each is a full ``<catalog>.<schema>.<service>``
+      whose proxy URL is deterministic, so its entry is built directly here with no discovery or
+      narrowing call.
+
+    Either way the managed set is tracked on its own and never entangles the developer's own servers
+    or the skills connection. A ``names`` entry that isn't a full three-part FQN is skipped with a
+    warning, so an admin's typo in one entry never blocks the developer from the valid entries.
     """
     location = selector.get("unity_catalog_location")
     if isinstance(location, str) and location:
@@ -788,21 +792,27 @@ def _resolve_managed_mcp_servers(
     names = [n for n in names if n not in set(malformed)]
     if not names:
         return []
-    # Group the valid FQNs by their `<catalog>.<schema>` so each schema is discovered once, e.g.
-    # {"system.ai": {"system.ai.slack", "system.ai.github"}, "main.default": {"main.default.custom"}}.
-    by_schema: dict[str, set[str]] = {}
-    for name in names:
-        by_schema.setdefault(".".join(name.split(".")[:2]), set()).add(name)
+    # Explicit FQNs need no runtime discovery: the proxy URL is deterministic from the name, and
+    # access is enforced when a tool is actually called. So build the entries directly and skip the
+    # per-schema ListMcpServices round-trip (and the Atlas load it drives at scale) that narrowing a
+    # discovered list would require. A since-removed name simply fails at call time rather than
+    # slowing every `ug configure`. The `unity_catalog_location` selector above is the one path that
+    # still discovers, since a whole-schema pointer has no explicit set to register.
     working: list[dict] = []
     seen: set[str] = set()
-    for schema in sorted(by_schema):
-        for server in _resolve_location_mcp_servers(
-            workspace, profile, clients, schema, [], services=by_schema[schema]
-        ):
-            name = server.get("name")
-            if isinstance(name, str) and name not in seen:
-                seen.add(name)
-                working.append(server)
+    for full_name in sorted(set(names)):
+        entry_name = full_name.replace(".", "-")
+        if entry_name in seen:
+            continue
+        seen.add(entry_name)
+        working.append(
+            {
+                "name": entry_name,
+                "url": build_mcp_service_url(workspace, full_name),
+                "auth": "proxy",
+                "clients": list(clients),
+            }
+        )
     return working
 
 

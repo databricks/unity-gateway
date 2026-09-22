@@ -2837,32 +2837,38 @@ class TestResolveManagedMcpServers:
         assert captured["original"] == []
         assert [s["name"] for s in out] == ["system-ai-a"]
 
-    def test_names_group_by_schema_and_narrow(self, monkeypatch):
-        calls: list[tuple[str, set]] = []
-
-        def fake_loc(ws, profile, clients, location, original, services=None):
-            calls.append((location, set(services)))
-            return [
-                {"name": n.replace(".", "-"), "url": "u", "auth": "proxy", "clients": clients}
-                for n in sorted(services)
-            ]
-
-        monkeypatch.setattr(mcp, "_resolve_location_mcp_servers", fake_loc)
+    def test_names_build_entries_directly_without_discovery(self, monkeypatch):
+        # Explicit FQNs register without a ListMcpServices round-trip: the proxy URL is
+        # deterministic from the name, so `ug configure` skips discovery (and the Atlas load a
+        # per-schema listing would drive at scale).
+        monkeypatch.setattr(
+            mcp,
+            "_resolve_location_mcp_servers",
+            lambda *a, **k: pytest.fail("must not discover for explicit FQN names"),
+        )
         out = mcp._resolve_managed_mcp_servers(
             {"names": ["system.ai.github", "system.ai.jira", "main.tools.foo"]},
             WS,
             None,
-            ["claude"],
+            ["claude", "codex"],
         )
-        by_schema = dict(calls)
-        assert sorted(by_schema) == ["main.tools", "system.ai"]
-        assert by_schema["system.ai"] == {"system.ai.github", "system.ai.jira"}
-        assert by_schema["main.tools"] == {"main.tools.foo"}
-        assert {s["name"] for s in out} == {
-            "system-ai-github",
-            "system-ai-jira",
-            "main-tools-foo",
-        }
+        by_name = {s["name"]: s for s in out}
+        assert set(by_name) == {"system-ai-github", "system-ai-jira", "main-tools-foo"}
+        github = by_name["system-ai-github"]
+        assert github["url"] == mcp.build_mcp_service_url(WS, "system.ai.github")
+        assert github["auth"] == "proxy"
+        assert github["clients"] == ["claude", "codex"]
+
+    def test_duplicate_names_collapse_to_one_entry(self, monkeypatch):
+        monkeypatch.setattr(
+            mcp,
+            "_resolve_location_mcp_servers",
+            lambda *a, **k: pytest.fail("must not discover for explicit FQN names"),
+        )
+        out = mcp._resolve_managed_mcp_servers(
+            {"names": ["system.ai.github", "system.ai.github"]}, WS, None, ["claude"]
+        )
+        assert [s["name"] for s in out] == ["system-ai-github"]
 
     def test_malformed_names_are_skipped_with_a_warning(self, monkeypatch):
         # A bare (`github`) or over-qualified (`a.b.c.d`) name isn't a full FQN and can't be

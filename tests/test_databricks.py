@@ -1286,6 +1286,87 @@ class TestListMcpServices:
         assert names == []
         assert reason and reason.startswith("HTTP 404")
 
+    def test_requests_basic_view(self, monkeypatch):
+        # Only names are needed; BASIC omits the source-connection resolution that makes FULL
+        # costlier (and adds Atlas load) at scale.
+        captured: dict[str, str] = {}
+
+        def fake_get(url, token, timeout=30):
+            captured["url"] = url
+            return {"mcp_services": []}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        db_mod.list_mcp_services(WS, "token")
+
+        assert "view=BASIC" in captured["url"]
+
+    def test_follows_next_page_token(self, monkeypatch):
+        # A whole-schema pointer can span more than one page; ignoring next_page_token would
+        # silently drop services on later pages.
+        pages = [
+            (
+                {
+                    "mcp_services": [{"name": "mcp-services/system.ai.github"}],
+                    "next_page_token": "tok2",
+                },
+                None,
+            ),
+            ({"mcp_services": [{"name": "mcp-services/system.ai.slack"}]}, None),
+        ]
+        seen: list[str] = []
+
+        def fake_get(url, token, timeout=30):
+            seen.append(url)
+            return pages[len(seen) - 1]
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        names, reason = db_mod.list_mcp_services(WS, "token")
+
+        assert reason is None
+        assert names == ["system.ai.github", "system.ai.slack"]
+        assert "page_token=tok2" in seen[1]
+
+    def test_stops_on_repeated_page_token(self, monkeypatch):
+        # A server that echoes the same token must not spin forever.
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: (
+                {
+                    "mcp_services": [{"name": "mcp-services/system.ai.github"}],
+                    "next_page_token": "x",
+                },
+                None,
+            ),
+        )
+
+        names, reason = db_mod.list_mcp_services(WS, "token")
+
+        assert reason is None
+        assert names == ["system.ai.github"]
+
+    def test_keeps_earlier_pages_when_a_later_one_fails(self, monkeypatch):
+        calls = {"n": 0}
+
+        def fake_get(url, token, timeout=30):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {
+                    "mcp_services": [{"name": "mcp-services/system.ai.github"}],
+                    "next_page_token": "tok2",
+                }, None
+            return None, "HTTP 500 Server Error"
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        names, reason = db_mod.list_mcp_services(WS, "token")
+
+        # A mid-pagination failure keeps what we already collected rather than erroring out.
+        assert names == ["system.ai.github"]
+        assert reason is None
+
 
 class TestWalkCatalogSchemas:
     """The generic catalogs -> schemas -> per-schema probe scaffold, independent of any probe."""

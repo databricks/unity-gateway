@@ -1994,30 +1994,50 @@ def _mcp_service_full_name(service: dict, required_prefix: str) -> str | None:
 
 
 def list_mcp_services(
-    workspace: str, token: str, parent: str = "system.ai"
+    workspace: str, token: str, parent: str = "system.ai", *, max_pages: int = 100
 ) -> tuple[list[str], str | None]:
     """List UC MCP services under ``parent`` (a ``<catalog>.<schema>`` ref).
+
+    Requests the ``BASIC`` view explicitly: only service names are needed to build
+    the deterministic proxy URLs, and ``BASIC`` omits the source-connection
+    resolution that makes ``FULL`` costlier (and adds Atlas load) at scale. The
+    server already defaults to ``BASIC`` when ``view`` is unset; sending it keeps
+    the cheap view even if that default ever changes.
+
+    Pages through ``next_page_token`` so a schema with more services than one page
+    (e.g. a whole-``system.ai`` pointer) isn't silently truncated.
 
     A non-None string indicates the listing call itself failed. Callers can inspect
     ``error`` for ``HTTP 404`` to distinguish "invalid location" from other failures.
     """
     hostname = workspace_hostname(workspace)
-    url = (
-        f"https://{hostname}/api/2.1/unity-catalog/mcp-services"
-        f"?{urlencode({'parent': f'schemas/{parent}'})}"
-    )
-    payload, reason = _http_get_json(url, token, timeout=30)
-    if payload is None:
-        return [], reason
     expected_prefix = parent + "."
-    data = cast(dict, payload) if isinstance(payload, dict) else {}
     names: list[str] = []
-    for service in data.get("mcp_services") or []:
-        if not isinstance(service, dict):
-            continue
-        full_name = _mcp_service_full_name(service, expected_prefix)
-        if full_name:
-            names.append(full_name)
+    page_token: str | None = None
+    seen_tokens: set[str] = set()
+    for _ in range(max_pages):
+        params: dict[str, str] = {"parent": f"schemas/{parent}", "view": "BASIC"}
+        if page_token:
+            params["page_token"] = page_token
+        url = f"https://{hostname}/api/2.1/unity-catalog/mcp-services?{urlencode(params)}"
+        payload, reason = _http_get_json(url, token, timeout=30)
+        if payload is None:
+            # First-page failure surfaces the reason (e.g. HTTP 404 for an invalid
+            # location); a mid-pagination blip keeps whatever we already collected.
+            if not names:
+                return [], reason
+            break
+        data = cast(dict, payload) if isinstance(payload, dict) else {}
+        for service in data.get("mcp_services") or []:
+            if not isinstance(service, dict):
+                continue
+            full_name = _mcp_service_full_name(service, expected_prefix)
+            if full_name:
+                names.append(full_name)
+        page_token = data.get("next_page_token") or None
+        if not page_token or page_token in seen_tokens:
+            break
+        seen_tokens.add(page_token)
     return sorted(set(names)), None
 
 
