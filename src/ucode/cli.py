@@ -2554,7 +2554,10 @@ def _launch_tool(
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []
         )
-        ensure_bootstrap_dependencies(tool)
+        ensure_bootstrap_dependencies(
+            tool,
+            skip_cli_version_check=skip_preflight,
+        )
         if needs_auto_configure:
             if custom_oauth is None:
                 _auto_configure_tool(tool)
@@ -2850,14 +2853,16 @@ def _launch_tool(
 
 # Launch-only escape hatch for managed/headless launchers (e.g. omnigent) that
 # have already run `ug configure`: skip the ~5-10s per-launch auth + AI
-# Gateway re-validation. Distinct from the configure-only `--skip-validate`,
-# which skips the model smoke test.
+# Gateway re-validation, plus the Databricks CLI minimum-version check (whose
+# `databricks aitools` floor otherwise false-positives on a usable public-preview
+# build). Distinct from the configure-only `--skip-validate`, which skips the
+# model smoke test.
 SkipPreflightOption = Annotated[
     bool,
     typer.Option(
         "--skip-preflight",
-        help="Skip the per-launch Databricks auth + AI Gateway re-validation, trusting a "
-        "prior `ug configure`.",
+        help="Skip the per-launch Databricks auth + AI Gateway re-validation (and the "
+        "Databricks CLI minimum-version check), trusting a prior `ug configure`.",
     ),
 ]
 
@@ -2959,7 +2964,7 @@ def _launch_managed_default(
     if not current:
         console.print(ctx.get_help())
         return
-    install_databricks_cli()
+    install_databricks_cli(skip_version_check=skip_preflight)
     apply_pat_environment(state)
     coding_agent_config_feature_disabled = False
     if dry_run:
