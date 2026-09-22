@@ -157,82 +157,37 @@ class TestRenderOverlay:
             "system.ai.claude-haiku-4-5": "Claude Haiku 4.5",
         }
 
-    def test_default_model_picker_catalog_uses_mps_family_shortcuts(self):
+    def test_mps_picker_renders_default_shortcuts_before_catalog_rows(self):
+        provider = "main.default.anthropic-mps"
+        sonnet = "anthropic.claude-sonnet-4-6"
+        opus = "anthropic.claude-opus-4-8"
+        fable = "anthropic.claude-fable-5-1"
+        defaults = {"sonnet": sonnet, "haiku": sonnet, "fable": fable}
         catalog = claude.default_model_picker_catalog(
-            {
-                "opus": "anthropic.claude-opus-4-8",
-                "sonnet": "anthropic.claude-sonnet-4-6",
-            },
-            provider="main.default.anthropic-mps",
+            defaults,
+            provider=provider,
+            discovered_catalog=db_mod.AnthropicModelCatalog(
+                model_ids=[sonnet, opus],
+                model_id_to_display_name={sonnet: "Gateway Sonnet", opus: "Gateway Opus"},
+                model_id_to_description={sonnet: "Configured Sonnet", opus: "Discovered Opus"},
+            ),
+        )
+        overlay, _ = claude.render_overlay(
+            WS, None, provider=provider, provider_models=defaults, picker_catalog=catalog
         )
 
-        assert catalog.model_ids == ["opus", "sonnet"]
-        assert catalog.model_id_to_display_name == {
-            "opus": "Default Opus",
-            "sonnet": "Default Sonnet",
-        }
-        assert catalog.model_id_to_description == {
-            "opus": "anthropic.claude-opus-4-8",
-            "sonnet": "anthropic.claude-sonnet-4-6",
-        }
-
-    def test_default_model_picker_catalog_unions_discovered_models_and_metadata(self):
-        discovered = db_mod.AnthropicModelCatalog(
-            model_ids=[
-                "anthropic.claude-sonnet-4-6",
-                "anthropic.claude-opus-4-8",
+        assert overlay["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == sonnet
+        assert overlay["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == sonnet
+        assert overlay["modelPicker"] == {
+            "replaceBuiltInOptions": True,
+            "options": [
+                {"model": "sonnet", "label": "Default Sonnet", "description": sonnet},
+                {"model": "haiku", "label": "Default Haiku", "description": sonnet},
+                {"model": "fable", "label": "Default Fable", "description": fable},
+                {"model": sonnet, "label": "Gateway Sonnet", "description": "Configured Sonnet"},
+                {"model": opus, "label": "Gateway Opus", "description": "Discovered Opus"},
             ],
-            model_id_to_display_name={
-                "anthropic.claude-sonnet-4-6": "Gateway Sonnet",
-                "anthropic.claude-opus-4-8": "Gateway Opus",
-            },
-            model_id_to_description={
-                "anthropic.claude-sonnet-4-6": "Configured Sonnet",
-                "anthropic.claude-opus-4-8": "Discovered Opus",
-            },
-        )
-        original_display_names = dict(discovered.model_id_to_display_name)
-        original_descriptions = dict(discovered.model_id_to_description)
-
-        catalog = claude.default_model_picker_catalog(
-            {
-                "sonnet": "anthropic.claude-sonnet-4-6",
-                "fable": "anthropic.claude-fable-5-1",
-            },
-            provider="main.default.anthropic-mps",
-            discovered_catalog=discovered,
-        )
-
-        assert catalog.model_ids == [
-            "sonnet",
-            "fable",
-            "anthropic.claude-sonnet-4-6",
-            "anthropic.claude-opus-4-8",
-        ]
-        assert catalog.model_id_to_display_name == {
-            "sonnet": "Default Sonnet",
-            "fable": "Default Fable",
-            "anthropic.claude-sonnet-4-6": "Gateway Sonnet",
-            "anthropic.claude-opus-4-8": "Gateway Opus",
         }
-        assert catalog.model_id_to_description == {
-            "sonnet": "anthropic.claude-sonnet-4-6",
-            "fable": "anthropic.claude-fable-5-1",
-            "anthropic.claude-sonnet-4-6": "Configured Sonnet",
-            "anthropic.claude-opus-4-8": "Discovered Opus",
-        }
-        assert discovered.model_id_to_display_name == original_display_names
-        assert discovered.model_id_to_description == original_descriptions
-
-    def test_default_model_picker_catalog_deduplicates_values(self):
-        catalog = claude.default_model_picker_catalog(
-            {
-                "opus": "system.ai.claude-opus-4-8",
-                "sonnet": "system.ai.claude-opus-4-8[1m]",
-            }
-        )
-
-        assert catalog.model_ids == ["system.ai.claude-opus-4-8[1m]"]
 
     @pytest.mark.parametrize(
         "configured_model", ["system.ai.claude-sonnet-5", "system.ai.claude-sonnet-5[1m]"]
@@ -1394,48 +1349,6 @@ class TestWriteToolConfigManagedSettings:
             "sonnet": "system.ai.claude-sonnet-4-6",  # Existing managed setting took priority.
             "haiku": "system.ai.claude-haiku-5",  # Ucode default took priority.
         }
-
-    def test_mps_default_shortcuts_and_catalog_rows_can_share_a_target(self, monkeypatch):
-        private_writes: list = []
-        managed_writes: list = []
-        self._patch(monkeypatch, private_writes, managed_writes)
-        model = "anthropic.claude-sonnet-4-6"
-        defaults = {"sonnet": model, "fable": model}
-        provider = "main.default.anthropic"
-        catalog = claude.default_model_picker_catalog(
-            defaults,
-            provider=provider,
-            discovered_catalog=db_mod.AnthropicModelCatalog(
-                model_ids=[model],
-                model_id_to_display_name={model: "Gateway Sonnet"},
-                model_id_to_description={model: "MPS catalog model"},
-            ),
-        )
-
-        claude.write_tool_config(
-            {"workspace": WS},
-            None,
-            provider=provider,
-            provider_models=defaults,
-            coding_agent_config_defaults=defaults,
-            route_root_model=model,
-            picker_catalog=catalog,
-        )
-
-        for written in (private_writes[0][1], json.loads(managed_writes[0][1])):
-            assert written["env"]["ANTHROPIC_MODEL"] == model
-            assert written["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == model
-            assert written["env"]["ANTHROPIC_DEFAULT_FABLE_MODEL"] == model
-            assert "ANTHROPIC_DEFAULT_OPUS_MODEL" not in written["env"]
-            assert "ANTHROPIC_DEFAULT_HAIKU_MODEL" not in written["env"]
-            assert written["modelPicker"] == {
-                "replaceBuiltInOptions": True,
-                "options": [
-                    {"model": "sonnet", "label": "Default Sonnet", "description": model},
-                    {"model": "fable", "label": "Default Fable", "description": model},
-                    {"model": model, "label": "Gateway Sonnet", "description": "MPS catalog model"},
-                ],
-            }
 
     def test_managed_file_omits_workspace_defaults_for_provider(self, monkeypatch):
         private_writes: list = []

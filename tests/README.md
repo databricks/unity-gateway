@@ -18,6 +18,11 @@ the distribution rename with mocked installer calls, including failure recovery 
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
+Claude picker composition is checked directly through the catalog and renderer functions in
+`test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
+The managed-default and discovery integration journeys below check the generated settings
+and real picker.
+
 Agent-picker regression coverage in `test_ui.py` and `test_cli.py` drives actual
 keyboard selection: nothing is selected by default, selecting Codex installs only
 Codex, and submitting an empty selection installs nothing. Rendering checks cover
