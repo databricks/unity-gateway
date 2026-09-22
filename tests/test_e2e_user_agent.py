@@ -211,6 +211,36 @@ class TestClaudeUserAgent:
         assert req is not None, _no_request_msg(capture_server, result)
         _assert_ua(req, _expected_ua("claude", "claude"))
 
+    def test_managed_http_header_arrives_at_gateway(self, tmp_path, monkeypatch, capture_server):
+        import ucode.config_io as config_io_mod
+        from ucode.agents import claude
+
+        _require_binary("claude")
+        config_dir = tmp_path / "claude_config"
+        config_dir.mkdir()
+        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", config_dir / "settings.json")
+        monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "claude.backup.json")
+
+        overlay, _ = claude.render_overlay(
+            capture_server.base_url,
+            "test-model",
+            managed_http_headers={"x-databricks-workspace": "eng-ml-inference"},
+        )
+        claude.CLAUDE_SETTINGS_PATH.write_text(json.dumps(overlay), encoding="utf-8")
+        env = {
+            **os.environ,
+            "CLAUDE_CONFIG_DIR": str(config_dir),
+            "ANTHROPIC_API_KEY": "test-key-not-real",
+            **overlay["env"],
+        }
+
+        result = _run_until_first_request(claude.validate_cmd("claude"), env)
+
+        req = capture_server.first_request_with_path_prefix("/ai-gateway/anthropic")
+        assert req is not None, _no_request_msg(capture_server, result)
+        assert _header(req, "x-databricks-workspace") == "eng-ml-inference"
+
 
 class TestCodexUserAgent:
     def test_user_agent_arrives_at_gateway(self, tmp_path, monkeypatch, capture_server):

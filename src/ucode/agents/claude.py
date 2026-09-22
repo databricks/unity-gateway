@@ -45,6 +45,7 @@ from ucode.databricks import (
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
+from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
     OS,
     ManagedFileSnapshots,
@@ -213,6 +214,19 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
 _RELAYED_SETTING_SOURCES = "project,local"
 
 
+def _apply_managed_header_lines(
+    ucode_lines: list[str], managed_http_headers: dict[str, str] | None
+) -> list[str]:
+    """Overlay admin ``managed_http_headers`` onto ucode's header lines; admin wins by name."""
+    lines_by_name: dict[str, str] = {}
+    for line in ucode_lines:
+        name, _separator, _value = line.partition(":")
+        lines_by_name[name.strip().casefold()] = line
+    for name, value in (managed_http_headers or {}).items():
+        lines_by_name[name.strip().casefold()] = f"{name}: {value}"
+    return list(lines_by_name.values())
+
+
 def configured_paths(state: dict) -> list[str]:
     """The Claude config file ug writes; the OS-managed file is added by the dispatcher."""
     return [str(CLAUDE_SETTINGS_PATH)]
@@ -353,6 +367,7 @@ def render_overlay(
     static_models: list[str] | None = None,
     otel_tracing: bool = False,
     picker_catalog: AnthropicModelCatalog | None = None,
+    managed_http_headers: dict[str, str] | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
 
@@ -396,7 +411,7 @@ def render_overlay(
         header_lines.append(f"{SMART_ROUTER_RECIPE_HEADER}: {configured_router_name()}")
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
-    custom_headers = "\n".join(header_lines)
+    custom_headers = "\n".join(_apply_managed_header_lines(header_lines, managed_http_headers))
     env: dict[str, str] = {
         "ANTHROPIC_BASE_URL": base_url,
         "ANTHROPIC_CUSTOM_HEADERS": custom_headers,
@@ -876,6 +891,11 @@ def write_tool_config(
     # revert would restore that snapshot instead of deleting the file.
     if not is_tool_managed(state, "claude"):
         backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
+    # A managed config makes ug authoritative over the whole custom-header value, so it is
+    # overwritten wholesale; without one, preserve the developer's own pre-existing headers. Reuses
+    # this launch's warm managed-config cache (no extra round trip); a failed fetch degrades to None
+    # (treated as unmanaged), never blocking the write.
+    managed_config_present = refresh_managed_config(state).manifest is not None
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
     # Relayed inference points at a local refresh proxy; its loopback base URL is
@@ -899,6 +919,7 @@ def write_tool_config(
         static_models=state.get("claude_static_models"),
         otel_tracing=bool(state.get("claude_otel_tracing")),
         picker_catalog=picker_catalog,
+        managed_http_headers=state.get("claude_http_headers"),
     )
     source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
     # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
@@ -985,9 +1006,16 @@ def write_tool_config(
         for key in stale_picker_keys:
             merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
-        merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
-            existing_custom_headers, overlay_custom_headers
-        )
+        if managed_config_present:
+            # ug owns the whole value under a managed config: overwrite wholesale so a header ug no
+            # longer emits is dropped and no stale or foreign header lingers.
+            merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = overlay_custom_headers
+        else:
+            # No managed config: preserve the developer's own pre-existing headers, replacing only
+            # the header names ug manages.
+            merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
+                existing_custom_headers, overlay_custom_headers
+            )
         # Drop any apiKeyHelper a prior non-relayed launch left in the file; relayed
         # must not carry one (it would outrank the subscription OAuth).
         if relayed:
