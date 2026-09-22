@@ -330,12 +330,13 @@ the five credential-free checks in `test_installation.py` (installation, CLI,
 auth-helper, and local MCP) and
 uploads `integration-installation-windows` evidence. It uses `continue-on-error`
 and is not part of `All integration tests` until the initial Windows issues are fixed.
-The Windows job uses the Databricks Python/npm mirrors. Its actual OS image is
+The Windows job authenticates to the Databricks JFrog package proxy using
+GitHub OIDC, following the organization's SDK CI setup. Its actual OS image is
 recorded in `versions.json`; the organization can update the image behind the
 runner label. The two POSIX version-floor journeys are outside this Windows subset.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
-Installation jobs need no credentials. For same-repository PRs, the live jobs
+Installation jobs need no workspace credentials. For same-repository PRs, the live jobs
 reuse the existing `UCODE_TEST_WORKSPACE` and `DATABRICKS_BEARER` secrets; the full
 Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workflow
 uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
