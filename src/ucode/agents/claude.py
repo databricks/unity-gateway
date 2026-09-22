@@ -591,7 +591,12 @@ def default_model_picker_catalog(
     for family, raw_model in defaults.items():
         model = raw_model
         label = _picker_label(model.removesuffix("[1m]"))
-        if provider is None and family in ("opus", "sonnet"):
+        if provider is not None:
+            # Family shortcuts stay distinct from catalog rows for the same target.
+            model = family
+            label = f"Default {family.title()}"
+            descriptions[model] = raw_model
+        elif family in ("opus", "sonnet"):
             # Match the current model's exact id so Claude does not append a duplicate row.
             if launch_model and model.removesuffix("[1m]") == launch_model.removesuffix("[1m]"):
                 model = launch_model

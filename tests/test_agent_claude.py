@@ -157,7 +157,7 @@ class TestRenderOverlay:
             "system.ai.claude-haiku-4-5": "Claude Haiku 4.5",
         }
 
-    def test_default_model_picker_catalog_preserves_mps_ids(self):
+    def test_default_model_picker_catalog_uses_mps_family_shortcuts(self):
         catalog = claude.default_model_picker_catalog(
             {
                 "opus": "anthropic.claude-opus-4-8",
@@ -166,10 +166,15 @@ class TestRenderOverlay:
             provider="main.default.anthropic-mps",
         )
 
-        assert catalog.model_ids == [
-            "anthropic.claude-opus-4-8",
-            "anthropic.claude-sonnet-4-6",
-        ]
+        assert catalog.model_ids == ["opus", "sonnet"]
+        assert catalog.model_id_to_display_name == {
+            "opus": "Default Opus",
+            "sonnet": "Default Sonnet",
+        }
+        assert catalog.model_id_to_description == {
+            "opus": "anthropic.claude-opus-4-8",
+            "sonnet": "anthropic.claude-sonnet-4-6",
+        }
 
     def test_default_model_picker_catalog_unions_discovered_models_and_metadata(self):
         discovered = db_mod.AnthropicModelCatalog(
@@ -199,16 +204,20 @@ class TestRenderOverlay:
         )
 
         assert catalog.model_ids == [
+            "sonnet",
+            "fable",
             "anthropic.claude-sonnet-4-6",
-            "anthropic.claude-fable-5-1",
             "anthropic.claude-opus-4-8",
         ]
         assert catalog.model_id_to_display_name == {
+            "sonnet": "Default Sonnet",
+            "fable": "Default Fable",
             "anthropic.claude-sonnet-4-6": "Gateway Sonnet",
-            "anthropic.claude-fable-5-1": "Anthropic.Claude Fable 5.1",
             "anthropic.claude-opus-4-8": "Gateway Opus",
         }
         assert catalog.model_id_to_description == {
+            "sonnet": "anthropic.claude-sonnet-4-6",
+            "fable": "anthropic.claude-fable-5-1",
             "anthropic.claude-sonnet-4-6": "Configured Sonnet",
             "anthropic.claude-opus-4-8": "Discovered Opus",
         }
@@ -1385,6 +1394,48 @@ class TestWriteToolConfigManagedSettings:
             "sonnet": "system.ai.claude-sonnet-4-6",  # Existing managed setting took priority.
             "haiku": "system.ai.claude-haiku-5",  # Ucode default took priority.
         }
+
+    def test_mps_default_shortcuts_and_catalog_rows_can_share_a_target(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        model = "anthropic.claude-sonnet-4-6"
+        defaults = {"sonnet": model, "fable": model}
+        provider = "main.default.anthropic"
+        catalog = claude.default_model_picker_catalog(
+            defaults,
+            provider=provider,
+            discovered_catalog=db_mod.AnthropicModelCatalog(
+                model_ids=[model],
+                model_id_to_display_name={model: "Gateway Sonnet"},
+                model_id_to_description={model: "MPS catalog model"},
+            ),
+        )
+
+        claude.write_tool_config(
+            {"workspace": WS},
+            None,
+            provider=provider,
+            provider_models=defaults,
+            coding_agent_config_defaults=defaults,
+            route_root_model=model,
+            picker_catalog=catalog,
+        )
+
+        for written in (private_writes[0][1], json.loads(managed_writes[0][1])):
+            assert written["env"]["ANTHROPIC_MODEL"] == model
+            assert written["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == model
+            assert written["env"]["ANTHROPIC_DEFAULT_FABLE_MODEL"] == model
+            assert "ANTHROPIC_DEFAULT_OPUS_MODEL" not in written["env"]
+            assert "ANTHROPIC_DEFAULT_HAIKU_MODEL" not in written["env"]
+            assert written["modelPicker"] == {
+                "replaceBuiltInOptions": True,
+                "options": [
+                    {"model": "sonnet", "label": "Default Sonnet", "description": model},
+                    {"model": "fable", "label": "Default Fable", "description": model},
+                    {"model": model, "label": "Gateway Sonnet", "description": "MPS catalog model"},
+                ],
+            }
 
     def test_managed_file_omits_workspace_defaults_for_provider(self, monkeypatch):
         private_writes: list = []

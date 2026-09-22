@@ -66,8 +66,9 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session):
 
     Expected: the installed ug launch writes the MPS header and every admin-authored default to
     both Claude settings files without changing the model ids, and replaces built-in picker rows
-    with those family defaults plus the independently fetched MPS catalog. This settings
-    reconciliation check does not claim model inference.
+    with labeled family-default shortcuts followed by the independently fetched MPS catalog,
+    including targets also used as defaults. This settings reconciliation check does not claim
+    model inference.
     """
     session = live_session
     target_bearer = os.environ.get("UG_MPS_DEFAULTS_BEARER", "").strip()
@@ -88,9 +89,7 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session):
     catalog = fetch_anthropic_provider_catalog(
         workspace, os.environ["DATABRICKS_BEARER"], MANAGED_CLAUDE_PROVIDER_SERVICE
     )
-    expected_models = {defaults[key] for key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS} | set(
-        catalog.model_ids
-    )
+    expected_families = ("opus", "sonnet", "haiku", "fable")
     command = [str(session.binary), "claude", "--", "--version"]
     with TerminalProcess(session, "claude", command, "managed-defaults-mps") as terminal:
         terminal.finish(timeout=240)
@@ -108,10 +107,14 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session):
             assert env.get(env_key) == defaults[config_key], settings
         picker = settings["modelPicker"]
         assert picker["replaceBuiltInOptions"] is True, picker
-        assert sorted(option["model"] for option in picker["options"]) == sorted(expected_models), (
-            picker
-        )
-        for option in picker["options"]:
+        default_options = picker["options"][: len(expected_families)]
+        catalog_options = picker["options"][len(expected_families) :]
+        for family, option in zip(expected_families, default_options, strict=True):
+            assert option["model"] == family, option
+            assert option["label"] == f"Default {family.title()}", option
+            assert option["description"] == defaults[f"default_{family}_model"], option
+        assert sorted(option["model"] for option in catalog_options) == sorted(catalog.model_ids)
+        for option in catalog_options:
             if display_name := catalog.display_names.get(option["model"]):
                 assert option["label"] == display_name, option
 

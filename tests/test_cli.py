@@ -1219,10 +1219,10 @@ class TestManagedClaudeModelDiscovery:
             ]
         else:
             expected_models = [
-                "anthropic.claude-opus-4-8",
-                "anthropic.claude-sonnet-4-6",
-                "anthropic.claude-haiku-4-5",
-                "anthropic.claude-fable-5-1",
+                "opus",
+                "sonnet",
+                "haiku",
+                "fable",
                 "main.default.claude-sonnet-5",
             ]
             assert (
@@ -1232,6 +1232,8 @@ class TestManagedClaudeModelDiscovery:
                 calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == expected_models
             )
             picker = calls["configure"].call_args.kwargs["picker_catalog"]
+            for family in ("opus", "sonnet", "haiku", "fable"):
+                assert picker.model_id_to_display_name[family] == f"Default {family.title()}"
             assert picker.model_id_to_display_name["main.default.claude-sonnet-5"] == (
                 "Claude Sonnet 5"
             )
@@ -1266,12 +1268,48 @@ class TestManagedClaudeModelDiscovery:
             calls["state"]["workspace"], "token", provider="main.default.anthropic-mps"
         )
         assert calls["configure"].call_args.kwargs["picker_catalog"].model_ids == [
-            "claude-sonnet-5",
+            "sonnet",
             "main.default.claude-sonnet-5",
         ]
         assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == [
-            "claude-sonnet-5",
+            "sonnet",
             "main.default.claude-sonnet-5",
+        ]
+
+    def test_managed_mps_default_and_matching_catalog_model_have_separate_rows(self):
+        model = "claude-sonnet-5"
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "model_provider_service": "main.default.anthropic-mps",
+                        "default_models_by_model_family": {"default_sonnet_model": model},
+                    }
+                }
+            }
+        }
+        catalog = db_mod.AnthropicModelCatalog(
+            model_ids=[model],
+            model_id_to_display_name={model: "MPS Sonnet"},
+            model_id_to_description={model: "Catalog description"},
+        )
+        with _launch_policy_patches(managed, picker_catalog=catalog) as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        picker = calls["configure"].call_args.kwargs["picker_catalog"]
+        assert picker.model_ids == ["sonnet", model]
+        assert picker.model_id_to_display_name == {"sonnet": "Default Sonnet", model: "MPS Sonnet"}
+        assert picker.model_id_to_description == {
+            "sonnet": model,
+            model: "Catalog description",
+        }
+        assert calls["configure"].call_args.kwargs["coding_agent_config_defaults"] == {
+            "sonnet": model
+        }
+        assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == [
+            "sonnet",
+            model,
         ]
 
     @pytest.mark.parametrize("source", [{}, {"unity_catalog_location": "system.ai"}])
