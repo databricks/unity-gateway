@@ -12,7 +12,8 @@ It is not collected by the default `uv run pytest` command.
 ## Run a specific combination
 
 Prerequisites: Python 3.12+, uv, and Node/npm. Live runs also require Databricks
-CLI 1.17.0 and a POSIX host. The runner installs the requested agents into a new
+CLI 1.17.0. Full live/TUI runs require a POSIX host; Windows supports the explicit
+headless subset described below. The runner installs the requested agents into a new
 npm prefix and ug into a new virtualenv. Pytest and, for live runs, the PTY/screen
 libraries (pexpect and pyte) live in a different virtualenv, so they cannot accidentally
 supply a missing application dependency. No packages are installed into your
@@ -79,9 +80,20 @@ integration pass. Requested live checks fail when credentials, binaries, models,
 or capabilities are missing. There are no capability-based skips or retries of
 failed model tasks. A failing historical version should remain a failing result.
 The installation-only path also runs natively on Windows, using the installed
-`ug.exe` and `ucode.exe` entry points. Windows live PTY/TUI journeys, managed
-settings, and signal behavior still require separate implementation and coverage;
-requesting a live run on Windows exits with guidance to use `--installation-only`.
+`ug.exe` and `ucode.exe` entry points. Windows also supports `--headless-only`:
+it selects the existing prompt-argument journey for each requested agent, with
+real configure, launch, and a completed file-reading task through the gateway.
+Supply the existing e2e workspace and bearer (or an explicitly selected profile),
+just as for a POSIX live run. This is not TUI coverage. Windows live PTY/TUI
+journeys, managed settings, and signal behavior remain outside this subset.
+
+```powershell
+python scripts/run_integration.py --ug-version checkout --claude-version 2.1.268 --headless-only
+```
+
+Use `--codex-version 0.154.0` instead of or alongside the Claude version to test
+Codex. Headless selection uses exact test node IDs, so unrelated POSIX-only
+modules are not collected. Missing prerequisites and failed tasks still fail.
 
 Installation checks also invoke both `ug` and `ucode` auth helpers using the public
 bearer override and drive their real local web-search MCP handshake/tool listing.
@@ -317,6 +329,8 @@ the process group is cleaned up after each command.
 Selection after `--` accepts `-k`, `-m`, `-x`, and `--maxfail`; configuration and
 report paths cannot be overridden. `--installation-only` always restricts the
 selection to installation checks, including when additional filters are used.
+`--headless-only` restricts it to the two named prompt-argument journeys (one per
+selected agent). The two modes are mutually exclusive.
 
 ## Run in GitHub Actions
 
@@ -336,6 +350,15 @@ recorded in `versions.json`; the organization can update the image behind the
 runner label. The two POSIX version-floor journeys are outside this Windows subset.
 It installs only Claude as the runner prerequisite; the five selected checks
 exercise ug and its local helpers, not either agent's inference path.
+
+An advisory **Windows headless journey · Claude** job installs pinned Claude
+on a native Windows runner using the same authenticated package proxies,
+reuses the existing e2e workspace/bearer,
+and requires the unpredictable file value in the agent's structured final answer.
+It uploads `integration-headless-windows-claude` evidence and remains outside
+the required gate while native failures are diagnosed. Codex's Windows CI
+journey is deferred while the npm proxy rejects its package metadata; the runner
+still supports explicitly selecting it once the requested package is available.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
 Installation jobs need no workspace credentials. For same-repository PRs, the live jobs
@@ -374,7 +397,7 @@ No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires Linux installation, workspace validation, smoke,
-and both full lanes to pass; the advisory Windows installation lane is not yet included.
+and both full lanes to pass; the advisory Windows installation and headless lanes are not yet included.
 The **Managed config** lanes run for signal but are temporarily
 non-blocking (`continue-on-error`): the managed workspace is now runner-reachable, but the lanes
 stay non-blocking until the managed-config apply path is proven stable. They neither fail the
@@ -492,7 +515,8 @@ gh run download RUN_ID -R databricks/unity-gateway \
 
 Use `integration-full-AGENT` for a full lane, `integration-smoke-AGENT` for
 smoke, `integration-installation` for Linux package failures, or
-`integration-installation-windows` for native Windows package failures. Older runs used
+`integration-installation-windows` for native Windows package failures, or
+`integration-headless-windows-claude` for the Windows gateway journey. Older runs used
 `integration-full-AGENT-GROUP`, `integration-cujs`, or numbered `integration-live-*`
 artifacts; download the name
 shown on that run. Read `versions.json` for the
