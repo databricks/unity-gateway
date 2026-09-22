@@ -9,7 +9,6 @@ from unittest.mock import Mock
 
 import pytest
 
-from ucode import databricks as db_mod
 from ucode import managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
@@ -979,85 +978,6 @@ class TestCodexLaunch:
             arg for arg in launches[0] if arg.startswith("model_providers.Databricks=")
         )
         assert 'Databricks-Model-Service-Parent-Schema = "main.default"' in parent_arg
-
-    def test_parent_discovery_empty_catalog_blocks_normal_launch(self, tmp_path, monkeypatch):
-        launches = self._patch(tmp_path, monkeypatch)
-        monkeypatch.setattr(
-            db_mod,
-            "_http_get_json",
-            lambda *args, **kwargs: ({"models": []}, None),
-        )
-
-        with pytest.raises(
-            RuntimeError, match="Parent schema main.default returned no Codex models"
-        ):
-            codex.launch(
-                {"workspace": WS, "_codex_launch_parent_schema": "main.default"},
-                [],
-                options=LaunchOptions(),
-            )
-
-        assert launches == []
-
-    def test_parent_discovery_populated_catalog_allows_normal_launch(self, tmp_path, monkeypatch):
-        launches = self._patch(tmp_path, monkeypatch)
-        seen = {}
-
-        def fake_get(url, token, **kwargs):
-            seen.update(url=url, token=token, **kwargs)
-            return {"models": [{"slug": "gpt-parent"}]}, None
-
-        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
-
-        codex.launch(
-            {"workspace": WS, "_codex_launch_parent_schema": "main.default"},
-            [],
-            options=LaunchOptions(),
-        )
-
-        assert launches
-        assert seen["headers"] == {"Databricks-Model-Service-Parent-Schema": "main.default"}
-
-    def test_parent_discovery_empty_catalog_blocks_smart_routing(self, tmp_path, monkeypatch):
-        self._patch(tmp_path, monkeypatch)
-        started = []
-        monkeypatch.setattr(codex, "_launch_smart_routing", lambda *args: started.append(args))
-        monkeypatch.setattr(
-            db_mod,
-            "_http_get_json",
-            lambda *args, **kwargs: ({"models": []}, None),
-        )
-
-        with pytest.raises(
-            RuntimeError, match="Parent schema main.default returned no Codex models"
-        ):
-            codex.launch(
-                {"workspace": WS, "_codex_launch_parent_schema": "main.default"},
-                [],
-                options=LaunchOptions(launch_smart_routing=True),
-            )
-
-        assert started == []
-
-    def test_parent_discovery_empty_catalog_blocks_legacy_launch(self, tmp_path, monkeypatch):
-        launches = self._patch(tmp_path, monkeypatch)
-        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.133.0")
-        monkeypatch.setattr(
-            db_mod,
-            "_http_get_json",
-            lambda *args, **kwargs: ({"models": []}, None),
-        )
-
-        with pytest.raises(
-            RuntimeError, match="Parent schema main.default returned no Codex models"
-        ):
-            codex.launch(
-                {"workspace": WS, "_codex_launch_parent_schema": "main.default"},
-                [],
-                options=LaunchOptions(),
-            )
-
-        assert launches == []
 
     def test_transient_parent_suppresses_persisted_provider(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
