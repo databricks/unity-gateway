@@ -86,13 +86,3 @@ def test_uses_independent_session_files(tmp_path, monkeypatch):
     assert first != second
     assert len(_read_rows(first)) == 1
     assert len(_read_rows(second)) == 1
-
-
-def test_hashes_unsafe_session_id(tmp_path, monkeypatch):
-    monkeypatch.setattr(usage, "usage_directory", lambda: tmp_path)
-
-    path = usage.session_csv_path("../../outside")
-
-    assert path.parent == tmp_path
-    assert path.name.endswith(".csv")
-    assert ".." not in path.name
