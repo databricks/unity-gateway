@@ -4444,8 +4444,9 @@ class TestConfigureSharedStateMcpCleanup:
 
 class TestConfigureSharedStateSkipDiscovery:
     """With skip_model_discovery (provider mode), the heavy family discovery is
-    skipped; only a single web-search model is fetched, and existing model lists
-    are preserved rather than clobbered."""
+    skipped; only a single web-search model is fetched (UC model-services first,
+    the serving-endpoints listing as fallback), and existing model lists are
+    preserved rather than clobbered."""
 
     @staticmethod
     def _stub(monkeypatch):
@@ -4473,11 +4474,49 @@ class TestConfigureSharedStateSkipDiscovery:
             "load_state",
             lambda: {"workspace": ws, "claude_models": {"opus": "databricks-claude-opus-4-8"}},
         )
+        ms_calls: list = []
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: (
+                ms_calls.append((w, t))
+                or (
+                    {"opus": "system.ai.claude-opus-4-8"},
+                    ["system.ai.gpt-5"],
+                    ["system.ai.gemini-3"],
+                    [],
+                    None,
+                )
+            ),
+        )
 
         def _boom(*a, **k):
-            raise AssertionError("discover_model_services must not run in provider mode")
+            raise AssertionError("per-family discovery must not run in provider mode")
 
-        monkeypatch.setattr(cli_mod, "discover_model_services", _boom)
+        monkeypatch.setattr(cli_mod, "discover_codex_models", _boom)
+        monkeypatch.setattr(cli_mod, "discover_claude_models", _boom)
+        monkeypatch.setattr(cli_mod, "discover_gemini_models", _boom)
+
+        state = cli_mod.configure_shared_state(ws, tools=["claude"], skip_model_discovery=True)
+
+        assert ms_calls == [(ws, "token")]
+        # The UC id is what the Responses gateway accepts (#805).
+        assert state["web_search_model"] == "system.ai.gpt-5"
+        # Existing model list preserved, not overwritten by the UC listing.
+        assert state["claude_models"] == {"opus": "databricks-claude-opus-4-8"}
+        assert "codex_models" not in state
+
+    def test_falls_back_to_serving_endpoints_without_uc_model_services(self, monkeypatch):
+        import ucode.cli as cli_mod
+
+        ws = "https://prov.databricks.com"
+        self._stub(monkeypatch)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {"workspace": ws})
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: ({}, [], [], [], "model-services unavailable"),
+        )
         codex_calls: list = []
         monkeypatch.setattr(
             cli_mod,
@@ -4489,8 +4528,6 @@ class TestConfigureSharedStateSkipDiscovery:
 
         assert codex_calls == [(ws, "token")]
         assert state["web_search_model"] == "databricks-gpt-5"
-        # Existing model list preserved, not overwritten to {}.
-        assert state["claude_models"] == {"opus": "databricks-claude-opus-4-8"}
 
 
 class TestConfigureSharedStateSkipPreflight:

@@ -142,6 +142,7 @@ def _resolve_web_search_model(state: dict) -> str | None:
 
 
 WEB_SEARCH_MCP_NAME = "web_search"
+WEB_SEARCH_DENY_RULE = "WebSearch"
 # Matches both the AI Gateway form (`databricks-claude-opus-4-8`) and the UC
 # model-services form (`system.ai.claude-opus-4-8`).
 _CLAUDE_MODEL_RE = re.compile(
@@ -487,7 +488,7 @@ def render_overlay(
     # replacement `web_search` MCP server is registered separately via the
     # claude CLI.
     if disable_web_search:
-        overlay["permissions"] = {"deny": ["WebSearch"]}
+        overlay["permissions"] = {"deny": [WEB_SEARCH_DENY_RULE]}
         keys.append(["permissions", "deny"])
 
     if static_models and not provider and not parent_schema and not relayed:
@@ -929,6 +930,9 @@ def write_tool_config(
         for key in CLAUDE_MANAGED_PICKER_KEYS
         if [key] in previous_keys and key not in overlay and (provider or parent_schema)
     ]
+    # ug stopped denying the built-in WebSearch (no web-search model anymore), so remove the deny
+    # it added earlier; a merge alone only ever adds to `permissions.deny`.
+    stale_web_search_deny = web_search_model is None and ["permissions", "deny"] in previous_keys
     managed_file_keys = list(managed_keys)
     for path in (
         [[key] for key in stale_picker_keys]
@@ -1055,6 +1059,8 @@ def write_tool_config(
                             merged.pop(key, None)
         if "otelHeadersHelper" not in overlay_for_merge:
             merged.pop("otelHeadersHelper", None)
+        if stale_web_search_deny and _web_search_deny_added_by_ug(managed_settings_snapshots):
+            _remove_permission_deny(merged, WEB_SEARCH_DENY_RULE)
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
@@ -1079,6 +1085,11 @@ def write_tool_config(
         ),
         managed_file_keys,
         relayed,
+        removed_denies=(
+            [WEB_SEARCH_DENY_RULE]
+            if stale_web_search_deny and _web_search_deny_added_by_ug(managed_snapshots)
+            else []
+        ),
     )
 
     if web_search_model:
@@ -1160,6 +1171,7 @@ def _reconcile_managed_settings(
     compose: Callable[[dict], dict],
     owned_paths: list[list[str]],
     relayed: bool,
+    removed_denies: list[str] | None = None,
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -1208,7 +1220,7 @@ def _reconcile_managed_settings(
         ) from exc
     managed_before = copy.deepcopy(existing)
     desired_settings = compose(existing)
-    _preserve_permission_denies(managed_before, desired_settings)
+    _preserve_permission_denies(managed_before, desired_settings, removed_denies or [])
     if not managed_writes_allowed():
         conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
         if conflicts:
@@ -1241,7 +1253,7 @@ def _reconcile_managed_settings(
     mark_managed_file_verified(state, "claude", path)
 
 
-def _preserve_permission_denies(existing: dict, desired: dict) -> None:
+def _preserve_permission_denies(existing: dict, desired: dict, removed: list[str]) -> None:
     existing_permissions = existing.get("permissions")
     desired_permissions = desired.get("permissions")
     if not isinstance(existing_permissions, dict) or not isinstance(desired_permissions, dict):
@@ -1251,9 +1263,48 @@ def _preserve_permission_denies(existing: dict, desired: dict) -> None:
     if not isinstance(existing_denies, list) or not isinstance(desired_denies, list):
         return
     desired_permissions["deny"] = [
-        *existing_denies,
+        *(rule for rule in existing_denies if rule not in removed),
         *(rule for rule in desired_denies if rule not in existing_denies),
     ]
+
+
+def _web_search_deny_added_by_ug(snapshots: ManagedFileSnapshots | None) -> bool:
+    """Whether ug, not a user or administrator, introduced the ``WebSearch`` deny.
+
+    ug owns the private settings file outright (``snapshots`` is None). For the managed file, apply
+    the usual three-way check: ug last wrote the deny and it was absent before ug. An unreadable
+    snapshot means unknown, so the deny is kept.
+    """
+    if snapshots is None:
+        return True
+    if snapshots.last_applied_by_ug is None or snapshots.original_before_ug is None:
+        return False
+    return _has_permission_deny(
+        snapshots.last_applied_by_ug, WEB_SEARCH_DENY_RULE
+    ) and not _has_permission_deny(snapshots.original_before_ug, WEB_SEARCH_DENY_RULE)
+
+
+def _has_permission_deny(settings: dict, rule: str) -> bool:
+    permissions = settings.get("permissions")
+    denies = permissions.get("deny") if isinstance(permissions, dict) else None
+    return isinstance(denies, list) and rule in denies
+
+
+def _remove_permission_deny(settings: dict, rule: str) -> None:
+    """Remove ``rule`` from ``permissions.deny``, dropping the containers ug leaves empty."""
+    permissions = settings.get("permissions")
+    if not isinstance(permissions, dict):
+        return
+    denies = permissions.get("deny")
+    if not isinstance(denies, list) or rule not in denies:
+        return
+    remaining = [entry for entry in denies if entry != rule]
+    if remaining:
+        permissions["deny"] = remaining
+        return
+    permissions.pop("deny")
+    if not permissions:
+        settings.pop("permissions")
 
 
 def default_model(state: dict) -> str | None:

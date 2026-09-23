@@ -612,11 +612,15 @@ def configure_shared_state(
     if skip_model_discovery:
         # Provider mode: the agent routes through a Model Provider Service and
         # pins no Databricks model, so the full family discovery is unused. Web
-        # search (claude only) still needs one Responses-capable model, so fetch
-        # just that with a single call.
+        # search (claude only) still needs one Responses-capable model. Prefer
+        # the UC model-services id (`system.ai.<name>`) like the non-provider
+        # path does: the Responses gateway rejects the legacy serving-endpoint
+        # names (`databricks-gpt-*`) that `discover_codex_models` returns.
         if want_claude:
             with spinner("Fetching available models..."):
-                ws_models, _ = discover_codex_models(workspace, token)
+                _, ws_models, _, _, _ = discover_model_services(workspace, token)
+                if not ws_models:
+                    ws_models, _ = discover_codex_models(workspace, token)
             if ws_models:
                 web_search_model = ws_models[0]
     else:

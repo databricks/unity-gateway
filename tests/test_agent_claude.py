@@ -1526,6 +1526,77 @@ class TestWriteToolConfigManagedSettings:
         _, text = managed_writes[0]
         assert json.loads(text)["permissions"]["deny"] == ["Bash(rm:*)", "WebSearch"]
 
+    @staticmethod
+    def _state_after_web_search_deny(**extra) -> dict:
+        """State from a prior configure that denied WebSearch; now no web-search model remains."""
+        return {
+            "workspace": WS,
+            "codex_models": [],
+            "managed_configs": {"claude": {"keys": [["permissions", "deny"]]}},
+            **extra,
+        }
+
+    def test_stale_web_search_deny_removed_when_ug_added_it(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        settings = {"permissions": {"deny": ["Bash(rm:*)", "WebSearch"]}}
+        existing = {
+            str(claude.CLAUDE_SETTINGS_PATH): {"permissions": {"deny": ["WebSearch"]}},
+            str(FAKE_MANAGED_PATH): settings,
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setattr(
+            claude,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(
+                {"permissions": {"deny": ["Bash(rm:*)"]}}, settings
+            ),
+        )
+
+        claude.write_tool_config(self._state_after_web_search_deny(), "databricks-claude-sonnet-4")
+
+        assert "permissions" not in private_writes[0][1]
+        assert json.loads(managed_writes[0][1])["permissions"]["deny"] == ["Bash(rm:*)"]
+
+    def test_stale_web_search_deny_kept_when_admin_authored_it(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        admin = {"permissions": {"deny": ["WebSearch"]}}
+        existing = {str(FAKE_MANAGED_PATH): admin}
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setattr(
+            claude,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(admin, admin),
+        )
+
+        claude.write_tool_config(self._state_after_web_search_deny(), "databricks-claude-sonnet-4")
+
+        assert json.loads(managed_writes[0][1])["permissions"]["deny"] == ["WebSearch"]
+
+    def test_stale_web_search_deny_kept_without_managed_snapshots(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {str(FAKE_MANAGED_PATH): {"permissions": {"deny": ["WebSearch"]}}}
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+
+        claude.write_tool_config(self._state_after_web_search_deny(), "databricks-claude-sonnet-4")
+
+        assert json.loads(managed_writes[0][1])["permissions"]["deny"] == ["WebSearch"]
+
+    def test_web_search_deny_kept_while_web_search_model_exists(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+
+        claude.write_tool_config(
+            self._state_after_web_search_deny(codex_models=["system.ai.gpt-5"]),
+            "databricks-claude-sonnet-4",
+        )
+
+        assert private_writes[0][1]["permissions"]["deny"] == ["WebSearch"]
+        assert json.loads(managed_writes[0][1])["permissions"]["deny"] == ["WebSearch"]
+
     def test_relayed_skips_managed_write(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []
