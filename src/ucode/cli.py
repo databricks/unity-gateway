@@ -2305,14 +2305,14 @@ def _reject_managed_launch_source_options(
         )
 
 
-def _fetch_managed_config(state: dict) -> ManagedConfigResult:
+def _fetch_managed_config(state: dict, *, force_refresh: bool = False) -> ManagedConfigResult:
     """The workspace's managed config for this launch, plus whether the feature is disabled.
 
     ``ManagedConfigResult(None, True)`` when the workspace has the feature disabled server-side;
     ``ManagedConfigResult(None, False)`` when the feature is on but no config is published.
     """
     with spinner("Loading..."):
-        return refresh_managed_config(state)
+        return refresh_managed_config(state, force_refresh=force_refresh)
 
 
 def _note_recommended_agent(recommendation: dict | None, tool: str) -> None:
@@ -2577,7 +2577,9 @@ def _launch_tool(
         # control-plane round trip and any fallback warning it printed.
         coding_agent_config_feature_disabled = False
         if managed is None:
-            managed, coding_agent_config_feature_disabled = _fetch_managed_config(state)
+            managed, coding_agent_config_feature_disabled = _fetch_managed_config(
+                state, force_refresh=refresh
+            )
         _reject_managed_launch_source_options(
             managed,
             provider=explicit_provider,

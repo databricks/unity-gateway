@@ -1060,7 +1060,7 @@ class TestManagedClaudeModelDiscovery:
         monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", lambda *_a, **_k: None)
         monkeypatch.setattr(cli_mod, "load_state", lambda: state)
         monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda *_a: state)
-        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state: (managed, False))
+        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda _state, **_k: (managed, False))
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a: "token")
         monkeypatch.setattr(cli_mod, "get_provider_service", lambda *_a: "main.developer.provider")
         monkeypatch.setattr(cli_mod, "configure_shared_state", shared)
@@ -1207,6 +1207,50 @@ class TestClaudeModelFlag:
         assert result.exit_code == 0, result.output
         assert mock_launch.call_args.kwargs["refresh"] is True
 
+    def test_refresh_forces_fresh_managed_config_fetch(self):
+        # --refresh must bypass the launch-path managed-config fetch cache. Patch the innermost
+        # fetch so the real _launch_tool -> _fetch_managed_config threading is exercised end to end.
+        captured: dict[str, bool] = {}
+
+        def fake_refresh(state, *, force_refresh=False):
+            captured["force_refresh"] = force_refresh
+            return (None, False)
+
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.ensure_provider_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.resolve_launch_model", return_value=(MINIMAL_STATE, "system.ai.opus")),
+            patch("ucode.cli.configure_tool", return_value=MINIMAL_STATE),
+            patch("ucode.cli.refresh_managed_config", side_effect=fake_refresh),
+            patch("ucode.cli.launch_agent"),
+        ):
+            result = runner.invoke(app, ["claude", "--refresh"])
+        assert result.exit_code == 0, result.output
+        assert captured["force_refresh"] is True
+
+    def test_launch_without_refresh_uses_cached_managed_config(self):
+        captured: dict[str, bool] = {}
+
+        def fake_refresh(state, *, force_refresh=False):
+            captured["force_refresh"] = force_refresh
+            return (None, False)
+
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies"),
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.ensure_provider_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.resolve_launch_model", return_value=(MINIMAL_STATE, "system.ai.opus")),
+            patch("ucode.cli.configure_tool", return_value=MINIMAL_STATE),
+            patch("ucode.cli.refresh_managed_config", side_effect=fake_refresh),
+            patch("ucode.cli.launch_agent"),
+        ):
+            result = runner.invoke(app, ["claude"])
+        assert result.exit_code == 0, result.output
+        assert captured["force_refresh"] is False
+
     @pytest.mark.parametrize(
         "forwarded_args",
         [
@@ -1295,7 +1339,7 @@ class TestClaudeModelFlag:
         monkeypatch.setattr(cli_mod, "load_state", lambda: MINIMAL_STATE)
         monkeypatch.setattr(cli_mod, "ensure_provider_state", lambda t: MINIMAL_STATE)
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: MINIMAL_STATE)
-        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda s: (None, False))
+        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda s, **_k: (None, False))
         monkeypatch.setattr(cli_mod, "_fetch_budget_recommendation", lambda s, m: None)
         mock_launch = MagicMock()
         monkeypatch.setattr(cli_mod, "launch_agent", mock_launch)
@@ -1468,7 +1512,7 @@ class TestGeminiProviderLaunch:
         monkeypatch.setattr("ucode.cli.load_state", lambda: state)
         monkeypatch.setattr("ucode.cli.ensure_provider_state", lambda t: state)
         monkeypatch.setattr("ucode.cli.configure_shared_state", lambda *a, **k: state)
-        monkeypatch.setattr("ucode.cli._fetch_managed_config", lambda s: (None, False))
+        monkeypatch.setattr("ucode.cli._fetch_managed_config", lambda s, **_k: (None, False))
         monkeypatch.setattr("ucode.cli.resolve_provider_models", resolve_provider_models)
         monkeypatch.setattr("ucode.cli.configure_tool", lambda *a, **k: state)
         monkeypatch.setattr(
@@ -4636,12 +4680,12 @@ class TestFetchManagedConfig:
 
     def test_fetches_fresh_when_enabled(self, monkeypatch):
         monkeypatch.setattr(
-            "ucode.cli.refresh_managed_config", lambda state: ({"enabled_agents": {}}, False)
+            "ucode.cli.refresh_managed_config", lambda state, **_k: ({"enabled_agents": {}}, False)
         )
         assert self._fetch({"workspace": "https://w"}) == ({"enabled_agents": {}}, False)
 
     def test_feature_disabled_returns_none_and_the_flag(self, monkeypatch):
-        monkeypatch.setattr("ucode.cli.refresh_managed_config", lambda state: (None, True))
+        monkeypatch.setattr("ucode.cli.refresh_managed_config", lambda state, **_k: (None, True))
         assert self._fetch({"workspace": "https://w"}) == (None, True)
 
 
@@ -4658,7 +4702,7 @@ class TestManagedConfigDecidesDiscoveryFromFreshRead:
         }
         fresh = {"enabled_agents": {"claude": {"model_config": {}}}}
         monkeypatch.setattr("ucode.cli.load_managed_state", lambda ws: stale_cache)
-        monkeypatch.setattr("ucode.cli.refresh_managed_config", lambda state: (fresh, False))
+        monkeypatch.setattr("ucode.cli.refresh_managed_config", lambda state, **_k: (fresh, False))
 
         state = dict(MINIMAL_STATE)
         with (
@@ -4697,9 +4741,13 @@ class TestBareUcode:
         monkeypatch.setattr("ucode.cli.load_state", lambda: {"workspace": "https://w"})
 
         if coding_agent_config_feature_disabled:
-            monkeypatch.setattr("ucode.cli.refresh_managed_config", lambda state: (None, True))
+            monkeypatch.setattr(
+                "ucode.cli.refresh_managed_config", lambda state, **_k: (None, True)
+            )
         else:
-            monkeypatch.setattr("ucode.cli.refresh_managed_config", lambda state: (managed, False))
+            monkeypatch.setattr(
+                "ucode.cli.refresh_managed_config", lambda state, **_k: (managed, False)
+            )
 
         monkeypatch.setattr("ucode.cli.load_managed_state", lambda ws: cached)
         monkeypatch.setattr(
@@ -4819,7 +4867,9 @@ class TestBareUcode:
             "default_agent": "claude",
             "enabled_agents": {"claude": {"model_config": {"default_model": "m"}}},
         }
-        monkeypatch.setattr("ucode.cli.refresh_managed_config", lambda state: (managed, False))
+        monkeypatch.setattr(
+            "ucode.cli.refresh_managed_config", lambda state, **_k: (managed, False)
+        )
         monkeypatch.setattr("ucode.cli._fetch_budget_recommendation", lambda state, m: None)
         monkeypatch.setattr("ucode.cli._print_managed_summary", lambda *a, **k: None)
         seen: dict = {}
