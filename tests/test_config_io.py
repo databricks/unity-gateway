@@ -9,15 +9,17 @@ import tomlkit
 
 import ucode.config_io as config_io
 from ucode.config_io import (
+    apply_restore,
     backup_existing_file,
     deep_merge_dict,
+    dispose_backup,
     ensure_parent_dir,
     is_dry_run,
     parse_dotenv,
+    plan_restore,
     prune_key_paths,
     read_json_safe,
     read_toml_safe,
-    restore_file,
     set_dry_run,
     write_dotenv,
     write_json_file,
@@ -114,33 +116,76 @@ class TestBackupAndRestore:
         assert result is False
         assert not backup.exists()
 
-    def test_restore_from_backup(self, tmp_path):
+    def test_plan_restore_classifies_backup_as_restore(self, tmp_path):
+        config = tmp_path / "config.json"
+        backup = tmp_path / "backup.json"
+        backup.write_text("original", encoding="utf-8")
+        assert plan_restore(config, backup, managed=True) == "restore"
+
+    def test_plan_restore_classifies_generated_file_as_remove(self, tmp_path):
+        config = tmp_path / "config.json"
+        config.write_text("managed", encoding="utf-8")
+        assert plan_restore(config, tmp_path / "no-backup.json", managed=True) == "remove"
+
+    def test_plan_restore_is_absent_when_nothing_ug_owned(self, tmp_path):
+        # No backup and not ug-generated: leave the user's own file alone.
+        config = tmp_path / "config.json"
+        config.write_text("user", encoding="utf-8")
+        assert plan_restore(config, tmp_path / "no-backup.json", managed=False) == "absent"
+        assert plan_restore(tmp_path / "missing.json", tmp_path / "gone.json", managed=True) == (
+            "absent"
+        )
+
+    def test_apply_restore_writes_config_but_keeps_backup(self, tmp_path):
+        # Keeping the backup is what makes a retry idempotent, so assert it survives.
         config = tmp_path / "config.json"
         backup = tmp_path / "backup.json"
         backup.write_text("original", encoding="utf-8")
 
-        result = restore_file(config, backup, managed=True)
+        apply_restore(config, backup, "restore")
 
-        assert result is True
         assert config.read_text() == "original"
-        assert not backup.exists()
+        assert backup.exists()
 
-    def test_restore_deletes_managed_config_when_no_backup(self, tmp_path):
+    def test_apply_restore_remove_deletes_config_and_is_idempotent(self, tmp_path):
         config = tmp_path / "config.json"
         config.write_text("managed", encoding="utf-8")
 
-        result = restore_file(config, tmp_path / "no-backup.json", managed=True)
-
-        assert result is True
+        apply_restore(config, tmp_path / "no-backup.json", "remove")
+        assert not config.exists()
+        # A retry of a completed remove must be a harmless no-op.
+        apply_restore(config, tmp_path / "no-backup.json", "remove")
         assert not config.exists()
 
-    def test_restore_returns_false_when_nothing_to_do(self, tmp_path):
-        result = restore_file(
-            tmp_path / "missing.json",
-            tmp_path / "also-missing.json",
-            managed=False,
-        )
-        assert result is False
+    def test_apply_restore_absent_is_noop(self, tmp_path):
+        config = tmp_path / "config.json"
+        config.write_text("user", encoding="utf-8")
+        apply_restore(config, tmp_path / "gone.json", "absent")
+        assert config.read_text() == "user"
+
+    def test_dispose_backup_removes_backup_and_is_idempotent(self, tmp_path):
+        backup = tmp_path / "backup.json"
+        backup.write_text("x", encoding="utf-8")
+        dispose_backup(backup)
+        assert not backup.exists()
+        dispose_backup(backup)  # missing backup must not raise
+        assert not backup.exists()
+
+    def test_restore_then_dispose_survives_a_retry_without_data_loss(self, tmp_path):
+        # Mirrors the revert commit->dispose ordering: after a restore, a retried restore (backup
+        # still present) must re-produce the file rather than delete it.
+        config = tmp_path / "config.json"
+        backup = tmp_path / "backup.json"
+        backup.write_text("original", encoding="utf-8")
+
+        action = plan_restore(config, backup, managed=True)
+        apply_restore(config, backup, action)
+        # Simulated crash before dispose: re-plan/apply with backup still present.
+        apply_restore(config, backup, plan_restore(config, backup, managed=True))
+        assert config.read_text() == "original"
+        dispose_backup(backup)
+        assert config.read_text() == "original"
+        assert not backup.exists()
 
 
 # ---------------------------------------------------------------------------

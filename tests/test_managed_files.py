@@ -321,6 +321,100 @@ class TestManagedFileLifecycle:
         assert result == "ucode entries removed; external changes preserved"
         assert json.loads(path.read_text()) == {"enterprise": "new-policy", "new": True}
 
+    def test_requires_privilege_false_without_backup_entry(self, tmp_path, backup_dir):
+        # No manifest entry: nothing to restore, so no privileged write is needed.
+        assert (
+            managed_files.managed_file_revert_requires_privilege(
+                "claude",
+                display="Claude Code",
+                parser=json.loads,
+                dumper=lambda doc: json.dumps(doc) + "\n",
+            )
+            is False
+        )
+
+    def test_requires_privilege_true_when_restore_pending(self, tmp_path, backup_dir, monkeypatch):
+        path = tmp_path / "managed.json"
+        path.write_text('{"enterprise": true}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        managed_files.reconcile_managed_file(
+            path,
+            '{"enterprise": true, "ucode": true}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["ucode"]],
+        )
+        # The live file still carries ug's entry, so a real restore (and its sudo write) is pending.
+        assert (
+            managed_files.managed_file_revert_requires_privilege(
+                "claude",
+                display="Claude Code",
+                parser=json.loads,
+                dumper=lambda doc: json.dumps(doc) + "\n",
+            )
+            is True
+        )
+
+    def test_requires_privilege_false_when_already_at_target(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        path = tmp_path / "managed.json"
+        path.write_text('{"enterprise": true}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        managed_files.reconcile_managed_file(
+            path,
+            '{"enterprise": true, "ucode": true}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["ucode"]],
+        )
+        # Something already put the file back to its ug-free target; no privileged write is needed.
+        path.write_text('{"enterprise": true}\n', encoding="utf-8")
+        assert (
+            managed_files.managed_file_revert_requires_privilege(
+                "claude",
+                display="Claude Code",
+                parser=json.loads,
+                dumper=lambda doc: json.dumps(doc, sort_keys=True) + "\n",
+            )
+            is False
+        )
+
+    def test_requires_privilege_raises_through_symlink(self, tmp_path, backup_dir, monkeypatch):
+        path = tmp_path / "managed.json"
+        path.write_text('{"enterprise": true}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+        managed_files.reconcile_managed_file(
+            path,
+            '{"enterprise": true, "ucode": true}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["ucode"]],
+        )
+        target = tmp_path / "elsewhere.json"
+        target.write_text('{"enterprise": true}\n', encoding="utf-8")
+        path.unlink()
+        path.symlink_to(target)
+        with pytest.raises(RuntimeError, match="symlink"):
+            managed_files.managed_file_revert_requires_privilege(
+                "claude",
+                display="Claude Code",
+                parser=json.loads,
+                dumper=lambda doc: json.dumps(doc) + "\n",
+            )
+
     def test_reconcile_retries_exact_mdm_restore_once(self, tmp_path, backup_dir, monkeypatch):
         path = tmp_path / "managed.json"
         path.write_text('{"enterprise": true}\n', encoding="utf-8")

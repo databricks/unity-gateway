@@ -356,18 +356,25 @@ def reconcile_managed_file(
     return "created" if created else "written"
 
 
-def revert_managed_file(
-    tool: str,
-    *,
-    display: str,
-    parser: ManagedParser,
-    dumper: ManagedDumper,
-) -> str:
-    """Restore one managed file from its baseline while preserving later external edits."""
-    manifest = _load_manifest()
-    entry = _manifest_files(manifest).get(tool)
-    if not isinstance(entry, dict):
-        return "unchanged"
+@dataclass
+class _ManagedRevertComputation:
+    """The read-only three-way result used to both preflight and perform a managed-file revert."""
+
+    path: Path
+    desired_text: str | None
+    current_text: str | None
+    original_text: str | None
+    last_text: str | None
+
+
+def _managed_revert_computation(
+    entry: dict, *, display: str, parser: ManagedParser, dumper: ManagedDumper
+) -> _ManagedRevertComputation:
+    """Compute what reverting ``entry``'s managed file would write, touching nothing on disk.
+
+    Raises on a symlinked target, an invalid backup path, or a snapshot that fails its integrity
+    check, so a revert plan can fail closed and leave everything unchanged.
+    """
     path = Path(str(entry.get("path") or ""))
     if not path.is_absolute():
         raise RuntimeError(f"Invalid managed-settings backup path for {display}.")
@@ -396,6 +403,43 @@ def revert_managed_file(
         paths = owned_paths if isinstance(owned_paths, list) else []
         reverted = _three_way_revert(current_doc, original_doc, last_doc, paths)
         desired_text = dumper(reverted)
+    return _ManagedRevertComputation(path, desired_text, current_text, original_text, last_text)
+
+
+def managed_file_revert_requires_privilege(
+    tool: str, *, display: str, parser: ManagedParser, dumper: ManagedDumper
+) -> bool:
+    """Read-only preflight: would reverting ``tool``'s managed file need a privileged write?
+
+    True only when a real restore is pending (the target differs from the live file) on a platform
+    whose managed-file writes go through ``sudo``. False when there is no backup entry or the file
+    already matches its target. Raises on symlink/integrity problems so the caller stays unchanged.
+    """
+    entry = _manifest_files(_load_manifest()).get(tool)
+    if not isinstance(entry, dict) or not managed_files_supported():
+        return False
+    computation = _managed_revert_computation(entry, display=display, parser=parser, dumper=dumper)
+    return computation.desired_text != computation.current_text
+
+
+def revert_managed_file(
+    tool: str,
+    *,
+    display: str,
+    parser: ManagedParser,
+    dumper: ManagedDumper,
+) -> str:
+    """Restore one managed file from its baseline while preserving later external edits."""
+    manifest = _load_manifest()
+    entry = _manifest_files(manifest).get(tool)
+    if not isinstance(entry, dict):
+        return "unchanged"
+    computation = _managed_revert_computation(entry, display=display, parser=parser, dumper=dumper)
+    path = computation.path
+    desired_text = computation.desired_text
+    current_text = computation.current_text
+    original_text = computation.original_text
+    last_text = computation.last_text
 
     if desired_text != current_text:
         if not managed_writes_allowed():
@@ -572,15 +616,19 @@ def _backup_label(tool: str) -> str:
 
 
 def _delete_backup(tool: str, manifest: dict, entry: dict) -> None:
-    for key in ("backup_file", "last_applied_file"):
-        filename = entry.get(key)
+    # Drop the manifest entry first, then unlink the snapshot files. If a crash lands between the
+    # two, a retry finds no entry and reports "unchanged" rather than an entry pointing at unlinked
+    # snapshots (which would fail integrity checks). Snapshot files orphaned this way are harmless
+    # private garbage, so their removal is best-effort and never fails the revert.
+    filenames = [entry.get(key) for key in ("backup_file", "last_applied_file")]
+    _manifest_files(manifest).pop(tool, None)
+    _write_manifest(manifest)
+    for filename in filenames:
         if isinstance(filename, str):
             try:
                 _snapshot_path(filename).unlink(missing_ok=True)
             except OSError as exc:
-                raise RuntimeError(f"Could not remove managed-settings backup: {exc}") from exc
-    _manifest_files(manifest).pop(tool, None)
-    _write_manifest(manifest)
+                print_warning(f"Could not remove managed-settings backup {filename}: {exc}")
 
 
 def _snapshot_path(filename: str) -> Path:

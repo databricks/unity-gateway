@@ -16,7 +16,7 @@ import questionary
 from rich.table import Table
 
 from ucode.agents import claude, codex, copilot, cursor, gemini, opencode
-from ucode.config_io import restore_file
+from ucode.config_io import apply_restore, dispose_backup, plan_restore
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
     PermissionDeniedError,
@@ -356,14 +356,27 @@ def revert_mcp_configs(state: dict) -> dict[str, bool]:
     # OpenCode MCP entries live in the normal OpenCode config and are restored
     # by the main agent config revert. Copilot stores MCP servers separately,
     # so restore its original MCP file after removing per-server entries above.
-    results["copilot"] = restore_file(
-        copilot.COPILOT_MCP_CONFIG_PATH,
-        copilot.COPILOT_MCP_BACKUP_PATH,
-        any(
-            "copilot" in (server.get("clients") or []) for server in state.get("mcp_servers") or []
-        ),
-    ) or results.get("copilot", False)
+    # The backup is left in place for the revert orchestrator to dispose only after state is
+    # cleared, so an interrupted revert can retry without deleting the restored file.
+    # Scan both scopes: Copilot may have been configured only through the workspace managed config
+    # (in managed_mcp_servers), so restrict to mcp_servers and revert leaves the generated file.
+    copilot_managed = any("copilot" in (server.get("clients") or []) for server in all_servers)
+    copilot_action = plan_restore(
+        copilot.COPILOT_MCP_CONFIG_PATH, copilot.COPILOT_MCP_BACKUP_PATH, copilot_managed
+    )
+    apply_restore(copilot.COPILOT_MCP_CONFIG_PATH, copilot.COPILOT_MCP_BACKUP_PATH, copilot_action)
+    results["copilot"] = copilot_action != "absent" or results.get("copilot", False)
     return results
+
+
+def dispose_mcp_revert_backups() -> None:
+    """Drop the MCP-specific backups consumed by ``revert_mcp_configs``.
+
+    Kept separate from the restore so the revert orchestrator can call it only after ``clear_state``
+    durably records the revert; until then the Copilot backup stays put so an interrupted revert can
+    retry the restore without losing the file.
+    """
+    dispose_backup(copilot.COPILOT_MCP_BACKUP_PATH)
 
 
 def discover_mcp_service_names(workspace: str, profile: str | None = None) -> list[str]:

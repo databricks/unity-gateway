@@ -2522,7 +2522,6 @@ class TestRevert:
 
         with (
             patch("ucode.cli.load_state", return_value=state),
-            patch("ucode.cli.restore_file", return_value=False),
             patch(
                 "ucode.cli.revert_mcp_configs",
                 side_effect=lambda loaded_state: (
@@ -2536,7 +2535,73 @@ class TestRevert:
         assert result.exit_code == 0, result.output
         assert reverted_mcp == [state]
         assert cleared == [True]
-        assert "Claude Code MCP config: restored" in result.output
+        assert "Claude Code MCP config: ug entries removed" in result.output
+
+    def test_non_tty_managed_restore_blocker_leaves_everything_unchanged(self):
+        # A pending OS-managed restore needs sudo; without a TTY, refuse before touching anything.
+        touched: list[str] = []
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch(
+                "ucode.cli.claude_agent.managed_settings_revert_requires_privilege",
+                return_value=True,
+            ),
+            patch(
+                "ucode.cli.codex_agent.managed_config_revert_requires_privilege",
+                return_value=False,
+            ),
+            patch("ucode.cli.managed_writes_allowed", return_value=False),
+            patch(
+                "ucode.cli.revert_mcp_configs",
+                side_effect=lambda _s: touched.append("mcp") or {},
+            ),
+            patch("ucode.cli.apply_restore", side_effect=lambda *a: touched.append("apply")),
+            patch("ucode.cli.clear_state", side_effect=lambda: touched.append("clear")),
+            patch("ucode.cli.dispose_backup", side_effect=lambda *a: touched.append("dispose")),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 1, result.output
+        assert "administrator access" in _strip_ansi(result.output)
+        assert touched == []  # nothing mutated: no MCP teardown, no restore, no state clear
+
+    def test_backup_disposal_waits_until_after_state_is_cleared(self):
+        # If clearing state fails, no backup is disposed yet, so a retry can re-restore from it.
+        order: list[str] = []
+
+        def failing_clear():
+            order.append("clear")
+            raise RuntimeError("injected failure clearing state")
+
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch(
+                "ucode.cli.claude_agent.managed_settings_revert_requires_privilege",
+                return_value=False,
+            ),
+            patch(
+                "ucode.cli.codex_agent.managed_config_revert_requires_privilege",
+                return_value=False,
+            ),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.claude_agent.revert_managed_settings", return_value="unchanged"),
+            patch("ucode.cli.codex_agent.revert_managed_config", return_value="unchanged"),
+            patch("ucode.cli.revert_legacy_shared_config", return_value=False),
+            patch("ucode.cli.apply_restore", side_effect=lambda *a: order.append("apply")),
+            patch("ucode.cli.dispose_backup", side_effect=lambda *a: order.append("dispose")),
+            patch(
+                "ucode.cli.dispose_mcp_revert_backups",
+                side_effect=lambda: order.append("dispose_mcp"),
+            ),
+            patch("ucode.cli.load_full_state", return_value={"workspaces": {}}),
+            patch("ucode.cli.clear_state", side_effect=failing_clear),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 1, result.output
+        assert "apply" in order  # the commit phase ran
+        assert order[-1] == "clear"  # it failed at clear_state
+        assert "dispose" not in order and "dispose_mcp" not in order  # backups left intact
 
 
 class TestRevertDryRun:
@@ -2545,16 +2610,15 @@ class TestRevertDryRun:
             patch("ucode.cli.revert") as mock_revert,
             patch("ucode.cli.revert_mcp_configs") as mock_revert_mcp,
             patch("ucode.cli.clear_state") as mock_clear_state,
-            patch("ucode.cli.restore_file") as mock_restore_file,
         ):
             result = runner.invoke(app, ["--dry-run", "revert"])
 
         assert result.exit_code == 2, result.output
         assert "revert does not support --dry-run" in _strip_ansi(result.output)
+        # revert() never runs, so nothing it would do (MCP teardown, state clear) is reachable.
         mock_revert.assert_not_called()
         mock_revert_mcp.assert_not_called()
         mock_clear_state.assert_not_called()
-        mock_restore_file.assert_not_called()
 
 
 class TestDoctorCommand:
@@ -2591,7 +2655,7 @@ class TestAutoConfigureOnFirstRun:
             patch("ucode.cli.ensure_provider_state", return_value=configured_state),
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
             patch("ucode.cli.configure_tool", return_value=configured_state),
-            patch("ucode.cli.restore_file") as mock_restore,
+            patch("ucode.cli.apply_restore") as mock_restore,
             patch("ucode.cli.launch_agent") as mock_launch,
         ):
             result = runner.invoke(app, [tool])

@@ -77,19 +77,45 @@ def backup_existing_file(config_path: Path, backup_path: Path) -> bool:
         raise RuntimeError(f"Failed to back up config from {config_path}") from exc
 
 
-def restore_file(config_path: Path, backup_path: Path, managed: bool) -> bool:
+def plan_restore(config_path: Path, backup_path: Path, managed: bool) -> str:
+    """Classify, without touching disk, what reverting one ug-written shared config needs.
+
+    Returns ``"restore"`` when a pre-ug backup exists (revert overwrites the config with it),
+    ``"remove"`` when ug generated the file and there is no backup to fall back to, or
+    ``"absent"`` when there is nothing ug-owned to undo. Splitting this off from the mutation lets
+    revert preflight and commit as a plan, and lets ``dispose_backup`` run only after the restore
+    and state update are durably recorded.
+    """
+    if backup_path.exists():
+        return "restore"
+    if managed and config_path.exists():
+        return "remove"
+    return "absent"
+
+
+def apply_restore(config_path: Path, backup_path: Path, action: str) -> None:
+    """Execute a planned restore, deliberately leaving the backup in place.
+
+    Keeping the backup makes a retry after a mid-revert failure idempotent: a second attempt
+    re-copies the same backup rather than hitting the ``"remove"`` branch and deleting the file it
+    just restored. ``dispose_backup`` removes the backup later, once state is cleared.
+    """
     try:
-        if backup_path.exists():
+        if action == "restore":
             ensure_parent_dir(config_path)
             config_path.write_text(backup_path.read_text(encoding="utf-8"), encoding="utf-8")
-            backup_path.unlink()
-            return True
-        if managed and config_path.exists():
-            config_path.unlink()
-            return True
-        return False
+        elif action == "remove":
+            config_path.unlink(missing_ok=True)
     except OSError as exc:
         raise RuntimeError(f"Failed to restore config at {config_path}") from exc
+
+
+def dispose_backup(backup_path: Path) -> None:
+    """Idempotently drop a consumed backup after its restore and the state update are recorded."""
+    try:
+        backup_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"Failed to remove backup {backup_path}") from exc
 
 
 def write_text_file(path: Path, content: str) -> None:
