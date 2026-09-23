@@ -1247,7 +1247,9 @@ class TestCodexLaunch:
         monkeypatch.setattr(
             codex,
             "_fetch_codex_model_catalog",
-            lambda workspace, token, **kwargs: seen.update(kwargs) or {"models": []},
+            lambda workspace, token, **kwargs: (
+                seen.update(kwargs) or {"models": [{"slug": "gpt-parent"}]}
+            ),
         )
 
         codex.launch(

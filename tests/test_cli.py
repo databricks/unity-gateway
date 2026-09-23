@@ -738,7 +738,14 @@ class TestSubcommandRouting:
         calls["launch"].assert_called_once()
 
     def test_claude_model_location_is_forwarded(self):
-        with _launch_policy_patches(None) as calls:
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.get_databricks_token", return_value="token"),
+            patch(
+                "ucode.databricks._http_get_json",
+                return_value=({"data": [{"id": "main.default.claude-sonnet-5"}]}, None),
+            ),
+        ):
             result = runner.invoke(app, ["claude", "--model-location", "main.default"])
 
         assert result.exit_code == 0, result.output
