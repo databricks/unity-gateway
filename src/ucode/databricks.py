@@ -25,7 +25,7 @@ from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
 from pathlib import Path
-from typing import Literal, NamedTuple, NoReturn, cast, overload
+from typing import Any, Literal, NamedTuple, NoReturn, cast, overload
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
@@ -2432,11 +2432,21 @@ _UC_FUNCTIONS_SKIP_CATALOGS = frozenset(
 )
 
 
-def _collect_concurrently(items, run, on_result, *, max_workers, should_stop):
-    pending: queue.Queue = queue.Queue()
+def _collect_concurrently[T, R](
+    items: list[T],
+    run: Callable[[T], R],
+    on_result: Callable[[R, T], None],
+    *,
+    max_workers: int,
+    should_stop: Callable[[], bool],
+) -> None:
+    """Run `run` over `items` on daemon workers that are never joined, so a slow or stuck
+    call can't block process exit. Results go to `on_result` on the calling thread until
+    every item is drained or `should_stop()` returns True."""
+    pending: queue.Queue[T] = queue.Queue()
     for item in items:
         pending.put(item)
-    results: queue.Queue = queue.Queue()
+    results: queue.Queue[tuple[Any, T]] = queue.Queue()
 
     def worker() -> None:
         while not should_stop():
