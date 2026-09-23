@@ -1979,3 +1979,42 @@ class TestOtelTokenProvider:
         assert provider(True) == "custom-token"
         assert get_custom_token.call_args.kwargs["force_refresh"] is True
         get_default_token.assert_not_called()
+
+
+class TestEnterpriseRoutingSources:
+    def test_model_provider_returns_path(self, monkeypatch, tmp_path):
+        cfg = tmp_path / "managed_config.toml"
+        cfg.write_text('model_provider = "Databricks"\n', encoding="utf-8")
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: cfg)
+        monkeypatch.setattr(
+            codex, "read_managed_file", lambda p: p.read_text() if p.exists() else None
+        )
+        assert codex.enterprise_routing_sources() == [str(cfg)]
+
+    def test_absent_config_returns_empty(self, monkeypatch, tmp_path):
+        cfg = tmp_path / "managed_config.toml"
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: cfg)
+        monkeypatch.setattr(codex, "read_managed_file", lambda _p: None)
+        assert codex.enterprise_routing_sources() == []
+
+    def test_no_model_provider_returns_empty(self, monkeypatch, tmp_path):
+        cfg = tmp_path / "managed_config.toml"
+        cfg.write_text('model = "gpt-5"\n', encoding="utf-8")
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: cfg)
+        monkeypatch.setattr(codex, "read_managed_file", lambda p: p.read_text())
+        assert codex.enterprise_routing_sources() == []
+
+    def test_unreadable_file_does_not_raise(self, monkeypatch, tmp_path):
+        # Reporting runs after revert has committed, so a permission error must be skipped.
+        cfg = tmp_path / "managed_config.toml"
+
+        def boom(_path):
+            raise RuntimeError("Cannot read managed settings: permission denied")
+
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: cfg)
+        monkeypatch.setattr(codex, "read_managed_file", boom)
+        assert codex.enterprise_routing_sources() == []
+
+    def test_none_path_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        assert codex.enterprise_routing_sources() == []

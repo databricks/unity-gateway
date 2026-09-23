@@ -1311,6 +1311,15 @@ def revert() -> int:
             f"Cleared ug state for this workspace; {len(other_workspaces)} other workspace "
             "configuration(s) left in place."
         )
+    for display, sources in (
+        ("Claude Code", claude_agent.enterprise_routing_sources()),
+        ("Codex", codex_agent.enterprise_routing_sources()),
+    ):
+        if sources:
+            print_note(
+                f"{display} enterprise gateway routing is still enforced by administrator-managed "
+                f"settings ug did not modify: {', '.join(sources)}."
+            )
     print_success("ug state cleared")
     return 0
 

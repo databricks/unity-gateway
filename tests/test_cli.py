@@ -2603,6 +2603,41 @@ class TestRevert:
         assert order[-1] == "clear"  # it failed at clear_state
         assert "dispose" not in order and "dispose_mcp" not in order  # backups left intact
 
+    def test_dropin_routing_enforcement_reported_after_revert(self):
+        # After a clean revert, if an admin drop-in still enforces routing, report it.
+        dropin_path = "/etc/claude-code/managed-settings.d/10-admin.json"
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch(
+                "ucode.cli.claude_agent.managed_settings_revert_requires_privilege",
+                return_value=False,
+            ),
+            patch(
+                "ucode.cli.codex_agent.managed_config_revert_requires_privilege",
+                return_value=False,
+            ),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.claude_agent.revert_managed_settings", return_value="unchanged"),
+            patch("ucode.cli.codex_agent.revert_managed_config", return_value="unchanged"),
+            patch("ucode.cli.revert_legacy_shared_config", return_value=False),
+            patch("ucode.cli.apply_restore"),
+            patch("ucode.cli.dispose_backup"),
+            patch("ucode.cli.dispose_mcp_revert_backups"),
+            patch("ucode.cli.load_full_state", return_value={"workspaces": {}}),
+            patch("ucode.cli.clear_state"),
+            patch(
+                "ucode.cli.claude_agent.enterprise_routing_sources",
+                return_value=[dropin_path],
+            ),
+            patch("ucode.cli.codex_agent.enterprise_routing_sources", return_value=[]),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        output = _strip_ansi(result.output)
+        assert "enterprise gateway routing is still enforced" in output
+        assert dropin_path in output
+
 
 class TestRevertDryRun:
     def test_dry_run_revert_errors_without_mutating_anything(self):

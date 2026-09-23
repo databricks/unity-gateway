@@ -2652,3 +2652,68 @@ class TestClaudeReadManagedMcpUrls:
 
         monkeypatch.setattr(claude, "read_managed_file", boom)
         assert claude.read_managed_mcp_urls() == {}
+
+
+class TestEnterpriseRoutingSources:
+    def test_dropin_with_anthropic_base_url_returned(self, monkeypatch, tmp_path):
+        os_file = tmp_path / "managed-settings.json"
+        dropin_dir = tmp_path / "managed-settings.d"
+        dropin_dir.mkdir()
+        dropin = dropin_dir / "10-admin.json"
+        dropin.write_text(
+            json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://admin.example/gw"}}),
+            encoding="utf-8",
+        )
+        # OS file is absent (no routing keys there).
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: os_file)
+        monkeypatch.setattr(
+            claude, "read_managed_file", lambda p: p.read_text() if p.exists() else None
+        )
+        result = claude.enterprise_routing_sources()
+        assert result == [str(dropin)]
+
+    def test_os_file_with_api_key_helper_returned(self, monkeypatch, tmp_path):
+        os_file = tmp_path / "managed-settings.json"
+        os_file.write_text(json.dumps({"apiKeyHelper": "/usr/bin/helper"}), encoding="utf-8")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: os_file)
+        monkeypatch.setattr(
+            claude, "read_managed_file", lambda p: p.read_text() if p.exists() else None
+        )
+        result = claude.enterprise_routing_sources()
+        assert result == [str(os_file)]
+
+    def test_empty_when_no_dropin_dir_and_os_file_absent(self, monkeypatch, tmp_path):
+        os_file = tmp_path / "managed-settings.json"
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: os_file)
+        monkeypatch.setattr(claude, "read_managed_file", lambda p: None)
+        result = claude.enterprise_routing_sources()
+        assert result == []
+
+    def test_empty_when_os_file_has_no_routing_keys(self, monkeypatch, tmp_path):
+        os_file = tmp_path / "managed-settings.json"
+        os_file.write_text(json.dumps({"env": {"SOME_OTHER_KEY": "1"}}), encoding="utf-8")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: os_file)
+        monkeypatch.setattr(
+            claude, "read_managed_file", lambda p: p.read_text() if p.exists() else None
+        )
+        result = claude.enterprise_routing_sources()
+        assert result == []
+
+    def test_returns_empty_when_path_is_none(self, monkeypatch):
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        result = claude.enterprise_routing_sources()
+        assert result == []
+
+    def test_unreadable_dropin_does_not_raise(self, monkeypatch, tmp_path):
+        # This runs after revert has committed, so a permission error must be skipped, not raised.
+        os_file = tmp_path / "managed-settings.json"
+        dropin_dir = tmp_path / "managed-settings.d"
+        dropin_dir.mkdir()
+        (dropin_dir / "10-admin.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: os_file)
+
+        def boom(_path):
+            raise RuntimeError("Cannot read managed settings: permission denied")
+
+        monkeypatch.setattr(claude, "read_managed_file", boom)
+        assert claude.enterprise_routing_sources() == []
