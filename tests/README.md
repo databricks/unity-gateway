@@ -168,6 +168,7 @@ These are unit/component checks; they do not establish live sudo password-prompt
 | Broad configure flags, multiple workspaces, and PAT flows | Deferred while focusing on basic CUJs |
 | Workspace-switch MCP cleanup | The `workspace_switch` CUJ covers real registration, cleanup, repeat configure, and a completed Claude task. Unit/component tests cover duplicate attempts and injected removal failures; the CUJ does not force an agent timeout. It runs in the required managed CI lane for full/live runs. |
 | Relayed/subscription MPS discovery | Not covered by the scoped discovery journeys |
+| Saved Claude picker selection | Unit/component checks in `test_agent_claude.py` cover mapped family aliases, `[1m]`/`[200k]` variants, and unavailable-model fallback without changing saved settings. No dedicated live journey. |
 | Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |

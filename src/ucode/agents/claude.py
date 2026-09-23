@@ -1507,6 +1507,17 @@ def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[s
     return ["--model", launch_model]
 
 
+def _picker_model_id(model: str, settings_env: dict) -> str:
+    """Resolve configured aliases and context suffixes for comparisons only."""
+    model = re.sub(r"\[(?:1m|200k)\]$", "", model)
+    family_env_key = CLAUDE_DEFAULT_MODEL_ENV_KEYS.get(model)
+    if family_env_key:
+        family_model = settings_env.get(family_env_key)
+        if isinstance(family_model, str) and family_model:
+            model = family_model
+    return re.sub(r"\[(?:1m|200k)\]$", "", model)
+
+
 def _build_claude_argv(
     binary: str,
     tool_args: list[str],
@@ -1700,7 +1711,13 @@ def launch(
         picker_models = state.get("_claude_launch_picker_models")
         if isinstance(picker_models, list) and picker_models:
             saved_model = read_json_safe(CLAUDE_USER_SETTINGS_PATH).get("model")
-            if saved_model not in picker_models:
+            settings_env = read_json_safe(CLAUDE_SETTINGS_PATH).get("env")
+            settings_env = settings_env if isinstance(settings_env, dict) else {}
+            available_models = {_picker_model_id(model, settings_env) for model in picker_models}
+            if (
+                not isinstance(saved_model, str)
+                or _picker_model_id(saved_model, settings_env) not in available_models
+            ):
                 # Launch on a valid discovered model without turning it into a managed default or
                 # overwriting the user's saved selection. This also prevents Claude from appending
                 # that stale built-in selection to an otherwise replaced picker.

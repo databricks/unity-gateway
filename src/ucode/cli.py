@@ -2707,7 +2707,7 @@ def _launch_tool(
             if tool == "claude" and managed is not None
             else {}
         )
-        managed_claude_source_without_defaults = (
+        is_managed_claude_source_without_defaults = (
             tool == "claude"
             and managed is not None
             and bool(managed_parent_schema or managed_provider)
@@ -2738,11 +2738,16 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
-        if (
-            managed_claude_source_without_defaults
-            or (tool == "claude" and managed_provider)
-            or (tool == "claude" and managed is None and (explicit_provider or parent_schema))
-        ) and not relayed:
+        should_fetch_claude_picker_catalog = (
+            tool == "claude"
+            and not relayed
+            and (
+                is_managed_claude_source_without_defaults
+                or bool(managed_provider)
+                or (managed is None and bool(explicit_provider or parent_schema))
+            )
+        )
+        if should_fetch_claude_picker_catalog:
             token = get_databricks_token(state["workspace"], state.get("profile"))
             picker_catalog = list_anthropic_model_catalog(
                 state["workspace"],
@@ -2751,11 +2756,12 @@ def _launch_tool(
             )
             error = picker_catalog.error_msg
             if error:
-                source = (
-                    f"Model Provider Service {provider}"
-                    if provider
-                    else f"Unity Catalog location {parent_schema}"
-                )
+                if provider:
+                    source = f"Model Provider Service {provider}"
+                elif parent_schema:
+                    source = f"Unity Catalog location {parent_schema}"
+                else:
+                    source = ""
                 raise RuntimeError(f"Could not discover Claude models for {source}: {error}")
         # The router's per-launch pick for the root session. Codex pins it as the
         # resolved model; claude pins it via ANTHROPIC_MODEL (route_root_model).
