@@ -19,6 +19,7 @@ from ucode.agents import claude, codex, copilot, cursor, gemini, opencode
 from ucode.config_io import restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
+    AIGW_MCP_SERVICES_SEGMENT,
     PermissionDeniedError,
     apply_pat_environment,
     build_mcp_proxy_argv,
@@ -31,6 +32,7 @@ from ucode.databricks import (
     list_mcp_services,
     workspace_hostname,
 )
+from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
     CLAUDE_CODE_OAUTH_CLIENT_ID,
     CURSOR_OAUTH_CLIENT_ID,
@@ -56,10 +58,6 @@ from ucode.ui import (
     scrolling_checkbox,
     spinner,
 )
-
-# AI Gateway MCP-services endpoints carry this path segment. These are the
-# connection-backed services that need a per-user connection login.
-AIGW_MCP_SERVICES_PATH = "/ai-gateway/mcp-services/"
 
 # Workspace-relative path fragments for the V2 AI Gateway MCP endpoints, shared by the URL-shape
 # checks (`_is_app_mcp_server`, `_mcp_server_location`) so the set stays in one place.
@@ -259,7 +257,7 @@ def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | N
     This is the single source of truth for that choice, shared by the per-server
     (:func:`configure_client_mcp_server`) and batched (:func:`_managed_mcp_entry`) paths. Whether it
     applies to a *specific* server additionally requires a connection-backed mcp-services URL
-    (``AIGW_MCP_SERVICES_PATH``), which the caller checks per server. It is URL-independent, so
+    (``AIGW_MCP_SERVICES_SEGMENT``), which the caller checks per server. It is URL-independent, so
     callers can compute it once per (client, workspace) rather than once per server."""
     oauth_client = AGENT_OAUTH_CLIENT.get(client)
     if oauth_client is not None and not use_pat and oauth_client_available(workspace, oauth_client):
@@ -282,7 +280,7 @@ def configure_client_mcp_server(
     # proxy: non-connection MCPs, the skills registry, PAT auth, agents without a mapped OAuth
     # client, and workspaces where the mapped client isn't published.
     http_client = _oauth_http_client(client, workspace, use_pat=use_pat)
-    if http_client is not None and AIGW_MCP_SERVICES_PATH in url:
+    if http_client is not None and AIGW_MCP_SERVICES_SEGMENT in url:
         if client == "claude":
             removed_scopes = [
                 scope
@@ -753,7 +751,7 @@ def _is_app_mcp_server(server: dict) -> bool:
         return False
     stripped = url.rstrip("/")
     known = (
-        AIGW_MCP_SERVICES_PATH,
+        AIGW_MCP_SERVICES_SEGMENT,
         MCP_EXTERNAL_PATH,
         MCP_GENIE_PATH,
         MCP_VECTOR_SEARCH_PATH,
@@ -867,7 +865,7 @@ def _agent_managed_file_entries(
         if agent == "claude":
             # A native HTTP+OAuth entry is only valid for a connection-backed mcp-services URL;
             # anything else stays on the stdio proxy so both delivery paths resolve identically.
-            if AIGW_MCP_SERVICES_PATH not in url:
+            if AIGW_MCP_SERVICES_SEGMENT not in url:
                 continue
             entries[name] = claude.managed_mcp_entry(url)
         elif agent == "codex":
@@ -1199,7 +1197,7 @@ def _managed_mcp_entry(
     workspace) (or ``None``); the caller computes it once per client so the batch loop doesn't
     re-probe ``oauth_client_available`` per server. HTTP+OAuth applies here only when that client is
     set AND this server's URL is a connection-backed mcp-services URL; otherwise the stdio proxy."""
-    use_http = http_client is not None and AIGW_MCP_SERVICES_PATH in url
+    use_http = http_client is not None and AIGW_MCP_SERVICES_SEGMENT in url
     if client == "claude":
         if use_http:
             return claude.managed_mcp_entry(url)
@@ -2147,8 +2145,8 @@ def _mcp_server_location(server: dict) -> str:
         return "skills"
     url = str(server.get("url") or "")
     stripped = url.rstrip("/")
-    if AIGW_MCP_SERVICES_PATH in url:
-        return url.split(AIGW_MCP_SERVICES_PATH, 1)[1] or "mcp-service"
+    if AIGW_MCP_SERVICES_SEGMENT in url:
+        return connection_from_url(url) or "mcp-service"
     if MCP_EXTERNAL_PATH in url:
         return f"connection:{stripped.rsplit('/', 1)[-1]}"
     if MCP_GENIE_PATH in url:
@@ -2240,6 +2238,47 @@ def _row_status(
     )
 
 
+def configured_mcp_servers_by_name(
+    state: dict, agents: set[str] | None = None
+) -> dict[str, dict[str, Any]]:
+    """Merge the developer- and workspace-managed MCP servers ug has configured, keyed by
+    registered name, unioning the agents each is on. Skills connections are excluded (they are
+    reported/handled separately). ``agents`` drops agents outside that scope, and a server left
+    with no in-scope agent is omitted. Each value is ``{"server", "clients", "managed"}``.
+
+    Managed servers can be delivered two ways: to fallback state (``managed_mcp_servers``) or, for
+    Claude/Codex, into the agents' OS-managed files — the latter is the source of truth, so it is
+    read directly here. Shared by ``ug mcp list`` and ``ug mcp login`` so both (and ``ug status``)
+    see the same configured-server set regardless of how a managed server was delivered."""
+    configured: dict[str, dict[str, Any]] = {}
+
+    def _collect(server: dict, *, managed: bool) -> None:
+        name = _server_name(server)
+        if not name or server.get("kind") == SKILLS_MCP_KIND:
+            return
+        clients = [
+            client for client in _mcp_server_clients(server) if agents is None or client in agents
+        ]
+        if not clients:
+            return
+        entry = configured.setdefault(name, {"server": server, "clients": [], "managed": managed})
+        entry["clients"] = _merge_clients(entry["clients"], clients)
+        entry["managed"] = entry["managed"] or managed
+
+    for server in state.get("mcp_servers") or []:
+        _collect(server, managed=False)
+    for server in state.get("managed_mcp_servers") or []:
+        _collect(server, managed=True)
+    # Managed servers delivered through the agents' OS-managed files (Claude/Codex) live in those
+    # files, not in state, so read them too — otherwise `ug mcp login` would miss them.
+    for agent, module in (("claude", claude), ("codex", codex)):
+        if agents is not None and agent not in agents:
+            continue
+        for name, url in module.read_managed_mcp_urls().items():
+            _collect({"name": name, "url": url, "clients": [agent]}, managed=True)
+    return configured
+
+
 def list_mcp_command(agents: set[str] | None = None) -> int:
     """`ug mcp list`: show the Databricks MCP servers ug has configured and their live
     connection status in each coding agent, one row per server.
@@ -2271,35 +2310,10 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
 
     live = _query_live_statuses(probe_clients)
 
-    # Merge developer- and workspace-managed servers by registered name, unioning their agents.
-    # ``--agents`` drops agents outside the scope, and a server left with no in-scope agent is
-    # omitted. The skills connection is intentionally excluded — it's reported by the skill commands.
-    configured: dict[str, dict[str, Any]] = {}
-
-    def _collect(server: dict, *, managed: bool) -> None:
-        name = _server_name(server)
-        if not name or server.get("kind") == SKILLS_MCP_KIND:
-            return
-        clients = [
-            client for client in _mcp_server_clients(server) if agents is None or client in agents
-        ]
-        if not clients:
-            return
-        entry = configured.setdefault(name, {"server": server, "clients": [], "managed": managed})
-        entry["clients"] = _merge_clients(entry["clients"], clients)
-        entry["managed"] = entry["managed"] or managed
-
-    for server in state.get("mcp_servers") or []:
-        _collect(server, managed=False)
-    # Managed servers also live in the OS-managed files (source of truth), not just fallback state.
-    for server in state.get("managed_mcp_servers") or []:
-        _collect(server, managed=True)
-    if agents is None or "claude" in agents:
-        for name, url in claude.read_managed_mcp_urls().items():
-            _collect({"name": name, "url": url, "clients": ["claude"]}, managed=True)
-    if agents is None or "codex" in agents:
-        for name, url in codex.read_managed_mcp_urls().items():
-            _collect({"name": name, "url": url, "clients": ["codex"]}, managed=True)
+    # Merge developer- and workspace-managed servers by registered name, unioning their agents
+    # (shared with `ug mcp login` so both see the same configured-server set, including the servers
+    # delivered through the agents' OS-managed files).
+    configured = configured_mcp_servers_by_name(state, agents)
 
     if configured:
         table = Table(box=None, pad_edge=False, header_style="bold")

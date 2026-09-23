@@ -3233,7 +3233,7 @@ class TestReconcileManagedMcpServers:
             resolved=[
                 {
                     "name": "system-ai-github",
-                    "url": f"https://host{mcp.AIGW_MCP_SERVICES_PATH}github",
+                    "url": f"https://host{mcp.AIGW_MCP_SERVICES_SEGMENT}github",
                 }
             ],
             applied=applied,
@@ -3257,7 +3257,7 @@ class TestReconcileManagedMcpServers:
     ):
         # Claude's managed file only takes native mcp-services entries; any other URL falls back to
         # the user-scope proxy (matching configure_client_mcp_server). Codex proxies both.
-        github_url = f"https://host{mcp.AIGW_MCP_SERVICES_PATH}github"
+        github_url = f"https://host{mcp.AIGW_MCP_SERVICES_SEGMENT}github"
         custom_url = "https://apps.example/custom/mcp"
         state = {"workspace": WS, "profile": None, "managed_mcp_servers": []}
         applied: dict = {}
@@ -3353,7 +3353,7 @@ class TestReconcileManagedMcpServers:
     def test_migration_removes_prior_user_scope_for_managed_file_agents(self, monkeypatch):
         # Servers a prior configure registered at user scope for an agent now on the managed file are
         # unregistered from that agent.
-        sg_url = f"https://host{mcp.AIGW_MCP_SERVICES_PATH}sg"
+        sg_url = f"https://host{mcp.AIGW_MCP_SERVICES_SEGMENT}sg"
         previous = [{"name": "sg", "url": sg_url, "clients": ["claude", "codex"]}]
         state = {"workspace": WS, "profile": None, "managed_mcp_servers": list(previous)}
         applied: dict = {}
@@ -3666,6 +3666,72 @@ class TestParseMcpListOutput:
         # A hard ✘ failure whose message happens to mention authentication is still a failure.
         out = "svc: https://ws/x (HTTP) - ✘ Failed to connect — 401 authentication error\n"
         assert mcp.parse_mcp_list_output("claude", out) == {"svc": mcp.LIVE_FAILED}
+
+
+class TestConfiguredMcpServersByName:
+    """The shared enumeration used by both `ug mcp list` and `ug mcp login`."""
+
+    @pytest.fixture(autouse=True)
+    def _no_managed_files(self, monkeypatch):
+        # Default: no OS-managed-file servers, so state-only cases are deterministic.
+        monkeypatch.setattr(mcp.claude, "read_managed_mcp_urls", dict)
+        monkeypatch.setattr(mcp.codex, "read_managed_mcp_urls", dict)
+
+    def _state(self):
+        return {
+            "mcp_servers": [
+                {"name": "system-ai-github", "url": "u1", "clients": ["claude", "codex"]},
+                {
+                    "name": mcp.SKILLS_MCP_SERVER_NAME,
+                    "kind": mcp.SKILLS_MCP_KIND,
+                    "clients": ["claude"],
+                },
+            ],
+            "managed_mcp_servers": [
+                {"name": "system-ai-github", "url": "u1", "clients": ["cursor"]},
+                {"name": "databricks-genie-abc", "url": "u2", "clients": ["claude"]},
+            ],
+        }
+
+    def test_merges_by_name_and_unions_clients(self):
+        by_name = mcp.configured_mcp_servers_by_name(self._state())
+        assert set(by_name) == {"system-ai-github", "databricks-genie-abc"}
+        gh = by_name["system-ai-github"]
+        # Developer + workspace-managed entries unioned; managed flag sticks.
+        assert gh["clients"] == ["claude", "codex", "cursor"]
+        assert gh["managed"] is True
+
+    def test_excludes_skills_connection(self):
+        assert mcp.SKILLS_MCP_SERVER_NAME not in mcp.configured_mcp_servers_by_name(self._state())
+
+    def test_agents_scope_drops_servers_with_no_in_scope_agent(self):
+        by_name = mcp.configured_mcp_servers_by_name(self._state(), agents={"cursor"})
+        # Only the github service has a cursor client; genie (claude-only) is dropped.
+        assert set(by_name) == {"system-ai-github"}
+        assert by_name["system-ai-github"]["clients"] == ["cursor"]
+
+    def test_includes_servers_delivered_via_os_managed_files(self, monkeypatch):
+        # Managed servers written to the agents' OS-managed files (Claude/Codex) live in those
+        # files, not state, so `ug mcp login`/`list` must still see them via the managed-file read.
+        url = f"{WS}/ai-gateway/mcp-services/system.ai.slack"
+        monkeypatch.setattr(mcp.claude, "read_managed_mcp_urls", lambda: {"system-ai-slack": url})
+        monkeypatch.setattr(mcp.codex, "read_managed_mcp_urls", lambda: {"system-ai-slack": url})
+        by_name = mcp.configured_mcp_servers_by_name({"mcp_servers": [], "managed_mcp_servers": []})
+        assert "system-ai-slack" in by_name
+        entry = by_name["system-ai-slack"]
+        # Delivered to both agents' managed files → unioned, flagged managed, URL preserved.
+        assert entry["clients"] == ["claude", "codex"]
+        assert entry["managed"] is True
+        assert entry["server"]["url"] == url
+
+    def test_managed_file_read_respects_agents_scope(self, monkeypatch):
+        url = f"{WS}/ai-gateway/mcp-services/system.ai.slack"
+        monkeypatch.setattr(mcp.claude, "read_managed_mcp_urls", lambda: {"system-ai-slack": url})
+        monkeypatch.setattr(mcp.codex, "read_managed_mcp_urls", lambda: {"system-ai-slack": url})
+        by_name = mcp.configured_mcp_servers_by_name(
+            {"mcp_servers": [], "managed_mcp_servers": []}, agents={"codex"}
+        )
+        assert by_name["system-ai-slack"]["clients"] == ["codex"]
 
 
 class TestListMcpCommand:
