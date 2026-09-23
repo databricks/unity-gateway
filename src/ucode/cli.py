@@ -3648,10 +3648,12 @@ def doctor_cmd() -> None:
     from ucode.doctor import doctor
 
     try:
-        doctor()
+        rc = doctor()
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
+    if rc:
+        raise typer.Exit(rc)
 
 
 @app.command("usage", rich_help_panel="Usage")

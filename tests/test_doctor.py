@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import ucode.doctor as doctor_mod
+from ucode.agents.claude import EffectiveManagedPolicy, ManagedPolicyKey
 from ucode.databricks import MIN_DATABRICKS_CLI_VERSION
 from ucode.doctor import (
     Check,
@@ -144,6 +149,12 @@ class TestAgentCliChecks:
 
 
 class TestDatabricksAuthCheck:
+    @pytest.fixture(autouse=True)
+    def _clear_bearer_env(self, monkeypatch):
+        # CI sets DATABRICKS_BEARER; clear both so each test selects its own auth branch.
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+
     def test_none_when_no_workspace(self):
         with patch.object(doctor_mod, "load_state", return_value={}):
             assert _check_databricks_auth() is None
@@ -186,6 +197,83 @@ class TestDatabricksAuthCheck:
         ):
             check = _check_databricks_auth()
             assert check.suggestion.apply() is False
+
+    def test_static_bearer_warns_without_verification(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setenv("DATABRICKS_BEARER", "garbage")
+        with patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}):
+            check = _check_databricks_auth()
+        assert check.status == "warn"
+        assert check.suggestion is None
+        assert "not verified" in check.detail.lower()
+        assert check.status != "ok"
+
+    def test_bearer_command_ok_when_obtainable(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setenv("DATABRICKS_BEARER_COMMAND", "echo tok")
+        with (
+            patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}),
+            patch.object(doctor_mod, "get_databricks_token", return_value="tok"),
+        ):
+            check = _check_databricks_auth()
+        assert check.status == "ok"
+        assert check.suggestion is None
+
+    def test_bearer_command_error_when_not_obtainable(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setenv("DATABRICKS_BEARER_COMMAND", "false")
+        with (
+            patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}),
+            patch.object(doctor_mod, "get_databricks_token", side_effect=RuntimeError("nope")),
+        ):
+            check = _check_databricks_auth()
+        assert check.status == "error"
+        assert check.suggestion is None
+
+    def test_custom_oauth_ok_when_profile_obtainable(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        state = {
+            "workspace": "https://ws",
+            "custom_oauth": {"profile": "oauth-profile"},
+        }
+        with (
+            patch.object(doctor_mod, "load_state", return_value=state),
+            patch.object(doctor_mod, "has_valid_databricks_auth", return_value=True),
+        ):
+            check = _check_databricks_auth()
+        assert check.status == "ok"
+        assert check.suggestion is None
+
+    def test_custom_oauth_warn_when_profile_not_obtainable(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        state = {
+            "workspace": "https://ws",
+            "custom_oauth": {"profile": "oauth-profile"},
+        }
+        with (
+            patch.object(doctor_mod, "load_state", return_value=state),
+            patch.object(doctor_mod, "has_valid_databricks_auth", return_value=False),
+        ):
+            check = _check_databricks_auth()
+        assert check.status == "warn"
+        assert check.suggestion is None
+
+    def test_custom_oauth_warn_without_profile(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        state = {
+            "workspace": "https://ws",
+            "custom_oauth": {},
+        }
+        with patch.object(doctor_mod, "load_state", return_value=state):
+            check = _check_databricks_auth()
+        assert check.status == "warn"
+        assert check.suggestion is None
 
 
 class TestAnthropicEnvCollision:
@@ -230,6 +318,7 @@ class TestDoctorFlow:
         check = Check("thing", "warn", "broken", suggestion)
         with (
             self._only([check]),
+            patch("sys.stdin.isatty", return_value=True),
             patch.object(doctor_mod, "prompt_yes_no_default", return_value=True),
         ):
             rc = doctor()
@@ -242,6 +331,7 @@ class TestDoctorFlow:
         check = Check("thing", "warn", "broken", suggestion)
         with (
             self._only([check]),
+            patch("sys.stdin.isatty", return_value=True),
             patch.object(doctor_mod, "prompt_yes_no_default", return_value=False),
         ):
             doctor()
@@ -252,11 +342,13 @@ class TestDoctorFlow:
         check = Check("thing", "error", "broken", suggestion)
         with (
             self._only([check]),
+            patch("sys.stdin.isatty", return_value=True),
             patch.object(doctor_mod, "prompt_yes_no_default", return_value=True),
             patch.object(doctor_mod, "print_warning") as warn,
         ):
             rc = doctor()
-        assert rc == 0
+        # The fix did not apply, so the error stays unresolved.
+        assert rc == 1
         warn.assert_called()
 
     def test_ok_check_is_never_prompted(self):
@@ -267,3 +359,626 @@ class TestDoctorFlow:
         ):
             doctor()
         prompt.assert_not_called()
+
+
+class TestDoctorNonInteractive:
+    def test_piped_run_never_prompts_or_applies(self):
+        applied = []
+        suggestion = Suggestion("Fix it?", lambda: applied.append(True) or True)
+        check = Check("thing", "error", "broken", suggestion)
+        with (
+            patch.object(doctor_mod, "_gather_checks", return_value=[check]),
+            patch("sys.stdin.isatty", return_value=False),
+            patch.object(doctor_mod, "prompt_yes_no_default") as prompt,
+        ):
+            rc = doctor()
+        prompt.assert_not_called()
+        assert applied == []
+        assert rc == 1
+
+    def test_stdin_none_does_not_raise(self):
+        check = Check("thing", "ok", "healthy")
+        with (
+            patch.object(doctor_mod, "_gather_checks", return_value=[check]),
+            patch("sys.stdin", None),
+        ):
+            rc = doctor()
+        assert rc == 0
+
+
+class TestDoctorExitCode:
+    def _run(self, checks: list[Check], interactive: bool = False, prompt_answer: bool = False):
+        with (
+            patch.object(doctor_mod, "_gather_checks", return_value=checks),
+            patch("sys.stdin.isatty", return_value=interactive),
+            patch.object(doctor_mod, "prompt_yes_no_default", return_value=prompt_answer),
+        ):
+            return doctor()
+
+    def test_unresolved_error_returns_1(self):
+        assert self._run([Check("thing", "error", "broken")]) == 1
+
+    def test_warn_only_returns_0(self):
+        assert self._run([Check("thing", "warn", "meh")]) == 0
+
+    def test_ok_returns_0(self):
+        assert self._run([Check("thing", "ok", "healthy")]) == 0
+
+    def test_resolved_error_returns_0(self):
+        suggestion = Suggestion("Fix it?", lambda: True)
+        check = Check("thing", "error", "broken", suggestion)
+        assert self._run([check], interactive=True, prompt_answer=True) == 0
+
+
+_WS = "https://ws.example.com"
+_CLAUDE_BASE_URL = "https://ws.example.com/ai-gateway/anthropic"
+_CODEX_BASE_URL = "https://ws.example.com/ai-gateway/codex/v1"
+
+
+class TestClaudeGatewayConfig:
+    def _run(self, tmp_path, monkeypatch, state, contents=None):
+        path = tmp_path / "ucode-settings.json"
+        if contents is not None:
+            path.write_text(contents, encoding="utf-8")
+        monkeypatch.setattr(doctor_mod, "CLAUDE_SETTINGS_PATH", path)
+        with patch.object(doctor_mod, "load_state", return_value=state):
+            return doctor_mod._check_claude_gateway_config()
+
+    def test_none_when_claude_not_configured(self, tmp_path, monkeypatch):
+        state = {"workspace": _WS, "available_tools": ["codex"]}
+        assert self._run(tmp_path, monkeypatch, state) is None
+
+    def test_none_when_no_workspace(self, tmp_path, monkeypatch):
+        state = {"available_tools": ["claude"]}
+        assert self._run(tmp_path, monkeypatch, state) is None
+
+    def test_error_when_settings_missing(self, tmp_path, monkeypatch):
+        state = {"workspace": _WS, "available_tools": ["claude"]}
+        check = self._run(tmp_path, monkeypatch, state)
+        assert check.status == "error"
+        assert "missing" in check.detail
+
+    def test_error_when_settings_malformed(self, tmp_path, monkeypatch):
+        state = {"workspace": _WS, "available_tools": ["claude"]}
+        check = self._run(tmp_path, monkeypatch, state, contents="{not json")
+        assert check.status == "error"
+        assert "not valid JSON" in check.detail
+
+    def test_ok_for_valid_non_relay_config(self, tmp_path, monkeypatch):
+        state = {"workspace": _WS, "managed_configs": {"claude": {"keys": []}}}
+        contents = json.dumps(
+            {"apiKeyHelper": "echo token", "env": {"ANTHROPIC_BASE_URL": _CLAUDE_BASE_URL}}
+        )
+        check = self._run(tmp_path, monkeypatch, state, contents=contents)
+        assert check.status == "ok"
+        assert check.suggestion is None
+
+    def test_error_for_stale_base_url(self, tmp_path, monkeypatch):
+        state = {"workspace": _WS, "available_tools": ["claude"]}
+        contents = json.dumps(
+            {
+                "apiKeyHelper": "echo token",
+                "env": {"ANTHROPIC_BASE_URL": "https://old.example.com/ai-gateway/anthropic"},
+            }
+        )
+        check = self._run(tmp_path, monkeypatch, state, contents=contents)
+        assert check.status == "error"
+        assert "stale gateway URL" in check.detail
+        assert _CLAUDE_BASE_URL in check.detail
+
+    def test_error_when_api_key_helper_missing(self, tmp_path, monkeypatch):
+        state = {"workspace": _WS, "available_tools": ["claude"]}
+        contents = json.dumps({"env": {"ANTHROPIC_BASE_URL": _CLAUDE_BASE_URL}})
+        check = self._run(tmp_path, monkeypatch, state, contents=contents)
+        assert check.status == "error"
+        assert "apiKeyHelper" in check.detail
+
+    def test_ok_for_relay_config_without_api_key_helper(self, tmp_path, monkeypatch):
+        state = {"workspace": _WS, "available_tools": ["claude"], "claude_relayed": True}
+        contents = json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:4567"}})
+        check = self._run(tmp_path, monkeypatch, state, contents=contents)
+        assert check.status == "ok"
+
+
+class TestCodexGatewayConfig:
+    _VALID = f'model_provider = "Databricks"\n\n[model_providers.Databricks]\nbase_url = "{_CODEX_BASE_URL}"\n'
+
+    def _run(self, tmp_path, monkeypatch, state, contents=None):
+        path = tmp_path / "ucode.config.toml"
+        if contents is not None:
+            path.write_text(contents, encoding="utf-8")
+        monkeypatch.setattr(doctor_mod, "CODEX_CONFIG_PATH", path)
+        with patch.object(doctor_mod, "load_state", return_value=state):
+            return doctor_mod._check_codex_gateway_config()
+
+    def _state(self):
+        return {"workspace": _WS, "available_tools": ["codex"]}
+
+    def test_error_when_config_missing(self, tmp_path, monkeypatch):
+        check = self._run(tmp_path, monkeypatch, self._state())
+        assert check.status == "error"
+        assert "missing" in check.detail
+
+    def test_error_when_config_malformed(self, tmp_path, monkeypatch):
+        check = self._run(tmp_path, monkeypatch, self._state(), contents="model_provider = ")
+        assert check.status == "error"
+        assert "not valid TOML" in check.detail
+
+    def test_ok_for_valid_config(self, tmp_path, monkeypatch):
+        check = self._run(tmp_path, monkeypatch, self._state(), contents=self._VALID)
+        assert check.status == "ok"
+        assert check.suggestion is None
+
+    def test_error_for_wrong_model_provider(self, tmp_path, monkeypatch):
+        contents = self._VALID.replace('model_provider = "Databricks"', 'model_provider = "openai"')
+        check = self._run(tmp_path, monkeypatch, self._state(), contents=contents)
+        assert check.status == "error"
+        assert "model_provider" in check.detail
+
+    def test_error_for_stale_base_url(self, tmp_path, monkeypatch):
+        contents = self._VALID.replace(
+            _CODEX_BASE_URL, "https://old.example.com/ai-gateway/codex/v1"
+        )
+        check = self._run(tmp_path, monkeypatch, self._state(), contents=contents)
+        assert check.status == "error"
+        assert "stale/absent gateway URL" in check.detail
+        assert _CODEX_BASE_URL in check.detail
+
+    def test_error_when_model_catalog_missing(self, tmp_path, monkeypatch):
+        contents = f'model_catalog_json = "{tmp_path / "missing.json"}"\n' + self._VALID
+        check = self._run(tmp_path, monkeypatch, self._state(), contents=contents)
+        assert check.status == "error"
+        assert "model catalog" in check.detail
+
+    def test_ok_when_model_catalog_exists(self, tmp_path, monkeypatch):
+        catalog = tmp_path / "catalog.json"
+        catalog.write_text("{}", encoding="utf-8")
+        contents = f'model_catalog_json = "{catalog}"\n' + self._VALID
+        check = self._run(tmp_path, monkeypatch, self._state(), contents=contents)
+        assert check.status == "ok"
+
+
+class TestGatherChecksIsolation:
+    def test_failing_inspector_does_not_suppress_others(self):
+        ok = Check("npm", "ok", "fine")
+        with (
+            patch.object(doctor_mod, "_check_uv", side_effect=RuntimeError("boom")),
+            patch.object(doctor_mod, "_check_npm", return_value=ok),
+            patch.object(doctor_mod, "_check_databricks_cli", return_value=None),
+            patch.object(doctor_mod, "_check_workspace", return_value=None),
+            patch.object(doctor_mod, "_check_databricks_auth", return_value=None),
+            patch.object(doctor_mod, "_check_anthropic_env_collision", return_value=None),
+            patch.object(doctor_mod, "_check_agent_clis", return_value=[]),
+            patch.object(doctor_mod, "_check_ug", return_value=None),
+        ):
+            checks = doctor_mod._gather_checks()
+        assert ok in checks
+        uv = next(c for c in checks if c.name == "uv")
+        assert uv.status == "error"
+        assert uv.detail.startswith("check could not run")
+
+
+class TestClaudeManagedPolicy:
+    def _make_policy(
+        self,
+        base_path=None,
+        supported=True,
+        unreadable=None,
+        invalid=None,
+        api_key_helper=None,
+        base_url=None,
+    ):
+        """Build a fake EffectiveManagedPolicy for testing."""
+        return EffectiveManagedPolicy(
+            supported=supported,
+            base_path=base_path,
+            dropin_dir=base_path.parent / "managed-settings.d" if base_path else None,
+            sources=[base_path] if base_path and base_path not in (unreadable or []) else [],
+            unreadable=unreadable or [],
+            invalid=invalid or [],
+            api_key_helper=api_key_helper or ManagedPolicyKey(),
+            base_url=base_url or ManagedPolicyKey(),
+        )
+
+    def test_none_when_claude_not_configured(self):
+        with (
+            patch.object(
+                doctor_mod, "load_state", return_value={"workspace": "https://ws.example.com"}
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=False),
+        ):
+            assert doctor_mod._check_claude_managed_policy() is None
+
+    def test_none_when_no_workspace(self):
+        with (
+            patch.object(doctor_mod, "load_state", return_value={}),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+        ):
+            assert doctor_mod._check_claude_managed_policy() is None
+
+    def test_info_when_not_supported(self):
+        policy = self._make_policy(supported=False)
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={"workspace": "https://ws.example.com", "available_tools": ["claude"]},
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(doctor_mod, "effective_managed_policy", return_value=policy),
+        ):
+            check = doctor_mod._check_claude_managed_policy()
+        assert check is not None
+        assert check.status == "info"
+        assert "not available on this platform" in check.detail
+
+    def test_warn_when_unreadable(self):
+        bad_path = Path("/etc/claude-code/managed-settings.json")
+        policy = self._make_policy(base_path=bad_path, unreadable=[bad_path])
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={"workspace": "https://ws.example.com", "available_tools": ["claude"]},
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(doctor_mod, "effective_managed_policy", return_value=policy),
+        ):
+            check = doctor_mod._check_claude_managed_policy()
+        assert check is not None
+        assert check.status == "warn"
+        assert "unreadable" in check.detail
+
+    def test_warn_when_invalid_json(self):
+        bad_path = Path("/etc/claude-code/managed-settings.d/bad.json")
+        base_path = Path("/etc/claude-code/managed-settings.json")
+        policy = self._make_policy(base_path=base_path, invalid=[bad_path])
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={"workspace": "https://ws.example.com", "available_tools": ["claude"]},
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(doctor_mod, "effective_managed_policy", return_value=policy),
+        ):
+            check = doctor_mod._check_claude_managed_policy()
+        assert check is not None
+        assert check.status == "warn"
+        assert "not valid JSON" in check.detail
+
+    def test_info_no_enforcement_keys(self):
+        base_path = Path("/etc/claude-code/managed-settings.json")
+        policy = self._make_policy(base_path=base_path)
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={"workspace": "https://ws.example.com", "available_tools": ["claude"]},
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(doctor_mod, "effective_managed_policy", return_value=policy),
+            patch.object(
+                doctor_mod, "managed_settings_status", return_value=(base_path, "current", "none")
+            ),
+        ):
+            check = doctor_mod._check_claude_managed_policy()
+        assert check is not None
+        assert check.status == "info"
+        assert "not OS-enforced" in check.detail
+
+    def test_ok_enforced_via_base_file(self):
+        base_path = Path("/etc/claude-code/managed-settings.json")
+        expected_url = "https://ws.example.com/ai-gateway/anthropic"
+        policy = self._make_policy(
+            base_path=base_path,
+            api_key_helper=ManagedPolicyKey(value="helper_cmd", source=base_path),
+            base_url=ManagedPolicyKey(value=expected_url, source=base_path),
+        )
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={"workspace": "https://ws.example.com", "available_tools": ["claude"]},
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(doctor_mod, "effective_managed_policy", return_value=policy),
+            patch.object(
+                doctor_mod, "managed_settings_status", return_value=(base_path, "current", "none")
+            ),
+        ):
+            check = doctor_mod._check_claude_managed_policy()
+        assert check is not None
+        assert check.status == "ok"
+        assert "managed-settings.json" in check.detail
+
+    def test_ok_enforced_via_dropin(self):
+        base_path = Path("/etc/claude-code/managed-settings.json")
+        dropin_path = Path("/etc/claude-code/managed-settings.d/50-enforce.json")
+        expected_url = "https://ws.example.com/ai-gateway/anthropic"
+        policy = self._make_policy(
+            base_path=base_path,
+            api_key_helper=ManagedPolicyKey(value="helper_cmd", source=dropin_path),
+            base_url=ManagedPolicyKey(value=expected_url, source=dropin_path),
+        )
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={"workspace": "https://ws.example.com", "available_tools": ["claude"]},
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(doctor_mod, "effective_managed_policy", return_value=policy),
+            patch.object(
+                doctor_mod, "managed_settings_status", return_value=(base_path, "current", "none")
+            ),
+        ):
+            check = doctor_mod._check_claude_managed_policy()
+        assert check is not None
+        assert check.status == "ok"
+        assert "drop-in" in check.detail
+
+    def test_warn_override_different_gateway(self):
+        base_path = Path("/etc/claude-code/managed-settings.json")
+        dropin_path = Path("/etc/claude-code/managed-settings.d/50-override.json")
+        wrong_url = "https://evil.example.com/ai-gateway/anthropic"
+        expected_url = "https://ws.example.com/ai-gateway/anthropic"
+        policy = self._make_policy(
+            base_path=base_path,
+            base_url=ManagedPolicyKey(value=wrong_url, source=dropin_path),
+        )
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={"workspace": "https://ws.example.com", "available_tools": ["claude"]},
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(doctor_mod, "effective_managed_policy", return_value=policy),
+            patch.object(
+                doctor_mod, "managed_settings_status", return_value=(base_path, "current", "none")
+            ),
+        ):
+            check = doctor_mod._check_claude_managed_policy()
+        assert check is not None
+        assert check.status == "warn"
+        assert "different gateway" in check.detail
+        assert wrong_url in check.detail
+        assert expected_url in check.detail
+
+    def test_warn_no_helper_non_relay(self):
+        base_path = Path("/etc/claude-code/managed-settings.json")
+        expected_url = "https://ws.example.com/ai-gateway/anthropic"
+        policy = self._make_policy(
+            base_path=base_path,
+            base_url=ManagedPolicyKey(value=expected_url, source=base_path),
+        )
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={"workspace": "https://ws.example.com", "available_tools": ["claude"]},
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(doctor_mod, "effective_managed_policy", return_value=policy),
+            patch.object(
+                doctor_mod, "managed_settings_status", return_value=(base_path, "current", "none")
+            ),
+        ):
+            check = doctor_mod._check_claude_managed_policy()
+        assert check is not None
+        assert check.status == "warn"
+        assert "apiKeyHelper" in check.detail
+
+    def test_warn_empty_helper_string(self):
+        base_path = Path("/etc/claude-code/managed-settings.json")
+        expected_url = "https://ws.example.com/ai-gateway/anthropic"
+        policy = self._make_policy(
+            base_path=base_path,
+            api_key_helper=ManagedPolicyKey(value="", source=base_path),
+            base_url=ManagedPolicyKey(value=expected_url, source=base_path),
+        )
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={"workspace": "https://ws.example.com", "available_tools": ["claude"]},
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(doctor_mod, "effective_managed_policy", return_value=policy),
+            patch.object(
+                doctor_mod, "managed_settings_status", return_value=(base_path, "current", "none")
+            ),
+        ):
+            check = doctor_mod._check_claude_managed_policy()
+        assert check is not None
+        assert check.status == "warn"
+        assert "apiKeyHelper" in check.detail
+
+    def test_error_relay_with_managed_base_url(self):
+        base_path = Path("/etc/claude-code/managed-settings.json")
+        expected_url = "https://ws.example.com/ai-gateway/anthropic"
+        policy = self._make_policy(
+            base_path=base_path,
+            base_url=ManagedPolicyKey(value=expected_url, source=base_path),
+        )
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={
+                    "workspace": "https://ws.example.com",
+                    "available_tools": ["claude"],
+                    "claude_relayed": True,
+                },
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(doctor_mod, "effective_managed_policy", return_value=policy),
+            patch.object(
+                doctor_mod, "managed_settings_status", return_value=(base_path, "current", "none")
+            ),
+        ):
+            check = doctor_mod._check_claude_managed_policy()
+        assert check is not None
+        assert check.status == "error"
+        assert "relay" in check.detail
+
+    def test_error_relay_with_managed_api_key_helper(self):
+        base_path = Path("/etc/claude-code/managed-settings.json")
+        policy = self._make_policy(
+            base_path=base_path,
+            api_key_helper=ManagedPolicyKey(value="helper_cmd", source=base_path),
+        )
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={
+                    "workspace": "https://ws.example.com",
+                    "available_tools": ["claude"],
+                    "claude_relayed": True,
+                },
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(doctor_mod, "effective_managed_policy", return_value=policy),
+            patch.object(
+                doctor_mod, "managed_settings_status", return_value=(base_path, "current", "none")
+            ),
+        ):
+            check = doctor_mod._check_claude_managed_policy()
+        assert check is not None
+        assert check.status == "error"
+        assert "relay" in check.detail
+
+    def test_info_relay_no_managed_keys(self):
+        base_path = Path("/etc/claude-code/managed-settings.json")
+        policy = self._make_policy(base_path=base_path)
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={
+                    "workspace": "https://ws.example.com",
+                    "available_tools": ["claude"],
+                    "claude_relayed": True,
+                },
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(doctor_mod, "effective_managed_policy", return_value=policy),
+            patch.object(
+                doctor_mod, "managed_settings_status", return_value=(base_path, "current", "none")
+            ),
+        ):
+            check = doctor_mod._check_claude_managed_policy()
+        assert check is not None
+        assert check.status == "info"
+        assert "relay" in check.detail
+
+
+class TestCodexManagedPolicy:
+    def test_none_when_codex_not_configured(self):
+        with (
+            patch.object(
+                doctor_mod, "load_state", return_value={"workspace": "https://ws.example.com"}
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=False),
+        ):
+            assert doctor_mod._check_codex_managed_policy() is None
+
+    def test_none_when_no_workspace(self):
+        with (
+            patch.object(doctor_mod, "load_state", return_value={}),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+        ):
+            assert doctor_mod._check_codex_managed_policy() is None
+
+    def test_info_when_unsupported(self):
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={"workspace": "https://ws.example.com", "available_tools": ["codex"]},
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(
+                doctor_mod, "managed_config_status", return_value=(None, "unsupported", "none")
+            ),
+        ):
+            check = doctor_mod._check_codex_managed_policy()
+        assert check is not None
+        assert check.status == "info"
+        assert "not available on this platform" in check.detail
+
+    def test_info_when_not_configured(self):
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={"workspace": "https://ws.example.com", "available_tools": ["codex"]},
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(
+                doctor_mod, "managed_config_status", return_value=(None, "not configured", "none")
+            ),
+        ):
+            check = doctor_mod._check_codex_managed_policy()
+        assert check is not None
+        assert check.status == "info"
+        assert "not OS-enforced" in check.detail
+
+    def test_ok_when_current(self):
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={"workspace": "https://ws.example.com", "available_tools": ["codex"]},
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(
+                doctor_mod,
+                "managed_config_status",
+                return_value=(Path("/etc/codex/managed_config.toml"), "current", "none"),
+            ),
+        ):
+            check = doctor_mod._check_codex_managed_policy()
+        assert check is not None
+        assert check.status == "ok"
+        assert "present and current" in check.detail
+
+    def test_warn_when_drifted(self):
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={"workspace": "https://ws.example.com", "available_tools": ["codex"]},
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(
+                doctor_mod,
+                "managed_config_status",
+                return_value=(Path("/etc/codex/managed_config.toml"), "drifted", "none"),
+            ),
+        ):
+            check = doctor_mod._check_codex_managed_policy()
+        assert check is not None
+        assert check.status == "warn"
+        assert "drifted" in check.detail
+
+    def test_warn_when_invalid(self):
+        with (
+            patch.object(
+                doctor_mod,
+                "load_state",
+                return_value={"workspace": "https://ws.example.com", "available_tools": ["codex"]},
+            ),
+            patch.object(doctor_mod, "_gateway_configured", return_value=True),
+            patch.object(
+                doctor_mod,
+                "managed_config_status",
+                return_value=(Path("/etc/codex/managed_config.toml"), "invalid", "none"),
+            ),
+        ):
+            check = doctor_mod._check_codex_managed_policy()
+        assert check is not None
+        assert check.status == "warn"
+        assert "not valid TOML" in check.detail

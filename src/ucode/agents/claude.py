@@ -11,6 +11,7 @@ import socket
 import subprocess
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from ucode import gateway_proxy
@@ -284,6 +285,120 @@ def managed_settings_status(state: dict) -> tuple[Path | None, str, str]:
     path = _managed_settings_path()
     status, backup = managed_file_status(state, "claude", path, parser=_parse_managed_settings)
     return path, status, backup
+
+
+_MANAGED_SETTINGS_DROPIN_DIRNAME = "managed-settings.d"
+
+# The effective-policy leaf keys that decide whether bare `claude` routes to the gateway.
+_MANAGED_POLICY_KEY_PATHS: dict[str, list[str]] = {
+    "apiKeyHelper": ["apiKeyHelper"],
+    "base_url": ["env", "ANTHROPIC_BASE_URL"],
+}
+
+_MANAGED_POLICY_MISSING = object()
+
+
+@dataclass
+class ManagedPolicyKey:
+    """Effective value of one managed-settings leaf and the file that set it (source=None when absent)."""
+
+    value: object | None = None
+    source: Path | None = None
+
+
+@dataclass
+class EffectiveManagedPolicy:
+    """Claude Code's merged OS-managed policy: base file plus alphabetical managed-settings.d drop-ins."""
+
+    supported: bool
+    base_path: Path | None
+    dropin_dir: Path | None
+    sources: list[Path]
+    unreadable: list[Path]
+    invalid: list[Path]
+    api_key_helper: ManagedPolicyKey
+    base_url: ManagedPolicyKey
+
+
+def _managed_policy_leaf(doc: dict, key_path: list[str]) -> object:
+    """Return the nested leaf at key_path, or the sentinel _MISSING when absent."""
+    node: object = doc
+    for key in key_path:
+        if not isinstance(node, dict) or key not in node:
+            return _MANAGED_POLICY_MISSING
+        node = node[key]
+    return node
+
+
+def effective_managed_policy() -> EffectiveManagedPolicy:
+    """Read-only: merge the base managed file and its managed-settings.d/*.json drop-ins.
+
+    Never writes; records unreadable/invalid files rather than raising so a doctor check can
+    report each distinctly. The winning source for a key is the LAST file (base, then drop-ins in
+    alpha order) that defines it, matching Claude Code's drop-in-wins merge.
+    """
+    base_path = _managed_settings_path()
+    if base_path is None:
+        return EffectiveManagedPolicy(
+            supported=False,
+            base_path=None,
+            dropin_dir=None,
+            sources=[],
+            unreadable=[],
+            invalid=[],
+            api_key_helper=ManagedPolicyKey(),
+            base_url=ManagedPolicyKey(),
+        )
+    dropin_dir = base_path.parent / _MANAGED_SETTINGS_DROPIN_DIRNAME
+    candidates = [base_path]
+    try:
+        if dropin_dir.is_dir():
+            candidates.extend(
+                sorted(
+                    (p for p in dropin_dir.glob("*.json") if p.is_file()),
+                    key=lambda p: p.name,
+                )
+            )
+    except OSError:
+        pass
+    parsed: list[tuple[Path, dict]] = []
+    sources: list[Path] = []
+    unreadable: list[Path] = []
+    invalid: list[Path] = []
+    for path in candidates:
+        try:
+            text = read_managed_file(path)
+        except RuntimeError:
+            unreadable.append(path)
+            continue
+        if text is None:
+            continue
+        try:
+            doc = _parse_managed_settings(text)
+        except RuntimeError:
+            invalid.append(path)
+            continue
+        parsed.append((path, doc))
+        sources.append(path)
+
+    def resolve(key_path: list[str]) -> ManagedPolicyKey:
+        key = ManagedPolicyKey()
+        for path, doc in parsed:
+            leaf = _managed_policy_leaf(doc, key_path)
+            if leaf is not _MANAGED_POLICY_MISSING:
+                key = ManagedPolicyKey(value=leaf, source=path)
+        return key
+
+    return EffectiveManagedPolicy(
+        supported=True,
+        base_path=base_path,
+        dropin_dir=dropin_dir,
+        sources=sources,
+        unreadable=unreadable,
+        invalid=invalid,
+        api_key_helper=resolve(_MANAGED_POLICY_KEY_PATHS["apiKeyHelper"]),
+        base_url=resolve(_MANAGED_POLICY_KEY_PATHS["base_url"]),
+    )
 
 
 def revert_managed_settings() -> str:
