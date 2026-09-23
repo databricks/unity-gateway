@@ -119,6 +119,7 @@ test_ug_configure_managed_models.py     # injected model sources, smart-routing 
 test_ug_configure_managed_mcp.py        # injected managed MCP list
 test_ug_configure_managed_skills.py     # injected managed skills: download, coexist, reconcile away
 test_ug_configure_managed_lifecycle.py  # none -> A -> B -> MPS -> none: reconcile, clear on MPS/no-config
+test_ug_usage.py                        # usage with and without a published managed config
 test_installation.py                   # fresh installed package
 utils/                                # process/terminal/evidence helpers and Docker files
 ```
@@ -227,10 +228,10 @@ startup banners and footer text cannot satisfy discovery assertions. Cases 7–1
 they only configure, list models, and open/close the picker. Other live CUJs perform
 real model tasks.
 
-There are **60 live cases** (including 12 TUI journeys) and **7 installation
-checks** with both agents. A separate **4 managed-workspace cases** (one per agent, an idempotent
-re-configure, and a cache-TTL journey; marker `managed`) run against a workspace that publishes a
-CodingAgentConfig; see "Managed-workspace journeys" below. One **`workspace_switch` case**
+There are **61 live cases** (including 12 TUI journeys) and **7 installation
+checks** with both agents. A separate **5 managed-workspace cases** (one per agent, an idempotent
+re-configure, a cache-TTL journey, and managed usage; marker `managed`) run against a workspace
+that publishes a CodingAgentConfig; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
 A further **27 `managed_fixture`
 cases** use `UCODE_MANAGED_CONFIG_STUB`. Twelve explicit configured/fresh Claude and Codex
@@ -240,7 +241,7 @@ cover focused model, MCP, skills, and lifecycle shapes, including per-agent mode
 and managed skill cleanup. The two Claude default-model cases launch with injected MPS and Unity
 Catalog sources and verify both generated settings files retain all admin-authored family defaults.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 99 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 101 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -351,12 +352,12 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 60 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 61 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 26 |
+| Claude | `live and claude` | 27 |
 | Codex | `live and codex` | 34 |
 
 Each lane installs only its agent CLI, once, and runs all its configure, headless,
@@ -380,7 +381,8 @@ cannot still be running when that gate passes. Full coverage on PRs needs no lab
 
 ### Managed-workspace journeys
 
-`test_ug_configure_managed.py` (marker `managed`, not `live`) runs in its own per-agent
+`test_ug_configure_managed.py` and the managed case in `test_ug_usage.py` (marker `managed`, not
+`live`) run in their own per-agent
 **Managed config** jobs against a second workspace that publishes an admin CodingAgentConfig,
 whereas unmanaged live cases require a workspace without one. `ug configure` applies the admin config
 with no agent selector, and each agent's generated config exposes exactly the admin's static
@@ -388,7 +390,9 @@ with no agent selector, and each agent's generated config exposes exactly the ad
 Codex case also checks stderr guidance to restart the daemon after publication,
 that the shared app config points at the stable catalog, and that a fresh
 bare Codex app-server returns the expected visible model before the existing TUI prompt/input
-assertion. It does not claim GUI rendering or inference coverage.
+assertion. It does not claim GUI rendering or inference coverage. The usage case then requires the
+real `ug usage` command to render budget spend from that workspace. The live usage case separately
+verifies the unavailable-budget result when no managed config is published.
 
 Treat that published CodingAgentConfig as shared CI fixture state. The managed lanes assert its
 exact model ids and its both-agent enablement, so editing the managed workspace's config (models,
@@ -636,7 +640,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 60 live cases. For the seven installation checks, run the same
+This runs all 61 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

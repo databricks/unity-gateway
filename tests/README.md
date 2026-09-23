@@ -61,6 +61,8 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure against a workspace that publishes a managed CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch. The Codex case also checks the shared catalog pointer, restart guidance, and a fresh bare app-server's visible model list |
+| `test_ug_usage_managed_config` | Configure against the managed workspace and run `ug usage` | Published managed config is cached; real budget spend, total, percentage, and meter are rendered |
+| `test_ug_usage_without_managed_config` | Configure against the normal workspace and run `ug usage` | Authoritative no-config result is cached; command exits successfully with the unavailable-budget guidance and no spend summary |
 | `test_case_01_*` | Launch managed Claude after configure and from fresh state | Claude receives the admin MPS header, caches exactly the independently fetched provider model IDs, and shows a cached model in a numbered picker row |
 | `test_case_03_*`, `test_case_05_*` | Pass a provider or model-location override to managed Claude after configure and from fresh state | ug rejects the override before Claude starts and preserves agent-owned state |
 | `test_case_02_*` | Launch managed Codex after configure and from fresh state | The scoped and stable catalogs, ug-launched app server, and fresh bare app server match the independently fetched admin MPS model IDs. The configured case uses real `ug revert` to remove ug's shared pointer and stable file while preserving a user setting |
@@ -75,8 +77,8 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_and_ucode_auth_helpers_emit_only_the_supplied_bearer` | Run both auth helper commands with the public bearer override, with and without forced refresh | Exact token-only stdout, no warnings or ANSI escapes; no workspace authentication or saved state |
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
-With both agents selected there are **60 live cases** (12 interactive TUI cases),
-**4 managed-workspace cases** (marker `managed`, run against a separate workspace that
+With both agents selected there are **61 live cases** (12 interactive TUI cases),
+**5 managed-workspace cases** (marker `managed`, run against a separate workspace that
 publishes a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
 **27 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected), and **7 installation checks**. The 14 retained numbered scenarios
@@ -122,7 +124,7 @@ dependency graph to reproduce a user's combination. Every relevant same-reposito
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
 journeys for both agents, in two parallel jobs. After smoke finishes, the full
-suite runs all 60 live cases across two parallel agent jobs: one Claude VM and one
+suite runs all 61 live cases across two parallel agent jobs: one Claude VM and one
 Codex VM, each running its configure, headless, and commands/lifecycle cases
 serially. Each agent is installed once for the full suite, and no two full jobs
 for the same agent overlap within a run.
