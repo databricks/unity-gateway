@@ -7,6 +7,10 @@ server bridges the gap: it advertises a single MCP tool, and on call it
 forwards the query to the workspace's Responses API with
 `tools: [{"type": "web_search"}]`, returning the model's text output.
 
+On HIPAA/BAA-compliant workspaces the gateway rejects live-internet search and
+asks for `external_web_access: false`; the server then retries once in that
+cache-only mode and keeps using it for the rest of the process.
+
 Speaks MCP JSON-RPC 2.0 over stdio (newline-delimited JSON). Implemented by
 hand to avoid pulling in the `mcp` SDK — keeps `ucode`'s dep footprint lean.
 """
@@ -83,6 +87,59 @@ def _extract_response_text(payload: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+class _ResponsesHTTPError(Exception):
+    """Non-2xx reply from the Responses gateway, with the (truncated) body."""
+
+    def __init__(self, code: int, detail: str) -> None:
+        super().__init__(f"HTTP {code}: {detail}")
+        self.code = code
+        self.detail = detail
+
+
+# Set once the gateway has asked for cache-only search (HIPAA/BAA workspaces).
+_cache_only = False
+
+
+def _post_responses(url: str, token: str, model: str, query: str, *, cache_only: bool) -> str:
+    """POST one web-search request and return the raw response body.
+
+    Raises ``_ResponsesHTTPError`` for an HTTP error status and ``RuntimeError``
+    for transport failures."""
+    tool: dict[str, Any] = {"type": "web_search"}
+    if cache_only:
+        tool["external_web_access"] = False
+    body = json.dumps(
+        {
+            "model": model,
+            "input": [{"role": "user", "content": query}],
+            "tools": [tool],
+            "store": False,
+        }
+    ).encode("utf-8")
+    request = urllib_request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib_request.urlopen(request, timeout=180) as response:
+            return response.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8")[:500]
+        except Exception:
+            pass
+        raise _ResponsesHTTPError(exc.code, detail) from exc
+    except urllib_error.URLError as exc:
+        raise RuntimeError(f"Responses API request failed: {exc.reason}") from exc
+
+
 def _call_responses_api(query: str) -> dict[str, Any]:
     """POST to the Databricks Codex (Responses API) gateway and return the
     parsed JSON payload. Raises RuntimeError on any failure with a message
@@ -100,37 +157,23 @@ def _call_responses_api(query: str) -> dict[str, Any]:
     except RuntimeError as exc:
         raise RuntimeError(f"Failed to acquire Databricks token: {exc}") from exc
 
-    body = json.dumps(
-        {
-            "model": model,
-            "input": [{"role": "user", "content": query}],
-            "tools": [{"type": "web_search"}],
-            "store": False,
-        }
-    ).encode("utf-8")
-
-    request = urllib_request.Request(
-        f"{workspace.rstrip('/')}/ai-gateway/codex/v1/responses",
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
+    global _cache_only
+    url = f"{workspace.rstrip('/')}/ai-gateway/codex/v1/responses"
     try:
-        with urllib_request.urlopen(request, timeout=180) as response:
-            raw = response.read().decode("utf-8")
-    except urllib_error.HTTPError as exc:
-        detail = ""
+        raw = _post_responses(url, token, model, query, cache_only=_cache_only)
+    except _ResponsesHTTPError as exc:
+        # HIPAA/BAA-compliant workspaces reject live-internet search and ask for
+        # cache-only search instead. Retry once in that mode and keep using it for
+        # the rest of this server process, so later calls skip the failing request.
+        if _cache_only or exc.code != 400 or "external_web_access" not in exc.detail:
+            raise RuntimeError(f"Responses API returned HTTP {exc.code}: {exc.detail}") from exc
+        _cache_only = True
         try:
-            detail = exc.read().decode("utf-8")[:500]
-        except Exception:
-            pass
-        raise RuntimeError(f"Responses API returned HTTP {exc.code}: {detail}") from exc
-    except urllib_error.URLError as exc:
-        raise RuntimeError(f"Responses API request failed: {exc.reason}") from exc
+            raw = _post_responses(url, token, model, query, cache_only=True)
+        except _ResponsesHTTPError as retry_exc:
+            raise RuntimeError(
+                f"Responses API returned HTTP {retry_exc.code}: {retry_exc.detail}"
+            ) from retry_exc
 
     try:
         return json.loads(raw)

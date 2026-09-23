@@ -191,6 +191,10 @@ class TestExtractText:
 
 
 class TestCallResponsesApi:
+    @pytest.fixture(autouse=True)
+    def _reset_cache_only(self, monkeypatch):
+        monkeypatch.setattr(mcp_web_search, "_cache_only", False)
+
     def test_missing_workspace_env(self, monkeypatch):
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.setenv("UCODE_WEB_SEARCH_MODEL", "x")
@@ -240,3 +244,83 @@ class TestCallResponsesApi:
             v for k, v in captured["headers"].items() if k.lower() == "authorization"
         )
         assert auth_header == "Bearer tok"
+
+    @staticmethod
+    def _fake_gateway(monkeypatch, replies):
+        """Serve ``replies`` in order: an int is an HTTP error with a body, a dict a 200 payload."""
+        import urllib.error
+
+        monkeypatch.setenv("DATABRICKS_HOST", WS)
+        monkeypatch.setenv("UCODE_WEB_SEARCH_MODEL", "system.ai.gpt-5")
+        monkeypatch.setattr(mcp_web_search, "get_databricks_token", lambda ws, profile=None: "tok")
+        bodies: list[dict[str, Any]] = []
+        pending = list(replies)
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps(self.payload).encode("utf-8")
+
+        def fake_urlopen(req, timeout):
+            bodies.append(json.loads(req.data.decode("utf-8")))
+            reply = pending.pop(0)
+            if isinstance(reply, tuple):
+                code, detail = reply
+                raise urllib.error.HTTPError(
+                    req.full_url, code, "err", {}, io.BytesIO(detail.encode("utf-8"))
+                )
+            return FakeResponse(reply)
+
+        monkeypatch.setattr(mcp_web_search.urllib_request, "urlopen", fake_urlopen)
+        return bodies
+
+    HIPAA_400 = (
+        400,
+        '{"error_code":"INVALID_PARAMETER_VALUE","message":"INVALID_PARAMETER_VALUE: Web search '
+        "with live internet access is not available for workspaces with HIPAA/BAA compliance "
+        'enabled. Set external_web_access to false on the web_search tool for cache-only web search."}',
+    )
+
+    def test_retries_cache_only_when_workspace_requires_it(self, monkeypatch):
+        bodies = self._fake_gateway(monkeypatch, [self.HIPAA_400, {"output": []}])
+
+        assert mcp_web_search._call_responses_api("hello") == {"output": []}
+
+        assert [b["tools"] for b in bodies] == [
+            [{"type": "web_search"}],
+            [{"type": "web_search", "external_web_access": False}],
+        ]
+
+    def test_stays_cache_only_after_first_fallback(self, monkeypatch):
+        bodies = self._fake_gateway(monkeypatch, [self.HIPAA_400, {"output": []}, {"output": []}])
+
+        mcp_web_search._call_responses_api("first")
+        mcp_web_search._call_responses_api("second")
+
+        # The second call goes straight to cache-only: no repeat of the rejected request.
+        assert len(bodies) == 3
+        assert bodies[2]["tools"] == [{"type": "web_search", "external_web_access": False}]
+
+    def test_other_400s_are_not_retried(self, monkeypatch):
+        bodies = self._fake_gateway(monkeypatch, [(400, '{"message":"bad input"}')])
+
+        with pytest.raises(RuntimeError, match="HTTP 400: .*bad input"):
+            mcp_web_search._call_responses_api("hello")
+        assert len(bodies) == 1
+
+    def test_cache_only_failure_surfaces_retry_error(self, monkeypatch):
+        bodies = self._fake_gateway(
+            monkeypatch, [self.HIPAA_400, (404, "'system.ai.gpt-5' is not enabled.")]
+        )
+
+        with pytest.raises(RuntimeError, match="HTTP 404: .*not enabled"):
+            mcp_web_search._call_responses_api("hello")
+        assert len(bodies) == 2

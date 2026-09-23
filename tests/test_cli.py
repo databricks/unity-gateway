@@ -4474,10 +4474,38 @@ class TestConfigureSharedStateSkipDiscovery:
             lambda: {"workspace": ws, "claude_models": {"opus": "databricks-claude-opus-4-8"}},
         )
 
-        def _boom(*a, **k):
-            raise AssertionError("discover_model_services must not run in provider mode")
+        ms_calls: list = []
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: (
+                ms_calls.append((w, t))
+                or ({"opus": "system.ai.claude-opus-4-8"}, ["system.ai.gpt-5"], [], [], None)
+            ),
+        )
 
-        monkeypatch.setattr(cli_mod, "discover_model_services", _boom)
+        def _boom(*a, **k):
+            raise AssertionError("legacy endpoint listing must not run when UC has a GPT model")
+
+        monkeypatch.setattr(cli_mod, "discover_codex_models", _boom)
+
+        state = cli_mod.configure_shared_state(ws, tools=["claude"], skip_model_discovery=True)
+
+        # One UC call, and the web-search model is the UC id the Responses gateway accepts.
+        assert ms_calls == [(ws, "token")]
+        assert state["web_search_model"] == "system.ai.gpt-5"
+        # Existing model list preserved, not overwritten by the provider-mode lookup.
+        assert state["claude_models"] == {"opus": "databricks-claude-opus-4-8"}
+
+    def test_web_search_model_falls_back_to_endpoint_listing(self, monkeypatch):
+        import ucode.cli as cli_mod
+
+        ws = "https://prov.databricks.com"
+        self._stub(monkeypatch)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: {"workspace": ws})
+        monkeypatch.setattr(
+            cli_mod, "discover_model_services", lambda w, t: ({}, [], [], [], "no model services")
+        )
         codex_calls: list = []
         monkeypatch.setattr(
             cli_mod,
@@ -4489,8 +4517,6 @@ class TestConfigureSharedStateSkipDiscovery:
 
         assert codex_calls == [(ws, "token")]
         assert state["web_search_model"] == "databricks-gpt-5"
-        # Existing model list preserved, not overwritten to {}.
-        assert state["claude_models"] == {"opus": "databricks-claude-opus-4-8"}
 
 
 class TestConfigureSharedStateSkipPreflight:
