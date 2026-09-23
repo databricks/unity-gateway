@@ -21,9 +21,7 @@ from __future__ import annotations
 import subprocess
 import sys
 
-# AI Gateway MCP service endpoints look like
-# ``https://<ws>/ai-gateway/mcp-services/<catalog>.<schema>.<service>``.
-AIGW_MCP_SERVICES_SEGMENT = "/ai-gateway/mcp-services/"
+from ucode.databricks import AIGW_MCP_SERVICES_SEGMENT
 
 # Login can pop a browser and wait for the user to complete the SaaS login, so
 # allow generously more than a token refresh would take.
@@ -137,7 +135,6 @@ def run_connection_login(
 
 
 __all__ = [
-    "AIGW_MCP_SERVICES_SEGMENT",
     "connection_from_url",
     "run_connection_login",
 ]
