@@ -276,8 +276,12 @@ def tool_version_error(tool: str) -> str | None:
     return _minimum_version_error(tool)
 
 
-def ensure_bootstrap_dependencies(tool: str) -> None:
-    install_databricks_cli()
+def ensure_bootstrap_dependencies(
+    tool: str,
+    *,
+    skip_cli_version_check: bool = False,
+) -> None:
+    install_databricks_cli(skip_version_check=skip_cli_version_check)
     install_tool_binary(
         tool,
         strict=True,
