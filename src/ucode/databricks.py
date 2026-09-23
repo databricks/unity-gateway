@@ -2296,14 +2296,17 @@ def service_usable_for_tool(tool: str, service: dict) -> bool:
 
     Beyond the provider-type match, a Bedrock service is only usable for claude
     if it exposes at least one Claude model in its targets — otherwise there's no
-    routable model id to pin. (Anthropic services use canonical names, so any
-    match is usable.)
+    routable model id to pin — or is ``allow_all_targets``, in which case the model
+    id comes from elsewhere (e.g. the managed config's authored default). (Anthropic
+    services use canonical names, so any match is usable.)
     """
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
         return False
     if provider_type in BEDROCK_PROVIDER_TYPES:
-        return bool(map_claude_family_models(service.get("targets") or []))
+        return bool(service.get("allow_all_targets")) or bool(
+            map_claude_family_models(service.get("targets") or [])
+        )
     return True
 
 
@@ -2343,12 +2346,14 @@ def resolve_provider_service(
             f"Model provider service '{service_name}' is a '{provider_type}' provider, "
             f"which {tool} can't route to (supported: {supported})."
         )
-    if provider_type in BEDROCK_PROVIDER_TYPES and not map_claude_family_models(
-        match.get("targets") or []
+    if (
+        provider_type in BEDROCK_PROVIDER_TYPES
+        and not match.get("allow_all_targets")
+        and not map_claude_family_models(match.get("targets") or [])
     ):
         return None, (
             f"Model provider service '{service_name}' exposes no Claude models — "
-            f"add Claude targets to it or pick a different service."
+            f"add Claude targets to it, enable allow_all_targets, or pick a different service."
         )
     return match, None
 
