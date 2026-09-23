@@ -152,6 +152,7 @@ def arguments():
         default=os.environ.get("UCODE_TEST_SECOND_WORKSPACE"),
         help="Second real workspace for workspace_switch CUJs; requires DATABRICKS_SECOND_BEARER.",
     )
+    parser.add_argument("--warehouse-id", default=os.environ.get("UG_INTEGRATION_WAREHOUSE_ID"))
     parser.add_argument("--output", type=Path, help="New results directory; never reused.")
     parser.add_argument("--installation-only", action="store_true", help="No workspace calls.")
     parser.add_argument(
@@ -323,6 +324,7 @@ def main() -> int:
             "dependencies": args.dependency,
             "workspace": args.workspace,
             "second_workspace": args.second_workspace,
+            "warehouse_id": args.warehouse_id,
         },
         "platform": platform.platform(),
         "installation_only": args.installation_only,
@@ -569,6 +571,7 @@ def main() -> int:
                 "DATABRICKS_BEARER": bearer,
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
                 "DATABRICKS_SECOND_BEARER": second_bearer,
+                "UG_INTEGRATION_WAREHOUSE_ID": args.warehouse_id or "",
             }
         )
         for agent in agents:

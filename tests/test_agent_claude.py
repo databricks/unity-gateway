@@ -2652,3 +2652,110 @@ class TestClaudeReadManagedMcpUrls:
 
         monkeypatch.setattr(claude, "read_managed_file", boom)
         assert claude.read_managed_mcp_urls() == {}
+
+
+class TestWriteUserMcpServers:
+    """Batched user-scope `mcpServers` writes for the workspace-managed reconcile path."""
+
+    def test_adds_and_preserves_other_keys(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text(
+            json.dumps(
+                {"numStartups": 7, "mcpServers": {"mine": {"type": "stdio", "command": "x"}}}
+            )
+        )
+        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+
+        entry = claude.user_stdio_mcp_entry(["ug", "mcp-proxy", "https://ws/svc"])
+        claude.write_user_mcp_servers({"system-ai-github": entry}, set())
+
+        doc = json.loads(path.read_text())
+        assert doc["numStartups"] == 7  # untouched
+        assert doc["mcpServers"]["mine"] == {
+            "type": "stdio",
+            "command": "x",
+        }  # developer's own kept
+        assert doc["mcpServers"]["system-ai-github"] == {
+            "type": "stdio",
+            "command": "ug",
+            "args": ["mcp-proxy", "https://ws/svc"],
+            "env": {},
+        }
+
+    def test_removes_named_entries_only(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text(
+            json.dumps({"mcpServers": {"gone": {"type": "http"}, "mine": {"type": "stdio"}}})
+        )
+        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+
+        claude.write_user_mcp_servers({}, {"gone"})
+
+        servers = json.loads(path.read_text())["mcpServers"]
+        assert "gone" not in servers
+        assert "mine" in servers
+
+    def test_writes_to_a_missing_file(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+
+        claude.write_user_mcp_servers({"a": {"type": "http", "url": "u"}}, set())
+
+        assert json.loads(path.read_text())["mcpServers"]["a"] == {"type": "http", "url": "u"}
+
+    def test_unparseable_file_falls_back_to_cli_and_does_not_clobber(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text("{ this is not valid json")
+        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        added: list[tuple[str, object]] = []
+        removed: list[tuple[str, str]] = []
+        monkeypatch.setattr(claude, "add_claude_mcp_server", lambda n, e, s: added.append((n, e)))
+        monkeypatch.setattr(
+            claude, "add_claude_http_mcp_server", lambda n, u, **kw: added.append((n, u))
+        )
+        monkeypatch.setattr(
+            claude, "remove_claude_mcp_server", lambda n, s: removed.append((n, s)) or True
+        )
+
+        claude.write_user_mcp_servers(
+            {
+                "stdio1": {"type": "stdio", "command": "ug", "args": []},
+                "http1": {"type": "http", "url": "u"},
+            },
+            {"old"},
+        )
+
+        # The malformed file is left exactly as it was — never overwritten.
+        assert path.read_text() == "{ this is not valid json"
+        assert ("stdio1", {"type": "stdio", "command": "ug", "args": []}) in added
+        assert ("http1", "u") in added
+        assert removed  # `old` removed via the CLI across cleanup scopes
+
+    def test_always_load_entry_shape(self):
+        entry = claude.user_stdio_mcp_entry(["ug", "mcp-proxy", "u"], always_load=True)
+        assert entry == {
+            "type": "stdio",
+            "command": "ug",
+            "args": ["mcp-proxy", "u"],
+            "alwaysLoad": True,
+        }
+
+    @pytest.fixture(autouse=True)
+    def _clear_config_dir_env(self, monkeypatch):
+        # Constant-based tests must not be perturbed by an ambient CLAUDE_CONFIG_DIR.
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+    def test_honors_claude_config_dir_env(self, tmp_path, monkeypatch):
+        # Regression: the `claude` CLI writes `.claude.json` under $CLAUDE_CONFIG_DIR when set, so a
+        # direct write must too — otherwise the servers land in a file Claude never reads.
+        config_dir = tmp_path / "cfgdir"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        default_path = tmp_path / "default.claude.json"
+        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", default_path)
+
+        claude.write_user_mcp_servers({"svc": {"type": "http", "url": "u"}}, set())
+
+        written = config_dir / ".claude.json"
+        assert json.loads(written.read_text())["mcpServers"]["svc"] == {"type": "http", "url": "u"}
+        assert not default_path.exists()  # the default location is untouched

@@ -708,6 +708,79 @@ def remove_claude_mcp_server(name: str, scope: str) -> bool:
         raise RuntimeError(f"Failed to remove MCP server '{name}' via claude CLI.") from exc
 
 
+def user_stdio_mcp_entry(argv: list[str], *, always_load: bool = False) -> dict:
+    """The user-scope ``mcpServers`` entry that ``claude mcp add ... -- <argv>`` writes.
+
+    Mirrors the CLI's on-disk shape so a batched direct write is what the CLI would have produced:
+    a plain stdio server carries an empty ``env`` map, while the skills registry's ``alwaysLoad``
+    entry carries that flag instead (as ``add-json`` writes it)."""
+    entry: dict = {"type": "stdio", "command": argv[0], "args": list(argv[1:])}
+    if always_load:
+        entry["alwaysLoad"] = True
+    else:
+        entry["env"] = {}
+    return entry
+
+
+def claude_mcp_config_path() -> Path:
+    """The file Claude Code reads user-scope ``mcpServers`` from: ``$CLAUDE_CONFIG_DIR/.claude.json``
+    when that env var is set (the ``claude`` CLI honors it), else the default ``~/.claude.json``. ug
+    elsewhere shells out to the CLI, which resolves this itself; a direct write must resolve the same
+    path or it silently writes to a file Claude never reads."""
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(config_dir) / ".claude.json" if config_dir else CLAUDE_MCP_CONFIG_PATH
+
+
+def _read_claude_config_for_rewrite(path: Path) -> dict | None:
+    """Read ``path`` for a full rewrite: ``{}`` when absent, the parsed object when present and
+    valid, and ``None`` when present but not a parseable JSON object — so a caller never overwrites
+    (and destroys) a config it could not read."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
+    """Apply ``add``/``remove`` to Claude's user-scope ``mcpServers`` (``~/.claude.json``, or under
+    ``$CLAUDE_CONFIG_DIR``) in a single read-modify-write, instead of one ``claude mcp`` subprocess
+    per server (each ~0.3-0.8s; a large managed set is otherwise dozens of them run serially). The
+    developer's own servers and every other key in the file are preserved.
+
+    If the file exists but can't be parsed as a JSON object, we must not clobber it, so we defer to
+    the per-server ``claude`` CLI (which edits the file in place) for exactly the changed entries."""
+    path = claude_mcp_config_path()
+    config = _read_claude_config_for_rewrite(path)
+    if config is None:
+        for name in remove:
+            for scope in MCP_CLEANUP_SCOPES:
+                remove_claude_mcp_server(name, scope)
+        for name, entry in add.items():
+            if entry.get("type") == "http":
+                oauth = entry.get("oauth") or {}
+                add_claude_http_mcp_server(
+                    name,
+                    entry["url"],
+                    client_id=oauth.get("clientId", CLAUDE_CODE_OAUTH_CLIENT_ID),
+                    callback_port=oauth.get("callbackPort", MCP_OAUTH_CALLBACK_PORT),
+                )
+            else:
+                add_claude_mcp_server(name, entry, MCP_USER_SCOPE)
+        return
+
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+    for name in remove:
+        servers.pop(name, None)
+    servers.update(add)
+    config["mcpServers"] = servers
+    write_json_file(path, config)
+
+
 def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
     """Whether Claude's managed MCP servers belong in the OS-managed file rather than user scope.
 
@@ -843,7 +916,7 @@ def _web_search_mcp_is_current(state: dict, entry: dict) -> bool:
     """
     if state.get(WEB_SEARCH_MCP_STATE_KEY) != entry:
         return False
-    config = read_json_safe(CLAUDE_MCP_CONFIG_PATH)
+    config = read_json_safe(claude_mcp_config_path())
     servers = config.get("mcpServers")
     return isinstance(servers, dict) and servers.get(WEB_SEARCH_MCP_NAME) == entry
 

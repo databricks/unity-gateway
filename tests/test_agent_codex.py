@@ -1979,3 +1979,88 @@ class TestOtelTokenProvider:
         assert provider(True) == "custom-token"
         assert get_custom_token.call_args.kwargs["force_refresh"] is True
         get_default_token.assert_not_called()
+
+
+class TestWriteUserMcpServers:
+    """Batched user-scope `[mcp_servers]` writes for the workspace-managed reconcile path."""
+
+    def test_adds_and_preserves_other_tables(self, tmp_path, monkeypatch):
+        path = tmp_path / "config.toml"
+        path.write_text('model = "gpt-5"\n\n[mcp_servers.mine]\ncommand = "x"\nargs = []\n')
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+
+        entry = codex.managed_mcp_entry(["ug", "mcp-proxy", "https://ws/svc"])
+        codex.write_user_mcp_servers({"system-ai-github": entry}, set())
+
+        doc = read_toml_safe(path)
+        assert doc["model"] == "gpt-5"  # untouched
+        assert dict(doc["mcp_servers"]["mine"]) == {
+            "command": "x",
+            "args": [],
+        }  # developer's own kept
+        assert dict(doc["mcp_servers"]["system-ai-github"]) == {
+            "command": "ug",
+            "args": ["mcp-proxy", "https://ws/svc"],
+        }
+
+    def test_removes_named_entries_only(self, tmp_path, monkeypatch):
+        path = tmp_path / "config.toml"
+        path.write_text('[mcp_servers.gone]\ncommand = "a"\n\n[mcp_servers.mine]\ncommand = "b"\n')
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+
+        codex.write_user_mcp_servers({}, {"gone"})
+
+        table = read_toml_safe(path)["mcp_servers"]
+        assert "gone" not in table
+        assert "mine" in table
+
+    def test_writes_to_a_missing_file(self, tmp_path, monkeypatch):
+        path = tmp_path / "config.toml"
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+
+        codex.write_user_mcp_servers({"a": {"command": "ug", "args": ["x"]}}, set())
+
+        assert dict(read_toml_safe(path)["mcp_servers"]["a"]) == {"command": "ug", "args": ["x"]}
+
+    def test_unparseable_file_falls_back_to_cli_and_does_not_clobber(self, tmp_path, monkeypatch):
+        path = tmp_path / "config.toml"
+        path.write_text("this is = = not valid toml [[[")
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+        added: list[tuple[str, list]] = []
+        removed: list[str] = []
+        import ucode.mcp as mcp_mod
+
+        monkeypatch.setattr(
+            mcp_mod, "add_codex_mcp_server", lambda n, argv: added.append((n, argv))
+        )
+        monkeypatch.setattr(mcp_mod, "remove_codex_mcp_server", lambda n: removed.append(n) or True)
+
+        codex.write_user_mcp_servers(
+            {"svc": {"command": "ug", "args": ["mcp-proxy", "u"]}}, {"old"}
+        )
+
+        assert path.read_text() == "this is = = not valid toml [[["  # never overwritten
+        assert added == [("svc", ["ug", "mcp-proxy", "u"])]
+        assert removed == ["old"]
+
+    @pytest.fixture(autouse=True)
+    def _clear_codex_home_env(self, monkeypatch):
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+
+    def test_honors_codex_home_env(self, tmp_path, monkeypatch):
+        # Regression: `codex mcp add` writes config.toml under $CODEX_HOME when set, so a direct
+        # write must too.
+        codex_home = tmp_path / "codexhome"
+        codex_home.mkdir()
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+        default_path = tmp_path / "default-config.toml"
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", default_path)
+
+        codex.write_user_mcp_servers({"svc": {"command": "ug", "args": ["x"]}}, set())
+
+        written = codex_home / "config.toml"
+        assert dict(read_toml_safe(written)["mcp_servers"]["svc"]) == {
+            "command": "ug",
+            "args": ["x"],
+        }
+        assert not default_path.exists()

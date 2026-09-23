@@ -3,6 +3,8 @@ and download orchestration."""
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 import ucode.skills_download as sd
@@ -855,7 +857,9 @@ class TestSkillDownloadPicker:
         monkeypatch.setattr(sd, "list_all_skills", fake_list_all)
         appended = []
 
-        message = sd._skills_download_background_loader(WS, "token", roots)(appended.extend)
+        message = sd._skills_download_background_loader(WS, "token", roots)(
+            appended.extend, threading.Event()
+        )
 
         assert message is None
         assert captured["token"] == "token"
@@ -870,7 +874,9 @@ class TestSkillDownloadPicker:
 
         monkeypatch.setattr(sd, "list_all_skills", fake_list_all)
 
-        message = sd._skills_download_background_loader(WS, "token", roots)(lambda choices: None)
+        message = sd._skills_download_background_loader(WS, "token", roots)(
+            lambda choices: None, threading.Event()
+        )
 
         assert message == "⚠ Timed out after 30s, found 2 skills"
 
