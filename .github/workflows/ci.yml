@@ -14,9 +14,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    env:
+      # See the test job: hosted runners can't reach the internal pypi-proxy,
+      # so resolve against public PyPI (paired with the `uv lock` step below).
+      UV_INDEX_URL: https://pypi.org/simple
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b  # v3
+      - run: uv lock
+      # Same recipe developers run locally, so lint stays identical in both places.
+      - run: just lint
+
   test:
     name: Unit tests
     runs-on: ubuntu-latest
+    needs: lint
     env:
       # uv.lock pins packages to Databricks' internal pypi-proxy, which hosted
       # GitHub runners can't reach (downloads time out). Re-resolve against
@@ -31,6 +47,7 @@ jobs:
   e2e-shards:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    needs: lint
     strategy:
       fail-fast: false
       matrix:
@@ -112,9 +129,12 @@ jobs:
 
   integration:
     name: Integration
-    # Start alongside unit/agent tests. Only the final required-e2e gate
-    # waits for both suites; an agent failure must not skip integration.
-    if: ${{ !cancelled() }}
+    # Gate on lint, then run alongside unit/agent tests. The explicit
+    # needs.lint success check preserves "an agent failure must not skip
+    # integration" (via !cancelled()) while still skipping when lint fails —
+    # !cancelled() alone would let it run through a lint failure.
+    needs: lint
+    if: ${{ !cancelled() && needs.lint.result == 'success' }}
     uses: ./.github/workflows/integration.yml
     secrets: inherit
 
