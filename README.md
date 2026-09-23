@@ -177,13 +177,14 @@ Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
 with `ug configure` to control installation.
 
-### Codex subagent usage CSV (experimental)
+### Subagent usage CSV (experimental)
 
-Set `ENABLE_SUBAGENT_USAGE_CSV=1` when launching Codex to record one local CSV
-row for each completed subagent:
+Set `ENABLE_SUBAGENT_USAGE_CSV=1` when launching Codex or Claude Code to record
+one local CSV row for each completed subagent:
 
 ```bash
 ENABLE_SUBAGENT_USAGE_CSV=1 ug codex
+ENABLE_SUBAGENT_USAGE_CSV=1 ug claude
 ```
 
 Unity Gateway writes one file per session under

@@ -13,7 +13,8 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from ucode import gateway_proxy
+from ucode import gateway_proxy, subagent_usage
+from ucode.agents import claude_subagent_usage
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -1478,12 +1479,24 @@ def _build_claude_argv(
     :data:`_RELAYED_SETTING_SOURCES`), so a stale user-scope apiKeyHelper cannot
     filter through and shadow the subscription OAuth.
     """
+    usage_hook_enabled = subagent_usage.enabled()
+    if usage_hook_enabled and settings_override is None:
+        settings_override = {}
     source_args = ["--setting-sources", _RELAYED_SETTING_SOURCES] if relayed else []
     caller_values, remaining = _extract_caller_settings(tool_args)
     if not caller_values and settings_override is None:
-        # No caller --settings: hand Claude ucode's settings file directly (the
-        # common path; behavior unchanged).
-        return [binary, *source_args, "--settings", str(CLAUDE_SETTINGS_PATH), *tool_args]
+        configured = read_json_safe(CLAUDE_SETTINGS_PATH)
+        cleaned = copy.deepcopy(configured)
+        claude_subagent_usage.sync_hook(cleaned, hook_enabled=False)
+        if cleaned == configured:
+            return [binary, *source_args, "--settings", str(CLAUDE_SETTINGS_PATH), *tool_args]
+        return [
+            binary,
+            *source_args,
+            "--settings",
+            json.dumps(cleaned, separators=(",", ":")),
+            *tool_args,
+        ]
     caller_settings: dict = {}
     for value in caller_values:
         caller_settings = _merge_claude_settings(caller_settings, _load_caller_settings(value))
@@ -1492,6 +1505,7 @@ def _build_claude_argv(
     merged = _merge_claude_settings(caller_settings, read_json_safe(CLAUDE_SETTINGS_PATH))
     if settings_override is not None:
         merged = _merge_claude_settings(merged, settings_override)
+    claude_subagent_usage.sync_hook(merged, hook_enabled=usage_hook_enabled)
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
         merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
