@@ -26,8 +26,16 @@ from ucode.agents import (
     tool_version_error,
     update_tool_binary,
 )
-from ucode.agents.claude import CLAUDE_SETTINGS_PATH
-from ucode.agents.codex import CODEX_CONFIG_PATH, CODEX_MODEL_PROVIDER_NAME
+from ucode.agents.claude import (
+    CLAUDE_SETTINGS_PATH,
+    effective_managed_policy,
+    managed_settings_status,
+)
+from ucode.agents.codex import (
+    CODEX_CONFIG_PATH,
+    CODEX_MODEL_PROVIDER_NAME,
+    managed_config_status,
+)
 from ucode.databricks import (
     MIN_DATABRICKS_CLI_VERSION,
     build_tool_base_url,
@@ -336,6 +344,171 @@ def _check_codex_gateway_config() -> Check | None:
     )
 
 
+def _check_claude_managed_policy() -> Check | None:
+    """Diagnose whether bare claude / VS Code is OS-enforced to route via the gateway.
+
+    Separate from `ug claude` (wrapped), which is covered by the ucode-settings.json
+    check. Reads the real managed files via effective_managed_policy() rather than
+    relying on state fingerprints, so it detects drop-in-only enforcement and
+    drop-in overrides even when the base file's fingerprint is unchanged.
+    Never offers a fix that deletes MDM policy.
+    """
+    state = load_state()
+    if not _gateway_configured(state, "claude"):
+        return None
+    workspace = state.get("workspace")
+    if not workspace:
+        return None
+    policy = effective_managed_policy()
+    if not policy.supported:
+        return Check(
+            "Claude OS-managed policy",
+            "info",
+            "OS-managed policy is not available on this platform; ug claude (wrapped) still "
+            "routes via ucode-settings.json.",
+        )
+    if policy.unreadable or policy.invalid:
+        parts: list[str] = []
+        if policy.unreadable:
+            parts.append(f"unreadable: {', '.join(str(p) for p in policy.unreadable)}")
+        if policy.invalid:
+            parts.append(f"not valid JSON: {', '.join(str(p) for p in policy.invalid)}")
+        return Check(
+            "Claude OS-managed policy",
+            "warn",
+            f"cannot confirm bare-claude enforcement. OS-managed policy file(s) {'; '.join(parts)}. "
+            "ug claude (wrapped) still routes.",
+        )
+    relayed = bool(state.get("claude_relayed"))
+    if relayed:
+        conflicts = []
+        if policy.api_key_helper.value:
+            conflicts.append("apiKeyHelper")
+        if policy.base_url.value:
+            conflicts.append("env.ANTHROPIC_BASE_URL")
+        if conflicts:
+            return Check(
+                "Claude OS-managed policy",
+                "error",
+                f"OS-managed policy defines {', '.join(conflicts)}, which conflicts with Claude "
+                "subscription relay; ug claude will refuse to launch. Ask your administrator to "
+                "remove these entries.",
+            )
+        return Check(
+            "Claude OS-managed policy",
+            "info",
+            "relay mode: no conflicting OS-managed policy; ug claude uses subscription OAuth.",
+        )
+    expected = build_tool_base_url("claude", str(workspace))
+    base_url_val = policy.base_url.value
+    base_url_src = policy.base_url.source
+    helper_value = policy.api_key_helper.value
+    helper_present = isinstance(helper_value, str) and bool(helper_value.strip())
+    _, status, _ = managed_settings_status(state)
+    ownership = (
+        "managed"
+        if status in {"current", "compatible (local settings)", "compatible (relay settings)"}
+        else "externally owned"
+    )
+    if base_url_src is None and policy.api_key_helper.source is None:
+        return Check(
+            "Claude OS-managed policy",
+            "info",
+            f"bare claude / VS Code is not OS-enforced to use the gateway ({ownership}). "
+            f"ug claude (wrapped) still routes.",
+        )
+    if base_url_src is not None:
+        src_desc = (
+            "via managed-settings.json"
+            if base_url_src == policy.base_path
+            else f"via drop-in {base_url_src.name}"
+        )
+        if str(base_url_val) != expected:
+            return Check(
+                "Claude OS-managed policy",
+                "warn",
+                f"bare claude / VS Code would route to a different gateway ({base_url_val}) set "
+                f"{src_desc}; expected {expected}. ug claude (wrapped) still routes correctly.",
+            )
+        if helper_present:
+            return Check(
+                "Claude OS-managed policy",
+                "ok",
+                f"bare claude / VS Code is enforced to route via the gateway ({src_desc}; "
+                f"{ownership}).",
+            )
+        return Check(
+            "Claude OS-managed policy",
+            "warn",
+            "OS-managed policy sets the gateway URL but no apiKeyHelper; bare claude may not "
+            "authenticate.",
+        )
+    return Check(
+        "Claude OS-managed policy",
+        "info",
+        "bare claude / VS Code is not OS-enforced to use the gateway.",
+    )
+
+
+def _check_codex_managed_policy() -> Check | None:
+    """Diagnose whether bare codex is OS-enforced to route via the gateway.
+
+    Separate from `ug codex` (wrapped), which is covered by the ucode config check.
+    Codex has no drop-in directory, so this is base-file-only.
+    """
+    state = load_state()
+    if not _gateway_configured(state, "codex"):
+        return None
+    workspace = state.get("workspace")
+    if not workspace:
+        return None
+    _, status, _ = managed_config_status(state)
+    status_map: dict[str, tuple[str, str]] = {
+        "unsupported": (
+            "info",
+            "Codex OS-managed policy is not available on this platform; ug codex (wrapped) still "
+            "routes.",
+        ),
+        "not configured": (
+            "info",
+            "bare codex is not OS-enforced to use the gateway; ug codex (wrapped) still routes.",
+        ),
+        "missing": (
+            "info",
+            "bare codex is not OS-enforced to use the gateway; ug codex (wrapped) still routes.",
+        ),
+        "current": (
+            "ok",
+            "Codex OS-managed policy is present and current (ug-owned).",
+        ),
+        "compatible (local settings)": (
+            "info",
+            "Codex OS-managed policy is compatible; enforced via local settings.",
+        ),
+        "compatible (relay settings)": (
+            "info",
+            "Codex OS-managed policy is compatible (relay settings).",
+        ),
+        "drifted": (
+            "warn",
+            "Codex OS-managed policy drifted from ug's last write.",
+        ),
+        "unreadable": (
+            "warn",
+            "Codex OS-managed policy file is unreadable.",
+        ),
+        "invalid": (
+            "warn",
+            "Codex OS-managed policy is not valid TOML.",
+        ),
+    }
+    status_tuple = status_map.get(status)
+    if status_tuple:
+        status_level, detail = status_tuple
+        return Check("Codex OS-managed policy", status_level, detail)
+    return Check("Codex OS-managed policy", "info", f"Codex OS-managed policy status: {status}.")
+
+
 def _check_databricks_auth() -> Check | None:
     """Validate the configured workspace's Databricks credentials.
 
@@ -481,6 +654,8 @@ def _gather_checks() -> list[Check]:
         ("Coding agents", _check_agent_clis),
         ("Claude gateway config", _check_claude_gateway_config),
         ("Codex gateway config", _check_codex_gateway_config),
+        ("Claude OS-managed policy", _check_claude_managed_policy),
+        ("Codex OS-managed policy", _check_codex_managed_policy),
         ("ug", _check_ug),
     ]
     checks: list[Check] = []

@@ -2759,3 +2759,94 @@ class TestWriteUserMcpServers:
         written = config_dir / ".claude.json"
         assert json.loads(written.read_text())["mcpServers"]["svc"] == {"type": "http", "url": "u"}
         assert not default_path.exists()  # the default location is untouched
+
+
+class TestEffectiveManagedPolicy:
+    def test_unsupported_platform(self, monkeypatch):
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        policy = claude.effective_managed_policy()
+        assert policy.supported is False
+        assert policy.base_path is None
+        assert policy.dropin_dir is None
+        assert policy.sources == []
+        assert policy.unreadable == []
+        assert policy.invalid == []
+        assert policy.api_key_helper.value is None
+        assert policy.api_key_helper.source is None
+        assert policy.base_url.value is None
+        assert policy.base_url.source is None
+
+    def test_base_file_only(self, monkeypatch, tmp_path):
+        base = tmp_path / "managed-settings.json"
+        base.write_text(
+            json.dumps(
+                {
+                    "apiKeyHelper": "/usr/bin/helper",
+                    "env": {"ANTHROPIC_BASE_URL": "https://gw"},
+                }
+            )
+        )
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: base)
+        policy = claude.effective_managed_policy()
+        assert policy.supported is True
+        assert policy.base_path == base
+        assert policy.dropin_dir == tmp_path / "managed-settings.d"
+        assert policy.sources == [base]
+        assert policy.api_key_helper.value == "/usr/bin/helper"
+        assert policy.api_key_helper.source == base
+        assert policy.base_url.value == "https://gw"
+        assert policy.base_url.source == base
+
+    def test_dropin_only_enforcement(self, monkeypatch, tmp_path):
+        base = tmp_path / "managed-settings.json"
+        dropin_dir = tmp_path / "managed-settings.d"
+        dropin_dir.mkdir()
+        dropin = dropin_dir / "10-foo.json"
+        dropin.write_text(
+            json.dumps(
+                {
+                    "apiKeyHelper": "/usr/bin/helper",
+                    "env": {"ANTHROPIC_BASE_URL": "https://gw"},
+                }
+            )
+        )
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: base)
+        policy = claude.effective_managed_policy()
+        assert policy.sources == [dropin]
+        assert policy.api_key_helper.value == "/usr/bin/helper"
+        assert policy.api_key_helper.source == dropin
+        assert policy.base_url.value == "https://gw"
+        assert policy.base_url.source == dropin
+
+    def test_later_dropin_wins(self, monkeypatch, tmp_path):
+        base = tmp_path / "managed-settings.json"
+        base.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "A"}}))
+        dropin_dir = tmp_path / "managed-settings.d"
+        dropin_dir.mkdir()
+        a = dropin_dir / "10-a.json"
+        a.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "C"}}))
+        b = dropin_dir / "20-b.json"
+        b.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "B"}}))
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: base)
+        policy = claude.effective_managed_policy()
+        assert policy.sources == [base, a, b]
+        assert policy.base_url.value == "B"
+        assert policy.base_url.source == b
+
+    def test_invalid_dropin_recorded_not_raised(self, monkeypatch, tmp_path):
+        base = tmp_path / "managed-settings.json"
+        base.write_text(json.dumps({"apiKeyHelper": "/helper"}))
+        dropin_dir = tmp_path / "managed-settings.d"
+        dropin_dir.mkdir()
+        bad = dropin_dir / "10-bad.json"
+        bad.write_text("{ not json")
+        good = dropin_dir / "20-good.json"
+        good.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://gw"}}))
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: base)
+        policy = claude.effective_managed_policy()
+        assert policy.invalid == [bad]
+        assert policy.sources == [base, good]
+        assert policy.api_key_helper.value == "/helper"
+        assert policy.api_key_helper.source == base
+        assert policy.base_url.value == "https://gw"
+        assert policy.base_url.source == good
