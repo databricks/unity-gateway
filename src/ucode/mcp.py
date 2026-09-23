@@ -1404,6 +1404,21 @@ def _skills_entries(servers: list[dict]) -> list[dict]:
     return [s for s in servers if s.get("kind") == SKILLS_MCP_KIND]
 
 
+class McpServiceListingRateLimited(RuntimeError):
+    """MCP-service discovery (`ListMcpServices`) was rate-limited (HTTP 429).
+
+    A distinct ``RuntimeError`` subtype so the managed reconcile path can skip MCP setup for this
+    run gracefully — an info note, no config change — rather than surfacing a hard failure. A
+    transient 429 (e.g. many clients calling `ug configure` at once) must not break configure or
+    unregister already-configured servers; the next `ug configure` retries."""
+
+    def __init__(self, location: str) -> None:
+        self.location = location
+        super().__init__(
+            f"MCP service discovery for `{location}` was rate-limited (HTTP 429); try again shortly."
+        )
+
+
 def _resolve_location_mcp_servers(
     workspace: str,
     profile: str | None,
@@ -1439,6 +1454,11 @@ def _resolve_location_mcp_servers(
             f"Invalid location: `{location}` is not a valid Unity Catalog schema "
             "in this workspace (or you lack USE permission on it)."
         )
+    if reason and reason.startswith("HTTP 429"):
+        # A transient rate-limit must not break `ug configure` or unregister already-configured
+        # servers. Raise a distinct type so the managed path skips MCP setup this run with an info
+        # note (leaving existing servers untouched) and retries on the next configure.
+        raise McpServiceListingRateLimited(location)
     if reason:
         raise RuntimeError(f"Failed to list MCP services at `{location}`: {reason}")
     if not names:
