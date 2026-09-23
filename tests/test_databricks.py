@@ -1089,6 +1089,30 @@ class TestResolveProviderService:
         assert service is None
         assert "no Claude models" in error
 
+    def test_bedrock_allow_all_targets_ok(self, monkeypatch):
+        # allow_all_targets routes any model, so no explicit Claude target is needed — the model id
+        # comes from the managed config's authored default instead.
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.schema2.bedrock-all-svc",
+                    "config": {
+                        "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_AMAZON_BEDROCK",
+                        "allow_all_targets": True,
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=30: (payload, None)
+        )
+        service, error = db_mod.resolve_provider_service(
+            "claude", "main.schema2.bedrock-all-svc", WS, "token"
+        )
+        assert error is None
+        assert service["allow_all_targets"] is True
+        assert service["targets"] == []
+
     def test_not_found_lists_usable(self, monkeypatch):
         self._patch(monkeypatch)
         service, error = db_mod.resolve_provider_service("claude", "main.x.missing", WS, "token")
@@ -1124,6 +1148,20 @@ class TestResolveProviderService:
         assert error is None
         assert service["provider_type"] == "gemini_enterprise"
         assert service["targets"] == ["gemini-3.5-flash"]
+
+
+class TestServiceUsableForTool:
+    def test_bedrock_allow_all_targets_usable_without_targets(self):
+        service = {"provider_type": "amazon_bedrock", "targets": [], "allow_all_targets": True}
+        assert db_mod.service_usable_for_tool("claude", service)
+
+    def test_bedrock_without_claude_targets_unusable(self):
+        service = {
+            "provider_type": "amazon_bedrock",
+            "targets": ["amazon.titan-text-express-v1"],
+            "allow_all_targets": False,
+        }
+        assert not db_mod.service_usable_for_tool("claude", service)
 
 
 class TestModelProviderFeatureUnavailable:
