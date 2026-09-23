@@ -142,18 +142,6 @@ def _cleanup_stale_csvs(directory: Path, current: Path, now: float) -> None:
             continue
 
 
-def _existing_agent_ids(path: Path) -> set[str]:
-    try:
-        with path.open(newline="", encoding="utf-8") as handle:
-            return {
-                row["agent_id"]
-                for row in csv.DictReader(handle)
-                if isinstance(row.get("agent_id"), str)
-            }
-    except OSError:
-        return set()
-
-
 def _write_rows_atomically(path: Path, rows: list[dict[str, str]]) -> None:
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
@@ -192,14 +180,12 @@ def _compact(path: Path) -> None:
 
 
 def write_subagent_usage(row: SubagentUsageRow, *, now: float | None = None) -> Path:
-    """Append one typed row, deduplicating by agent id and cleaning up best effort."""
+    """Append one typed row and clean up old session files best effort."""
     path = session_csv_path(row.session_id, row.token_log_subdirectory)
     directory = _ensure_usage_directory(row.token_log_subdirectory)
     write_at = now if now is not None else time.time()
     with _directory_lock(directory):
         _cleanup_stale_csvs(directory, path, write_at)
-        if path.exists() and row.agent_id in _existing_agent_ids(path):
-            return path
         write_header = not path.exists() or path.stat().st_size == 0
         with path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
