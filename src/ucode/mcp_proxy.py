@@ -154,7 +154,7 @@ def _build_token_auth(url: str, workspace: str, profile: str | None, *, use_pat:
         # the 401, re-running it on every subsequent request would loop browsers.
         return connection is not None and response.status_code == 401 and not login["attempted"]
 
-    def _login_or_fail() -> None:
+    def _connection_login_or_fail() -> None:
         login["attempted"] = True
         ok, detail = run_connection_login(url, workspace, profile=profile)
         if not ok:
@@ -166,7 +166,7 @@ def _build_token_auth(url: str, workspace: str, profile: str | None, *, use_pat:
             response = yield request
             if not _needs_connection_login(response):
                 return
-            _login_or_fail()
+            _connection_login_or_fail()
             _mint(request)
             yield request
 
@@ -177,7 +177,7 @@ def _build_token_auth(url: str, workspace: str, profile: str | None, *, use_pat:
                 return
             # Run the blocking browser login off the event loop so the bridge's
             # other pumps aren't starved while the user completes the sign-in.
-            await to_thread.run_sync(_login_or_fail)
+            await to_thread.run_sync(_connection_login_or_fail)
             _mint(request)
             yield request
 
