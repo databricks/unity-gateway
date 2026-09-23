@@ -21,7 +21,15 @@ def _assert_system_models_in_picker(session, screen):
     ids = claude_system_model_ids(models)
     discovered = session.workspace_state()["claude_models"]
     assert discovered, "ug configure found no Claude system.ai models"
-    assert set(discovered.values()) <= set(ids), (discovered, models)
+    # ug caches the newest system.ai model per family from UC model-services, which can list a
+    # just-released model (e.g. a new opus tier) before Claude Code's own gateway-model discovery
+    # surfaces it in the picker cache. Require the cached defaults to be well-formed system.ai
+    # Claude ids that overlap Claude Code's catalog, rather than a strict subset of a catalog that
+    # can legitimately lag behind UC model-services.
+    assert all(model_id.startswith("system.ai.claude-") for model_id in discovered.values()), (
+        discovered
+    )
+    assert set(discovered.values()) & set(ids), (discovered, models)
     assert any(
         claude_model_in_picker(screen, model["id"], model.get("display_name")) for model in models
     ), screen

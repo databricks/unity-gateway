@@ -20,7 +20,7 @@ on:
         default: ug
       claude_version:
         description: Exact Claude Code version
-        default: 2.1.268
+        default: 2.1.280
         required: true
       codex_version:
         description: Exact Codex version
@@ -46,7 +46,7 @@ env:
   EXPECTED_WORKSPACE: https://eng-ml-inference-team-us-east-1.cloud.databricks.com
   UG_VERSION: ${{ inputs.ug_version || 'checkout' }}
   ENTRY_POINT: ${{ inputs.entry_point || 'ug' }}
-  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.268' }}
+  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.280' }}
   CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
 
