@@ -2026,6 +2026,24 @@ def _oauth_token_is_fresh(token: str, buffer_seconds: float = 120) -> bool:
     return time.time() < expires_at - buffer_seconds
 
 
+@app.command("codex-subagent-usage-hook", hidden=True)
+def codex_subagent_usage_hook_cmd() -> None:
+    """Record one completed Codex subagent in a local session CSV."""
+    import json
+    import sys
+
+    from ucode import subagent_usage
+    from ucode.agents import codex_subagent_usage
+
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+        if subagent_usage.enabled() and isinstance(payload, dict):
+            codex_subagent_usage.CodexSubagentUsageRow.record(payload)
+    except Exception:  # noqa: BLE001 - observability hooks must never block an agent
+        pass
+    sys.stdout.write("{}\n")
+
+
 @app.command("codex-router-hook", hidden=True)
 def codex_router_hook_cmd(
     event: str,

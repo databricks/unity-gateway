@@ -16,7 +16,8 @@ from pathlib import Path
 import tomlkit
 from tomlkit.exceptions import ParseError
 
-from ucode import gateway_proxy
+from ucode import gateway_proxy, subagent_usage
+from ucode.agents import codex_subagent_usage
 from ucode.codex_config import (
     catalog_slugs,
     codex_config_args,
@@ -1122,6 +1123,7 @@ def launch(
         )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
+    codex_subagent_usage.sync_hook(profile_doc, hook_enabled=subagent_usage.enabled())
     updating = tool_args[:1] == ["update"]
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")

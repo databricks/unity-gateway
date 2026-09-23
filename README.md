@@ -177,6 +177,22 @@ Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
 with `ug configure` to control installation.
 
+### Codex subagent usage CSV (experimental)
+
+Set `ENABLE_SUBAGENT_USAGE_CSV=1` when launching Codex to record one local CSV
+row for each completed subagent:
+
+```bash
+ENABLE_SUBAGENT_USAGE_CSV=1 ug codex
+```
+
+Unity Gateway writes one file per session under
+`~/.ucode/token-logs/<session-id>.csv`. Rows include the parent and subagent
+models plus input, output, cache, and total token counts; prompts and responses
+are not stored. On each write, files inactive for more than seven days are
+removed and the current session file is trimmed to the newest complete rows when
+it exceeds 10 MiB. Collection is best effort and never blocks an agent session.
+
 ## Managed Files
 
 `ug` backs up files before overwriting them. `ug revert` restores backups.

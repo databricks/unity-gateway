@@ -152,9 +152,10 @@ banner journeys below for both agents. Subagent routing is covered at the hook p
 level by the route-subagent hook journeys, which drive the real installed hook commands
 with a harness-shaped payload against the live router; the subagent-only launch journeys
 assert the first-prompt banner and routing wrappers stay silent while the routing hooks
-arm. The agent's interactive spawn decision, interactive explicit-model bypass, and
-dedicated smart-routing CI shards remain deferred; unit/component routing tests do not
-establish that live behavior.
+arm. The Codex launch journey also requires a real routed child to complete and verifies
+the token-usage CSV written by its native SubagentStop hook. Claude's interactive spawn
+decision, interactive explicit-model bypass, and dedicated smart-routing CI shards remain
+deferred; unit/component routing tests do not establish that live behavior.
 
 The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
 completes a file task on two models: a bare Anthropic id the subscription serves
