@@ -2933,6 +2933,13 @@ def default(
 ) -> None:
     """Configure and launch coding agents through Databricks AI Gateway."""
     if ctx.invoked_subcommand is not None:
+        if dry_run and ctx.invoked_subcommand == "revert":
+            print_err(
+                "ug revert does not support --dry-run. It has no preview mode; run "
+                "`ug revert` to restore your configuration, or `ug status` to inspect "
+                "the current setup first."
+            )
+            raise typer.Exit(2)
         return
     set_dry_run(dry_run)
     try:
