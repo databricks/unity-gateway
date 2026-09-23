@@ -288,8 +288,8 @@ records both URLs in `versions.json`, redacts both bearers in evidence, and pass
 only the active workspace's bearer to each tested command. CI runs the case in
 the existing **Managed config · Claude** lane: the first host uses
 `E2E_ADMIN_WORKSPACE` and its service-principal credentials; the second uses the
-existing `UCODE_TEST_WORKSPACE` / `DATABRICKS_BEARER` secrets. That lane remains
-non-blocking under its existing policy. Collection or lint success is not a live pass.
+existing `UCODE_TEST_WORKSPACE` / `DATABRICKS_BEARER` secrets. That lane is
+required for full/live runs. Collection or lint success is not a live pass.
 
 The configure terminal helper recognizes `[✓]` / `[ ]` agent checkboxes as well
 as legacy markers in older pinned ug releases. It explicitly toggles
@@ -370,12 +370,12 @@ shards and other PRs; this limit does not guarantee freedom from rate limits.
 No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
-The **All integration tests** check requires installation, workspace validation, smoke, and
-both full lanes to pass; each tracing journey is included in its agent's Full lane. The **Managed config** lanes run for signal but are temporarily
-non-blocking (`continue-on-error`): the managed workspace is now runner-reachable, but the lanes
-stay non-blocking until the managed-config apply path is proven stable. They neither fail the
-workflow nor gate merges until then. The
-existing required `e2e` context also waits for the complete integration workflow, so integration
+The **All integration tests** check requires installation, workspace validation, smoke,
+both full lanes, and both **Managed config** lanes to pass for full/live runs. Each tracing
+journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
+a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
+and installation subsets do not select managed tests and do not require them.
+The existing required `e2e` context also waits for the complete integration workflow, so integration
 cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
 
 ### Managed-workspace journeys

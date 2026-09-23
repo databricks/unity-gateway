@@ -1,7 +1,11 @@
 """Keep the black-box suite independent of application internals and test doubles."""
 
 import ast
+import json
 import re
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -35,6 +39,52 @@ def test_integration_ci_pins_a_skills_capable_databricks_cli():
         version = re.search(r"(?m)^          version: (\d+)\.(\d+)\.(\d+)\s*$", block)
         assert version, "Every integration setup-cli step must pin an exact CLI version"
         assert tuple(map(int, version.groups())) >= SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
+
+
+def test_managed_integration_ci_is_blocking():
+    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+    managed, gate = workflow.read_text().split("\n  managed:\n", 1)[1].split("\n  cujs:\n", 1)
+    assert "continue-on-error:" not in managed
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", gate)
+    assert needs is not None
+    assert "managed" in {job.strip() for job in needs.group(1).split(",")}
+    assert (
+        "if: ${{ always() && (github.event_name != 'pull_request' || "
+        "github.event.pull_request.head.repo.full_name == github.repository) }}"
+    ) in gate
+
+
+@pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
+@pytest.mark.parametrize("managed_result", ["success", "failure", "cancelled", "skipped"])
+def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_result):
+    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+    gate = workflow.read_text().split("\n  cujs:\n", 1)[1]
+    script = re.search(r"          python3 - <<'PY'\n(.*?)          PY", gate, re.DOTALL)
+    assert script is not None
+    results = {
+        job: {"result": "success"}
+        for job in ("installation", "workspace", "smoke", "full", "managed")
+    }
+    results["managed"]["result"] = managed_result
+    for job in {
+        "installation": ("workspace", "smoke", "full"),
+        "smoke": ("full",),
+        "tui": ("smoke",),
+    }.get(suite, ()):
+        results[job]["result"] = "skipped"
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script.group(1))],
+        env={"RESULTS": json.dumps(results), "SUITE": suite},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if suite in {"full", "live"} and managed_result != "success":
+        assert result.returncode != 0
+        assert "Integration jobs did not pass: managed" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "All selected integration jobs passed:" in result.stdout
 
 
 def test_integration_suite_uses_only_public_process_boundaries():
