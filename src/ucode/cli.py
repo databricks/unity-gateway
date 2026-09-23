@@ -104,7 +104,6 @@ from ucode.managed_resolve import (
 )
 from ucode.mcp import (
     MCP_CLIENTS,
-    SKILLS_MCP_KIND,
     add_mcp_command,
     add_skills_command,
     available_mcp_clients,
@@ -112,6 +111,7 @@ from ucode.mcp import (
     configure_mcp_command,
     configure_skills_mcp_picker_command,
     configured_mcp_clients,
+    configured_mcp_servers_by_name,
     list_mcp_command,
     purge_cross_workspace_mcp_residue,
     reconcile_managed_mcp_servers,
@@ -1127,8 +1127,9 @@ def status() -> int:
     state = load_state()
     workspace = state.get("workspace")
     managed_configs = state.get("managed_configs") or {}
-    # Both developer- and workspace-managed servers, so the count agrees with `ug mcp list`.
-    mcp_servers = (state.get("mcp_servers") or []) + (state.get("managed_mcp_servers") or [])
+    # The one enumerator `ug mcp list` / `ug mcp login` use, keyed by name with each server's
+    # agents — so the per-agent counts below can't drift from what those commands report.
+    configured_mcp = configured_mcp_servers_by_name(state)
     cached_managed = load_managed_state(workspace) if workspace else None
     managed, managed_freshness = _live_status_managed_state(state, cached_managed)
     configured_tools = (
@@ -1200,21 +1201,11 @@ def status() -> int:
             )
         if tool in MCP_CLIENTS:
             # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
-            # the per-server detail and live connection status, so status stays scannable. Dedupe by
-            # name so a server present in both mcp_servers and managed_mcp_servers isn't double-counted.
-            mcp_names = {
-                server.get("name")
-                for server in mcp_servers
-                if tool in (server.get("clients") or [])
-                and server.get("name")
-                and server.get("kind") != SKILLS_MCP_KIND
-            }
-            # Managed servers ug delivers through an OS-managed file live in that file, not state.
-            if tool == "claude":
-                mcp_names |= claude_agent.read_managed_mcp_urls().keys()
-            elif tool == "codex":
-                mcp_names |= codex_agent.read_managed_mcp_urls().keys()
-            rows.append(("MCP servers", str(len(mcp_names))))
+            # the per-server detail and live connection status, so status stays scannable. The shared
+            # enumerator already dedupes by name and folds in servers delivered through an agent's
+            # OS-managed file (Claude/Codex), so this count matches `ug mcp list` by construction.
+            mcp_count = sum(1 for entry in configured_mcp.values() if tool in entry["clients"])
+            rows.append(("MCP servers", str(mcp_count)))
             rows.append(("Skills", str(skill_counts_by_agent.get(tool, 0))))
         base_url = state.get("base_urls", {}).get(tool)
         if isinstance(base_url, dict):
