@@ -110,22 +110,6 @@ ug mcp login --names system.ai.github
 ug mcp remove
 ```
 
-Here's what a typical session looks like — add two tools, check their status, then sign in:
-
-```text
-$ ug mcp add --names system.ai.github,system.ai.slack
-✔ Added 2 MCP servers across Claude Code, Codex
-
-$ ug mcp list
-  NAME              LOCATION          AGENTS         STATUS
-  system-ai-github  system.ai.github  claude, codex  needs sign-in
-  system-ai-slack   system.ai.slack   claude, codex  needs sign-in
-
-$ ug mcp login --names system.ai.github
-Signing in to 'system.ai.github' — opening your browser to finish sign-in…
-✔ Signed in to 1 MCP service(s)
-```
-
 **You only sign in once.** Some tools (like `system.ai.github`) ask you to sign in to the
 underlying service the first time. Do it once — through any agent or `ug mcp login` — and the
 tool works everywhere: Claude, Cursor, Codex, and the rest.
@@ -135,10 +119,6 @@ tool works everywhere: Claude, Cursor, Codex, and the rest.
 - Limit any command to certain agents: add `--agents claude,codex`.
 - Add other AI Gateway tools by typed name: `vector-search:main.docs`,
   `uc-functions:main.tools`, `external:<name>`, `genie-space:<space-id>`, `app:<name>`.
-- Each tool runs locally through `ug mcp-proxy`, which keeps your Databricks sign-in fresh —
-  no tokens to copy or manage.
-- Sign-in works for any connection-backed tool, not just `system.ai.*`, and needs a recent
-  Databricks CLI (`ug mcp login` tells you if yours is too old).
 
 </details>
 
