@@ -340,6 +340,37 @@ class TestCodexWriteConfig:
         headers = read_toml_safe(config_path)["model_providers"]["Databricks"]["http_headers"]
         assert "Databricks-Model-Provider-Service" not in headers
 
+    @pytest.mark.parametrize("disabled_value", [None, "0"], ids=["unset", "zero"])
+    def test_disabled_smart_routing_removes_stale_recipe_header(
+        self, tmp_path, monkeypatch, disabled_value
+    ):
+        config_path = tmp_path / ".codex" / "ucode.config.toml"
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+        state = {"workspace": WS, "codex_models": []}
+
+        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.delenv(
+            codex.smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False
+        )
+        codex.write_tool_config(state)
+        headers = read_toml_safe(config_path)["model_providers"]["Databricks"]["http_headers"]
+        assert codex.SMART_ROUTER_RECIPE_HEADER in headers
+
+        for var in (
+            codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR,
+            codex.smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+        ):
+            if disabled_value is None:
+                monkeypatch.delenv(var, raising=False)
+            else:
+                monkeypatch.setenv(var, disabled_value)
+        codex.write_tool_config(state)
+        headers = read_toml_safe(config_path)["model_providers"]["Databricks"]["http_headers"]
+        assert codex.SMART_ROUTER_RECIPE_HEADER not in headers
+
     def test_replaces_stale_routing_headers(self, tmp_path, monkeypatch):
         config_path = tmp_path / ".codex" / "ucode.config.toml"
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
