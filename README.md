@@ -91,63 +91,40 @@ Cursor models still run through your Cursor account.
 
 ## MCP Servers
 
-Register Databricks MCP servers for configured MCP-capable agents. Cursor Agent
-is MCP-only and is included when `cursor-agent` is installed:
-
-Use `ug mcp add` to add servers without removing existing registrations:
+MCP servers let your coding agents use Databricks-governed tools — like GitHub, Slack,
+Vector Search, and Genie. `ug` sets them up for all your installed agents at once.
 
 ```bash
+# Add tools — a whole catalog.schema, or specific ones by name.
 ug mcp add --location system.ai
-ug mcp add --names system.ai.slack,system.ai.github
-ug mcp add --agents claude,codex --location system.ai
-```
+ug mcp add --names system.ai.github,system.ai.slack
 
-Remove configured servers:
-
-```bash
-ug mcp remove
-ug mcp remove --agents codex
-```
-
-List configured servers and their connection status:
-
-```bash
+# See what's set up, and whether each is signed in.
 ug mcp list
-ug mcp list --agents claude,codex
-```
 
-Every Databricks MCP server is registered as a local stdio server that runs
-`ug mcp-proxy`; the proxy refreshes Databricks OAuth tokens from your CLI
-profile. V2 AI Gateway servers can be added with typed selectors such as
-`vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
-`genie-space:<space-id>`, or `app:<name>`.
-
-Sign in to connection-backed servers with `ug mcp login`:
-
-```bash
-# Show every configured connection-backed MCP service with its sign-in status,
-# and pick which to sign in to.
+# Sign in to a tool that needs it (opens your browser). Plain form shows a picker.
 ug mcp login
+ug mcp login --names system.ai.github
 
-# Sign in to specific services non-interactively (full or short names).
-ug mcp login --names system.ai.github,system.ai.slack
-
-# Scope to specific agents' services.
-ug mcp login --agents claude,codex
+# Remove tools (plain form shows a picker).
+ug mcp remove
 ```
 
-Some MCP services (e.g. `system.ai.github`) are backed by a Unity Catalog connection and only vend
-their tools once you've completed a one-time per-user sign-in to the underlying SaaS. `ug mcp login`
-uses the same configured-server set as `ug mcp list` (including servers delivered through the
-agents' OS-managed files), keeping only the connection-backed AI Gateway MCP services, and shows
-each one's sign-in status (`signed in` / `needs sign-in`). Sign-in opens your browser to complete
-the connection's login (via `databricks auth login`), then mints the credential. The credential is
-**per-user and shared across every agent** — signing in once through any agent (or here) unblocks
-that MCP service for Claude Code, Cursor, Codex, and the rest. It works for any connection-backed
-MCP service, not just `system.ai.*`.
+**You only sign in once.** Some tools (like `system.ai.github`) ask you to sign in to the
+underlying service the first time. Do it once — through any agent or `ug mcp login` — and the
+tool works everywhere: Claude, Cursor, Codex, and the rest.
 
-> Requires a Databricks CLI that supports `--resource` (databricks/cli#6621); `ug mcp login`
-> reports a clear message if your CLI is too old.
+<details><summary>Advanced options</summary>
+
+- Limit any command to certain agents: add `--agents claude,codex`.
+- Add other AI Gateway tools by typed name: `vector-search:main.docs`,
+  `uc-functions:main.tools`, `external:<name>`, `genie-space:<space-id>`, `app:<name>`.
+- Each tool runs locally through `ug mcp-proxy`, which keeps your Databricks sign-in fresh —
+  no tokens to copy or manage.
+- Sign-in works for any connection-backed tool, not just `system.ai.*`, and needs a recent
+  Databricks CLI (`ug mcp login` tells you if yours is too old).
+
+</details>
 
 ## Skills
 
