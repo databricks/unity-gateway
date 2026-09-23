@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ucode.config_io import read_json_safe, write_json_file
+from ucode.config_io import apply_json_mcp_diff, read_json_safe, write_json_file
 from ucode.launcher import exec_or_spawn
 
 CURSOR_BINARY = "cursor-agent"
@@ -52,17 +52,8 @@ def _upsert_mcp_server(name: str, entry: dict) -> bool:
 
 
 def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
-    """Apply ``add``/``remove`` to Cursor's `mcpServers` in a single read-modify-write, instead of
-    one write per server. Other entries the user configured are preserved."""
-    existing = read_json_safe(CURSOR_MCP_CONFIG_PATH)
-    mcp_servers = existing.get("mcpServers")
-    if not isinstance(mcp_servers, dict):
-        mcp_servers = {}
-    for name in remove:
-        mcp_servers.pop(name, None)
-    mcp_servers.update(add)
-    existing["mcpServers"] = mcp_servers
-    write_json_file(CURSOR_MCP_CONFIG_PATH, existing)
+    """Apply ``add``/``remove`` to Cursor's `mcpServers` in a single read-modify-write."""
+    apply_json_mcp_diff(CURSOR_MCP_CONFIG_PATH, "mcpServers", add, remove)
 
 
 def write_mcp_server_config(name: str, argv: list[str]) -> bool:

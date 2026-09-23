@@ -175,6 +175,31 @@ def read_json_safe(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def apply_json_mcp_diff(
+    path: Path,
+    key: str,
+    add: dict[str, dict],
+    remove: set[str],
+    *,
+    backup_path: Path | None = None,
+) -> None:
+    """Apply an ``add``/``remove`` MCP-server diff to the ``key`` map in a JSON config, in one
+    read-modify-write. Shared by the agents whose MCP servers live in a JSON object keyed by name
+    (copilot/cursor/gemini/opencode); the developer's own entries and every other key are kept.
+    ``backup_path`` snapshots the file first when the agent keeps a revert backup."""
+    if backup_path is not None:
+        backup_existing_file(path, backup_path)
+    existing = read_json_safe(path)
+    servers = existing.get(key)
+    if not isinstance(servers, dict):
+        servers = {}
+    for name in remove:
+        servers.pop(name, None)
+    servers.update(add)
+    existing[key] = servers
+    write_json_file(path, existing)
+
+
 def read_toml_safe(path: Path) -> tomlkit.TOMLDocument:
     # See read_json_safe: keep `path.exists()` inside the try so a PermissionError on a locked
     # parent directory is treated as an empty document rather than propagating.

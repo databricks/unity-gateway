@@ -752,8 +752,6 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
 
     If the file exists but can't be parsed as a JSON object, we must not clobber it, so we defer to
     the per-server ``claude`` CLI (which edits the file in place) for exactly the changed entries."""
-    from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
-
     path = claude_mcp_config_path()
     config = _read_claude_config_for_rewrite(path)
     if config is None:

@@ -575,6 +575,97 @@ class TestApplyMcpServerChanges:
 
         assert per_server == [("claude", "a")]
 
+    def test_batch_uses_http_entry_when_oauth_available(self, monkeypatch):
+        # Batch case with oauth_client_available -> True: the connection-backed mcp-services URL
+        # must resolve to Claude's native HTTP+OAuth entry, not the stdio proxy. This is the branch
+        # the flat "oauth False" batch test never exercised.
+        writes: list[tuple[dict, set]] = []
+        monkeypatch.setattr(
+            mcp.claude, "write_user_mcp_servers", lambda a, r: writes.append((a, r))
+        )
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda ws, cid: True)
+        url = f"{WS}/ai-gateway/mcp-services/system.ai.github"
+        working = [{"name": "system-ai-github", "url": url, "clients": ["claude"]}]
+
+        mcp.apply_mcp_server_changes(
+            [], working, ["claude"], WS, batch_agents=frozenset({"claude"})
+        )
+
+        add, _ = writes[0]
+        assert add["system-ai-github"] == mcp.claude.managed_mcp_entry(url)
+        assert add["system-ai-github"]["type"] == "http" and add["system-ai-github"]["url"] == url
+
+
+class TestManagedMcpEntry:
+    """`_managed_mcp_entry` builds the exact on-disk entry each agent's CLI/config would write.
+
+    Locks in the hand-built HTTP+OAuth and `alwaysLoad` shapes (verified against the real CLIs) so a
+    future CLI change that desyncs them fails a test instead of silently."""
+
+    MCP_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
+
+    def _argv(self):
+        return mcp.build_mcp_proxy_argv(self.MCP_URL, WS, None, use_pat=False)
+
+    def test_claude_stdio_when_no_http_client(self):
+        e = mcp._managed_mcp_entry(
+            "claude", self.MCP_URL, WS, None, use_pat=False, always_load=False, http_client=None
+        )
+        assert e["type"] == "stdio"
+        assert e == mcp.claude.user_stdio_mcp_entry(self._argv())
+
+    def test_claude_http_when_http_client_and_mcp_services_url(self):
+        e = mcp._managed_mcp_entry(
+            "claude",
+            self.MCP_URL,
+            WS,
+            None,
+            use_pat=False,
+            always_load=False,
+            http_client="claude-code",
+        )
+        assert e == mcp.claude.managed_mcp_entry(self.MCP_URL)
+        assert e["type"] == "http" and e["url"] == self.MCP_URL
+
+    def test_claude_stdio_when_http_client_but_non_mcp_services_url(self):
+        # http_client set, but a non-connection URL still uses the stdio proxy.
+        url = f"{WS}/api/2.0/mcp/vector-search/main.docs"
+        e = mcp._managed_mcp_entry(
+            "claude", url, WS, None, use_pat=False, always_load=False, http_client="claude-code"
+        )
+        assert e["type"] == "stdio"
+
+    def test_claude_always_load_stdio_entry(self):
+        e = mcp._managed_mcp_entry(
+            "claude", self.MCP_URL, WS, None, use_pat=False, always_load=True, http_client=None
+        )
+        assert e.get("alwaysLoad") is True and e["type"] == "stdio"
+        assert e == mcp.claude.user_stdio_mcp_entry(self._argv(), always_load=True)
+
+    def test_cursor_http_entry_uses_client_id(self):
+        e = mcp._managed_mcp_entry(
+            "cursor",
+            self.MCP_URL,
+            WS,
+            None,
+            use_pat=False,
+            always_load=False,
+            http_client="cursor-oauth",
+        )
+        assert e == mcp.cursor.build_http_mcp_server_entry(self.MCP_URL, "cursor-oauth")
+
+    def test_other_agents_use_stdio_proxy_entry(self):
+        argv = self._argv()
+        assert mcp._managed_mcp_entry(
+            "codex", self.MCP_URL, WS, None, use_pat=False, always_load=False, http_client=None
+        ) == mcp.codex.managed_mcp_entry(argv)
+        assert mcp._managed_mcp_entry(
+            "gemini", self.MCP_URL, WS, None, use_pat=False, always_load=False, http_client=None
+        ) == mcp.gemini.build_mcp_server_entry(argv)
+        assert mcp._managed_mcp_entry(
+            "opencode", self.MCP_URL, WS, None, use_pat=False, always_load=False, http_client=None
+        ) == mcp.opencode.build_mcp_server_entry(argv)
+
 
 class TestApplySkillsMcpChanges:
     def _entry(self, by_client):

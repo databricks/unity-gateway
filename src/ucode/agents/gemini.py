@@ -13,6 +13,7 @@ from ucode.agent_updates import latest_version_below
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
+    apply_json_mcp_diff,
     backup_existing_file,
     deep_merge_dict,
     parse_dotenv,
@@ -129,17 +130,8 @@ def build_mcp_server_entry(argv: list[str]) -> dict:
 
 def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
     """Apply ``add``/``remove`` to Gemini's `mcpServers` (in ug's Gemini home settings) in a single
-    read-modify-write, instead of one `gemini mcp` subprocess per server. Other settings and the
-    developer's own servers are preserved."""
-    settings = read_json_safe(GEMINI_SETTINGS_PATH)
-    servers = settings.get("mcpServers")
-    if not isinstance(servers, dict):
-        servers = {}
-    for name in remove:
-        servers.pop(name, None)
-    servers.update(add)
-    settings["mcpServers"] = servers
-    write_json_file(GEMINI_SETTINGS_PATH, settings)
+    read-modify-write."""
+    apply_json_mcp_diff(GEMINI_SETTINGS_PATH, "mcpServers", add, remove)
 
 
 def render_env_overlay(

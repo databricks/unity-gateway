@@ -250,6 +250,23 @@ def configured_mcp_clients(state: dict, installed_clients: list[str]) -> list[st
     ]
 
 
+def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | None:
+    """The published OAuth app id to register a **native HTTP+OAuth** MCP entry against for
+    ``client`` (Claude Code / Cursor), or ``None`` to use the stdio ``ug mcp-proxy`` instead.
+
+    Native HTTP+OAuth fits only an agent that pins an OAuth client (``AGENT_OAUTH_CLIENT``), on a
+    non-PAT run (PAT has no interactive OAuth), whose workspace actually publishes that client.
+    This is the single source of truth for that choice, shared by the per-server
+    (:func:`configure_client_mcp_server`) and batched (:func:`_managed_mcp_entry`) paths. Whether it
+    applies to a *specific* server additionally requires a connection-backed mcp-services URL
+    (``AIGW_MCP_SERVICES_PATH``), which the caller checks per server. It is URL-independent, so
+    callers can compute it once per (client, workspace) rather than once per server."""
+    oauth_client = AGENT_OAUTH_CLIENT.get(client)
+    if oauth_client is not None and not use_pat and oauth_client_available(workspace, oauth_client):
+        return oauth_client
+    return None
+
+
 def configure_client_mcp_server(
     client: str,
     name: str,
@@ -260,30 +277,22 @@ def configure_client_mcp_server(
     use_pat: bool = False,
     always_load: bool = False,
 ) -> list[str]:
-    # Connection-backed AI Gateway MCP services register as a direct HTTP server so
-    # the agent drives the connection login natively — but only for an agent that can
-    # pin an OAuth client (AGENT_OAUTH_CLIENT: Claude Code, Cursor) and only when that
-    # client is registered on the workspace. Everything else keeps the stdio proxy:
-    # non-connection MCPs, the skills registry, PAT auth (no
-    # interactive OAuth), agents without a mapped OAuth client, and workspaces where
-    # the mapped client isn't published.
-    oauth_client = AGENT_OAUTH_CLIENT.get(client)
-    if (
-        oauth_client is not None
-        and AIGW_MCP_SERVICES_PATH in url
-        and not use_pat
-        and oauth_client_available(workspace, oauth_client)
-    ):
+    # Connection-backed AI Gateway MCP services register as a direct HTTP server so the agent drives
+    # the connection login natively (see `_oauth_http_client`). Everything else keeps the stdio
+    # proxy: non-connection MCPs, the skills registry, PAT auth, agents without a mapped OAuth
+    # client, and workspaces where the mapped client isn't published.
+    http_client = _oauth_http_client(client, workspace, use_pat=use_pat)
+    if http_client is not None and AIGW_MCP_SERVICES_PATH in url:
         if client == "claude":
             removed_scopes = [
                 scope
                 for scope in MCP_CLEANUP_SCOPES
                 if claude.remove_claude_mcp_server(name, scope)
             ]
-            claude.add_claude_http_mcp_server(name, url, client_id=oauth_client)
+            claude.add_claude_http_mcp_server(name, url, client_id=http_client)
             return removed_scopes
         if client == "cursor":
-            removed = cursor.write_http_mcp_server_config(name, url, client_id=oauth_client)
+            removed = cursor.write_http_mcp_server_config(name, url, client_id=http_client)
             return [MCP_USER_SCOPE] if removed else []
 
     # Every other case registers the `ug mcp-proxy ...` stdio command; the proxy
@@ -1180,26 +1189,24 @@ def _managed_mcp_entry(
     *,
     use_pat: bool,
     always_load: bool,
+    http_client: str | None,
 ) -> dict:
     """The user-scope config entry one MCP server registers as for ``client``, mirroring the
-    delivery choice in :func:`configure_client_mcp_server`: a native HTTP+OAuth entry for a
-    connection-backed mcp-services URL on an OAuth-capable (Claude/Cursor), non-PAT run, else the
-    stdio ``ug mcp-proxy`` entry. Used by the batched writers so a direct write matches exactly what
-    the per-server CLI/config path would have registered."""
-    oauth_client = AGENT_OAUTH_CLIENT.get(client)
-    use_http = (
-        oauth_client is not None
-        and AIGW_MCP_SERVICES_PATH in url
-        and not use_pat
-        and oauth_client_available(workspace, oauth_client)
-    )
+    delivery choice in :func:`configure_client_mcp_server` so a batched direct write matches exactly
+    what the per-server CLI/config path would have registered.
+
+    ``http_client`` is the precomputed :func:`_oauth_http_client` result for this (client,
+    workspace) (or ``None``); the caller computes it once per client so the batch loop doesn't
+    re-probe ``oauth_client_available`` per server. HTTP+OAuth applies here only when that client is
+    set AND this server's URL is a connection-backed mcp-services URL; otherwise the stdio proxy."""
+    use_http = http_client is not None and AIGW_MCP_SERVICES_PATH in url
     if client == "claude":
         if use_http:
             return claude.managed_mcp_entry(url)
         argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
         return claude.user_stdio_mcp_entry(argv, always_load=always_load)
     if client == "cursor" and use_http:
-        return cursor.build_http_mcp_server_entry(url, oauth_client)
+        return cursor.build_http_mcp_server_entry(url, http_client)
     argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
     if client == "codex":
         return codex.managed_mcp_entry(argv)
@@ -1239,6 +1246,9 @@ def apply_mcp_server_changes(
     batched = {c for c in clients if c in batch_agents and c in _MCP_CLIENT_MODULES}
     batch_add: dict[str, dict[str, dict]] = {c: {} for c in batched}
     batch_remove: dict[str, set[str]] = {c: set() for c in batched}
+    # The HTTP+OAuth choice is URL-independent, so probe `oauth_client_available` once per batched
+    # client here rather than once per server inside the entry-building loop below.
+    batch_http_client = {c: _oauth_http_client(c, workspace, use_pat=use_pat) for c in batched}
     changed = False
 
     for name, server in original_by_name.items():
@@ -1265,7 +1275,13 @@ def apply_mcp_server_changes(
         for client in clients:
             if client in batched:
                 batch_add[client][name] = _managed_mcp_entry(
-                    client, url, workspace, profile, use_pat=use_pat, always_load=always_load
+                    client,
+                    url,
+                    workspace,
+                    profile,
+                    use_pat=use_pat,
+                    always_load=always_load,
+                    http_client=batch_http_client[client],
                 )
             else:
                 work[client].append(
