@@ -767,7 +767,9 @@ class TestConfigureMcpCommand:
         background loader and streams each schema's services in as add-choices."""
         walk_calls: list[str] = []
 
-        def fake_walk(workspace, profile=None, on_progress=None, on_services=None):
+        def fake_walk(
+            workspace, profile=None, on_progress=None, on_services=None, cancel_event=None
+        ):
             walk_calls.append(workspace)
             if on_services is not None:
                 on_services(["mycat.myschema.weather"])
@@ -777,7 +779,7 @@ class TestConfigureMcpCommand:
 
         loader = mcp._mcp_services_background_loader(WS, None, set(), additive=True)
         appended: list = []
-        loader(appended.extend)
+        loader(appended.extend, threading.Event())
 
         assert walk_calls == [WS]
         assert [c.value for c in appended] == [
@@ -2240,7 +2242,9 @@ class TestSkillSchemaPicker:
         monkeypatch.setattr(mcp, "list_all_skills", fake_list_all)
         appended = []
 
-        message = mcp._skill_schema_background_loader(WS, "token", {"ml.prod"})(appended.extend)
+        message = mcp._skill_schema_background_loader(WS, "token", {"ml.prod"})(
+            appended.extend, threading.Event()
+        )
 
         assert message is None
         assert [c.value for c in appended] == ["main.default", "ml.prod"]
@@ -2258,7 +2262,9 @@ class TestSkillSchemaPicker:
 
         monkeypatch.setattr(mcp, "list_all_skills", fake_list_all)
 
-        message = mcp._skill_schema_background_loader(WS, "token", set())(lambda choices: None)
+        message = mcp._skill_schema_background_loader(WS, "token", set())(
+            lambda choices: None, threading.Event()
+        )
 
         assert message == "⚠️ Timed out after 30s, found 2 skill schemas"
 

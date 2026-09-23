@@ -380,6 +380,7 @@ def discover_all_mcp_service_names(
     profile: str | None = None,
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> list[str]:
     """All MCP services across every `<catalog>.<schema>` in the workspace. This
     walks the workspace (see `list_all_mcp_services`) and is the workspace-wide
@@ -388,7 +389,11 @@ def discover_all_mcp_service_names(
     service names into the picker as the walk progresses."""
     token = get_databricks_token(workspace, profile)
     names, _reason = list_all_mcp_services(
-        workspace, token, on_progress=on_progress, on_services=on_services
+        workspace,
+        token,
+        on_progress=on_progress,
+        on_services=on_services,
+        cancel_event=cancel_event,
     )
     return names
 
@@ -684,7 +689,8 @@ def prompt_for_mcp_server_choices(
     available_uc_functions_servers: list[dict] | None = None,
     allow_back: bool = False,
     additive: bool = False,
-    background_loader: Callable[[Callable[[list[questionary.Choice]], None]], None] | None = None,
+    background_loader: Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]
+    | None = None,
 ) -> list[str] | None | _Back:
     """Show the MCP server picker. Returns the list of selected values, `None`
     if cancelled (Ctrl-C), or `_BACK` if `allow_back` and the user pressed Left
@@ -1090,17 +1096,21 @@ def _mcp_services_background_loader(
     profile: str | None,
     known_names: set[str],
     additive: bool,
-) -> Callable[[Callable[[list[questionary.Choice]], None]], None]:
+) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]:
     """Return a picker `background_loader` that runs the workspace-wide MCP-services walk and
     streams each schema's newly-found services into the open picker as choices, so the walk
     never blocks the picker from opening. Deduping against already-shown rows (e.g. the fast
     `system.ai` list) is handled by the picker's append."""
 
-    def loader(append: Callable[[list[questionary.Choice]], None]) -> None:
+    def loader(
+        append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
+    ) -> None:
         def on_services(new_names: list[str]) -> None:
             append([_mcp_service_choice(name, known_names, additive) for name in new_names])
 
-        discover_all_mcp_service_names(workspace, profile, on_services=on_services)
+        discover_all_mcp_service_names(
+            workspace, profile, on_services=on_services, cancel_event=cancel_event
+        )
 
     return loader
 
@@ -2598,19 +2608,23 @@ def _skill_schema_choice(location: str, skill_count: int, in_scope: bool) -> que
 
 def _skill_schema_background_loader(
     workspace: str, token: str, in_scope: set[str]
-) -> Callable[[Callable[[list[questionary.Choice]], None]], str | None]:
+) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], str | None]:
     """A picker ``background_loader`` that streams the workspace-wide skill walk in as schema rows.
 
     ``list_all_skills`` probes one schema per call, so each ``on_skills`` batch is that schema's
     complete skill set: one row per schema, carrying its exact skill count.
     """
 
-    def loader(append: Callable[[list[questionary.Choice]], None]) -> str | None:
+    def loader(
+        append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
+    ) -> str | None:
         def on_skills(refs: list[SkillRef]) -> None:
             location = f"{refs[0].catalog}.{refs[0].schema}"
             append([_skill_schema_choice(location, len(refs), location in in_scope)])
 
-        found, reason = list_all_skills(workspace, token, on_skills=on_skills)
+        found, reason = list_all_skills(
+            workspace, token, on_skills=on_skills, cancel_event=cancel_event
+        )
         if reason == _SKILLS_WALK_TIMEOUT_REASON:
             schemas = len({(ref.catalog, ref.schema) for ref in found})
             return (
@@ -2623,7 +2637,9 @@ def _skill_schema_background_loader(
 
 
 def prompt_for_skill_schema_choices(
-    background_loader: Callable[[Callable[[list[questionary.Choice]], None]], str | None],
+    background_loader: Callable[
+        [Callable[[list[questionary.Choice]], None], threading.Event], str | None
+    ],
 ) -> list[str] | None:
     """Show the skill-schema picker, returning the selected schemas or None on Ctrl-C."""
     selection = scrolling_checkbox(

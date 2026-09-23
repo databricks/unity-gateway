@@ -10,27 +10,22 @@ import logging
 import logging.handlers
 import os
 import platform
+import queue
 import random
 import re
 import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import (
-    ThreadPoolExecutor,
-    as_completed,
-)
-from concurrent.futures import (
-    TimeoutError as FutureTimeoutError,
-)
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
 from pathlib import Path
-from typing import Literal, NamedTuple, NoReturn, cast, overload
+from typing import Any, Literal, NamedTuple, NoReturn, cast, overload
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
@@ -786,9 +781,19 @@ def upgrade_databricks_cli() -> bool:
 
 def install_databricks_cli(
     minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
+    *,
+    skip_version_check: bool = False,
 ) -> None:
+    """Ensure the Databricks CLI is installed and (unless skipped) new enough.
+
+    ``skip_version_check`` is set on ``--skip-preflight`` launches: they trust a
+    prior ``ucode configure`` and must not re-run the minimum-version gate, whose
+    ``databricks aitools`` floor (v1.0.0) rejects a perfectly usable public-preview
+    build (e.g. v0.299.2) as a false positive. A missing CLI is still installed —
+    only the version *check* is bypassed."""
     if shutil.which("databricks"):
-        ensure_databricks_cli_version(minimum)
+        if not skip_version_check:
+            ensure_databricks_cli_version(minimum)
         return
 
     print_section("Bootstrap")
@@ -799,7 +804,8 @@ def install_databricks_cli(
         raise RuntimeError(
             "Databricks CLI install completed, but `databricks` is still not on PATH."
         )
-    ensure_databricks_cli_version(minimum)
+    if not skip_version_check:
+        ensure_databricks_cli_version(minimum)
 
 
 def install_ai_tools(agent_tokens: list[str], profile: str | None = None) -> None:
@@ -2424,6 +2430,8 @@ _UC_LIST_PAGE_SIZE = 200
 _UC_LIST_MAX_PAGES = 50
 _SCHEMA_PROBE_WORKERS = 16
 _UC_LIST_HTTP_TIMEOUT = 10
+_WALK_POLL_INTERVAL = 0.05
+_PROBE_FAILED = object()
 # Most MCP services live outside `system.ai`, so this workspace-wide walk needs
 # enough time to enumerate them; a slow workspace still degrades to partial
 # results once the budget is exceeded instead of hanging indefinitely.
@@ -2435,22 +2443,45 @@ _UC_FUNCTIONS_SKIP_CATALOGS = frozenset(
 )
 
 
-def _drain_with_deadline(futures: dict, deadline: float, on_result) -> None:
-    """Iterate `futures` via `as_completed`, calling `on_result(value, key)` per
-    completed future, until either all are done or `deadline` passes. Per-task
-    exceptions are swallowed so one failure doesn't stop the rest."""
-    remaining = max(0.0, deadline - time.monotonic())
-    try:
-        for future in as_completed(futures, timeout=remaining):
+def _collect_concurrently[T, R](
+    items: list[T],
+    run: Callable[[T], R],
+    on_result: Callable[[R, T], None],
+    *,
+    max_workers: int,
+    should_stop: Callable[[], bool],
+) -> None:
+    """Run `run` over `items` on daemon workers that are never joined, so a slow or stuck
+    call can't block process exit. Results go to `on_result` on the calling thread until
+    every item is drained or `should_stop()` returns True."""
+    pending: queue.Queue[T] = queue.Queue()
+    for item in items:
+        pending.put(item)
+    results: queue.Queue[tuple[Any, T]] = queue.Queue()
+
+    def worker() -> None:
+        while not should_stop():
             try:
-                value = future.result()
+                item = pending.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                results.put((run(item), item))
             except Exception:  # noqa: BLE001
-                continue
-            on_result(value, futures[future])
-            if time.monotonic() > deadline:
-                break
-    except FutureTimeoutError:
-        pass
+                results.put((_PROBE_FAILED, item))
+
+    for _ in range(max(1, min(max_workers, len(items)))):
+        threading.Thread(target=worker, daemon=True).start()
+
+    remaining = len(items)
+    while remaining > 0 and not should_stop():
+        try:
+            result, item = results.get(timeout=_WALK_POLL_INTERVAL)
+        except queue.Empty:
+            continue
+        remaining -= 1
+        if result is not _PROBE_FAILED:
+            on_result(result, item)
 
 
 def _paginated_json_items(
@@ -2505,13 +2536,14 @@ def walk_catalog_schemas[T](
     collect: Callable[[T, int, int], None],
     skip_catalogs: frozenset[str] = _UC_FUNCTIONS_SKIP_CATALOGS,
     max_workers: int = _SCHEMA_PROBE_WORKERS,
+    cancel_event: threading.Event | None = None,
 ) -> str | None:
     """Discover every user `<catalog>.<schema>` in the workspace and probe each one in parallel.
 
     Catalogs and their schemas are listed (skipping `skip_catalogs` and `information_schema`), then
     each schema is probed concurrently until `deadline` (an absolute `time.monotonic()` value)
-    passes, so a slow workspace returns partial results instead of hanging. The caller supplies two
-    callables and owns whatever they accumulate:
+    passes or `cancel_event` is set, so a slow workspace returns partial results instead of hanging.
+    The caller supplies two callables and owns whatever they accumulate:
 
       - `probe(catalog, schema) -> result`: fetch one schema's data (e.g. its MCP services).
       - `collect(result, done, total)`: handle each probe result as it lands — accumulating,
@@ -2519,6 +2551,11 @@ def walk_catalog_schemas[T](
 
     Returns None once the probes run, or a short reason string if there are no catalogs or schemas
     to probe."""
+    cancel_event = cancel_event or threading.Event()
+
+    def should_stop() -> bool:
+        return cancel_event.is_set() or time.monotonic() > deadline
+
     hostname = workspace_hostname(workspace)
 
     catalogs, catalogs_reason = _paginated_json_items(
@@ -2541,33 +2578,27 @@ def walk_catalog_schemas[T](
         return "deadline exceeded while listing UC catalogs"
 
     schema_refs: list[tuple[str, str]] = []
-    schema_workers = max(1, min(max_workers, len(catalog_names)))
-    with ThreadPoolExecutor(max_workers=schema_workers) as pool:
-        schema_futures = {
-            pool.submit(
-                _paginated_json_items,
-                f"https://{hostname}/api/2.1/unity-catalog/schemas",
-                token,
-                items_key="schemas",
-                extra_params={"catalog_name": cat},
-                timeout=_UC_LIST_HTTP_TIMEOUT,
-            ): cat
-            for cat in catalog_names
-        }
 
-        def collect_schemas(result, catalog):
-            schemas, _ = result
-            for schema in schemas:
-                schema_name = schema.get("name")
-                if (
-                    isinstance(schema_name, str)
-                    and schema_name
-                    and schema_name != "information_schema"
-                ):
-                    schema_refs.append((catalog, schema_name))
+    def collect_schemas(result, catalog):
+        schemas, _ = result
+        for schema in schemas:
+            schema_name = schema.get("name")
+            if isinstance(schema_name, str) and schema_name and schema_name != "information_schema":
+                schema_refs.append((catalog, schema_name))
 
-        _drain_with_deadline(schema_futures, deadline, collect_schemas)
-        pool.shutdown(wait=False, cancel_futures=True)
+    _collect_concurrently(
+        catalog_names,
+        lambda cat: _paginated_json_items(
+            f"https://{hostname}/api/2.1/unity-catalog/schemas",
+            token,
+            items_key="schemas",
+            extra_params={"catalog_name": cat},
+            timeout=_UC_LIST_HTTP_TIMEOUT,
+        ),
+        collect_schemas,
+        max_workers=max_workers,
+        should_stop=should_stop,
+    )
 
     if not schema_refs:
         if time.monotonic() > deadline:
@@ -2576,20 +2607,19 @@ def walk_catalog_schemas[T](
 
     schemas_total = len(schema_refs)
     schemas_done = 0
-    probe_workers = max(1, min(max_workers, schemas_total))
-    with ThreadPoolExecutor(max_workers=probe_workers) as pool:
-        probe_futures = {
-            pool.submit(probe, catalog, schema): (catalog, schema)
-            for catalog, schema in schema_refs
-        }
 
-        def collect_probe(result, _ref):
-            nonlocal schemas_done
-            schemas_done += 1
-            collect(result, schemas_done, schemas_total)
+    def collect_probe(result, _ref):
+        nonlocal schemas_done
+        schemas_done += 1
+        collect(result, schemas_done, schemas_total)
 
-        _drain_with_deadline(probe_futures, deadline, collect_probe)
-        pool.shutdown(wait=False, cancel_futures=True)
+    _collect_concurrently(
+        schema_refs,
+        lambda ref: probe(*ref),
+        collect_probe,
+        max_workers=max_workers,
+        should_stop=should_stop,
+    )
 
     return None
 
@@ -2601,6 +2631,7 @@ def list_all_mcp_services(
     deadline_seconds: float = _MCP_SERVICES_WALK_DEADLINE_SECONDS,
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[list[str], str | None]:
     """Return sorted unique MCP-service full names across every `<catalog>.<schema>`
     in the workspace. The mcp-services API is one-schema-per-call, so this walks
@@ -2631,7 +2662,9 @@ def list_all_mcp_services(
         if on_services is not None and new:
             on_services(sorted(new))
 
-    reason = walk_catalog_schemas(workspace, token, deadline=deadline, probe=probe, collect=collect)
+    reason = walk_catalog_schemas(
+        workspace, token, deadline=deadline, probe=probe, collect=collect, cancel_event=cancel_event
+    )
     if reason is not None:
         return [], reason
     if not names:
