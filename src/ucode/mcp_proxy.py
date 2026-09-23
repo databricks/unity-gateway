@@ -161,14 +161,13 @@ def _build_token_auth(url: str, workspace: str, profile: str | None, *, use_pat:
             raise ProxyAuthError(f"connection login for '{connection}' failed: {detail}")
 
     class _DatabricksTokenAuth(httpx.Auth):
-        def auth_flow(self, request):
-            _mint(request)
-            response = yield request
-            if not _needs_connection_login(response):
-                return
-            _connection_login_or_fail()
-            _mint(request)
-            yield request
+        def sync_auth_flow(self, request):
+            # The proxy always drives this Auth from an httpx AsyncClient (see `_run`), so only
+            # `async_auth_flow` is implemented. Fail loudly on the sync entry point so a future sync
+            # client can't silently fall back to httpx's no-op default flow (which skips the bearer)
+            # instead of injecting the token.
+            raise ProxyAuthError("mcp-proxy auth is async-only; use it with an httpx AsyncClient")
+            yield request  # unreachable — present only so httpx treats this as a generator
 
         async def async_auth_flow(self, request):
             _mint(request)
