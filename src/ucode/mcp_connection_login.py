@@ -107,8 +107,8 @@ def run_connection_login(
     if profile:
         argv += ["--profile", profile]
     print(
-        f"ucode mcp-proxy: '{connection}' needs a one-time connection sign-in. Opening your "
-        "browser to complete it — if it doesn't open, use the authorization URL printed below.",
+        f"Signing in to '{connection}' — opening your browser to complete the connection login; "
+        "if it doesn't open, use the authorization URL printed below.",
         file=sys.stderr,
         flush=True,
     )
