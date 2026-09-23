@@ -566,6 +566,25 @@ def managed_config_revert_requires_privilege() -> bool:
     )
 
 
+def enterprise_routing_sources() -> list[str]:
+    """Administrator-managed Codex config that still pins gateway routing after a revert (read-only)."""
+    path = codex_managed_config_path()
+    if path is None:
+        return []
+    # Reporting runs after revert has committed, so an unreadable or invalid file is skipped
+    # rather than raised: this must never turn a completed revert into an error.
+    try:
+        text = read_managed_file(path)
+        if text is None:
+            return []
+        doc = _parse_managed_config(text)
+    except RuntimeError:
+        return []
+    if doc.get("model_provider"):
+        return [str(path)]
+    return []
+
+
 def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
     path = codex_managed_config_path()

@@ -306,6 +306,43 @@ def managed_settings_revert_requires_privilege() -> bool:
     )
 
 
+def enterprise_routing_sources() -> list[str]:
+    """Administrator-managed files that still pin Claude gateway routing after a revert.
+
+    Scans the OS-managed settings file and any ``managed-settings.d`` drop-ins (which ug never
+    writes) for the keys ug uses to force gateway routing. Read-only; used by ``ug revert`` to
+    report enforcement it cannot and did not remove. Returns the file paths that set them.
+    """
+    path = _managed_settings_path()
+    if path is None:
+        return []
+
+    candidates: list[Path] = [path]
+    dropin_dir = path.parent / "managed-settings.d"
+    try:
+        if dropin_dir.is_dir():
+            candidates += sorted(dropin_dir.glob("*.json"))
+    except OSError:
+        pass
+
+    sources: list[str] = []
+    for candidate in candidates:
+        # Skip a candidate we cannot read or parse: this runs after revert has already committed,
+        # so it must only report, never raise and turn a completed revert into an error.
+        try:
+            text = read_managed_file(candidate)
+            if text is None:
+                continue
+            settings = _parse_managed_settings(text)
+        except RuntimeError:
+            continue
+        if settings.get("apiKeyHelper") or (
+            isinstance(settings.get("env"), dict) and settings["env"].get("ANTHROPIC_BASE_URL")
+        ):
+            sources.append(str(candidate))
+    return sources
+
+
 def _managed_relayed_conflicts(path: Path) -> list[str]:
     """Return managed settings that would override Claude subscription relay auth."""
     text = read_managed_file(path)
