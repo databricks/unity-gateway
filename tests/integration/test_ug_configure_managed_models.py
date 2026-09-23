@@ -26,7 +26,6 @@ LIVE_ONLY = "haiku-4-5"  # published live, but not in the injected list below
 CODEX_DEFAULT = "system.ai.gpt-5-6-sol"
 CODEX_WITHOUT_BUNDLED_METADATA = "system.ai.gpt-99"
 MANAGED_CLAUDE_DEFAULT_ENV_KEYS = {
-    "default_fable_model": "ANTHROPIC_DEFAULT_FABLE_MODEL",
     "default_opus_model": "ANTHROPIC_DEFAULT_OPUS_MODEL",
     "default_sonnet_model": "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "default_haiku_model": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
@@ -56,17 +55,17 @@ CODEX_SMART_ROUTING_MODELS = [
 def test_managed_fixture_claude_mps_defaults_accompany_discovery(live_session, workspace, tmp_path):
     """Scenario: launch Claude with managed defaults and MPS discovery.
 
-    Expected: the installed ug launch writes the MPS header and every admin-authored default to
-    both Claude settings files without changing the model ids. This settings reconciliation check
-    does not claim model inference.
+    Expected: the installed ug launch writes the MPS header and every admin-authored family
+    default to both Claude settings files. Live budget recommendations may choose the
+    launch-scoped ``ANTHROPIC_MODEL``, so this settings reconciliation check does not assert the
+    fixture's overall default model or claim model inference.
     """
     session = live_session
     defaults = {
-        "default_model": "anthropic.claude-sonnet-5",
-        "default_fable_model": "anthropic.claude-fable-5-1",
-        "default_opus_model": "anthropic.claude-opus-5",
-        "default_sonnet_model": "anthropic.claude-sonnet-5",
-        "default_haiku_model": "anthropic.claude-haiku-4-5",
+        "default_model": "claude-opus-4-8",
+        "default_opus_model": "claude-opus-4-8",
+        "default_sonnet_model": "claude-sonnet-4-6",
+        "default_haiku_model": "claude-haiku-4-5",
     }
     config = build_coding_agent_config(
         "CODING_AGENT_CLAUDE_CODE",
@@ -94,7 +93,6 @@ def test_managed_fixture_claude_mps_defaults_accompany_discovery(live_session, w
         env = settings.get("env") or {}
         expected_header = f"Databricks-Model-Provider-Service: {MANAGED_CLAUDE_PROVIDER_SERVICE}"
         assert expected_header in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines(), settings
-        assert env.get("ANTHROPIC_MODEL") == defaults["default_model"], settings
         for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
             assert env.get(env_key) == defaults[config_key], settings
 
@@ -107,16 +105,17 @@ def test_managed_fixture_claude_parent_schema_defaults_accompany_discovery(
     """Scenario: launch Claude with managed defaults and Unity Catalog discovery.
 
     Expected: the installed ug launch writes the parent-schema header and every admin-authored
-    default to both Claude settings files, adding ``[1m]`` only to Opus and Sonnet family defaults.
-    This settings reconciliation check does not claim model inference.
+    family default to both Claude settings files, adding ``[1m]`` only to Opus and Sonnet family
+    defaults. Live budget recommendations may choose the launch-scoped ``ANTHROPIC_MODEL``, so
+    this settings reconciliation check does not assert the fixture's overall default model or
+    claim model inference.
     """
     session = live_session
     parent_schema = "system.ai"
     defaults = {
-        "default_model": f"{parent_schema}.claude-sonnet-5",
-        "default_fable_model": f"{parent_schema}.claude-fable-5-1",
-        "default_opus_model": f"{parent_schema}.claude-opus-5",
-        "default_sonnet_model": f"{parent_schema}.claude-sonnet-5",
+        "default_model": f"{parent_schema}.claude-opus-4-8",
+        "default_opus_model": f"{parent_schema}.claude-opus-4-8",
+        "default_sonnet_model": f"{parent_schema}.claude-sonnet-4-6",
         "default_haiku_model": f"{parent_schema}.claude-haiku-4-5",
     }
     config = build_coding_agent_config(
@@ -145,7 +144,6 @@ def test_managed_fixture_claude_parent_schema_defaults_accompany_discovery(
         env = settings.get("env") or {}
         expected_header = f"Databricks-Model-Service-Parent-Schema: {parent_schema}"
         assert expected_header in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines(), settings
-        assert env.get("ANTHROPIC_MODEL") == defaults["default_model"], settings
         for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
             expected = defaults[config_key]
             if config_key in {"default_opus_model", "default_sonnet_model"}:

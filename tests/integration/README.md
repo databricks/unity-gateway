@@ -239,7 +239,9 @@ discovery and source-override journeys fetch the published config once per agent
 agent's static source with its dedicated MPS, and reuse the result. Fifteen existing collected cases
 cover focused model, MCP, skills, and lifecycle shapes, including per-agent model reconciliation
 and managed skill cleanup. The two Claude default-model cases launch with injected MPS and Unity
-Catalog sources and verify both generated settings files retain all admin-authored family defaults.
+Catalog sources and verify both generated settings files retain all admin-authored family defaults
+and their routing headers. Live budget recommendations may choose the launch-scoped
+`ANTHROPIC_MODEL`, so these cases do not assert that it equals the fixture's overall default.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
 executions; the complete integration suite collects 101 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
