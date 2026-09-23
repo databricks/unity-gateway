@@ -4,7 +4,7 @@ import csv
 import multiprocessing
 import os
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -107,6 +107,24 @@ def test_appends_rows_to_session_csv(tmp_path, monkeypatch):
     _TestSubagentUsageRow.record(asdict(second), now=1_800_000_001)
 
     assert _read_rows(path) == [expected_first, expected_second]
+
+
+def test_appends_multiple_events_for_same_agent(tmp_path, monkeypatch):
+    monkeypatch.setattr(usage, "usage_directory", lambda _subdirectory: tmp_path / "usage")
+    first = _row()
+    second = replace(
+        first,
+        recorded_at_utc="2027-01-15T08:01:00+00:00",
+        output_tokens=11,
+        total_tokens=21,
+    )
+
+    path = usage.write_subagent_usage(first, now=1_800_000_000)
+    usage.write_subagent_usage(second, now=1_800_000_060)
+
+    rows = _read_rows(path)
+    assert [row["agent_id"] for row in rows] == ["agent-1", "agent-1"]
+    assert [row["total_tokens"] for row in rows] == ["17", "21"]
 
 
 def test_concurrent_processes_append_complete_rows(tmp_path):
