@@ -44,6 +44,25 @@ Having the bootstrap (or `ug` per launch) rewrite them via `sudo` fights that
 model and prompts non-admin users. Let MDM own the enforcement layer; let the
 bootstrap own provisioning + local settings.
 
+## Troubleshooting (`heal-claude-gateway.sh`)
+
+`heal-claude-gateway.sh` is an interactive, idempotent repair tool for a Mac left
+half-configured: a legacy wrapper (`~/.local/bin/ucode-claude-ide`) that hardcodes
+`ug claude --provider ...` and trips the "`--provider` not allowed when a managed
+config exists" error, or a machine where `ug configure` wrote only its local
+settings and never the OS-managed file (so `ug claude` routes but bare `claude` /
+VS Code do not).
+
+A developer runs it by **typing** it in Terminal (it refuses a non-TTY run,
+because `ug` only writes the root-owned managed settings when stdin is a TTY):
+
+    bash heal-claude-gateway.sh https://<workspace>.cloud.databricks.com
+
+It backs up and removes the legacy wrapper, clears the VS Code
+`claudeCode.claudeProcessWrapper` setting, runs `ug configure`, verifies where each
+piece landed (`~/.claude/ucode-settings.json` and the OS-managed file), and writes
+a redacted `~/ug-heal-report-*.txt` for support. Everything it changes is backed up.
+
 ## Known gap
 
 `ug` cannot yet **emit** these profile payloads for MDM packaging — it only writes
