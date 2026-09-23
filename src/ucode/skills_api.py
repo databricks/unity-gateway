@@ -7,6 +7,7 @@ to import the other.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -168,6 +169,7 @@ def list_all_skills(
     deadline_seconds: float = _SKILLS_WALK_DEADLINE_SECONDS,
     on_progress: Callable[[int, int, int], None] | None = None,
     on_skills: Callable[[list[SkillRef]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[list[SkillRef], str | None]:
     """Return every finalized skill across all ``<catalog>.<schema>`` in the workspace, by FQN.
 
@@ -195,7 +197,9 @@ def list_all_skills(
         if on_skills is not None and new:
             on_skills(sorted(new, key=lambda ref: ref.fqn))
 
-    reason = walk_catalog_schemas(workspace, token, deadline=deadline, probe=probe, collect=collect)
+    reason = walk_catalog_schemas(
+        workspace, token, deadline=deadline, probe=probe, collect=collect, cancel_event=cancel_event
+    )
     if reason is not None:
         return [], reason
     refs = sorted(by_fqn.values(), key=lambda ref: ref.fqn)

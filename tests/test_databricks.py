@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from decimal import Decimal
 from urllib.parse import parse_qs
@@ -3682,3 +3683,60 @@ class TestBearerCommand:
 
         assert db_mod.has_valid_databricks_auth(WS) is True
         assert not marker.exists()
+
+
+class TestWalkCatalogSchemasCancellation:
+    def _fake_paginated(self, n_schemas):
+        def impl(url, token, *, items_key, extra_params=None, **kwargs):
+            if items_key == "catalogs":
+                return [{"name": "main"}], None
+            if items_key == "schemas":
+                return [{"name": f"s{i}"} for i in range(n_schemas)], None
+            return [], None
+
+        return impl
+
+    def test_cancel_event_stops_walk_promptly(self, monkeypatch):
+        N = 50
+        monkeypatch.setattr(db_mod, "_paginated_json_items", self._fake_paginated(N))
+
+        collected = []
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        def slow_probe(cat, schema):
+            time.sleep(0.2)
+            return f"{cat}.{schema}"
+
+        start = time.monotonic()
+        db_mod.walk_catalog_schemas(
+            WS,
+            "tok",
+            deadline=start + 60.0,
+            probe=slow_probe,
+            collect=lambda result, done, total: collected.append(result),
+            cancel_event=cancel_event,
+        )
+        assert time.monotonic() - start < 2.0
+        assert len(collected) < N
+
+    def test_deadline_stops_walk_promptly(self, monkeypatch):
+        N = 50
+        monkeypatch.setattr(db_mod, "_paginated_json_items", self._fake_paginated(N))
+
+        collected = []
+
+        def slow_probe(cat, schema):
+            time.sleep(0.5)
+            return f"{cat}.{schema}"
+
+        start = time.monotonic()
+        db_mod.walk_catalog_schemas(
+            WS,
+            "tok",
+            deadline=start + 0.1,
+            probe=slow_probe,
+            collect=lambda result, done, total: collected.append(result),
+        )
+        assert time.monotonic() - start < 1.5
+        assert len(collected) < N
