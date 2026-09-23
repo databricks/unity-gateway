@@ -602,6 +602,7 @@ def launch_codex(
     overlay["hooks"] = {
         "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
     }
+    overlay.setdefault("features", {})["multi_agent_v2"] = False
     config_args = codex_config_args(overlay)
     if not first_prompt_routing_enabled():
         # Subagent-only routing needs neither the app-server nor the interposer:
