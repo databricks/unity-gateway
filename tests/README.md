@@ -151,6 +151,12 @@ pending. The descriptive jobs provide the actual coverage and diagnostics.
 
 ## Gaps and deferred scope
 
+`test_managed_files.py` covers a lazy sudo worker shared across multiple managed-file writes,
+no elevation for unchanged files, target/symlink rejection, bounded shutdown and cancellation,
+and real-shell copy/rename failure handling in temporary directories.
+`test_cli.py` covers the workspace configure session boundary.
+These are unit/component checks; they do not establish live sudo password-prompt behavior.
+
 | Scenario | Status / requirement |
 | --- | --- |
 | Live MCP and skills functionality | Deferred; installation tests cover the local web-search MCP handshake and tool listing, not upstream proxying or a real search request |
