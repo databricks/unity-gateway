@@ -3687,6 +3687,28 @@ class TestParseMcpListOutput:
         # The "Checking MCP server health…" header must not become a bogus entry.
         assert "Checking" not in mcp.parse_mcp_list_output("claude", CLAUDE_MCP_LIST)
 
+    @pytest.mark.parametrize(
+        "failure_detail",
+        ["HTTP 404 Not Found", "sh: 1: my-bin: not found", 'no server named "x"'],
+    )
+    def test_one_servers_failure_detail_does_not_discard_the_listing(self, failure_detail):
+        # One broken server must not hide the healthy ones, even when its failure detail
+        # contains a phrase that also marks a "no servers configured" listing.
+        output = (
+            CLAUDE_MCP_LIST
+            + f"broken: https://h/mcp (HTTP) - ✘ Failed to connect — {failure_detail}\n"
+        )
+        parsed = mcp.parse_mcp_list_output("claude", output)
+        assert parsed["github"] == mcp.LIVE_CONNECTED
+        assert parsed["web_search"] == mcp.LIVE_CONNECTED
+        assert parsed["broken"] == mcp.LIVE_FAILED
+
+    def test_no_servers_message_still_reads_as_empty(self):
+        # A real "no servers" listing must still come back empty, including for codex, whose
+        # table parser would otherwise read the message itself as a server name.
+        for client in ("claude", "gemini", "codex"):
+            assert mcp.parse_mcp_list_output(client, "No MCP servers configured.") == {}
+
     def test_parses_codex_enabled_disabled_table(self):
         assert mcp.parse_mcp_list_output("codex", CODEX_MCP_LIST) == {
             "accounts-admin": mcp.LIVE_ENABLED,
