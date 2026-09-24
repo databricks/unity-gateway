@@ -155,6 +155,30 @@ def claude_provider_model():
 
 
 @pytest.fixture(scope="session")
+def claude_bedrock_allow_all_provider():
+    # A Bedrock MPS with allow_all_targets and no declared targets (issue #811). Set only in the
+    # region(s) where that MPS exists; skip elsewhere so the region matrix stays green.
+    value = os.environ.get("UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_PROVIDER", "").strip()
+    if not value:
+        pytest.skip(
+            "Set UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_PROVIDER to run the allow_all Bedrock CUJ."
+        )
+    return value
+
+
+@pytest.fixture(scope="session")
+def claude_bedrock_allow_all_model():
+    # Explicit Bedrock model id (e.g. an inference profile): an allow_all service declares no
+    # targets, so a launch must name the model itself.
+    value = os.environ.get("UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL", "").strip()
+    if not value:
+        pytest.skip(
+            "Set UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL to run the allow_all Bedrock CUJ."
+        )
+    return value
+
+
+@pytest.fixture(scope="session")
 def codex_provider():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER"]
 
