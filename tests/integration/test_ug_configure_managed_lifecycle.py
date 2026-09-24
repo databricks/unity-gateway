@@ -22,6 +22,7 @@ from utils.managed import (
     build_codex_agent_config,
     build_coding_agent_config,
     build_mps_agent_config,
+    build_uc_agent_config,
     set_managed_config_stub,
 )
 
@@ -166,3 +167,198 @@ def test_managed_fixture_codex_model_lifecycle(live_session, workspace, tmp_path
     set_managed_config_stub(session, tmp_path, None)
     _configure_unmanaged(session, workspace, "codex")
     assert _codex_listed(session) == []
+
+
+def _source_mode(session, agent: str) -> dict:
+    """Read the managed-config cache and return ``agent``'s raw ``models`` (model-source) dict."""
+    cache = json.loads((session.home / ".ucode" / "managed-config.json").read_text())
+    config = cache.get("config") or {}
+    for entry in config.get("enabled_agents") or []:
+        if isinstance(entry, dict) and entry.get("agent") == agent:
+            return (entry.get("config") or {}).get("models") or {}
+    return {}
+
+
+@pytest.mark.managed_fixture
+@pytest.mark.claude
+def test_managed_fixture_claude_source_mode_transitions(live_session, workspace, tmp_path):
+    """Scenario: configure Claude across every ordered model-source transition by walking
+    static -> MPS -> UC -> static -> UC -> MPS -> static (S->M, M->U, U->S, S->U, U->M, M->S).
+
+    Expected: each state reconciles the picker (static lists its models; MPS and UC clear it), and
+    the persisted managed-config source mode distinguishes MPS (model_provider_service) from UC
+    (unity_catalog_location) at the two picker-cleared states.
+    """
+    session = live_session
+    UC_LOCATION = "system.ai"
+    AGENT = "CODING_AGENT_CLAUDE_CODE"
+
+    # State 1: static (starting point)
+    set_managed_config_stub(
+        session,
+        tmp_path,
+        build_coding_agent_config(AGENT, build_claude_agent_config(CLAUDE_A)),
+    )
+    _configure_managed(session, workspace)
+    assert _claude_picker(session) == CLAUDE_A
+
+    # S->M: MPS; picker cleared, cache shows model_provider_service.
+    set_managed_config_stub(
+        session,
+        tmp_path,
+        build_coding_agent_config(AGENT, build_mps_agent_config(AGENT, CLAUDE_MPS)),
+    )
+    _configure_managed(session, workspace)
+    assert _claude_picker(session) is None
+    mode = _source_mode(session, AGENT)
+    assert mode.get("model_provider_service") == CLAUDE_MPS, mode
+    assert "unity_catalog_location" not in mode, mode
+
+    # M->U: UC; picker still cleared, cache shows unity_catalog_location instead.
+    set_managed_config_stub(
+        session,
+        tmp_path,
+        build_coding_agent_config(AGENT, build_uc_agent_config(AGENT, UC_LOCATION)),
+    )
+    _configure_managed(session, workspace)
+    assert _claude_picker(session) is None
+    mode = _source_mode(session, AGENT)
+    assert mode.get("unity_catalog_location") == UC_LOCATION, mode
+    assert "model_provider_service" not in mode, mode
+
+    # U->S: static; picker restored.
+    set_managed_config_stub(
+        session,
+        tmp_path,
+        build_coding_agent_config("CODING_AGENT_CLAUDE_CODE", build_claude_agent_config(CLAUDE_A)),
+    )
+    _configure_managed(session, workspace)
+    assert _claude_picker(session) == CLAUDE_A
+
+    # S->U: UC; picker cleared again.
+    set_managed_config_stub(
+        session,
+        tmp_path,
+        build_coding_agent_config(
+            "CODING_AGENT_CLAUDE_CODE",
+            build_uc_agent_config("CODING_AGENT_CLAUDE_CODE", UC_LOCATION),
+        ),
+    )
+    _configure_managed(session, workspace)
+    assert _claude_picker(session) is None
+
+    # U->M: MPS; picker still cleared.
+    set_managed_config_stub(
+        session,
+        tmp_path,
+        build_coding_agent_config(
+            "CODING_AGENT_CLAUDE_CODE",
+            build_mps_agent_config("CODING_AGENT_CLAUDE_CODE", CLAUDE_MPS),
+        ),
+    )
+    _configure_managed(session, workspace)
+    assert _claude_picker(session) is None
+
+    # M->S: static; picker restored for the final time.
+    set_managed_config_stub(
+        session,
+        tmp_path,
+        build_coding_agent_config("CODING_AGENT_CLAUDE_CODE", build_claude_agent_config(CLAUDE_A)),
+    )
+    _configure_managed(session, workspace)
+    assert _claude_picker(session) == CLAUDE_A
+
+
+@pytest.mark.managed_fixture
+@pytest.mark.codex
+def test_managed_fixture_codex_source_mode_transitions(live_session, workspace, tmp_path):
+    """Scenario: configure Codex across every ordered model-source transition by walking
+    static -> MPS -> UC -> static -> UC -> MPS -> static (S->M, M->U, U->S, S->U, U->M, M->S).
+
+    Expected: each state reconciles the catalog (static lists its models; MPS and UC clear it), and
+    the persisted managed-config source mode distinguishes MPS (model_provider_service) from UC
+    (unity_catalog_location) at the two catalog-cleared states.
+    """
+    session = live_session
+    UC_LOCATION = "system.ai"
+
+    # State 1: static (starting point)
+    set_managed_config_stub(
+        session,
+        tmp_path,
+        build_coding_agent_config("CODING_AGENT_CODEX", build_codex_agent_config(models=CODEX_A)),
+    )
+    _configure_managed(session, workspace)
+    assert _codex_listed(session) == CODEX_A
+
+    # S->M: MPS; catalog cleared, cache shows model_provider_service.
+    set_managed_config_stub(
+        session,
+        tmp_path,
+        build_coding_agent_config(
+            "CODING_AGENT_CODEX",
+            build_mps_agent_config("CODING_AGENT_CODEX", CODEX_MPS),
+        ),
+    )
+    _configure_managed(session, workspace)
+    assert _codex_listed(session) == []
+    mode = _source_mode(session, "CODING_AGENT_CODEX")
+    assert mode.get("model_provider_service") == CODEX_MPS, mode
+    assert "unity_catalog_location" not in mode, mode
+
+    # M->U: UC; catalog still cleared, cache shows unity_catalog_location instead.
+    set_managed_config_stub(
+        session,
+        tmp_path,
+        build_coding_agent_config(
+            "CODING_AGENT_CODEX",
+            build_uc_agent_config("CODING_AGENT_CODEX", UC_LOCATION),
+        ),
+    )
+    _configure_managed(session, workspace)
+    assert _codex_listed(session) == []
+    mode = _source_mode(session, "CODING_AGENT_CODEX")
+    assert mode.get("unity_catalog_location") == UC_LOCATION, mode
+    assert "model_provider_service" not in mode, mode
+
+    # U->S: static; catalog restored.
+    set_managed_config_stub(
+        session,
+        tmp_path,
+        build_coding_agent_config("CODING_AGENT_CODEX", build_codex_agent_config(models=CODEX_A)),
+    )
+    _configure_managed(session, workspace)
+    assert _codex_listed(session) == CODEX_A
+
+    # S->U: UC; catalog cleared again.
+    set_managed_config_stub(
+        session,
+        tmp_path,
+        build_coding_agent_config(
+            "CODING_AGENT_CODEX",
+            build_uc_agent_config("CODING_AGENT_CODEX", UC_LOCATION),
+        ),
+    )
+    _configure_managed(session, workspace)
+    assert _codex_listed(session) == []
+
+    # U->M: MPS; catalog still cleared.
+    set_managed_config_stub(
+        session,
+        tmp_path,
+        build_coding_agent_config(
+            "CODING_AGENT_CODEX",
+            build_mps_agent_config("CODING_AGENT_CODEX", CODEX_MPS),
+        ),
+    )
+    _configure_managed(session, workspace)
+    assert _codex_listed(session) == []
+
+    # M->S: static; catalog restored for the final time.
+    set_managed_config_stub(
+        session,
+        tmp_path,
+        build_coding_agent_config("CODING_AGENT_CODEX", build_codex_agent_config(models=CODEX_A)),
+    )
+    _configure_managed(session, workspace)
+    assert _codex_listed(session) == CODEX_A
