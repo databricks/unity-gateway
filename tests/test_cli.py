@@ -3127,6 +3127,35 @@ class TestConfigureAgentsSelection:
         # the managed-branch test overrides this.
         monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda state, **_k: (None, False))
 
+    def test_workspace_configuration_uses_one_command_scoped_managed_write_session(
+        self, monkeypatch
+    ):
+        events: list[str] = []
+
+        @contextlib.contextmanager
+        def capture_session():
+            events.append("enter")
+            try:
+                yield
+            finally:
+                events.append("exit")
+
+        monkeypatch.setattr(cli_mod, "managed_write_session", capture_session)
+        monkeypatch.setattr(
+            cli_mod,
+            "_configure_workspace_command",
+            lambda *args, **kwargs: events.append("configure") or 17,
+        )
+
+        assert (
+            cli_mod.configure_workspace_command(
+                selected_tools=["claude", "codex"],
+                workspaces=[("https://example.databricks.com", None)],
+            )
+            == 17
+        )
+        assert events == ["enter", "configure", "exit"]
+
     @pytest.mark.parametrize(("keys", "expected"), [(" \r", ["codex"]), ("\r", [])])
     def test_interactive_picker_installs_only_checked_agents(self, monkeypatch, keys, expected):
         state = {**MINIMAL_STATE, "available_tools": []}

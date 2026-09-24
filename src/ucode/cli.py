@@ -89,6 +89,7 @@ from ucode.managed_config import (
     normalize_managed_config,
     refresh_managed_config,
 )
+from ucode.managed_files import managed_write_session
 from ucode.managed_resolve import (
     managed_claude_family_models,
     managed_default_model,
@@ -782,6 +783,34 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
 
 
 def configure_workspace_command(
+    tool: str | None = None,
+    selected_tools: list[str] | None = None,
+    workspaces: list[tuple[str, str | None]] | None = None,
+    *,
+    use_pat: bool = False,
+    databricks_ai_tools_enabled: bool | None = None,
+    custom_oauth: CustomOAuthConfig | None = None,
+    offer_optional_setup: bool = False,
+) -> int:
+    """Configure a workspace while sharing one lazy privileged settings session.
+
+    Agent setup and managed MCP reconciliation can update the same machine-wide Claude/Codex
+    files at different points in the flow. Keeping one command-scoped worker means every changed
+    file is handled under the same sudo authentication; a no-op configure never starts it.
+    """
+    with managed_write_session():
+        return _configure_workspace_command(
+            tool,
+            selected_tools,
+            workspaces,
+            use_pat=use_pat,
+            databricks_ai_tools_enabled=databricks_ai_tools_enabled,
+            custom_oauth=custom_oauth,
+            offer_optional_setup=offer_optional_setup,
+        )
+
+
+def _configure_workspace_command(
     tool: str | None = None,
     selected_tools: list[str] | None = None,
     workspaces: list[tuple[str, str | None]] | None = None,

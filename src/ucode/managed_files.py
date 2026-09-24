@@ -7,6 +7,8 @@ values are compatible with ucode's local settings.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -14,10 +16,11 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
+from importlib import resources
 from pathlib import Path
 from typing import Any, cast
 
@@ -32,6 +35,8 @@ MANAGED_FINGERPRINT_VERSION = 1
 _MISSING = object()
 _managed_write_batch: tuple[str, ...] = ()
 _managed_write_notice_shown = False
+_managed_write_session_depth = 0
+_managed_write_worker: _SudoReplaceWorker | None = None
 
 ManagedParser = Callable[[str], dict]
 ManagedDumper = Callable[[dict], str]
@@ -48,6 +53,22 @@ class OS(Enum):
     MACOS = "macos"
     WINDOWS = "windows"
     OTHER = "other"
+
+
+_SUDO_REPLACE_TARGETS = {
+    OS.LINUX: frozenset(
+        {
+            Path("/etc/claude-code/managed-settings.json"),
+            Path("/etc/codex/managed_config.toml"),
+        }
+    ),
+    OS.MACOS: frozenset(
+        {
+            Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
+            Path("/etc/codex/managed_config.toml"),
+        }
+    ),
+}
 
 
 def current_os() -> OS:
@@ -167,9 +188,49 @@ def managed_write_batch(displays: list[str]) -> Iterator[None]:
         _managed_write_notice_shown = previous_notice
 
 
+@contextmanager
+def managed_write_session() -> Iterator[None]:
+    """Share one lazy sudo worker across managed-file replacements in a command.
+
+    Unchanged reconciliations never start the worker. Nested sessions share the outer worker and
+    only the outermost exit closes it.
+    """
+    global _managed_write_session_depth, _managed_write_worker
+
+    _managed_write_session_depth += 1
+    try:
+        yield
+    finally:
+        _managed_write_session_depth -= 1
+        if _managed_write_session_depth == 0:
+            worker = _managed_write_worker
+            _managed_write_worker = None
+            if worker is not None:
+                unwinding = sys.exc_info()[0] is not None
+                try:
+                    worker.close()
+                except Exception as exc:  # noqa: BLE001 -- preserve the original setup failure
+                    if not unwinding:
+                        raise RuntimeError(
+                            "Could not close the privileged settings session."
+                        ) from exc
+                    print_warning("The privileged settings session did not close cleanly.")
+
+
 def _print_managed_write_permission(display: str) -> None:
     global _managed_write_notice_shown
 
+    if _managed_write_session_depth:
+        # The worker is lazy: this message immediately precedes its first sudo invocation. Once it
+        # exists, later Claude/Codex and MCP reconciliations reuse the same authenticated process
+        # and must not tell the developer to enter their password again. A reused worker still
+        # counts as a write in the current batch, so its success summary is printed.
+        if _managed_write_worker is not None and _managed_write_worker.usable:
+            _managed_write_notice_shown = True
+            return
+        print_note("Enter password once to configure machine-wide coding agent settings.")
+        _managed_write_notice_shown = True
+        return
     if not _managed_write_batch:
         print_note(f"Enter password to configure settings for {display}.")
         return
@@ -658,6 +719,160 @@ def _three_way_revert(current: dict, original: dict, last: dict, paths: list) ->
     return reverted
 
 
+# Read once into memory and passed to `sh -c`: root never executes a file from the (user-writable)
+# install directory, so the script can't be swapped between validation and use.
+_SUDO_REPLACE_SCRIPT = (
+    resources.files("ucode").joinpath("managed_replace.sh").read_text(encoding="utf-8")
+)
+
+
+def _sudo_replace_command(mode: str, *args: str) -> list[str]:
+    return _sudo_command(
+        "/bin/sh",
+        "-c",
+        _SUDO_REPLACE_SCRIPT,
+        "ucode-managed-replace",
+        mode,
+        current_os().value,
+        *args,
+    )
+
+
+def _encode_worker_arg(value: str) -> str:
+    return base64.b64encode(os.fsencode(value)).decode("ascii")
+
+
+def _validate_sudo_replace_target(path: Path) -> None:
+    if path not in _SUDO_REPLACE_TARGETS.get(current_os(), frozenset()):
+        raise RuntimeError(f"Refusing unexpected managed-settings target: {path}")
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")
+
+
+class _SudoReplaceWorker:
+    """One privileged shell serving atomic replacements for a managed-write session."""
+
+    def __init__(self) -> None:
+        self.command = _sudo_replace_command("session")
+        self.process = subprocess.Popen(
+            self.command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        stdin = self.process.stdin
+        stdout = self.process.stdout
+        if stdin is None or stdout is None:
+            self.process.kill()
+            raise RuntimeError("Could not open the privileged managed-settings session.")
+        self.stdin = stdin
+        self.stdout = stdout
+        self._next_request_id = 1
+        self._broken = False
+
+    @property
+    def usable(self) -> bool:
+        """Whether this worker can still serve requests (authenticated and running)."""
+        return not self._broken and self.process.poll() is None
+
+    def replace(self, path: Path, source_path: str) -> None:
+        request_id = str(self._next_request_id)
+        self._next_request_id += 1
+        fields = (
+            "REPLACE",
+            request_id,
+            _encode_worker_arg(source_path),
+            _encode_worker_arg(str(path)),
+        )
+        try:
+            self.stdin.write(" ".join(fields) + "\n")
+            self.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            self._broken = True
+            raise self._process_error("privileged worker stopped before the update") from exc
+
+        response = self.stdout.readline()
+        parts = response.rstrip("\n").split(" ", 3)
+        if parts == ["OK", request_id]:
+            return
+        if len(parts) == 4 and parts[:2] == ["ERROR", request_id]:
+            try:
+                returncode = int(parts[2])
+                stderr = base64.b64decode(parts[3], validate=True).decode("utf-8", errors="replace")
+            except (binascii.Error, ValueError, UnicodeError):
+                returncode = 1
+                stderr = "Invalid error response from privileged managed-settings worker"
+            raise subprocess.CalledProcessError(
+                returncode, self.command, stderr=stderr or "managed-settings replacement failed"
+            )
+        if not response:
+            self._broken = True
+            raise self._process_error("privileged worker exited during the update")
+        raise subprocess.CalledProcessError(
+            1, self.command, stderr=f"Invalid privileged-worker response: {response!r}"
+        )
+
+    def _process_error(self, message: str) -> subprocess.CalledProcessError:
+        returncode = self.process.poll()
+        if returncode is None:
+            returncode = 1
+        stderr = ""
+        if self.process.stderr is not None and self.process.poll() is not None:
+            stderr = self.process.stderr.read()
+        return subprocess.CalledProcessError(
+            returncode, self.command, stderr=stderr.strip() or message
+        )
+
+    def close(self) -> None:
+        try:
+            if self.process.poll() is None:
+                try:
+                    self.stdin.write("QUIT\n")
+                    self.stdin.flush()
+                    self.stdin.close()
+                except (BrokenPipeError, OSError):
+                    self._broken = True
+            try:
+                returncode = self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired as exc:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=5)
+                raise RuntimeError(
+                    "The privileged settings session timed out during shutdown."
+                ) from exc
+            if returncode != 0 and not self._broken:
+                raise self._process_error("privileged worker failed while closing")
+        finally:
+            # A dead worker can make a buffered pipe close raise BrokenPipeError. Still close
+            # every stream without hiding the worker's exit status or the shutdown timeout.
+            for stream in (self.stdin, self.stdout, self.process.stderr):
+                if stream is not None:
+                    with suppress(OSError):
+                        stream.close()
+
+
+def _session_worker() -> _SudoReplaceWorker:
+    global _managed_write_worker
+
+    worker = _managed_write_worker
+    if worker is not None and not worker.usable:
+        # Failed authentication or an exited shell must not poison later writes: callers treat a
+        # failed managed write as recoverable, so the next one starts (and prompts for) a new worker.
+        _managed_write_worker = None
+        with suppress(Exception):
+            worker.close()
+        worker = None
+    if worker is None:
+        worker = _managed_write_worker = _SudoReplaceWorker()
+    return worker
+
+
 def _sudo_remove(path: Path) -> None:
     original_flags = _clear_immutable(path)
     try:
@@ -670,78 +885,31 @@ def _sudo_remove(path: Path) -> None:
 
 
 def _sudo_replace(path: Path, desired_text: str) -> None:
-    """Atomically replace ``path`` via sudo while preserving metadata and file flags."""
+    """Atomically replace ``path`` while preserving metadata and file flags."""
     if not managed_writes_allowed():
         raise RuntimeError("Refusing to invoke sudo for managed settings non-interactively.")
-    try:
-        parent_existed = path.parent.exists()
-    except OSError:
-        parent_existed = True
-    subprocess.run(_sudo_command("mkdir", "-p", str(path.parent)), check=True)
-    if not parent_existed:
-        subprocess.run(_sudo_command("chown", "0:0", str(path.parent)), check=True)
-        subprocess.run(_sudo_command("chmod", "755", str(path.parent)), check=True)
+    _validate_sudo_replace_target(path)
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=path.suffix or ".tmp", delete=False, encoding="utf-8"
     ) as tmp:
         tmp.write(desired_text)
         tmp_path = tmp.name
-    staging_path: str | None = None
-    original_flags: tuple[str, ...] = ()
     try:
-        result = subprocess.run(
-            _sudo_command("mktemp", str(path.parent / f".{path.name}.ucode.XXXXXX")),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        staging_path = result.stdout.strip()
-        if not staging_path or Path(staging_path).parent != path.parent:
-            raise RuntimeError(f"sudo mktemp returned an invalid staging path for {path}.")
-
-        path_exists = path.exists()
-        if path_exists:
-            original_flags = _clear_immutable(path)
-            preserve_args = ["-p"] if current_os() is OS.MACOS else ["--preserve=all"]
+        if _managed_write_session_depth:
+            _session_worker().replace(path, tmp_path)
+        else:
             subprocess.run(
-                _sudo_command("cp", *preserve_args, str(path), staging_path),
+                _sudo_replace_command(
+                    "once",
+                    tmp_path,
+                    str(path),
+                ),
                 capture_output=True,
                 text=True,
                 check=True,
             )
-            _clear_immutable(Path(staging_path))
-
-        subprocess.run(
-            _sudo_command("cp", tmp_path, staging_path),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        if not path_exists:
-            subprocess.run(_sudo_command("chown", "0:0", staging_path), check=True)
-            subprocess.run(_sudo_command("chmod", "644", staging_path), check=True)
-
-        subprocess.run(
-            _sudo_command("mv", "-f", staging_path, str(path)),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        staging_path = None
-        if original_flags:
-            _restore_immutable(path, original_flags)
-            original_flags = ()
     finally:
-        if original_flags and path.exists():
-            _restore_immutable(path, original_flags)
         os.unlink(tmp_path)
-        if staging_path:
-            subprocess.run(
-                _sudo_command("rm", "-f", staging_path),
-                capture_output=True,
-                text=True,
-                check=False,
-            )
 
 
 def _clear_immutable(path: Path) -> tuple[str, ...]:
