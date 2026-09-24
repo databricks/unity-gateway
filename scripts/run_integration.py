@@ -111,6 +111,16 @@ def arguments():
         help="Only model exposed by the Anthropic MPS discovery fixture.",
     )
     parser.add_argument(
+        "--claude-bedrock-allow-all-provider",
+        default="main.ucode.e2e_bedrock_all_models_enabled",
+        help="Bedrock MPS with allow_all_targets and no declared targets, for the #811 CUJ.",
+    )
+    parser.add_argument(
+        "--claude-bedrock-allow-all-model",
+        default="global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        help="Explicit Bedrock model id the allow_all CUJ pins (the service declares no targets).",
+    )
+    parser.add_argument(
         "--codex-provider",
         default="main.ucode.ci_openai_mps",
         help="Existing OpenAI MPS selected in the configure CUJ.",
@@ -316,6 +326,8 @@ def main() -> int:
             "claude_provider": args.claude_provider,
             "claude_relayed_provider": args.claude_relayed_provider,
             "claude_provider_model": args.claude_provider_model,
+            "claude_bedrock_allow_all_provider": args.claude_bedrock_allow_all_provider,
+            "claude_bedrock_allow_all_model": args.claude_bedrock_allow_all_model,
             "codex_provider": args.codex_provider,
             "codex_provider_model": args.codex_provider_model,
             "parent_schema": args.parent_schema,
@@ -562,6 +574,8 @@ def main() -> int:
                 "UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER": args.claude_relayed_provider,
                 "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN": oauth_token,
                 "UG_INTEGRATION_CLAUDE_PROVIDER_MODEL": args.claude_provider_model,
+                "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_PROVIDER": args.claude_bedrock_allow_all_provider,
+                "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL": args.claude_bedrock_allow_all_model,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
                 "UG_INTEGRATION_PARENT_SCHEMA": args.parent_schema,
