@@ -30,7 +30,13 @@ from ucode.databricks import (
     list_anthropic_models,
 )
 from ucode.launcher import exec_or_spawn
-from ucode.smart_routing import claude_routing, codex_interposer, routing
+from ucode.smart_routing import (
+    claude_routing,
+    claude_statusline,
+    codex_interposer,
+    pricing,
+    routing,
+)
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     sync_first_prompt_hook,
@@ -41,6 +47,7 @@ from ucode.ui import print_warning
 
 ENABLE_SMART_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_V2"
 ENABLE_SUBAGENT_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"
+ENABLE_SAVINGS_STATUSLINE_ENV_VAR = "ENABLE_SMART_ROUTING_SAVINGS"
 LEGACY_STATE_KEY = "smart_routing_enabled"
 
 _SMART_ROUTING_ENV_VARS = (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
@@ -128,6 +135,35 @@ def first_prompt_routing_enabled(env: MutableMapping[str, str] | None = None) ->
     return (
         source.get(ENABLE_SMART_ROUTING_ENV_VAR) == "1"
         and source.get(ENABLE_SUBAGENT_ROUTING_ENV_VAR) != "1"
+    )
+
+
+def savings_statusline_enabled(env: MutableMapping[str, str] | None = None) -> bool:
+    """Whether a smart-routed Claude launch shows the estimated-savings statusline row."""
+    source = os.environ if env is None else env
+    return source.get(ENABLE_SAVINGS_STATUSLINE_ENV_VAR) == "1"
+
+
+def _install_savings_statusline(
+    settings: dict, user_settings_path: Path, *, baseline_session_start: bool
+) -> None:
+    """Point the per-launch ``statusLine`` at the savings row, wrapping the user's own statusline.
+
+    The row reads per-token prices from a local cache, since a statusline refresh can't wait on the
+    network. Until the AI Gateway price endpoint lands, nothing writes that cache and the row stays
+    hidden; the fetch belongs here, keyed by the launch's Claude model ids plus the main model.
+    """
+    state_dir = APP_DIR / claude_statusline.STATE_DIRNAME
+    claude_statusline.prune_state(state_dir)
+    original = claude_statusline.effective_status_line(
+        settings, user_settings_path=user_settings_path, project_dir=Path.cwd()
+    )
+    settings["statusLine"] = claude_statusline.savings_status_line(
+        original,
+        python=sys.executable,
+        state_dir=state_dir,
+        price_cache=APP_DIR / pricing.PRICE_CACHE_FILENAME,
+        baseline_session_start=baseline_session_start,
     )
 
 
@@ -492,6 +528,10 @@ def launch_claude(
     sync_smart_routing_hooks(settings, routing_state, enabled=True)
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)
+    if savings_statusline_enabled():
+        _install_savings_statusline(
+            settings, user_settings_path, baseline_session_start=route_first_prompt
+        )
     write_json_file(settings_path, settings)
     model_args = launch_model_args(remaining, launch_model)
     routed_agent_args = _with_routed_claude_agents(remaining, model_ids)
