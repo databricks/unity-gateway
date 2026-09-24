@@ -67,7 +67,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_case_04_*`, `test_case_06_*` | Pass a provider or model-location override to managed Codex after configure and from fresh state | ug rejects the override before Codex starts and preserves agent-owned state |
 | `test_ug_configure_managed_codex_catalog_fallback` | Configure from an injected managed response containing a GPT model absent from Codex's bundled catalog | Actionable metadata warning; conservative catalog entry for the unknown model; real Codex prompt on the valid default model |
 | `test_managed_fixture_codex_http_headers_in_managed_file` | Interactive PTY configure with injected managed `http_headers` for Codex | The specified header (`x-databricks-workspace`) lands in `model_providers.Databricks.http_headers` in `/etc/codex/managed_config.toml` with the exact admin value |
-| `test_managed_fixture_claude_mps_defaults_accompany_discovery`, `test_managed_fixture_claude_parent_schema_defaults_accompany_discovery` | Launch Claude from injected managed defaults with MPS and Unity Catalog discovery | Both generated settings files retain every admin-authored default alongside the source header; only UC Opus/Sonnet family ids gain `[1m]` |
+| `test_managed_claude_mps_defaults_accompany_discovery`, `test_managed_claude_parent_schema_defaults_accompany_discovery` | Configure from the published admin config and launch Claude with MPS on `eng-ml-inference-batch-inference-us-west-2` and Unity Catalog discovery on `eng-ml-inference-ap-northeast-2`, respectively | Both generated settings files retain every admin-authored default alongside the source header; only UC Opus/Sonnet family ids gain `[1m]` |
 | `test_managed_fixture_claude_model_lifecycle`, `test_managed_fixture_codex_model_lifecycle` | Configure across no config -> static A -> static B -> MPS -> no config (stub-injected, `null` for no-config; MPS via a real provider service) | Each agent's model files reconcile to each static config (removed models pruned); switching to an MPS and a workspace with no managed config both clear ug's managed model settings so no stale list is enforced |
 | `test_ug_installed_wheel_exposes_help_and_version` | Invoke freshly installed console command | Package version matches; public help works |
 | `test_ug_status_in_fresh_home_is_unconfigured` | Request status before configure | Unconfigured status |
@@ -76,13 +76,13 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
 With both agents selected there are **60 live cases** (12 interactive TUI cases),
-**4 managed-workspace cases** (marker `managed`, run against a separate workspace that
-publishes a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
-**27 managed-fixture cases** (marker `managed_fixture`, with only
+**6 managed-workspace cases** (marker `managed`, run against workspaces that
+publish a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
+**25 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected), and **7 installation checks**. The 14 retained numbered scenarios
 comprise **24 explicit journeys**: 12 managed configured/fresh executions and 12 unmanaged
-executions. Fifteen additional managed-fixture cases cover focused model, MCP, skills,
-and lifecycle shapes. Parametrization varies
+executions. Thirteen additional managed-fixture cases cover focused model, MCP, skills,
+and lifecycle shapes; two published-config cases cover Claude defaults. Parametrization varies
 argument spelling or routing mode, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
 Generated-file cleanup and strict app-server stdout assertions remain enforced.
@@ -129,8 +129,9 @@ for the same agent overlap within a run.
 CI starts integration alongside unit tests and the existing e2e shards. Integration
 does not wait for agent e2e or get skipped when an agent shard fails. These suites
 share workspace capacity; overlapping their requests can still encounter rate limits.
-The `All integration tests` check requires every selected integration job to pass; full coverage
-does not depend on a label or a manual request.
+The `All integration tests` check requires every selected integration job to pass, including
+both managed-config lanes for full/live runs; full coverage does not depend on a label or
+a manual request.
 
 The existing e2e workflow runs seven parallel shards: gateway checks plus one for
 each of Claude, Codex, Gemini, OpenCode, Copilot, and Pi. Each agent shard installs
@@ -154,7 +155,7 @@ pending. The descriptive jobs provide the actual coverage and diagnostics.
 | --- | --- |
 | Live MCP and skills functionality | Deferred; installation tests cover the local web-search MCP handshake and tool listing, not upstream proxying or a real search request |
 | Broad configure flags, multiple workspaces, and PAT flows | Deferred while focusing on basic CUJs |
-| Workspace-switch MCP cleanup | The `workspace_switch` CUJ covers real registration, cleanup, repeat configure, and a completed Claude task. Unit/component tests cover duplicate attempts and injected removal failures; the CUJ does not force an agent timeout. It runs in the existing non-blocking managed CI lane. |
+| Workspace-switch MCP cleanup | The `workspace_switch` CUJ covers real registration, cleanup, repeat configure, and a completed Claude task. Unit/component tests cover duplicate attempts and injected removal failures; the CUJ does not force an agent timeout. It runs in the required managed CI lane for full/live runs. |
 | Relayed/subscription MPS discovery | Not covered by the scoped discovery journeys |
 | Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |

@@ -1445,6 +1445,22 @@ class TestConfigureMcpFromLocation:
         else:
             raise AssertionError("expected RuntimeError")
 
+    def test_rate_limited_raises_typed_error(self, monkeypatch):
+        # A 429 raises the distinct McpServiceListingRateLimited (not a generic RuntimeError) so the
+        # managed path can skip gracefully without breaking `ug configure`.
+        _stub_location_base(monkeypatch, {**CLAUDE_STATE})
+        monkeypatch.setattr(
+            mcp,
+            "list_mcp_services",
+            lambda workspace, token, parent: ([], "HTTP 429 Too Many Requests"),
+        )
+        try:
+            mcp.configure_mcp_command(location="system.ai")
+        except mcp.McpServiceListingRateLimited as exc:
+            assert "system.ai" in str(exc) and "429" in str(exc)
+        else:
+            raise AssertionError("expected McpServiceListingRateLimited")
+
     def test_registers_every_discovered_service(self, monkeypatch):
         saved_states: list[dict] = []
         configured: list[tuple[str, str, str, dict]] = []

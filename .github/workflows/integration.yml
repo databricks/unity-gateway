@@ -194,10 +194,6 @@ jobs:
     name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
     if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && inputs.suite != 'tui' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-22.04
-    # Kept non-blocking for now: the managed workspace (E2E_ADMIN_WORKSPACE) is repointed to
-    # runner-reachable ca-central, but leave these lanes for signal until the managed-config apply
-    # path is proven stable. Then drop this and add `managed` to the required set.
-    continue-on-error: true
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -229,6 +225,8 @@ jobs:
           UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
           DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
           DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
+          UG_MPS_DEFAULTS_CLIENT_SECRET: ${{ matrix.agent == 'claude' && secrets.UG_MPS_DEFAULTS_CLIENT_SECRET || '' }}
+          UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET: ${{ matrix.agent == 'claude' && secrets.UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET || '' }}
           UCODE_TEST_SECOND_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
           DATABRICKS_SECOND_BEARER: ${{ secrets.DATABRICKS_BEARER }}
         run: |
@@ -258,8 +256,8 @@ jobs:
 
   cujs:
     name: All integration tests
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, workspace, smoke, full]
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs: [installation, workspace, smoke, full, managed]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -280,7 +278,8 @@ jobs:
                   required.append("smoke")
               if suite != "smoke":
                   required.append("full")
-          # `managed` is intentionally omitted while it is non-blocking (see its job comment).
+          if suite in {"full", "live"}:
+              required.append("managed")
           failed = [job for job in required if results[job]["result"] != "success"]
           if failed:
               raise SystemExit("Integration jobs did not pass: " + ", ".join(failed))
