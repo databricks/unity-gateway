@@ -582,22 +582,25 @@ def _add_choice(selection: str, title: str) -> questionary.Choice:
     return questionary.Choice(title=title, value=f"{MCP_ADD_PREFIX}{selection}")
 
 
-def _mcp_service_choice(name: str, known_names: set[str], additive: bool) -> questionary.Choice:
-    """Picker choice for one MCP-service full name (`<catalog>.<schema>.<id>`).
+def _mcp_service_choice(
+    name: str,
+    known_names: set[str],
+    additive: bool,
+    managed_names: set[str] | None = None,
+) -> questionary.Choice | None:
+    """Picker choice for one MCP-service full name (`<catalog>.<schema>.<id>`), or None to hide it.
 
-    Shared by the initial `build_mcp_picker_choices` render and the background walk that
-    streams more services in, so a streamed row is built identically to an up-front one
-    (and dedupes by value against what's already shown). An already-registered service is
-    a removable toggle in replace mode and a non-toggleable note under `mcp add`
-    (additive); an unregistered one is an add-choice."""
+    Shared by the initial `build_mcp_picker_choices` render and the background walk that streams
+    more services in, so a streamed row is built identically to an up-front one. The picker only
+    shows rows you can act on, so two kinds are hidden: a managed service (never ug's to add or
+    remove) and, under `mcp add`, an already-configured one (nothing to add). Replace mode still
+    lists ug's own as a removable toggle; an unregistered service is an add-choice."""
     registered_as = name.replace(".", "-")
     display_title = f"MCP: {name}"
+    if registered_as in (managed_names or set()):
+        return None
     if registered_as in known_names:
-        if additive:
-            return questionary.Choice(
-                title=display_title, value=registered_as, disabled="already configured"
-            )
-        return _server_choice(registered_as, True, display_title)
+        return None if additive else _server_choice(registered_as, True, display_title)
     return _add_choice(f"{MCP_SERVICE_SELECTION_PREFIX}{name}", display_title)
 
 
@@ -610,23 +613,28 @@ def build_mcp_picker_choices(
     available_vector_search_servers: list[dict] | None = None,
     available_uc_functions_servers: list[dict] | None = None,
     additive: bool = False,
+    managed_names: set[str] | None = None,
 ) -> list[questionary.Choice | questionary.Separator]:
     original_by_name = _servers_by_name(original_servers)
-    known_names = set(original_by_name)
+    managed = managed_names or set()
+    # Managed servers aren't in ug's own `mcp_servers` state, so add them here to make every
+    # source's already-configured branch pick them up.
+    known_names = set(original_by_name) | managed
 
-    def known_choice(name: str, title: str | None = None) -> questionary.Choice:
-        # `ucode mcp add` (additive) never removes an already-configured server, so
-        # show it as a non-toggleable note rather than a pre-checked box whose
-        # unchecking would be silently ignored. Replace mode keeps it a
-        # pre-checked toggle so unchecking removes it.
-        if additive:
-            return questionary.Choice(
-                title=title or name, value=name, disabled="already configured"
-            )
+    def known_choice(name: str, title: str | None = None) -> questionary.Choice | None:
+        # The picker shows only actionable rows. A managed server is never ug's to add or remove,
+        # and under `ug mcp add` an already-configured server has nothing to add — hide both.
+        # Replace mode keeps ug's own as a pre-checked toggle so unchecking removes it.
+        if name in managed or additive:
+            return None
         return _server_choice(name, True, title)
 
     choices: list[questionary.Choice | questionary.Separator] = []
     displayed_names: set[str] = set()
+
+    def push(choice: questionary.Choice | None) -> None:
+        if choice is not None:
+            choices.append(choice)
 
     # Databricks SQL is intentionally NOT offered as an up-front add-choice — we don't promote
     # it. If it's exposed as a `system.ai` MCP service it shows like any other service, and an
@@ -637,13 +645,13 @@ def build_mcp_picker_choices(
         # Picker shows the dotted UC name; state/agents store the dashed form
         # (see resolver). The shared helper is also used by the background walk that
         # streams more services in, so up-front and streamed rows match exactly.
-        choices.append(_mcp_service_choice(name, known_names, additive))
+        push(_mcp_service_choice(name, known_names, additive, managed))
         displayed_names.add(name.replace(".", "-"))
 
     for name in available_external_names:
         display_title = f"Connection: {name}"
         if name in known_names:
-            choices.append(known_choice(name, display_title))
+            push(known_choice(name, display_title))
         else:
             choices.append(_add_choice(f"{EXTERNAL_MCP_SELECTION_PREFIX}{name}", display_title))
         displayed_names.add(name)
@@ -655,7 +663,7 @@ def build_mcp_picker_choices(
             continue
         display_title = f"Genie: {title}" if isinstance(title, str) and title else name
         if name in known_names:
-            choices.append(known_choice(name, display_title))
+            push(known_choice(name, display_title))
         else:
             choices.append(
                 _add_choice(
@@ -672,7 +680,7 @@ def build_mcp_picker_choices(
             continue
         display_title = f"App: {title}" if isinstance(title, str) and title else name
         if name in known_names:
-            choices.append(known_choice(name, display_title))
+            push(known_choice(name, display_title))
         else:
             choices.append(
                 _add_choice(
@@ -690,7 +698,7 @@ def build_mcp_picker_choices(
             continue
         display_title = f"Vector Search: {catalog}.{schema}"
         if name in known_names:
-            choices.append(known_choice(name, display_title))
+            push(known_choice(name, display_title))
         else:
             choices.append(
                 _add_choice(
@@ -708,7 +716,7 @@ def build_mcp_picker_choices(
             continue
         display_title = f"UC Functions: {catalog}.{schema}"
         if name in known_names:
-            choices.append(known_choice(name, display_title))
+            push(known_choice(name, display_title))
         else:
             choices.append(
                 _add_choice(
@@ -719,7 +727,7 @@ def build_mcp_picker_choices(
         displayed_names.add(name)
 
     for name in sorted(known_names - displayed_names):
-        choices.append(known_choice(name))
+        push(known_choice(name))
     return choices
 
 
@@ -733,6 +741,7 @@ def prompt_for_mcp_server_choices(
     available_uc_functions_servers: list[dict] | None = None,
     allow_back: bool = False,
     additive: bool = False,
+    managed_names: set[str] | None = None,
     background_loader: Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]
     | None = None,
 ) -> list[str] | None | _Back:
@@ -742,6 +751,9 @@ def prompt_for_mcp_server_choices(
 
     ``additive`` (``ucode mcp add``) shows already-configured servers as
     non-toggleable notes instead of pre-checked, removable boxes.
+
+    ``managed_names`` are servers managed configuration already provides; they show as
+    non-toggleable in either mode, since there is nothing to add and ug can't remove them here.
 
     ``background_loader`` streams more choices in after the picker opens (see
     `scrolling_checkbox`) — used to load the workspace-wide MCP-services walk without
@@ -760,6 +772,7 @@ def prompt_for_mcp_server_choices(
             available_vector_search_servers,
             available_uc_functions_servers,
             additive=additive,
+            managed_names=managed_names,
         ),
         style=picker_style(),
         instruction=instruction,
@@ -862,6 +875,57 @@ def _resolve_managed_mcp_servers(
 
 # Agents whose managed MCP goes to an OS-managed file (name -> module); drives the guard and loop.
 _MANAGED_FILE_AGENTS = {"claude": claude, "codex": codex}
+
+
+def managed_mcp_servers(state: dict, agents: set[str] | None = None) -> list[dict]:
+    """Every MCP server that managed config already provides, as server dicts.
+
+    Managed servers live in two places, so both are merged here: the ``managed_mcp_servers``
+    fallback state, and each agent's OS-managed file. ``agents`` narrows the result to servers
+    registered for those clients.
+
+    `ug mcp list`, `ug status`, and the `ug mcp add` picker all use this, so they can't disagree
+    about what managed config provides."""
+    servers: list[dict] = [
+        server
+        for server in (state.get("managed_mcp_servers") or [])
+        if isinstance(server, dict)
+        and (agents is None or any(c in agents for c in _mcp_server_clients(server)))
+    ]
+    for agent, module in _MANAGED_FILE_AGENTS.items():
+        if agents is not None and agent not in agents:
+            continue
+        for name, url in module.read_managed_mcp_urls().items():
+            servers.append({"name": name, "url": url, "clients": [agent]})
+    return servers
+
+
+def managed_mcp_server_names(state: dict, agents: set[str] | None = None) -> set[str]:
+    """Registered names of the servers managed config provides (see :func:`managed_mcp_servers`)."""
+    return {name for server in managed_mcp_servers(state, agents) if (name := _server_name(server))}
+
+
+def _drop_managed_servers(servers: list[dict], managed_names: set[str]) -> list[dict]:
+    """Drop the servers managed config already provides, and name them so the skip isn't silent.
+
+    The non-interactive counterpart to the picker's `already configured (managed)` row. Adding one
+    anyway would write a second, user-scope registration that shadows the managed one."""
+    if not managed_names:
+        return servers
+    kept: list[dict] = []
+    skipped: set[str] = set()
+    for server in servers:
+        name = _server_name(server)
+        if name and name in managed_names:
+            skipped.add(name)
+        else:
+            kept.append(server)
+    if skipped:
+        print_note(
+            "Already provided by your managed configuration; skipping: "
+            f"{', '.join(sorted(skipped))}."
+        )
+    return kept
 
 
 def _servers_without_clients(servers: list[dict], drop: set[tuple[str, str]]) -> list[dict]:
@@ -1173,6 +1237,7 @@ def _mcp_services_background_loader(
     profile: str | None,
     known_names: set[str],
     additive: bool,
+    managed_names: set[str] | None = None,
 ) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]:
     """Return a picker `background_loader` that runs the workspace-wide MCP-services walk and
     streams each schema's newly-found services into the open picker as choices, so the walk
@@ -1183,7 +1248,16 @@ def _mcp_services_background_loader(
         append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
     ) -> None:
         def on_services(new_names: list[str]) -> None:
-            append([_mcp_service_choice(name, known_names, additive) for name in new_names])
+            # A streamed service can be hidden (managed, or already configured under `mcp add`),
+            # in which case its choice is None — drop those so only real rows reach the picker.
+            new_choices = [
+                choice
+                for name in new_names
+                if (choice := _mcp_service_choice(name, known_names, additive, managed_names))
+                is not None
+            ]
+            if new_choices:
+                append(new_choices)
 
         discover_all_mcp_service_names(
             workspace, profile, on_services=on_services, cancel_event=cancel_event
@@ -1721,16 +1795,26 @@ def _configure_v2_mcp_selectors(
     picker_servers = [s for s in original_mcp_servers if s.get("kind") != SKILLS_MCP_KIND]
     original_by_name = _servers_by_name(picker_servers)
 
+    managed_names = managed_mcp_server_names(state, set(clients))
     working_mcp_servers: list[dict] = list(skills_servers)
     working_names: set[str] = set()
+    skipped_managed: set[str] = set()
     for selection in selectors:
         entry_name, url = _resolve_mcp_selection(selection, workspace, available_app_servers)
         if entry_name in working_names:
+            continue
+        if entry_name in managed_names:
+            skipped_managed.add(entry_name)
             continue
         working_mcp_servers.append(
             {"name": entry_name, "url": url, "auth": "proxy", "clients": clients}
         )
         working_names.add(entry_name)
+    if skipped_managed:
+        print_note(
+            "Already provided by your managed configuration; skipping: "
+            f"{', '.join(sorted(skipped_managed))}."
+        )
 
     if append:
         working_mcp_servers = _union_missing(original_mcp_servers, working_mcp_servers)
@@ -1805,11 +1889,14 @@ def configure_mcp_command(
         state, "Add MCP Servers" if append else "MCP Servers", agents=agents
     )
 
+    managed_names = managed_mcp_server_names(state, set(clients))
+
     original_mcp_servers_for_location: list[dict] = list(state.get("mcp_servers") or [])
     if location is not None:
         working_mcp_servers = _resolve_location_mcp_servers(
             workspace, profile, clients, location, original_mcp_servers_for_location, services
         )
+        working_mcp_servers = _drop_managed_servers(working_mcp_servers, managed_names)
         if append:
             working_mcp_servers = _union_missing(
                 original_mcp_servers_for_location, working_mcp_servers
@@ -1845,7 +1932,11 @@ def configure_mcp_command(
     # behind it via the background loader so the picker never blocks on it.
     discovered = _discover_selected_mcp_sources(workspace, profile, {MCP_SERVICES_SOURCE})
     services_loader = _mcp_services_background_loader(
-        workspace, profile, set(original_by_name), additive=append
+        workspace,
+        profile,
+        set(original_by_name) | managed_names,
+        additive=append,
+        managed_names=managed_names,
     )
     selections = prompt_for_mcp_server_choices(
         discovered["external"],
@@ -1856,6 +1947,7 @@ def configure_mcp_command(
         discovered["vector_search"],
         discovered["uc_functions"],
         additive=append,
+        managed_names=managed_names,
         background_loader=services_loader,
     )
     if selections is None or isinstance(selections, _Back):
@@ -2370,15 +2462,8 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
 
     for server in state.get("mcp_servers") or []:
         _collect(server, managed=False)
-    # Managed servers also live in the OS-managed files (source of truth), not just fallback state.
-    for server in state.get("managed_mcp_servers") or []:
+    for server in managed_mcp_servers(state, agents):
         _collect(server, managed=True)
-    if agents is None or "claude" in agents:
-        for name, url in claude.read_managed_mcp_urls().items():
-            _collect({"name": name, "url": url, "clients": ["claude"]}, managed=True)
-    if agents is None or "codex" in agents:
-        for name, url in codex.read_managed_mcp_urls().items():
-            _collect({"name": name, "url": url, "clients": ["codex"]}, managed=True)
 
     if configured:
         table = Table(box=None, pad_edge=False, header_style="bold")
