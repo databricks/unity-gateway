@@ -94,6 +94,41 @@ def _without_managed_overlay(state: dict) -> dict:
     return persisted
 
 
+def forget_mcp_servers_in_other_workspaces(current_workspace: str, names: set[str]) -> None:
+    """Drop MCP entries named in ``names`` from every workspace bucket except ``current_workspace``.
+
+    The cross-workspace residue purge removes these servers from the agents' config files; this
+    clears ucode's own per-workspace record of them too. Without it, the purge keeps rediscovering
+    the same already-removed servers and re-runs on every later ``ucode configure`` (twice on a
+    workspace switch). Only non-current buckets are touched, so the current workspace's own
+    ``save_state`` is left untouched.
+    """
+    if is_dry_run() or not names:
+        return
+    full = load_full_state()
+    workspaces = full.get("workspaces")
+    if not isinstance(workspaces, dict):
+        return
+    changed = False
+    for ws, bucket in workspaces.items():
+        if ws == current_workspace or not isinstance(bucket, dict):
+            continue
+        servers = bucket.get("mcp_servers")
+        if not isinstance(servers, list):
+            continue
+        kept = [s for s in servers if not (isinstance(s, dict) and s.get("name") in names)]
+        if len(kept) != len(servers):
+            bucket["mcp_servers"] = kept
+            changed = True
+    if not changed:
+        return
+    try:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_PATH.write_text(json.dumps(full, indent=2), encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Failed to write state file: {STATE_PATH}") from exc
+
+
 def set_current_workspace(workspace: str | None) -> None:
     """Set ``current_workspace`` without touching the per-workspace blocks.
 

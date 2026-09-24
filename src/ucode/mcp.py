@@ -47,7 +47,12 @@ from ucode.skills_api import (
     SkillRef,
     list_all_skills,
 )
-from ucode.state import load_full_state, load_state, save_state
+from ucode.state import (
+    forget_mcp_servers_in_other_workspaces,
+    load_full_state,
+    load_state,
+    save_state,
+)
 from ucode.ui import (
     _BACK,
     _Back,
@@ -1390,20 +1395,45 @@ def _run_client_work(work: dict[str, list[Callable[[], object]]]) -> None:
                 future.result()
 
 
+def _batch_remove_stale_servers(batch_remove: dict[str, set[str]]) -> bool:
+    """Remove ``{client: {names}}`` from each agent's user-scope config in ONE read-modify-write per
+    client (the ``write_user_mcp_servers`` batched path), instead of a ``claude mcp remove`` /
+    ``codex mcp remove`` subprocess per (client, name) — for Claude that was one subprocess per
+    cleanup scope per name, so the ~11 servers the ``system.ai`` default registers turned a workspace
+    switch into dozens of serial subprocesses and a multi-second stall. ``ug`` only ever *adds* MCP
+    servers at user scope, so a user-scope removal covers everything it wrote.
+
+    Best-effort: a client whose write fails is warned about and skipped so the switch still
+    completes. Returns ``True`` only if every client's write succeeded, so the caller can leave the
+    state record in place and retry on the next run when a removal failed."""
+    failed: list[str] = []
+
+    def remove_for(client: str, names: set[str]) -> None:
+        try:
+            _MCP_CLIENT_MODULES[client].write_user_mcp_servers({}, names)
+        except (RuntimeError, subprocess.TimeoutExpired, OSError) as exc:
+            failed.append(client)
+            print_warning(
+                f"Failed to remove stale MCP entries from {MCP_CLIENTS[client]['display']}: {exc}"
+            )
+
+    work: dict[str, list[Callable[[], object]]] = {}
+    for client, names in batch_remove.items():
+        if names:
+            work[client] = [lambda c=client, n=names: remove_for(c, n)]
+    _run_client_work(work)
+    return not failed
+
+
 def purge_cross_workspace_mcp_residue(state: dict, workspace: str) -> None:
     installed = set(available_mcp_clients())
-    attempted_removals: set[tuple[str, str]] = set()
+    # Collect every removal as {client: {names}} and apply it as one batched write per client below,
+    # rather than a CLI/config removal per server (see `_batch_remove_stale_servers`).
+    batch_remove: dict[str, set[str]] = {}
 
-    def remove_stale_server(client: str, name: str) -> list[str] | None:
-        key = (client, name)
-        if key in attempted_removals:
-            return None
-        attempted_removals.add(key)
-        try:
-            return remove_client_mcp_server(client, name)
-        except (RuntimeError, subprocess.TimeoutExpired, OSError) as exc:
-            print_warning(f"Failed to remove `{name}` from {MCP_CLIENTS[client]['display']}: {exc}")
-            return None
+    def queue_removal(client: str, name: str) -> None:
+        if client in installed and client in _MCP_CLIENT_MODULES:
+            batch_remove.setdefault(client, set()).add(name)
 
     raw_mcp_servers = list(state.get("mcp_servers") or [])
     current_mcp_servers, foreign_mcp_servers = _partition_mcp_entries_by_workspace(
@@ -1423,29 +1453,28 @@ def purge_cross_workspace_mcp_residue(state: dict, workspace: str) -> None:
             if not name:
                 continue
             for client in server.get("clients") or []:
-                if client not in installed or client not in MCP_CLIENTS:
-                    continue
-                remove_stale_server(client, name)
+                queue_removal(client, name)
         state["mcp_servers"] = current_mcp_servers
         save_state(state)
 
     other_ws_mcps = _mcp_entries_only_in_other_workspaces(workspace)
-    actually_removed: list[str] = []
-    for name in sorted(other_ws_mcps):
-        any_removed = False
-        for client in other_ws_mcps[name]:
-            if client not in installed or client not in MCP_CLIENTS:
-                continue
-            removed_scopes = remove_stale_server(client, name)
-            if removed_scopes:
-                any_removed = True
-        if any_removed:
-            actually_removed.append(name)
-    if actually_removed:
-        noun = "entry" if len(actually_removed) == 1 else "entries"
+    for name, clients in other_ws_mcps.items():
+        for client in clients:
+            queue_removal(client, name)
+
+    all_removed = _batch_remove_stale_servers(batch_remove) if batch_remove else True
+
+    # We just removed these servers from every agent's config; forget them in the other workspaces'
+    # state buckets too. Otherwise `_mcp_entries_only_in_other_workspaces` keeps rediscovering the
+    # same already-removed servers, so every later `configure` re-runs this purge (and on a workspace
+    # switch both the shared-state and MCP-setup call sites fire it — the report appearing twice).
+    # Skip forgetting (and the report) when a removal failed, so the next run retries it.
+    if other_ws_mcps and all_removed:
+        forget_mcp_servers_in_other_workspaces(workspace, set(other_ws_mcps))
+        noun = "entry" if len(other_ws_mcps) == 1 else "entries"
         print_warning(
-            f"Removed {len(actually_removed)} MCP {noun} left over from "
-            f"previously-configured workspaces: {', '.join(actually_removed)}."
+            f"Removed {len(other_ws_mcps)} MCP {noun} left over from "
+            f"previously-configured workspaces: {', '.join(sorted(other_ws_mcps))}."
         )
 
 
