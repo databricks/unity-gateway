@@ -1313,6 +1313,31 @@ class PermissionDeniedError(RuntimeError):
     denial for a consumer."""
 
 
+class AuthTokenError(RuntimeError):
+    """The workspace rejected the access token *itself* — expired or invalid — as
+    opposed to a valid identity missing a grant (:class:`PermissionDeniedError`).
+
+    A ``--use-pat`` profile is never validated locally (the static PAT is exported
+    as ``DATABRICKS_BEARER`` and returned unchecked), so a stale PAT only surfaces
+    on the first real API call. Discovery callers let this propagate as a hard,
+    actionable error instead of skipping the source, so an expired/invalid token
+    is reported rather than looking like an empty workspace (AIGTWY-4843)."""
+
+
+def raise_for_invalid_access_token(workspace: str, reason: str | None) -> None:
+    """Raise :class:`AuthTokenError` with re-auth guidance when ``reason`` shows the
+    workspace rejected the token itself. No-op for any other failure (permission,
+    transient) so a best-effort discovery caller can still skip a source quietly."""
+    if reason and _looks_like_definitive_auth_failure(reason):
+        raise AuthTokenError(
+            f"Databricks rejected the access token for {workspace} — it is expired or "
+            f"invalid ({reason}). Re-authenticate:\n"
+            f"  databricks auth login --host {workspace}\n"
+            "If this profile uses a personal access token (PAT), generate a new token "
+            "and update it in ~/.databrickscfg."
+        )
+
+
 def _looks_like_cli_permission_error(stderr: str | None) -> bool:
     """Whether a Databricks CLI stderr indicates an authorization failure.
 
@@ -3009,14 +3034,18 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
 
 
 def _looks_like_definitive_auth_failure(reason: str) -> bool:
-    """True when the token itself is rejected (401, or an invalid-token 400).
+    """True when the token itself is rejected (expired or invalid).
 
-    A 403 is left to the scope and permission routing, since it can mean a
-    missing OAuth scope or missing Unity Catalog grants rather than a bad token.
+    Matches a 401, an invalid-token 400 (the AI Gateway's `Invalid Token`), or a
+    403 whose body reports an invalid access token (Unity Catalog rejects a stale
+    PAT this way, e.g. `HTTP 403 Forbidden: ...Invalid access token...`). A *plain*
+    403 with no token-invalid wording is left to the scope and permission routing,
+    since it can mean a missing OAuth scope or Unity Catalog grants, not a bad token.
     """
-    if "HTTP 401" in reason:
+    lowered = reason.lower()
+    if "http 401" in lowered:
         return True
-    return "HTTP 400" in reason and "invalid token" in reason.lower()
+    return "invalid token" in lowered or "invalid access token" in lowered
 
 
 def _looks_like_scope_failure(reason: str) -> bool:
