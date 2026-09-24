@@ -588,8 +588,6 @@ def main() -> int:
                 "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
                 "DATABRICKS_BEARER": bearer,
-                "DATABRICKS_CLIENT_ID": os.environ.get("DATABRICKS_CLIENT_ID", ""),
-                "DATABRICKS_CLIENT_SECRET": os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
                 "UG_MPS_DEFAULTS_CLIENT_SECRET": os.environ.get(
                     "UG_MPS_DEFAULTS_CLIENT_SECRET", ""
                 ),
