@@ -2553,6 +2553,61 @@ class TestDoctorCommand:
         assert "boom" in _strip_ansi(result.output)
 
 
+class TestOpenCodeModelFlag:
+    @pytest.mark.parametrize("flag", ["--model", "-m"])
+    def test_model_option_threads_to_config_and_launch(self, flag):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["opencode", flag, "databricks-claude-sonnet-4"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.args[2] == (
+            "databricks-anthropic/databricks-claude-sonnet-4"
+        )
+        assert (
+            calls["launch"].call_args.kwargs["options"].user_pinned_model
+            == "databricks-anthropic/databricks-claude-sonnet-4"
+        )
+
+    def test_native_model_after_separator_overrides_owned_option(self):
+        native = "openrouter/anthropic/claude-sonnet"
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(
+                app,
+                [
+                    "opencode",
+                    "--model",
+                    "databricks-claude-sonnet-4",
+                    "run",
+                    "--",
+                    "--model",
+                    native,
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.args[2] == native
+        assert calls["launch"].call_args.args[2] == ["run", "--model", native]
+        assert calls["launch"].call_args.kwargs["options"].user_pinned_model == native
+
+    def test_unknown_model_fails_before_tool_configuration(self):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["opencode", "--model", "missing-model"])
+
+        assert result.exit_code == 1
+        assert "not configured" in _strip_ansi(result.output)
+        calls["configure"].assert_not_called()
+        calls["launch"].assert_not_called()
+
+    def test_model_after_separator_is_prompt_text(self):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["opencode", "run", "--", "--", "--model", "literal"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.args[2] == "databricks-claude-sonnet-4"
+        assert calls["launch"].call_args.args[2] == ["run", "--", "--model", "literal"]
+        assert calls["launch"].call_args.kwargs["options"].user_pinned_model is None
+
+
 class TestAutoConfigureOnFirstRun:
     @pytest.mark.parametrize("tool", list(cli_mod.TOOL_SPECS))
     @pytest.mark.parametrize("has_workspace", [False, True])
