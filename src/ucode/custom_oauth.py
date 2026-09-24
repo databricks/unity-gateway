@@ -17,6 +17,7 @@ from databricks.sdk import oauth
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
 from ucode.databricks import (
     build_auth_token_argv,
+    databricks_cli_path,
     ensure_databricks_cli_version,
     external_bearer_configured,
     get_databricks_token,
@@ -153,7 +154,7 @@ def ensure_custom_oauth_cli_token(
     if has_valid_databricks_auth(workspace, profile):
         return get_databricks_token(workspace, profile)
     login_args = [
-        "databricks",
+        databricks_cli_path(),
         "auth",
         "login",
         "--host",

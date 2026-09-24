@@ -22,6 +22,7 @@ from ucode.agents import (
 )
 from ucode.databricks import (
     MIN_DATABRICKS_CLI_VERSION,
+    databricks_cli_installed,
     databricks_cli_version,
     has_valid_databricks_auth,
     install_databricks_cli,
@@ -107,11 +108,11 @@ def _install_databricks() -> bool:
         install_databricks_cli()
     except RuntimeError:
         return False
-    return shutil.which("databricks") is not None
+    return databricks_cli_installed()
 
 
 def _check_databricks_cli() -> Check:
-    if not shutil.which("databricks"):
+    if not databricks_cli_installed():
         return Check(
             "Databricks CLI",
             "error",
