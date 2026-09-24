@@ -6,12 +6,15 @@ import base64
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+import ucode.agents.claude as claude_agent
+import ucode.codex_config as codex_config
 import ucode.config_io as config_io
 from ucode import managed_files
 
@@ -480,6 +483,30 @@ class TestSudoReplace:
         with pytest.raises(RuntimeError, match="Refusing to replace symlinked managed settings"):
             _REAL_SUDO_REPLACE(path, "content")
 
+    def test_shell_allowlist_matches_python_targets(self):
+        """The shell worker's quoted allowlist must mirror _SUDO_REPLACE_TARGETS exactly."""
+        body = managed_files._SUDO_REPLACE_SCRIPT.split("target_is_allowed() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        shell_entries = set(re.findall(r'"(linux|macos):([^"]+)"', body))
+        python_entries = {
+            (os_enum.value, str(path))
+            for os_enum, paths in managed_files._SUDO_REPLACE_TARGETS.items()
+            for path in paths
+        }
+        assert shell_entries == python_entries
+
+    @pytest.mark.parametrize("os_enum", [managed_files.OS.LINUX, managed_files.OS.MACOS])
+    def test_real_managed_path_helpers_are_allowlisted(self, os_enum, monkeypatch):
+        """The paths the agent helpers compute must be in the sudo-replace allowlist."""
+        # Both helpers bind current_os into their own module namespaces.
+        monkeypatch.setattr(managed_files, "current_os", lambda: os_enum)
+        monkeypatch.setattr(claude_agent, "current_os", lambda: os_enum)
+        monkeypatch.setattr(codex_config, "current_os", lambda: os_enum)
+        allowed = managed_files._SUDO_REPLACE_TARGETS[os_enum]
+        assert claude_agent._managed_settings_path() in allowed
+        assert codex_config.codex_managed_config_path() in allowed
+
 
 @pytest.mark.skipif(sys.platform == "win32", reason="The managed writer is Unix-only")
 class TestManagedWorkerShell:
@@ -537,6 +564,64 @@ mv() {
             assert target.read_text(encoding="utf-8") == "final settings\n"
         assert target.stat().st_mode & 0o777 == 0o640
         assert not list(tmp_path.glob(".managed_config.toml.ucode.*"))
+
+    @pytest.mark.parametrize("parent_exists", [True, False])
+    def test_real_shell_creates_missing_file(self, tmp_path, parent_exists):
+        """The new-file branch installs content, mode, and (root) ownership from scratch."""
+        source = tmp_path / "source.json"
+        source.write_text("managed settings\n", encoding="utf-8")
+        parent = tmp_path if parent_exists else tmp_path / "codex"
+        target = parent / "managed_config.toml"
+        chown_log = tmp_path / "chown.log"
+        # Unit-only relocation: production still accepts only its fixed machine-wide targets.
+        script = managed_files._SUDO_REPLACE_SCRIPT.replace(
+            "/etc/codex/managed_config.toml", str(target)
+        )
+        # chown 0:0 needs root; log the calls instead, leaving chmod/mkdir/cp/mv real.
+        shim_chown = r"""
+chown() {
+    printf '%s\n' "$*" >> "$UG_TEST_CHOWN_LOG"
+    return 0
+}
+"""
+        script = script.replace('\ncase "$mode" in', shim_chown + '\ncase "$mode" in')
+        request = " ".join(
+            [
+                "REPLACE",
+                "1",
+                managed_files._encode_worker_arg(str(source)),
+                managed_files._encode_worker_arg(str(target)),
+            ]
+        )
+        result = subprocess.run(
+            ["/bin/sh", "-c", script, "worker-test", "session", managed_files.current_os().value],
+            input=request + "\nQUIT\n",
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={
+                **os.environ,
+                "SUDO_UID": str(os.getuid()),
+                "UG_TEST_CHOWN_LOG": str(chown_log),
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "OK 1\n"
+        assert target.read_text(encoding="utf-8") == "managed settings\n"
+        assert target.stat().st_mode & 0o777 == 0o644
+        expected_chown_calls = []
+        if not parent_exists:
+            assert parent.stat().st_mode & 0o777 == 0o755
+            expected_chown_calls.append(f"0:0 {parent}")
+        chown_calls = chown_log.read_text(encoding="utf-8").splitlines()
+        assert chown_calls[: len(expected_chown_calls)] == expected_chown_calls
+        assert len(chown_calls) == len(expected_chown_calls) + 1
+        staging_owner, _, staging_arg = chown_calls[-1].partition(" ")
+        assert staging_owner == "0:0"
+        staging_path = Path(staging_arg)
+        assert staging_path.parent == parent
+        assert staging_path.name.startswith(".managed_config.toml.ucode.")
+        assert not list(parent.glob(".managed_config.toml.ucode.*"))
 
 
 class TestManagedFileLifecycle:
