@@ -1,8 +1,8 @@
 """Managed-config CUJs for agent model lists, smart routing, and Codex catalog fallback metadata.
 
-The admin CodingAgentConfig is injected via UCODE_MANAGED_CONFIG_STUB so the real /model TUI can be
-driven against a model list the live workspace does not publish; only the config INPUT is stubbed
-(auth, the config writers, and the agent binary stay real). See tests/AGENTS.md rule 4.
+The Claude defaults cases read published configs from their dedicated workspaces. Other cases
+inject the admin CodingAgentConfig via UCODE_MANAGED_CONFIG_STUB to exercise shapes the live
+workspace does not publish; only that config input is stubbed. See tests/AGENTS.md rule 4.
 """
 
 import json
@@ -14,6 +14,7 @@ from utils.managed import (
     build_claude_agent_config,
     build_codex_agent_config,
     build_coding_agent_config,
+    fetch_published_config,
     set_managed_config_stub,
 )
 from utils.terminal import AgentTerminal, TerminalProcess
@@ -31,6 +32,12 @@ MANAGED_CLAUDE_DEFAULT_ENV_KEYS = {
     "default_sonnet_model": "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "default_haiku_model": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 }
+CLAUDE_MPS_DEFAULTS_WORKSPACE = (
+    "https://eng-ml-inference-batch-inference-us-west-2.cloud.databricks.com"
+)
+CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE = (
+    "https://eng-ml-inference-ap-northeast-2.cloud.databricks.com"
+)
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 CLAUDE_SMART_ROUTING_MODELS = [
@@ -51,16 +58,17 @@ CODEX_SMART_ROUTING_MODELS = [
 ]
 
 
-@pytest.mark.managed_fixture
+@pytest.mark.managed
 @pytest.mark.claude
-def test_managed_fixture_claude_mps_defaults_accompany_discovery(live_session, workspace, tmp_path):
-    """Scenario: launch Claude with managed defaults and MPS discovery.
+def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace_bearer):
+    """Scenario: launch Claude with managed defaults and MPS discovery on the west-2 workspace.
 
     Expected: the installed ug launch writes the MPS header and every admin-authored default to
     both Claude settings files without changing the model ids. This settings reconciliation check
     does not claim model inference.
     """
     session = live_session
+    session.env["DATABRICKS_BEARER"] = workspace_bearer(CLAUDE_MPS_DEFAULTS_WORKSPACE)
     defaults = {
         "default_model": "anthropic.claude-sonnet-5",
         "default_fable_model": "anthropic.claude-fable-5-1",
@@ -68,18 +76,20 @@ def test_managed_fixture_claude_mps_defaults_accompany_discovery(live_session, w
         "default_sonnet_model": "anthropic.claude-sonnet-5",
         "default_haiku_model": "anthropic.claude-haiku-4-5",
     }
-    config = build_coding_agent_config(
-        "CODING_AGENT_CLAUDE_CODE",
-        {
-            "agent": "CODING_AGENT_CLAUDE_CODE",
-            "config": {
-                "models": {"model_provider_service": MANAGED_CLAUDE_PROVIDER_SERVICE},
-                "default_models": defaults,
-            },
-        },
+    published = fetch_published_config(
+        CLAUDE_MPS_DEFAULTS_WORKSPACE, session.env["DATABRICKS_BEARER"]
     )
-    set_managed_config_stub(session, tmp_path, config)
-    result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+    claude = [
+        entry["config"]
+        for entry in published.get("enabled_agents", [])
+        if entry.get("agent") == "CODING_AGENT_CLAUDE_CODE"
+    ]
+    assert len(claude) == 1, "Expected one published Claude agent config"
+    assert claude[0].get("models") == {"model_provider_service": MANAGED_CLAUDE_PROVIDER_SERVICE}
+    assert claude[0].get("default_models") == defaults
+    result = session.run(
+        "configure", "--workspace", CLAUDE_MPS_DEFAULTS_WORKSPACE, "--skip-upgrade", timeout=240
+    )
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
 
     command = [str(session.binary), "claude", "--", "--version"]
@@ -99,18 +109,17 @@ def test_managed_fixture_claude_mps_defaults_accompany_discovery(live_session, w
             assert env.get(env_key) == defaults[config_key], settings
 
 
-@pytest.mark.managed_fixture
+@pytest.mark.managed
 @pytest.mark.claude
-def test_managed_fixture_claude_parent_schema_defaults_accompany_discovery(
-    live_session, workspace, tmp_path
-):
-    """Scenario: launch Claude with managed defaults and Unity Catalog discovery.
+def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session, workspace_bearer):
+    """Scenario: launch Claude with managed defaults and UC discovery on the northeast-2 workspace.
 
     Expected: the installed ug launch writes the parent-schema header and every admin-authored
     default to both Claude settings files, adding ``[1m]`` only to Opus and Sonnet family defaults.
     This settings reconciliation check does not claim model inference.
     """
     session = live_session
+    session.env["DATABRICKS_BEARER"] = workspace_bearer(CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE)
     parent_schema = "system.ai"
     defaults = {
         "default_model": f"{parent_schema}.claude-sonnet-5",
@@ -119,18 +128,24 @@ def test_managed_fixture_claude_parent_schema_defaults_accompany_discovery(
         "default_sonnet_model": f"{parent_schema}.claude-sonnet-5",
         "default_haiku_model": f"{parent_schema}.claude-haiku-4-5",
     }
-    config = build_coding_agent_config(
-        "CODING_AGENT_CLAUDE_CODE",
-        {
-            "agent": "CODING_AGENT_CLAUDE_CODE",
-            "config": {
-                "models": {"unity_catalog_location": parent_schema},
-                "default_models": defaults,
-            },
-        },
+    published = fetch_published_config(
+        CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE, session.env["DATABRICKS_BEARER"]
     )
-    set_managed_config_stub(session, tmp_path, config)
-    result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+    claude = [
+        entry["config"]
+        for entry in published.get("enabled_agents", [])
+        if entry.get("agent") == "CODING_AGENT_CLAUDE_CODE"
+    ]
+    assert len(claude) == 1, "Expected one published Claude agent config"
+    assert claude[0].get("models") == {"unity_catalog_location": parent_schema}
+    assert claude[0].get("default_models") == defaults
+    result = session.run(
+        "configure",
+        "--workspace",
+        CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE,
+        "--skip-upgrade",
+        timeout=240,
+    )
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
 
     command = [str(session.binary), "claude", "--", "--version"]

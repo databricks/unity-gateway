@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import shutil
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
@@ -47,6 +49,40 @@ def workspace():
     if not value.startswith("https://") or not os.environ.get("DATABRICKS_BEARER", "").strip():
         pytest.fail("Live integration requires UCODE_TEST_WORKSPACE and DATABRICKS_BEARER.")
     return value
+
+
+@pytest.fixture
+def workspace_bearer(workspace):
+    """Supply a token scoped to an explicitly chosen integration workspace."""
+
+    def bearer_for(target_workspace: str) -> str:
+        if target_workspace == workspace:
+            return os.environ["DATABRICKS_BEARER"]
+
+        client_id = os.environ.get("DATABRICKS_CLIENT_ID", "").strip()
+        client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
+        if not client_id or not client_secret:
+            pytest.fail(
+                f"Set DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET to authenticate "
+                f"against {target_workspace}."
+            )
+        basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        request = urllib.request.Request(
+            f"{target_workspace.rstrip('/')}/oidc/v1/token",
+            data=urllib.parse.urlencode(
+                {"grant_type": "client_credentials", "scope": "all-apis"}
+            ).encode(),
+            headers={
+                "Authorization": f"Basic {basic}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            token = json.load(response).get("access_token", "")
+        assert token, f"Workspace {target_workspace} returned no OAuth access token."
+        return token
+
+    return bearer_for
 
 
 @pytest.fixture(scope="session")

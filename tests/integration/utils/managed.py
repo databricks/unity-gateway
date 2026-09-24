@@ -13,6 +13,24 @@ from pathlib import Path
 MANAGED_CONFIGS_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 
 
+def fetch_published_config(workspace: str, token: str) -> dict:
+    """Read the single admin-published CodingAgentConfig from a real workspace."""
+    request = urllib.request.Request(
+        workspace.rstrip("/") + MANAGED_CONFIGS_PATH,
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = json.load(response)
+
+    configs = payload.get("coding_agent_configs") if isinstance(payload, dict) else payload
+    assert isinstance(configs, list) and len(configs) == 1, (
+        f"Expected exactly one published CodingAgentConfig on {workspace}"
+    )
+    config = configs[0]
+    assert isinstance(config, dict), f"Invalid CodingAgentConfig on {workspace}"
+    return config
+
+
 def assert_no_managed_config(payload: object) -> None:
     """Validate the real List response before claiming unmanaged-workspace coverage."""
     configs = payload.get("coding_agent_configs", []) if isinstance(payload, dict) else payload

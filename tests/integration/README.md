@@ -228,17 +228,22 @@ they only configure, list models, and open/close the picker. Other live CUJs per
 real model tasks.
 
 There are **60 live cases** (including 12 TUI journeys) and **7 installation
-checks** with both agents. A separate **4 managed-workspace cases** (one per agent, an idempotent
-re-configure, and a cache-TTL journey; marker `managed`) run against a workspace that publishes a
-CodingAgentConfig; see "Managed-workspace journeys" below. One **`workspace_switch` case**
+checks** with both agents. A separate **6 managed-workspace cases** (one per agent, an idempotent
+re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
+workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
-A further **27 `managed_fixture`
+A further **25 `managed_fixture`
 cases** use `UCODE_MANAGED_CONFIG_STUB`. Twelve explicit configured/fresh Claude and Codex
 discovery and source-override journeys fetch the published config once per agent, replace that
-agent's static source with its dedicated MPS, and reuse the result. Fifteen existing collected cases
+agent's static source with its dedicated MPS, and reuse the result. Thirteen other collected cases
 cover focused model, MCP, skills, and lifecycle shapes, including per-agent model reconciliation
-and managed skill cleanup. The two Claude default-model cases launch with injected MPS and Unity
-Catalog sources and verify both generated settings files retain all admin-authored family defaults.
+and managed skill cleanup. The two Claude default-model cases read published MPS and Unity
+Catalog sources directly from `eng-ml-inference-batch-inference-us-west-2` and
+`eng-ml-inference-ap-northeast-2`, respectively, then verify both generated settings files retain
+all admin-authored family defaults. Neither case injects a config. Each obtains a token for its
+target workspace using the managed lane's service principal credentials. Local runs of these cases
+need that principal's
+`DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET` when the target differs from `--workspace`.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
 executions; the complete integration suite collects 99 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
@@ -389,6 +394,12 @@ Codex case also checks stderr guidance to restart the daemon after publication,
 that the shared app config points at the stable catalog, and that a fresh
 bare Codex app-server returns the expected visible model before the existing TUI prompt/input
 assertion. It does not claim GUI rendering or inference coverage.
+
+Two `managed` cases in `test_ug_configure_managed_models.py` target separate published configs:
+west-2 must publish a Claude MPS source with Anthropic family defaults, and northeast-2 must
+publish a Claude `system.ai` parent-schema source with Unity Catalog family defaults. They read
+the control-plane listing before `ug configure` and assert the generated private and OS-managed
+Claude settings after launch. Their exact required config fields are reflected in the tests.
 
 Treat that published CodingAgentConfig as shared CI fixture state. The managed lanes assert its
 exact model ids and its both-agent enablement, so editing the managed workspace's config (models,

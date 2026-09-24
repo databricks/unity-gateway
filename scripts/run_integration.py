@@ -583,6 +583,8 @@ def main() -> int:
                 "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
                 "DATABRICKS_BEARER": bearer,
+                "DATABRICKS_CLIENT_ID": os.environ.get("DATABRICKS_CLIENT_ID", ""),
+                "DATABRICKS_CLIENT_SECRET": os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
                 "DATABRICKS_SECOND_BEARER": second_bearer,
                 "UG_INTEGRATION_WAREHOUSE_ID": args.warehouse_id or "",
