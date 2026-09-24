@@ -892,8 +892,10 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
       Claude CLI, PAT auth, or a workspace without the OAuth client), plus every non-Claude/Codex
       MCP client, which keeps its existing behavior.
 
-    Returns the servers resolved this run. Raises ``RuntimeError`` on a discovery failure; the caller
-    keeps it best-effort.
+    Returns the servers resolved this run. Propagates the distinct
+    :class:`McpServiceListingRateLimited` when discovery is rate-limited (HTTP 429), so the caller
+    can skip MCP setup for the run without treating it as a hard failure; any other discovery
+    failure raises plain ``RuntimeError``. Either way the caller keeps it best-effort.
     """
     selector = managed.get("mcp_servers")
     selector = selector if isinstance(selector, dict) else {}
@@ -1402,6 +1404,21 @@ def _skills_entries(servers: list[dict]) -> list[dict]:
     return [s for s in servers if s.get("kind") == SKILLS_MCP_KIND]
 
 
+class McpServiceListingRateLimited(RuntimeError):
+    """MCP-service discovery (`ListMcpServices`) was rate-limited (HTTP 429).
+
+    A distinct ``RuntimeError`` subtype so the managed reconcile path can skip MCP setup for this
+    run gracefully — an info note, no config change — rather than surfacing a hard failure. A
+    transient 429 (e.g. many clients calling `ug configure` at once) must not break configure or
+    unregister already-configured servers; the next `ug configure` retries."""
+
+    def __init__(self, location: str) -> None:
+        self.location = location
+        super().__init__(
+            f"MCP service discovery for `{location}` was rate-limited (HTTP 429); try again shortly."
+        )
+
+
 def _resolve_location_mcp_servers(
     workspace: str,
     profile: str | None,
@@ -1415,8 +1432,10 @@ def _resolve_location_mcp_servers(
     Strict replacement for mcp-services: the returned list is exactly the ones
     discovered at ``location`` (any previously-registered mcp-service outside it
     is removed by ``apply_mcp_server_changes``), plus any existing skills
-    connection, preserved untouched. Raises ``RuntimeError`` for an invalid
-    location (HTTP 404 from the listing API) or any other listing failure.
+    connection, preserved untouched. Raises the distinct
+    :class:`McpServiceListingRateLimited` when discovery is rate-limited (HTTP 429) so callers can
+    skip gracefully, and plain ``RuntimeError`` for an invalid location (HTTP 404 from the listing
+    API) or any other listing failure.
 
     When ``services`` is given, the discovered set is narrowed to exactly that
     subset (matched by full name like ``system.ai.github`` or bare short name
@@ -1437,6 +1456,11 @@ def _resolve_location_mcp_servers(
             f"Invalid location: `{location}` is not a valid Unity Catalog schema "
             "in this workspace (or you lack USE permission on it)."
         )
+    if reason and reason.startswith("HTTP 429"):
+        # A transient rate-limit must not break `ug configure` or unregister already-configured
+        # servers. Raise a distinct type so the managed path skips MCP setup this run with an info
+        # note (leaving existing servers untouched) and retries on the next configure.
+        raise McpServiceListingRateLimited(location)
     if reason:
         raise RuntimeError(f"Failed to list MCP services at `{location}`: {reason}")
     if not names:
