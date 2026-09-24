@@ -59,6 +59,7 @@ from ucode.databricks import (
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
     ManagedFileWriteUnavailable,
+    managed_conflict_message,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -582,12 +583,7 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     if not managed_writes_allowed():
         conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
         if conflicts:
-            raise RuntimeError(
-                "Codex configuration cannot be applied non-interactively because OS-managed "
-                f"settings at {path} override ucode values: {', '.join(conflicts)}. Run `ucode "
-                "configure --agent codex` from an interactive terminal or contact your "
-                "administrator."
-            )
+            raise RuntimeError(managed_conflict_message("Codex", "codex", path, conflicts))
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
     try:

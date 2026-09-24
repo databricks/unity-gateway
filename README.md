@@ -181,6 +181,14 @@ with `ug configure` to control installation.
 
 `ug` backs up files before overwriting them. `ug revert` restores backups.
 
+The OS-managed Claude Code and Codex files are updated only from an interactive terminal and may
+prompt for your password. If you can't or don't approve it, `ug` writes its Claude Code gateway
+settings to `~/.claude/settings.json` instead, so a bare `claude` and the IDE extension still use the
+gateway, and it stops asking on later launches until you run `ug configure` again. `ug revert` removes
+only the entries `ug` added there. Set `UCODE_DISABLE_MANAGED_SETTINGS=1` to skip the OS-managed files
+entirely: `ug` then never creates, updates, or restores them, stopping with an error only if a managed
+value would override its settings.
+
 | Tool | Managed files |
 |------|---------------|
 | Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS) |

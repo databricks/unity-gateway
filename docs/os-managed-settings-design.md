@@ -36,6 +36,47 @@ remain local-only.
 This is a new shared ucode distinction. The previous implementation inferred interactivity from
 command shape in some flows and did not guard managed-file writes consistently.
 
+## User-Settings Fallback (Claude Code)
+
+When ucode cannot use Claude Code's OS-managed file, because administrator access is unavailable or
+declined, or because the opt-out below is set, it mirrors its gateway keys (`apiKeyHelper`, the
+`ANTHROPIC_*` gateway env, the model picker, and the `WebSearch` deny) into the user's own
+`~/.claude/settings.json`. A bare `claude` and the IDE extension then still reach the gateway, at
+user-settings precedence, without `sudo`.
+
+- ucode records every key it changes there, with the value it replaced, in `claude_user_settings_mirror`.
+  `permissions.deny` and `ANTHROPIC_CUSTOM_HEADERS` are merged rather than replaced, so the user's
+  own rules and headers stay.
+- A key the user edits after ucode wrote it becomes theirs: ucode stops updating it and never
+  restores over it.
+- A later successful managed write, a switch to subscription relay, or `ucode revert` restores the
+  recorded values.
+- Plain non-interactive runs (CI, scripts) without the opt-out do not touch user settings.
+- Because user settings are the lowest-precedence scope, a managed file or a project's
+  `.claude/settings.json` that sets the same keys still wins; the conflict rules in the behavior
+  matrix apply to the managed file as before.
+
+After a failed `sudo` write, ucode stores the managed file's fingerprint and stops attempting the
+write (and its password prompt) on later launches while the file is unchanged. `ucode configure`
+clears it and tries once more; a changed managed file, such as an MDM replacement, retries too.
+
+## Opting Out
+
+Set `UCODE_DISABLE_MANAGED_SETTINGS=1` (also `true`, `yes`, or `on`) when ucode must not manage the
+OS-managed files at all, for example when administrator tooling owns them or users have no
+administrator access. Every invocation then follows the non-interactive rows of the behavior matrix,
+even from a TTY:
+
+- `ucode configure`, `ucode claude`, and `ucode codex` never create, update, or reconcile the
+  OS-managed file, never request administrator access, and use the local ucode file. Claude Code
+  also gets the user-settings fallback above.
+- An existing managed file is still read so precedence stays deterministic. Compatible files are
+  left untouched; a file whose ucode-owned values conflict stops the command with an error naming
+  the opt-out.
+- Managed MCP servers use the user-scope registration instead of the managed file.
+- `ucode revert` does not restore the managed file and retains any existing backup, so a later
+  revert without the opt-out can still restore it.
+
 ## Behavior Matrix
 
 | Invocation | Managed file | Behavior |
@@ -124,7 +165,8 @@ If ucode cannot complete a write or revert, the backup remains available for a l
 - Preserve externally changed values rather than replacing them with stale baseline values.
 - Refuse an unsafe or unparsable merge and retain the backup.
 
-A revert that needs to change an OS-managed file must run interactively. A successful revert removes
+A revert that needs to change an OS-managed file must run interactively, and is skipped while
+`UCODE_DISABLE_MANAGED_SETTINGS` is set. A successful revert removes
 that agent's backup record. The existing local configuration and ucode state cleanup still occur as
 part of the command.
 

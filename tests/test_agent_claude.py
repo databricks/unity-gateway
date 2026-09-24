@@ -39,6 +39,8 @@ def _managed_config_result(manifest: dict | None) -> SimpleNamespace:
 @pytest.fixture(autouse=True)
 def _avoid_real_managed_settings(monkeypatch):
     monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+    # Never read the developer's real ~/.ucode/state.json.
+    monkeypatch.setattr(claude, "load_state", lambda: {})
 
 
 @pytest.fixture(autouse=True)
@@ -1576,6 +1578,39 @@ class TestWriteToolConfigManagedSettings:
 
         assert managed_writes == []
 
+    def _disable_managed_settings_on_a_tty(self, monkeypatch):
+        # Use the real gate so the env var, not a stub, is what blocks the managed write.
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(claude, "managed_writes_allowed", managed_files.managed_writes_allowed)
+        monkeypatch.setenv(managed_files.DISABLE_MANAGED_SETTINGS_ENV, "1")
+
+    def test_disable_env_uses_local_settings_on_a_tty(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(monkeypatch, private_writes, managed_writes)
+        self._disable_managed_settings_on_a_tty(monkeypatch)
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert managed_writes == []
+        assert any(path == str(claude.CLAUDE_SETTINGS_PATH) for path, _ in private_writes)
+
+    def test_disable_env_reports_conflicting_managed_file_without_writing(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): {"env": {"ANTHROPIC_BASE_URL": "https://other.example.com"}}
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        self._disable_managed_settings_on_a_tty(monkeypatch)
+        state = {"workspace": WS, "codex_models": []}
+
+        with pytest.raises(RuntimeError, match="UCODE_DISABLE_MANAGED_SETTINGS is set"):
+            claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert managed_writes == []
+
     def test_noninteractive_fails_when_managed_file_conflicts(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []
@@ -1619,7 +1654,7 @@ class TestWriteToolConfigManagedSettings:
 
         assert private_writes
         assert managed_writes == []
-        assert "continuing with local settings" in warnings[0]
+        assert "continuing with your user settings" in warnings[0]
         assert verified == [{"scope": "local-compatible"}]
 
     def test_sudo_failure_remains_fatal_when_managed_file_conflicts(self, monkeypatch):
@@ -1639,7 +1674,7 @@ class TestWriteToolConfigManagedSettings:
             deny_managed_write,
         )
 
-        with pytest.raises(managed_files.ManagedFileWriteUnavailable, match="sudo denied"):
+        with pytest.raises(RuntimeError, match="could not update them without administrator"):
             claude.write_tool_config(
                 {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
             )
@@ -2759,3 +2794,193 @@ class TestWriteUserMcpServers:
         written = config_dir / ".claude.json"
         assert json.loads(written.read_text())["mcpServers"]["svc"] == {"type": "http", "url": "u"}
         assert not default_path.exists()  # the default location is untouched
+
+
+class TestUserSettingsFallback:
+    """Without a usable managed file, ug mirrors its gateway keys into ~/.claude/settings.json."""
+
+    USER = str(claude.CLAUDE_USER_SETTINGS_PATH)
+
+    def _patch(
+        self,
+        monkeypatch,
+        files: dict,
+        *,
+        sudo_ok: bool = False,
+        allowed: bool = True,
+        saved: dict | None = None,
+    ):
+        managed_attempts: list[str] = []
+        saved = {} if saved is None else saved
+        monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+        monkeypatch.setattr(
+            claude, "read_json_safe", lambda path: json.loads(json.dumps(files.get(str(path), {})))
+        )
+
+        def write_json(path, payload):
+            files[str(path)] = json.loads(json.dumps(payload))
+
+        monkeypatch.setattr(claude, "write_json_file", write_json)
+        monkeypatch.setattr(claude, "save_state", lambda state: saved.update(state))
+        monkeypatch.setattr(claude, "load_state", lambda: dict(saved))
+        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: allowed)
+        monkeypatch.setattr(
+            claude,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(None, None),
+        )
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: FAKE_MANAGED_PATH)
+        monkeypatch.setattr(
+            claude,
+            "read_managed_file",
+            lambda path: json.dumps(files[str(path)]) if str(path) in files else None,
+        )
+        monkeypatch.setattr(claude, "mark_managed_file_verified", lambda *a, **kw: None)
+        # The fingerprint only changes when the fake managed file's content does.
+        monkeypatch.setattr(
+            claude,
+            "managed_file_fingerprint",
+            lambda path: {"content": json.dumps(files.get(str(path)), sort_keys=True)},
+        )
+
+        def reconcile(path, text, **kwargs):
+            managed_attempts.append(str(path))
+            if not sudo_ok:
+                raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+            files[str(path)] = json.loads(text)
+            return "written"
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", reconcile)
+        return managed_attempts
+
+    def test_sudo_failure_mirrors_gateway_keys_and_keeps_user_keys(self, monkeypatch):
+        files = {self.USER: {"model": "opus", "env": {"MY_VAR": "1"}, "hooks": {"Stop": []}}}
+        attempts = self._patch(monkeypatch, files)
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        user = files[self.USER]
+        assert attempts == [str(FAKE_MANAGED_PATH)]
+        assert (
+            user["env"]["ANTHROPIC_BASE_URL"]
+            == files[str(claude.CLAUDE_SETTINGS_PATH)]["env"]["ANTHROPIC_BASE_URL"]
+        )
+        assert "apiKeyHelper" in user
+        assert user["model"] == "opus"
+        assert user["env"]["MY_VAR"] == "1"
+        assert user["hooks"] == {"Stop": []}
+        assert claude.MANAGED_WRITE_UNAVAILABLE_STATE_KEY in state
+
+    def test_launch_after_sudo_failure_does_not_prompt_again(self, monkeypatch):
+        files: dict = {}
+        attempts = self._patch(monkeypatch, files)
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert attempts == [str(FAKE_MANAGED_PATH)]
+        assert "ANTHROPIC_BASE_URL" in files[self.USER]["env"]
+
+    def test_changed_managed_file_retries_the_write(self, monkeypatch):
+        files: dict = {}
+        attempts = self._patch(monkeypatch, files)
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        files[str(FAKE_MANAGED_PATH)] = {"env": {"UNRELATED": "mdm"}}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert len(attempts) == 2
+
+    def test_successful_managed_write_restores_user_settings(self, monkeypatch):
+        original = {"model": "opus", "env": {"MY_VAR": "1"}}
+        files = {self.USER: json.loads(json.dumps(original))}
+        self._patch(monkeypatch, files)
+        state = {"workspace": WS, "codex_models": []}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert files[self.USER] != original
+
+        # e.g. an admin granted sudo, then `ug configure` retried.
+        claude.forget_managed_write_failure(state)
+        self._patch(monkeypatch, files, sudo_ok=True)
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert files[self.USER] == original
+        assert claude.USER_SETTINGS_MIRROR_STATE_KEY not in state
+
+    def test_revert_keeps_a_key_the_user_changed(self, monkeypatch):
+        files: dict = {self.USER: {}}
+        self._patch(monkeypatch, files)
+        state = {"workspace": WS, "codex_models": []}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        files[self.USER]["env"]["ANTHROPIC_BASE_URL"] = "https://mine.example.com"
+
+        assert claude.restore_user_settings_mirror(state) is True
+
+        assert files[self.USER]["env"] == {"ANTHROPIC_BASE_URL": "https://mine.example.com"}
+        assert "apiKeyHelper" not in files[self.USER]
+
+    def test_web_search_deny_is_added_to_and_removed_from_user_denies(self, monkeypatch):
+        files = {self.USER: {"permissions": {"deny": ["Bash(rm:*)"]}}}
+        self._patch(monkeypatch, files)
+        state = {"workspace": WS, "codex_models": [], "web_search_model": "system.ai.gpt-5"}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert files[self.USER]["permissions"]["deny"] == ["Bash(rm:*)", "WebSearch"]
+
+        claude.restore_user_settings_mirror(state)
+
+        assert files[self.USER]["permissions"]["deny"] == ["Bash(rm:*)"]
+
+    def test_user_custom_headers_survive_mirror_and_revert(self, monkeypatch):
+        files = {self.USER: {"env": {"ANTHROPIC_CUSTOM_HEADERS": "x-team: blue"}}}
+        self._patch(monkeypatch, files)
+        state = {"workspace": WS, "codex_models": []}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert files[self.USER]["env"]["ANTHROPIC_CUSTOM_HEADERS"].startswith("x-team: blue\n")
+
+        claude.restore_user_settings_mirror(state)
+
+        assert files[self.USER] == {"env": {"ANTHROPIC_CUSTOM_HEADERS": "x-team: blue"}}
+
+    def test_disable_env_mirrors_without_attempting_managed_write(self, monkeypatch):
+        files: dict = {}
+        attempts = self._patch(monkeypatch, files, allowed=False)
+        monkeypatch.setenv(managed_files.DISABLE_MANAGED_SETTINGS_ENV, "1")
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert attempts == []
+        assert "ANTHROPIC_BASE_URL" in files[self.USER]["env"]
+
+    def test_noninteractive_launch_does_not_touch_user_settings(self, monkeypatch):
+        files: dict = {}
+        self._patch(monkeypatch, files, allowed=False)
+        monkeypatch.delenv(managed_files.DISABLE_MANAGED_SETTINGS_ENV, raising=False)
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert self.USER not in files
+
+    def test_conflicting_managed_file_stops_once_then_never_prompts_again(self, monkeypatch):
+        # A managed file ug wrote earlier now overrides a new provider, and sudo is unavailable.
+        files = {str(FAKE_MANAGED_PATH): {"env": {"ANTHROPIC_BASE_URL": "https://old.example.com"}}}
+        saved: dict = {}
+        attempts = self._patch(monkeypatch, files, saved=saved)
+
+        with pytest.raises(RuntimeError, match="won't ask for the password again"):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+            )
+        assert claude.MANAGED_WRITE_UNAVAILABLE_STATE_KEY in saved
+
+        # The next launch starts from the persisted state, as a fresh `ug claude` would.
+        with pytest.raises(RuntimeError, match="administrator"):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": [], **saved}, "databricks-claude-sonnet-4"
+            )
+        assert attempts == [str(FAKE_MANAGED_PATH)]

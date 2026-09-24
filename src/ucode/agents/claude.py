@@ -19,6 +19,7 @@ from ucode.config_io import (
     ToolSpec,
     backup_existing_file,
     deep_merge_dict,
+    prune_key_paths,
     read_json_safe,
     write_json_file,
 )
@@ -50,13 +51,17 @@ from ucode.managed_files import (
     OS,
     ManagedFileSnapshots,
     ManagedFileWriteUnavailable,
+    created_by_ug_hint,
     current_os,
+    managed_conflict_message,
     managed_file_conflicts,
+    managed_file_fingerprint,
     managed_file_is_verified,
     managed_file_scope,
     managed_file_snapshots,
     managed_file_status,
     managed_files_supported,
+    managed_settings_disabled,
     managed_writes_allowed,
     mark_managed_file_verified,
     read_managed_file,
@@ -74,7 +79,13 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.routing import configured_router_name
-from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
+from ucode.state import (
+    MANAGED_OVERLAY_KEY,
+    is_tool_managed,
+    load_state,
+    mark_tool_managed,
+    save_state,
+)
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_note, print_success, print_warning
 
@@ -93,6 +104,14 @@ WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
 MINIMUM_CLAUDE_VERSION = (2, 1, 259)
 MINIMUM_CLAUDE_VERSION_TEXT = "2.1.259"
 MANAGED_MCP_SETTINGS_KEY = "managedMcpServers"
+# When ug cannot use the OS-managed file (no sudo, or UCODE_DISABLE_MANAGED_SETTINGS), it mirrors its
+# gateway keys into the user's own ~/.claude/settings.json so a bare `claude` and the IDE extension
+# still reach the gateway. The record lists each key ug changed there, with the value it replaced,
+# so revert undoes only ug's edits.
+USER_SETTINGS_MIRROR_STATE_KEY = "claude_user_settings_mirror"
+# Fingerprint of the managed file when a sudo write last failed. While the file is unchanged, launches
+# skip the write (and its password prompt); `ug configure` clears it to try again.
+MANAGED_WRITE_UNAVAILABLE_STATE_KEY = "claude_managed_write_unavailable"
 
 SPEC: ToolSpec = {
     "binary": "claude",
@@ -1132,14 +1151,12 @@ def write_tool_config(
         return merged
 
     managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
-    write_json_file(
-        CLAUDE_SETTINGS_PATH,
-        _compose(
-            read_json_safe(CLAUDE_SETTINGS_PATH),
-            enforce_model_default_hierarchy=source_scoped_defaults,
-            managed_settings_snapshots=None,
-        ),
+    ucode_settings = _compose(
+        read_json_safe(CLAUDE_SETTINGS_PATH),
+        enforce_model_default_hierarchy=source_scoped_defaults,
+        managed_settings_snapshots=None,
     )
+    write_json_file(CLAUDE_SETTINGS_PATH, ucode_settings)
 
     _reconcile_managed_settings(
         state,
@@ -1152,6 +1169,7 @@ def write_tool_config(
         ),
         managed_file_keys,
         relayed,
+        ucode_settings,
     )
 
     if web_search_model:
@@ -1233,6 +1251,7 @@ def _reconcile_managed_settings(
     compose: Callable[[dict], dict],
     owned_paths: list[list[str]],
     relayed: bool,
+    ucode_settings: dict | None = None,
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -1268,6 +1287,8 @@ def _reconcile_managed_settings(
                 "those entries or use standard Databricks authentication. If ucode previously "
                 "created them, run `ucode revert` from an interactive terminal first."
             )
+        # Relay must not carry an apiKeyHelper, so drop any gateway keys ug mirrored for bare claude.
+        restore_user_settings_mirror(state)
         mark_managed_file_verified(state, "claude", path, scope="relay-compatible")
         return
 
@@ -1285,12 +1306,17 @@ def _reconcile_managed_settings(
     if not managed_writes_allowed():
         conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
         if conflicts:
-            raise RuntimeError(
-                "Claude Code configuration cannot be applied non-interactively because "
-                f"OS-managed settings at {path} override ucode values: {', '.join(conflicts)}. "
-                "Run `ucode configure --agent claude` from an interactive terminal or contact "
-                "your administrator."
-            )
+            raise RuntimeError(managed_conflict_message("Claude Code", "claude", path, conflicts))
+        if managed_settings_disabled():
+            mirror_user_settings(state, owned_paths, ucode_settings or {})
+        mark_managed_file_verified(state, "claude", path, scope="local-compatible")
+        return
+    # A sudo write already failed against this exact file: don't prompt again on every launch.
+    if state.get(MANAGED_WRITE_UNAVAILABLE_STATE_KEY) == managed_file_fingerprint(path):
+        conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
+        if conflicts:
+            raise RuntimeError(_managed_write_unavailable_conflict_message(path, conflicts))
+        mirror_user_settings(state, owned_paths, ucode_settings or {})
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
     try:
@@ -1301,16 +1327,27 @@ def _reconcile_managed_settings(
             display="Claude Code",
             owned_paths=owned_paths,
         )
-    except ManagedFileWriteUnavailable:
+    except ManagedFileWriteUnavailable as exc:
+        fingerprint = managed_file_fingerprint(path)
+        state[MANAGED_WRITE_UNAVAILABLE_STATE_KEY] = fingerprint
         conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
         if conflicts:
-            raise
+            # Persist the failure before stopping, so the next launch doesn't prompt again for a
+            # write that can't happen; the rest of this configure is abandoned with the error.
+            _remember_managed_write_failure(fingerprint)
+            raise RuntimeError(
+                _managed_write_unavailable_conflict_message(path, conflicts)
+            ) from exc
         print_warning(
             f"Claude Code OS-managed settings could not be updated at {path}; continuing with "
-            f"local settings at {CLAUDE_SETTINGS_PATH}."
+            f"your user settings at {CLAUDE_USER_SETTINGS_PATH}. Run `ug configure` to try again."
         )
+        mirror_user_settings(state, owned_paths, ucode_settings or {})
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
+    state.pop(MANAGED_WRITE_UNAVAILABLE_STATE_KEY, None)
+    # The managed file now outranks user settings; take back what ug mirrored there.
+    restore_user_settings_mirror(state)
     mark_managed_file_verified(state, "claude", path)
 
 
@@ -1327,6 +1364,173 @@ def _preserve_permission_denies(existing: dict, desired: dict) -> None:
         *existing_denies,
         *(rule for rule in desired_denies if rule not in existing_denies),
     ]
+
+
+_ABSENT = object()
+
+
+def _get_key_path(doc: dict, path: list[str]) -> object:
+    node: object = doc
+    for key in path:
+        if not isinstance(node, dict) or key not in node:
+            return _ABSENT
+        node = node[key]
+    return node
+
+
+def _put_key_path(doc: dict, path: list[str], value: object) -> None:
+    """Set ``path`` to ``value``, or remove it (dropping emptied parents) when ``value`` is absent."""
+    if value is _ABSENT:
+        prune_key_paths(doc, [path])
+        return
+    node = doc
+    for key in path[:-1]:
+        child = node.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            node[key] = child
+        node = child
+    node[path[-1]] = value
+
+
+def _encode_value(value: object) -> dict:
+    return {"present": False} if value is _ABSENT else {"present": True, "value": value}
+
+
+def _decode_value(encoded: object) -> object:
+    if isinstance(encoded, dict) and encoded.get("present"):
+        return encoded.get("value")
+    return _ABSENT
+
+
+def mirror_user_settings(state: dict, owned_paths: list[list[str]], ucode_settings: dict) -> None:
+    """Mirror ug's gateway keys into ``~/.claude/settings.json`` when the managed file is unusable.
+
+    User settings are the lowest-precedence scope, so this only helps a bare ``claude`` or the IDE
+    extension where no managed file or project setting overrides these keys, which is exactly the
+    no-sudo case. Each key ug changes is recorded with the value it replaced. A key the user edits
+    afterwards becomes theirs: ug stops updating it and revert leaves it alone.
+    """
+    user_settings = read_json_safe(CLAUDE_USER_SETTINGS_PATH)
+    record = state.get(USER_SETTINGS_MIRROR_STATE_KEY)
+    previous = {
+        json.dumps(entry["path"]): entry
+        for entry in (record.get("entries") or [] if isinstance(record, dict) else [])
+        if isinstance(entry, dict) and isinstance(entry.get("path"), list)
+    }
+    entries: list[dict] = []
+    changed = False
+    for path in owned_paths:
+        # Persistent settings never carry ug's routing hooks; the managed paths list them for removal.
+        if path[0] == "hooks":
+            continue
+        prior = previous.pop(json.dumps(path), None)
+        user_value = _get_key_path(user_settings, path)
+        ucode_value = _get_key_path(ucode_settings, path)
+        if path == ["permissions", "deny"]:
+            # Add ug's rules to the user's list rather than owning the whole list.
+            denies = list(user_value) if isinstance(user_value, list) else []
+            wanted = ucode_value if isinstance(ucode_value, list) else []
+            added = [rule for rule in (prior or {}).get("added", []) if rule in denies]
+            for rule in added:
+                if rule not in wanted:
+                    denies.remove(rule)
+            added = [rule for rule in added if rule in wanted]
+            for rule in wanted:
+                if rule not in denies:
+                    denies.append(rule)
+                    added.append(rule)
+            if denies != (user_value if isinstance(user_value, list) else []):
+                _put_key_path(user_settings, path, denies if denies else _ABSENT)
+                changed = True
+            if added:
+                entries.append({"path": path, "added": added})
+            continue
+        if prior is not None and _decode_value(prior.get("applied")) != user_value:
+            continue
+        if ucode_value is _ABSENT:
+            if prior is not None:
+                _put_key_path(user_settings, path, _decode_value(prior.get("original")))
+                changed = True
+            continue
+        desired = ucode_value
+        if path == ["env", ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] and isinstance(ucode_value, str):
+            original = _decode_value(prior["original"]) if prior is not None else user_value
+            desired = _merge_anthropic_custom_headers(
+                original if isinstance(original, str) else None, ucode_value
+            )
+        if prior is None and desired == user_value:
+            continue
+        if desired != user_value:
+            _put_key_path(user_settings, path, desired)
+            changed = True
+        entries.append(
+            {
+                "path": path,
+                "original": prior["original"] if prior is not None else _encode_value(user_value),
+                "applied": _encode_value(desired),
+            }
+        )
+    # Keys ug mirrored earlier but no longer manages at all are still ug's to restore later.
+    entries.extend(previous.values())
+    if changed:
+        write_json_file(CLAUDE_USER_SETTINGS_PATH, user_settings)
+    if entries:
+        state[USER_SETTINGS_MIRROR_STATE_KEY] = {
+            "path": str(CLAUDE_USER_SETTINGS_PATH),
+            "entries": entries,
+        }
+    else:
+        state.pop(USER_SETTINGS_MIRROR_STATE_KEY, None)
+
+
+def restore_user_settings_mirror(state: dict) -> bool:
+    """Undo ``mirror_user_settings``, leaving any key the user changed since. Returns True if edited."""
+    record = state.pop(USER_SETTINGS_MIRROR_STATE_KEY, None)
+    if not isinstance(record, dict):
+        return False
+    user_settings = read_json_safe(CLAUDE_USER_SETTINGS_PATH)
+    changed = False
+    for entry in record.get("entries") or []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), list):
+            continue
+        path = entry["path"]
+        current = _get_key_path(user_settings, path)
+        if "added" in entry:
+            if isinstance(current, list):
+                remaining = [rule for rule in current if rule not in entry["added"]]
+                if remaining != current:
+                    _put_key_path(user_settings, path, remaining if remaining else _ABSENT)
+                    changed = True
+            continue
+        if current != _decode_value(entry.get("applied")):
+            continue
+        _put_key_path(user_settings, path, _decode_value(entry.get("original")))
+        changed = True
+    if changed:
+        write_json_file(CLAUDE_USER_SETTINGS_PATH, user_settings)
+    return changed
+
+
+def _remember_managed_write_failure(fingerprint: dict) -> None:
+    saved = load_state()
+    saved[MANAGED_WRITE_UNAVAILABLE_STATE_KEY] = fingerprint
+    save_state(saved)
+
+
+def _managed_write_unavailable_conflict_message(path: Path, conflicts: list[str]) -> str:
+    return (
+        f"Claude Code OS-managed settings at {path} override ucode values ({', '.join(conflicts)}) "
+        "and ucode could not update them without administrator access. Ask your administrator to "
+        "update or remove that file, or run `ug configure` again as an administrator. ucode won't "
+        "ask for the password again until then."
+        f"{created_by_ug_hint('claude', path)}"
+    )
+
+
+def forget_managed_write_failure(state: dict) -> None:
+    """Let the next configure retry the managed write (and its sudo prompt) after a failure."""
+    state.pop(MANAGED_WRITE_UNAVAILABLE_STATE_KEY, None)
 
 
 def default_model(state: dict) -> str | None:

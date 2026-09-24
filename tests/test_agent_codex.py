@@ -1728,6 +1728,36 @@ class TestCodexManagedConfig:
         with pytest.raises(RuntimeError, match="cannot be applied non-interactively"):
             codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
 
+    def _disable_managed_settings_on_a_tty(self, monkeypatch):
+        # Use the real gate so the env var, not a stub, is what blocks the managed write.
+        monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(codex, "managed_writes_allowed", managed_files.managed_writes_allowed)
+        monkeypatch.setenv(managed_files.DISABLE_MANAGED_SETTINGS_ENV, "1")
+
+    def test_disable_env_uses_local_config_on_a_tty(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        self._disable_managed_settings_on_a_tty(monkeypatch)
+
+        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        assert not managed_path.exists()
+        assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+        assert codex.managed_mcp_uses_managed_file() is False
+
+    def test_disable_env_reports_conflicting_managed_config_without_writing(
+        self, tmp_path, monkeypatch
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        original = 'model_provider = "enterprise"\n'
+        managed_path.write_text(original, encoding="utf-8")
+        self._disable_managed_settings_on_a_tty(monkeypatch)
+
+        with pytest.raises(RuntimeError, match="UCODE_DISABLE_MANAGED_SETTINGS is set"):
+            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+
+        assert managed_path.read_text(encoding="utf-8") == original
+
     def test_invalid_managed_toml_is_not_modified(self, tmp_path, monkeypatch):
         _, managed_path = self._patch(tmp_path, monkeypatch)
         managed_path.parent.mkdir(parents=True, exist_ok=True)

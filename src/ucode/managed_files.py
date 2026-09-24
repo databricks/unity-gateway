@@ -29,6 +29,10 @@ _SUDO = "/usr/bin/sudo"
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
+# Opt-out for machines whose OS-managed settings are owned by MDM or other admin tooling: ucode
+# never creates, updates, or restores those files and always configures local settings.
+DISABLE_MANAGED_SETTINGS_ENV = "UCODE_DISABLE_MANAGED_SETTINGS"
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 _MISSING = object()
 _managed_write_batch: tuple[str, ...] = ()
 _managed_write_notice_shown = False
@@ -144,9 +148,33 @@ def managed_file_scope(state: dict, tool: str) -> str:
     return scope if isinstance(scope, str) else "managed"
 
 
+def managed_settings_disabled() -> bool:
+    """True when ``UCODE_DISABLE_MANAGED_SETTINGS`` opts out of every OS-managed settings write."""
+    value = os.environ.get(DISABLE_MANAGED_SETTINGS_ENV, "")
+    return value.strip().lower() in _TRUTHY_ENV_VALUES
+
+
 def managed_writes_allowed() -> bool:
-    """Managed writes are interactive setup work; scripts and CI use local settings."""
-    return sys.stdin.isatty()
+    """Managed writes are interactive setup work; scripts, CI, and the opt-out use local settings."""
+    return sys.stdin.isatty() and not managed_settings_disabled()
+
+
+def managed_conflict_message(display: str, agent: str, path: Path, conflicts: list[str]) -> str:
+    """Explain a managed-settings conflict that ucode will not write through, and how to fix it."""
+    overrides = f"OS-managed settings at {path} override ucode values: {', '.join(conflicts)}."
+    if managed_settings_disabled():
+        return (
+            f"{display} configuration cannot be applied because {overrides} "
+            f"{DISABLE_MANAGED_SETTINGS_ENV} is set, so ucode will not modify that file. Ask your "
+            f"administrator to update it, or unset {DISABLE_MANAGED_SETTINGS_ENV} and run "
+            f"`ucode configure --agent {agent}` from an interactive terminal."
+            f"{created_by_ug_hint(agent, path)}"
+        )
+    return (
+        f"{display} configuration cannot be applied non-interactively because {overrides} "
+        f"Run `ucode configure --agent {agent}` from an interactive terminal or contact your "
+        "administrator."
+    )
 
 
 @contextmanager
@@ -187,6 +215,26 @@ class ManagedFileSnapshots:
 
     original_before_ug: dict | None
     last_applied_by_ug: dict | None
+
+
+def managed_file_created_by_ug(tool: str) -> bool:
+    """True when ucode's backup manifest records that ``tool``'s managed file didn't exist before
+    ucode created it, so removing the file restores the pre-ucode state."""
+    try:
+        entry = _manifest_files(_load_manifest()).get(tool)
+    except RuntimeError:
+        return False
+    return isinstance(entry, dict) and entry.get("original_existed") is False
+
+
+def created_by_ug_hint(tool: str, path: Path) -> str:
+    """Point at removing a managed file ucode itself created, the one step that unblocks it."""
+    if not managed_file_created_by_ug(tool):
+        return ""
+    return (
+        f' ucode created {path}; removing it (for example `sudo rm "{path}"`) lets ucode use '
+        "your user settings instead."
+    )
 
 
 def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnapshots:
@@ -296,6 +344,11 @@ def reconcile_managed_file(
             f"{display}: OS-managed settings aren't supported on this platform; skipped {path}."
         )
         return "unsupported"
+    if managed_settings_disabled():
+        raise RuntimeError(
+            f"Refusing to update {display} managed settings at {path} because "
+            f"{DISABLE_MANAGED_SETTINGS_ENV} is set."
+        )
     if not managed_writes_allowed() and not is_dry_run():
         raise RuntimeError(
             f"Refusing to update {display} managed settings at {path} non-interactively. "
@@ -368,6 +421,9 @@ def revert_managed_file(
     entry = _manifest_files(manifest).get(tool)
     if not isinstance(entry, dict):
         return "unchanged"
+    if managed_settings_disabled():
+        # Leave the file and its backup alone; a later revert without the opt-out can restore it.
+        return f"skipped ({DISABLE_MANAGED_SETTINGS_ENV} is set; backup retained)"
     path = Path(str(entry.get("path") or ""))
     if not path.is_absolute():
         raise RuntimeError(f"Invalid managed-settings backup path for {display}.")

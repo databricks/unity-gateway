@@ -1232,6 +1232,7 @@ def revert() -> int:
     managed_configs = state.get("managed_configs") or {}
     mcp_results = revert_mcp_configs(state)
     claude_managed_result = claude_agent.revert_managed_settings()
+    claude_user_settings_restored = claude_agent.restore_user_settings_mirror(state)
     codex_managed_result = codex_agent.revert_managed_config()
 
     results: dict[str, bool] = {
@@ -1255,6 +1256,10 @@ def revert() -> int:
     if legacy_codex_stripped:
         print_kv("Codex shared config", "ucode entries removed")
     print_kv("Claude Code OS-managed settings", claude_managed_result)
+    print_kv(
+        "Claude Code user settings",
+        "ug entries removed" if claude_user_settings_restored else "unchanged",
+    )
     print_kv("Codex OS-managed settings", codex_managed_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     for client, spec in MCP_CLIENTS.items():
@@ -3440,6 +3445,12 @@ def configure(
         raise typer.Exit(2)
     set_dry_run(dry_run)
     set_verbosity(verbose)
+    if not dry_run:
+        # An explicit configure retries the managed-settings write that launches stopped prompting for.
+        prior_state = load_state()
+        if claude_agent.MANAGED_WRITE_UNAVAILABLE_STATE_KEY in prior_state:
+            claude_agent.forget_managed_write_failure(prior_state)
+            save_state(prior_state)
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:

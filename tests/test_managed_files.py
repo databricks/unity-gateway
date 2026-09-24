@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -376,3 +377,89 @@ def test_sudo_command_refuses_noninteractive_execution(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Refusing to invoke sudo"):
         managed_files._sudo_command("cp", "a", "b")
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", " yes ", "on"])
+def test_disable_env_blocks_managed_writes_on_a_tty(monkeypatch, value):
+    monkeypatch.setenv(managed_files.DISABLE_MANAGED_SETTINGS_ENV, value)
+
+    assert managed_files.managed_settings_disabled() is True
+    assert managed_files.managed_writes_allowed() is False
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no", "off"])
+def test_falsy_disable_env_keeps_interactive_managed_writes(monkeypatch, value):
+    monkeypatch.setenv(managed_files.DISABLE_MANAGED_SETTINGS_ENV, value)
+
+    assert managed_files.managed_settings_disabled() is False
+    assert managed_files.managed_writes_allowed() is True
+
+
+def test_disable_env_refuses_reconcile_even_in_dry_run(tmp_path, backup_dir, monkeypatch):
+    monkeypatch.setenv(managed_files.DISABLE_MANAGED_SETTINGS_ENV, "1")
+    config_io.set_dry_run(True)
+    monkeypatch.setattr(managed_files, "_sudo_replace", lambda *args: pytest.fail("must not write"))
+
+    with pytest.raises(RuntimeError, match="UCODE_DISABLE_MANAGED_SETTINGS is set"):
+        managed_files.reconcile_managed_file(
+            tmp_path / "managed.json",
+            '{"ucode": true}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["ucode"]],
+        )
+
+    assert not backup_dir.exists()
+
+
+def test_disable_env_skips_revert_and_retains_backup(tmp_path, backup_dir, monkeypatch):
+    path = tmp_path / "managed.json"
+    monkeypatch.setattr(
+        managed_files,
+        "_sudo_replace",
+        lambda target, text: target.write_text(text, encoding="utf-8"),
+    )
+    managed_files.reconcile_managed_file(
+        path,
+        '{"ucode": true}\n',
+        tool="claude",
+        display="Claude Code",
+        owned_paths=[["ucode"]],
+    )
+    monkeypatch.setenv(managed_files.DISABLE_MANAGED_SETTINGS_ENV, "1")
+    monkeypatch.setattr(managed_files, "_sudo_remove", lambda *args: pytest.fail("must not remove"))
+
+    result = managed_files.revert_managed_file(
+        "claude",
+        display="Claude Code",
+        parser=json.loads,
+        dumper=lambda doc: json.dumps(doc) + "\n",
+    )
+
+    assert result == "skipped (UCODE_DISABLE_MANAGED_SETTINGS is set; backup retained)"
+    assert path.read_text(encoding="utf-8") == '{"ucode": true}\n'
+    assert "claude" in json.loads((backup_dir / "manifest.json").read_text())["files"]
+
+
+def test_disable_env_conflict_message_names_the_opt_out(monkeypatch, tmp_path):
+    monkeypatch.setenv(managed_files.DISABLE_MANAGED_SETTINGS_ENV, "1")
+
+    message = managed_files.managed_conflict_message(
+        "Codex", "codex", tmp_path / "managed.toml", ["model_provider"]
+    )
+
+    assert "UCODE_DISABLE_MANAGED_SETTINGS is set" in message
+    assert "model_provider" in message
+    assert "non-interactively" not in message
+
+
+def test_created_by_ug_hint_only_for_files_ucode_created(monkeypatch):
+    path = Path("/tmp/ucode-test/managed-settings.json")
+    manifest = {
+        "files": {"claude": {"original_existed": False}, "codex": {"original_existed": True}}
+    }
+    monkeypatch.setattr(managed_files, "_load_manifest", lambda: manifest)
+
+    assert "removing it" in managed_files.created_by_ug_hint("claude", path)
+    assert managed_files.created_by_ug_hint("codex", path) == ""
+    assert managed_files.created_by_ug_hint("gemini", path) == ""
