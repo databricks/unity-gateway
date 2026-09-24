@@ -398,9 +398,9 @@ assertion. It does not claim GUI rendering or inference coverage.
 
 Two `managed` cases in `test_ug_configure_managed_models.py` target separate published configs:
 west-2 must publish a Claude MPS source with Anthropic family defaults, and northeast-2 must
-publish a Claude `system.ai` parent-schema source with Unity Catalog family defaults. They read
-the control-plane listing before `ug configure` and assert the generated private and OS-managed
-Claude settings after launch. Their exact required config fields are reflected in the tests.
+publish a Claude `system.ai` parent-schema source with Unity Catalog family defaults. `ug configure`
+fetches the config; the tests assert the generated private and OS-managed Claude settings after
+launch. Their exact required defaults and source headers are reflected in the tests.
 
 Treat that published CodingAgentConfig as shared CI fixture state. The managed lanes assert its
 exact model ids and its both-agent enablement, so editing the managed workspace's config (models,

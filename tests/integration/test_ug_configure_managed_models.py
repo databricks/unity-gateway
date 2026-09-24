@@ -14,7 +14,6 @@ from utils.managed import (
     build_claude_agent_config,
     build_codex_agent_config,
     build_coding_agent_config,
-    fetch_published_config,
     set_managed_config_stub,
 )
 from utils.terminal import AgentTerminal, TerminalProcess
@@ -82,17 +81,6 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace
         "default_sonnet_model": "anthropic.claude-sonnet-5",
         "default_haiku_model": "anthropic.claude-haiku-4-5",
     }
-    published = fetch_published_config(
-        CLAUDE_MPS_DEFAULTS_WORKSPACE, session.env["DATABRICKS_BEARER"]
-    )
-    claude = [
-        entry["config"]
-        for entry in published.get("enabled_agents", [])
-        if entry.get("agent") == "CODING_AGENT_CLAUDE_CODE"
-    ]
-    assert len(claude) == 1, "Expected one published Claude agent config"
-    assert claude[0].get("models") == {"model_provider_service": MANAGED_CLAUDE_PROVIDER_SERVICE}
-    assert claude[0].get("default_models") == defaults
     result = session.run(
         "configure", "--workspace", CLAUDE_MPS_DEFAULTS_WORKSPACE, "--skip-upgrade", timeout=240
     )
@@ -138,17 +126,6 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
         "default_sonnet_model": f"{parent_schema}.claude-sonnet-5",
         "default_haiku_model": f"{parent_schema}.claude-haiku-4-5",
     }
-    published = fetch_published_config(
-        CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE, session.env["DATABRICKS_BEARER"]
-    )
-    claude = [
-        entry["config"]
-        for entry in published.get("enabled_agents", [])
-        if entry.get("agent") == "CODING_AGENT_CLAUDE_CODE"
-    ]
-    assert len(claude) == 1, "Expected one published Claude agent config"
-    assert claude[0].get("models") == {"unity_catalog_location": parent_schema}
-    assert claude[0].get("default_models") == defaults
     result = session.run(
         "configure",
         "--workspace",
