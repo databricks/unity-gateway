@@ -48,6 +48,7 @@ class _FakeSudoWorkerProcess:
         self.responses: list[str] = []
         self.returncode: int | None = None
         self.quit_received = False
+        self.exit_on_request = False
         self.stderr = io.StringIO()
         self.stdin = self._Stdin(self)
         self.stdout = self._Stdout(self)
@@ -64,6 +65,11 @@ class _FakeSudoWorkerProcess:
         def write(self, data: str) -> int:
             if data == "QUIT\n":
                 self.process.quit_received = True
+                return len(data)
+            if self.process.exit_on_request:
+                # Simulates sudo exiting after failed authentication: no response, nonzero exit.
+                self.process.returncode = 1
+                self.process.responses.append("")
                 return len(data)
             operation, request_id, source, target = data.split()
             assert operation == "REPLACE"
@@ -270,6 +276,57 @@ class TestSudoReplace:
 
         assert notes == ["Enter password once to configure machine-wide coding agent settings."]
         assert len(processes) == 1
+
+    def test_session_restarts_worker_after_it_exits(self, tmp_path, monkeypatch):
+        processes: list[_FakeSudoWorkerProcess] = []
+        notes: list[str] = []
+
+        def popen(command, **kwargs):
+            process = _FakeSudoWorkerProcess(command, **kwargs)
+            process.exit_on_request = not processes
+            processes.append(process)
+            return process
+
+        monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
+        monkeypatch.setattr(managed_files.subprocess, "Popen", popen)
+        monkeypatch.setattr(managed_files, "print_note", notes.append)
+        first = tmp_path / "one.json"
+        second = tmp_path / "two.json"
+        monkeypatch.setitem(
+            managed_files._SUDO_REPLACE_TARGETS,
+            managed_files.OS.LINUX,
+            frozenset({first, second}),
+        )
+
+        with managed_files.managed_write_session():
+            managed_files._print_managed_write_permission("Claude Code")
+            with pytest.raises(subprocess.CalledProcessError):
+                _REAL_SUDO_REPLACE(first, "first\n")
+            managed_files._print_managed_write_permission("Codex")
+            _REAL_SUDO_REPLACE(second, "second\n")
+
+        assert len(processes) == 2
+        assert processes[0].requests == []
+        assert [target for _source, target, _text in processes[1].requests] == [str(second)]
+        assert len(notes) == 2
+
+    def test_reused_worker_still_reports_batch_success(self, monkeypatch):
+        successes: list[str] = []
+        monkeypatch.setattr(managed_files.subprocess, "Popen", _FakeSudoWorkerProcess)
+        monkeypatch.setattr(managed_files, "print_note", lambda _message: None)
+        monkeypatch.setattr(managed_files, "print_success", successes.append)
+
+        with managed_files.managed_write_session():
+            with managed_files.managed_write_batch(["Claude Code"]):
+                managed_files._print_managed_write_permission("Claude Code")
+                managed_files._session_worker()
+            with managed_files.managed_write_batch(["Codex"]):
+                managed_files._print_managed_write_permission("Codex")
+
+        assert successes == [
+            "Settings configured for Claude Code",
+            "Settings configured for Codex",
+        ]
 
     def test_session_shares_one_lazy_sudo_process(self, tmp_path, monkeypatch):
         processes: list[_FakeSudoWorkerProcess] = []

@@ -222,8 +222,10 @@ def _print_managed_write_permission(display: str) -> None:
     if _managed_write_session_depth:
         # The worker is lazy: this message immediately precedes its first sudo invocation. Once it
         # exists, later Claude/Codex and MCP reconciliations reuse the same authenticated process
-        # and must not tell the developer to enter their password again.
-        if _managed_write_worker is not None:
+        # and must not tell the developer to enter their password again. A reused worker still
+        # counts as a write in the current batch, so its success summary is printed.
+        if _managed_write_worker is not None and _managed_write_worker.usable:
+            _managed_write_notice_shown = True
             return
         print_note("Enter password once to configure machine-wide coding agent settings.")
         _managed_write_notice_shown = True
@@ -992,6 +994,11 @@ class _SudoReplaceWorker:
         self._next_request_id = 1
         self._broken = False
 
+    @property
+    def usable(self) -> bool:
+        """Whether this worker can still serve requests (authenticated and running)."""
+        return not self._broken and self.process.poll() is None
+
     def replace(self, path: Path, source_path: str) -> None:
         request_id = str(self._next_request_id)
         self._next_request_id += 1
@@ -1075,9 +1082,17 @@ class _SudoReplaceWorker:
 def _session_worker() -> _SudoReplaceWorker:
     global _managed_write_worker
 
-    if _managed_write_worker is None:
-        _managed_write_worker = _SudoReplaceWorker()
-    return _managed_write_worker
+    worker = _managed_write_worker
+    if worker is not None and not worker.usable:
+        # Failed authentication or an exited shell must not poison later writes: callers treat a
+        # failed managed write as recoverable, so the next one starts (and prompts for) a new worker.
+        _managed_write_worker = None
+        with suppress(Exception):
+            worker.close()
+        worker = None
+    if worker is None:
+        worker = _managed_write_worker = _SudoReplaceWorker()
+    return worker
 
 
 def _sudo_remove(path: Path) -> None:
