@@ -91,36 +91,36 @@ Cursor models still run through your Cursor account.
 
 ## MCP Servers
 
-Register Databricks MCP servers for configured MCP-capable agents. Cursor Agent
-is MCP-only and is included when `cursor-agent` is installed:
-
-Use `ug mcp add` to add servers without removing existing registrations:
+MCP servers let your coding agents use Databricks-governed tools — like GitHub, Slack,
+Vector Search, and Genie. `ug` sets them up for all your installed agents at once.
 
 ```bash
+# Add tools — a whole catalog.schema, or specific ones by name.
 ug mcp add --location system.ai
-ug mcp add --names system.ai.slack,system.ai.github
-ug mcp add --agents claude,codex --location system.ai
-```
+ug mcp add --names system.ai.github,system.ai.slack
 
-Remove configured servers:
-
-```bash
-ug mcp remove
-ug mcp remove --agents codex
-```
-
-List configured servers and their connection status:
-
-```bash
+# See what's set up, and whether each is signed in.
 ug mcp list
-ug mcp list --agents claude,codex
+
+# Sign in to a tool that needs it (opens your browser). Plain form shows a picker.
+ug mcp login
+ug mcp login --names system.ai.github
+
+# Remove tools (plain form shows a picker).
+ug mcp remove
 ```
 
-Every Databricks MCP server is registered as a local stdio server that runs
-`ug mcp-proxy`; the proxy refreshes Databricks OAuth tokens from your CLI
-profile. V2 AI Gateway servers can be added with typed selectors such as
-`vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
-`genie-space:<space-id>`, or `app:<name>`.
+**You only sign in once.** Some tools (like `system.ai.github`) ask you to sign in to the
+underlying service the first time. Do it once — through any agent or `ug mcp login` — and the
+tool works everywhere: Claude, Cursor, Codex, and the rest.
+
+<details><summary>Advanced options</summary>
+
+- Limit any command to certain agents: add `--agents claude,codex`.
+- Add other AI Gateway tools by typed name: `vector-search:main.docs`,
+  `uc-functions:main.tools`, `external:<name>`, `genie-space:<space-id>`, `app:<name>`.
+
+</details>
 
 ## Skills
 
@@ -163,6 +163,7 @@ ug skills remove --location main.default --via mcp
 | `ug mcp add` | Add MCP servers without removing existing registrations |
 | `ug mcp remove` | Unregister configured MCP servers |
 | `ug mcp list` | List configured MCP servers and connection status |
+| `ug mcp login` | Sign in to connection-backed MCP services (interactive, or `--names`) |
 | `ug skills` | Set up the Databricks skills MCP so agents can create and manage skills |
 | `ug skills list` | List configured skills and how each was configured |
 | `ug skills add` | Add skill MCP scopes or download skills |
