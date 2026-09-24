@@ -20,6 +20,7 @@ from ucode.config_io import restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
     AIGW_MCP_SERVICES_SEGMENT,
+    AuthTokenError,
     PermissionDeniedError,
     apply_pat_environment,
     build_mcp_proxy_argv,
@@ -30,6 +31,7 @@ from ucode.databricks import (
     list_all_mcp_services,
     list_databricks_apps,
     list_mcp_services,
+    raise_for_invalid_access_token,
     workspace_hostname,
 )
 from ucode.mcp_connection_login import connection_from_url
@@ -376,9 +378,14 @@ def revert_mcp_configs(state: dict) -> dict[str, bool]:
 def discover_mcp_service_names(workspace: str, profile: str | None = None) -> list[str]:
     """Curated `system.ai.*` MCP services. Empty list if discovery fails so
     callers can fall back to legacy connection discovery without surfacing
-    every error to the picker."""
+    every error to the picker.
+
+    A rejected token is the exception: it raises :class:`AuthTokenError` so an
+    expired/invalid credential surfaces loudly instead of masquerading as an empty
+    workspace (AIGTWY-4843)."""
     token = get_databricks_token(workspace, profile)
-    names, _reason = list_mcp_services(workspace, token)
+    names, reason = list_mcp_services(workspace, token)
+    raise_for_invalid_access_token(workspace, reason)
     return names
 
 
@@ -395,13 +402,14 @@ def discover_all_mcp_service_names(
     the walk for live count reporting, and `on_services` to stream newly-found
     service names into the picker as the walk progresses."""
     token = get_databricks_token(workspace, profile)
-    names, _reason = list_all_mcp_services(
+    names, reason = list_all_mcp_services(
         workspace,
         token,
         on_progress=on_progress,
         on_services=on_services,
         cancel_event=cancel_event,
     )
+    raise_for_invalid_access_token(workspace, reason)
     return names
 
 
@@ -1106,6 +1114,12 @@ def _discover_mcp_source(label: str, discover: Callable[[], list[Any]]) -> list[
     try:
         with spinner(f"Discovering {label}..."):
             return discover()
+    except AuthTokenError:
+        # The token itself was rejected (expired/invalid). Unlike a permission or
+        # transient failure, skipping the source would hide a blocker the user must
+        # fix, so let it propagate and abort with actionable re-auth guidance
+        # instead of silently discovering nothing (AIGTWY-4843).
+        raise
     except PermissionDeniedError:
         # Consumer-only identities lack workspace access, so this source 403s for them.
         # Skip it quietly (not as a scary warning) so setup completes (AIGTWY-4471).

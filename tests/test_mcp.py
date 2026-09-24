@@ -3585,6 +3585,27 @@ class TestDiscoverySkipsPermissionErrors:
         out = capsys.readouterr().out
         assert "network down" in out
 
+    def test_discover_mcp_source_reraises_invalid_token(self):
+        # A rejected token is a blocker, not a skippable source: it must propagate
+        # (AIGTWY-4843) instead of being swallowed like a permission/transient error.
+        def boom():
+            raise mcp.AuthTokenError("token rejected")
+
+        with pytest.raises(mcp.AuthTokenError, match="token rejected"):
+            mcp._discover_mcp_source("MCP services", boom)
+
+    def test_discover_mcp_service_names_raises_on_invalid_token(self, monkeypatch):
+        # An invalid/expired PAT 403s with an "Invalid access token" body; the reason
+        # was previously discarded, so `ug mcp add` silently discovered nothing.
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda workspace, profile=None: "pat")
+        monkeypatch.setattr(
+            mcp,
+            "list_mcp_services",
+            lambda workspace, token: ([], "HTTP 403 Forbidden: Invalid access token."),
+        )
+        with pytest.raises(mcp.AuthTokenError, match="expired or invalid"):
+            mcp.discover_mcp_service_names(WS)
+
 
 # Real-shaped `claude mcp list` output: `<name>: <cmd|url …> - <glyph> <status>`, health-probed.
 CLAUDE_MCP_LIST = """Checking MCP server health…

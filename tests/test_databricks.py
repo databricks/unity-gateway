@@ -2501,6 +2501,39 @@ class TestProbeUnityGatewayCapabilities:
         )
         assert not db_mod._looks_like_scope_failure("HTTP 403: Missing Unity Catalog grants")
 
+    def test_definitive_auth_failure_matches_invalid_token_403(self):
+        # A stale PAT 403s with an "Invalid access token" body — that's the token being
+        # rejected, not a missing grant, so it must classify as a definitive auth failure.
+        assert db_mod._looks_like_definitive_auth_failure(
+            'HTTP 403 Forbidden: {"error_code":403,"message":"Invalid access token."}'
+        )
+        assert db_mod._looks_like_definitive_auth_failure("HTTP 401: Unauthorized")
+        assert db_mod._looks_like_definitive_auth_failure("HTTP 400: Invalid Token")
+        # A plain permission 403 (missing grant) is left to permission routing.
+        assert not db_mod._looks_like_definitive_auth_failure(
+            "HTTP 403: Missing Unity Catalog grants"
+        )
+
+    def test_raise_for_invalid_access_token(self):
+        with pytest.raises(db_mod.AuthTokenError, match="expired or invalid") as e:
+            db_mod.raise_for_invalid_access_token(WS, "HTTP 403 Forbidden: Invalid access token.")
+        assert "databricks auth login" in str(e.value)
+        assert "PAT" in str(e.value)
+        # No-op for a permission 403 or a clean result, so best-effort discovery still skips quietly.
+        db_mod.raise_for_invalid_access_token(WS, "HTTP 403: Missing Unity Catalog grants")
+        db_mod.raise_for_invalid_access_token(WS, None)
+
+    def test_invalid_token_403_routes_to_reauth_in_probe(self, monkeypatch):
+        # The gateway probe should also route a token-invalid 403 to re-auth guidance,
+        # not the "missing grants" permission message.
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token: (None, "HTTP 403 Forbidden: Invalid access token."),
+        )
+        with pytest.raises(RuntimeError, match="rejected the access token"):
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
     def test_model_service_forbidden_reports_permission_error(self, monkeypatch):
         calls: list[str] = []
 
