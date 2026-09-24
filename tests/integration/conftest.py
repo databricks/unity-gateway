@@ -138,6 +138,7 @@ def claude_relayed_provider():
 
 @pytest.fixture(scope="session")
 def claude_bedrock_provider():
+    # A Bedrock MPS that restricts its allowed models to an explicit set (Sonnet + Haiku, no Opus).
     return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_PROVIDER"]
 
 

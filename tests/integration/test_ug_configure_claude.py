@@ -109,12 +109,15 @@ def test_ug_configure_claude_anthropic_mps(live_session, workspace, claude_provi
 
 
 def test_ug_configure_claude_bedrock_mps(live_session, workspace, claude_bedrock_provider):
-    """Scenario: choose the real AWS Bedrock (amazon_bedrock) Anthropic MPS in the provider picker.
+    """Scenario: pick the real AWS Bedrock (amazon_bedrock) Anthropic MPS in the provider picker.
+    This MPS allows only a restricted set of models (its explicit targets: Sonnet + Haiku, no
+    Opus), unlike an allow_all_targets service, so discovery must surface exactly that allow-list.
 
     Expected: ug saves that provider, and launching Claude without --provider completes a
-    file-reading task. This is the live check that the real ug + Claude Code binary resolve a
-    region-prefixed Bedrock slug (us.anthropic.claude-...) into a working launch -- the model-id
-    pinning that unit tests only cover against mocked listings.
+    file-reading task. With Opus outside the allow-list, the launch tier preference
+    (sonnet > opus > haiku) resolves to Sonnet. This is the live check that the real ug + Claude
+    Code binary resolve a region-prefixed Bedrock slug (us.anthropic.claude-...) into a working
+    launch -- the model-id pinning that unit tests only cover against mocked listings.
     """
     session = live_session
     task = FileTask(session)

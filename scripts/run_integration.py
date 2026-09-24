@@ -136,7 +136,7 @@ def arguments():
     parser.add_argument(
         "--claude-bedrock-provider",
         default="main.ucode.bedrock_e2e",
-        help="Existing AWS Bedrock Anthropic MPS selected in the configure CUJ.",
+        help="AWS Bedrock Anthropic MPS with a restricted allowed-models set (Sonnet + Haiku, no Opus), selected in the configure CUJ.",
     )
     parser.add_argument(
         "--codex-provider",
