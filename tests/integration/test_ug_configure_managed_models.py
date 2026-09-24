@@ -18,7 +18,7 @@ from utils.managed import (
 )
 from utils.terminal import AgentTerminal, TerminalProcess
 
-CLAUDE_OPUS = "system.ai.claude-opus-4-8"
+LIVE_RECOMMENDED_CLAUDE_MODEL = "system.ai.claude-opus-4-8"
 # A real ca-central model absent from the live published config: its presence in the picker can
 # only come from the injected config, which the live workspace's model list cannot produce.
 CLAUDE_OFF_MENU = "system.ai.claude-sonnet-5"
@@ -62,7 +62,6 @@ def test_managed_fixture_claude_mps_defaults_accompany_discovery(live_session, w
     """
     session = live_session
     defaults = {
-        "default_model": "anthropic.claude-sonnet-5",
         "default_fable_model": "anthropic.claude-fable-5-1",
         "default_opus_model": "anthropic.claude-opus-5",
         "default_sonnet_model": "anthropic.claude-sonnet-5",
@@ -94,6 +93,9 @@ def test_managed_fixture_claude_mps_defaults_accompany_discovery(live_session, w
         env = settings.get("env") or {}
         expected_header = f"Databricks-Model-Provider-Service: {MANAGED_CLAUDE_PROVIDER_SERVICE}"
         assert expected_header in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines(), settings
+        # UCODE_MANAGED_CONFIG_STUB replaces only the managed-config GET; launch still uses the
+        # real recommendModel response, so this intentionally differs from stubbed family defaults.
+        assert env.get("ANTHROPIC_MODEL") == LIVE_RECOMMENDED_CLAUDE_MODEL, settings
         for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
             assert env.get(env_key) == defaults[config_key], settings
 
@@ -112,7 +114,6 @@ def test_managed_fixture_claude_parent_schema_defaults_accompany_discovery(
     session = live_session
     parent_schema = "system.ai"
     defaults = {
-        "default_model": f"{parent_schema}.claude-sonnet-5",
         "default_fable_model": f"{parent_schema}.claude-fable-5-1",
         "default_opus_model": f"{parent_schema}.claude-opus-5",
         "default_sonnet_model": f"{parent_schema}.claude-sonnet-5",
@@ -144,6 +145,9 @@ def test_managed_fixture_claude_parent_schema_defaults_accompany_discovery(
         env = settings.get("env") or {}
         expected_header = f"Databricks-Model-Service-Parent-Schema: {parent_schema}"
         assert expected_header in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines(), settings
+        # UCODE_MANAGED_CONFIG_STUB replaces only the managed-config GET; launch still uses the
+        # real recommendModel response, so this intentionally differs from stubbed family defaults.
+        assert env.get("ANTHROPIC_MODEL") == LIVE_RECOMMENDED_CLAUDE_MODEL, settings
         for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
             expected = defaults[config_key]
             if config_key in {"default_opus_model", "default_sonnet_model"}:
@@ -161,7 +165,8 @@ def test_managed_fixture_claude_model_picker_reflects_the_config(live_session, w
     """
     session = live_session
     config = build_coding_agent_config(
-        "CODING_AGENT_CLAUDE_CODE", build_claude_agent_config([CLAUDE_OPUS, CLAUDE_OFF_MENU])
+        "CODING_AGENT_CLAUDE_CODE",
+        build_claude_agent_config([LIVE_RECOMMENDED_CLAUDE_MODEL, CLAUDE_OFF_MENU]),
     )
     set_managed_config_stub(session, tmp_path, config)
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
