@@ -590,12 +590,8 @@ def main() -> int:
                 "DATABRICKS_BEARER": bearer,
                 "DATABRICKS_CLIENT_ID": os.environ.get("DATABRICKS_CLIENT_ID", ""),
                 "DATABRICKS_CLIENT_SECRET": os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
-                "UG_MPS_DEFAULTS_CLIENT_ID": os.environ.get("UG_MPS_DEFAULTS_CLIENT_ID", ""),
                 "UG_MPS_DEFAULTS_CLIENT_SECRET": os.environ.get(
                     "UG_MPS_DEFAULTS_CLIENT_SECRET", ""
-                ),
-                "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_ID": os.environ.get(
-                    "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_ID", ""
                 ),
                 "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET": os.environ.get(
                     "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", ""

@@ -38,6 +38,8 @@ CLAUDE_MPS_DEFAULTS_WORKSPACE = (
 CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE = (
     "https://eng-ml-inference-ap-northeast-2.cloud.databricks.com"
 )
+UG_MPS_DEFAULTS_CLIENT_ID = "1c359c0f-58bc-42ac-a74f-079ccb173676"
+UG_PARENT_SCHEMA_DEFAULTS_CLIENT_ID = "95e267dc-4393-4360-9d45-4b9b13b2d370"
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 CLAUDE_SMART_ROUTING_MODELS = [
@@ -69,7 +71,9 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace
     """
     session = live_session
     session.env["DATABRICKS_BEARER"] = workspace_bearer(
-        CLAUDE_MPS_DEFAULTS_WORKSPACE, credentials_prefix="UG_MPS_DEFAULTS"
+        CLAUDE_MPS_DEFAULTS_WORKSPACE,
+        client_id=UG_MPS_DEFAULTS_CLIENT_ID,
+        client_secret_env="UG_MPS_DEFAULTS_CLIENT_SECRET",
     )
     defaults = {
         "default_model": "anthropic.claude-sonnet-5",
@@ -122,7 +126,9 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
     """
     session = live_session
     session.env["DATABRICKS_BEARER"] = workspace_bearer(
-        CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE, credentials_prefix="UG_PARENT_SCHEMA_DEFAULTS"
+        CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE,
+        client_id=UG_PARENT_SCHEMA_DEFAULTS_CLIENT_ID,
+        client_secret_env="UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET",
     )
     parent_schema = "system.ai"
     defaults = {
