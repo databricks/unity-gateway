@@ -13,6 +13,20 @@ from pathlib import Path
 MANAGED_CONFIGS_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 
 
+def assert_no_managed_config(payload: object) -> None:
+    """Validate the real List response before claiming unmanaged-workspace coverage."""
+    configs = payload.get("coding_agent_configs", []) if isinstance(payload, dict) else payload
+    assert isinstance(configs, list) and all(isinstance(config, dict) for config in configs), (
+        "Invalid CodingAgentConfig listing; cannot establish an unmanaged workspace"
+    )
+    names = [config.get("name", "<unnamed>") for config in configs]
+    assert not configs, (
+        "Unmanaged discovery requires a workspace with no CodingAgentConfig; "
+        f"the selected workspace publishes {names}. Use an unmanaged workspace for these "
+        "cases. The suite will not remove or bypass shared admin configuration."
+    )
+
+
 def fetch_managed_config_stub(
     workspace: str,
     token: str,
@@ -100,6 +114,7 @@ def build_claude_agent_config(
     *,
     family_defaults: dict[str, str] | None = None,
     smart_routing: bool = False,
+    otel_tracing_enabled: bool | None = None,
 ) -> dict:
     default_models = {"default_model": models[0]}
     if family_defaults:
@@ -112,16 +127,28 @@ def build_claude_agent_config(
     }
     if smart_routing:
         config["smart_routing"] = {"enabled": True}
+    if otel_tracing_enabled is not None:
+        config["tracing"] = {"enabled": otel_tracing_enabled}
     return {"agent": "CODING_AGENT_CLAUDE_CODE", "config": config}
 
 
-def build_codex_agent_config(*, models: list[str], smart_routing: bool = False) -> dict:
+def build_codex_agent_config(
+    *,
+    models: list[str],
+    smart_routing: bool = False,
+    http_headers: dict[str, str] | None = None,
+    otel_tracing_enabled: bool | None = None,
+) -> dict:
     config = {
         "models": {"model_services": models},
         "default_models": {"default_model": models[0]},
     }
     if smart_routing:
         config["smart_routing"] = {"enabled": True}
+    if http_headers is not None:
+        config["http_headers"] = http_headers
+    if otel_tracing_enabled is not None:
+        config["tracing"] = {"enabled": otel_tracing_enabled}
     return {"agent": "CODING_AGENT_CODEX", "config": config}
 
 

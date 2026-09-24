@@ -45,6 +45,7 @@ from ucode.databricks import (
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
+from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
     OS,
     ManagedFileSnapshots,
@@ -213,6 +214,19 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
 _RELAYED_SETTING_SOURCES = "project,local"
 
 
+def _apply_managed_header_lines(
+    ucode_lines: list[str], managed_http_headers: dict[str, str] | None
+) -> list[str]:
+    """Overlay admin ``managed_http_headers`` onto ucode's header lines; admin wins by name."""
+    lines_by_name: dict[str, str] = {}
+    for line in ucode_lines:
+        name, _separator, _value = line.partition(":")
+        lines_by_name[name.strip().casefold()] = line
+    for name, value in (managed_http_headers or {}).items():
+        lines_by_name[name.strip().casefold()] = f"{name}: {value}"
+    return list(lines_by_name.values())
+
+
 def configured_paths(state: dict) -> list[str]:
     """The Claude config file ug writes; the OS-managed file is added by the dispatcher."""
     return [str(CLAUDE_SETTINGS_PATH)]
@@ -353,6 +367,7 @@ def render_overlay(
     static_models: list[str] | None = None,
     otel_tracing: bool = False,
     picker_catalog: AnthropicModelCatalog | None = None,
+    managed_http_headers: dict[str, str] | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
 
@@ -396,7 +411,7 @@ def render_overlay(
         header_lines.append(f"{SMART_ROUTER_RECIPE_HEADER}: {configured_router_name()}")
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
-    custom_headers = "\n".join(header_lines)
+    custom_headers = "\n".join(_apply_managed_header_lines(header_lines, managed_http_headers))
     env: dict[str, str] = {
         "ANTHROPIC_BASE_URL": base_url,
         "ANTHROPIC_CUSTOM_HEADERS": custom_headers,
@@ -693,6 +708,79 @@ def remove_claude_mcp_server(name: str, scope: str) -> bool:
         raise RuntimeError(f"Failed to remove MCP server '{name}' via claude CLI.") from exc
 
 
+def user_stdio_mcp_entry(argv: list[str], *, always_load: bool = False) -> dict:
+    """The user-scope ``mcpServers`` entry that ``claude mcp add ... -- <argv>`` writes.
+
+    Mirrors the CLI's on-disk shape so a batched direct write is what the CLI would have produced:
+    a plain stdio server carries an empty ``env`` map, while the skills registry's ``alwaysLoad``
+    entry carries that flag instead (as ``add-json`` writes it)."""
+    entry: dict = {"type": "stdio", "command": argv[0], "args": list(argv[1:])}
+    if always_load:
+        entry["alwaysLoad"] = True
+    else:
+        entry["env"] = {}
+    return entry
+
+
+def claude_mcp_config_path() -> Path:
+    """The file Claude Code reads user-scope ``mcpServers`` from: ``$CLAUDE_CONFIG_DIR/.claude.json``
+    when that env var is set (the ``claude`` CLI honors it), else the default ``~/.claude.json``. ug
+    elsewhere shells out to the CLI, which resolves this itself; a direct write must resolve the same
+    path or it silently writes to a file Claude never reads."""
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(config_dir) / ".claude.json" if config_dir else CLAUDE_MCP_CONFIG_PATH
+
+
+def _read_claude_config_for_rewrite(path: Path) -> dict | None:
+    """Read ``path`` for a full rewrite: ``{}`` when absent, the parsed object when present and
+    valid, and ``None`` when present but not a parseable JSON object — so a caller never overwrites
+    (and destroys) a config it could not read."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
+    """Apply ``add``/``remove`` to Claude's user-scope ``mcpServers`` (``~/.claude.json``, or under
+    ``$CLAUDE_CONFIG_DIR``) in a single read-modify-write, instead of one ``claude mcp`` subprocess
+    per server (each ~0.3-0.8s; a large managed set is otherwise dozens of them run serially). The
+    developer's own servers and every other key in the file are preserved.
+
+    If the file exists but can't be parsed as a JSON object, we must not clobber it, so we defer to
+    the per-server ``claude`` CLI (which edits the file in place) for exactly the changed entries."""
+    path = claude_mcp_config_path()
+    config = _read_claude_config_for_rewrite(path)
+    if config is None:
+        for name in remove:
+            for scope in MCP_CLEANUP_SCOPES:
+                remove_claude_mcp_server(name, scope)
+        for name, entry in add.items():
+            if entry.get("type") == "http":
+                oauth = entry.get("oauth") or {}
+                add_claude_http_mcp_server(
+                    name,
+                    entry["url"],
+                    client_id=oauth.get("clientId", CLAUDE_CODE_OAUTH_CLIENT_ID),
+                    callback_port=oauth.get("callbackPort", MCP_OAUTH_CALLBACK_PORT),
+                )
+            else:
+                add_claude_mcp_server(name, entry, MCP_USER_SCOPE)
+        return
+
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+    for name in remove:
+        servers.pop(name, None)
+    servers.update(add)
+    config["mcpServers"] = servers
+    write_json_file(path, config)
+
+
 def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
     """Whether Claude's managed MCP servers belong in the OS-managed file rather than user scope.
 
@@ -828,7 +916,7 @@ def _web_search_mcp_is_current(state: dict, entry: dict) -> bool:
     """
     if state.get(WEB_SEARCH_MCP_STATE_KEY) != entry:
         return False
-    config = read_json_safe(CLAUDE_MCP_CONFIG_PATH)
+    config = read_json_safe(claude_mcp_config_path())
     servers = config.get("mcpServers")
     return isinstance(servers, dict) and servers.get(WEB_SEARCH_MCP_NAME) == entry
 
@@ -876,6 +964,11 @@ def write_tool_config(
     # revert would restore that snapshot instead of deleting the file.
     if not is_tool_managed(state, "claude"):
         backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
+    # A managed config makes ug authoritative over the whole custom-header value, so it is
+    # overwritten wholesale; without one, preserve the developer's own pre-existing headers. Reuses
+    # this launch's warm managed-config cache (no extra round trip); a failed fetch degrades to None
+    # (treated as unmanaged), never blocking the write.
+    managed_config_present = refresh_managed_config(state).manifest is not None
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
     # Relayed inference points at a local refresh proxy; its loopback base URL is
@@ -899,6 +992,7 @@ def write_tool_config(
         static_models=state.get("claude_static_models"),
         otel_tracing=bool(state.get("claude_otel_tracing")),
         picker_catalog=picker_catalog,
+        managed_http_headers=state.get("claude_http_headers"),
     )
     source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
     # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
@@ -985,9 +1079,16 @@ def write_tool_config(
         for key in stale_picker_keys:
             merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
-        merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
-            existing_custom_headers, overlay_custom_headers
-        )
+        if managed_config_present:
+            # ug owns the whole value under a managed config: overwrite wholesale so a header ug no
+            # longer emits is dropped and no stale or foreign header lingers.
+            merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = overlay_custom_headers
+        else:
+            # No managed config: preserve the developer's own pre-existing headers, replacing only
+            # the header names ug manages.
+            merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
+                existing_custom_headers, overlay_custom_headers
+            )
         # Drop any apiKeyHelper a prior non-relayed launch left in the file; relayed
         # must not carry one (it would outrank the subscription OAuth).
         if relayed:
@@ -1511,7 +1612,7 @@ def launch(
     if options.launch_smart_routing and os.name == "nt":
         raise RuntimeError(
             "Smart routing in Claude Code is currently not supported on Windows. "
-            "Please use Codex or disable smart routing."
+            "Please use Codex or launch without --enable-smart-routing."
         )
     if options.launch_smart_routing:
         smart_routing_v2.launch_claude(

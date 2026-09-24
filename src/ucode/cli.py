@@ -106,6 +106,7 @@ from ucode.managed_resolve import (
 from ucode.mcp import (
     MCP_CLIENTS,
     SKILLS_MCP_KIND,
+    McpServiceListingRateLimited,
     add_mcp_command,
     add_skills_command,
     available_mcp_clients,
@@ -2401,6 +2402,15 @@ def _configure_managed_mcp_servers(managed: dict | None) -> list[str]:
     agents = {tool for tool in managed_enabled_tools(managed) if tool in MCP_CLIENTS}
     try:
         registered = reconcile_managed_mcp_servers(managed, agents)
+    except McpServiceListingRateLimited:
+        # A transient 429 while discovering the workspace's MCP services: skip MCP setup for this
+        # run (existing servers are left untouched) with an info note instead of a hard failure, so
+        # `ug configure` still completes. The next configure retries.
+        print_note(
+            "Skipped workspace MCP setup this run — MCP service discovery was rate-limited "
+            "(HTTP 429). Existing MCP servers are unchanged; run `ug configure` again to retry."
+        )
+        return []
     except RuntimeError as exc:
         print_warning(f"Could not register your workspace's MCP servers: {exc}")
         return []
@@ -2555,7 +2565,10 @@ def _launch_tool(
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []
         )
-        ensure_bootstrap_dependencies(tool)
+        ensure_bootstrap_dependencies(
+            tool,
+            skip_cli_version_check=skip_preflight,
+        )
         if needs_auto_configure:
             if custom_oauth is None:
                 _auto_configure_tool(tool)
@@ -2851,14 +2864,16 @@ def _launch_tool(
 
 # Launch-only escape hatch for managed/headless launchers (e.g. omnigent) that
 # have already run `ug configure`: skip the ~5-10s per-launch auth + AI
-# Gateway re-validation. Distinct from the configure-only `--skip-validate`,
-# which skips the model smoke test.
+# Gateway re-validation, plus the Databricks CLI minimum-version check (whose
+# `databricks aitools` floor otherwise false-positives on a usable public-preview
+# build). Distinct from the configure-only `--skip-validate`, which skips the
+# model smoke test.
 SkipPreflightOption = Annotated[
     bool,
     typer.Option(
         "--skip-preflight",
-        help="Skip the per-launch Databricks auth + AI Gateway re-validation, trusting a "
-        "prior `ug configure`.",
+        help="Skip the per-launch Databricks auth + AI Gateway re-validation (and the "
+        "Databricks CLI minimum-version check), trusting a prior `ug configure`.",
     ),
 ]
 
@@ -2960,7 +2975,7 @@ def _launch_managed_default(
     if not current:
         console.print(ctx.get_help())
         return
-    install_databricks_cli()
+    install_databricks_cli(skip_version_check=skip_preflight)
     apply_pat_environment(state)
     coding_agent_config_feature_disabled = False
     if dry_run:
@@ -3061,14 +3076,6 @@ def codex_cmd(
             help="Enable AI Gateway model routing for Codex sessions and subagents.",
         ),
     ] = False,
-    disable_smart_routing_flag: Annotated[
-        bool,
-        typer.Option(
-            "--disable-smart-routing",
-            hidden=True,
-            help="Disable smart routing and remove ug's Codex routing hooks.",
-        ),
-    ] = False,
 ) -> None:
     """Launch Codex via Databricks."""
     try:
@@ -3076,13 +3083,6 @@ def codex_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
-    if enable_smart_routing_flag and disable_smart_routing_flag:
-        print_err("Use only one of --enable-smart-routing or --disable-smart-routing.")
-        raise typer.Exit(1)
-    if disable_smart_routing_flag:
-        codex_agent.disable_smart_routing(load_state())
-        print_success("Codex smart routing disabled; ug routing hooks removed")
-        return
     with _smart_routing_v2_flag(enable_smart_routing_flag):
         with _disable_smart_routing_for_subcommand("codex", ctx):
             _launch_tool(
@@ -3162,14 +3162,6 @@ def claude_cmd(
             help="Enable AI Gateway model routing for Claude Code sessions and subagents.",
         ),
     ] = False,
-    disable_smart_routing_flag: Annotated[
-        bool,
-        typer.Option(
-            "--disable-smart-routing",
-            hidden=True,
-            help="Disable smart routing and remove ug's Claude Code routing hooks.",
-        ),
-    ] = False,
 ) -> None:
     """Launch Claude Code via Databricks."""
     try:
@@ -3177,13 +3169,6 @@ def claude_cmd(
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from exc
-    if enable_smart_routing_flag and disable_smart_routing_flag:
-        print_err("Use only one of --enable-smart-routing or --disable-smart-routing.")
-        raise typer.Exit(1)
-    if disable_smart_routing_flag:
-        claude_agent.disable_smart_routing(load_state())
-        print_success("Claude Code smart routing disabled; ug routing hooks removed")
-        return
     with _smart_routing_v2_flag(enable_smart_routing_flag):
         with _disable_smart_routing_for_subcommand("claude", ctx):
             _launch_tool(

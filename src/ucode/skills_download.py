@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -463,14 +464,18 @@ def _skill_download_choice(ref: SkillRef, roots: list[Path]) -> questionary.Choi
 
 def _skills_download_background_loader(
     workspace: str, token: str, roots: list[Path]
-) -> Callable[[Callable[[list[questionary.Choice]], None]], str | None]:
+) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], str | None]:
     """A picker ``background_loader`` that streams the workspace-wide skill walk in as choices."""
 
-    def loader(append: Callable[[list[questionary.Choice]], None]) -> str | None:
+    def loader(
+        append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
+    ) -> str | None:
         def on_skills(refs: list[SkillRef]) -> None:
             append([_skill_download_choice(ref, roots) for ref in refs])
 
-        found, reason = list_all_skills(workspace, token, on_skills=on_skills)
+        found, reason = list_all_skills(
+            workspace, token, on_skills=on_skills, cancel_event=cancel_event
+        )
         if reason == _SKILLS_WALK_TIMEOUT_REASON:
             return f"⚠ Timed out after {int(_SKILLS_WALK_DEADLINE_SECONDS)}s, found {len(found)} skills"
         return None
@@ -480,7 +485,9 @@ def _skills_download_background_loader(
 
 def prompt_for_skill_download_choices(
     roots: list[Path],
-    background_loader: Callable[[Callable[[list[questionary.Choice]], None]], str | None],
+    background_loader: Callable[
+        [Callable[[list[questionary.Choice]], None], threading.Event], str | None
+    ],
 ) -> list[str] | None:
     """Show the skill-download picker, returning the selected FQNs or None on Ctrl-C."""
     selection = scrolling_checkbox(

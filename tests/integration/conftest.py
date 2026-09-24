@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 from utils.harness import UserSession
+from utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
 from utils.terminal import TerminalProcess
 
 
@@ -41,6 +46,44 @@ def workspace():
     value = os.environ.get("UCODE_TEST_WORKSPACE", "").strip().rstrip("/")
     if not value.startswith("https://") or not os.environ.get("DATABRICKS_BEARER", "").strip():
         pytest.fail("Live integration requires UCODE_TEST_WORKSPACE and DATABRICKS_BEARER.")
+    return value
+
+
+@pytest.fixture(scope="session")
+def unmanaged_workspace(workspace):
+    """Require a real no-config workspace, without injecting or changing its policy."""
+    request = urllib.request.Request(
+        workspace + MANAGED_CONFIGS_PATH,
+        headers={"Authorization": f"Bearer {os.environ['DATABRICKS_BEARER']}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        # Like the product, accept NOT_FOUND as no published config. Auth failures
+        # and other HTTP errors do not establish the unmanaged prerequisite.
+        if error.code != 404:
+            raise
+        return workspace
+    assert_no_managed_config(payload)
+    return workspace
+
+
+@pytest.fixture(scope="session")
+def second_workspace(workspace):
+    value = os.environ.get("UCODE_TEST_SECOND_WORKSPACE", "").strip().rstrip("/")
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or not os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
+    ):
+        pytest.fail(
+            "Workspace-switch CUJs require --second-workspace (or UCODE_TEST_SECOND_WORKSPACE) "
+            "and DATABRICKS_SECOND_BEARER for that workspace."
+        )
+    if parsed.hostname == urlparse(workspace).hostname:
+        pytest.fail("Workspace-switch CUJs require two distinct workspace hosts.")
     return value
 
 
@@ -107,6 +150,24 @@ def claude_oauth_token():
 
 
 @pytest.fixture(scope="session")
+def claude_provider_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_PROVIDER_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def claude_bedrock_allow_all_provider():
+    # A Bedrock MPS with allow_all_targets and no declared targets (issue #811). The runner always
+    # supplies this (default in run_integration.py); the suite has no capability skips.
+    return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def claude_bedrock_allow_all_model():
+    # An allow_all service declares no targets, so a launch must name the Bedrock model id itself.
+    return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL"]
+
+
+@pytest.fixture(scope="session")
 def codex_provider():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER"]
 
@@ -119,3 +180,13 @@ def codex_provider_model():
 @pytest.fixture(scope="session")
 def parent_schema():
     return os.environ["UG_INTEGRATION_PARENT_SCHEMA"]
+
+
+@pytest.fixture(scope="session")
+def claude_parent_model():
+    return os.environ["UG_INTEGRATION_CLAUDE_PARENT_MODEL"]
+
+
+@pytest.fixture(scope="session")
+def codex_parent_model():
+    return os.environ["UG_INTEGRATION_CODEX_PARENT_MODEL"]

@@ -89,7 +89,7 @@ class UserSession:
 
     def redact(self, text: str, *, strip_ansi: bool = True) -> str:
         # Also scrub the relayed launch's subscription OAuth token, not just the bearer.
-        for name in ("DATABRICKS_BEARER", "CLAUDE_CODE_OAUTH_TOKEN"):
+        for name in ("DATABRICKS_BEARER", "DATABRICKS_SECOND_BEARER", "CLAUDE_CODE_OAUTH_TOKEN"):
             for token in (os.environ.get(name), self.env.get(name)):
                 if token:
                     text = text.replace(token, "<redacted>")
@@ -192,15 +192,38 @@ class UserSession:
         for name in ("codex-v2-interposer.log", "claude-v2-pty.log"):
             assert not (self.home / ".ucode" / name).exists(), f"Unexpected routing: {name}"
 
+    def claude_gateway_models(self, name: str = "claude-gateway-models") -> list[dict]:
+        """Inspect Claude Code's own cache after its model picker launched and exited."""
+        path = Path(self.env["CLAUDE_CONFIG_DIR"]) / "cache/gateway-models.json"
+        assert path.is_file(), f"Claude Code did not create its gateway model cache: {path}"
+        payload = json.loads(path.read_text())
+        models = payload.get("models") if isinstance(payload, dict) else None
+        assert isinstance(models, list), f"Invalid Claude gateway model cache: {payload!r}"
+        assert all(isinstance(model, dict) for model in models), (
+            f"Invalid Claude gateway model entries: {models!r}"
+        )
+        self.record(f"{name}.json", payload)
+        return models
+
+    def claude_gateway_model_ids(self, name: str = "claude-gateway-models") -> list[str]:
+        """Read IDs from Claude Code's own post-launch gateway catalog cache."""
+        models = self.claude_gateway_models(name)
+        ids = [model.get("id") for model in models if isinstance(model, dict)]
+        assert len(ids) == len(models) and all(isinstance(model_id, str) for model_id in ids), (
+            f"Invalid Claude gateway model entries: {models!r}"
+        )
+        return ids
+
     def app_server_handshake(
         self,
         args: list[str],
         timeout: int = 120,
         request: tuple[str, dict] | None = None,
         name: str = "app-server",
+        binary: str | None = None,
     ) -> dict:
         """Speak the real Codex stdio protocol and require an initialize response."""
-        command = [str(self.binary), "codex", *args]
+        command = [binary, *args] if binary else [str(self.binary), "codex", *args]
         messages: queue.Queue = queue.Queue()
         transcript: list[str] = []
         diagnostics: list[str] = []
@@ -287,7 +310,9 @@ class UserSession:
                 f"{name}.json", {"argv": command, "stdout": transcript, "stderr": diagnostics}
             )
 
-    def codex_model_ids(self, args: list[str], name: str = "codex-models") -> list[str]:
+    def codex_model_ids(
+        self, args: list[str], name: str = "codex-models", *, binary: str | None = None
+    ) -> list[str]:
         """Ask the real Codex app-server for the catalog its model picker uses."""
         response = self.app_server_handshake(
             args,
@@ -296,6 +321,7 @@ class UserSession:
                 {"cursor": None, "limit": 1000, "includeHidden": False},
             ),
             name=f"{name}-app-server",
+            binary=binary,
         )
         result = response["result"]
         models = result.get("data")

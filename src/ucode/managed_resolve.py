@@ -62,6 +62,12 @@ def _agent_model_config(managed: dict, tool: str) -> dict[str, object]:
     return _as_dict(_agent_entry(managed, tool).get("model_config"))
 
 
+def _agent_http_headers(managed: dict, tool: str) -> dict[str, str]:
+    """Return the manifest's custom ``http_headers`` for ``tool`` (str->str only)."""
+    headers = _as_dict(_agent_entry(managed, tool).get("http_headers"))
+    return {k: v for k, v in headers.items() if isinstance(k, str) and isinstance(v, str)}
+
+
 def managed_otel_tracing_enabled(managed: dict, tool: str) -> bool:
     """Whether managed config enables OTLP trace export for ``tool``."""
     return _agent_entry(managed, tool).get("otel_tracing_enabled") is True
@@ -94,6 +100,9 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
     default_model = _str(_agent_model_config(managed, tool).get("default_model"))
     if default_model:
         overrides[f"{tool}_default_model"] = default_model
+    http_headers = _agent_http_headers(managed, tool)
+    if http_headers:
+        overrides[f"{tool}_http_headers"] = http_headers
     if tool in OTEL_TRACING_TOOLS and managed_otel_tracing_enabled(managed, tool):
         overrides[f"{tool}_otel_tracing"] = True
     return overrides

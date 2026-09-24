@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from decimal import Decimal
 from urllib.parse import parse_qs
@@ -37,6 +38,7 @@ from ucode.databricks import (
     get_databricks_profiles,
     get_databricks_token,
     install_ai_tools,
+    install_databricks_cli,
     list_databricks_apps,
     list_workspace_budgets,
     resolve_current_budget_spend,
@@ -1087,6 +1089,30 @@ class TestResolveProviderService:
         assert service is None
         assert "no Claude models" in error
 
+    def test_bedrock_allow_all_targets_ok(self, monkeypatch):
+        # allow_all_targets routes any model, so no explicit Claude target is needed — the model id
+        # comes from the managed config's authored default instead.
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.schema2.bedrock-all-svc",
+                    "config": {
+                        "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_AMAZON_BEDROCK",
+                        "allow_all_targets": True,
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=30: (payload, None)
+        )
+        service, error = db_mod.resolve_provider_service(
+            "claude", "main.schema2.bedrock-all-svc", WS, "token"
+        )
+        assert error is None
+        assert service["allow_all_targets"] is True
+        assert service["targets"] == []
+
     def test_not_found_lists_usable(self, monkeypatch):
         self._patch(monkeypatch)
         service, error = db_mod.resolve_provider_service("claude", "main.x.missing", WS, "token")
@@ -1122,6 +1148,20 @@ class TestResolveProviderService:
         assert error is None
         assert service["provider_type"] == "gemini_enterprise"
         assert service["targets"] == ["gemini-3.5-flash"]
+
+
+class TestServiceUsableForTool:
+    def test_bedrock_allow_all_targets_usable_without_targets(self):
+        service = {"provider_type": "amazon_bedrock", "targets": [], "allow_all_targets": True}
+        assert db_mod.service_usable_for_tool("claude", service)
+
+    def test_bedrock_without_claude_targets_unusable(self):
+        service = {
+            "provider_type": "amazon_bedrock",
+            "targets": ["amazon.titan-text-express-v1"],
+            "allow_all_targets": False,
+        }
+        assert not db_mod.service_usable_for_tool("claude", service)
 
 
 class TestModelProviderFeatureUnavailable:
@@ -1283,6 +1323,87 @@ class TestListMcpServices:
 
         assert names == []
         assert reason and reason.startswith("HTTP 404")
+
+    def test_requests_basic_view(self, monkeypatch):
+        # Only names are needed; BASIC omits the source-connection resolution that makes FULL
+        # costlier (and adds Atlas load) at scale.
+        captured: dict[str, str] = {}
+
+        def fake_get(url, token, timeout=30):
+            captured["url"] = url
+            return {"mcp_services": []}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        db_mod.list_mcp_services(WS, "token")
+
+        assert "view=BASIC" in captured["url"]
+
+    def test_follows_next_page_token(self, monkeypatch):
+        # A whole-schema pointer can span more than one page; ignoring next_page_token would
+        # silently drop services on later pages.
+        pages = [
+            (
+                {
+                    "mcp_services": [{"name": "mcp-services/system.ai.github"}],
+                    "next_page_token": "tok2",
+                },
+                None,
+            ),
+            ({"mcp_services": [{"name": "mcp-services/system.ai.slack"}]}, None),
+        ]
+        seen: list[str] = []
+
+        def fake_get(url, token, timeout=30):
+            seen.append(url)
+            return pages[len(seen) - 1]
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        names, reason = db_mod.list_mcp_services(WS, "token")
+
+        assert reason is None
+        assert names == ["system.ai.github", "system.ai.slack"]
+        assert "page_token=tok2" in seen[1]
+
+    def test_stops_on_repeated_page_token(self, monkeypatch):
+        # A server that echoes the same token must not spin forever.
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: (
+                {
+                    "mcp_services": [{"name": "mcp-services/system.ai.github"}],
+                    "next_page_token": "x",
+                },
+                None,
+            ),
+        )
+
+        names, reason = db_mod.list_mcp_services(WS, "token")
+
+        assert reason is None
+        assert names == ["system.ai.github"]
+
+    def test_keeps_earlier_pages_when_a_later_one_fails(self, monkeypatch):
+        calls = {"n": 0}
+
+        def fake_get(url, token, timeout=30):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {
+                    "mcp_services": [{"name": "mcp-services/system.ai.github"}],
+                    "next_page_token": "tok2",
+                }, None
+            return None, "HTTP 500 Server Error"
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        names, reason = db_mod.list_mcp_services(WS, "token")
+
+        # A mid-pagination failure keeps what we already collected rather than erroring out.
+        assert names == ["system.ai.github"]
+        assert reason is None
 
 
 class TestWalkCatalogSchemas:
@@ -2621,6 +2742,49 @@ class TestEnsureDatabricksCliVersion:
         assert upgraded == ["upgrade"]
 
 
+class TestInstallDatabricksCli:
+    def test_checks_version_when_present(self, monkeypatch):
+        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: "/usr/bin/databricks")
+        checked = []
+        monkeypatch.setattr(
+            db_mod, "ensure_databricks_cli_version", lambda *a, **kw: checked.append(True)
+        )
+        install_databricks_cli()
+        assert checked == [True]
+
+    def test_skip_version_check_bypasses_version_gate(self, monkeypatch):
+        """`--skip-preflight` sets skip_version_check: an already-installed CLI is
+        trusted without the minimum-version gate, so a public-preview build is no
+        longer a false positive."""
+        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: "/usr/bin/databricks")
+        checked = []
+        monkeypatch.setattr(
+            db_mod, "ensure_databricks_cli_version", lambda *a, **kw: checked.append(True)
+        )
+        install_databricks_cli(skip_version_check=True)
+        assert checked == []
+
+    def test_skip_version_check_still_installs_when_missing(self, monkeypatch):
+        """A missing CLI is installed even under skip_version_check — only the
+        version *check* is bypassed, not the install."""
+        present = {"databricks": None}
+        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: present.get(cmd))
+        installed = []
+
+        def fake_installer(brew_subcommand="install"):
+            present["databricks"] = "/usr/bin/databricks"
+            installed.append(brew_subcommand)
+
+        monkeypatch.setattr(db_mod, "_run_databricks_cli_installer", fake_installer)
+        checked = []
+        monkeypatch.setattr(
+            db_mod, "ensure_databricks_cli_version", lambda *a, **kw: checked.append(True)
+        )
+        install_databricks_cli(skip_version_check=True)
+        assert installed == ["install"]
+        assert checked == []
+
+
 class TestDatabricksCliVersion:
     def test_none_when_absent(self, monkeypatch):
         monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: None)
@@ -2679,6 +2843,39 @@ class TestRunDatabricksCliInstaller:
         # databricks/tap and fails if absent, rather than falling back to the
         # unrelated `databricks` cask.
         assert calls == [["brew", brew_subcommand, "databricks/tap/databricks"]]
+
+    def _fail_installer(self, monkeypatch):
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: "/opt/homebrew/bin/brew")
+
+        def boom(cmd, **kw):
+            raise subprocess.CalledProcessError(1, cmd)
+
+        monkeypatch.setattr(db_mod, "run", boom)
+
+    def test_failure_points_at_local_bin_when_present(self, monkeypatch, tmp_path):
+        # A stale databricks in ~/.local/bin shadows the official install target;
+        # the failure message must call it out so users know to remove it too.
+        local_bin = tmp_path / ".local" / "bin" / "databricks"
+        local_bin.parent.mkdir(parents=True)
+        local_bin.write_text("stale")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._fail_installer(monkeypatch)
+
+        with pytest.raises(RuntimeError) as exc:
+            _run_databricks_cli_installer()
+
+        assert str(local_bin) in str(exc.value)
+        assert "remove it" in str(exc.value)
+
+    def test_failure_omits_local_bin_when_absent(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._fail_installer(monkeypatch)
+
+        with pytest.raises(RuntimeError) as exc:
+            _run_databricks_cli_installer()
+
+        assert ".local/bin/databricks" not in str(exc.value)
 
 
 class TestHttpGetJsonTimeout:
@@ -3649,3 +3846,99 @@ class TestBearerCommand:
 
         assert db_mod.has_valid_databricks_auth(WS) is True
         assert not marker.exists()
+
+
+class TestWalkCatalogSchemasCancellation:
+    def _fake_paginated(self, n_schemas):
+        def impl(url, token, *, items_key, extra_params=None, **kwargs):
+            if items_key == "catalogs":
+                return [{"name": "main"}], None
+            if items_key == "schemas":
+                return [{"name": f"s{i}"} for i in range(n_schemas)], None
+            return [], None
+
+        return impl
+
+    def test_cancel_event_stops_walk_during_probing(self, monkeypatch):
+        N = 50
+        monkeypatch.setattr(db_mod, "_paginated_json_items", self._fake_paginated(N))
+
+        cancel_event = threading.Event()
+        probe_calls: list[tuple[str, str]] = []
+
+        def slow_probe(cat, schema):
+            probe_calls.append((cat, schema))
+            cancel_event.set()
+            time.sleep(0.2)
+            return f"{cat}.{schema}"
+
+        collected = []
+        start = time.monotonic()
+        db_mod.walk_catalog_schemas(
+            WS,
+            "tok",
+            deadline=start + 60.0,
+            probe=slow_probe,
+            collect=lambda result, done, total: collected.append(result),
+            cancel_event=cancel_event,
+        )
+        assert probe_calls
+        assert len(probe_calls) < N
+        assert time.monotonic() - start < 5.0
+
+    def test_deadline_stops_walk_promptly(self, monkeypatch):
+        N = 50
+        monkeypatch.setattr(db_mod, "_paginated_json_items", self._fake_paginated(N))
+
+        collected = []
+
+        def slow_probe(cat, schema):
+            time.sleep(0.5)
+            return f"{cat}.{schema}"
+
+        start = time.monotonic()
+        db_mod.walk_catalog_schemas(
+            WS,
+            "tok",
+            deadline=start + 0.1,
+            probe=slow_probe,
+            collect=lambda result, done, total: collected.append(result),
+        )
+        assert time.monotonic() - start < 1.5
+        assert len(collected) < N
+
+    def test_all_probes_collected_on_full_success(self, monkeypatch):
+        N = 20
+        monkeypatch.setattr(db_mod, "_paginated_json_items", self._fake_paginated(N))
+
+        collected = []
+        reason = db_mod.walk_catalog_schemas(
+            WS,
+            "tok",
+            deadline=time.monotonic() + 60.0,
+            probe=lambda cat, schema: f"{cat}.{schema}",
+            collect=lambda result, done, total: collected.append(result),
+        )
+        assert reason is None
+        assert len(collected) == N
+
+    def test_raising_probes_are_skipped_not_stalled(self, monkeypatch):
+        N = 10
+        monkeypatch.setattr(db_mod, "_paginated_json_items", self._fake_paginated(N))
+
+        def probe(cat, schema):
+            if int(schema[1:]) % 2 == 0:
+                raise RuntimeError("probe failure")
+            return f"{cat}.{schema}"
+
+        collected = []
+        reason = db_mod.walk_catalog_schemas(
+            WS,
+            "tok",
+            deadline=time.monotonic() + 60.0,
+            probe=probe,
+            collect=lambda result, done, total: collected.append(result),
+        )
+        assert reason is None
+        assert len(collected) == N // 2
+        assert all("." in r for r in collected)

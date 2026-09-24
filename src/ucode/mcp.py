@@ -19,6 +19,7 @@ from ucode.agents import claude, codex, copilot, cursor, gemini, opencode
 from ucode.config_io import restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
+    AIGW_MCP_SERVICES_SEGMENT,
     PermissionDeniedError,
     apply_pat_environment,
     build_mcp_proxy_argv,
@@ -31,6 +32,7 @@ from ucode.databricks import (
     list_mcp_services,
     workspace_hostname,
 )
+from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
     CLAUDE_CODE_OAUTH_CLIENT_ID,
     CURSOR_OAUTH_CLIENT_ID,
@@ -56,10 +58,6 @@ from ucode.ui import (
     scrolling_checkbox,
     spinner,
 )
-
-# AI Gateway MCP-services endpoints carry this path segment. These are the
-# connection-backed services that need a per-user connection login.
-AIGW_MCP_SERVICES_PATH = "/ai-gateway/mcp-services/"
 
 # Workspace-relative path fragments for the V2 AI Gateway MCP endpoints, shared by the URL-shape
 # checks (`_is_app_mcp_server`, `_mcp_server_location`) so the set stays in one place.
@@ -250,6 +248,23 @@ def configured_mcp_clients(state: dict, installed_clients: list[str]) -> list[st
     ]
 
 
+def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | None:
+    """The published OAuth app id to register a **native HTTP+OAuth** MCP entry against for
+    ``client`` (Claude Code / Cursor), or ``None`` to use the stdio ``ug mcp-proxy`` instead.
+
+    Native HTTP+OAuth fits only an agent that pins an OAuth client (``AGENT_OAUTH_CLIENT``), on a
+    non-PAT run (PAT has no interactive OAuth), whose workspace actually publishes that client.
+    This is the single source of truth for that choice, shared by the per-server
+    (:func:`configure_client_mcp_server`) and batched (:func:`_managed_mcp_entry`) paths. Whether it
+    applies to a *specific* server additionally requires a connection-backed mcp-services URL
+    (``AIGW_MCP_SERVICES_SEGMENT``), which the caller checks per server. It is URL-independent, so
+    callers can compute it once per (client, workspace) rather than once per server."""
+    oauth_client = AGENT_OAUTH_CLIENT.get(client)
+    if oauth_client is not None and not use_pat and oauth_client_available(workspace, oauth_client):
+        return oauth_client
+    return None
+
+
 def configure_client_mcp_server(
     client: str,
     name: str,
@@ -260,30 +275,22 @@ def configure_client_mcp_server(
     use_pat: bool = False,
     always_load: bool = False,
 ) -> list[str]:
-    # Connection-backed AI Gateway MCP services register as a direct HTTP server so
-    # the agent drives the connection login natively — but only for an agent that can
-    # pin an OAuth client (AGENT_OAUTH_CLIENT: Claude Code, Cursor) and only when that
-    # client is registered on the workspace. Everything else keeps the stdio proxy:
-    # non-connection MCPs, the skills registry, PAT auth (no
-    # interactive OAuth), agents without a mapped OAuth client, and workspaces where
-    # the mapped client isn't published.
-    oauth_client = AGENT_OAUTH_CLIENT.get(client)
-    if (
-        oauth_client is not None
-        and AIGW_MCP_SERVICES_PATH in url
-        and not use_pat
-        and oauth_client_available(workspace, oauth_client)
-    ):
+    # Connection-backed AI Gateway MCP services register as a direct HTTP server so the agent drives
+    # the connection login natively (see `_oauth_http_client`). Everything else keeps the stdio
+    # proxy: non-connection MCPs, the skills registry, PAT auth, agents without a mapped OAuth
+    # client, and workspaces where the mapped client isn't published.
+    http_client = _oauth_http_client(client, workspace, use_pat=use_pat)
+    if http_client is not None and AIGW_MCP_SERVICES_SEGMENT in url:
         if client == "claude":
             removed_scopes = [
                 scope
                 for scope in MCP_CLEANUP_SCOPES
                 if claude.remove_claude_mcp_server(name, scope)
             ]
-            claude.add_claude_http_mcp_server(name, url, client_id=oauth_client)
+            claude.add_claude_http_mcp_server(name, url, client_id=http_client)
             return removed_scopes
         if client == "cursor":
-            removed = cursor.write_http_mcp_server_config(name, url, client_id=oauth_client)
+            removed = cursor.write_http_mcp_server_config(name, url, client_id=http_client)
             return [MCP_USER_SCOPE] if removed else []
 
     # Every other case registers the `ug mcp-proxy ...` stdio command; the proxy
@@ -380,6 +387,7 @@ def discover_all_mcp_service_names(
     profile: str | None = None,
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> list[str]:
     """All MCP services across every `<catalog>.<schema>` in the workspace. This
     walks the workspace (see `list_all_mcp_services`) and is the workspace-wide
@@ -388,7 +396,11 @@ def discover_all_mcp_service_names(
     service names into the picker as the walk progresses."""
     token = get_databricks_token(workspace, profile)
     names, _reason = list_all_mcp_services(
-        workspace, token, on_progress=on_progress, on_services=on_services
+        workspace,
+        token,
+        on_progress=on_progress,
+        on_services=on_services,
+        cancel_event=cancel_event,
     )
     return names
 
@@ -684,7 +696,8 @@ def prompt_for_mcp_server_choices(
     available_uc_functions_servers: list[dict] | None = None,
     allow_back: bool = False,
     additive: bool = False,
-    background_loader: Callable[[Callable[[list[questionary.Choice]], None]], None] | None = None,
+    background_loader: Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]
+    | None = None,
 ) -> list[str] | None | _Back:
     """Show the MCP server picker. Returns the list of selected values, `None`
     if cancelled (Ctrl-C), or `_BACK` if `allow_back` and the user pressed Left
@@ -738,7 +751,7 @@ def _is_app_mcp_server(server: dict) -> bool:
         return False
     stripped = url.rstrip("/")
     known = (
-        AIGW_MCP_SERVICES_PATH,
+        AIGW_MCP_SERVICES_SEGMENT,
         MCP_EXTERNAL_PATH,
         MCP_GENIE_PATH,
         MCP_VECTOR_SEARCH_PATH,
@@ -756,14 +769,18 @@ def _resolve_managed_mcp_servers(
 ) -> list[dict]:
     """Resolve a managed ``mcp_servers`` selector into MCP server entries for ``clients``.
 
-    ``selector`` is the normalized ``NamesOrLocation`` (``{names?, unity_catalog_location?}``): a
-    ``unity_catalog_location`` registers every MCP service discovered under that
-    ``<catalog>.<schema>``; ``names`` registers exactly those services, each a full
-    ``<catalog>.<schema>.<service>`` name. Discovery and narrowing reuse
-    :func:`_resolve_location_mcp_servers` with no ``original_servers``, so the managed set is
-    tracked on its own and never entangles the developer's own servers or the skills connection.
-    A name that isn't a full three-part FQN is skipped with a warning, so an admin's typo in one
-    entry never blocks the developer from the entries that are valid.
+    ``selector`` is the normalized ``NamesOrLocation`` (``{names?, unity_catalog_location?}``), and
+    the two branches resolve differently:
+
+    - a ``unity_catalog_location`` registers every MCP service under that ``<catalog>.<schema>``, so
+      it discovers the set via :func:`_resolve_location_mcp_servers` (with no ``original_servers``);
+    - ``names`` registers exactly those services. Each is a full ``<catalog>.<schema>.<service>``
+      whose proxy URL is deterministic, so its entry is built directly here with no discovery or
+      narrowing call.
+
+    Either way the managed set is tracked on its own and never entangles the developer's own servers
+    or the skills connection. A ``names`` entry that isn't a full three-part FQN is skipped with a
+    warning, so an admin's typo in one entry never blocks the developer from the valid entries.
     """
     location = selector.get("unity_catalog_location")
     if isinstance(location, str) and location:
@@ -782,21 +799,27 @@ def _resolve_managed_mcp_servers(
     names = [n for n in names if n not in set(malformed)]
     if not names:
         return []
-    # Group the valid FQNs by their `<catalog>.<schema>` so each schema is discovered once, e.g.
-    # {"system.ai": {"system.ai.slack", "system.ai.github"}, "main.default": {"main.default.custom"}}.
-    by_schema: dict[str, set[str]] = {}
-    for name in names:
-        by_schema.setdefault(".".join(name.split(".")[:2]), set()).add(name)
+    # Explicit FQNs need no runtime discovery: the proxy URL is deterministic from the name, and
+    # access is enforced when a tool is actually called. So build the entries directly and skip the
+    # per-schema ListMcpServices round-trip (and the Atlas load it drives at scale) that narrowing a
+    # discovered list would require. A since-removed name simply fails at call time rather than
+    # slowing every `ug configure`. The `unity_catalog_location` selector above is the one path that
+    # still discovers, since a whole-schema pointer has no explicit set to register.
     working: list[dict] = []
     seen: set[str] = set()
-    for schema in sorted(by_schema):
-        for server in _resolve_location_mcp_servers(
-            workspace, profile, clients, schema, [], services=by_schema[schema]
-        ):
-            name = server.get("name")
-            if isinstance(name, str) and name not in seen:
-                seen.add(name)
-                working.append(server)
+    for full_name in sorted(set(names)):
+        entry_name = full_name.replace(".", "-")
+        if entry_name in seen:
+            continue
+        seen.add(entry_name)
+        working.append(
+            {
+                "name": entry_name,
+                "url": build_mcp_service_url(workspace, full_name),
+                "auth": "proxy",
+                "clients": list(clients),
+            }
+        )
     return working
 
 
@@ -842,7 +865,7 @@ def _agent_managed_file_entries(
         if agent == "claude":
             # A native HTTP+OAuth entry is only valid for a connection-backed mcp-services URL;
             # anything else stays on the stdio proxy so both delivery paths resolve identically.
-            if AIGW_MCP_SERVICES_PATH not in url:
+            if AIGW_MCP_SERVICES_SEGMENT not in url:
                 continue
             entries[name] = claude.managed_mcp_entry(url)
         elif agent == "codex":
@@ -869,8 +892,10 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
       Claude CLI, PAT auth, or a workspace without the OAuth client), plus every non-Claude/Codex
       MCP client, which keeps its existing behavior.
 
-    Returns the servers resolved this run. Raises ``RuntimeError`` on a discovery failure; the caller
-    keeps it best-effort.
+    Returns the servers resolved this run. Propagates the distinct
+    :class:`McpServiceListingRateLimited` when discovery is rate-limited (HTTP 429), so the caller
+    can skip MCP setup for the run without treating it as a hard failure; any other discovery
+    failure raises plain ``RuntimeError``. Either way the caller keeps it best-effort.
     """
     selector = managed.get("mcp_servers")
     selector = selector if isinstance(selector, dict) else {}
@@ -961,8 +986,18 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         if client in _MANAGED_FILE_AGENTS
     }
     fallback_clients = [c for c in clients if c not in _MANAGED_FILE_AGENTS or c in fallback_agents]
+    # The managed set can register a whole `system.ai` schema, so batch every agent into one config
+    # write each instead of a `claude mcp`/`codex mcp`/`gemini mcp` subprocess (or per-server file
+    # write) per server. Interactive `ug mcp` commands keep the per-server path (they change few
+    # servers and their output narrates each).
     apply_mcp_server_changes(
-        previous_fallback, working_fallback, fallback_clients, workspace, profile, use_pat=use_pat
+        previous_fallback,
+        working_fallback,
+        fallback_clients,
+        workspace,
+        profile,
+        use_pat=use_pat,
+        batch_agents=frozenset(fallback_clients),
     )
     state["managed_mcp_servers"] = working_fallback
     save_state(state)
@@ -1090,17 +1125,21 @@ def _mcp_services_background_loader(
     profile: str | None,
     known_names: set[str],
     additive: bool,
-) -> Callable[[Callable[[list[questionary.Choice]], None]], None]:
+) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]:
     """Return a picker `background_loader` that runs the workspace-wide MCP-services walk and
     streams each schema's newly-found services into the open picker as choices, so the walk
     never blocks the picker from opening. Deduping against already-shown rows (e.g. the fast
     `system.ai` list) is handled by the picker's append."""
 
-    def loader(append: Callable[[list[questionary.Choice]], None]) -> None:
+    def loader(
+        append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
+    ) -> None:
         def on_services(new_names: list[str]) -> None:
             append([_mcp_service_choice(name, known_names, additive) for name in new_names])
 
-        discover_all_mcp_service_names(workspace, profile, on_services=on_services)
+        discover_all_mcp_service_names(
+            workspace, profile, on_services=on_services, cancel_event=cancel_event
+        )
 
     return loader
 
@@ -1129,6 +1168,59 @@ def _discover_selected_mcp_sources(
     }
 
 
+# Every MCP client's module, keyed by client name — the batched-writer dispatch table (the MCP
+# analogue of `configure_tool`'s per-agent `write_tool_config`). Each module exposes
+# ``write_user_mcp_servers(add, remove)`` and an entry builder used by `_managed_mcp_entry`.
+_MCP_CLIENT_MODULES = {
+    "claude": claude,
+    "codex": codex,
+    "gemini": gemini,
+    "copilot": copilot,
+    "cursor": cursor,
+    "opencode": opencode,
+}
+
+
+def _managed_mcp_entry(
+    client: str,
+    url: str,
+    workspace: str,
+    profile: str | None,
+    *,
+    use_pat: bool,
+    always_load: bool,
+    http_client: str | None,
+) -> dict:
+    """The user-scope config entry one MCP server registers as for ``client``, mirroring the
+    delivery choice in :func:`configure_client_mcp_server` so a batched direct write matches exactly
+    what the per-server CLI/config path would have registered.
+
+    ``http_client`` is the precomputed :func:`_oauth_http_client` result for this (client,
+    workspace) (or ``None``); the caller computes it once per client so the batch loop doesn't
+    re-probe ``oauth_client_available`` per server. HTTP+OAuth applies here only when that client is
+    set AND this server's URL is a connection-backed mcp-services URL; otherwise the stdio proxy."""
+    use_http = http_client is not None and AIGW_MCP_SERVICES_SEGMENT in url
+    if client == "claude":
+        if use_http:
+            return claude.managed_mcp_entry(url)
+        argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
+        return claude.user_stdio_mcp_entry(argv, always_load=always_load)
+    if client == "cursor" and use_http:
+        return cursor.build_http_mcp_server_entry(url, http_client)
+    argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
+    if client == "codex":
+        return codex.managed_mcp_entry(argv)
+    if client == "cursor":
+        return cursor.build_mcp_server_entry(argv)
+    if client == "gemini":
+        return gemini.build_mcp_server_entry(argv)
+    if client == "copilot":
+        return copilot.build_mcp_server_entry(argv)
+    if client == "opencode":
+        return opencode.build_mcp_server_entry(argv)
+    raise RuntimeError(f"Unsupported MCP client '{client}'.")
+
+
 def apply_mcp_server_changes(
     original_servers: list[dict],
     working_servers: list[dict],
@@ -1137,25 +1229,37 @@ def apply_mcp_server_changes(
     profile: str | None = None,
     *,
     use_pat: bool = False,
+    batch_agents: frozenset[str] = frozenset(),
 ) -> bool:
     original_by_name = _servers_by_name(original_servers)
     working_by_name = _servers_by_name(working_servers)
 
-    # Build the per-client work lists. Each add/remove shells out to a CLI or
-    # rewrites a config file, so a large diff means hundreds of operations; we
-    # run them concurrently ACROSS clients but SERIALLY within a client, since
-    # every operation for one client mutates that client's single shared config
-    # (`claude mcp add-json` edits ~/.claude.json, etc.) and concurrent
-    # read-modify-writes would clobber each other.
+    # Work runs concurrently ACROSS clients but SERIALLY within a client, since every operation for
+    # one client mutates that client's single shared config and concurrent read-modify-writes would
+    # clobber each other. Each per-server add/remove is a `claude mcp`/`codex mcp`/`gemini mcp`
+    # subprocess (~0.3-0.8s) or its own config read-modify-write, so a large set is dozens of them
+    # run serially. Agents named in ``batch_agents`` (the workspace-managed path, which can register
+    # a whole `system.ai` schema) instead collapse their whole diff into ONE write each via the
+    # per-agent ``write_user_mcp_servers`` (the MCP analogue of models' `write_tool_config`). Every
+    # agent by default, and any agent not listed, keeps the per-server CLI/config path.
     work: dict[str, list[Callable[[], object]]] = {client: [] for client in clients}
+    batched = {c for c in clients if c in batch_agents and c in _MCP_CLIENT_MODULES}
+    batch_add: dict[str, dict[str, dict]] = {c: {} for c in batched}
+    batch_remove: dict[str, set[str]] = {c: set() for c in batched}
+    # The HTTP+OAuth choice is URL-independent, so probe `oauth_client_available` once per batched
+    # client here rather than once per server inside the entry-building loop below.
+    batch_http_client = {c: _oauth_http_client(c, workspace, use_pat=use_pat) for c in batched}
     changed = False
 
     for name, server in original_by_name.items():
         if name not in working_by_name:
             for client in _mcp_server_clients(server):
-                work.setdefault(client, []).append(
-                    lambda c=client, n=name: remove_client_mcp_server(c, n)
-                )
+                if client in batched:
+                    batch_remove[client].add(name)
+                else:
+                    work.setdefault(client, []).append(
+                        lambda c=client, n=name: remove_client_mcp_server(c, n)
+                    )
             changed = True
 
     for name, server in working_by_name.items():
@@ -1169,12 +1273,30 @@ def apply_mcp_server_changes(
         # discoverable without an explicit mention; other clients ignore it.
         always_load = server.get("kind") == SKILLS_MCP_KIND
         for client in clients:
-            work[client].append(
-                lambda c=client, n=name, u=url, al=always_load: configure_client_mcp_server(
-                    c, n, u, workspace, profile, use_pat=use_pat, always_load=al
+            if client in batched:
+                batch_add[client][name] = _managed_mcp_entry(
+                    client,
+                    url,
+                    workspace,
+                    profile,
+                    use_pat=use_pat,
+                    always_load=always_load,
+                    http_client=batch_http_client[client],
                 )
-            )
+            else:
+                work[client].append(
+                    lambda c=client, n=name, u=url, al=always_load: configure_client_mcp_server(
+                        c, n, u, workspace, profile, use_pat=use_pat, always_load=al
+                    )
+                )
         changed = True
+
+    for client in batched:
+        adds, removes = batch_add[client], batch_remove[client]
+        if not adds and not removes:
+            continue
+        module = _MCP_CLIENT_MODULES[client]
+        work[client].append(lambda m=module, a=adds, r=removes: m.write_user_mcp_servers(a, r))
 
     _run_client_work(work)
     return changed
@@ -1221,6 +1343,18 @@ def _run_client_work(work: dict[str, list[Callable[[], object]]]) -> None:
 
 def purge_cross_workspace_mcp_residue(state: dict, workspace: str) -> None:
     installed = set(available_mcp_clients())
+    attempted_removals: set[tuple[str, str]] = set()
+
+    def remove_stale_server(client: str, name: str) -> list[str] | None:
+        key = (client, name)
+        if key in attempted_removals:
+            return None
+        attempted_removals.add(key)
+        try:
+            return remove_client_mcp_server(client, name)
+        except (RuntimeError, subprocess.TimeoutExpired, OSError) as exc:
+            print_warning(f"Failed to remove `{name}` from {MCP_CLIENTS[client]['display']}: {exc}")
+            return None
 
     raw_mcp_servers = list(state.get("mcp_servers") or [])
     current_mcp_servers, foreign_mcp_servers = _partition_mcp_entries_by_workspace(
@@ -1242,12 +1376,7 @@ def purge_cross_workspace_mcp_residue(state: dict, workspace: str) -> None:
             for client in server.get("clients") or []:
                 if client not in installed or client not in MCP_CLIENTS:
                     continue
-                try:
-                    remove_client_mcp_server(client, name)
-                except RuntimeError as exc:
-                    print_warning(
-                        f"Failed to remove `{name}` from {MCP_CLIENTS[client]['display']}: {exc}"
-                    )
+                remove_stale_server(client, name)
         state["mcp_servers"] = current_mcp_servers
         save_state(state)
 
@@ -1258,13 +1387,7 @@ def purge_cross_workspace_mcp_residue(state: dict, workspace: str) -> None:
         for client in other_ws_mcps[name]:
             if client not in installed or client not in MCP_CLIENTS:
                 continue
-            try:
-                removed_scopes = remove_client_mcp_server(client, name)
-            except RuntimeError as exc:
-                print_warning(
-                    f"Failed to remove `{name}` from {MCP_CLIENTS[client]['display']}: {exc}"
-                )
-                continue
+            removed_scopes = remove_stale_server(client, name)
             if removed_scopes:
                 any_removed = True
         if any_removed:
@@ -1281,6 +1404,21 @@ def _skills_entries(servers: list[dict]) -> list[dict]:
     return [s for s in servers if s.get("kind") == SKILLS_MCP_KIND]
 
 
+class McpServiceListingRateLimited(RuntimeError):
+    """MCP-service discovery (`ListMcpServices`) was rate-limited (HTTP 429).
+
+    A distinct ``RuntimeError`` subtype so the managed reconcile path can skip MCP setup for this
+    run gracefully — an info note, no config change — rather than surfacing a hard failure. A
+    transient 429 (e.g. many clients calling `ug configure` at once) must not break configure or
+    unregister already-configured servers; the next `ug configure` retries."""
+
+    def __init__(self, location: str) -> None:
+        self.location = location
+        super().__init__(
+            f"MCP service discovery for `{location}` was rate-limited (HTTP 429); try again shortly."
+        )
+
+
 def _resolve_location_mcp_servers(
     workspace: str,
     profile: str | None,
@@ -1294,8 +1432,10 @@ def _resolve_location_mcp_servers(
     Strict replacement for mcp-services: the returned list is exactly the ones
     discovered at ``location`` (any previously-registered mcp-service outside it
     is removed by ``apply_mcp_server_changes``), plus any existing skills
-    connection, preserved untouched. Raises ``RuntimeError`` for an invalid
-    location (HTTP 404 from the listing API) or any other listing failure.
+    connection, preserved untouched. Raises the distinct
+    :class:`McpServiceListingRateLimited` when discovery is rate-limited (HTTP 429) so callers can
+    skip gracefully, and plain ``RuntimeError`` for an invalid location (HTTP 404 from the listing
+    API) or any other listing failure.
 
     When ``services`` is given, the discovered set is narrowed to exactly that
     subset (matched by full name like ``system.ai.github`` or bare short name
@@ -1316,6 +1456,11 @@ def _resolve_location_mcp_servers(
             f"Invalid location: `{location}` is not a valid Unity Catalog schema "
             "in this workspace (or you lack USE permission on it)."
         )
+    if reason and reason.startswith("HTTP 429"):
+        # A transient rate-limit must not break `ug configure` or unregister already-configured
+        # servers. Raise a distinct type so the managed path skips MCP setup this run with an info
+        # note (leaving existing servers untouched) and retries on the next configure.
+        raise McpServiceListingRateLimited(location)
     if reason:
         raise RuntimeError(f"Failed to list MCP services at `{location}`: {reason}")
     if not names:
@@ -2024,8 +2169,8 @@ def _mcp_server_location(server: dict) -> str:
         return "skills"
     url = str(server.get("url") or "")
     stripped = url.rstrip("/")
-    if AIGW_MCP_SERVICES_PATH in url:
-        return url.split(AIGW_MCP_SERVICES_PATH, 1)[1] or "mcp-service"
+    if AIGW_MCP_SERVICES_SEGMENT in url:
+        return connection_from_url(url) or "mcp-service"
     if MCP_EXTERNAL_PATH in url:
         return f"connection:{stripped.rsplit('/', 1)[-1]}"
     if MCP_GENIE_PATH in url:
@@ -2597,19 +2742,23 @@ def _skill_schema_choice(location: str, skill_count: int, in_scope: bool) -> que
 
 def _skill_schema_background_loader(
     workspace: str, token: str, in_scope: set[str]
-) -> Callable[[Callable[[list[questionary.Choice]], None]], str | None]:
+) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], str | None]:
     """A picker ``background_loader`` that streams the workspace-wide skill walk in as schema rows.
 
     ``list_all_skills`` probes one schema per call, so each ``on_skills`` batch is that schema's
     complete skill set: one row per schema, carrying its exact skill count.
     """
 
-    def loader(append: Callable[[list[questionary.Choice]], None]) -> str | None:
+    def loader(
+        append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
+    ) -> str | None:
         def on_skills(refs: list[SkillRef]) -> None:
             location = f"{refs[0].catalog}.{refs[0].schema}"
             append([_skill_schema_choice(location, len(refs), location in in_scope)])
 
-        found, reason = list_all_skills(workspace, token, on_skills=on_skills)
+        found, reason = list_all_skills(
+            workspace, token, on_skills=on_skills, cancel_event=cancel_event
+        )
         if reason == _SKILLS_WALK_TIMEOUT_REASON:
             schemas = len({(ref.catalog, ref.schema) for ref in found})
             return (
@@ -2622,7 +2771,9 @@ def _skill_schema_background_loader(
 
 
 def prompt_for_skill_schema_choices(
-    background_loader: Callable[[Callable[[list[questionary.Choice]], None]], str | None],
+    background_loader: Callable[
+        [Callable[[list[questionary.Choice]], None], threading.Event], str | None
+    ],
 ) -> list[str] | None:
     """Show the skill-schema picker, returning the selected schemas or None on Ctrl-C."""
     selection = scrolling_checkbox(

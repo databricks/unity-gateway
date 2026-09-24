@@ -10,27 +10,22 @@ import logging
 import logging.handlers
 import os
 import platform
+import queue
 import random
 import re
 import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import (
-    ThreadPoolExecutor,
-    as_completed,
-)
-from concurrent.futures import (
-    TimeoutError as FutureTimeoutError,
-)
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
 from pathlib import Path
-from typing import Literal, NamedTuple, NoReturn, cast, overload
+from typing import Any, Literal, NamedTuple, NoReturn, cast, overload
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
@@ -708,7 +703,17 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
         else:
             raise RuntimeError("Neither curl nor wget is available.")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
-        raise RuntimeError("Failed to install/upgrade Databricks CLI automatically.") from exc
+        message = "Failed to install/upgrade Databricks CLI automatically."
+        # The official installer only tells you to remove /usr/local/bin/databricks,
+        # but a stale copy in ~/.local/bin can shadow it and break the install. Point
+        # at it explicitly so users know to delete that one too.
+        local_bin = Path("~/.local/bin/databricks").expanduser()
+        if local_bin.exists():
+            message += (
+                f"\nIf you have an existing Databricks CLI installation, please first "
+                f"remove it using\n  rm '{local_bin}'"
+            )
+        raise RuntimeError(message) from exc
 
 
 def ensure_databricks_cli_version(
@@ -776,9 +781,19 @@ def upgrade_databricks_cli() -> bool:
 
 def install_databricks_cli(
     minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
+    *,
+    skip_version_check: bool = False,
 ) -> None:
+    """Ensure the Databricks CLI is installed and (unless skipped) new enough.
+
+    ``skip_version_check`` is set on ``--skip-preflight`` launches: they trust a
+    prior ``ucode configure`` and must not re-run the minimum-version gate, whose
+    ``databricks aitools`` floor (v1.0.0) rejects a perfectly usable public-preview
+    build (e.g. v0.299.2) as a false positive. A missing CLI is still installed —
+    only the version *check* is bypassed."""
     if shutil.which("databricks"):
-        ensure_databricks_cli_version(minimum)
+        if not skip_version_check:
+            ensure_databricks_cli_version(minimum)
         return
 
     print_section("Bootstrap")
@@ -789,7 +804,8 @@ def install_databricks_cli(
         raise RuntimeError(
             "Databricks CLI install completed, but `databricks` is still not on PATH."
         )
-    ensure_databricks_cli_version(minimum)
+    if not skip_version_check:
+        ensure_databricks_cli_version(minimum)
 
 
 def install_ai_tools(agent_tokens: list[str], profile: str | None = None) -> None:
@@ -1959,6 +1975,13 @@ def delete_coding_agent_config(workspace: str, token: str, name: str) -> str | N
 # --- MCP services (parallel to model services) -----------------------------
 
 
+# Canonical path segment of an AI Gateway MCP-services endpoint
+# (``https://<ws>/ai-gateway/mcp-services/<catalog>.<schema>.<service>``). This is
+# the single source of truth: URL building (below), connection-backed detection
+# (`mcp_connection_login.connection_from_url`), and URL-shape classification
+# (`mcp.py`) all reference this one constant.
+AIGW_MCP_SERVICES_SEGMENT = "/ai-gateway/mcp-services/"
+
 _MCP_SERVICE_NAME_PREFIX = "mcp-services/"
 
 
@@ -1978,35 +2001,55 @@ def _mcp_service_full_name(service: dict, required_prefix: str) -> str | None:
 
 
 def list_mcp_services(
-    workspace: str, token: str, parent: str = "system.ai"
+    workspace: str, token: str, parent: str = "system.ai", *, max_pages: int = 100
 ) -> tuple[list[str], str | None]:
     """List UC MCP services under ``parent`` (a ``<catalog>.<schema>`` ref).
+
+    Requests the ``BASIC`` view explicitly: only service names are needed to build
+    the deterministic proxy URLs, and ``BASIC`` omits the source-connection
+    resolution that makes ``FULL`` costlier (and adds Atlas load) at scale. The
+    server already defaults to ``BASIC`` when ``view`` is unset; sending it keeps
+    the cheap view even if that default ever changes.
+
+    Pages through ``next_page_token`` so a schema with more services than one page
+    (e.g. a whole-``system.ai`` pointer) isn't silently truncated.
 
     A non-None string indicates the listing call itself failed. Callers can inspect
     ``error`` for ``HTTP 404`` to distinguish "invalid location" from other failures.
     """
     hostname = workspace_hostname(workspace)
-    url = (
-        f"https://{hostname}/api/2.1/unity-catalog/mcp-services"
-        f"?{urlencode({'parent': f'schemas/{parent}'})}"
-    )
-    payload, reason = _http_get_json(url, token, timeout=30)
-    if payload is None:
-        return [], reason
     expected_prefix = parent + "."
-    data = cast(dict, payload) if isinstance(payload, dict) else {}
     names: list[str] = []
-    for service in data.get("mcp_services") or []:
-        if not isinstance(service, dict):
-            continue
-        full_name = _mcp_service_full_name(service, expected_prefix)
-        if full_name:
-            names.append(full_name)
+    page_token: str | None = None
+    seen_tokens: set[str] = set()
+    for _ in range(max_pages):
+        params: dict[str, str] = {"parent": f"schemas/{parent}", "view": "BASIC"}
+        if page_token:
+            params["page_token"] = page_token
+        url = f"https://{hostname}/api/2.1/unity-catalog/mcp-services?{urlencode(params)}"
+        payload, reason = _http_get_json(url, token, timeout=30)
+        if payload is None:
+            # First-page failure surfaces the reason (e.g. HTTP 404 for an invalid
+            # location); a mid-pagination blip keeps whatever we already collected.
+            if not names:
+                return [], reason
+            break
+        data = cast(dict, payload) if isinstance(payload, dict) else {}
+        for service in data.get("mcp_services") or []:
+            if not isinstance(service, dict):
+                continue
+            full_name = _mcp_service_full_name(service, expected_prefix)
+            if full_name:
+                names.append(full_name)
+        page_token = data.get("next_page_token") or None
+        if not page_token or page_token in seen_tokens:
+            break
+        seen_tokens.add(page_token)
     return sorted(set(names)), None
 
 
 def build_mcp_service_url(workspace: str, full_name: str) -> str:
-    return f"{workspace}/ai-gateway/mcp-services/{full_name}"
+    return f"{workspace}{AIGW_MCP_SERVICES_SEGMENT}{full_name}"
 
 
 def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
@@ -2260,14 +2303,17 @@ def service_usable_for_tool(tool: str, service: dict) -> bool:
 
     Beyond the provider-type match, a Bedrock service is only usable for claude
     if it exposes at least one Claude model in its targets — otherwise there's no
-    routable model id to pin. (Anthropic services use canonical names, so any
-    match is usable.)
+    routable model id to pin — or is ``allow_all_targets``, in which case the model
+    id comes from elsewhere (e.g. the managed config's authored default). (Anthropic
+    services use canonical names, so any match is usable.)
     """
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
         return False
     if provider_type in BEDROCK_PROVIDER_TYPES:
-        return bool(map_claude_family_models(service.get("targets") or []))
+        return bool(service.get("allow_all_targets")) or bool(
+            map_claude_family_models(service.get("targets") or [])
+        )
     return True
 
 
@@ -2307,12 +2353,14 @@ def resolve_provider_service(
             f"Model provider service '{service_name}' is a '{provider_type}' provider, "
             f"which {tool} can't route to (supported: {supported})."
         )
-    if provider_type in BEDROCK_PROVIDER_TYPES and not map_claude_family_models(
-        match.get("targets") or []
+    if (
+        provider_type in BEDROCK_PROVIDER_TYPES
+        and not match.get("allow_all_targets")
+        and not map_claude_family_models(match.get("targets") or [])
     ):
         return None, (
             f"Model provider service '{service_name}' exposes no Claude models — "
-            f"add Claude targets to it or pick a different service."
+            f"add Claude targets to it, enable allow_all_targets, or pick a different service."
         )
     return match, None
 
@@ -2414,6 +2462,8 @@ _UC_LIST_PAGE_SIZE = 200
 _UC_LIST_MAX_PAGES = 50
 _SCHEMA_PROBE_WORKERS = 16
 _UC_LIST_HTTP_TIMEOUT = 10
+_WALK_POLL_INTERVAL = 0.05
+_PROBE_FAILED = object()
 # Most MCP services live outside `system.ai`, so this workspace-wide walk needs
 # enough time to enumerate them; a slow workspace still degrades to partial
 # results once the budget is exceeded instead of hanging indefinitely.
@@ -2425,22 +2475,45 @@ _UC_FUNCTIONS_SKIP_CATALOGS = frozenset(
 )
 
 
-def _drain_with_deadline(futures: dict, deadline: float, on_result) -> None:
-    """Iterate `futures` via `as_completed`, calling `on_result(value, key)` per
-    completed future, until either all are done or `deadline` passes. Per-task
-    exceptions are swallowed so one failure doesn't stop the rest."""
-    remaining = max(0.0, deadline - time.monotonic())
-    try:
-        for future in as_completed(futures, timeout=remaining):
+def _collect_concurrently[T, R](
+    items: list[T],
+    run: Callable[[T], R],
+    on_result: Callable[[R, T], None],
+    *,
+    max_workers: int,
+    should_stop: Callable[[], bool],
+) -> None:
+    """Run `run` over `items` on daemon workers that are never joined, so a slow or stuck
+    call can't block process exit. Results go to `on_result` on the calling thread until
+    every item is drained or `should_stop()` returns True."""
+    pending: queue.Queue[T] = queue.Queue()
+    for item in items:
+        pending.put(item)
+    results: queue.Queue[tuple[Any, T]] = queue.Queue()
+
+    def worker() -> None:
+        while not should_stop():
             try:
-                value = future.result()
+                item = pending.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                results.put((run(item), item))
             except Exception:  # noqa: BLE001
-                continue
-            on_result(value, futures[future])
-            if time.monotonic() > deadline:
-                break
-    except FutureTimeoutError:
-        pass
+                results.put((_PROBE_FAILED, item))
+
+    for _ in range(max(1, min(max_workers, len(items)))):
+        threading.Thread(target=worker, daemon=True).start()
+
+    remaining = len(items)
+    while remaining > 0 and not should_stop():
+        try:
+            result, item = results.get(timeout=_WALK_POLL_INTERVAL)
+        except queue.Empty:
+            continue
+        remaining -= 1
+        if result is not _PROBE_FAILED:
+            on_result(result, item)
 
 
 def _paginated_json_items(
@@ -2495,13 +2568,14 @@ def walk_catalog_schemas[T](
     collect: Callable[[T, int, int], None],
     skip_catalogs: frozenset[str] = _UC_FUNCTIONS_SKIP_CATALOGS,
     max_workers: int = _SCHEMA_PROBE_WORKERS,
+    cancel_event: threading.Event | None = None,
 ) -> str | None:
     """Discover every user `<catalog>.<schema>` in the workspace and probe each one in parallel.
 
     Catalogs and their schemas are listed (skipping `skip_catalogs` and `information_schema`), then
     each schema is probed concurrently until `deadline` (an absolute `time.monotonic()` value)
-    passes, so a slow workspace returns partial results instead of hanging. The caller supplies two
-    callables and owns whatever they accumulate:
+    passes or `cancel_event` is set, so a slow workspace returns partial results instead of hanging.
+    The caller supplies two callables and owns whatever they accumulate:
 
       - `probe(catalog, schema) -> result`: fetch one schema's data (e.g. its MCP services).
       - `collect(result, done, total)`: handle each probe result as it lands — accumulating,
@@ -2509,6 +2583,11 @@ def walk_catalog_schemas[T](
 
     Returns None once the probes run, or a short reason string if there are no catalogs or schemas
     to probe."""
+    cancel_event = cancel_event or threading.Event()
+
+    def should_stop() -> bool:
+        return cancel_event.is_set() or time.monotonic() > deadline
+
     hostname = workspace_hostname(workspace)
 
     catalogs, catalogs_reason = _paginated_json_items(
@@ -2531,33 +2610,27 @@ def walk_catalog_schemas[T](
         return "deadline exceeded while listing UC catalogs"
 
     schema_refs: list[tuple[str, str]] = []
-    schema_workers = max(1, min(max_workers, len(catalog_names)))
-    with ThreadPoolExecutor(max_workers=schema_workers) as pool:
-        schema_futures = {
-            pool.submit(
-                _paginated_json_items,
-                f"https://{hostname}/api/2.1/unity-catalog/schemas",
-                token,
-                items_key="schemas",
-                extra_params={"catalog_name": cat},
-                timeout=_UC_LIST_HTTP_TIMEOUT,
-            ): cat
-            for cat in catalog_names
-        }
 
-        def collect_schemas(result, catalog):
-            schemas, _ = result
-            for schema in schemas:
-                schema_name = schema.get("name")
-                if (
-                    isinstance(schema_name, str)
-                    and schema_name
-                    and schema_name != "information_schema"
-                ):
-                    schema_refs.append((catalog, schema_name))
+    def collect_schemas(result, catalog):
+        schemas, _ = result
+        for schema in schemas:
+            schema_name = schema.get("name")
+            if isinstance(schema_name, str) and schema_name and schema_name != "information_schema":
+                schema_refs.append((catalog, schema_name))
 
-        _drain_with_deadline(schema_futures, deadline, collect_schemas)
-        pool.shutdown(wait=False, cancel_futures=True)
+    _collect_concurrently(
+        catalog_names,
+        lambda cat: _paginated_json_items(
+            f"https://{hostname}/api/2.1/unity-catalog/schemas",
+            token,
+            items_key="schemas",
+            extra_params={"catalog_name": cat},
+            timeout=_UC_LIST_HTTP_TIMEOUT,
+        ),
+        collect_schemas,
+        max_workers=max_workers,
+        should_stop=should_stop,
+    )
 
     if not schema_refs:
         if time.monotonic() > deadline:
@@ -2566,20 +2639,19 @@ def walk_catalog_schemas[T](
 
     schemas_total = len(schema_refs)
     schemas_done = 0
-    probe_workers = max(1, min(max_workers, schemas_total))
-    with ThreadPoolExecutor(max_workers=probe_workers) as pool:
-        probe_futures = {
-            pool.submit(probe, catalog, schema): (catalog, schema)
-            for catalog, schema in schema_refs
-        }
 
-        def collect_probe(result, _ref):
-            nonlocal schemas_done
-            schemas_done += 1
-            collect(result, schemas_done, schemas_total)
+    def collect_probe(result, _ref):
+        nonlocal schemas_done
+        schemas_done += 1
+        collect(result, schemas_done, schemas_total)
 
-        _drain_with_deadline(probe_futures, deadline, collect_probe)
-        pool.shutdown(wait=False, cancel_futures=True)
+    _collect_concurrently(
+        schema_refs,
+        lambda ref: probe(*ref),
+        collect_probe,
+        max_workers=max_workers,
+        should_stop=should_stop,
+    )
 
     return None
 
@@ -2591,6 +2663,7 @@ def list_all_mcp_services(
     deadline_seconds: float = _MCP_SERVICES_WALK_DEADLINE_SECONDS,
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[list[str], str | None]:
     """Return sorted unique MCP-service full names across every `<catalog>.<schema>`
     in the workspace. The mcp-services API is one-schema-per-call, so this walks
@@ -2621,7 +2694,9 @@ def list_all_mcp_services(
         if on_services is not None and new:
             on_services(sorted(new))
 
-    reason = walk_catalog_schemas(workspace, token, deadline=deadline, probe=probe, collect=collect)
+    reason = walk_catalog_schemas(
+        workspace, token, deadline=deadline, probe=probe, collect=collect, cancel_event=cancel_event
+    )
     if reason is not None:
         return [], reason
     if not names:

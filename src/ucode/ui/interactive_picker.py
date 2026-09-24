@@ -125,7 +125,9 @@ def scrolling_checkbox(
     instruction: str,
     style: questionary.Style,
     allow_back: bool = False,
-    background_loader: Callable[[Callable[[list[questionary.Choice]], None]], str | None]
+    background_loader: Callable[
+        [Callable[[list[questionary.Choice]], None], threading.Event], str | None
+    ]
     | None = None,
     loading_noun: str = "MCP services",
     show_description: bool = False,
@@ -289,11 +291,16 @@ def scrolling_checkbox(
     )
 
     bindings = KeyBindings()
+    cancel_event = threading.Event()
+
+    def _exit(event: Any, **kwargs: Any) -> None:
+        cancel_event.set()
+        event.app.exit(**kwargs)
 
     @bindings.add(Keys.ControlQ, eager=True)
     @bindings.add(Keys.ControlC, eager=True)
     def _(event: Any) -> None:
-        event.app.exit(exception=KeyboardInterrupt, style="class:aborting")
+        _exit(event, exception=KeyboardInterrupt, style="class:aborting")
 
     @bindings.add(" ", eager=True)
     def _(_event: Any) -> None:
@@ -362,7 +369,7 @@ def scrolling_checkbox(
         control.submission_attempted = True
         if perform_validation():
             control.is_answered = True
-            event.app.exit(result=get_selected_values())
+            _exit(event, result=get_selected_values())
 
     if allow_back:
 
@@ -371,7 +378,7 @@ def scrolling_checkbox(
             # Wizard back-navigation: exit this step with the _BACK sentinel so
             # the caller re-shows the previous step. Left arrow is otherwise
             # unused in this multi-select (cursor moves with up/down).
-            event.app.exit(result=_BACK)
+            _exit(event, result=_BACK)
 
     @bindings.add(Keys.Any)
     def _(_event: Any) -> None:
@@ -416,7 +423,7 @@ def scrolling_checkbox(
         def worker() -> None:
             message: str | None = None
             try:
-                message = background_loader(append)
+                message = background_loader(append, cancel_event)
             except Exception:
                 # Discovery is best-effort; a failed background walk just stops streaming.
                 pass
