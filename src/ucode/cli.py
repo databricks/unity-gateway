@@ -105,6 +105,7 @@ from ucode.managed_resolve import (
 from ucode.mcp import (
     MCP_CLIENTS,
     SKILLS_MCP_KIND,
+    McpServiceListingRateLimited,
     add_mcp_command,
     add_skills_command,
     available_mcp_clients,
@@ -2400,6 +2401,15 @@ def _configure_managed_mcp_servers(managed: dict | None) -> list[str]:
     agents = {tool for tool in managed_enabled_tools(managed) if tool in MCP_CLIENTS}
     try:
         registered = reconcile_managed_mcp_servers(managed, agents)
+    except McpServiceListingRateLimited:
+        # A transient 429 while discovering the workspace's MCP services: skip MCP setup for this
+        # run (existing servers are left untouched) with an info note instead of a hard failure, so
+        # `ug configure` still completes. The next configure retries.
+        print_note(
+            "Skipped workspace MCP setup this run — MCP service discovery was rate-limited "
+            "(HTTP 429). Existing MCP servers are unchanged; run `ug configure` again to retry."
+        )
+        return []
     except RuntimeError as exc:
         print_warning(f"Could not register your workspace's MCP servers: {exc}")
         return []
