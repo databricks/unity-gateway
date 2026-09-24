@@ -283,9 +283,14 @@ def main() -> int:
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
     second_bearer = os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    client_secrets = (
+        os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
+        os.environ.get("UG_MPS_DEFAULTS_CLIENT_SECRET", ""),
+        os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", ""),
+    )
 
     def redact(value: str) -> str:
-        for secret in (bearer, second_bearer, oauth_token):
+        for secret in (bearer, second_bearer, oauth_token, *client_secrets):
             if secret:
                 value = value.replace(secret, "<redacted>")
         return value
@@ -585,6 +590,16 @@ def main() -> int:
                 "DATABRICKS_BEARER": bearer,
                 "DATABRICKS_CLIENT_ID": os.environ.get("DATABRICKS_CLIENT_ID", ""),
                 "DATABRICKS_CLIENT_SECRET": os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
+                "UG_MPS_DEFAULTS_CLIENT_ID": os.environ.get("UG_MPS_DEFAULTS_CLIENT_ID", ""),
+                "UG_MPS_DEFAULTS_CLIENT_SECRET": os.environ.get(
+                    "UG_MPS_DEFAULTS_CLIENT_SECRET", ""
+                ),
+                "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_ID": os.environ.get(
+                    "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_ID", ""
+                ),
+                "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET": os.environ.get(
+                    "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", ""
+                ),
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
                 "DATABRICKS_SECOND_BEARER": second_bearer,
                 "UG_INTEGRATION_WAREHOUSE_ID": args.warehouse_id or "",

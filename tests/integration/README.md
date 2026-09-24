@@ -241,9 +241,13 @@ and managed skill cleanup. The two Claude default-model cases read published MPS
 Catalog sources directly from `eng-ml-inference-batch-inference-us-west-2` and
 `eng-ml-inference-ap-northeast-2`, respectively, then verify both generated settings files retain
 all admin-authored family defaults. Neither case injects a config. Each obtains a token for its
-target workspace using the managed lane's service principal credentials. Local runs of these cases
-need that principal's
-`DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET` when the target differs from `--workspace`.
+target workspace using OAuth client credentials. By default they reuse the managed lane's
+`DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET`, so that principal must belong to both target
+workspaces. If separate principals are needed, set `UG_MPS_DEFAULTS_CLIENT_ID` /
+`UG_MPS_DEFAULTS_CLIENT_SECRET` for west-2 and `UG_PARENT_SCHEMA_DEFAULTS_CLIENT_ID` /
+`UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET` for northeast-2. These are optional overrides, but each
+override must be supplied as a pair. The runner passes them to the test process; the agent receives
+only the minted bearer for its target workspace.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
 executions; the complete integration suite collects 99 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
@@ -441,6 +445,11 @@ these same-repository secrets rather than storing a long-lived bearer:
 - `E2E_ADMIN_SP_CLIENT_ID` / `E2E_ADMIN_SP_CLIENT_SECRET`: the service principal's OAuth client
   credentials. The job passes them to the runner as the standard `DATABRICKS_CLIENT_ID` /
   `DATABRICKS_CLIENT_SECRET`, and `run_integration.py` mints the workspace token.
+- Optional `UG_MPS_DEFAULTS_CLIENT_ID` / `UG_MPS_DEFAULTS_CLIENT_SECRET`: OAuth client credentials
+  for the west-2 Claude defaults workspace when the base managed principal lacks access there.
+- Optional `UG_PARENT_SCHEMA_DEFAULTS_CLIENT_ID` / `UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET`:
+  OAuth client credentials for the northeast-2 Claude defaults workspace when the base principal
+  lacks access there. CI passes these four repository secrets to the integration runner.
 
 Run it locally the same way, pointing at the managed workspace:
 
@@ -448,6 +457,16 @@ Run it locally the same way, pointing at the managed workspace:
 export UCODE_TEST_WORKSPACE=https://<managed-workspace>
 export DATABRICKS_CLIENT_ID=<sp-app-id> DATABRICKS_CLIENT_SECRET=<sp-oauth-secret>
 python scripts/run_integration.py --claude-version <v> --codex-version <v> -- -m managed
+```
+
+To run only the two Claude defaults cases locally, set the base managed workspace and its
+`DATABRICKS_CLIENT_ID` / `DATABRICKS_CLIENT_SECRET` as above, set either or both target-specific
+credential pairs if needed, and select the tests by name:
+
+```bash
+python3.12 scripts/run_integration.py \
+  --ug-version checkout --claude-version 2.1.268 --codex-version 0.154.0 \
+  -- -k 'test_managed_claude_mps_defaults_accompany_discovery or test_managed_claude_parent_schema_defaults_accompany_discovery'
 ```
 
 Each job uses fresh consumer dependency resolution. There is no default dependency

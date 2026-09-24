@@ -68,7 +68,9 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace
     does not claim model inference.
     """
     session = live_session
-    session.env["DATABRICKS_BEARER"] = workspace_bearer(CLAUDE_MPS_DEFAULTS_WORKSPACE)
+    session.env["DATABRICKS_BEARER"] = workspace_bearer(
+        CLAUDE_MPS_DEFAULTS_WORKSPACE, credentials_prefix="UG_MPS_DEFAULTS"
+    )
     defaults = {
         "default_model": "anthropic.claude-sonnet-5",
         "default_fable_model": "anthropic.claude-fable-5-1",
@@ -119,7 +121,9 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
     This settings reconciliation check does not claim model inference.
     """
     session = live_session
-    session.env["DATABRICKS_BEARER"] = workspace_bearer(CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE)
+    session.env["DATABRICKS_BEARER"] = workspace_bearer(
+        CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE, credentials_prefix="UG_PARENT_SCHEMA_DEFAULTS"
+    )
     parent_schema = "system.ai"
     defaults = {
         "default_model": f"{parent_schema}.claude-sonnet-5",

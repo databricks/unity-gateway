@@ -55,15 +55,26 @@ def workspace():
 def workspace_bearer(workspace):
     """Supply a token scoped to an explicitly chosen integration workspace."""
 
-    def bearer_for(target_workspace: str) -> str:
+    def bearer_for(target_workspace: str, *, credentials_prefix: str | None = None) -> str:
         if target_workspace == workspace:
             return os.environ["DATABRICKS_BEARER"]
 
-        client_id = os.environ.get("DATABRICKS_CLIENT_ID", "").strip()
-        client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
+        client_id = client_secret = ""
+        if credentials_prefix:
+            client_id = os.environ.get(f"{credentials_prefix}_CLIENT_ID", "").strip()
+            client_secret = os.environ.get(f"{credentials_prefix}_CLIENT_SECRET", "").strip()
+            if bool(client_id) != bool(client_secret):
+                pytest.fail(
+                    f"Set both {credentials_prefix}_CLIENT_ID and "
+                    f"{credentials_prefix}_CLIENT_SECRET."
+                )
+        if not client_id:
+            client_id = os.environ.get("DATABRICKS_CLIENT_ID", "").strip()
+            client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
         if not client_id or not client_secret:
             pytest.fail(
-                f"Set DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET to authenticate "
+                f"Set {credentials_prefix or 'DATABRICKS'}_CLIENT_ID and "
+                f"{credentials_prefix or 'DATABRICKS'}_CLIENT_SECRET to authenticate "
                 f"against {target_workspace}."
             )
         basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
