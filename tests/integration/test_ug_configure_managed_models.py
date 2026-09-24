@@ -62,6 +62,7 @@ def test_managed_fixture_claude_mps_defaults_accompany_discovery(live_session, w
     """
     session = live_session
     defaults = {
+        "default_model": "anthropic.claude-sonnet-5",
         "default_fable_model": "anthropic.claude-fable-5-1",
         "default_opus_model": "anthropic.claude-opus-5",
         "default_sonnet_model": "anthropic.claude-sonnet-5",
@@ -114,6 +115,7 @@ def test_managed_fixture_claude_parent_schema_defaults_accompany_discovery(
     session = live_session
     parent_schema = "system.ai"
     defaults = {
+        "default_model": f"{parent_schema}.claude-sonnet-5",
         "default_fable_model": f"{parent_schema}.claude-fable-5-1",
         "default_opus_model": f"{parent_schema}.claude-opus-5",
         "default_sonnet_model": f"{parent_schema}.claude-sonnet-5",
