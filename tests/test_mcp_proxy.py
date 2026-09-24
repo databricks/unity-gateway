@@ -143,6 +143,7 @@ class TestDatabricksTokenAuth:
 
     def test_on_401_from_connection_service_runs_login_then_retries(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a, **k: True)
         logins: list = []
         monkeypatch.setattr(
             mcp_proxy,
@@ -175,8 +176,23 @@ class TestDatabricksTokenAuth:
         yielded = self._run_flow(auth, httpx.Request("POST", CONN_URL), httpx.Response(200))
         assert logins == [] and len(yielded) == 1  # tools/list etc. never trigger a browser
 
+    def test_no_login_service_does_not_drive_login_on_401(self, monkeypatch):
+        # A no-login mcp-service (web_search) that 401s must NOT open a connection-login browser --
+        # it's a bad-token problem, not a missing connection credential (AIGTWY-4856).
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a, **k: False)
+        logins: list = []
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: logins.append(1) or (True, "")
+        )
+        ws_url = f"{WS}/ai-gateway/mcp-services/system.ai.web_search"
+        auth = mcp_proxy._build_token_auth(ws_url, WS, "p")
+        yielded = self._run_flow(auth, httpx.Request("POST", ws_url), httpx.Response(401))
+        assert logins == [] and len(yielded) == 1  # token-only; no resource login driven
+
     def test_login_runs_at_most_once_per_session(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a, **k: True)
         logins: list = []
         monkeypatch.setattr(
             mcp_proxy, "run_connection_login", lambda *a, **k: logins.append(1) or (True, "")
@@ -199,6 +215,7 @@ class TestDatabricksTokenAuth:
 
     def test_login_failure_becomes_a_proxy_auth_error(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a, **k: True)
         monkeypatch.setattr(
             mcp_proxy, "run_connection_login", lambda *a, **k: (False, "user cancelled")
         )
@@ -212,6 +229,7 @@ class TestDatabricksTokenAuth:
         # The proxy uses the async client, so async_auth_flow is the real path; the
         # blocking login runs off the event loop via anyio.to_thread.
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a, **k: True)
         logins: list = []
         monkeypatch.setattr(
             mcp_proxy, "run_connection_login", lambda *a, **k: logins.append(1) or (True, "")

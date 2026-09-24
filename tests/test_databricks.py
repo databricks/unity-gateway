@@ -3975,3 +3975,39 @@ class TestWalkCatalogSchemasCancellation:
         assert reason is None
         assert len(collected) == N // 2
         assert all("." in r for r in collected)
+
+
+class TestMcpServiceNeedsConnectionLogin:
+    """`mcp_service_needs_connection_login` classifies whether an mcp-service needs a per-user
+    connection sign-in (from its source_connection's securable_kind)."""
+
+    def _mock_http(self, monkeypatch, details=None, err=None):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **k: (details, err))
+
+    def test_true_for_oauth_u2m_connection(self, monkeypatch):
+        self._mock_http(
+            monkeypatch,
+            details={
+                "config": {
+                    "source_connection": {"securable_kind": "CONNECTION_HTTP_OAUTH_U2M_MAPPING"}
+                }
+            },
+        )
+        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.github") is True
+
+    def test_false_when_no_source_connection(self, monkeypatch):
+        # e.g. system.ai.web_search: no backing connection, so no per-user login (AIGTWY-4856).
+        self._mock_http(monkeypatch, details={"config": {"internal": {}}})
+        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.web_search") is False
+
+    def test_false_for_non_u2m_kind(self, monkeypatch):
+        self._mock_http(
+            monkeypatch,
+            details={"config": {"source_connection": {"securable_kind": "CONNECTION_MYSQL"}}},
+        )
+        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.pg") is False
+
+    def test_false_on_lookup_error(self, monkeypatch):
+        # Safe default: an unreachable API must not push a service into an OAuth flow.
+        self._mock_http(monkeypatch, details=None, err="HTTP 500")
+        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.github") is False

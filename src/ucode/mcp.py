@@ -31,6 +31,7 @@ from ucode.databricks import (
     list_all_mcp_services,
     list_databricks_apps,
     list_mcp_services,
+    mcp_service_needs_connection_login,
     raise_for_invalid_access_token,
     workspace_hostname,
 )
@@ -256,15 +257,41 @@ def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | N
 
     Native HTTP+OAuth fits only an agent that pins an OAuth client (``AGENT_OAUTH_CLIENT``), on a
     non-PAT run (PAT has no interactive OAuth), whose workspace actually publishes that client.
-    This is the single source of truth for that choice, shared by the per-server
-    (:func:`configure_client_mcp_server`) and batched (:func:`_managed_mcp_entry`) paths. Whether it
-    applies to a *specific* server additionally requires a connection-backed mcp-services URL
-    (``AIGW_MCP_SERVICES_SEGMENT``), which the caller checks per server. It is URL-independent, so
-    callers can compute it once per (client, workspace) rather than once per server."""
+    This is the client-level half of the choice, shared by the per-server
+    (:func:`configure_client_mcp_server`) and batched (:func:`_managed_mcp_entry`) paths. It is
+    URL-independent, so callers can compute it once per (client, workspace); the per-server half
+    (:func:`_native_oauth_http_entry`) decides whether a *specific* URL warrants the native entry."""
     oauth_client = AGENT_OAUTH_CLIENT.get(client)
     if oauth_client is not None and not use_pat and oauth_client_available(workspace, oauth_client):
         return oauth_client
     return None
+
+
+def _native_oauth_http_entry(
+    oauth_client: str | None, url: str, workspace: str, profile: str | None
+) -> str | None:
+    """The OAuth app id to register ``url`` as a native HTTP+OAuth entry, or ``None`` for the proxy.
+
+    ``oauth_client`` is the precomputed :func:`_oauth_http_client` result for this (client,
+    workspace). Native OAuth applies only when that client is set AND ``url`` is a *connection-backed*
+    mcp-service — one whose backing UC connection uses per-user OAuth (U2M) and thus needs a one-time
+    sign-in (e.g. ``system.ai.github``). A no-login service like ``system.ai.web_search`` has no such
+    connection, so it (and non-mcp-services URLs) uses the stdio proxy, which injects the Databricks
+    token with no sign-in prompt. Giving a no-login service the native entry would push the agent into
+    a connection-login OAuth flow it can't complete (AIGTWY-4856). A missing token or lookup failure
+    also falls back to the proxy — the safe default, since the proxy works for every service."""
+    if oauth_client is None:
+        return None
+    connection = connection_from_url(url)
+    if connection is None:
+        return None
+    try:
+        token = get_databricks_token(workspace, profile)
+    except RuntimeError:
+        return None
+    if not mcp_service_needs_connection_login(workspace, token, connection):
+        return None
+    return oauth_client
 
 
 def configure_client_mcp_server(
@@ -278,11 +305,13 @@ def configure_client_mcp_server(
     always_load: bool = False,
 ) -> list[str]:
     # Connection-backed AI Gateway MCP services register as a direct HTTP server so the agent drives
-    # the connection login natively (see `_oauth_http_client`). Everything else keeps the stdio
-    # proxy: non-connection MCPs, the skills registry, PAT auth, agents without a mapped OAuth
-    # client, and workspaces where the mapped client isn't published.
-    http_client = _oauth_http_client(client, workspace, use_pat=use_pat)
-    if http_client is not None and AIGW_MCP_SERVICES_SEGMENT in url:
+    # the connection login natively (see `_native_oauth_http_entry`). Everything else keeps the stdio
+    # proxy: no-login mcp-services (e.g. web_search), non-mcp-services URLs, the skills registry, PAT
+    # auth, agents without a mapped OAuth client, and workspaces where the mapped client isn't published.
+    http_client = _native_oauth_http_entry(
+        _oauth_http_client(client, workspace, use_pat=use_pat), url, workspace, profile
+    )
+    if http_client is not None:
         if client == "claude":
             removed_scopes = [
                 scope
@@ -859,11 +888,15 @@ def _agent_managed_file_entries(
 ) -> dict[str, dict]:
     """Build the OS-managed-file entry map (name -> entry) for ``agent`` from the resolved set.
 
-    Claude gets a direct HTTP + OAuth entry, but only for a connection-backed mcp-services URL; its
-    other URLs fall back to the proxy (like ``configure_client_mcp_server``). Codex gets the same
-    ``ug mcp-proxy`` stdio command it would register at user scope, for any URL. Only servers that
-    name ``agent`` in their ``clients`` are included.
+    Claude gets a direct HTTP + OAuth entry, but only for a *connection-backed* mcp-service (one that
+    needs a per-user connection sign-in, e.g. ``system.ai.github``); no-login services (``web_search``)
+    and its other URLs fall back to the proxy (like ``configure_client_mcp_server``). Codex gets the
+    same ``ug mcp-proxy`` stdio command it would register at user scope, for any URL. Only servers
+    that name ``agent`` in their ``clients`` are included.
     """
+    claude_oauth = (
+        _oauth_http_client("claude", workspace, use_pat=use_pat) if agent == "claude" else None
+    )
     entries: dict[str, dict] = {}
     for server in servers:
         name = _server_name(server)
@@ -871,9 +904,10 @@ def _agent_managed_file_entries(
         if not name or not isinstance(url, str) or agent not in (server.get("clients") or []):
             continue
         if agent == "claude":
-            # A native HTTP+OAuth entry is only valid for a connection-backed mcp-services URL;
-            # anything else stays on the stdio proxy so both delivery paths resolve identically.
-            if AIGW_MCP_SERVICES_SEGMENT not in url:
+            # Native HTTP+OAuth only for a connection-backed mcp-service; a no-login service
+            # (web_search) or non-mcp-services URL stays on the stdio proxy, so both delivery
+            # paths resolve identically and no-login services aren't forced into an OAuth flow.
+            if _native_oauth_http_entry(claude_oauth, url, workspace, profile) is None:
                 continue
             entries[name] = claude.managed_mcp_entry(url)
         elif agent == "codex":
@@ -1212,15 +1246,16 @@ def _managed_mcp_entry(
     ``http_client`` is the precomputed :func:`_oauth_http_client` result for this (client,
     workspace) (or ``None``); the caller computes it once per client so the batch loop doesn't
     re-probe ``oauth_client_available`` per server. HTTP+OAuth applies here only when that client is
-    set AND this server's URL is a connection-backed mcp-services URL; otherwise the stdio proxy."""
-    use_http = http_client is not None and AIGW_MCP_SERVICES_SEGMENT in url
+    set AND this server's URL is a *connection-backed* mcp-service (:func:`_native_oauth_http_entry`);
+    a no-login service (e.g. web_search) or any other URL uses the stdio proxy."""
+    native_client = _native_oauth_http_entry(http_client, url, workspace, profile)
     if client == "claude":
-        if use_http:
+        if native_client is not None:
             return claude.managed_mcp_entry(url)
         argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
         return claude.user_stdio_mcp_entry(argv, always_load=always_load)
-    if client == "cursor" and use_http:
-        return cursor.build_http_mcp_server_entry(url, http_client)
+    if client == "cursor" and native_client is not None:
+        return cursor.build_http_mcp_server_entry(url, native_client)
     argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
     if client == "codex":
         return codex.managed_mcp_entry(argv)

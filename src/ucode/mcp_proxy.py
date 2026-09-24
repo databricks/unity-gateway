@@ -43,7 +43,11 @@ from anyio import to_thread
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.stdio import stdio_server
 
-from ucode.databricks import ensure_pat_bearer, get_databricks_token
+from ucode.databricks import (
+    ensure_pat_bearer,
+    get_databricks_token,
+    mcp_service_needs_connection_login,
+)
 from ucode.mcp_connection_login import connection_from_url, run_connection_login
 
 # Exit code used when the proxy cannot continue. MCP clients surface a non-zero
@@ -154,11 +158,28 @@ def _build_token_auth(url: str, workspace: str, profile: str | None, *, use_pat:
         # the 401, re-running it on every subsequent request would loop browsers.
         return connection is not None and response.status_code == 401 and not login["attempted"]
 
-    def _connection_login_or_fail() -> None:
+    def _connection_login_or_fail() -> bool:
+        """Drive the one-time connection sign-in for a 401. Returns whether a login was actually
+        performed, so the caller retries the request only then.
+
+        A 401 is only fixable by a connection sign-in when the service is actually connection-backed
+        (its UC connection uses per-user OAuth-U2M). A no-login service (e.g. system.ai.web_search)
+        that 401s has a bad Databricks token, not a missing connection credential — so don't open a
+        doomed connection-login browser it can't complete (AIGTWY-4856), and don't bother retrying.
+        Classified once, on the first 401; a token/lookup failure also skips the login."""
         login["attempted"] = True
+        if connection is None:  # unreachable via _needs_connection_login; narrows for the checker
+            return False
+        try:
+            token = get_databricks_token(workspace, profile)
+        except RuntimeError:
+            return False
+        if not mcp_service_needs_connection_login(workspace, token, connection):
+            return False
         ok, detail = run_connection_login(url, workspace, profile=profile)
         if not ok:
             raise ProxyAuthError(f"connection login for '{connection}' failed: {detail}")
+        return True
 
     class _DatabricksTokenAuth(httpx.Auth):
         def auth_flow(self, request):
@@ -166,7 +187,8 @@ def _build_token_auth(url: str, workspace: str, profile: str | None, *, use_pat:
             response = yield request
             if not _needs_connection_login(response):
                 return
-            _connection_login_or_fail()
+            if not _connection_login_or_fail():
+                return
             _mint(request)
             yield request
 
@@ -177,7 +199,8 @@ def _build_token_auth(url: str, workspace: str, profile: str | None, *, use_pat:
                 return
             # Run the blocking browser login off the event loop so the bridge's
             # other pumps aren't starved while the user completes the sign-in.
-            await to_thread.run_sync(_connection_login_or_fail)
+            if not await to_thread.run_sync(_connection_login_or_fail):
+                return
             _mint(request)
             yield request
 
