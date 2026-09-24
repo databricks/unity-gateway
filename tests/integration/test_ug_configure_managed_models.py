@@ -6,6 +6,7 @@ workspace does not publish; only that config input is stubbed. See tests/AGENTS.
 """
 
 import json
+import os
 
 import pytest
 from utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
@@ -37,8 +38,6 @@ CLAUDE_MPS_DEFAULTS_WORKSPACE = (
 CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE = (
     "https://eng-ml-inference-ap-northeast-2.cloud.databricks.com"
 )
-UG_MPS_DEFAULTS_CLIENT_ID = "1c359c0f-58bc-42ac-a74f-079ccb173676"
-UG_PARENT_SCHEMA_DEFAULTS_CLIENT_ID = "95e267dc-4393-4360-9d45-4b9b13b2d370"
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 CLAUDE_SMART_ROUTING_MODELS = [
@@ -61,7 +60,7 @@ CODEX_SMART_ROUTING_MODELS = [
 
 @pytest.mark.managed
 @pytest.mark.claude
-def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace_bearer):
+def test_managed_claude_mps_defaults_accompany_discovery(live_session):
     """Scenario: launch Claude with managed defaults and MPS discovery on the west-2 workspace.
 
     Expected: the installed ug launch writes the MPS header and every admin-authored default to
@@ -69,11 +68,9 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace
     does not claim model inference.
     """
     session = live_session
-    session.env["DATABRICKS_BEARER"] = workspace_bearer(
-        CLAUDE_MPS_DEFAULTS_WORKSPACE,
-        client_id=UG_MPS_DEFAULTS_CLIENT_ID,
-        client_secret_env="UG_MPS_DEFAULTS_CLIENT_SECRET",
-    )
+    target_bearer = os.environ.get("UG_MPS_DEFAULTS_BEARER", "").strip()
+    assert target_bearer, "The runner needs UG_MPS_DEFAULTS_CLIENT_SECRET for this workspace."
+    session.env["DATABRICKS_BEARER"] = target_bearer
     defaults = {
         "default_model": "anthropic.claude-sonnet-5",
         "default_fable_model": "anthropic.claude-fable-5-1",
@@ -105,7 +102,7 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace
 
 @pytest.mark.managed
 @pytest.mark.claude
-def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session, workspace_bearer):
+def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session):
     """Scenario: launch Claude with managed defaults and UC discovery on the northeast-2 workspace.
 
     Expected: the installed ug launch writes the parent-schema header and every admin-authored
@@ -113,11 +110,11 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
     This settings reconciliation check does not claim model inference.
     """
     session = live_session
-    session.env["DATABRICKS_BEARER"] = workspace_bearer(
-        CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE,
-        client_id=UG_PARENT_SCHEMA_DEFAULTS_CLIENT_ID,
-        client_secret_env="UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET",
+    target_bearer = os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_BEARER", "").strip()
+    assert target_bearer, (
+        "The runner needs UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET for this workspace."
     )
+    session.env["DATABRICKS_BEARER"] = target_bearer
     parent_schema = "system.ai"
     defaults = {
         "default_model": f"{parent_schema}.claude-sonnet-5",

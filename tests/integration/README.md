@@ -242,9 +242,10 @@ Catalog sources directly from `eng-ml-inference-batch-inference-us-west-2` and
 `eng-ml-inference-ap-northeast-2`, respectively, then verify both generated settings files retain
 all admin-authored family defaults. Neither case injects a config. Each obtains a token for its
 target workspace using OAuth client credentials. The two target service-principal client IDs are
-constants in the tests; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-2 and
-`UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET` for northeast-2. The runner passes the secrets to the
-test process, which mints a token on each target host; the agent receives only its target bearer.
+constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-2 and
+`UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET` for northeast-2. As with the base workspace, the runner
+mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
+`ug configure` and Claude. The client secrets do not enter the pytest process.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
 executions; the complete integration suite collects 99 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
@@ -443,10 +444,10 @@ these same-repository secrets rather than storing a long-lived bearer:
   credentials. The job passes them to the runner as the standard `DATABRICKS_CLIENT_ID` /
   `DATABRICKS_CLIENT_SECRET`, and `run_integration.py` mints the workspace token.
 - `UG_MPS_DEFAULTS_CLIENT_SECRET`: OAuth client secret for the west-2 Claude defaults workspace.
-  Its client ID (`1c359c0f-58bc-42ac-a74f-079ccb173676`) is in the test code.
+  Its client ID (`1c359c0f-58bc-42ac-a74f-079ccb173676`) is in the runner code.
 - `UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET`: OAuth client secret for the northeast-2 Claude
-  defaults workspace. Its client ID (`95e267dc-4393-4360-9d45-4b9b13b2d370`) is in the test code.
-  CI passes these two repository secrets to the integration runner.
+  defaults workspace. Its client ID (`95e267dc-4393-4360-9d45-4b9b13b2d370`) is in the runner code.
+  CI passes these two repository secrets only to the managed Claude lane.
 
 Run it locally the same way, pointing at the managed workspace:
 

@@ -26,14 +26,27 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_PACKAGES = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}
+MANAGED_DEFAULTS_TARGETS = (
+    (
+        "UG_MPS_DEFAULTS_BEARER",
+        "https://eng-ml-inference-batch-inference-us-west-2.cloud.databricks.com",
+        "1c359c0f-58bc-42ac-a74f-079ccb173676",
+        "UG_MPS_DEFAULTS_CLIENT_SECRET",
+    ),
+    (
+        "UG_PARENT_SCHEMA_DEFAULTS_BEARER",
+        "https://eng-ml-inference-ap-northeast-2.cloud.databricks.com",
+        "95e267dc-4393-4360-9d45-4b9b13b2d370",
+        "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET",
+    ),
+)
 
 
 def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
     """Mint a short-lived workspace token for a service principal via OAuth client credentials.
 
-    The managed e2e workspace authenticates as a service principal, whose M2M tokens expire
-    hourly, so CI mints one per run from `DATABRICKS_CLIENT_ID`/`DATABRICKS_CLIENT_SECRET` rather
-    than storing a long-lived bearer.
+    Managed-workspace M2M tokens expire hourly, so the runner mints them from client credentials
+    rather than storing long-lived bearers for the base or Claude defaults workspaces.
     """
     basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
     body = urllib.parse.urlencode(
@@ -283,6 +296,7 @@ def main() -> int:
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
     second_bearer = os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    target_bearers: dict[str, str] = {}
     client_secrets = (
         os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
         os.environ.get("UG_MPS_DEFAULTS_CLIENT_SECRET", ""),
@@ -290,7 +304,13 @@ def main() -> int:
     )
 
     def redact(value: str) -> str:
-        for secret in (bearer, second_bearer, oauth_token, *client_secrets):
+        for secret in (
+            bearer,
+            second_bearer,
+            oauth_token,
+            *target_bearers.values(),
+            *client_secrets,
+        ):
             if secret:
                 value = value.replace(secret, "<redacted>")
         return value
@@ -553,6 +573,14 @@ def main() -> int:
             if client_id and client_secret:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
+        if not args.installation_only:
+            for bearer_env, target_workspace, client_id, secret_env in MANAGED_DEFAULTS_TARGETS:
+                secret = os.environ.get(secret_env, "").strip()
+                if args.workspace.rstrip("/") == target_workspace:
+                    target_bearers[bearer_env] = bearer
+                elif secret:
+                    target_bearers[bearer_env] = mint_m2m_token(target_workspace, client_id, secret)
+
         run(
             [
                 uv,
@@ -588,11 +616,9 @@ def main() -> int:
                 "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
                 "DATABRICKS_BEARER": bearer,
-                "UG_MPS_DEFAULTS_CLIENT_SECRET": os.environ.get(
-                    "UG_MPS_DEFAULTS_CLIENT_SECRET", ""
-                ),
-                "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET": os.environ.get(
-                    "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", ""
+                "UG_MPS_DEFAULTS_BEARER": target_bearers.get("UG_MPS_DEFAULTS_BEARER", ""),
+                "UG_PARENT_SCHEMA_DEFAULTS_BEARER": target_bearers.get(
+                    "UG_PARENT_SCHEMA_DEFAULTS_BEARER", ""
                 ),
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
                 "DATABRICKS_SECOND_BEARER": second_bearer,
