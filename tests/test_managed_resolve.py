@@ -483,6 +483,28 @@ class TestManagedSuppliesModels:
         managed = {"enabled_agents": {"opencode": {"model_config": {"models": ["a", "b"]}}}}
         assert managed_supplies_models(managed, "opencode") is True
 
+    def test_true_for_canonical_model_services(self):
+        managed = {
+            "enabled_agents": {
+                "opencode": {"model_config": {"model_services": ["system.ai.gpt-5"]}}
+            }
+        }
+        assert managed_supplies_models(managed, "opencode") is True
+
+    def test_canonical_empty_model_services_do_not_fall_back_to_legacy_models(self):
+        managed = {
+            "enabled_agents": {
+                "opencode": {
+                    "model_config": {
+                        "model_services": [],
+                        "models": ["legacy-model"],
+                    }
+                }
+            }
+        }
+        assert managed_supplies_models(managed, "opencode") is False
+        assert managed_state_overrides(managed, "opencode") == {}
+
     def test_false_when_the_config_names_no_models(self):
         # Discovery still has to run, or the launch has nothing to pin.
         managed = {"enabled_agents": {"claude": {}}}
@@ -510,24 +532,39 @@ class TestManagedStateOverrides:
     def test_opencode_gets_provider_buckets_not_a_flat_list(self):
         # OpenCode's state is `{provider: [models]}` and its writer calls `.get()` on it, so handing
         # it the manifest's flat list raises AttributeError.
-        managed = {
-            "enabled_agents": {
-                "opencode": {
-                    "model_config": {
-                        "models": [
-                            "system.ai.claude-opus-4-8",
-                            "system.ai.gemini-3-flash",
-                            "system.ai.kimi-k2-7-code",
-                        ]
+        managed = normalize_managed_config(
+            {
+                "spec_version": 1,
+                "enabled_agents": [
+                    {
+                        "agent": "CODING_AGENT_OPENCODE",
+                        "config": {
+                            "models": {
+                                "model_services": [
+                                    "system.ai.claude-opus-4-8",
+                                    "system.ai.gemini-3-flash",
+                                    "system.ai.gpt-5-6-sol",
+                                    "system.ai.gpt-oss-120b",
+                                    "databricks-gpt-5-5-codex",
+                                    "databricks-gpt-oss-120b",
+                                    "system.ai.kimi-k2-7-code",
+                                ]
+                            }
+                        },
                     }
-                }
+                ],
             }
-        }
+        )
         assert managed_state_overrides(managed, "opencode") == {
             "opencode_models": {
                 "anthropic": ["system.ai.claude-opus-4-8"],
                 "gemini": ["system.ai.gemini-3-flash"],
-                "oss": ["system.ai.kimi-k2-7-code"],
+                "openai": ["system.ai.gpt-5-6-sol", "databricks-gpt-5-5-codex"],
+                "oss": [
+                    "system.ai.gpt-oss-120b",
+                    "databricks-gpt-oss-120b",
+                    "system.ai.kimi-k2-7-code",
+                ],
             }
         }
 
@@ -639,10 +676,10 @@ class TestManagedUnservableModels:
             self._managed("pi", ["system.ai.kimi-k2-7-code"]), "pi"
         ) == ["system.ai.kimi-k2-7-code"]
 
-    def test_opencode_gpt_only_is_unservable(self):
-        # OpenCode has no OpenAI provider block.
-        managed = self._managed("opencode", ["system.ai.gpt-5"])
-        assert managed_unservable_models(managed, "opencode") == ["system.ai.gpt-5"]
+    def test_opencode_unknown_model_is_unservable(self):
+        # A model outside the known provider families has no safe OpenCode route.
+        managed = self._managed("opencode", ["system.ai.llama-4-maverick"])
+        assert managed_unservable_models(managed, "opencode") == ["system.ai.llama-4-maverick"]
 
     @pytest.mark.parametrize(
         ("tool", "models"),

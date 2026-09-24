@@ -1474,6 +1474,12 @@ _OSS_MODEL_FAMILIES = ("kimi-", "glm-", "deepseek-")
 ANTHROPIC_FAMILIES = ("fable", "opus", "sonnet", "haiku")
 
 
+def is_proprietary_gpt_model(model_id: str) -> bool:
+    """Distinguish proprietary GPT names from gpt-oss, including managed aliases."""
+    model_name = model_id.rsplit(".", 1)[-1].lower().removeprefix("databricks-")
+    return model_name.startswith("gpt-") and not model_name.startswith("gpt-oss")
+
+
 def classify_model_family(model_id: str) -> str | None:
     """Bucket a model FQN into the family ucode keys its state by, or None if unrecognized.
 
@@ -1568,13 +1574,9 @@ def _get_model_services_page(
     return payload, reason
 
 
-# Successful model-service listings for this process, keyed by workspace. The listing is a paginated
-# walk of the whole metastore catalog, and several callers want different views of the same result
-# (`discover_model_services` buckets it per family, `discover_claude_models_unbucketed` keeps the raw
-# Claude ids), so a single `ucode setup` run would otherwise page it twice. Cached per process, not
-# persisted: a long-lived process is not a thing here, and a new model appearing mid-command is not
-# worth a second walk. Failures are never cached, so a transient error still retries.
-_MODEL_SERVICES_CACHE: dict[str, list[str]] = {}
+# Cache model ids and their advertised API types from one complete listing per workspace.
+# Shared discovery uses the ids; OpenCode also needs the API types. Failures are not cached.
+_MODEL_SERVICES_CACHE: dict[str, dict[str, list[str]]] = {}
 
 # Same idea for the Model Provider Service listing (a different endpoint). It is workspace-wide and
 # filtered per agent afterwards, so `ucode setup` would otherwise re-list it once per MPS-capable
@@ -1607,30 +1609,18 @@ def list_model_services(
     max_pages: int = 100,
     use_cache: bool = True,
 ) -> tuple[list[str], str | None]:
-    """List all `system.ai.*` model ids via the UC model-services API.
+    """List sorted ``system.ai.*`` ids and cache API types from the same paginated walk.
 
-    Pages through ``/api/2.1/unity-catalog/model-services`` scoped to the
-    ``system.ai`` schema (``parent=schemas/system.ai``) with a bounded
-    ``page_size`` (the endpoint 499s without one) and returns the de-duplicated,
-    sorted list of ``system.ai.<model-name>`` ids. Returns (ids, reason); reason
-    is None on success, otherwise it describes why the list is empty (HTTP/network
-    error or no services). Scoping matters: the unscoped metastore listing walks
-    every schema across dozens of ~2s pages (~50s on a busy workspace) only to
-    keep the same ``system.ai.*`` subset — see ``_MODEL_SERVICE_PARENT_SCHEMA``.
-
-    A successful result is memoized per workspace for the life of the process; pass
-    ``use_cache=False`` to force a fresh walk.
+    Scope the request to ``schemas/system.ai`` and bound each page to avoid slow,
+    metastore-wide scans. Only complete nonempty listings populate the process cache.
     """
-    if use_cache:
-        cached = _MODEL_SERVICES_CACHE.get(workspace)
-        if cached is not None:
-            return list(cached), None
+    if use_cache and workspace in _MODEL_SERVICES_CACHE:
+        return sorted(_MODEL_SERVICES_CACHE[workspace]), None
 
     hostname = workspace_hostname(workspace)
-    ids: list[str] = []
+    api_types_by_id: dict[str, list[str]] = {}
     page_token: str | None = None
     seen_tokens: set[str] = set()
-    last_reason: str | None = None
     for _ in range(max_pages):
         params: dict[str, str] = {
             "parent": _MODEL_SERVICE_PARENT_SCHEMA,
@@ -1641,30 +1631,52 @@ def list_model_services(
         url = f"https://{hostname}/api/2.1/unity-catalog/model-services?{urlencode(params)}"
         payload, reason = _get_model_services_page(url, token)
         if payload is None:
-            # Surface the failure only if we have nothing yet; a mid-pagination
-            # blip still returns whatever we collected.
-            last_reason = reason
-            break
-        data = cast(dict, payload) if isinstance(payload, dict) else {}
+            return [], reason or "model-services pagination did not complete"
+        data = payload if isinstance(payload, dict) else {}
         for service in data.get("model_services", []):
-            if isinstance(service, dict):
-                model_id = _model_service_id(service)
-                if model_id:
-                    ids.append(model_id)
+            if not isinstance(service, dict):
+                continue
+            model_id = _model_service_id(service)
+            if model_id:
+                api_types = api_types_by_id.setdefault(model_id, [])
+                advertised = service.get("supported_api_types")
+                if isinstance(advertised, list):
+                    # Merge duplicate rows without losing APIs reported on later pages.
+                    for api_type in advertised:
+                        if isinstance(api_type, str) and api_type not in api_types:
+                            api_types.append(api_type)
         page_token = data.get("next_page_token") or None
         if not page_token:
-            last_reason = None
             break
         if page_token in seen_tokens:
-            break
+            return [], "model-services pagination did not complete"
         seen_tokens.add(page_token)
+    else:
+        return [], "model-services pagination did not complete"
 
-    deduped = sorted(set(ids))
-    if deduped:
-        if use_cache:
-            _MODEL_SERVICES_CACHE[workspace] = list(deduped)
-        return deduped, None
-    return [], last_reason or "model-services listing returned no models"
+    if not api_types_by_id:
+        return [], "model-services listing returned no models"
+    if use_cache:
+        _MODEL_SERVICES_CACHE[workspace] = api_types_by_id
+    return sorted(api_types_by_id), None
+
+
+def cached_opencode_model_api_types(workspace: str) -> dict[str, list[str]] | None:
+    """Read compatible APIs from the listing cache; None means no successful listing.
+
+    Claude and Gemini use their own provider buckets. Return copies so callers
+    cannot mutate the cached API lists.
+    """
+    services = _MODEL_SERVICES_CACHE.get(workspace)
+    if services is None:
+        return None
+    return {
+        model_id: list(api_types)
+        for model_id, api_types in sorted(services.items())
+        if "claude-" not in model_id
+        and "gemini-" not in model_id
+        and ("mlflow/v1/responses" in api_types or "mlflow/v1/chat/completions" in api_types)
+    }
 
 
 def _is_not_found_reason(reason: str | None) -> bool:
@@ -1797,9 +1809,10 @@ def discover_model_services(
     - ``gemini_models`` is the list of ``system.ai.*gemini-*`` ids, newest first.
     - ``oss_models`` is the list of OSS-model ``system.ai.*`` ids.
 
-    ``reason`` is None on success, else explains why nothing was found. Family
-    bucketing is by name substring because the model-services API does not
-    expose per-model API dialects.
+    ``reason`` is None on success, else explains why nothing was found.
+    Family bucketing remains by name substring for the shared agent lists. The
+    listing's ``supported_api_types`` metadata is retained separately for
+    OpenCode's generation-capable catalog.
     """
     ids, reason = list_model_services(workspace, token)
     if not ids:

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from ucode.databricks import ANTHROPIC_FAMILIES, classify_model_family
+from ucode.databricks import ANTHROPIC_FAMILIES, classify_model_family, is_proprietary_gpt_model
 from ucode.state import MANAGED_OVERLAY_KEY
 
 # Proto model-config slot -> the family key `claude.py`'s render_overlay reads. The manifest keeps
@@ -113,8 +113,8 @@ def managed_unservable_models(managed: dict, tool: str) -> list[str]:
 
     Only non-empty when *every* named model is unservable, which is when the translation yields
     nothing and the developer's own models stand — so the caller can say why the admin's list had no
-    effect. opencode has no OpenAI provider and pi has no OSS provider, so each can be handed a
-    valid model FQN it cannot route.
+    effect. OpenCode and pi have only selected provider families, so each can be handed a valid
+    model FQN it cannot route.
     """
     if tool not in ("opencode", "pi"):
         return []
@@ -144,6 +144,11 @@ def _manifest_models(managed: dict, tool: str) -> dict | list | None:
             if model:
                 slots[family] = model
         return slots or None
+    # Normalized managed configs call the flat model allow-list `model_services`.
+    # Keep that field authoritative when present; the `models` list below is a
+    # compatibility path for older manifests.
+    if "model_services" in model_config:
+        return managed_static_models(managed, tool)
     manifest_models = model_config.get("models")
     if isinstance(manifest_models, list):
         listed = [model for model in (_str(item) for item in manifest_models) if model]
@@ -165,6 +170,13 @@ def _bucket_by_provider(models: list[str]) -> dict[str, list[str]]:
             buckets.setdefault("anthropic", []).append(model)
         elif family in ("gemini", "oss"):
             buckets.setdefault(family, []).append(model)
+        elif family == "codex":
+            # Shared Codex discovery intentionally groups proprietary GPT and
+            # gpt-oss services together. OpenCode has separate MLflow provider
+            # entries for them, so recover that distinction for managed lists.
+            buckets.setdefault("openai" if is_proprietary_gpt_model(model) else "oss", []).append(
+                model
+            )
     return buckets
 
 
@@ -181,11 +193,14 @@ def managed_supplies_models(managed: dict | None, tool: str) -> bool:
 
     Lets the launch path skip Databricks model discovery, whose whole purpose is to find the models
     the config has now specified. Any of the three counts: a provider (the agent routes by header and
-    pins no Databricks model), a ``default_model``, or at least one entry in ``models``.
+    pins no Databricks model), a ``default_model``, or at least one entry in ``model_services``.
+    The legacy ``models`` field is still accepted for older manifests.
     """
     model_config = _agent_model_config(managed or {}, tool)
     if _str(model_config.get("model_provider_service")) or _str(model_config.get("default_model")):
         return True
+    if "model_services" in model_config:
+        return managed_static_models(managed or {}, tool) is not None
     models = model_config.get("models")
     if isinstance(models, dict):
         return any(_str(value) for value in models.values())

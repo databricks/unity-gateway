@@ -80,14 +80,18 @@ ug opencode --model system.ai.grok-4-6
 ug opencode --model system.ai.qwen35-122b-a10b
 ```
 
-OpenCode discovery is curated. For an undiscovered Unity Catalog model, `ug`
-looks up the model service directly and requires it to advertise
-`mlflow/v1/responses` or `mlflow/v1/chat/completions`. It prefers Responses and
-falls back to Chat Completions for chat-only services. Lookup or protocol errors
-stop launch instead of selecting the default. This does not change saved discovery
-or defaults; repeat `--model` on subsequent launches. Metadata validation does not
-guarantee streaming tool-call support or compatible token limits; those depend on
-the model and endpoint.
+OpenCode discovery includes every accessible `system.ai` model service whose
+listing advertises `mlflow/v1/responses` or `mlflow/v1/chat/completions`, while
+Claude and Gemini remain in their existing providers. It prefers Responses and
+uses the OpenAI-compatible SDK for chat-only services. For an undiscovered
+Unity Catalog model, `ug` looks up the exact model service directly; lookup or
+protocol errors stop launch instead of selecting the default. Metadata validation
+does not guarantee streaming tool-call support or compatible token limits; those
+depend on the model and endpoint.
+
+Proprietary models whose final name starts with `gpt-` use OpenCode's
+`databricks-openai` provider. `gpt-oss-*` and other MLflow model services use
+`databricks-oss`.
 
 OpenCode's `provider/model` form also works, including user-owned providers
 (for example, `ug opencode --model my-provider/my-model`). OpenCode validates

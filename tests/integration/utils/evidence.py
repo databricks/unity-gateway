@@ -79,7 +79,13 @@ def opencode_completed_session(output: str) -> str:
     return session_id
 
 
-def assert_opencode_answer(payload: dict, session_id: str, model: str, expected: str) -> None:
+def assert_opencode_answer(
+    payload: dict,
+    session_id: str,
+    model: str,
+    expected: str,
+    provider_id: str = "databricks-oss",
+) -> None:
     """Require native exported assistant completion, tool use, and model identity."""
     assert payload.get("info", {}).get("id") == session_id, payload
     messages = payload.get("messages")
@@ -91,7 +97,7 @@ def assert_opencode_answer(payload: dict, session_id: str, model: str, expected:
     for message in assistants:
         info = message["info"]
         assert info.get("sessionID") == session_id, info
-        assert info.get("providerID") == "databricks-oss" and info.get("modelID") == model, info
+        assert info.get("providerID") == provider_id and info.get("modelID") == model, info
         assert not info.get("error"), info
     final = assistants[-1]
     assert final["info"].get("finish") == "stop", final

@@ -136,6 +136,22 @@ class TestRenderOverlay:
         )
         assert overlay["provider"]["databricks-oss"]["npm"] == "@ai-sdk/openai"
 
+    @pytest.mark.parametrize(
+        ("bucket", "model"),
+        [("openai", "system.ai.gpt-5"), ("oss", "system.ai.gpt-oss-120b")],
+    )
+    def test_mlflow_provider_configuration(self, bucket, model):
+        overlay, keys = opencode.render_overlay(model, "tok", _base_urls(), {bucket: [model]})
+
+        provider_id = f"databricks-{bucket}"
+        assert set(overlay["provider"]) == {provider_id}
+        provider = overlay["provider"][provider_id]
+        assert overlay["model"] == f"{provider_id}/{model}"
+        assert provider["npm"] == "@ai-sdk/openai"
+        assert provider["options"]["baseURL"] == _base_urls()["oss"]
+        assert set(provider["models"]) == {model}
+        assert ["provider", provider_id] in keys
+
     def test_deepseek_uses_oss_provider(self):
         model = "system.ai.deepseek-v4-pro"
 
@@ -188,6 +204,30 @@ class TestRenderOverlay:
         )
         kimi = overlay["provider"]["databricks-oss"]["models"]["system.ai.kimi-k2-7-code"]
         assert "limit" not in kimi
+
+    @pytest.mark.parametrize(
+        ("bucket", "responses", "chat"),
+        [
+            ("oss", "system.ai.qwen35-122b-a10b", "system.ai.grok-4-6"),
+            ("openai", "system.ai.gpt-5", "system.ai.gpt-5-chat"),
+        ],
+    )
+    def test_discovered_models_choose_sdk_from_listing_metadata(self, bucket, responses, chat):
+        api_types = {
+            responses: ["mlflow/v1/chat/completions", "mlflow/v1/responses"],
+            chat: ["mlflow/v1/chat/completions", "openai/v1/responses"],
+        }
+        overlay, _ = opencode.render_overlay(
+            f"databricks-{bucket}/{responses}",
+            "tok",
+            _base_urls(),
+            {bucket: [responses, chat]},
+            model_api_types=api_types,
+        )
+
+        rendered = overlay["provider"][f"databricks-{bucket}"]["models"]
+        assert rendered[responses]["provider"] == {"npm": "@ai-sdk/openai"}
+        assert rendered[chat]["provider"] == {"npm": "@ai-sdk/openai-compatible"}
 
     def test_token_in_api_key(self):
         models = {"anthropic": ["claude-sonnet"]}
@@ -306,7 +346,7 @@ class TestRenderOverlay:
             "tok",
             _base_urls(),
             models,
-            requested_model=(model, npm),
+            requested_model=("databricks-oss", model, npm),
         )
 
         provider = overlay["provider"]["databricks-oss"]
@@ -430,6 +470,17 @@ class TestOpencodeDefaultModel:
         state = {"opencode_models": {"anthropic": [], "gemini": ["gemini-2"]}}
         assert opencode.default_model(state) == "gemini-2"
 
+    def test_prefers_gemini_before_openai_and_oss(self):
+        state = {
+            "opencode_models": {
+                "anthropic": [],
+                "openai": ["system.ai.gpt-5"],
+                "gemini": ["gemini-2"],
+                "oss": ["system.ai.gpt-oss-120b"],
+            }
+        }
+        assert opencode.default_model(state) == "gemini-2"
+
     def test_falls_back_to_oss(self):
         state = {
             "opencode_models": {
@@ -481,6 +532,7 @@ class TestWriteToolConfigStaleProviderCleanup:
             "provider": {
                 "databricks-anthropic": {"old": True},
                 "databricks-google": {"old": True},
+                "databricks-openai": {"old": True},
                 "other-provider": {"keep": True},
             }
         }
@@ -503,6 +555,7 @@ class TestWriteToolConfigStaleProviderCleanup:
         providers = written.get("provider", {})
         # stale entry is replaced with new data, not kept as-is
         assert providers.get("databricks-anthropic") != {"old": True}
+        assert "databricks-openai" not in providers
         # unmanaged provider entry survives
         assert providers.get("other-provider") == {"keep": True}
         # OpenCode 1.0.0 discovers `plugin/`; plural `plugins/` came later.
@@ -742,6 +795,67 @@ class TestExplicitModelConfig:
         assert requested["provider"] == {"npm": "@ai-sdk/openai"}
         assert requested["limit"] == {"context": 262_144, "output": 25_000}
 
+    @pytest.mark.parametrize(
+        ("model_id", "provider", "api_types", "npm"),
+        [
+            (
+                "main.team.gpt-5",
+                "databricks-openai",
+                ["mlflow/v1/responses"],
+                "@ai-sdk/openai",
+            ),
+            (
+                "main.team.gpt-oss-120b",
+                "databricks-oss",
+                ["mlflow/v1/chat/completions"],
+                "@ai-sdk/openai-compatible",
+            ),
+            (
+                "main.team.grok-4-6",
+                "databricks-oss",
+                ["mlflow/v1/chat/completions"],
+                "@ai-sdk/openai-compatible",
+            ),
+        ],
+    )
+    def test_undiscovered_model_uses_expected_transient_provider_and_sdk(
+        self, opencode_config, monkeypatch, model_id, provider, api_types, npm
+    ):
+        monkeypatch.setattr(
+            "ucode.databricks._http_get_json",
+            lambda *a, **kw: (
+                {"name": f"model-services/{model_id}", "supported_api_types": api_types},
+                None,
+            ),
+        )
+
+        opencode.write_tool_config({"workspace": WS}, model_id)
+
+        written = json.loads(opencode_config.read_text())
+        assert written["model"] == f"{provider}/{model_id}"
+        requested = written["provider"][provider]["models"][model_id]
+        assert requested["provider"] == {"npm": npm}
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "databricks-openai/main.team.custom-model",
+            "databricks-openai/main.team.gpt-oss-120b",
+            "databricks-oss/main.team.gpt-5",
+        ],
+    )
+    def test_rejects_known_provider_when_model_belongs_to_other_mlflow_bucket(
+        self, opencode_config, monkeypatch, model
+    ):
+        monkeypatch.setattr(
+            "ucode.databricks._http_get_json", lambda *a, **kw: pytest.fail("unexpected lookup")
+        )
+
+        with pytest.raises(RuntimeError, match="uses a different provider"):
+            opencode.write_tool_config({"workspace": WS}, model)
+
+        assert not opencode_config.exists()
+
     def test_native_provider_is_left_for_opencode_to_validate(self, opencode_config, monkeypatch):
         monkeypatch.setattr(
             "ucode.databricks._http_get_json", lambda *a, **kw: pytest.fail("unexpected lookup")
@@ -759,7 +873,6 @@ class TestExplicitModelConfig:
         [
             "databricks-anthropic/system.ai.gemini-3-flash",
             "databricks-anthropic/system.ai.claude-new",
-            "databricks-openai/main.team.model",
             "not-qualified",
             "main..model",
             "native/",

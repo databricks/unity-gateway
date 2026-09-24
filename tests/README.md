@@ -3,8 +3,8 @@
 Integration runs a freshly installed ug wheel/release, exact real Claude/Codex
 versions, and the existing real e2e workspace. It has no application imports,
 mocks, monkeypatching, fake binaries/services, or fabricated ug state.
-OpenCode has two opt-in headless explicit-model journeys, selected with a pinned
-version and an undiscovered model; the default Claude/Codex CI matrix is unchanged.
+OpenCode has two opt-in headless model-discovery journeys, selected with a pinned
+version and an API-compatible model service; the default Claude/Codex CI matrix is unchanged.
 
 | Category | Location | What it proves |
 | --- | --- | --- |
@@ -51,7 +51,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_claude_exports_trace_to_configured_table`, `test_ug_codex_exports_trace_to_configured_table` | Configure tracing, complete a headless task carrying a unique trace marker, then wait for ingestion | The configured trace table contains an agent span with the same trace-safe marker and requested model |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` with routing enabled | Real file task completes; no routing wrapper |
 | `test_ug_codex_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` / `-m VALUE` with routing enabled | Real file task completes; no routing wrapper |
-| `test_ug_opencode_explicit_undiscovered_model` | Configure OpenCode, then launch twice with an explicit model outside curated discovery | Each run reads/edits a file and completes an answer; exported native session identifies the requested model; compatible per-model SDK overlay survives regeneration; saved discovery/defaults stay unchanged |
+| `test_ug_opencode_discovers_and_selects_compatible_model` | Configure OpenCode, require an API-compatible model in its native model list, then launch it twice explicitly | Generated config and the real OpenCode list expose the model without manual edits; each run reads/edits a file and completes an answer; exported sessions identify the model; the compatible SDK and saved discovery/defaults remain stable |
 | `test_ug_opencode_rejects_missing_explicit_model` | Launch configured OpenCode with a nonexistent model service | Real 404 and nonzero exit before an agent session; no default fallback or generated-config change |
 | `test_ug_claude_preserves_caller_settings_and_hook` | Pass a settings path containing spaces | Real SessionStart hook executes; caller file unchanged; file task completes |
 | `test_ug_claude_reports_unsupported_short_model_option` | Pass Claude's unsupported `-m` | Actual agent error and exit status preserved |

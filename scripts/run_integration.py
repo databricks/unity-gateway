@@ -103,7 +103,7 @@ def arguments():
     parser.add_argument(
         "--opencode-model",
         default=os.environ.get("UG_INTEGRATION_OPENCODE_MODEL"),
-        help="Explicit catalog.schema.model outside ug's curated discovery; required for live OpenCode journeys.",
+        help="Compatible catalog.schema.model expected in OpenCode discovery; required for live OpenCode journeys.",
     )
     parser.add_argument(
         "--claude-provider",
@@ -194,9 +194,7 @@ def arguments():
         and not args.installation_only
         and not (args.opencode_model or "").strip()
     ):
-        parser.error(
-            "Live OpenCode journeys require an explicit --opencode-model outside ug's curated discovery."
-        )
+        parser.error("Live OpenCode journeys require an explicit API-compatible --opencode-model.")
     if args.ug_version != "checkout" and not re.fullmatch(
         r"[0-9][0-9A-Za-z.!+_-]*", args.ug_version
     ):

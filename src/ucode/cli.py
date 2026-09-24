@@ -56,6 +56,7 @@ from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     apply_pat_environment,
     build_shared_base_urls,
+    cached_opencode_model_api_types,
     discover_claude_models,
     discover_codex_models,
     discover_gemini_models,
@@ -609,6 +610,7 @@ def configure_shared_state(
     codex_models = []
     oss_models = []
     opencode_models: dict[str, list[str]] = {}
+    opencode_model_api_types: dict[str, list[str]] | None = None
     web_search_model: str | None = None
     if skip_model_discovery:
         # Provider mode: the agent routes through a Model Provider Service and
@@ -644,12 +646,18 @@ def configure_shared_state(
                     codex_models, codex_reason = discover_codex_models(workspace, token)
             if want_oss:
                 oss_models, oss_reason = ms_oss, ms_reason
-        if claude_models:
-            opencode_models["anthropic"] = list(claude_models.values())
-        if gemini_models:
-            opencode_models["gemini"] = gemini_models
-        if oss_models:
-            opencode_models["oss"] = oss_models
+            # `discover_model_services` populated the metadata cache during
+            # the same paginated walk.  OpenCode uses the generation API
+            # dialects from those entries; no per-model GETs are needed.
+            if fetch_all or "opencode" in tools:
+                opencode_model_api_types = cached_opencode_model_api_types(workspace)
+        if fetch_all or "opencode" in tools:
+            opencode_models = opencode_agent.model_buckets(
+                claude_models,
+                gemini_models,
+                oss_models,
+                opencode_model_api_types,
+            )
 
     if skip_model_discovery:
         # Don't clobber any previously-discovered Databricks model lists; provider
@@ -668,6 +676,10 @@ def configure_shared_state(
             state["oss_models"] = oss_models
         if fetch_all or "opencode" in tools:
             state["opencode_models"] = opencode_models
+            if opencode_model_api_types is not None:
+                state["opencode_model_api_types"] = opencode_model_api_types
+            else:
+                state.pop("opencode_model_api_types", None)
     save_state(state)
     # Scrub MCP entries that ucode wrote for the previous workspace so the new
     # workspace's agent configs aren't stale.
@@ -1079,13 +1091,17 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
     live["codex_models"] = codex_models
     live["gemini_models"] = gemini_models
     live["oss_models"] = oss_models
-    opencode_models: dict[str, list[str]] = {}
-    if claude_models:
-        opencode_models["anthropic"] = list(claude_models.values())
-    if gemini_models:
-        opencode_models["gemini"] = gemini_models
-    if oss_models:
-        opencode_models["oss"] = oss_models
+    opencode_model_api_types = cached_opencode_model_api_types(workspace)
+    opencode_models = opencode_agent.model_buckets(
+        claude_models,
+        gemini_models,
+        oss_models,
+        opencode_model_api_types,
+    )
+    if opencode_model_api_types is not None:
+        live["opencode_model_api_types"] = opencode_model_api_types
+    else:
+        live.pop("opencode_model_api_types", None)
     live["opencode_models"] = opencode_models
     live["_status_model_reasons"] = {
         family: reason or shared_reason for family, reason in reasons.items()

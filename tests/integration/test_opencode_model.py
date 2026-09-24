@@ -1,4 +1,4 @@
-"""Explicit undiscovered-model journeys through installed ug and real OpenCode."""
+"""Compatible-model discovery and explicit selection through installed OpenCode."""
 
 import json
 import re
@@ -10,12 +10,15 @@ from utils.evidence import FileTask, assert_opencode_answer, opencode_completed_
 pytestmark = [pytest.mark.live, pytest.mark.opencode]
 
 
-def test_ug_opencode_explicit_undiscovered_model(live_session, unmanaged_workspace, opencode_model):
-    """Scenario: configure OpenCode, then select an undiscovered model on two launches.
+def test_ug_opencode_discovers_and_selects_compatible_model(
+    live_session, unmanaged_workspace, opencode_model
+):
+    """Scenario: configure OpenCode, list a compatible model, then select it twice.
 
-    Expected: each real headless run reads and edits a file, completes an assistant
-    answer under the requested model, and retains the compatible SDK overlay.
-    Curated discovery and saved defaults remain unchanged. This does not cover TUI use.
+    Expected: the native model list includes the API-compatible model without a
+    manual config edit. Each headless run reads and edits a file, completes an
+    assistant answer under that model, and retains discovery and SDK metadata.
+    This does not cover TUI use.
     """
     session = live_session
     session.run(
@@ -25,29 +28,55 @@ def test_ug_opencode_explicit_undiscovered_model(live_session, unmanaged_workspa
         "--workspace",
         unmanaged_workspace,
         "--disable-databricks-ai-tools",
+        timeout=240,
     )
     before = session.workspace_state()
-    curated = before["opencode_models"]
-    assert curated, "ug configure found no curated OpenCode models"
-    assert opencode_model not in {model for models in curated.values() for model in models}, (
-        "--opencode-model must be outside ug's curated discovery to exercise this regression"
+    discovered = before["opencode_models"]
+    assert discovered, "ug configure found no OpenCode models"
+    matching_buckets = [
+        bucket for bucket in ("openai", "oss") if opencode_model in discovered.get(bucket, [])
+    ]
+    assert len(matching_buckets) == 1, (
+        "--opencode-model must advertise a supported MLflow generation API and appear in exactly "
+        f"one OpenCode provider bucket (got {matching_buckets!r})"
+    )
+    bucket = matching_buckets[0]
+    provider_id = f"databricks-{bucket}"
+    api_types = before["opencode_model_api_types"][opencode_model]
+    assert {
+        "mlflow/v1/responses",
+        "mlflow/v1/chat/completions",
+    }.intersection(api_types), api_types
+    expected_sdk = (
+        "@ai-sdk/openai" if "mlflow/v1/responses" in api_types else "@ai-sdk/openai-compatible"
     )
     discovery_and_defaults = {
         key: value
         for key, value in before.items()
-        if key.endswith("_models") or key.endswith("_default_model")
+        if key.endswith("_models")
+        or key.endswith("_default_model")
+        or key == "opencode_model_api_types"
     }
     config_path = session.home / ".ucode/opencode-xdg/opencode/opencode.json"
     configured = json.loads(config_path.read_text())
-    selector = f"databricks-oss/{opencode_model}"
-    assert configured["model"] != selector
+    selector = f"{provider_id}/{opencode_model}"
+    configured_model = configured["provider"][provider_id]["models"][opencode_model]
+    assert configured_model["provider"]["npm"] == expected_sdk
+    previous_xdg = session.env["XDG_CONFIG_HOME"]
+    session.env["XDG_CONFIG_HOME"] = str(config_path.parents[1])
+    try:
+        native_models = session.run("models", provider_id, binary="opencode", timeout=60)
+    finally:
+        session.env["XDG_CONFIG_HOME"] = previous_xdg
+    assert selector in native_models.stdout.splitlines(), native_models.stdout
     session.record(
         "model.json",
         {
             "model": opencode_model,
             "selector": selector,
-            "source": "runner override",
-            "curated": curated,
+            "source": "compatible model-service discovery",
+            "discovered": discovered,
+            "supported_api_types": api_types,
         },
     )
 
@@ -74,27 +103,25 @@ def test_ug_opencode_explicit_undiscovered_model(live_session, unmanaged_workspa
         assert session_id not in sessions, "Repeat launch reused the previous session"
         sessions.add(session_id)
         exported = session.run("export", session_id, binary="opencode", timeout=30)
-        assert_opencode_answer(json.loads(exported.stdout), session_id, opencode_model, expected)
+        assert_opencode_answer(
+            json.loads(exported.stdout), session_id, opencode_model, expected, provider_id
+        )
 
         config = json.loads(config_path.read_text())
         assert config["model"] == selector, launch
-        provider = config["provider"]["databricks-oss"]
+        provider = config["provider"][provider_id]
         assert provider["npm"] == "@ai-sdk/openai"
         assert provider["options"]["baseURL"] == f"{unmanaged_workspace}/ai-gateway/mlflow/v1"
-        assert provider["models"][opencode_model]["provider"]["npm"] in {
-            "@ai-sdk/openai",
-            "@ai-sdk/openai-compatible",
-        }
-        assert set(provider["models"]) == set(curated.get("oss", [])) | {opencode_model}
-        for model in curated.get("oss", []):
-            assert (
-                provider["models"][model]
-                == configured["provider"]["databricks-oss"]["models"][model]
-            )
+        assert provider["models"][opencode_model]["provider"]["npm"] == expected_sdk
+        assert set(provider["models"]) == set(discovered.get(bucket, []))
+        for model in discovered.get(bucket, []):
+            assert provider["models"][model] == configured["provider"][provider_id]["models"][model]
         assert {
             key: value
             for key, value in session.workspace_state().items()
-            if key.endswith("_models") or key.endswith("_default_model")
+            if key.endswith("_models")
+            or key.endswith("_default_model")
+            or key == "opencode_model_api_types"
         } == discovery_and_defaults, launch
 
 
@@ -114,6 +141,7 @@ def test_ug_opencode_rejects_missing_explicit_model(
         "--workspace",
         unmanaged_workspace,
         "--disable-databricks-ai-tools",
+        timeout=240,
     )
     before = session.workspace_state()
     config_path = session.home / ".ucode/opencode-xdg/opencode/opencode.json"

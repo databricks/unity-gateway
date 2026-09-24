@@ -39,6 +39,7 @@ from ucode.databricks import (
     get_databricks_token,
     install_ai_tools,
     install_databricks_cli,
+    is_proprietary_gpt_model,
     list_databricks_apps,
     list_workspace_budgets,
     resolve_current_budget_spend,
@@ -545,13 +546,13 @@ class TestDiscoverModelServices:
             },
         }
 
-        def fake_get(url, token, timeout=10):
+        def fake_get(url, token):
             token_param = None
             if "page_token=" in url:
                 token_param = url.split("page_token=")[1].split("&")[0]
             return pages[token_param], None
 
-        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        monkeypatch.setattr(db_mod, "_get_model_services_page", fake_get)
 
         claude, codex, _, _, reason = db_mod.discover_model_services(WS, "token")
 
@@ -568,6 +569,29 @@ class TestDiscoverModelServices:
 
         assert (claude, codex, gemini, oss) == ({}, [], [], [])
         assert reason == "HTTP 500 Server Error"
+
+    def test_later_page_failure_does_not_cache_partial_listing(self, monkeypatch):
+        calls = {"n": 0}
+
+        def fake_get(url, token):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {
+                    "model_services": [_model_service("system.ai.glm-5-2")],
+                    "next_page_token": "next",
+                }, None
+            return None, "HTTP 500 Server Error"
+
+        monkeypatch.setattr(db_mod, "_get_model_services_page", fake_get)
+
+        claude, codex, gemini, oss, reason = db_mod.discover_model_services(WS, "token")
+
+        assert (claude, codex, gemini, oss) == ({}, [], [], [])
+        assert reason == "HTTP 500 Server Error"
+        assert db_mod.cached_opencode_model_api_types(WS) is None
+
+        db_mod.discover_model_services(WS, "token")
+        assert calls["n"] == 3
 
     def test_no_matching_families_reports_sample(self, monkeypatch):
         payload = {"model_services": [_model_service("system.ai.llama-4-maverick")]}
@@ -603,6 +627,147 @@ class TestDiscoverModelServices:
         assert claude == {}  # temp.erni.claude-* must not be bucketed
         assert gemini == []
         assert oss == []
+
+    def test_caches_opencode_generation_metadata_without_expanding_shared_oss(self, monkeypatch):
+        payload = {
+            "model_services": [
+                {
+                    "name": "model-services/system.ai.claude-opus-4-8",
+                    "supported_api_types": ["mlflow/v1/responses"],
+                },
+                {
+                    "name": "model-services/system.ai.gemini-3-5-flash",
+                    "supported_api_types": ["mlflow/v1/chat/completions"],
+                },
+                {
+                    "name": "model-services/system.ai.qwen35-122b-a10b",
+                    "supported_api_types": [
+                        "mlflow/v1/chat/completions",
+                        "mlflow/v1/responses",
+                    ],
+                },
+                {
+                    "name": "model-services/system.ai.grok-4-6",
+                    "supported_api_types": [
+                        "mlflow/v1/chat/completions",
+                        "openai/v1/responses",
+                    ],
+                },
+                {
+                    "name": "model-services/system.ai.llama-4-maverick",
+                    "supported_api_types": ["mlflow/v1/chat/completions"],
+                },
+                {
+                    "name": "model-services/system.ai.gte-large-embed",
+                    "supported_api_types": ["mlflow/v1/embeddings"],
+                },
+                {
+                    "name": "model-services/system.ai.bge-reranker-v2",
+                    "supported_api_types": ["mlflow/v1/rerank"],
+                },
+            ]
+        }
+        db_mod.clear_model_services_cache()
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=10: (payload, None)
+        )
+
+        claude, codex, gemini, oss, reason = db_mod.discover_model_services(WS, "token")
+
+        assert reason is None
+        assert claude == {"opus": "system.ai.claude-opus-4-8"}
+        assert codex == []
+        assert gemini == ["system.ai.gemini-3-5-flash"]
+        # The shared OSS list remains curated for the other agents.
+        assert oss == []
+        assert db_mod.cached_opencode_model_api_types(WS) == {
+            "system.ai.grok-4-6": [
+                "mlflow/v1/chat/completions",
+                "openai/v1/responses",
+            ],
+            "system.ai.llama-4-maverick": ["mlflow/v1/chat/completions"],
+            "system.ai.qwen35-122b-a10b": [
+                "mlflow/v1/chat/completions",
+                "mlflow/v1/responses",
+            ],
+        }
+
+    def test_opencode_metadata_survives_pagination_and_cache_hits(self, monkeypatch):
+        pages = {
+            None: {
+                "model_services": [
+                    {
+                        "name": "model-services/system.ai.qwen35-122b-a10b",
+                        "supported_api_types": ["mlflow/v1/responses"],
+                    }
+                ],
+                "next_page_token": "next",
+            },
+            "next": {
+                "model_services": [
+                    {
+                        "name": "model-services/system.ai.grok-4-6",
+                        "supported_api_types": ["mlflow/v1/chat/completions"],
+                    }
+                ]
+            },
+        }
+        calls = {"n": 0}
+
+        def page(url, token):
+            calls["n"] += 1
+            page_token = None
+            if "page_token=" in url:
+                page_token = url.split("page_token=")[1].split("&")[0]
+            return pages[page_token], None
+
+        db_mod.clear_model_services_cache()
+        monkeypatch.setattr(db_mod, "_get_model_services_page", page)
+
+        db_mod.discover_model_services(WS, "token")
+        metadata = db_mod.cached_opencode_model_api_types(WS)
+        assert metadata == {
+            "system.ai.grok-4-6": ["mlflow/v1/chat/completions"],
+            "system.ai.qwen35-122b-a10b": ["mlflow/v1/responses"],
+        }
+        metadata["system.ai.grok-4-6"].append("mutated")
+
+        # The cached copy is independent and no second paginated walk occurs.
+        assert db_mod.cached_opencode_model_api_types(WS) == {
+            "system.ai.grok-4-6": ["mlflow/v1/chat/completions"],
+            "system.ai.qwen35-122b-a10b": ["mlflow/v1/responses"],
+        }
+        assert calls["n"] == 2
+
+        db_mod.clear_model_services_cache()
+        assert db_mod.cached_opencode_model_api_types(WS) is None
+
+    def test_duplicate_rows_merge_supported_api_types(self, monkeypatch):
+        model = "system.ai.qwen35-122b-a10b"
+        payload = {
+            "model_services": [
+                {
+                    "name": f"model-services/{model}",
+                    "supported_api_types": [],
+                },
+                {
+                    "name": f"model-services/{model}",
+                    "supported_api_types": [
+                        "mlflow/v1/chat/completions",
+                        "mlflow/v1/responses",
+                    ],
+                },
+            ]
+        }
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=10: (payload, None)
+        )
+
+        db_mod.discover_model_services(WS, "token")
+
+        assert db_mod.cached_opencode_model_api_types(WS) == {
+            model: ["mlflow/v1/chat/completions", "mlflow/v1/responses"]
+        }
 
     def test_requests_bounded_page_size(self, monkeypatch):
         # The endpoint 499s without a bounded page_size, so every request must
@@ -3084,6 +3249,22 @@ class TestClassifyModelFamily:
     )
     def test_buckets_by_family(self, model_id, expected):
         assert classify_model_family(model_id) == expected
+
+
+class TestProprietaryGptModel:
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        [
+            ("system.ai.gpt-5-3-codex", True),
+            ("databricks-gpt-5-3-codex", True),
+            ("system.ai.databricks-gpt-5-3-codex", True),
+            ("system.ai.gpt-oss-120b", False),
+            ("databricks-gpt-oss-120b", False),
+            ("system.ai.databricks-gpt-oss-120b", False),
+        ],
+    )
+    def test_classifies_managed_and_discovered_ids(self, model_id, expected):
+        assert is_proprietary_gpt_model(model_id) is expected
 
 
 class TestModelServicesCache:

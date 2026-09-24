@@ -1856,12 +1856,14 @@ class TestStatus:
 
 
 class TestStatusLiveModels:
-    def test_refreshes_models_with_the_saved_profile_without_persisting(self):
+    @pytest.mark.parametrize("model_api_types", [{}, None])
+    def test_refreshes_models_with_the_saved_profile_without_persisting(self, model_api_types):
         state = {
             **MINIMAL_STATE,
             "profile": "explicit-profile",
             "claude_models": {"sonnet": "cached-claude"},
             "codex_models": ["cached-codex"],
+            "opencode_model_api_types": {"cached-oss": ["mlflow/v1/responses"]},
         }
         with (
             patch("ucode.cli.get_databricks_token", return_value="token") as get_token,
@@ -1878,6 +1880,7 @@ class TestStatusLiveModels:
             patch("ucode.cli.discover_claude_models") as legacy_claude,
             patch("ucode.cli.discover_codex_models") as legacy_codex,
             patch("ucode.cli.discover_gemini_models") as legacy_gemini,
+            patch("ucode.cli.cached_opencode_model_api_types", return_value=model_api_types),
             patch("ucode.cli.save_state") as save,
         ):
             live, freshness = cli_mod._live_status_model_state(state, {"claude", "codex"})
@@ -1887,11 +1890,37 @@ class TestStatusLiveModels:
         assert live["codex_models"] == ["live-codex"]
         assert live["opencode_models"]["oss"] == ["live-oss"]
         assert state["codex_models"] == ["cached-codex"]
+        assert state["opencode_model_api_types"] == {"cached-oss": ["mlflow/v1/responses"]}
+        assert live.get("opencode_model_api_types") == model_api_types
         get_token.assert_called_once_with("https://example.databricks.com", "explicit-profile")
         legacy_claude.assert_not_called()
         legacy_codex.assert_not_called()
         legacy_gemini.assert_not_called()
         save.assert_not_called()
+
+    def test_merges_compatible_models_with_curated_oss_models(self):
+        state = {**MINIMAL_STATE, "profile": "explicit-profile"}
+        with (
+            patch("ucode.cli.get_databricks_token", return_value="token"),
+            patch(
+                "ucode.cli.discover_model_services",
+                return_value=({}, [], [], ["system.ai.glm-5-3"], None),
+            ),
+            patch(
+                "ucode.cli.cached_opencode_model_api_types",
+                return_value={
+                    "system.ai.glm-5-3": ["mlflow/v1/responses"],
+                    "system.ai.qwen35-122b-a10b": ["mlflow/v1/responses"],
+                },
+            ),
+        ):
+            live, freshness = cli_mod._live_status_model_state(state, {"opencode"})
+
+        assert freshness == "live"
+        assert live["opencode_models"]["oss"] == [
+            "system.ai.glm-5-3",
+            "system.ai.qwen35-122b-a10b",
+        ]
 
     def test_labels_cached_fallback_when_live_auth_fails(self):
         state = {**MINIMAL_STATE, "profile": "explicit-profile"}
@@ -4282,6 +4311,91 @@ class TestConfigureSharedStateUsePat:
 
         assert state["codex_models"] == ["system.ai.gpt-5-6-sol"]
         assert state["oss_models"] == ["system.ai.glm-5-2"]
+
+    def test_opencode_persists_generation_metadata_without_expanding_shared_oss(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: (
+                {},
+                ["system.ai.gpt-5"],
+                [],
+                ["system.ai.glm-5-2"],
+                None,
+            ),
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "cached_opencode_model_api_types",
+            lambda workspace: {
+                "system.ai.gpt-5": ["mlflow/v1/responses"],
+                "system.ai.glm-5-2": ["mlflow/v1/chat/completions"],
+                "system.ai.grok-4-6": ["mlflow/v1/chat/completions"],
+                "system.ai.qwen35-122b-a10b": [
+                    "mlflow/v1/chat/completions",
+                    "mlflow/v1/responses",
+                ],
+            },
+        )
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["opencode"])
+
+        assert state["oss_models"] == ["system.ai.glm-5-2"]
+        assert state["opencode_models"]["openai"] == ["system.ai.gpt-5"]
+        assert state["opencode_models"]["oss"] == [
+            "system.ai.glm-5-2",
+            "system.ai.grok-4-6",
+            "system.ai.qwen35-122b-a10b",
+        ]
+        assert state["opencode_model_api_types"]["system.ai.grok-4-6"] == [
+            "mlflow/v1/chat/completions"
+        ]
+
+    def test_opencode_separates_proprietary_gpt_from_gpt_oss(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: (
+                {},
+                ["system.ai.gpt-5", "system.ai.gpt-oss-120b"],
+                [],
+                [],
+                None,
+            ),
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "cached_opencode_model_api_types",
+            lambda workspace: {
+                "system.ai.gpt-5": ["mlflow/v1/responses"],
+                "system.ai.gpt-oss-120b": ["mlflow/v1/chat/completions"],
+            },
+        )
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["opencode"])
+
+        assert "codex_models" not in state
+        assert state["opencode_models"] == {
+            "openai": ["system.ai.gpt-5"],
+            "oss": ["system.ai.gpt-oss-120b"],
+        }
+
+    def test_opencode_preserves_curated_oss_when_listing_metadata_is_empty(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: ({}, ["system.ai.gpt-5"], [], ["system.ai.glm-5-2"], None),
+        )
+        monkeypatch.setattr(cli_mod, "cached_opencode_model_api_types", lambda workspace: {})
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["opencode"])
+
+        assert state["opencode_models"]["oss"] == ["system.ai.glm-5-2"]
+        assert "openai" not in state["opencode_models"]
+        assert state["opencode_model_api_types"] == {}
 
     def _stub_with_fable(self, monkeypatch):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")

@@ -186,7 +186,7 @@ def opencode_model():
     model = os.environ.get("UG_INTEGRATION_OPENCODE_MODEL", "").strip()
     if len(model.split(".")) != 3 or not all(model.split(".")) or "/" in model:
         pytest.fail(
-            "Pass --opencode-model catalog.schema.model explicitly, using a real MLflow chat "
-            "model outside ug's curated discovery."
+            "Pass --opencode-model catalog.schema.model explicitly, using a real model service "
+            "that advertises MLflow Responses or Chat Completions."
         )
     return model
