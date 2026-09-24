@@ -155,6 +155,19 @@ def claude_provider_model():
 
 
 @pytest.fixture(scope="session")
+def claude_bedrock_allow_all_provider():
+    # A Bedrock MPS with allow_all_targets and no declared targets (issue #811). The runner always
+    # supplies this (default in run_integration.py); the suite has no capability skips.
+    return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_PROVIDER"]
+
+
+@pytest.fixture(scope="session")
+def claude_bedrock_allow_all_model():
+    # An allow_all service declares no targets, so a launch must name the Bedrock model id itself.
+    return os.environ["UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL"]
+
+
+@pytest.fixture(scope="session")
 def codex_provider():
     return os.environ["UG_INTEGRATION_CODEX_PROVIDER"]
 
