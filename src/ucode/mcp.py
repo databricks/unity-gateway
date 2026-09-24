@@ -19,6 +19,7 @@ from ucode.agents import claude, codex, copilot, cursor, gemini, opencode
 from ucode.config_io import restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
+    AIGW_MCP_SERVICES_SEGMENT,
     PermissionDeniedError,
     apply_pat_environment,
     build_mcp_proxy_argv,
@@ -31,6 +32,7 @@ from ucode.databricks import (
     list_mcp_services,
     workspace_hostname,
 )
+from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
     CLAUDE_CODE_OAUTH_CLIENT_ID,
     CURSOR_OAUTH_CLIENT_ID,
@@ -56,10 +58,6 @@ from ucode.ui import (
     scrolling_checkbox,
     spinner,
 )
-
-# AI Gateway MCP-services endpoints carry this path segment. These are the
-# connection-backed services that need a per-user connection login.
-AIGW_MCP_SERVICES_PATH = "/ai-gateway/mcp-services/"
 
 # Workspace-relative path fragments for the V2 AI Gateway MCP endpoints, shared by the URL-shape
 # checks (`_is_app_mcp_server`, `_mcp_server_location`) so the set stays in one place.
@@ -259,7 +257,7 @@ def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | N
     This is the single source of truth for that choice, shared by the per-server
     (:func:`configure_client_mcp_server`) and batched (:func:`_managed_mcp_entry`) paths. Whether it
     applies to a *specific* server additionally requires a connection-backed mcp-services URL
-    (``AIGW_MCP_SERVICES_PATH``), which the caller checks per server. It is URL-independent, so
+    (``AIGW_MCP_SERVICES_SEGMENT``), which the caller checks per server. It is URL-independent, so
     callers can compute it once per (client, workspace) rather than once per server."""
     oauth_client = AGENT_OAUTH_CLIENT.get(client)
     if oauth_client is not None and not use_pat and oauth_client_available(workspace, oauth_client):
@@ -282,7 +280,7 @@ def configure_client_mcp_server(
     # proxy: non-connection MCPs, the skills registry, PAT auth, agents without a mapped OAuth
     # client, and workspaces where the mapped client isn't published.
     http_client = _oauth_http_client(client, workspace, use_pat=use_pat)
-    if http_client is not None and AIGW_MCP_SERVICES_PATH in url:
+    if http_client is not None and AIGW_MCP_SERVICES_SEGMENT in url:
         if client == "claude":
             removed_scopes = [
                 scope
@@ -753,7 +751,7 @@ def _is_app_mcp_server(server: dict) -> bool:
         return False
     stripped = url.rstrip("/")
     known = (
-        AIGW_MCP_SERVICES_PATH,
+        AIGW_MCP_SERVICES_SEGMENT,
         MCP_EXTERNAL_PATH,
         MCP_GENIE_PATH,
         MCP_VECTOR_SEARCH_PATH,
@@ -867,7 +865,7 @@ def _agent_managed_file_entries(
         if agent == "claude":
             # A native HTTP+OAuth entry is only valid for a connection-backed mcp-services URL;
             # anything else stays on the stdio proxy so both delivery paths resolve identically.
-            if AIGW_MCP_SERVICES_PATH not in url:
+            if AIGW_MCP_SERVICES_SEGMENT not in url:
                 continue
             entries[name] = claude.managed_mcp_entry(url)
         elif agent == "codex":
@@ -1201,7 +1199,7 @@ def _managed_mcp_entry(
     workspace) (or ``None``); the caller computes it once per client so the batch loop doesn't
     re-probe ``oauth_client_available`` per server. HTTP+OAuth applies here only when that client is
     set AND this server's URL is a connection-backed mcp-services URL; otherwise the stdio proxy."""
-    use_http = http_client is not None and AIGW_MCP_SERVICES_PATH in url
+    use_http = http_client is not None and AIGW_MCP_SERVICES_SEGMENT in url
     if client == "claude":
         if use_http:
             return claude.managed_mcp_entry(url)
@@ -2171,8 +2169,8 @@ def _mcp_server_location(server: dict) -> str:
         return "skills"
     url = str(server.get("url") or "")
     stripped = url.rstrip("/")
-    if AIGW_MCP_SERVICES_PATH in url:
-        return url.split(AIGW_MCP_SERVICES_PATH, 1)[1] or "mcp-service"
+    if AIGW_MCP_SERVICES_SEGMENT in url:
+        return connection_from_url(url) or "mcp-service"
     if MCP_EXTERNAL_PATH in url:
         return f"connection:{stripped.rsplit('/', 1)[-1]}"
     if MCP_GENIE_PATH in url:

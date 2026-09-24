@@ -3249,7 +3249,7 @@ class TestReconcileManagedMcpServers:
             resolved=[
                 {
                     "name": "system-ai-github",
-                    "url": f"https://host{mcp.AIGW_MCP_SERVICES_PATH}github",
+                    "url": f"https://host{mcp.AIGW_MCP_SERVICES_SEGMENT}github",
                 }
             ],
             applied=applied,
@@ -3273,7 +3273,7 @@ class TestReconcileManagedMcpServers:
     ):
         # Claude's managed file only takes native mcp-services entries; any other URL falls back to
         # the user-scope proxy (matching configure_client_mcp_server). Codex proxies both.
-        github_url = f"https://host{mcp.AIGW_MCP_SERVICES_PATH}github"
+        github_url = f"https://host{mcp.AIGW_MCP_SERVICES_SEGMENT}github"
         custom_url = "https://apps.example/custom/mcp"
         state = {"workspace": WS, "profile": None, "managed_mcp_servers": []}
         applied: dict = {}
@@ -3369,7 +3369,7 @@ class TestReconcileManagedMcpServers:
     def test_migration_removes_prior_user_scope_for_managed_file_agents(self, monkeypatch):
         # Servers a prior configure registered at user scope for an agent now on the managed file are
         # unregistered from that agent.
-        sg_url = f"https://host{mcp.AIGW_MCP_SERVICES_PATH}sg"
+        sg_url = f"https://host{mcp.AIGW_MCP_SERVICES_SEGMENT}sg"
         previous = [{"name": "sg", "url": sg_url, "clients": ["claude", "codex"]}]
         state = {"workspace": WS, "profile": None, "managed_mcp_servers": list(previous)}
         applied: dict = {}
