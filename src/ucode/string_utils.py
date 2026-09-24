@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 
+def is_uc_fqn(name: str, *, parts: int) -> bool:
+    """Return whether name has exactly ``parts`` non-empty UC name components."""
+    segments = name.split(".")
+    return len(segments) == parts and all(segments)
+
+
 def is_valid_catalog_schema(value: str) -> bool:
     """Return whether value is a safe ``<catalog>.<schema>`` reference."""
     parts = value.split(".")

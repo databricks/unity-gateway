@@ -35,6 +35,7 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
+from ucode.string_utils import is_uc_fqn
 from ucode.ui import (
     err_console,
     normalize_workspace_url,
@@ -1670,6 +1671,40 @@ def _is_not_found_reason(reason: str | None) -> bool:
         return False
     lowered = reason.lower()
     return any(marker in lowered for marker in _NOT_FOUND_REASON_MARKERS)
+
+
+def get_model_service(workspace: str, token: str, full_name: str) -> tuple[dict | None, str | None]:
+    """Fetch one UC model service by its exact ``catalog.schema.model`` name.
+
+    Return the resource unchanged, including ``supported_api_types`` and any other metadata.
+    This lookup does not use or populate the model listing cache.
+    """
+    if not is_uc_fqn(full_name, parts=3):
+        return None, "Expected a model service name in catalog.schema.model form."
+
+    hostname = workspace_hostname(workspace)
+    url = f"https://{hostname}/api/2.1/unity-catalog/model-services/{quote(full_name, safe='')}"
+    payload, reason = _http_get_json(url, token, timeout=30)
+    if reason is not None:
+        if reason.startswith("HTTP 404 "):
+            return None, (
+                f"Model service '{full_name}' was not found or is not accessible. "
+                f"Check the name, workspace, and Unity Catalog permissions. ({reason})"
+            )
+        if reason.startswith("HTTP 403 "):
+            return None, (
+                f"Permission denied for model service '{full_name}'. Ask its owner for "
+                "EXECUTE, READ_METADATA, or MANAGE on the service, plus USE_CATALOG and "
+                f"USE_SCHEMA on its parents. ({reason})"
+            )
+        if reason.startswith("network error:"):
+            return None, f"{reason}. Check workspace connectivity and retry."
+        return None, reason
+    if not isinstance(payload, dict) or not isinstance(payload.get("name"), str):
+        return None, "model-service response had an unexpected shape (expected a named resource)"
+    if payload["name"] != f"{_MODEL_SERVICE_NAME_PREFIX}{full_name}":
+        return None, f"model-service response name did not match the requested '{full_name}'"
+    return payload, None
 
 
 def model_service_exists(

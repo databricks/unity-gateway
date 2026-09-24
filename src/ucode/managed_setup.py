@@ -33,6 +33,7 @@ from ucode.databricks import (
 from ucode.managed_config import (
     AGENT_ENUM_TO_TOOL,
 )
+from ucode.string_utils import is_uc_fqn
 
 # ucode tool name -> CodingAgent proto enum. Inverted from the read side's map so the two directions
 # cannot drift: adding an agent to `managed_config._AGENT_ENUM_TO_TOOL` makes it serializable here
@@ -269,12 +270,6 @@ def _spend_tiers_payload(spend_tiers: dict) -> dict:
     return payload
 
 
-def _is_uc_fqn(name: str, *, parts: int) -> bool:
-    """True when ``name`` is a dotted UC name with exactly ``parts`` non-empty components."""
-    segments = name.split(".")
-    return len(segments) == parts and all(segments)
-
-
 def _uc_names_or_location_payload(selector: dict) -> dict:
     """Serialize the internal ``{names, unity_catalog_location}`` selector back to the wire
     ``{names, unity_catalog_location}`` shape shared by ``mcp_servers`` and ``skills``."""
@@ -307,7 +302,7 @@ def _validate_uc_names_or_location(field: str, selector: dict) -> list[str]:
             errors.append(f"{field}.names must not contain empty names.")
         clean = [name for name in names if isinstance(name, str) and name]
         has_names = bool(clean)
-        malformed = [name for name in clean if not _is_uc_fqn(name, parts=3)]
+        malformed = [name for name in clean if not is_uc_fqn(name, parts=3)]
         if malformed:
             errors.append(
                 f"{field}.names must be <catalog>.<schema>.<name> FQNs (got: {', '.join(malformed)})."
@@ -316,7 +311,7 @@ def _validate_uc_names_or_location(field: str, selector: dict) -> list[str]:
     has_location = isinstance(location, str) and bool(location)
     if "unity_catalog_location" in selector and not has_location:
         errors.append(f"{field}.unity_catalog_location must not be empty.")
-    elif has_location and not _is_uc_fqn(location, parts=2):
+    elif has_location and not is_uc_fqn(location, parts=2):
         errors.append(
             f"{field}.unity_catalog_location must be a <catalog>.<schema> (got: {location})."
         )
