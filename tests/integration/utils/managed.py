@@ -149,3 +149,8 @@ def build_codex_agent_config(
 def build_mps_agent_config(agent: str, provider: str) -> dict:
     """A model-discovery config routing ``agent`` through a Model Provider Service (no static list)."""
     return {"agent": agent, "config": {"models": {"model_provider_service": provider}}}
+
+
+def build_uc_agent_config(agent: str, location: str) -> dict:
+    """A model-discovery config routing ``agent`` through a Unity Catalog schema (no static list)."""
+    return {"agent": agent, "config": {"models": {"unity_catalog_location": location}}}

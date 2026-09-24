@@ -94,6 +94,7 @@ from ucode.managed_resolve import (
     managed_default_model,
     managed_enabled_tools,
     managed_launch_model,
+    managed_pins_gateway_models,
     managed_provider_family_models,
     managed_provider_service,
     managed_supplies_models,
@@ -2603,6 +2604,8 @@ def _launch_tool(
             # rewriting it; the admin's location exists only for this launch.
             provider = None
             parent_schema = managed_parent_schema
+        elif managed is not None and managed_pins_gateway_models(managed, tool):
+            provider = None
         # Unmanaged Claude launches discover gateway models automatically; with no
         # provider or parent header the gateway defaults to system.ai. Managed
         # configs opt into discovery by selecting an MPS or Unity Catalog location.

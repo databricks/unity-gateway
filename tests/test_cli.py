@@ -1190,6 +1190,25 @@ class TestManagedCodexModelSource:
             assert "_codex_launch_provider" not in launch_state
         assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
+    def test_model_services_config_clears_saved_provider(self, monkeypatch):
+        monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        managed = {
+            "enabled_agents": {
+                "codex": {"model_config": {"model_services": ["system.ai.gpt-5-3-codex"]}}
+            }
+        }
+
+        with _launch_policy_patches(managed, persisted_provider="main.default.developer") as calls:
+            result = runner.invoke(app, ["codex"])
+
+        assert result.exit_code == 0, result.output
+        calls["resolve_provider"].assert_not_called()
+        assert calls["configure"].call_args.kwargs["provider"] is None
+        assert calls["configure"].call_args.kwargs["parent_schema"] is None
+        launch_state = calls["launch"].call_args.args[1]
+        assert "_codex_launch_provider" not in launch_state
+        assert "_codex_launch_parent_schema" not in launch_state
+
 
 class TestClaudeModelFlag:
     """`ucode claude --model <id>` pins the id into the family aliases so the gateway resolves any
