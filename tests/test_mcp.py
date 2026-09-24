@@ -2802,11 +2802,12 @@ class TestRevertMcpConfigs:
         )
         monkeypatch.setattr(
             mcp,
-            "restore_file",
+            "plan_restore",
             lambda config_path, backup_path, managed: (
-                restored.append((config_path, backup_path, managed)) or True
+                restored.append((config_path, backup_path, managed)) or "restore"
             ),
         )
+        monkeypatch.setattr(mcp, "apply_restore", lambda *a, **kw: None)
 
         result = mcp.revert_mcp_configs(
             {
@@ -2837,6 +2838,28 @@ class TestRevertMcpConfigs:
             "copilot": True,
         }
 
+    def test_copilot_configured_only_via_managed_config_removes_generated_file(self, monkeypatch):
+        # Copilot lived only in managed_mcp_servers (never mcp_servers), so its generated file has
+        # no backup and revert must still classify it as ug-owned ("remove"), not leave it behind.
+        restored: list[tuple[object, object, bool]] = []
+        monkeypatch.setattr(mcp, "remove_client_mcp_server", lambda client, name: ["user"])
+        monkeypatch.setattr(
+            mcp,
+            "plan_restore",
+            lambda config_path, backup_path, managed: (
+                restored.append((config_path, backup_path, managed)) or "remove"
+            ),
+        )
+        monkeypatch.setattr(mcp, "apply_restore", lambda *a, **kw: None)
+
+        mcp.revert_mcp_configs(
+            {"managed_mcp_servers": [{"name": "github-mcp", "clients": ["copilot"]}]}
+        )
+
+        assert restored == [
+            (mcp.copilot.COPILOT_MCP_CONFIG_PATH, mcp.copilot.COPILOT_MCP_BACKUP_PATH, True)
+        ]
+
     def test_removes_skills_registry_across_its_clients(self, monkeypatch):
         removed: list[tuple[str, str]] = []
         monkeypatch.setattr(
@@ -2844,7 +2867,8 @@ class TestRevertMcpConfigs:
             "remove_client_mcp_server",
             lambda client, name: removed.append((client, name)) or ["user"],
         )
-        monkeypatch.setattr(mcp, "restore_file", lambda *a, **kw: False)
+        monkeypatch.setattr(mcp, "plan_restore", lambda *a, **kw: "absent")
+        monkeypatch.setattr(mcp, "apply_restore", lambda *a, **kw: None)
 
         skills_entry = mcp._resolve_skills_mcp_servers(
             WS, ["claude", "codex"], _by_client(["claude", "codex"], ["a.b"]), []

@@ -45,7 +45,7 @@ from ucode.agents import (
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
-from ucode.config_io import is_dry_run, restore_file, set_dry_run
+from ucode.config_io import apply_restore, dispose_backup, is_dry_run, plan_restore, set_dry_run
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
     custom_oauth_cli_enabled,
@@ -89,6 +89,7 @@ from ucode.managed_config import (
     normalize_managed_config,
     refresh_managed_config,
 )
+from ucode.managed_files import managed_writes_allowed
 from ucode.managed_resolve import (
     managed_claude_family_models,
     managed_default_model,
@@ -112,6 +113,7 @@ from ucode.mcp import (
     configure_mcp_command,
     configure_skills_mcp_picker_command,
     configured_mcp_clients,
+    dispose_mcp_revert_backups,
     list_mcp_command,
     purge_cross_workspace_mcp_residue,
     reconcile_managed_mcp_servers,
@@ -134,6 +136,7 @@ from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRS
 from ucode.state import (
     clear_state,
     get_provider_service,
+    load_full_state,
     load_state,
     save_state,
     set_current_workspace,
@@ -1226,40 +1229,87 @@ def status() -> int:
     return 0
 
 
+# How a planned shared-config restore reads back in the revert summary.
+_SHARED_RESTORE_OUTCOME = {"restore": "restored", "remove": "removed", "absent": "unchanged"}
+
+
 def revert() -> int:
     state = load_state()
+    workspace = state.get("workspace")
     managed_configs = state.get("managed_configs") or {}
+
+    # --- Plan (read-only): classify every ug-written shared config before touching anything. ---
+    # TOOL_SPECS covers each agent's generated config; the Pi settings file is a second Pi target.
+    shared_targets = [
+        (spec["display"], "config", spec["config_path"], spec["backup_path"], tool)
+        for tool, spec in TOOL_SPECS.items()
+    ]
+    shared_targets.append(("Pi", "settings", PI_SETTINGS_PATH, PI_SETTINGS_BACKUP_PATH, "pi"))
+    shared_plan = [
+        (
+            display,
+            noun,
+            config_path,
+            backup_path,
+            plan_restore(config_path, backup_path, bool(managed_configs.get(tool))),
+        )
+        for display, noun, config_path, backup_path, tool in shared_targets
+    ]
+
+    # --- Preflight: fail closed and unchanged if we cannot finish. ---
+    # Restoring an OS-managed file needs a privileged write; a non-interactive shell cannot approve
+    # it, so refuse up front rather than half-revert MCP and local files first. This read-only check
+    # also surfaces symlinked or corrupted backups before any mutation.
+    privileged = [
+        display
+        for display, needs in (
+            ("Claude Code", claude_agent.managed_settings_revert_requires_privilege()),
+            ("Codex", codex_agent.managed_config_revert_requires_privilege()),
+        )
+        if needs
+    ]
+    if privileged and not managed_writes_allowed():
+        raise RuntimeError(
+            f"Reverting {' and '.join(privileged)} OS-managed settings needs administrator access. "
+            "Run `ug revert` from an interactive terminal so it can prompt for your password."
+        )
+
+    # --- Commit: undo everything, keeping backups so an interrupted revert can be retried. ---
     mcp_results = revert_mcp_configs(state)
     claude_managed_result = claude_agent.revert_managed_settings()
     codex_managed_result = codex_agent.revert_managed_config()
-
-    results: dict[str, bool] = {
-        tool: restore_file(
-            spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool))
-        )
-        for tool, spec in TOOL_SPECS.items()
-    }
-    pi_settings_restored = restore_file(
-        PI_SETTINGS_PATH, PI_SETTINGS_BACKUP_PATH, bool(managed_configs.get("pi"))
-    )
+    for _display, _noun, config_path, backup_path, action in shared_plan:
+        apply_restore(config_path, backup_path, action)
     # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
     # place; restoring the per-profile file above does not undo that.
     legacy_codex_stripped = revert_legacy_shared_config()
-    clear_state()
 
+    # --- Record the revert durably, then dispose of the now-consumed backups (idempotent). ---
+    other_workspaces = [w for w in load_full_state().get("workspaces", {}) if w != workspace]
+    clear_state()
+    for _display, _noun, _config_path, backup_path, action in shared_plan:
+        if action == "restore":
+            dispose_backup(backup_path)
+    dispose_mcp_revert_backups()
+
+    # --- Report each target's outcome, and the true scope of the state we cleared. ---
     print_heading("Revert")
-    print_kv("Workspace", state.get("workspace") or "none")
-    for tool, spec in TOOL_SPECS.items():
-        print_kv(f"{spec['display']} config", "restored" if results[tool] else "unchanged")
+    print_kv("Workspace", workspace or "none")
+    for display, noun, _config_path, _backup_path, action in shared_plan:
+        print_kv(f"{display} {noun}", _SHARED_RESTORE_OUTCOME[action])
     if legacy_codex_stripped:
-        print_kv("Codex shared config", "ucode entries removed")
+        print_kv("Codex shared config", "ug entries removed")
     print_kv("Claude Code OS-managed settings", claude_managed_result)
     print_kv("Codex OS-managed settings", codex_managed_result)
-    print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     for client, spec in MCP_CLIENTS.items():
         print_kv(
             f"{spec['display']} MCP config",
-            "restored" if mcp_results.get(client) else "unchanged",
+            "ug entries removed" if mcp_results.get(client) else "unchanged",
+        )
+    if other_workspaces:
+        print_note(
+            f"Cleared ug state for this workspace; {len(other_workspaces)} other workspace "
+            "configuration(s) left in place."
         )
     print_success("ug state cleared")
     return 0

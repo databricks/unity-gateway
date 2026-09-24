@@ -61,6 +61,7 @@ from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     managed_file_conflicts,
     managed_file_is_verified,
+    managed_file_revert_requires_privilege,
     managed_file_scope,
     managed_file_status,
     managed_files_supported,
@@ -548,6 +549,16 @@ def managed_config_status(state: dict) -> tuple[Path | None, str, str]:
 
 def revert_managed_config() -> str:
     return revert_managed_file(
+        "codex",
+        display="Codex",
+        parser=_parse_managed_config,
+        dumper=tomlkit.dumps,
+    )
+
+
+def managed_config_revert_requires_privilege() -> bool:
+    """True if reverting Codex's OS-managed config would need a privileged (sudo) write."""
+    return managed_file_revert_requires_privilege(
         "codex",
         display="Codex",
         parser=_parse_managed_config,

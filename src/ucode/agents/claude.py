@@ -53,6 +53,7 @@ from ucode.managed_files import (
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
+    managed_file_revert_requires_privilege,
     managed_file_scope,
     managed_file_snapshots,
     managed_file_status,
@@ -288,6 +289,16 @@ def managed_settings_status(state: dict) -> tuple[Path | None, str, str]:
 
 def revert_managed_settings() -> str:
     return revert_managed_file(
+        "claude",
+        display="Claude Code",
+        parser=_parse_managed_settings,
+        dumper=_dump_managed_settings,
+    )
+
+
+def managed_settings_revert_requires_privilege() -> bool:
+    """True if reverting Claude Code's OS-managed settings would need a privileged (sudo) write."""
+    return managed_file_revert_requires_privilege(
         "claude",
         display="Claude Code",
         parser=_parse_managed_settings,
