@@ -176,6 +176,8 @@ class TestConfigureClientMcpServer:
         monkeypatch.setattr(
             mcp, "oauth_client_available", lambda ws, client_id: claude_code_available
         )
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         monkeypatch.setattr(claude, "remove_claude_mcp_server", lambda name, scope: False)
         monkeypatch.setattr(
             claude,
@@ -194,6 +196,17 @@ class TestConfigureClientMcpServer:
         mcp.configure_client_mcp_server("claude", "github", AIGW_MCP_URL, WS, "p")
         assert http_calls == [("github", AIGW_MCP_URL)]
         assert proxy_calls == []
+
+    def test_claude_no_login_service_uses_proxy(self, monkeypatch):
+        # A no-login mcp-service (e.g. web_search: no backing connection) must NOT get the native
+        # HTTP+OAuth entry even when claude-code is available -- it uses the stdio proxy, so it is
+        # never forced into a connection-login OAuth flow it can't complete (AIGTWY-4856).
+        http_calls, proxy_calls = self._capture_claude(monkeypatch, claude_code_available=True)
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: False)
+        url = f"{WS}/ai-gateway/mcp-services/system.ai.web_search"
+        mcp.configure_client_mcp_server("claude", "web_search", url, WS, "p")
+        assert http_calls == []
+        assert len(proxy_calls) == 1
 
     def test_claude_aigw_service_falls_back_to_proxy_without_client(self, monkeypatch):
         http_calls, proxy_calls = self._capture_claude(monkeypatch, claude_code_available=False)
@@ -221,6 +234,8 @@ class TestConfigureClientMcpServer:
         monkeypatch.setattr(
             mcp, "oauth_client_available", lambda ws, client_id: cursor_client_available
         )
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         monkeypatch.setattr(
             mcp.cursor,
             "write_http_mcp_server_config",
@@ -584,6 +599,8 @@ class TestApplyMcpServerChanges:
             mcp.claude, "write_user_mcp_servers", lambda a, r: writes.append((a, r))
         )
         monkeypatch.setattr(mcp, "oauth_client_available", lambda ws, cid: True)
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         url = f"{WS}/ai-gateway/mcp-services/system.ai.github"
         working = [{"name": "system-ai-github", "url": url, "clients": ["claude"]}]
 
@@ -614,7 +631,9 @@ class TestManagedMcpEntry:
         assert e["type"] == "stdio"
         assert e == mcp.claude.user_stdio_mcp_entry(self._argv())
 
-    def test_claude_http_when_http_client_and_mcp_services_url(self):
+    def test_claude_http_when_http_client_and_mcp_services_url(self, monkeypatch):
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         e = mcp._managed_mcp_entry(
             "claude",
             self.MCP_URL,
@@ -635,6 +654,17 @@ class TestManagedMcpEntry:
         )
         assert e["type"] == "stdio"
 
+    def test_claude_stdio_when_no_login_mcp_service(self, monkeypatch):
+        # A no-login mcp-service (web_search) uses the proxy even with an http_client, so it works
+        # without a connection-login OAuth prompt (AIGTWY-4856).
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: False)
+        url = f"{WS}/ai-gateway/mcp-services/system.ai.web_search"
+        e = mcp._managed_mcp_entry(
+            "claude", url, WS, None, use_pat=False, always_load=False, http_client="claude-code"
+        )
+        assert e["type"] == "stdio"
+
     def test_claude_always_load_stdio_entry(self):
         e = mcp._managed_mcp_entry(
             "claude", self.MCP_URL, WS, None, use_pat=False, always_load=True, http_client=None
@@ -642,7 +672,9 @@ class TestManagedMcpEntry:
         assert e.get("alwaysLoad") is True and e["type"] == "stdio"
         assert e == mcp.claude.user_stdio_mcp_entry(self._argv(), always_load=True)
 
-    def test_cursor_http_entry_uses_client_id(self):
+    def test_cursor_http_entry_uses_client_id(self, monkeypatch):
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         e = mcp._managed_mcp_entry(
             "cursor",
             self.MCP_URL,
@@ -3222,6 +3254,8 @@ class TestReconcileManagedMcpServers:
             mcp.claude, "managed_mcp_uses_managed_file", lambda ws, *, use_pat: claude_eligible
         )
         monkeypatch.setattr(mcp.codex, "managed_mcp_uses_managed_file", lambda: codex_eligible)
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
 
         def claude_reconcile(state, servers):
             captured["claude"] = servers
