@@ -7,12 +7,14 @@ import json
 import os
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
+from ucode.codex_config import ModelVisibility
 from ucode.smart_routing.codex_routing import codex_model_id
+from ucode.ui import print_warning
 
 _TIMEOUT_SECONDS = 30
-_BASELINE_MODEL = "gpt-5.2"
 
 # Known hosted-model capabilities, following universe#2591694. These are not
 # universal non-GPT defaults: an arbitrary UC service need not support images,
@@ -53,8 +55,13 @@ def _model_key(slug: str) -> str:
     return codex_model_id(slug).removeprefix("system.ai.").replace(".", "-")
 
 
-def build_codex_catalog(bundled_models: list[dict], names: list[str]) -> dict:
-    """Copy native presets or derive non-GPT defaults, in admin order.
+def build_codex_catalog(
+    bundled_models: list[dict],
+    names: list[str],
+    *,
+    warn: Callable[[str], None] | None = None,
+) -> dict:
+    """Copy native presets or derive generic compatibility defaults, in admin order.
 
     Preserve all native metadata (including unknown future fields), except picker
     identity/visibility/order. Only requested slugs are visible. Hidden aliases
@@ -69,18 +76,18 @@ def build_codex_catalog(bundled_models: list[dict], names: list[str]) -> dict:
             model = copy.deepcopy(native)
         else:
             if _model_key(name).startswith(("gpt-", "databricks-gpt-")):
-                raise RuntimeError(
-                    f"Codex has no bundled metadata for managed GPT model '{name}'. "
-                    "Upgrade the active Codex installation or correct the admin model list."
-                )
-            baseline = by_slug.get(_BASELINE_MODEL)
+                if warn is not None:
+                    warn(
+                        f"Codex is missing metadata for managed GPT model '{name}', so UG is "
+                        "falling back to default metadata. Try updating Codex with "
+                        "`ug codex update`."
+                    )
+            baseline = next((m for m in bundled_models if m.get("tool_mode") is None), None)
             if baseline is None:
                 raise RuntimeError(
-                    f"Codex is missing the {_BASELINE_MODEL} metadata needed for '{name}'. "
-                    "Install a Codex version with that bundled template."
+                    f"Codex has no ordinary-tool bundled model to base '{name}' on. "
+                    "Upgrade or reinstall Codex."
                 )
-            # GPT-5.2 supplies a complete ordinary-tool schema and prompt, not
-            # the GPT-only code-mode tooling used by newer native models.
             model = copy.deepcopy(baseline)
             model.update(copy.deepcopy(_HOSTED_DEFAULTS))
             capabilities = _HOSTED_CAPABILITIES.get(name.removeprefix("system.ai."))
@@ -100,7 +107,7 @@ def build_codex_catalog(bundled_models: list[dict], names: list[str]) -> dict:
         model.update(
             slug=name,
             display_name=name,
-            visibility="list",
+            visibility=ModelVisibility.LIST,
             supported_in_api=True,
             priority=len(models),
         )
@@ -111,10 +118,52 @@ def build_codex_catalog(bundled_models: list[dict], names: list[str]) -> dict:
         native_slug = codex_model_id(model["slug"])
         if native_slug != model["slug"] and native_slug not in requested:
             alias = copy.deepcopy(model)
-            alias.update(slug=native_slug, visibility="hide")
+            alias.update(slug=native_slug, visibility=ModelVisibility.HIDE)
             aliases.setdefault(native_slug, alias)
     models.extend(aliases.values())
     return {"models": models}
+
+
+def _run_catalog_command(
+    binary: str, args: list[str], home: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [binary, *args],
+        env={**os.environ, "CODEX_HOME": home},
+        cwd=home,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=_TIMEOUT_SECONDS,
+        check=True,
+    )
+
+
+def _validate_codex_catalog_in_home(binary: str, catalog: dict, home: str) -> None:
+    candidate = Path(home) / "catalog.json"
+    candidate.write_text(json.dumps(catalog), encoding="utf-8")
+    _run_catalog_command(
+        binary,
+        [
+            "-c",
+            f"model_catalog_json={json.dumps(str(candidate))}",
+            "debug",
+            "models",
+        ],
+        home,
+    )
+
+
+def validate_codex_catalog(binary: str, catalog: dict) -> None:
+    """Validate a candidate catalog with the selected Codex binary in isolation."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="ug-codex-catalog-") as home:
+            _validate_codex_catalog_in_home(binary, catalog, home)
+    except (OSError, TypeError, ValueError, subprocess.SubprocessError):
+        raise RuntimeError(
+            "Could not load the Codex model catalog with the selected Codex binary. "
+            "Update Codex and retry `ug codex`."
+        ) from None
 
 
 def prepare_codex_catalog(binary: str, names: list[str]) -> dict:
@@ -126,20 +175,7 @@ def prepare_codex_catalog(binary: str, names: list[str]) -> dict:
     """
     try:
         with tempfile.TemporaryDirectory(prefix="ug-codex-catalog-") as home:
-            env = {**os.environ, "CODEX_HOME": home}
-
-            def run(args: list[str]) -> subprocess.CompletedProcess[str]:
-                return subprocess.run(
-                    [binary, *args],
-                    env=env,
-                    cwd=home,
-                    capture_output=True,
-                    text=True,
-                    timeout=_TIMEOUT_SECONDS,
-                    check=True,
-                )
-
-            result = run(["debug", "models", "--bundled"])
+            result = _run_catalog_command(binary, ["debug", "models", "--bundled"], home)
             payload = json.loads(result.stdout)
             bundled = payload.get("models") if isinstance(payload, dict) else None
             if (
@@ -151,22 +187,16 @@ def prepare_codex_catalog(binary: str, names: list[str]) -> dict:
                 )
             ):
                 raise ValueError("invalid bundled model catalog")
-            catalog = build_codex_catalog(bundled, names)
-            candidate = Path(home) / "catalog.json"
-            candidate.write_text(json.dumps(catalog), encoding="utf-8")
-            run(
-                [
-                    "-c",
-                    f"model_catalog_json={json.dumps(str(candidate))}",
-                    "debug",
-                    "models",
-                ]
-            )
-            return catalog
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            fallback_warnings: list[str] = []
+            catalog = build_codex_catalog(bundled, names, warn=fallback_warnings.append)
+            _validate_codex_catalog_in_home(binary, catalog, home)
+    except (OSError, TypeError, ValueError, subprocess.SubprocessError):
         raise RuntimeError(
             "Could not build the managed Codex model catalog locally. "
             "Upgrade the active Codex installation and verify "
             "`codex debug models --bundled` works, then retry configuration. "
             "Gateway discovery was not used."
-        ) from exc
+        ) from None
+    for message in fallback_warnings:
+        print_warning(message)
+    return catalog

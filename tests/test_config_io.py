@@ -194,6 +194,18 @@ class TestWriteHelpers:
         assert 'KEY="value"' in text
         assert 'OTHER="123"' in text
 
+    def test_atomic_write_json_round_trips_and_creates_parent(self, tmp_path):
+        p = tmp_path / "nested" / "out.json"
+        config_io.atomic_write_json(p, {"a": 1})
+        assert json.loads(p.read_text()) == {"a": 1}
+
+    def test_atomic_write_json_replaces_existing_and_leaves_no_temp(self, tmp_path):
+        p = tmp_path / "out.json"
+        config_io.atomic_write_json(p, {"a": 1})
+        config_io.atomic_write_json(p, {"a": 2})
+        assert json.loads(p.read_text()) == {"a": 2}
+        assert not list(tmp_path.glob(".out.json.*"))
+
 
 # ---------------------------------------------------------------------------
 # read_json_safe / read_toml_safe
@@ -218,6 +230,13 @@ class TestReadHelpers:
     def test_read_json_safe_non_dict(self, tmp_path):
         p = tmp_path / "arr.json"
         p.write_text("[1, 2, 3]", encoding="utf-8")
+        assert read_json_safe(p) == {}
+
+    def test_read_json_safe_non_utf8(self, tmp_path):
+        # A file with non-UTF-8 bytes must read as absent rather than raising, so a corrupted
+        # cache file can't crash a launch that reads it.
+        p = tmp_path / "binary.json"
+        p.write_bytes(b"\xff\xfe\x00not utf-8")
         assert read_json_safe(p) == {}
 
     def test_read_toml_safe_missing_file(self, tmp_path):

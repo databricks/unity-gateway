@@ -6,14 +6,12 @@ import copy
 import json
 import os
 import re
-import shutil
 import signal
 import socket
 import subprocess
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
 
 from ucode import gateway_proxy
 from ucode.config_io import (
@@ -30,37 +28,54 @@ from ucode.constants import (
     MCP_USER_SCOPE,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
+    SMART_ROUTER_RECIPE_HEADER,
 )
-from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
+from ucode.custom_oauth import (
+    CustomOAuthConfig,
+    build_custom_auth_shell_command,
+    custom_oauth_cli_enabled,
+)
 from ucode.databricks import (
+    AnthropicModelCatalog,
     build_auth_shell_command,
+    build_otel_headers_shell_command,
+    build_otel_traces_endpoint,
     build_tool_base_url,
     get_databricks_token,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
+from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
     OS,
+    ManagedFileSnapshots,
     ManagedFileWriteUnavailable,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
+    managed_file_scope,
+    managed_file_snapshots,
     managed_file_status,
+    managed_files_supported,
     managed_writes_allowed,
     mark_managed_file_verified,
     read_managed_file,
     reconcile_managed_file,
     revert_managed_file,
 )
-from ucode.mcp_oauth import CLAUDE_CODE_OAUTH_CLIENT_ID, MCP_OAUTH_CALLBACK_PORT
+from ucode.mcp_oauth import (
+    CLAUDE_CODE_OAUTH_CLIENT_ID,
+    MCP_OAUTH_CALLBACK_PORT,
+    oauth_client_available,
+)
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
+from ucode.smart_routing.routing import configured_router_name
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
-from ucode.tracing import tracing_env
 from ucode.ui import print_note, print_success, print_warning
 
 from .args import LaunchOptions, has_explicit_model_arg
@@ -75,8 +90,9 @@ CLAUDE_MCP_CONFIG_PATH = Path.home() / ".claude.json"
 CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
 CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
 WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
-MINIMUM_CLAUDE_VERSION = (2, 1, 248)
-MINIMUM_CLAUDE_VERSION_TEXT = "2.1.248"
+MINIMUM_CLAUDE_VERSION = (2, 1, 259)
+MINIMUM_CLAUDE_VERSION_TEXT = "2.1.259"
+MANAGED_MCP_SETTINGS_KEY = "managedMcpServers"
 
 SPEC: ToolSpec = {
     "binary": "claude",
@@ -98,22 +114,15 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
     return int(major), int(minor), int(patch)
 
 
-def _minimum_version_requirement_message(version: str) -> str:
-    feature = "Smart routing" if smart_routing_v2.enabled() else "Model discovery"
-    return (
-        f"{feature} requires Claude Code {MINIMUM_CLAUDE_VERSION_TEXT} or newer. "
-        f"Your current version is Claude Code {version}."
-    )
-
-
 def minimum_version_error() -> str | None:
-    if os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) != "1" and not smart_routing_v2.enabled():
-        return None
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
     if parsed is None or parsed >= MINIMUM_CLAUDE_VERSION:
         return None
-    return _minimum_version_requirement_message(version)
+    return (
+        f"ug requires Claude Code {MINIMUM_CLAUDE_VERSION_TEXT} or newer. "
+        f"Your current version is Claude Code {version}."
+    )
 
 
 def _resolve_web_search_model(state: dict) -> str | None:
@@ -139,14 +148,31 @@ _CLAUDE_MODEL_RE = re.compile(
     r"^(?:system\.ai\.)?(?:databricks-)?claude-(opus|sonnet)-(\d+)(?:-(\d+))?(.*)$"
 )
 
-# Env keys the MLflow Stop hook reads to route traces. Written into the
-# settings `env` block alongside the hook itself.
-CLAUDE_TRACING_ENV_KEYS = (
-    "MLFLOW_CLAUDE_TRACING_ENABLED",
-    "MLFLOW_TRACKING_URI",
-    "MLFLOW_EXPERIMENT_ID",
-    "MLFLOW_TRACING_SQL_WAREHOUSE_ID",
+# OTLP trace-export keys owned by the managed configuration path.
+CLAUDE_OTEL_TRACE_ENV_KEYS = (
+    "CLAUDE_CODE_ENABLE_TELEMETRY",
+    "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+    "OTEL_TRACES_EXPORTER",
+    "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS",
+    "CLAUDE_CODE_PROPAGATE_TRACEPARENT",
 )
+
+
+def _otel_trace_env(workspace: str) -> dict[str, str]:
+    """Build Claude Code's client-side OTLP trace configuration."""
+    return {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
+        "OTEL_TRACES_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": build_otel_traces_endpoint(workspace),
+        "CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS": "900000",
+        "CLAUDE_CODE_PROPAGATE_TRACEPARENT": "1",
+    }
+
+
 # Model-selection env keys ucode manages. Existing family defaults in the enterprise-managed file
 # are preserved unless Coding Agent Config explicitly supplies that family.
 CLAUDE_MANAGED_MODEL_ENV_KEYS = (
@@ -173,7 +199,6 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 # settings file on every launch so stale values never linger.
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
-CLAUDE_PRUNED_PICKER_KEYS = ("availableModels", "enforceAvailableModels")
 ANTHROPIC_CUSTOM_HEADERS_ENV_KEY = "ANTHROPIC_CUSTOM_HEADERS"
 CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
     {
@@ -181,25 +206,25 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
         "user-agent",
         MODEL_PROVIDER_SERVICE_HEADER.casefold(),
         MODEL_SERVICE_PARENT_SCHEMA_HEADER.casefold(),
+        SMART_ROUTER_RECIPE_HEADER.casefold(),
     }
 )
-CLAUDE_TRACING_STOP_HOOK_SUFFIX = " autolog claude stop-hook"
-# Tracing is driven by an `mlflow autolog claude stop-hook` Stop hook, run by
-# the `mlflow` CLI on each session end. Pin to 3.11.x: 3.12 dropped the Unity
-# Catalog trace-write path, so traces silently land in the classic store
-# instead of the experiment's UC table. ucode installs this via `uv tool` at
-# `configure tracing` time (where UV_INDEX_URL is set), then writes the hook
-# with the resolved absolute path — so the hook needs no uv or index at run
-# time, and can't be shadowed by a project venv's mlflow.
-MLFLOW_CLI_SPEC = "mlflow[databricks]>=3.11,<3.12"
-MINIMUM_MLFLOW_VERSION = (3, 11)
-# Upper bound (exclusive) — an installed mlflow at or above this is too new and
-# must be replaced, not just left alone.
-MAXIMUM_MLFLOW_VERSION = (3, 12)
-
 # Relayed drops the user scope to deliberately omit the stale apiKeyHelper. Only applied to relayed
 # launches — normal launches keep loading user settings (hooks/permissions) as before.
 _RELAYED_SETTING_SOURCES = "project,local"
+
+
+def _apply_managed_header_lines(
+    ucode_lines: list[str], managed_http_headers: dict[str, str] | None
+) -> list[str]:
+    """Overlay admin ``managed_http_headers`` onto ucode's header lines; admin wins by name."""
+    lines_by_name: dict[str, str] = {}
+    for line in ucode_lines:
+        name, _separator, _value = line.partition(":")
+        lines_by_name[name.strip().casefold()] = line
+    for name, value in (managed_http_headers or {}).items():
+        lines_by_name[name.strip().casefold()] = f"{name}: {value}"
+    return list(lines_by_name.values())
 
 
 def configured_paths(state: dict) -> list[str]:
@@ -340,6 +365,9 @@ def render_overlay(
     custom_model: str | None = None,
     parent_schema: str | None = None,
     static_models: list[str] | None = None,
+    otel_tracing: bool = False,
+    picker_catalog: AnthropicModelCatalog | None = None,
+    managed_http_headers: dict[str, str] | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
 
@@ -379,9 +407,11 @@ def render_overlay(
         header_lines.append(f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}")
     elif parent_schema:
         header_lines.append(f"{MODEL_SERVICE_PARENT_SCHEMA_HEADER}: {parent_schema}")
+    if smart_routing_v2.smart_routing_enabled():
+        header_lines.append(f"{SMART_ROUTER_RECIPE_HEADER}: {configured_router_name()}")
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
-    custom_headers = "\n".join(header_lines)
+    custom_headers = "\n".join(_apply_managed_header_lines(header_lines, managed_http_headers))
     env: dict[str, str] = {
         "ANTHROPIC_BASE_URL": base_url,
         "ANTHROPIC_CUSTOM_HEADERS": custom_headers,
@@ -421,7 +451,7 @@ def render_overlay(
     # provider and Claude Code's own canonical model names are sent verbatim —
     # pinning a Databricks model id here would mislabel the picker and isn't
     # routable.
-    elif claude_models and not provider:
+    elif claude_models and not provider and not parent_schema:
         # Picker rows show the raw routable id (e.g. "system.ai.claude-opus-4-8[1m]")
         # so users can see which gateway-routable model is behind each shortcut.
         # We deliberately don't set the `_NAME` companion env vars — the raw id
@@ -460,7 +490,7 @@ def render_overlay(
         overlay["permissions"] = {"deny": ["WebSearch"]}
         keys.append(["permissions", "deny"])
 
-    if static_models and not provider and not relayed:
+    if static_models and not provider and not parent_schema and not relayed:
         overlay["availableModels"] = list(static_models)
         overlay["enforceAvailableModels"] = True
         overlay["modelPicker"] = {
@@ -468,13 +498,66 @@ def render_overlay(
             "options": [{"model": m, "label": _picker_label(m)} for m in static_models],
         }
         keys += [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
+    elif picker_catalog and picker_catalog.model_ids and not relayed:
+        overlay["modelPicker"] = {
+            "replaceBuiltInOptions": True,
+            "options": [
+                _picker_option(
+                    model,
+                    picker_catalog.model_id_to_display_name.get(model) or _picker_label(model),
+                    picker_catalog.model_id_to_description.get(model),
+                )
+                for model in picker_catalog.model_ids
+            ],
+        }
+        keys.append(["modelPicker"])
+
+    if otel_tracing:
+        otel_env = _otel_trace_env(workspace)
+        env.update(otel_env)
+        overlay["otelHeadersHelper"] = build_otel_headers_shell_command(
+            workspace, profile, use_pat=use_pat
+        )
+        keys += [["env", key] for key in otel_env] + [["otelHeadersHelper"]]
 
     return overlay, keys
 
 
+_MODEL_LABEL_ACRONYMS = frozenset({"glm", "gpt"})
+_CLAUDE_PICKER_LABEL_RE = re.compile(
+    r"^Claude (Fable|Opus|Sonnet|Haiku) (\d+(?:\.\d+)*)$", re.IGNORECASE
+)
+
+
 def _picker_label(model: str) -> str:
-    """A short picker label for a model id — the raw id minus the ``system.ai.`` prefix."""
-    return model.removeprefix("system.ai.")
+    """A human-friendly picker label for a model id (e.g. ``system.ai.claude-haiku-4-5`` ->
+    ``Claude Haiku 4.5``): keep the vendor and name words title-cased, uppercase known acronyms,
+    and join a run of numeric segments into a dotted version."""
+    stem = model.removeprefix("system.ai.")
+    parts: list[str] = []
+    version: list[str] = []
+    for token in stem.split("-"):
+        if token.isdigit():
+            version.append(token)
+            continue
+        if version:
+            parts.append(".".join(version))
+            version = []
+        parts.append(token.upper() if token in _MODEL_LABEL_ACRONYMS else token.title())
+    if version:
+        parts.append(".".join(version))
+    return " ".join(parts) if parts else stem
+
+
+def _picker_option(model: str, label: str, description: str | None = None) -> dict[str, str]:
+    option = {"model": model, "label": label}
+    if description:
+        option["description"] = description
+    match = _CLAUDE_PICKER_LABEL_RE.fullmatch(label)
+    if match:
+        family, version = match.groups()
+        option["behavesAs"] = f"claude-{family.lower()}-{version.replace('.', '-')}"
+    return option
 
 
 def _maybe_add_1m_suffix(model: str) -> str:
@@ -499,24 +582,30 @@ def _enforce_model_default_hierarchy(
     coding_agent_config_defaults: dict[str, str],
     settings_file_existing_defaults: dict[str, str],
     ucode_defaults: dict[str, str],
+    ucode_last_written_defaults: dict[str, str],
+    enforced_models: list[str] | None,
+    add_1m_suffix: bool = True,
 ) -> str | None:
-    """Apply managed-file model precedence for one Claude family."""
-    coding_agent_config_default_model = coding_agent_config_defaults.get(family)
-    settings_file_existing_default_model = settings_file_existing_defaults.get(family)
-    ucode_default_model = ucode_defaults.get(family)
+    """Resolve one Claude family's managed-file default model.
 
-    if coding_agent_config_default_model is not None:
-        selected_default_model = coding_agent_config_default_model
-    elif settings_file_existing_default_model is not None:
-        return settings_file_existing_default_model
-    else:
-        selected_default_model = ucode_default_model
-
-    if selected_default_model is None:
+    An existing managed-file default ucode did not write itself (it differs from ucode's last write)
+    is an administrator's, so it is preserved verbatim. Otherwise the value is ucode's own or unset,
+    so ucode re-derives it from the coding-agent config, then discovery, resetting a value carried
+    over from a previous workspace, and drops the result when an enforced model list excludes it.
+    """
+    selected = coding_agent_config_defaults.get(family)
+    if selected is None:
+        existing = settings_file_existing_defaults.get(family)
+        if existing is not None and existing != ucode_last_written_defaults.get(family):
+            return existing
+        selected = ucode_defaults.get(family)
+    if selected is None:
         return None
-    if family in ("opus", "sonnet"):
-        return _maybe_add_1m_suffix(selected_default_model)
-    return selected_default_model
+    if add_1m_suffix and family in ("opus", "sonnet"):
+        selected = _maybe_add_1m_suffix(selected)
+    if enforced_models is not None and selected.split("[", 1)[0] not in enforced_models:
+        return None
+    return selected
 
 
 def add_claude_mcp_server(
@@ -619,6 +708,182 @@ def remove_claude_mcp_server(name: str, scope: str) -> bool:
         raise RuntimeError(f"Failed to remove MCP server '{name}' via claude CLI.") from exc
 
 
+def user_stdio_mcp_entry(argv: list[str], *, always_load: bool = False) -> dict:
+    """The user-scope ``mcpServers`` entry that ``claude mcp add ... -- <argv>`` writes.
+
+    Mirrors the CLI's on-disk shape so a batched direct write is what the CLI would have produced:
+    a plain stdio server carries an empty ``env`` map, while the skills registry's ``alwaysLoad``
+    entry carries that flag instead (as ``add-json`` writes it)."""
+    entry: dict = {"type": "stdio", "command": argv[0], "args": list(argv[1:])}
+    if always_load:
+        entry["alwaysLoad"] = True
+    else:
+        entry["env"] = {}
+    return entry
+
+
+def claude_mcp_config_path() -> Path:
+    """The file Claude Code reads user-scope ``mcpServers`` from: ``$CLAUDE_CONFIG_DIR/.claude.json``
+    when that env var is set (the ``claude`` CLI honors it), else the default ``~/.claude.json``. ug
+    elsewhere shells out to the CLI, which resolves this itself; a direct write must resolve the same
+    path or it silently writes to a file Claude never reads."""
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(config_dir) / ".claude.json" if config_dir else CLAUDE_MCP_CONFIG_PATH
+
+
+def _read_claude_config_for_rewrite(path: Path) -> dict | None:
+    """Read ``path`` for a full rewrite: ``{}`` when absent, the parsed object when present and
+    valid, and ``None`` when present but not a parseable JSON object — so a caller never overwrites
+    (and destroys) a config it could not read."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
+    """Apply ``add``/``remove`` to Claude's user-scope ``mcpServers`` (``~/.claude.json``, or under
+    ``$CLAUDE_CONFIG_DIR``) in a single read-modify-write, instead of one ``claude mcp`` subprocess
+    per server (each ~0.3-0.8s; a large managed set is otherwise dozens of them run serially). The
+    developer's own servers and every other key in the file are preserved.
+
+    If the file exists but can't be parsed as a JSON object, we must not clobber it, so we defer to
+    the per-server ``claude`` CLI (which edits the file in place) for exactly the changed entries."""
+    path = claude_mcp_config_path()
+    config = _read_claude_config_for_rewrite(path)
+    if config is None:
+        for name in remove:
+            for scope in MCP_CLEANUP_SCOPES:
+                remove_claude_mcp_server(name, scope)
+        for name, entry in add.items():
+            if entry.get("type") == "http":
+                oauth = entry.get("oauth") or {}
+                add_claude_http_mcp_server(
+                    name,
+                    entry["url"],
+                    client_id=oauth.get("clientId", CLAUDE_CODE_OAUTH_CLIENT_ID),
+                    callback_port=oauth.get("callbackPort", MCP_OAUTH_CALLBACK_PORT),
+                )
+            else:
+                add_claude_mcp_server(name, entry, MCP_USER_SCOPE)
+        return
+
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+    for name in remove:
+        servers.pop(name, None)
+    servers.update(add)
+    config["mcpServers"] = servers
+    write_json_file(path, config)
+
+
+def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
+    """Whether Claude's managed MCP servers belong in the OS-managed file rather than user scope.
+
+    The OS-managed ``managedMcpServers`` key is additive (it never touches the developer's own
+    servers) but Claude Code reads it only from a real managed source, and only as a remote HTTP
+    server it can drive OAuth against itself. So it fits only when the platform supports the sudo
+    reconcile, the run is interactive, the developer is not on PAT auth (which needs the stdio
+    proxy), and the workspace publishes the ``claude-code`` OAuth client. Every other case falls back to the user-scope registration."""
+    return (
+        managed_files_supported()
+        and managed_writes_allowed()
+        and not use_pat
+        and oauth_client_available(workspace, CLAUDE_CODE_OAUTH_CLIENT_ID)
+    )
+
+
+def managed_mcp_entry(url: str) -> dict:
+    """A ``managedMcpServers`` entry: a direct HTTP server Claude Code drives OAuth against itself.
+
+    Mirrors :func:`add_claude_http_mcp_server`: the published ``claude-code`` OAuth client and an
+    arbitrary loopback callback port, which ``/oidc`` ignores for loopback redirects."""
+    return {
+        "type": "http",
+        "url": url,
+        "oauth": {
+            "clientId": CLAUDE_CODE_OAUTH_CLIENT_ID,
+            "callbackPort": MCP_OAUTH_CALLBACK_PORT,
+        },
+    }
+
+
+def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
+    """Overwrite ug's ``managedMcpServers`` in Claude's OS-managed file with ``servers``.
+
+    ``servers`` is the freshly resolved managed set keyed by name; an empty map clears the key. The
+    managed file is the source of truth, so this is a wipe-and-rewrite, not a diff. Every other
+    managed key is preserved, including the model configuration ug wrote earlier this run and any
+    admin-authored policy. Returns True when the managed file is the delivery mechanism (written or
+    already current), False when it cannot be used (unsupported platform or a non-interactive run),
+    so the caller routes those servers to the user-scope registration instead."""
+    path = _managed_settings_path()
+    if path is None or not managed_writes_allowed():
+        return False
+    if path.is_symlink():
+        raise RuntimeError(
+            f"Refusing to use Claude Code managed settings through symlink {path}. Replace it "
+            "with a regular file or contact your administrator."
+        )
+    current_text = read_managed_file(path)
+    try:
+        existing = _parse_managed_settings(current_text) if current_text is not None else {}
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Cannot safely update Claude Code managed settings at {path}: {exc}. ucode did not "
+            "modify the file. Repair it or contact your administrator."
+        ) from exc
+    # Nothing managed to clear: never create or rewrite the file just to remove an absent key.
+    if not servers and MANAGED_MCP_SETTINGS_KEY not in existing:
+        return True
+    desired = copy.deepcopy(existing)
+    if servers:
+        desired[MANAGED_MCP_SETTINGS_KEY] = servers
+    else:
+        desired.pop(MANAGED_MCP_SETTINGS_KEY, None)
+    try:
+        reconcile_managed_file(
+            path,
+            _dump_managed_settings(desired),
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[[MANAGED_MCP_SETTINGS_KEY]],
+        )
+    except ManagedFileWriteUnavailable:
+        return False
+    # Preserve the scope the model reconcile recorded (e.g. relay-compatible); an MCP-only write only
+    # refreshes the fingerprint, it does not change how the file relates to the model settings.
+    mark_managed_file_verified(state, "claude", path, scope=managed_file_scope(state, "claude"))
+    return True
+
+
+def read_managed_mcp_urls() -> dict[str, str]:
+    """``{name: url}`` for ug's managed MCP servers in Claude's OS-managed file (empty if none).
+
+    Read-only, for ``ug mcp list`` to tag managed servers now that the managed file is their source
+    of truth rather than ug state."""
+    path = _managed_settings_path()
+    if path is None:
+        return {}
+    try:
+        text = read_managed_file(path)
+        settings = _parse_managed_settings(text) if text else {}
+    except RuntimeError:
+        return {}
+    servers = settings.get(MANAGED_MCP_SETTINGS_KEY)
+    if not isinstance(servers, dict):
+        return {}
+    return {
+        name: entry["url"]
+        for name, entry in servers.items()
+        if isinstance(entry, dict) and isinstance(entry.get("url"), str)
+    }
+
+
 def _register_web_search_mcp(workspace: str, search_model: str, profile: str | None = None) -> bool:
     """Register (or replace) the web_search MCP server in Claude Code's user
     scope via `claude mcp add-json`. Removes any prior entry first so re-runs
@@ -651,7 +916,7 @@ def _web_search_mcp_is_current(state: dict, entry: dict) -> bool:
     """
     if state.get(WEB_SEARCH_MCP_STATE_KEY) != entry:
         return False
-    config = read_json_safe(CLAUDE_MCP_CONFIG_PATH)
+    config = read_json_safe(claude_mcp_config_path())
     servers = config.get("mcpServers")
     return isinstance(servers, dict) and servers.get(WEB_SEARCH_MCP_NAME) == entry
 
@@ -692,12 +957,19 @@ def write_tool_config(
     custom_model: str | None = None,
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
+    picker_catalog: AnthropicModelCatalog | None = None,
 ) -> dict:
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
     # revert would restore that snapshot instead of deleting the file.
     if not is_tool_managed(state, "claude"):
         backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
+    # A managed config makes ug authoritative over the whole custom-header value, so it is
+    # overwritten wholesale; without one, preserve the developer's own pre-existing headers. Reuses
+    # this launch's warm managed-config cache (no extra round trip); a failed fetch degrades to None
+    # (treated as unmanaged), never blocking the write.
+    managed_config_present = refresh_managed_config(state).manifest is not None
+    previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
     # Relayed inference points at a local refresh proxy; its loopback base URL is
     # recorded in state so launch starts the proxy on the matching port.
@@ -718,28 +990,26 @@ def write_tool_config(
         custom_model=custom_model,
         parent_schema=parent_schema,
         static_models=state.get("claude_static_models"),
+        otel_tracing=bool(state.get("claude_otel_tracing")),
+        picker_catalog=picker_catalog,
+        managed_http_headers=state.get("claude_http_headers"),
     )
-    tracing_env_vars = tracing_env(state, "claude")
-    stop_hook_command = claude_tracing_stop_hook_command() if tracing_env_vars else None
-    if tracing_env_vars:
-        overlay["env"]["MLFLOW_CLAUDE_TRACING_ENABLED"] = "true"
-        overlay["env"].update(tracing_env_vars)
-        managed_keys = managed_keys + [["env", key] for key in CLAUDE_TRACING_ENV_KEYS]
-        if stop_hook_command:
-            managed_keys = managed_keys + [["hooks", "Stop"]]
-        else:
-            print_warning(
-                "MLflow tracing env was written, but the `mlflow` CLI could not be located "
-                "to install the Claude Stop hook — traces won't be emitted. Re-run "
-                "`ucode configure tracing`."
-            )
+    source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
+    # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
+    # written by this launch, and remove only previously owned picker keys that no longer apply.
+    stale_picker_keys = [
+        key
+        for key in CLAUDE_MANAGED_PICKER_KEYS
+        if [key] in previous_keys and key not in overlay and (provider or parent_schema)
+    ]
     managed_file_keys = list(managed_keys)
     for path in (
-        [["env", key] for key in CLAUDE_MANAGED_MODEL_ENV_KEYS]
+        [[key] for key in stale_picker_keys]
+        + [["env", key] for key in CLAUDE_MANAGED_MODEL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_CONDITIONAL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_REMOVED_ENV_KEYS]
-        + [["env", key] for key in CLAUDE_TRACING_ENV_KEYS]
-        + [["hooks", "Stop"]]
+        + [["env", key] for key in CLAUDE_OTEL_TRACE_ENV_KEYS]
+        + [["otelHeadersHelper"]]
         + [["hooks", event] for event in ("PreToolUse", "SessionStart", "SubagentStart")]
     ):
         if path not in managed_file_keys:
@@ -747,7 +1017,12 @@ def write_tool_config(
 
     # V2 installs routing hooks in a transient per-launch settings file. Persistent settings must
     # contain no ucode routing hooks; surgically strip legacy ones while preserving user hooks.
-    def _compose(base: dict, *, enforce_model_default_hierarchy: bool) -> dict:
+    def _compose(
+        base: dict,
+        *,
+        enforce_model_default_hierarchy: bool,
+        managed_settings_snapshots: ManagedFileSnapshots | None,
+    ) -> dict:
         base_env = base.get("env")
         existing_custom_headers = (
             base_env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(base_env, dict) else None
@@ -758,45 +1033,66 @@ def write_tool_config(
             settings_file_env = base_env if isinstance(base_env, dict) else {}
             target_env = overlay_for_merge["env"]
             configured_defaults = coding_agent_config_defaults or {}
-            settings_file_existing_defaults = {
-                family: model
-                for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items()
-                if isinstance((model := settings_file_env.get(key)), str)
-            }
-            managed_overlay = state.get(MANAGED_OVERLAY_KEY, {})
-            ucode_defaults = (
-                managed_overlay.get("claude_models") or state.get("claude_models") or {}
-            )
+            if source_scoped_defaults:
+                # The managed map is complete policy for this source: omitted families must not
+                # inherit targets from local settings or live discovery.
+                settings_file_existing_defaults = {}
+                ucode_defaults = {}
+            else:
+                settings_file_existing_defaults = {
+                    family: model
+                    for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items()
+                    if isinstance((model := settings_file_env.get(key)), str)
+                }
+                managed_overlay = state.get(MANAGED_OVERLAY_KEY, {})
+                ucode_defaults = (
+                    managed_overlay.get("claude_models") or state.get("claude_models") or {}
+                )
 
+            enforced_models = overlay_for_merge.get("availableModels")
+            last_applied_env = {}
+            if (
+                managed_settings_snapshots is not None
+                and managed_settings_snapshots.last_applied_by_ug
+            ):
+                last_applied_env = managed_settings_snapshots.last_applied_by_ug.get("env") or {}
+            ucode_last_written_defaults = {
+                family: last_applied_env[key]
+                for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items()
+                if isinstance(last_applied_env.get(key), str)
+            }
             for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items():
                 selected_default_model = _enforce_model_default_hierarchy(
                     family,
                     coding_agent_config_defaults=configured_defaults,
                     settings_file_existing_defaults=settings_file_existing_defaults,
                     ucode_defaults=ucode_defaults,
+                    ucode_last_written_defaults=ucode_last_written_defaults,
+                    enforced_models=enforced_models,
+                    add_1m_suffix=provider is None,
                 )
                 if selected_default_model is None:
                     target_env.pop(key, None)
                 else:
                     target_env[key] = selected_default_model
         merged = deep_merge_dict(base, overlay_for_merge)
+        for key in stale_picker_keys:
+            merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
-        merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
-            existing_custom_headers, overlay_custom_headers
-        )
+        if managed_config_present:
+            # ug owns the whole value under a managed config: overwrite wholesale so a header ug no
+            # longer emits is dropped and no stale or foreign header lingers.
+            merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = overlay_custom_headers
+        else:
+            # No managed config: preserve the developer's own pre-existing headers, replacing only
+            # the header names ug manages.
+            merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
+                existing_custom_headers, overlay_custom_headers
+            )
         # Drop any apiKeyHelper a prior non-relayed launch left in the file; relayed
         # must not carry one (it would outrank the subscription OAuth).
         if relayed:
             merged.pop("apiKeyHelper", None)
-        if tracing_env_vars and stop_hook_command:
-            _upsert_tracing_stop_hook(merged, stop_hook_command)
-        if not tracing_env_vars:
-            env_block = merged.get("env")
-            if isinstance(env_block, dict):
-                for key in CLAUDE_TRACING_ENV_KEYS:
-                    env_block.pop(key, None)
-            # Strip only ucode's tracing Stop hook so user hooks stay intact.
-            _remove_tracing_stop_hook(merged)
         # Prune ucode-managed model env keys we deliberately don't write this run
         # (e.g. ANTHROPIC_MODEL — see render_overlay).
         overlay_env = overlay_for_merge.get("env", {})
@@ -808,21 +1104,52 @@ def write_tool_config(
             for key in CLAUDE_CONDITIONAL_ENV_KEYS:
                 if key not in overlay_env:
                     merged_env.pop(key, None)
+            for key in CLAUDE_OTEL_TRACE_ENV_KEYS:
+                if key not in overlay_env:
+                    merged_env.pop(key, None)
             # deep_merge_dict keeps keys already in the file, so drop the ones ucode no
             # longer writes.
             for key in CLAUDE_REMOVED_ENV_KEYS:
                 merged_env.pop(key, None)
+        if not any(key in overlay_for_merge for key in CLAUDE_MANAGED_PICKER_KEYS):
+            if managed_settings_snapshots is None:
+                for key in CLAUDE_MANAGED_PICKER_KEYS:
+                    merged.pop(key, None)
+            elif managed_settings_snapshots.last_applied_by_ug is not None:
+                last_applied = managed_settings_snapshots.last_applied_by_ug
+                live_picker = [merged.get(key) for key in CLAUDE_MANAGED_PICKER_KEYS]
+                ucode_picker = [last_applied.get(key) for key in CLAUDE_MANAGED_PICKER_KEYS]
+                if live_picker == ucode_picker:
+                    baseline = managed_settings_snapshots.original_before_ug or {}
+                    for key in CLAUDE_MANAGED_PICKER_KEYS:
+                        if key in baseline:
+                            merged[key] = baseline[key]
+                        else:
+                            merged.pop(key, None)
+        if "otelHeadersHelper" not in overlay_for_merge:
+            merged.pop("otelHeadersHelper", None)
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
+    managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
     write_json_file(
         CLAUDE_SETTINGS_PATH,
-        _compose(read_json_safe(CLAUDE_SETTINGS_PATH), enforce_model_default_hierarchy=False),
+        _compose(
+            read_json_safe(CLAUDE_SETTINGS_PATH),
+            enforce_model_default_hierarchy=source_scoped_defaults,
+            managed_settings_snapshots=None,
+        ),
     )
 
     _reconcile_managed_settings(
         state,
-        lambda base: _compose(base, enforce_model_default_hierarchy=provider is None),
+        lambda base: _compose(
+            base,
+            enforce_model_default_hierarchy=(
+                source_scoped_defaults or (provider is None and parent_schema is None)
+            ),
+            managed_settings_snapshots=managed_snapshots,
+        ),
         managed_file_keys,
         relayed,
     )
@@ -913,8 +1240,9 @@ def _reconcile_managed_settings(
     configuration mirrors ucode's settings there. The same compose operation that produced the
     private file is applied to the existing managed file, preserving unrelated IT-authored keys.
 
-    `ug configure` updates gateway-owned fields in this file, but does not generate or modify
-    the `modelPicker` object; an existing picker is retained by the merge.
+    `ug configure` updates gateway-owned fields in this file. It writes the picker
+    (`availableModels`/`modelPicker`) for a static managed list and removes the picker keys it
+    previously wrote when it no longer manages one, leaving an administrator's own picker untouched.
 
     Relayed launches are skipped: they depend on a per-session loopback refresh proxy that only runs
     during `ucode claude`, so a bare `claude` could not reach the gateway anyway.
@@ -999,165 +1327,6 @@ def _preserve_permission_denies(existing: dict, desired: dict) -> None:
         *existing_denies,
         *(rule for rule in desired_denies if rule not in existing_denies),
     ]
-
-
-def _is_tracing_stop_hook(hook: object) -> bool:
-    if not isinstance(hook, dict):
-        return False
-    hook = cast(dict, hook)
-    if hook.get("type") != "command":
-        return False
-    command = hook.get("command")
-    return isinstance(command, str) and command.endswith(CLAUDE_TRACING_STOP_HOOK_SUFFIX)
-
-
-def _remove_tracing_stop_hook(settings: dict) -> None:
-    hooks = settings.get("hooks")
-    if not isinstance(hooks, dict):
-        return
-    stop_entries = hooks.get("Stop")
-    if not isinstance(stop_entries, list):
-        return
-
-    cleaned_entries = []
-    for entry in stop_entries:
-        if not isinstance(entry, dict):
-            cleaned_entries.append(entry)
-            continue
-        hook_list = entry.get("hooks")
-        if not isinstance(hook_list, list):
-            cleaned_entries.append(entry)
-            continue
-        cleaned_hooks = [hook for hook in hook_list if not _is_tracing_stop_hook(hook)]
-        if cleaned_hooks:
-            cleaned_entry = dict(entry)
-            cleaned_entry["hooks"] = cleaned_hooks
-            cleaned_entries.append(cleaned_entry)
-
-    if cleaned_entries:
-        hooks["Stop"] = cleaned_entries
-    else:
-        hooks.pop("Stop", None)
-    if not hooks:
-        settings.pop("hooks", None)
-
-
-def _upsert_tracing_stop_hook(settings: dict, command: str) -> None:
-    _remove_tracing_stop_hook(settings)
-    hooks = settings.get("hooks")
-    if not isinstance(hooks, dict):
-        hooks = {}
-        settings["hooks"] = hooks
-    stop_entries = hooks.get("Stop")
-    if not isinstance(stop_entries, list):
-        stop_entries = []
-        hooks["Stop"] = stop_entries
-    stop_entries.append({"hooks": [{"type": "command", "command": command}]})
-
-
-def ensure_tracing_runtime() -> bool:
-    """Ensure the MLflow tracing runtime is ready: a pinned `mlflow` CLI (3.11.x)
-    installed via `uv tool`, whose absolute path the Stop hook will call.
-
-    Best-effort — warns and returns False if it can't be set up, so
-    `ucode configure tracing` can still finish for other agents."""
-    return _ensure_mlflow_cli()
-
-
-def _parse_mlflow_version(text: str) -> tuple[int, int] | None:
-    match = re.search(r"(\d+)\.(\d+)", text)
-    if not match:
-        return None
-    return int(match.group(1)), int(match.group(2))
-
-
-def _uv_tool_mlflow_path() -> str | None:
-    """Absolute path to the `mlflow` installed by `uv tool`, or None.
-
-    Resolved from `uv tool dir --bin` rather than ``shutil.which`` so a project
-    venv's (possibly wrong-versioned) mlflow can't shadow the one ucode pins —
-    the Stop hook must always run the uv-tool copy."""
-    if not shutil.which("uv"):
-        return None
-    try:
-        result = subprocess.run(
-            ["uv", "tool", "dir", "--bin"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    bin_dir = (result.stdout or "").strip()
-    if result.returncode != 0 or not bin_dir:
-        return None
-    candidate = Path(bin_dir) / "mlflow"
-    return str(candidate) if candidate.exists() else None
-
-
-def _installed_mlflow_version() -> tuple[int, int] | None:
-    """The (major, minor) of the uv-tool `mlflow`, or None if absent."""
-    path = _uv_tool_mlflow_path()
-    if not path:
-        return None
-    try:
-        result = subprocess.run(
-            [path, "--version"], check=False, capture_output=True, text=True, timeout=30
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return _parse_mlflow_version(result.stdout or result.stderr or "")
-
-
-def claude_tracing_stop_hook_command() -> str | None:
-    """The Stop hook command string: the absolute uv-tool `mlflow` invoking its
-    `autolog claude stop-hook` handler. None when mlflow isn't installed.
-
-    Using the absolute path means the hook needs neither `uv` nor a package
-    index at run time (the minimal env Claude runs hooks in lacks UV_INDEX_URL),
-    and can't be shadowed by another mlflow on PATH."""
-    path = _uv_tool_mlflow_path()
-    if not path:
-        return None
-    return f"{path} autolog claude stop-hook"
-
-
-def _ensure_mlflow_cli() -> bool:
-    """Ensure the pinned `mlflow` CLI (3.11.x) is installed via `uv tool`,
-    installing or replacing an out-of-range version when needed."""
-    current = _installed_mlflow_version()
-    if current and MINIMUM_MLFLOW_VERSION <= current < MAXIMUM_MLFLOW_VERSION:
-        return True
-
-    if not shutil.which("uv"):
-        verb = "replace" if current else "install"
-        print_warning(
-            f"Claude tracing needs the `mlflow` CLI ({MLFLOW_CLI_SPEC}), but `uv` is not "
-            f'available to {verb} it. Run `uv tool install "{MLFLOW_CLI_SPEC}"`, then '
-            "re-run `ucode configure tracing`."
-        )
-        return False
-
-    print_note(f"{'Replacing' if current else 'Installing'} the mlflow CLI ({MLFLOW_CLI_SPEC})...")
-    # Always --force: it installs fresh when absent and replaces in place when
-    # present. Keying it on `current` broke when an mlflow existed but its
-    # version couldn't be parsed — uv still errors "Executable already exists".
-    cmd = ["uv", "tool", "install", "--force", MLFLOW_CLI_SPEC]
-    try:
-        subprocess.run(cmd, check=True, timeout=600)
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        print_warning(f"Could not install the mlflow CLI automatically: {exc}")
-        return False
-
-    if not _uv_tool_mlflow_path():
-        print_warning(
-            "Installed mlflow via `uv tool`, but its binary could not be located. "
-            "Re-run `ucode configure tracing`."
-        )
-        return False
-    print_success("mlflow CLI ready")
-    return True
 
 
 def default_model(state: dict) -> str | None:
@@ -1275,16 +1444,6 @@ def _compose_v2_settings(tool_args: list[str]) -> tuple[dict, list[str]]:
     for value in caller_values:
         settings = _merge_claude_settings(settings, _load_caller_settings(value))
     return _merge_claude_settings(settings, read_json_safe(CLAUDE_SETTINGS_PATH)), remaining
-
-
-def _original_launch_model(state: dict) -> str | None:
-    override = state.get("_claude_launch_model")
-    if isinstance(override, str) and override.strip():
-        return override.strip()
-    value = read_json_safe(CLAUDE_USER_SETTINGS_PATH).get("model")
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return default_model(state)
 
 
 def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[str]:
@@ -1405,14 +1564,13 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     if not isinstance(port, int):
         raise RuntimeError("Relayed proxy port was not configured; re-run `ucode claude`.")
 
-    server, cache, client = gateway_proxy.start_proxy(
-        workspace,
-        state.get("profile"),
-        port,
-        token_header=gateway_proxy.AI_GATEWAY_TOKEN_HEADER,
-        force_refresh_near_expiry=False,
-    )
-    # start_proxy falls back to an OS-assigned port when the cached one is taken
+    profile = state.get("profile")
+
+    def token_provider(force_refresh: bool) -> str:
+        return get_databricks_token(workspace, profile, force_refresh=force_refresh)
+
+    server, cache, client = gateway_proxy.start_relay_proxy(workspace, token_provider, port)
+    # start_relay_proxy falls back to an OS-assigned port when the cached one is taken
     # (stale proxy from a killed session). Reconcile settings + state to whatever
     # it actually bound, so Claude Code connects to the live port.
     bound_port = server.server_address[1]
@@ -1454,7 +1612,7 @@ def launch(
     if options.launch_smart_routing and os.name == "nt":
         raise RuntimeError(
             "Smart routing in Claude Code is currently not supported on Windows. "
-            "Please use Codex or disable smart routing."
+            "Please use Codex or launch without --enable-smart-routing."
         )
     if options.launch_smart_routing:
         smart_routing_v2.launch_claude(
@@ -1462,17 +1620,34 @@ def launch(
             tool_args,
             binary=binary,
             user_settings_path=CLAUDE_USER_SETTINGS_PATH,
-            launch_model=_original_launch_model(state),
+            # With no user pin, let Claude resolve its starting model from its own settings.
+            launch_model=options.user_pinned_model,
             compose_settings=_compose_v2_settings,
             launch_model_args=_launch_model_args,
             model_name=_maybe_add_1m_suffix,
         )
         return
-    if workspace:
+    if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
-    if options.claude_launch_model:
-        os.environ["ANTHROPIC_MODEL"] = options.claude_launch_model
-    exec_or_spawn(_build_claude_argv(binary, tool_args))
+    settings_override = None
+    launch_args = list(tool_args)
+    if options.user_pinned_model:
+        os.environ["ANTHROPIC_MODEL"] = options.user_pinned_model
+        settings_override = {"env": {"ANTHROPIC_MODEL": options.user_pinned_model}}
+        launch_args = [
+            *_launch_model_args(tool_args, options.user_pinned_model),
+            *tool_args,
+        ]
+    else:
+        picker_models = state.get("_claude_launch_picker_models")
+        if isinstance(picker_models, list) and picker_models:
+            saved_model = read_json_safe(CLAUDE_USER_SETTINGS_PATH).get("model")
+            if saved_model not in picker_models:
+                # Launch on a valid discovered model without turning it into a managed default or
+                # overwriting the user's saved selection. This also prevents Claude from appending
+                # that stale built-in selection to an otherwise replaced picker.
+                settings_override = {"model": picker_models[0]}
+    exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 
 def validate_cmd(binary: str) -> list[str]:

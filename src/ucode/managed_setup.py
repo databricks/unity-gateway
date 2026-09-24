@@ -219,11 +219,16 @@ def _enabled_agent_payload(tool: str, agent_config: dict) -> dict:
         clean = {k: v for k, v in headers.items() if isinstance(k, str) and isinstance(v, str)}
         if clean:
             config["http_headers"] = clean
+    if agent_config.get("smart_routing_enabled") is True:
+        config["smart_routing"] = {"enabled": True}
     model_config = agent_config.get("model_config")
     if isinstance(model_config, dict):
         payload = _model_config_payload(tool, model_config)
         if payload:
             config.update(payload)
+    tracing_enabled = agent_config.get("otel_tracing_enabled")
+    if isinstance(tracing_enabled, bool):
+        config["tracing"] = {"enabled": tracing_enabled}
 
     entry: dict = {"agent": AGENT_TOOL_TO_ENUM[tool]}
     if config:

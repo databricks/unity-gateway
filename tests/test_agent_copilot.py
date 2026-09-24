@@ -234,3 +234,23 @@ class TestManagedModels:
             "copilot_models": ["system.ai.gpt-5"],
         }
         assert copilot.default_model(state) == "admin-chosen-default"
+
+
+class TestWriteUserMcpServers:
+    def test_batched_add_remove_preserves_other_keys(self, tmp_path, monkeypatch):
+        path = tmp_path / "ucode-mcp-config.json"
+        path.write_text(
+            json.dumps({"other": 1, "mcpServers": {"mine": {"type": "local"}, "gone": {}}})
+        )
+        monkeypatch.setattr(copilot, "COPILOT_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(copilot, "COPILOT_MCP_BACKUP_PATH", tmp_path / "backup.json")
+
+        copilot.write_user_mcp_servers(
+            {"svc": copilot.build_mcp_server_entry(["ug", "mcp-proxy", "u"])}, {"gone"}
+        )
+
+        doc = json.loads(path.read_text())
+        assert doc["other"] == 1
+        assert "gone" not in doc["mcpServers"]
+        assert doc["mcpServers"]["mine"] == {"type": "local"}
+        assert doc["mcpServers"]["svc"]["command"] == "ug"

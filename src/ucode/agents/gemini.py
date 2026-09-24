@@ -13,6 +13,7 @@ from ucode.agent_updates import latest_version_below
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
+    apply_json_mcp_diff,
     backup_existing_file,
     deep_merge_dict,
     parse_dotenv,
@@ -120,6 +121,17 @@ def _ensure_local_settings_selected_type() -> None:
         {"security": {"auth": {"selectedType": "gemini-api-key"}}},
     )
     write_json_file(GEMINI_SETTINGS_PATH, settings)
+
+
+def build_mcp_server_entry(argv: list[str]) -> dict:
+    """The `mcpServers` stdio entry `gemini mcp add <name> <argv> --type stdio` writes."""
+    return {"command": argv[0], "args": list(argv[1:])}
+
+
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
+    """Apply ``add``/``remove`` to Gemini's `mcpServers` (in ug's Gemini home settings) in a single
+    read-modify-write."""
+    apply_json_mcp_diff(GEMINI_SETTINGS_PATH, "mcpServers", add, remove)
 
 
 def render_env_overlay(

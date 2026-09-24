@@ -7,6 +7,11 @@ header. Native gateway discovery instead carries the Databricks credential in
 `Authorization`. The proxy refreshes the applicable header and streams responses
 back verbatim.
 
+With relayed OSS-routing on, the proxy picks per request by the requested model:
+Databricks-hosted ids (system.ai / OSS) take the gateway-auth path while relayed
+subscription models keep the OAuth passthrough, so one Claude Code session can use
+both.
+
 Security invariants (mirroring `databricks.py` token handling):
   - Binds 127.0.0.1 only; never exposed off-host.
   - Never logs header values or bodies. The Databricks token lives in memory,
@@ -24,16 +29,19 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import cast
 
 import httpx
-
-from ucode.databricks import get_databricks_token
 
 # Header we overwrite with the freshly-minted Databricks credential. Any
 # client-supplied value is replaced, so a stale settings.json value can't leak.
 AI_GATEWAY_TOKEN_HEADER = "X-Databricks-AI-Gateway-Token"
 AUTHORIZATION_HEADER = "Authorization"
+# Header that routes a request to a specific Model Provider Service. Dropped when a
+# request is re-routed to a Databricks-hosted model so the gateway serves it directly.
+MODEL_PROVIDER_SERVICE_HEADER = "Databricks-Model-Provider-Service"
 # Hop-by-hop headers must not be forwarded across a proxy.
 HOP_BY_HOP_HEADERS = frozenset(
     h.lower()
@@ -116,13 +124,14 @@ class TokenCache:
 
     def __init__(
         self,
-        workspace: str,
-        profile: str | None,
+        token_provider: Callable[[bool], str],
         *,
         force_refresh_near_expiry: bool = False,
     ) -> None:
-        self._workspace = workspace
-        self._profile = profile
+        # token_provider(force_refresh) mints a fresh token from the same source the
+        # client agent uses, so the proxy authenticates as the same principal (e.g.
+        # a per-user custom-OAuth token, not the default CLI profile).
+        self._token_provider = token_provider
         self._force_refresh_near_expiry = force_refresh_near_expiry
         self._state_lock = threading.Lock()  # guards _token / _expiry (brief)
         self._refresh_lock = threading.Lock()  # single-flights the CLI refresh
@@ -135,7 +144,7 @@ class TokenCache:
 
     def _refresh(self, *, force: bool) -> None:
         """Mint a token and record its expiry."""
-        token = get_databricks_token(self._workspace, self._profile, force_refresh=force)
+        token = self._token_provider(force)
         expiry = _jwt_exp(token) or (time.time() + _DEFAULT_TTL_S)
         with self._state_lock:
             self._token = token
@@ -186,13 +195,46 @@ def forwarded_request_headers(
     handler: BaseHTTPRequestHandler,
     token: str,
     token_header: str = AI_GATEWAY_TOKEN_HEADER,
+    extra_strip: frozenset[str] = frozenset(),
 ) -> dict[str, str]:
-    strip_on_forward = HOP_BY_HOP_HEADERS | {token_header.lower()}
+    strip_on_forward = HOP_BY_HOP_HEADERS | {token_header.lower()} | extra_strip
     headers = {
         key: value for key, value in handler.headers.items() if key.lower() not in strip_on_forward
     }
     headers[token_header] = f"Bearer {token}"
     return headers
+
+
+# On the Databricks-hosted path the gateway credential goes in `Authorization` (so the
+# caller's Anthropic OAuth is replaced), and the swap + MPS headers are dropped so the
+# gateway serves the model directly instead of relaying to the subscription MPS.
+_DATABRICKS_ROUTE_STRIP = frozenset(
+    {AI_GATEWAY_TOKEN_HEADER.lower(), MODEL_PROVIDER_SERVICE_HEADER.lower()}
+)
+
+
+def is_databricks_routed_model(model: str | None) -> bool:
+    """True when ``model`` is a Databricks-hosted (gateway-served) id rather than a model
+    the relayed Anthropic subscription serves.
+
+    Databricks ids are namespace-qualified (``system.ai.*``, ``catalog.schema.model``,
+    ``databricks-*``); the relayed subscription uses Anthropic's bare canonical names
+    (``claude-opus-4-1``, ``claude-sonnet-4-5``, ...), which never carry a dot."""
+    if not model:
+        return False
+    return "." in model or model.startswith("databricks-")
+
+
+def _request_model(body: bytes | None) -> str | None:
+    """The ``model`` field of a JSON request body, or None when absent/unparseable."""
+    if not body:
+        return None
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    model = payload.get("model") if isinstance(payload, dict) else None
+    return model if isinstance(model, str) else None
 
 
 class _ProxyHandler(BaseHTTPRequestHandler):
@@ -212,21 +254,32 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         except OSError:
             pass
 
+    def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
+        return self.token_header, frozenset(), "forward"
+
     def _handle(self) -> None:
         diagnostic_id = uuid.uuid4().hex[:12]
         started = time.monotonic()
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else None
         url = self.path.lstrip("/")
+        token_header, extra_strip, route_label = self._forward_target(body)
         log_proxy_diagnostic(
             "request_start",
             request_id=diagnostic_id,
             method=self.command,
             path=self.path.split("?", 1)[0],
+            route=route_label,
         )
+
+        def request_headers() -> dict[str, str]:
+            return forwarded_request_headers(
+                self, self.cache.token, token_header, extra_strip=extra_strip
+            )
+
         try:
             # First attempt with the current token.
-            headers = forwarded_request_headers(self, self.cache.token, self.token_header)
+            headers = request_headers()
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
@@ -256,7 +309,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 # which otherwise reads as an Anthropic `/login` prompt and sends the
                 # user to the wrong re-auth. Still retry + relay with the existing token.
                 log_token_refresh_failure(exc)
-            headers = forwarded_request_headers(self, self.cache.token, self.token_header)
+            headers = request_headers()
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
@@ -368,11 +421,21 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         raise AttributeError(name)
 
 
-def start_proxy(
+class _RelayProxyHandler(_ProxyHandler):
+    def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
+        if is_databricks_routed_model(_request_model(body)):
+            return AUTHORIZATION_HEADER, _DATABRICKS_ROUTE_STRIP, "databricks"
+        return self.token_header, frozenset(), "relay"
+
+
+def _start_proxy(
     workspace: str,
-    profile: str | None,
+    token_provider: Callable[[bool], str],
     port: int,
+    *,
+    upstream_path: str,
     token_header: str,
+    handler_type: type[_ProxyHandler],
     force_refresh_near_expiry: bool,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start the loopback refresh proxy + its background token refresher.
@@ -382,24 +445,30 @@ def start_proxy(
     still holds the socket). The caller reads ``server.server_address[1]`` for the
     actual port and points Claude Code at it.
 
+    ``token_provider(force_refresh)`` mints the token from the same source the
+    client agent authenticates with.
+
     Returns (server, cache, client); the caller runs the server (e.g. in a
     thread) and calls shutdown()/cache.stop()/client.close() on exit.
     """
-    upstream_base = f"{workspace.rstrip('/')}/ai-gateway/anthropic/"
-    cache = TokenCache(
-        workspace,
-        profile,
-        force_refresh_near_expiry=force_refresh_near_expiry,
-    )
+    upstream_base = f"{workspace.rstrip('/')}/{upstream_path.lstrip('/')}"
+    cache = TokenCache(token_provider, force_refresh_near_expiry=force_refresh_near_expiry)
     # One pooled, keep-alive client shared across handler threads: reuses TCP+TLS
     # to the gateway instead of a fresh handshake per request. Don't follow
     # redirects — a proxy relays 3xx verbatim.
     client = httpx.Client(base_url=upstream_base, timeout=UPSTREAM_TIMEOUT, follow_redirects=False)
 
-    handler = type(
-        "BoundProxyHandler",
-        (_ProxyHandler,),
-        {"cache": cache, "client": client, "token_header": token_header},
+    handler = cast(
+        type[_ProxyHandler],
+        type(
+            "BoundProxyHandler",
+            (handler_type,),
+            {
+                "cache": cache,
+                "client": client,
+                "token_header": token_header,
+            },
+        ),
     )
     try:
         server = ThreadingHTTPServer(("127.0.0.1", port), handler)
@@ -411,3 +480,36 @@ def start_proxy(
     refresher = threading.Thread(target=cache.run_refresher, daemon=True)
     refresher.start()
     return server, cache, client
+
+
+def start_relay_proxy(
+    workspace: str,
+    token_provider: Callable[[bool], str],
+    port: int,
+) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
+    """Start the Claude subscription relay proxy."""
+    return _start_proxy(
+        workspace,
+        token_provider,
+        port,
+        upstream_path="ai-gateway/anthropic/",
+        token_header=AI_GATEWAY_TOKEN_HEADER,
+        handler_type=_RelayProxyHandler,
+        force_refresh_near_expiry=False,
+    )
+
+
+def start_otel_proxy(
+    workspace: str,
+    token_provider: Callable[[bool], str],
+) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
+    """Start the Codex OTLP proxy on an OS-assigned port."""
+    return _start_proxy(
+        workspace,
+        token_provider,
+        0,
+        upstream_path="ai-gateway/otel/",
+        token_header=AUTHORIZATION_HEADER,
+        handler_type=_ProxyHandler,
+        force_refresh_near_expiry=True,
+    )

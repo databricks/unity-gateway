@@ -63,6 +63,68 @@ class TestForwardedRequestHeaders:
         assert "Content-Length" not in out
         assert "Connection" not in out
 
+    def test_extra_strip_removes_named_headers(self):
+        handler = _FakeHandler({"Databricks-Model-Provider-Service": "cat.s.mps", "Keep": "me"})
+        out = gateway_proxy.forwarded_request_headers(
+            handler, "t", extra_strip=frozenset({"databricks-model-provider-service"})
+        )
+        assert "Databricks-Model-Provider-Service" not in out
+        assert out["Keep"] == "me"
+
+    def test_databricks_route_swaps_authorization_and_drops_relay_headers(self):
+        # OSS path: the Databricks token replaces the caller's OAuth in Authorization, and
+        # the swap + MPS headers are dropped so the gateway serves the model directly.
+        handler = _FakeHandler(
+            {
+                "Authorization": "Bearer anthropic-oauth",
+                "X-Databricks-AI-Gateway-Token": "Bearer stale-swap",
+                "Databricks-Model-Provider-Service": "cat.s.relayed_mps",
+            }
+        )
+        out = gateway_proxy.forwarded_request_headers(
+            handler,
+            "dbx-token",
+            gateway_proxy.AUTHORIZATION_HEADER,
+            extra_strip=gateway_proxy._DATABRICKS_ROUTE_STRIP,
+        )
+        assert out["Authorization"] == "Bearer dbx-token"
+        assert "X-Databricks-AI-Gateway-Token" not in out
+        assert "Databricks-Model-Provider-Service" not in out
+
+
+class TestIsDatabricksRoutedModel:
+    def test_namespace_qualified_ids_route_to_databricks(self):
+        for model in (
+            "system.ai.claude-opus-4-8",
+            "system.ai.gpt-oss-120b",
+            "my_catalog.my_schema.my_model",
+            "databricks-meta-llama-3-3-70b-instruct",
+        ):
+            assert gateway_proxy.is_databricks_routed_model(model), model
+
+    def test_bare_anthropic_ids_relay(self):
+        for model in ("claude-opus-4-1", "claude-sonnet-4-5", "claude-3-7-sonnet-20250219"):
+            assert not gateway_proxy.is_databricks_routed_model(model), model
+
+    def test_missing_model_relays(self):
+        assert not gateway_proxy.is_databricks_routed_model(None)
+        assert not gateway_proxy.is_databricks_routed_model("")
+
+
+class TestRequestModel:
+    def test_extracts_model_from_json_body(self):
+        assert gateway_proxy._request_model(b'{"model": "system.ai.x", "n": 1}') == "system.ai.x"
+
+    def test_none_for_missing_body(self):
+        assert gateway_proxy._request_model(None) is None
+
+    def test_none_for_invalid_json(self):
+        assert gateway_proxy._request_model(b"not json") is None
+
+    def test_none_for_non_object_or_non_string_model(self):
+        assert gateway_proxy._request_model(b"[1, 2]") is None
+        assert gateway_proxy._request_model(b'{"model": 5}') is None
+
 
 class _FakeResponse:
     """Stand-in for httpx.Response exposing only what `_relay_response` reads."""
@@ -217,55 +279,57 @@ class TestJwtExp:
         assert gateway_proxy._jwt_exp("not-a-jwt") is None
 
 
-def _install_fake_token(monkeypatch, exp_offsets, delay=0.0):
-    """Patch get_databricks_token to hand out JWTs whose exp is now+offset, one
-    per successive mint (last offset repeats). Records the force flag of each."""
-    state = {"i": 0, "forces": []}
+def _fake_token_provider(exp_offsets, delay=0.0):
+    """Build a ``token_provider(force)`` that hands out JWTs whose exp is now+offset,
+    one per successive mint (last offset repeats), recording each force flag. Set
+    ``state['raise'] = True`` to make subsequent mints fail."""
+    state = {"i": 0, "forces": [], "raise": False}
 
-    def fake(_ws, _profile, force_refresh=False):
+    def provider(force_refresh=False):
         if delay:
             time.sleep(delay)
+        if state["raise"]:
+            raise RuntimeError("mint failed")
         off = exp_offsets[min(state["i"], len(exp_offsets) - 1)]
         state["i"] += 1
         state["forces"].append(force_refresh)
         return _make_jwt(time.time() + off)
 
-    monkeypatch.setattr(gateway_proxy, "get_databricks_token", fake)
-    return state
+    return state, provider
 
 
 class TestTokenCache:
-    def test_initial_mint_preserves_default_nonforce_refresh(self, monkeypatch):
-        state = _install_fake_token(monkeypatch, [5000])
-        gateway_proxy.TokenCache("ws", None)
+    def test_initial_mint_preserves_default_nonforce_refresh(self):
+        state, provider = _fake_token_provider([5000])
+        gateway_proxy.TokenCache(provider)
         assert state["forces"] == [False]
 
-    def test_fresh_token_is_not_refreshed(self, monkeypatch):
-        state = _install_fake_token(monkeypatch, [5000])
-        cache = gateway_proxy.TokenCache("ws", None)
+    def test_fresh_token_is_not_refreshed(self):
+        state, provider = _fake_token_provider([5000])
+        cache = gateway_proxy.TokenCache(provider)
         _ = cache.token
         _ = cache.token
         assert state["forces"] == [False]  # no extra mint while fresh
 
-    def test_near_expiry_preserves_default_nonforce_refresh(self, monkeypatch):
-        state = _install_fake_token(monkeypatch, [100, 5000])
-        cache = gateway_proxy.TokenCache("ws", None)
+    def test_near_expiry_preserves_default_nonforce_refresh(self):
+        state, provider = _fake_token_provider([100, 5000])
+        cache = gateway_proxy.TokenCache(provider)
         _ = cache.token
         assert state["forces"] == [False, False]
         _ = cache.token  # now fresh again
         assert state["forces"] == [False, False]
 
-    def test_near_expiry_can_force_refresh(self, monkeypatch):
-        state = _install_fake_token(monkeypatch, [100, 5000])
-        cache = gateway_proxy.TokenCache("ws", None, force_refresh_near_expiry=True)
+    def test_near_expiry_can_force_refresh(self):
+        state, provider = _fake_token_provider([100, 5000])
+        cache = gateway_proxy.TokenCache(provider, force_refresh_near_expiry=True)
         _ = cache.token
         assert state["forces"] == [True, True]
 
-    def test_refresh_is_single_flighted(self, monkeypatch):
+    def test_refresh_is_single_flighted(self):
         # A burst of concurrent requests at the expiry boundary must trigger ONE
         # refresh, not a thundering herd on the shared token cache.
-        state = _install_fake_token(monkeypatch, [100, 5000], delay=0.05)
-        cache = gateway_proxy.TokenCache("ws", None, force_refresh_near_expiry=True)
+        state, provider = _fake_token_provider([100, 5000], delay=0.05)
+        cache = gateway_proxy.TokenCache(provider, force_refresh_near_expiry=True)
         threads = [threading.Thread(target=lambda: cache.token) for _ in range(10)]
         for t in threads:
             t.start()
@@ -274,22 +338,19 @@ class TestTokenCache:
         # 1 forced init + exactly 1 forced refresh shared by all 10 readers.
         assert state["forces"] == [True, True]
 
-    def test_ensure_fresh_keeps_token_when_refresh_fails(self, monkeypatch):
-        _install_fake_token(monkeypatch, [5000])
-        cache = gateway_proxy.TokenCache("ws", None)
+    def test_ensure_fresh_keeps_token_when_refresh_fails(self):
+        state, provider = _fake_token_provider([5000])
+        cache = gateway_proxy.TokenCache(provider)
         good = cache.token
 
-        def boom(*_a, **_k):
-            raise RuntimeError("mint failed")
-
-        monkeypatch.setattr(gateway_proxy, "get_databricks_token", boom)
+        state["raise"] = True  # subsequent mints fail
         # Force staleness so _ensure_fresh attempts a refresh, which now fails.
         cache._expiry = time.time()
         assert cache.token == good  # last good token retained, no exception
 
     def test_refresher_loop_survives_unexpected_error(self, monkeypatch):
-        _install_fake_token(monkeypatch, [5000])
-        cache = gateway_proxy.TokenCache("ws", None)
+        _state, provider = _fake_token_provider([5000])
+        cache = gateway_proxy.TokenCache(provider)
         monkeypatch.setattr(gateway_proxy, "_REFRESHER_POLL_S", 0.01)
         ticks = []
 
@@ -328,9 +389,11 @@ class _FakeClient:
     def __init__(self, responses):
         self._responses = list(responses)
         self.sent_tokens: list[str | None] = []
+        self.sent_headers: list[dict] = []
 
     def stream(self, _method, _url, headers, content):
         self.sent_tokens.append(headers.get(gateway_proxy.AI_GATEWAY_TOKEN_HEADER))
+        self.sent_headers.append(headers)
         return self._responses.pop(0)
 
 
@@ -445,10 +508,13 @@ class TestStartProxyPortFallback:
             def run_refresher(self):
                 return None
 
+            def stop(self):
+                return None
+
         monkeypatch.setattr(
             gateway_proxy,
             "TokenCache",
-            lambda workspace, profile, **_kwargs: _StubCache(),
+            lambda token_provider, **_kwargs: _StubCache(),
         )
         # Occupy a port to simulate the leftover proxy holding it.
         occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -457,12 +523,10 @@ class TestStartProxyPortFallback:
         occupied.listen(1)
         busy_port = occupied.getsockname()[1]
         try:
-            server, _cache, client = gateway_proxy.start_proxy(
+            server, _cache, client = gateway_proxy.start_relay_proxy(
                 "https://x.staging.cloud.databricks.com",
-                None,
+                lambda _force: "tok",
                 busy_port,
-                token_header=gateway_proxy.AI_GATEWAY_TOKEN_HEADER,
-                force_refresh_near_expiry=False,
             )
             try:
                 bound = server.server_address[1]
@@ -473,3 +537,60 @@ class TestStartProxyPortFallback:
                 client.close()
         finally:
             occupied.close()
+
+
+def _relayed_oss_handler(client, cache, wfile, *, headers, body) -> gateway_proxy._ProxyHandler:
+    h = object.__new__(gateway_proxy._RelayProxyHandler)
+    h.client = client
+    h.cache = cache
+    h.token_header = gateway_proxy.AI_GATEWAY_TOKEN_HEADER
+    hdrs = dict(headers)
+    hdrs["Content-Length"] = str(len(body))
+    h.headers = hdrs
+    h.rfile = io.BytesIO(body)
+    h.path = "/v1/messages"
+    h.command = "POST"
+    h.wfile = wfile
+    h.request_version = "HTTP/1.1"
+    h.requestline = "POST /v1/messages HTTP/1.1"
+    h._headers_buffer = []
+    return h
+
+
+class TestRelayedOssRouting:
+    _CLIENT_HEADERS = {
+        "Authorization": "Bearer anthropic-oauth",
+        "Databricks-Model-Provider-Service": "cat.s.relayed_mps",
+    }
+
+    def test_databricks_model_routes_to_gateway_auth(self):
+        # A Databricks-hosted model with relayed OSS-routing on: the gateway token
+        # replaces the OAuth in Authorization, and the swap + MPS headers are dropped.
+        client = _FakeClient([_FakeResp(200, b"ok")])
+        _relayed_oss_handler(
+            client,
+            _FakeCache(),
+            _Collect(),
+            headers=self._CLIENT_HEADERS,
+            body=b'{"model": "system.ai.gpt-oss-120b"}',
+        )._handle()
+        sent = client.sent_headers[0]
+        assert sent["Authorization"] == "Bearer tok1"
+        assert gateway_proxy.AI_GATEWAY_TOKEN_HEADER not in sent
+        assert "Databricks-Model-Provider-Service" not in sent
+
+    def test_relayed_model_keeps_oauth_passthrough(self):
+        # A subscription model still relays: the OAuth is untouched, the swap header
+        # carries the Databricks token, and the MPS header is preserved.
+        client = _FakeClient([_FakeResp(200, b"ok")])
+        _relayed_oss_handler(
+            client,
+            _FakeCache(),
+            _Collect(),
+            headers=self._CLIENT_HEADERS,
+            body=b'{"model": "claude-opus-4-1"}',
+        )._handle()
+        sent = client.sent_headers[0]
+        assert sent["Authorization"] == "Bearer anthropic-oauth"
+        assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
+        assert sent["Databricks-Model-Provider-Service"] == "cat.s.relayed_mps"

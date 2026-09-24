@@ -20,7 +20,7 @@ on:
         default: ug
       claude_version:
         description: Exact Claude Code version
-        default: 2.1.268
+        default: 2.1.280
         required: true
       codex_version:
         description: Exact Codex version
@@ -46,7 +46,7 @@ env:
   EXPECTED_WORKSPACE: https://eng-ml-inference-team-us-east-1.cloud.databricks.com
   UG_VERSION: ${{ inputs.ug_version || 'checkout' }}
   ENTRY_POINT: ${{ inputs.entry_point || 'ug' }}
-  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.268' }}
+  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.280' }}
   CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
 
@@ -135,6 +135,8 @@ jobs:
         with:
           version: 0.9.8
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+        with:
+          version: 1.17.0
       - name: Run the selected live cases against the e2e workspace
         shell: bash
         run: |
@@ -181,6 +183,7 @@ jobs:
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: ${{ inputs.suite == 'tui' && 'live and tui' || 'live' }} and ${{ matrix.agent }}
@@ -191,10 +194,6 @@ jobs:
     name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
     if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && inputs.suite != 'tui' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-22.04
-    # Temporarily non-blocking: the managed e2e workspace is not yet reachable from CI runners
-    # (token mint returns 403). Keep the job running for signal, but do not fail the workflow or
-    # gate merges on it until that workspace access is sorted.
-    continue-on-error: true
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -216,6 +215,8 @@ jobs:
         with:
           version: 0.9.8
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+        with:
+          version: 1.17.0
       - name: Run the managed cases against the managed e2e workspace
         shell: bash
         env:
@@ -224,18 +225,21 @@ jobs:
           UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
           DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
           DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
+          UG_MPS_DEFAULTS_CLIENT_SECRET: ${{ matrix.agent == 'claude' && secrets.UG_MPS_DEFAULTS_CLIENT_SECRET || '' }}
+          UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET: ${{ matrix.agent == 'claude' && secrets.UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET || '' }}
+          UCODE_TEST_SECOND_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_SECOND_BEARER: ${{ secrets.DATABRICKS_BEARER }}
         run: |
-          case "$AGENT" in
-            claude) args=(--claude-version "$CLAUDE_VERSION") ;;
-            codex) args=(--codex-version "$CODEX_VERSION") ;;
-          esac
+          # A managed config enables both agents and `ug configure` applies it to every enabled
+          # agent, so both CLIs must be installed even though this lane asserts only one agent.
+          args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION")
           if [[ -n "$DEPENDENCY" ]]; then
             args+=(--dependency "$DEPENDENCY")
           fi
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${args[@]}" -- -m "managed and $AGENT"
+            "${args[@]}" -- -m "(managed or managed_fixture or workspace_switch) and $AGENT"
       - name: Upload managed test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -252,8 +256,8 @@ jobs:
 
   cujs:
     name: All integration tests
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, workspace, smoke, full]
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs: [installation, workspace, smoke, full, managed]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -274,7 +278,8 @@ jobs:
                   required.append("smoke")
               if suite != "smoke":
                   required.append("full")
-          # `managed` is intentionally omitted while it is non-blocking (see its job comment).
+          if suite in {"full", "live"}:
+              required.append("managed")
           failed = [job for job in required if results[job]["result"] != "success"]
           if failed:
               raise SystemExit("Integration jobs did not pass: " + ", ".join(failed))

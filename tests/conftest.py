@@ -50,6 +50,10 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         managed_files_mod, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
     )
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
+    monkeypatch.setattr(
+        codex_mod, "CODEX_MODEL_CATALOG_PATH", state_dir / "codex-model-catalog.json"
+    )
+    monkeypatch.setattr(codex_mod, "CODEX_CONFIG_PATH", tmp_path / ".codex" / "ucode.config.toml")
 
     def reject_privileged_write(path, _desired_text):
         pytest.fail(
@@ -65,6 +69,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # The model-services listing is memoized for the life of the process, so without this a cached
     # result would leak into the next test and make a stubbed listing look like it was never called.
     databricks_mod.clear_model_services_cache()
+    databricks_mod.clear_workspace_org_id_cache()
 
 
 def _workspace() -> str:

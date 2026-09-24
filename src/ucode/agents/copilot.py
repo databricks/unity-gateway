@@ -23,6 +23,7 @@ from pathlib import Path
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
+    apply_json_mcp_diff,
     backup_existing_file,
     parse_dotenv,
     read_json_safe,
@@ -140,6 +141,13 @@ def remove_mcp_server_config(name: str) -> bool:
     existing["mcpServers"] = mcp_servers
     write_json_file(COPILOT_MCP_CONFIG_PATH, existing)
     return True
+
+
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
+    """Apply ``add``/``remove`` to Copilot's `mcpServers` in a single read-modify-write."""
+    apply_json_mcp_diff(
+        COPILOT_MCP_CONFIG_PATH, "mcpServers", add, remove, backup_path=COPILOT_MCP_BACKUP_PATH
+    )
 
 
 def write_tool_config(

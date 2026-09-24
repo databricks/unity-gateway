@@ -52,6 +52,9 @@ from ucode.ui import normalize_workspace_url
 # happened to list first. Hardcoded on purpose.
 CI_ANTHROPIC_MPS = "main.ucode.ci_e2e_anthropic_nonrelay_mps"  # api-key Anthropic (for claude)
 CI_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+CI_ANTHROPIC_RELAY_MPS = (
+    "main.ucode.ci_e2e_anthropic_relay_mps"  # subscription-relay Anthropic (for claude)
+)
 CI_OPENAI_MPS = "main.ucode.ci_openai_mps"  # api-key OpenAI (for codex)
 CI_OPENAI_MODEL = "gpt-5-nano"
 
@@ -421,12 +424,17 @@ E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     "grok": frozenset({"codex", "copilot", "pi"}),
     # These Gemini endpoints hang OpenCode well past its E2E timeout.
     "databricks-gemini-3-1-flash-lite": frozenset({"opencode"}),
-    # Codex-tuned and newer GPT endpoints do not support Copilot's MLflow chat route.
+    # These endpoints do not support Copilot's MLflow chat route.
     "-codex": frozenset({"copilot"}),
     "gpt-5-5": frozenset({"copilot"}),
-    "gpt-5-6": frozenset({"copilot"}),
-    # Astra has limited allowance in production and will hit 429s if tested.
-    "astra": frozenset({"codex", "copilot", "pi", "web_search"}),
+    # Copilot's chat-completions route cannot combine reasoning with function tools for these
+    # models. Pi also fails against the Luna and Sol variants.
+    "gpt-5-6-luna": frozenset({"copilot", "pi"}),
+    "gpt-5-6-sol": frozenset({"copilot", "pi"}),
+    "gpt-5-6-terra": frozenset({"copilot"}),
+    "gpt-6-astra": frozenset({"copilot"}),
+    "gpt-6-luna": frozenset({"copilot", "pi"}),
+    "gpt-6-sol": frozenset({"copilot", "pi"}),
 }
 
 
@@ -572,20 +580,6 @@ class TestModelProviderLaunch:
     """
 
     @staticmethod
-    def _first_relayed_service(tool: str, workspace: str, token: str) -> str:
-        services, reason = list_model_provider_services(workspace, token)
-        if is_model_provider_feature_unavailable(reason):
-            pytest.skip("Model Provider Service feature not enabled on this workspace")
-        if reason is not None:
-            pytest.skip(f"could not list provider services: {reason}")
-        names = [
-            s["name"] for s in services if service_usable_for_tool(tool, s) and s.get("relayed")
-        ]
-        if not names:
-            pytest.skip(f"no relayed {tool} model provider services available on this workspace")
-        return names[0]
-
-    @staticmethod
     def _skip_if_provider_unusable(combined: str, provider: str) -> None:
         # Environmental provider-account conditions, not ucode bugs: the test only proves routing
         # reaches the provider, so skip (rather than fail) when the account lacks a grant on the
@@ -708,27 +702,25 @@ class TestModelProviderLaunch:
             pytest.skip(
                 "set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) to run the relayed launch"
             )
-        provider = self._first_relayed_service("claude", e2e_workspace, e2e_token)
+        provider = CI_ANTHROPIC_RELAY_MPS
+        _, error, _relayed = resolve_provider_models(
+            "claude", {**e2e_state, "workspace": e2e_workspace}, provider
+        )
+        if error is not None:
+            pytest.skip(
+                f"CI relayed Anthropic MPS {provider} unavailable on this workspace: {error}"
+            )
 
         config_dir = tmp_path / "claude_config"
         config_dir.mkdir()
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", config_dir / "settings.json")
         monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "claude-settings.backup.json")
-        # The proxy mints the Databricks swap token; feed it the e2e bearer rather
-        # than shelling out to the CLI, matching the other launch tests.
-        monkeypatch.setattr(
-            gateway_proxy, "get_databricks_token", lambda ws, profile=None, **kwargs: e2e_token
-        )
-
-        # Start the real loopback refresh proxy exactly as `_launch_relayed` does,
-        # so the request is credential-swapped and relayed like a live session.
-        server, cache, client = gateway_proxy.start_proxy(
-            e2e_workspace,
-            None,
-            0,
-            token_header=gateway_proxy.AI_GATEWAY_TOKEN_HEADER,
-            force_refresh_near_expiry=False,
+        # Start the real loopback refresh proxy exactly as `_launch_relayed` does, so
+        # the request is credential-swapped and relayed like a live session. The token
+        # provider feeds the e2e bearer rather than shelling out to the CLI.
+        server, cache, client = gateway_proxy.start_relay_proxy(
+            e2e_workspace, lambda _force: e2e_token, 0
         )
         port = server.server_address[1]
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -1158,9 +1150,23 @@ class TestCopilotLaunch:
             out.append(("codex", model))
         return out
 
-    def test_astra_is_skipped(self):
-        state = {"codex_models": ["databricks-gpt-6-astra", "databricks-gpt-5-4"]}
-        assert self._all_models(state) == [("codex", "databricks-gpt-5-4")]
+    def test_incompatible_models_are_skipped(self):
+        state = {
+            "codex_models": [
+                "databricks-gpt-5-6-luna",
+                "databricks-gpt-5-6-sol",
+                "databricks-gpt-5-6-terra",
+                "databricks-gpt-6-astra",
+                "databricks-gpt-6-luna",
+                "databricks-gpt-6-sol",
+                "databricks-gpt-5-4",
+                "databricks-gpt-5-6",
+            ]
+        }
+        assert self._all_models(state) == [
+            ("codex", "databricks-gpt-5-4"),
+            ("codex", "databricks-gpt-5-6"),
+        ]
 
     def test_launch_copilot_per_model(
         self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
@@ -1223,8 +1229,16 @@ class TestPiLaunch:
             out.append(("gemini", model))
         return out
 
-    def test_astra_is_skipped(self):
-        state = {"codex_models": ["databricks-gpt-6-astra", "databricks-gpt-5-4"]}
+    def test_incompatible_models_are_skipped(self):
+        state = {
+            "codex_models": [
+                "databricks-gpt-5-6-luna",
+                "databricks-gpt-5-6-sol",
+                "databricks-gpt-6-luna",
+                "databricks-gpt-6-sol",
+                "databricks-gpt-5-4",
+            ]
+        }
         assert self._all_models(state) == [("codex", "databricks-gpt-5-4")]
 
     def test_launch_pi_per_model(self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token):
@@ -1305,9 +1319,9 @@ def _first_codex_model(e2e_state: dict) -> str:
     return models[0]
 
 
-def test_web_search_skips_astra():
+def test_web_search_supports_astra():
     state = {"codex_models": ["databricks-gpt-6-astra", "databricks-gpt-5-4"]}
-    assert _first_codex_model(state) == "databricks-gpt-5-4"
+    assert _first_codex_model(state) == "databricks-gpt-6-astra"
 
 
 class TestWebSearchResponsesApi:

@@ -97,9 +97,8 @@ def _without_managed_overlay(state: dict) -> dict:
 def set_current_workspace(workspace: str | None) -> None:
     """Set ``current_workspace`` without touching the per-workspace blocks.
 
-    Used by flows like ``configure tracing`` that operate on a non-current
-    workspace and must not silently change which workspace ``ucode launch``
-    targets afterwards."""
+    Used by flows that operate on a non-current workspace and must not silently
+    change which workspace ``ucode launch`` targets afterwards."""
     if is_dry_run():
         return
     full = load_full_state()
