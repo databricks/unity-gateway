@@ -894,8 +894,10 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
       Claude CLI, PAT auth, or a workspace without the OAuth client), plus every non-Claude/Codex
       MCP client, which keeps its existing behavior.
 
-    Returns the servers resolved this run. Raises ``RuntimeError`` on a discovery failure; the caller
-    keeps it best-effort.
+    Returns the servers resolved this run. Propagates the distinct
+    :class:`McpServiceListingRateLimited` when discovery is rate-limited (HTTP 429), so the caller
+    can skip MCP setup for the run without treating it as a hard failure; any other discovery
+    failure raises plain ``RuntimeError``. Either way the caller keeps it best-effort.
     """
     selector = managed.get("mcp_servers")
     selector = selector if isinstance(selector, dict) else {}
@@ -1432,8 +1434,10 @@ def _resolve_location_mcp_servers(
     Strict replacement for mcp-services: the returned list is exactly the ones
     discovered at ``location`` (any previously-registered mcp-service outside it
     is removed by ``apply_mcp_server_changes``), plus any existing skills
-    connection, preserved untouched. Raises ``RuntimeError`` for an invalid
-    location (HTTP 404 from the listing API) or any other listing failure.
+    connection, preserved untouched. Raises the distinct
+    :class:`McpServiceListingRateLimited` when discovery is rate-limited (HTTP 429) so callers can
+    skip gracefully, and plain ``RuntimeError`` for an invalid location (HTTP 404 from the listing
+    API) or any other listing failure.
 
     When ``services`` is given, the discovered set is narrowed to exactly that
     subset (matched by full name like ``system.ai.github`` or bare short name
