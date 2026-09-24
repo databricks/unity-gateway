@@ -2077,6 +2077,36 @@ def build_mcp_service_url(workspace: str, full_name: str) -> str:
     return f"{workspace}{AIGW_MCP_SERVICES_SEGMENT}{full_name}"
 
 
+# Connection securable kinds that use per-user OAuth (U2M): the mcp-service only vends its tools
+# after a one-time per-user sign-in to the backing SaaS. Mirrors the webapp's
+# `hasGenericAccessTokenFlowKnownKinds`. A service with no source connection (e.g.
+# `system.ai.web_search`) needs no sign-in — just the Databricks token.
+OAUTH_U2M_CONNECTION_KINDS = frozenset(
+    {
+        "CONNECTION_HTTP_OAUTH_U2M_MAPPING",
+        "CONNECTION_HTTP_DCR",
+        "CONNECTION_SLACK_OAUTH_U2M_MAPPING",
+    }
+)
+
+
+def mcp_service_needs_connection_login(workspace: str, token: str, full_name: str) -> bool:
+    """Whether an AI Gateway mcp-service is backed by a per-user OAuth (U2M) connection, and so
+    needs a one-time connection sign-in before it vends tools.
+
+    Reads the service's ``config.source_connection.securable_kind`` via a per-service GET (the
+    listing omits it). No source connection (e.g. ``system.ai.web_search``), a non-U2M kind, or a
+    failed lookup all return ``False`` — the safe default: such services work with only the
+    Databricks token that ``ug mcp-proxy`` injects, and must not be pushed into a connection-login
+    OAuth flow they can't complete (AIGTWY-4856)."""
+    prefix = f"https://{workspace_hostname(workspace)}/api/2.1/unity-catalog"
+    details, err = _http_get_json(f"{prefix}/mcp-services/{quote(full_name, safe='')}", token)
+    if err is not None or not isinstance(details, dict):
+        return False
+    kind = ((details.get("config") or {}).get("source_connection") or {}).get("securable_kind")
+    return kind in OAUTH_U2M_CONNECTION_KINDS
+
+
 def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
     """Skills route with one ``?schema=`` scope per location. The trailing slash
     is required by the Envoy prefix even with no query params.
