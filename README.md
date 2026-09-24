@@ -73,6 +73,26 @@ ug removes its shared reference on discovery/validation failure, reconfiguration
 revert, or before installing/updating Codex. After an update, run `ug codex` to refresh
 discovery or `ug configure` for a managed static list, then restart the app server.
 
+For OpenCode, select a model for one launch with `--model` (or `-m`):
+
+```bash
+ug opencode --model system.ai.grok-4-6
+ug opencode --model system.ai.qwen35-122b-a10b
+```
+
+OpenCode discovery is curated. For an undiscovered Unity Catalog model, `ug`
+looks up the model service directly and requires it to advertise
+`mlflow/v1/responses` or `mlflow/v1/chat/completions`. It prefers Responses and
+falls back to Chat Completions for chat-only services. Lookup or protocol errors
+stop launch instead of selecting the default. This does not change saved discovery
+or defaults; repeat `--model` on subsequent launches. Metadata validation does not
+guarantee streaming tool-call support or compatible token limits; those depend on
+the model and endpoint.
+
+OpenCode's `provider/model` form also works, including user-owned providers
+(for example, `ug opencode --model my-provider/my-model`). OpenCode validates
+user-owned provider selections. `ucode opencode` accepts the same options.
+
 ## Configure
 
 ```bash
@@ -191,6 +211,11 @@ with `ug configure` to control installation.
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
 | Cursor Agent | `~/.cursor/mcp.json` |
 | Unity Gateway | `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
+
+Each OpenCode launch regenerates the ug-managed `databricks-*` provider entries;
+manual edits inside those entries are overwritten. Use `--model` for an explicit
+Databricks model, or add a provider with a separate name for custom OpenCode
+configuration. Unmanaged provider entries are preserved.
 
 ## Development
 

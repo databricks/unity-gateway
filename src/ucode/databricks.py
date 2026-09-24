@@ -1505,6 +1505,8 @@ _MODEL_TOKEN_LIMITS: dict[str, dict[str, int]] = {
     # GLM-4.6: 200k context, but the gateway caps output well below the model's
     # native 128k — pin 25k so requests aren't rejected.
     "glm": {"context": 200_000, "output": 25_000},
+    # Qwen3.5's serving runtime caps output at 25k despite its 256k context window.
+    "qwen35-122b-a10b": {"context": 262_144, "output": 25_000},
 }
 
 

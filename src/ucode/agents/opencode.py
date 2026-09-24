@@ -22,6 +22,7 @@ from ucode.databricks import (
     build_auth_token_argv,
     build_opencode_base_urls,
     get_databricks_token,
+    get_model_service,
     model_token_limits,
 )
 from ucode.state import mark_tool_managed, save_state
@@ -37,6 +38,10 @@ OPENCODE_AUTH_PLUGIN_PATH = OPENCODE_CONFIG_DIR / "plugin" / "ucode-auth.js"
 OPENCODE_NPM_PACKAGE = "opencode-ai"
 MINIMUM_OPENCODE_VERSION = (1, 0, 220)
 MINIMUM_OPENCODE_VERSION_TEXT = "1.0.220"
+_MLFLOW_RESPONSES_API = "mlflow/v1/responses"
+_MLFLOW_CHAT_COMPLETIONS_API = "mlflow/v1/chat/completions"
+_OPENAI_RESPONSES_NPM = "@ai-sdk/openai"
+_OPENAI_COMPATIBLE_NPM = "@ai-sdk/openai-compatible"
 
 SPEC: ToolSpec = {
     "binary": "opencode",
@@ -173,6 +178,45 @@ def write_auth_plugin(state: dict) -> None:
     write_text_file(path, render_auth_plugin(state))
 
 
+def extract_model_args(model: str | None, tool_args: list[str]) -> tuple[str | None, list[str]]:
+    """Extract one explicit model before OpenCode's ``--`` positional separator.
+
+    Identical selections coalesce. Differently spelled selections conflict, even if they might
+    resolve to the same model, so argument order never silently chooses a different route.
+    """
+
+    def select(value: str) -> None:
+        nonlocal model
+        if not value or value != value.strip() or value.startswith("-"):
+            raise RuntimeError("OpenCode --model requires a nonempty model value.")
+        if model is not None and model != value:
+            raise RuntimeError(f"Conflicting OpenCode models: '{model}' and '{value}'.")
+        model = value
+
+    if model is not None:
+        select(model)
+    remaining: list[str] = []
+    index = 0
+    while index < len(tool_args):
+        arg = tool_args[index]
+        if arg == "--":
+            remaining.extend(tool_args[index:])
+            break
+        if arg in {"--model", "-m"}:
+            if index + 1 >= len(tool_args):
+                raise RuntimeError(f"OpenCode {arg} requires a model value.")
+            index += 1
+            select(tool_args[index])
+        elif arg.startswith("--model="):
+            select(arg.partition("=")[2])
+        elif arg.startswith("-m"):
+            select(arg[2:].removeprefix("="))
+        else:
+            remaining.append(arg)
+        index += 1
+    return model, remaining
+
+
 def _resolve_model_selector(model: str, opencode_models: dict[str, list[str]]) -> str:
     """Return an OpenCode model selector in provider/model form when possible."""
     if model.startswith(("databricks-anthropic/", "databricks-google/", "databricks-oss/")):
@@ -191,6 +235,56 @@ def _resolve_model_selector(model: str, opencode_models: dict[str, list[str]]) -
         return f"databricks-oss/{model}"
 
     return model
+
+
+def _resolve_requested_model(
+    state: dict, model: str, token: str
+) -> tuple[str, tuple[str, str] | None]:
+    """Return the native selector and any verified transient model plus its AI SDK."""
+    if not model or any(char.isspace() for char in model):
+        raise RuntimeError("Select an OpenCode model as catalog.schema.model or provider/model.")
+    models = state.get("opencode_models") or {}
+    provider, separator, model_id = model.partition("/")
+    if separator:
+        if not provider or not model_id or model_id.startswith("/"):
+            raise RuntimeError("An OpenCode model selector must contain both provider and model.")
+        if provider not in {"databricks-anthropic", "databricks-google", "databricks-oss"}:
+            if provider == "databricks-openai":
+                raise RuntimeError("The databricks-openai provider is no longer configured.")
+            # OpenCode owns validation for native and user-defined providers, which need not
+            # be present in ug's isolated configuration.
+            return model, None
+    else:
+        model_id = model
+
+    known_selector = _resolve_model_selector(model_id, models)
+    if known_selector != model_id:
+        if separator and known_selector != model:
+            raise RuntimeError(
+                f"Model '{model_id}' uses a different provider; select '{known_selector}'."
+            )
+        return known_selector, None
+    if separator and provider != "databricks-oss":
+        raise RuntimeError(f"Model '{model_id}' is not configured for provider '{provider}'.")
+
+    service, reason = get_model_service(state["workspace"], token, model_id)
+    if service is None:
+        raise RuntimeError(f"Could not resolve OpenCode model '{model_id}': {reason}")
+    supported_api_types = service.get("supported_api_types")
+    if isinstance(supported_api_types, list) and _MLFLOW_RESPONSES_API in supported_api_types:
+        npm = _OPENAI_RESPONSES_NPM
+    elif (
+        isinstance(supported_api_types, list)
+        and _MLFLOW_CHAT_COMPLETIONS_API in supported_api_types
+    ):
+        npm = _OPENAI_COMPATIBLE_NPM
+    else:
+        raise RuntimeError(
+            f"Model service '{model_id}' does not advertise {_MLFLOW_RESPONSES_API} or "
+            f"{_MLFLOW_CHAT_COMPLETIONS_API}. Select a model service that supports an "
+            "OpenCode MLflow generation endpoint."
+        )
+    return f"databricks-oss/{model_id}", (model_id, npm)
 
 
 def _oss_model_overlay(model: str, ua_header: dict[str, str]) -> dict:
@@ -212,6 +306,8 @@ def render_overlay(
     token: str,
     opencode_base_urls: dict[str, str],
     opencode_models: dict[str, list[str]],
+    *,
+    requested_model: tuple[str, str] | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for opencode.json."""
     auth_headers = {"Authorization": f"Bearer {token}"}
@@ -260,15 +356,22 @@ def render_overlay(
             "models": {m: {"headers": ua_header} for m in gemini_models},
         }
         keys.append(["provider", "databricks-google"])
-    if oss_models:
+    if oss_models or requested_model:
+        rendered_oss_models = {m: _oss_model_overlay(m, ua_header) for m in oss_models}
+        if requested_model:
+            requested_model_id, npm = requested_model
+            rendered_oss_models[requested_model_id] = {
+                **_oss_model_overlay(requested_model_id, ua_header),
+                "provider": {"npm": npm},
+            }
         providers["databricks-oss"] = {
-            "npm": "@ai-sdk/openai",
+            "npm": _OPENAI_RESPONSES_NPM,
             "options": {
                 "baseURL": opencode_base_urls["oss"],
                 "apiKey": token,
                 "headers": auth_headers,
             },
-            "models": {m: _oss_model_overlay(m, ua_header) for m in oss_models},
+            "models": rendered_oss_models,
         }
         keys.append(["provider", "databricks-oss"])
 
@@ -283,18 +386,20 @@ def write_tool_config(
     model: str,
     token: str | None = None,
 ) -> tuple[dict, str]:
-    backup_existing_file(OPENCODE_CONFIG_PATH, OPENCODE_BACKUP_PATH)
     if token is None:
         token = get_databricks_token(state["workspace"], state.get("profile"))
+    selector, requested_model = _resolve_requested_model(state, model, token)
     opencode_base_urls = state.get("base_urls", {}).get("opencode") or build_opencode_base_urls(
         state["workspace"]
     )
     overlay, managed_keys = render_overlay(
-        model,
+        selector,
         token,
         opencode_base_urls,
         state.get("opencode_models") or {},
+        requested_model=requested_model,
     )
+    backup_existing_file(OPENCODE_CONFIG_PATH, OPENCODE_BACKUP_PATH)
     existing = read_json_safe(OPENCODE_CONFIG_PATH)
     write_auth_plugin(state)
     providers = existing.get("provider")
@@ -367,12 +472,12 @@ def default_model(state: dict) -> str | None:
     return oss[0] if oss else None
 
 
-def _configure_launch(state: dict) -> str:
-    model = default_model(state)
+def _configure_launch(state: dict, model: str | None = None) -> tuple[str, str]:
+    model = default_model(state) if model is None else model
     if not model:
         raise RuntimeError("No OpenCode model is configured.")
     _, token = write_tool_config(state, model)
-    return token
+    return token, read_json_safe(OPENCODE_CONFIG_PATH)["model"]
 
 
 def build_runtime_env(token: str, state: dict | None = None) -> dict[str, str]:
@@ -384,9 +489,13 @@ def build_runtime_env(token: str, state: dict | None = None) -> dict[str, str]:
 
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
     """Launch OpenCode with on-demand token refresh from its local plugin."""
-    token = _configure_launch(state)
+    model, tool_args = extract_model_args(options.user_pinned_model, tool_args)
+    token, selector = _configure_launch(state, model)
     env = build_runtime_env(token, state)
 
+    if model is not None:
+        separator = tool_args.index("--") if "--" in tool_args else len(tool_args)
+        tool_args[separator:separator] = ["--model", selector]
     proc = subprocess.Popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()

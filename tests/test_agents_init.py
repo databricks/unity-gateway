@@ -201,6 +201,39 @@ class TestConfigureWiresAiToolsInstall:
 
         configure.assert_called_once_with("claude", state, parent_schema="main.default")
 
+    def test_explicit_opencode_model_does_not_require_discovered_models(self, monkeypatch):
+        state = {"workspace": "https://x.databricks.com", "opencode_models": {}}
+        monkeypatch.setattr(
+            agents_mod,
+            "check_gateway_endpoint",
+            lambda *_a: pytest.fail("explicit model must be validated by the config writer"),
+        )
+        configure = MagicMock(return_value=state)
+        save = MagicMock()
+        monkeypatch.setattr(agents_mod, "configure_tool", configure)
+        monkeypatch.setattr(agents_mod, "save_state", save)
+
+        agents_mod.configure_single_tool("opencode", state, model="system.ai.grok-4-6")
+
+        configure.assert_called_once_with("opencode", state, "system.ai.grok-4-6")
+        assert state["available_tools"] == ["opencode"]
+        assert state["opencode_models"] == {}
+        save.assert_called_once_with(state)
+
+    def test_invalid_explicit_opencode_model_does_not_mark_configured(self, monkeypatch):
+        state = {"workspace": "https://x.databricks.com", "opencode_models": {}}
+        monkeypatch.setattr(
+            agents_mod, "configure_tool", MagicMock(side_effect=RuntimeError("Invalid model"))
+        )
+        save = MagicMock()
+        monkeypatch.setattr(agents_mod, "save_state", save)
+
+        with pytest.raises(RuntimeError, match="Invalid model"):
+            agents_mod.configure_single_tool("opencode", state, model="system.ai.missing")
+
+        assert "available_tools" not in state
+        save.assert_not_called()
+
     def test_configure_selected_tools_triggers_install(self, monkeypatch):
         captured = self._stub_configure(monkeypatch)
         agents_mod.configure_selected_tools(

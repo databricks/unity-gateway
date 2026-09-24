@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.integration.utils.evidence import assert_opencode_answer, opencode_completed_session
 from tests.integration.utils.managed import assert_no_managed_config
 
 
@@ -72,7 +73,7 @@ def test_integration_suite_uses_only_public_process_boundaries():
     assert not violations, "\n".join(violations)
 
 
-def test_live_integration_cases_belong_to_exactly_one_ci_agent():
+def test_live_integration_cases_belong_to_exactly_one_selected_agent():
     for path in (Path(__file__).parent / "integration").glob("test_*.py"):
         tree = ast.parse(path.read_text())
         module_marks = _markers(
@@ -88,7 +89,98 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed", "workspace_switch"}:
-                    assert len(marks & {"claude", "codex"}) == 1, node.name
+                    assert len(marks & {"claude", "codex", "opencode"}) == 1, node.name
+
+
+@pytest.fixture
+def opencode_export():
+    """A parser input, never a substitute for a live integration transcript."""
+    return {
+        "info": {"id": "ses_test"},
+        "messages": [
+            {
+                "info": {
+                    "role": "assistant",
+                    "sessionID": "ses_test",
+                    "providerID": "databricks-oss",
+                    "modelID": "catalog.schema.model",
+                    "finish": "stop",
+                    "time": {"completed": 1},
+                },
+                "parts": [
+                    {
+                        "type": "tool",
+                        "state": {"status": "completed", "output": "file-value\ndone"},
+                    },
+                    {"type": "text", "text": "file-value\ndone"},
+                ],
+            }
+        ],
+    }
+
+
+def test_opencode_evidence_requires_a_completed_native_session(opencode_export):
+    output = 'Launching OpenCode\n{"type":"step_finish","sessionID":"ses_test","part":{"reason":"stop"}}\n'
+    assert opencode_completed_session(output) == "ses_test"
+    assert_opencode_answer(
+        opencode_export, "ses_test", "catalog.schema.model", "file-value\ndone\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("role", "user"),
+        ("sessionID", "ses_other"),
+        ("modelID", "catalog.schema.other"),
+        ("providerID", "openai"),
+        ("finish", "tool-calls"),
+        ("time", {}),
+        ("error", {"name": "APIError"}),
+    ],
+)
+def test_opencode_evidence_rejects_wrong_or_incomplete_assistant_messages(
+    opencode_export, field, value
+):
+    opencode_export["messages"][0]["info"][field] = value
+    with pytest.raises(AssertionError):
+        assert_opencode_answer(
+            opencode_export, "ses_test", "catalog.schema.model", "file-value\ndone"
+        )
+
+
+@pytest.mark.parametrize("evidence", ["tool_only", "text_only", "synthetic", "wrong_answer"])
+def test_opencode_evidence_rejects_tool_output_or_echoes_as_final_answers(
+    opencode_export, evidence
+):
+    parts = opencode_export["messages"][0]["parts"]
+    if evidence == "tool_only":
+        del parts[1]
+    elif evidence == "text_only":
+        del parts[0]
+    elif evidence == "synthetic":
+        parts[1]["synthetic"] = True
+    else:
+        parts[1]["text"] = "Read the file and append done."
+    with pytest.raises(AssertionError):
+        assert_opencode_answer(
+            opencode_export, "ses_test", "catalog.schema.model", "file-value\ndone"
+        )
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "Launching OpenCode",
+        '{"type":"text","sessionID":"ses_test","part":{"text":"file-value"}}',
+        '{"type":"step_finish","sessionID":"ses_test","part":{"reason":"tool-calls"}}',
+        '{"type":"error","sessionID":"ses_test"}\n'
+        '{"type":"step_finish","sessionID":"ses_test","part":{"reason":"stop"}}',
+    ],
+)
+def test_opencode_evidence_rejects_runs_without_successful_completion(output):
+    with pytest.raises(AssertionError):
+        opencode_completed_session(output)
 
 
 def test_model_discovery_cases_match_current_launch_contract():

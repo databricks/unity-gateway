@@ -78,6 +78,28 @@ integration pass. Requested live checks fail when credentials, binaries, models,
 or capabilities are missing. There are no capability-based skips or retries of
 failed model tasks. A failing historical version should remain a failing result.
 
+OpenCode's explicit-model journeys are opt-in and headless. Select an exact
+OpenCode version and a real three-part UC model service outside ug's curated
+discovery, on a workspace without a managed coding-agent config:
+
+```bash
+python3.12 scripts/run_integration.py \
+  --ug-version checkout --opencode-version 1.18.30 \
+  --opencode-model system.ai.qwen35-122b-a10b \
+  --workspace https://your-existing-e2e-workspace --profile YOUR_PROFILE
+```
+
+Repeat with the exact Grok service to validate it separately. The successful
+journey launches twice with the explicit selection, checks a file read/edit and
+completed assistant answer, and exports each native session to verify its model.
+It also checks the metadata-selected Responses or Chat Completions SDK and unchanged saved discovery
+and defaults. The failure journey requires a real 404 and no agent session or
+config overwrite. Missing models, permissions, chat/tool compatibility, and token
+limit failures are failures, not skips. These journeys do not claim OpenCode TUI
+coverage. The existing Claude/Codex CI matrix does not automatically run them.
+Use `--entry-point ucode` to run through the legacy command name. Add
+`--installation-only` for package checks without credentials or inference.
+
 Installation checks also invoke both `ug` and `ucode` auth helpers using the public
 bearer override and drive their real local web-search MCP handshake/tool listing.
 These assert protocol stdout without stripping ANSI escapes and make no workspace
@@ -103,6 +125,7 @@ test_ug_claude_relayed.py               # relayed session: subscription + Databr
 test_ug_claude_tracing.py               # Claude OTLP export reaches the configured trace table
 test_ug_codex_headless.py               # script prompts and model arguments
 test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
+test_opencode_model.py                  # opt-in undiscovered-model read/edit tasks and missing-model failure
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
 test_ug_codex_app_server.py             # actual client/server initialize exchange

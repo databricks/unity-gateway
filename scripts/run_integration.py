@@ -25,7 +25,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-AGENT_PACKAGES = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}
+AGENT_PACKAGES = {
+    "claude": "@anthropic-ai/claude-code",
+    "codex": "@openai/codex",
+    "opencode": "opencode-ai",
+}
 
 
 def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
@@ -93,8 +97,14 @@ def arguments():
     parser.add_argument("--entry-point", choices=["ug", "ucode"], default="ug")
     parser.add_argument("--claude-version", type=exact_npm_version)
     parser.add_argument("--codex-version", type=exact_npm_version)
+    parser.add_argument("--opencode-version", type=exact_npm_version)
     parser.add_argument("--claude-model", default=os.environ.get("UG_INTEGRATION_CLAUDE_MODEL"))
     parser.add_argument("--codex-model", default=os.environ.get("UG_INTEGRATION_CODEX_MODEL"))
+    parser.add_argument(
+        "--opencode-model",
+        default=os.environ.get("UG_INTEGRATION_OPENCODE_MODEL"),
+        help="Explicit catalog.schema.model outside ug's curated discovery; required for live OpenCode journeys.",
+    )
     parser.add_argument(
         "--claude-provider",
         default="main.ucode.ci_e2e_anthropic_nonrelay_mps",
@@ -177,8 +187,16 @@ def arguments():
             args.pytest_args.extend([flag, str(value)])
     if selected.x:
         args.pytest_args.append("-x")
-    if not (args.claude_version or args.codex_version):
-        parser.error("Select --claude-version and/or --codex-version explicitly.")
+    if not (args.claude_version or args.codex_version or args.opencode_version):
+        parser.error("Select --claude-version, --codex-version, or --opencode-version explicitly.")
+    if (
+        args.opencode_version
+        and not args.installation_only
+        and not (args.opencode_model or "").strip()
+    ):
+        parser.error(
+            "Live OpenCode journeys require an explicit --opencode-model outside ug's curated discovery."
+        )
     if args.ug_version != "checkout" and not re.fullmatch(
         r"[0-9][0-9A-Za-z.!+_-]*", args.ug_version
     ):
@@ -311,8 +329,10 @@ def main() -> int:
             "entry_point": args.entry_point,
             "claude": args.claude_version,
             "codex": args.codex_version,
+            "opencode": args.opencode_version,
             "claude_model": args.claude_model,
             "codex_model": args.codex_model,
+            "opencode_model": args.opencode_model,
             "claude_provider": args.claude_provider,
             "claude_relayed_provider": args.claude_relayed_provider,
             "claude_provider_model": args.claude_provider_model,

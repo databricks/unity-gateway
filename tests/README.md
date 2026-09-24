@@ -3,6 +3,8 @@
 Integration runs a freshly installed ug wheel/release, exact real Claude/Codex
 versions, and the existing real e2e workspace. It has no application imports,
 mocks, monkeypatching, fake binaries/services, or fabricated ug state.
+OpenCode has two opt-in headless explicit-model journeys, selected with a pinned
+version and an undiscovered model; the default Claude/Codex CI matrix is unchanged.
 
 | Category | Location | What it proves |
 | --- | --- | --- |
@@ -49,6 +51,8 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_claude_exports_trace_to_configured_table`, `test_ug_codex_exports_trace_to_configured_table` | Configure tracing, complete a headless task carrying a unique trace marker, then wait for ingestion | The configured trace table contains an agent span with the same trace-safe marker and requested model |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` with routing enabled | Real file task completes; no routing wrapper |
 | `test_ug_codex_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` / `-m VALUE` with routing enabled | Real file task completes; no routing wrapper |
+| `test_ug_opencode_explicit_undiscovered_model` | Configure OpenCode, then launch twice with an explicit model outside curated discovery | Each run reads/edits a file and completes an answer; exported native session identifies the requested model; compatible per-model SDK overlay survives regeneration; saved discovery/defaults stay unchanged |
+| `test_ug_opencode_rejects_missing_explicit_model` | Launch configured OpenCode with a nonexistent model service | Real 404 and nonzero exit before an agent session; no default fallback or generated-config change |
 | `test_ug_claude_preserves_caller_settings_and_hook` | Pass a settings path containing spaces | Real SessionStart hook executes; caller file unchanged; file task completes |
 | `test_ug_claude_reports_unsupported_short_model_option` | Pass Claude's unsupported `-m` | Actual agent error and exit status preserved |
 | `test_ug_claude_auth_help`, `test_ug_claude_mcp_help` | Request subcommand help, routing off/on | Real agent help; no routing wrapper |
@@ -163,7 +167,14 @@ pending. The descriptive jobs provide the actual coverage and diagnostics.
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
 | Native macOS/Windows managed settings, resize/signals | Separate platform coverage needed |
-| Other agents | Current scope is Claude Code and Codex |
+| Other agents | OpenCode has two opt-in explicit-model headless journeys; its TUI and broad provider-configuration matrix remain uncovered. Other agents remain outside this suite. |
+
+OpenCode unit/component coverage in `test_agent_opencode.py`, `test_cli.py`,
+`test_agents_init.py`, and `test_entry_points.py` covers owned/forwarded model
+flags, conflicting selections, empty-discovery bootstrap, final launch arguments,
+temporary compatible-model registration, config preservation, and both command
+names. `test_databricks.py` covers targeted lookup identity, metadata, and failures.
+These local checks do not establish live Grok/Qwen tool-call compatibility.
 
 See [integration/README.md](integration/README.md) for commands, CI, artifacts,
 and reproduction. Follow [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md) when

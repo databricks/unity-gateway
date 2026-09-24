@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+import pytest
+
 from ucode.agents import opencode
+from ucode.agents.args import LaunchOptions
+from ucode.state import load_state
 
 WS = "https://example.databricks.com"
 
@@ -16,6 +20,31 @@ def _base_urls() -> dict[str, str]:
         "gemini": f"{WS}/ai-gateway/gemini/v1beta",
         "oss": f"{WS}/ai-gateway/mlflow/v1",
     }
+
+
+def _model_state() -> dict:
+    return {
+        "workspace": WS,
+        "profile": "test-profile",
+        "opencode_default_model": "system.ai.claude-sonnet-4-6",
+        "opencode_models": {
+            "anthropic": ["system.ai.claude-sonnet-4-6"],
+            "gemini": ["system.ai.gemini-3-flash"],
+            "oss": ["system.ai.glm-5-2"],
+        },
+    }
+
+
+@pytest.fixture
+def opencode_config(tmp_path, monkeypatch):
+    path = tmp_path / "opencode.json"
+    monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", path)
+    monkeypatch.setattr(opencode, "OPENCODE_BACKUP_PATH", tmp_path / "opencode-backup.json")
+    monkeypatch.setattr(opencode, "OPENCODE_XDG_CONFIG_HOME", tmp_path)
+    monkeypatch.setattr(opencode, "get_databricks_token", lambda *a, **kw: "test-token")
+    monkeypatch.setattr(opencode, "ug_version", lambda: "0.1.0")
+    monkeypatch.setattr(opencode, "agent_version", lambda _binary: "1.0.220")
+    return path
 
 
 class TestOpencodeSpec:
@@ -152,7 +181,7 @@ class TestRenderOverlay:
         # OpenCode's schema requires both context and output on `limit`.
         assert glm["limit"] == {"context": 200000, "output": 25000}
 
-    def test_non_glm_oss_model_has_no_output_cap(self):
+    def test_unknown_oss_model_has_no_output_cap(self):
         models = {"oss": ["system.ai.kimi-k2-7-code"]}
         overlay, _ = opencode.render_overlay(
             "system.ai.kimi-k2-7-code", "tok", _base_urls(), models
@@ -252,6 +281,41 @@ class TestRenderOverlay:
             "system.ai.kimi-k2-7-code", "tok", _base_urls(), models
         )
         assert overlay["model"] == "databricks-oss/system.ai.kimi-k2-7-code"
+
+    @pytest.mark.parametrize(
+        ("model", "npm", "limits"),
+        [
+            (
+                "main.team.glm-custom",
+                "@ai-sdk/openai-compatible",
+                {"context": 200_000, "output": 25_000},
+            ),
+            (
+                "system.ai.qwen35-122b-a10b",
+                "@ai-sdk/openai",
+                {"context": 262_144, "output": 25_000},
+            ),
+        ],
+    )
+    def test_requested_model_uses_selected_sdk_and_known_limits_without_changing_other_models(
+        self, model, npm, limits
+    ):
+        models = {"oss": ["system.ai.kimi-k2-7-code"]}
+        overlay, _ = opencode.render_overlay(
+            f"databricks-oss/{model}",
+            "tok",
+            _base_urls(),
+            models,
+            requested_model=(model, npm),
+        )
+
+        provider = overlay["provider"]["databricks-oss"]
+        assert provider["npm"] == "@ai-sdk/openai"
+        assert "provider" not in provider["models"]["system.ai.kimi-k2-7-code"]
+        requested = provider["models"][model]
+        assert requested["provider"] == {"npm": npm}
+        assert requested["limit"] == limits
+        assert models == {"oss": ["system.ai.kimi-k2-7-code"]}
 
 
 class TestMcpServerConfig:
@@ -491,3 +555,342 @@ class TestWriteUserMcpServers:
         assert "gone" not in doc["mcp"]
         assert doc["mcp"]["mine"] == {"type": "local"}
         assert doc["mcp"]["svc"]["command"] == ["ug", "mcp-proxy", "u"]
+
+
+class TestExtractModelArgs:
+    @pytest.mark.parametrize(
+        "flags",
+        [["--model", "chosen"], ["--model=chosen"], ["-m", "chosen"], ["-mchosen"], ["-m=chosen"]],
+    )
+    def test_extracts_model_and_preserves_other_arguments(self, flags):
+        tool_args = ["run", "--format", "json", *flags, "prompt"]
+
+        assert opencode.extract_model_args(None, tool_args) == (
+            "chosen",
+            ["run", "--format", "json", "prompt"],
+        )
+        assert tool_args == ["run", "--format", "json", *flags, "prompt"]
+
+    def test_identical_values_coalesce(self):
+        assert opencode.extract_model_args(
+            "chosen",
+            ["--model", "chosen", "run", "--model=chosen", "-m", "chosen", "-mchosen", "-m=chosen"],
+        ) == ("chosen", ["run"])
+
+    def test_preserves_arguments_after_native_separator(self):
+        assert opencode.extract_model_args(
+            None,
+            [
+                "run",
+                "-m",
+                "chosen",
+                "--",
+                "--model",
+                "literal",
+                "-m",
+                "also-literal",
+                "-mattached",
+                "-m=attached",
+            ],
+        ) == (
+            "chosen",
+            ["run", "--", "--model", "literal", "-m", "also-literal", "-mattached", "-m=attached"],
+        )
+
+    @pytest.mark.parametrize(
+        ("model", "tool_args"),
+        [
+            ("", []),
+            (" ", []),
+            (None, ["--model"]),
+            (None, ["-m"]),
+            (None, ["-m="]),
+            (None, ["--model", "--format", "json"]),
+        ],
+    )
+    def test_rejects_missing_or_empty_value(self, model, tool_args):
+        with pytest.raises(RuntimeError, match="requires a .*value"):
+            opencode.extract_model_args(model, tool_args)
+
+    @pytest.mark.parametrize(
+        ("model", "tool_args"),
+        [
+            ("first", ["--model", "second"]),
+            (None, ["--model=first", "-m", "second"]),
+            (None, ["-mfirst", "-m=second"]),
+            ("main.team.model", ["--model", "databricks-oss/main.team.model"]),
+        ],
+    )
+    def test_rejects_conflicting_values(self, model, tool_args):
+        with pytest.raises(RuntimeError, match="Conflicting OpenCode models"):
+            opencode.extract_model_args(model, tool_args)
+
+
+class TestExplicitModelConfig:
+    @pytest.mark.parametrize(
+        ("model_id", "provider"),
+        [
+            ("system.ai.claude-sonnet-4-6", "databricks-anthropic"),
+            ("system.ai.gemini-3-flash", "databricks-google"),
+            ("system.ai.glm-5-2", "databricks-oss"),
+        ],
+    )
+    @pytest.mark.parametrize("qualified", [False, True])
+    def test_known_models_use_their_configured_provider(
+        self, opencode_config, monkeypatch, model_id, provider, qualified
+    ):
+        monkeypatch.setattr(
+            "ucode.databricks._http_get_json", lambda *a, **kw: pytest.fail("unexpected lookup")
+        )
+        state = _model_state()
+        expected = _model_state()
+
+        returned, token = opencode.write_tool_config(
+            state, f"{provider}/{model_id}" if qualified else model_id
+        )
+
+        written = json.loads(opencode_config.read_text())
+        assert written["model"] == f"{provider}/{model_id}"
+        assert model_id in written["provider"][provider]["models"]
+        assert returned["opencode_models"] == expected["opencode_models"]
+        assert returned["opencode_default_model"] == expected["opencode_default_model"]
+        assert token == "test-token"
+
+    @pytest.mark.parametrize("qualified", [False, True])
+    def test_registers_only_requested_chat_model_and_preserves_user_config(
+        self, opencode_config, monkeypatch, qualified
+    ):
+        model_id = "main.team.claude-custom"
+        calls = []
+
+        def get(url, token, **kwargs):
+            calls.append((url, token))
+            return {
+                "name": f"model-services/{model_id}",
+                "supported_api_types": ["mlflow/v1/chat/completions"],
+            }, None
+
+        monkeypatch.setattr("ucode.databricks._http_get_json", get)
+        original = {
+            "theme": "custom",
+            "mcp": {"local": {"type": "local", "command": ["real-server"]}},
+            "provider": {
+                "user-provider": {"models": {"user-model": {"name": "User's model"}}},
+                "databricks-oss": {"models": {"main.team.old-transient": {}}},
+            },
+        }
+        opencode_config.write_text(json.dumps(original))
+        state = _model_state()
+        expected = _model_state()
+
+        opencode.write_tool_config(state, f"databricks-oss/{model_id}" if qualified else model_id)
+
+        written = json.loads(opencode_config.read_text())
+        assert calls == [(f"{WS}/api/2.1/unity-catalog/model-services/{model_id}", "test-token")]
+        assert written["model"] == f"databricks-oss/{model_id}"
+        provider = written["provider"]["databricks-oss"]
+        assert provider["options"]["baseURL"] == _base_urls()["oss"]
+        assert provider["options"]["apiKey"] == "test-token"
+        assert set(provider["models"]) == {"system.ai.glm-5-2", model_id}
+        assert provider["models"][model_id] == {
+            "headers": {"User-Agent": "ucode/0.1.0 opencode/1.0.220"},
+            "provider": {"npm": "@ai-sdk/openai-compatible"},
+        }
+        assert written["provider"]["user-provider"] == original["provider"]["user-provider"]
+        assert written["mcp"] == original["mcp"]
+        assert written["theme"] == "custom"
+        plugin = opencode_config.parent / "plugin" / opencode.OPENCODE_AUTH_PLUGIN_PATH.name
+        assert '"databricks-oss"' in plugin.read_text()
+        saved = load_state()
+        assert state["opencode_models"] == saved["opencode_models"] == expected["opencode_models"]
+        assert (
+            state["opencode_default_model"]
+            == saved["opencode_default_model"]
+            == expected["opencode_default_model"]
+        )
+
+        # An ordinary later write reconstructs the catalog and uses its saved default.
+        opencode.write_tool_config(state, opencode.default_model(state))
+        regenerated = json.loads(opencode_config.read_text())
+        assert regenerated["model"] == f"databricks-anthropic/{expected['opencode_default_model']}"
+        assert set(regenerated["provider"]["databricks-oss"]["models"]) == {"system.ai.glm-5-2"}
+        assert regenerated["provider"]["user-provider"] == original["provider"]["user-provider"]
+        assert regenerated["mcp"] == original["mcp"]
+
+    def test_prefers_responses_for_requested_model_that_advertises_both_apis(
+        self, opencode_config, monkeypatch
+    ):
+        model_id = "system.ai.qwen35-122b-a10b"
+        monkeypatch.setattr(
+            "ucode.databricks._http_get_json",
+            lambda *a, **kw: (
+                {
+                    "name": f"model-services/{model_id}",
+                    "supported_api_types": [
+                        "mlflow/v1/chat/completions",
+                        "mlflow/v1/responses",
+                    ],
+                },
+                None,
+            ),
+        )
+
+        opencode.write_tool_config(_model_state(), model_id)
+
+        written = json.loads(opencode_config.read_text())
+        requested = written["provider"]["databricks-oss"]["models"][model_id]
+        assert requested["provider"] == {"npm": "@ai-sdk/openai"}
+        assert requested["limit"] == {"context": 262_144, "output": 25_000}
+
+    def test_native_provider_is_left_for_opencode_to_validate(self, opencode_config, monkeypatch):
+        monkeypatch.setattr(
+            "ucode.databricks._http_get_json", lambda *a, **kw: pytest.fail("unexpected lookup")
+        )
+
+        opencode.write_tool_config({"workspace": WS}, "openrouter/anthropic/claude-sonnet")
+
+        written = json.loads(opencode_config.read_text())
+        assert written["model"] == "openrouter/anthropic/claude-sonnet"
+        assert "provider" not in written
+        assert "opencode_models" not in load_state()
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "databricks-anthropic/system.ai.gemini-3-flash",
+            "databricks-anthropic/system.ai.claude-new",
+            "databricks-openai/main.team.model",
+            "not-qualified",
+            "main..model",
+            "native/",
+        ],
+    )
+    def test_rejects_invalid_selection_before_writing(self, opencode_config, monkeypatch, model):
+        monkeypatch.setattr(
+            "ucode.databricks._http_get_json", lambda *a, **kw: pytest.fail("unexpected lookup")
+        )
+        original = '{"model": "user/original", "theme": "custom"}'
+        opencode_config.write_text(original)
+        state = _model_state()
+        expected = _model_state()
+
+        with pytest.raises(RuntimeError):
+            opencode.write_tool_config(state, model)
+
+        assert opencode_config.read_text() == original
+        assert not opencode.OPENCODE_BACKUP_PATH.exists()
+        assert not (opencode_config.parent / "plugin").exists()
+        assert state == expected
+        assert load_state() == {}
+
+    @pytest.mark.parametrize(
+        "api_types",
+        [
+            None,
+            "mlflow/v1/chat/completions",
+            ["openai/v1/chat/completions"],
+            ["mlflow/v1/chat/completions/extra"],
+        ],
+    )
+    def test_requires_explicit_mlflow_generation_capability(
+        self, opencode_config, monkeypatch, api_types
+    ):
+        payload = {"name": "model-services/main.team.new-model"}
+        if api_types is not None:
+            payload["supported_api_types"] = api_types
+        monkeypatch.setattr("ucode.databricks._http_get_json", lambda *a, **kw: (payload, None))
+
+        with pytest.raises(
+            RuntimeError,
+            match="does not advertise mlflow/v1/responses or mlflow/v1/chat/completions",
+        ):
+            opencode.write_tool_config({"workspace": WS}, "main.team.new-model")
+
+        assert not opencode_config.exists()
+        assert not (opencode_config.parent / "plugin").exists()
+        assert load_state() == {}
+
+    @pytest.mark.parametrize(
+        "reason", ["HTTP 404 Not Found", "HTTP 403 Forbidden", "network error: timed out"]
+    )
+    def test_propagates_lookup_failure_without_writing(self, opencode_config, monkeypatch, reason):
+        monkeypatch.setattr("ucode.databricks._http_get_json", lambda *a, **kw: (None, reason))
+
+        with pytest.raises(RuntimeError, match=reason):
+            opencode.write_tool_config({"workspace": WS}, "main.team.new-model")
+
+        assert not opencode_config.exists()
+        assert not (opencode_config.parent / "plugin").exists()
+        assert load_state() == {}
+
+
+class TestExplicitModelLaunch:
+    def test_no_override_preserves_native_arguments(self, opencode_config, monkeypatch):
+        tool_args = ["run", "prompt"]
+        monkeypatch.setattr(
+            "ucode.databricks._http_get_json", lambda *a, **kw: pytest.fail("unexpected lookup")
+        )
+        with patch.object(opencode.subprocess, "Popen") as popen:
+            popen.return_value.wait.return_value = 0
+            with pytest.raises(SystemExit) as exc:
+                opencode.launch(_model_state(), tool_args, options=LaunchOptions())
+
+        assert exc.value.code == 0
+        assert popen.call_args.args[0] == ["opencode", *tool_args]
+        assert (
+            json.loads(opencode_config.read_text())["model"]
+            == "databricks-anthropic/system.ai.claude-sonnet-4-6"
+        )
+
+    @pytest.mark.parametrize("empty_catalog", [False, True])
+    def test_final_write_and_native_argv_keep_requested_model(
+        self, opencode_config, monkeypatch, empty_catalog
+    ):
+        model_id = "main.team.new-model"
+        monkeypatch.setattr(
+            "ucode.databricks._http_get_json",
+            lambda *a, **kw: (
+                {
+                    "name": f"model-services/{model_id}",
+                    "supported_api_types": ["mlflow/v1/chat/completions"],
+                },
+                None,
+            ),
+        )
+        state = {"workspace": WS} if empty_catalog else _model_state()
+        expected = {} if empty_catalog else _model_state()
+        # Bootstrap's first write must survive the launcher's second write.
+        opencode.write_tool_config(state, model_id)
+        tool_args = ["run", "--format", "json", "--", "--model", "literal-prompt"]
+
+        with patch.object(opencode.subprocess, "Popen") as popen:
+            popen.return_value.wait.return_value = 7
+            with pytest.raises(SystemExit) as exc:
+                opencode.launch(state, tool_args, options=LaunchOptions(user_pinned_model=model_id))
+
+        assert exc.value.code == 7
+        assert popen.call_args.args[0] == [
+            "opencode",
+            "run",
+            "--format",
+            "json",
+            "--model",
+            f"databricks-oss/{model_id}",
+            "--",
+            "--model",
+            "literal-prompt",
+        ]
+        assert popen.call_args.kwargs["env"]["OAUTH_TOKEN"] == "test-token"
+        assert popen.call_args.kwargs["env"]["XDG_CONFIG_HOME"] == str(opencode_config.parent)
+        assert tool_args == ["run", "--format", "json", "--", "--model", "literal-prompt"]
+        assert json.loads(opencode_config.read_text())["model"] == f"databricks-oss/{model_id}"
+        assert state.get("opencode_models") == expected.get("opencode_models")
+        assert state.get("opencode_default_model") == expected.get("opencode_default_model")
+
+    def test_no_selection_and_no_default_fails_before_launch(self, opencode_config):
+        with patch.object(opencode.subprocess, "Popen") as popen:
+            with pytest.raises(RuntimeError, match="No OpenCode model is configured"):
+                opencode.launch({"workspace": WS}, ["run", "prompt"], options=LaunchOptions())
+
+        popen.assert_not_called()
+        assert not opencode_config.exists()

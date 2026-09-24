@@ -61,6 +61,56 @@ def assistant_answers(agent: str, records: list[dict]) -> list[str]:
     return answers
 
 
+def opencode_completed_session(output: str) -> str:
+    """Read the session ID from a successful native OpenCode JSON run."""
+    # ug prints launch diagnostics before OpenCode's JSONL stream. JSON-looking
+    # lines must still parse; a damaged protocol record must not be ignored.
+    events = [json.loads(line) for line in output.splitlines() if line.lstrip().startswith("{")]
+    assert events and all(isinstance(event, dict) for event in events), output
+    assert not any(event.get("type") == "error" for event in events), output
+    assert any(
+        event.get("type") == "step_finish" and event.get("part", {}).get("reason") == "stop"
+        for event in events
+    ), "OpenCode did not report a completed final step:\n" + output
+    session_ids = {event["sessionID"] for event in events if "sessionID" in event}
+    assert len(session_ids) == 1, output
+    session_id = session_ids.pop()
+    assert isinstance(session_id, str) and session_id, output
+    return session_id
+
+
+def assert_opencode_answer(payload: dict, session_id: str, model: str, expected: str) -> None:
+    """Require native exported assistant completion, tool use, and model identity."""
+    assert payload.get("info", {}).get("id") == session_id, payload
+    messages = payload.get("messages")
+    assert isinstance(messages, list) and messages, payload
+    assistants = [
+        message for message in messages if message.get("info", {}).get("role") == "assistant"
+    ]
+    assert assistants, "No assistant messages in OpenCode's exported session"
+    for message in assistants:
+        info = message["info"]
+        assert info.get("sessionID") == session_id, info
+        assert info.get("providerID") == "databricks-oss" and info.get("modelID") == model, info
+        assert not info.get("error"), info
+    final = assistants[-1]
+    assert final["info"].get("finish") == "stop", final
+    assert final["info"].get("time", {}).get("completed"), final
+    answer = "\n".join(
+        part["text"]
+        for part in final["parts"]
+        if part.get("type") == "text" and not part.get("synthetic") and not part.get("ignored")
+    )
+    assert expected.strip() in answer, (
+        "OpenCode's completed assistant answer did not contain the file contents"
+    )
+    assert any(
+        part.get("type") == "tool" and part.get("state", {}).get("status") == "completed"
+        for message in assistants
+        for part in message["parts"]
+    ), "OpenCode did not complete a tool call"
+
+
 def is_child_session(agent: str, path: str, records: list[dict]) -> bool:
     if agent == "claude":
         return "/subagents/" in path

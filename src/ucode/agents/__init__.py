@@ -516,12 +516,14 @@ def _availability_failure_detail(tool: str, state: dict) -> str:
     return " (" + "; ".join(parts) + ")"
 
 
-def configure_single_tool(tool: str, state: dict, *, parent_schema: str | None = None) -> dict:
+def configure_single_tool(
+    tool: str, state: dict, *, parent_schema: str | None = None, model: str | None = None
+) -> dict:
     """Check availability, configure, and persist state for one tool only."""
     provider = None if parent_schema else get_provider_service(state, tool)
     # A Model Provider Service or parent schema routes through the same gateway and pins no
-    # globally discovered Databricks model, so the availability check doesn't apply.
-    if not provider and not parent_schema:
+    # globally discovered Databricks model. An explicit selection is validated by its writer.
+    if not provider and not parent_schema and model is None:
         with spinner(f"Checking {TOOL_SPECS[tool]['display']} availability..."):
             ok = check_gateway_endpoint(state, tool)
         if not ok:
@@ -530,7 +532,10 @@ def configure_single_tool(tool: str, state: dict, *, parent_schema: str | None =
                 f"{TOOL_SPECS[tool]['display']} is not available on this workspace.{detail}"
             )
     with managed_write_batch(_managed_settings_displays([tool])):
-        state = _configure_one(tool, state, provider, parent_schema=parent_schema)
+        if model is not None and not provider and not parent_schema:
+            state = configure_tool(tool, state, model)
+        else:
+            state = _configure_one(tool, state, provider, parent_schema=parent_schema)
     available_tools = list(set((state.get("available_tools") or []) + [tool]))
     state["available_tools"] = available_tools
     save_state(state)
