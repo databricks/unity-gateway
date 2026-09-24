@@ -19,6 +19,7 @@ from ucode.agents import claude, codex, copilot, cursor, gemini, opencode
 from ucode.config_io import restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
+    AIGW_MCP_SERVICES_SEGMENT,
     PermissionDeniedError,
     apply_pat_environment,
     build_mcp_proxy_argv,
@@ -31,6 +32,7 @@ from ucode.databricks import (
     list_mcp_services,
     workspace_hostname,
 )
+from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
     CLAUDE_CODE_OAUTH_CLIENT_ID,
     CURSOR_OAUTH_CLIENT_ID,
@@ -56,10 +58,6 @@ from ucode.ui import (
     scrolling_checkbox,
     spinner,
 )
-
-# AI Gateway MCP-services endpoints carry this path segment. These are the
-# connection-backed services that need a per-user connection login.
-AIGW_MCP_SERVICES_PATH = "/ai-gateway/mcp-services/"
 
 # Workspace-relative path fragments for the V2 AI Gateway MCP endpoints, shared by the URL-shape
 # checks (`_is_app_mcp_server`, `_mcp_server_location`) so the set stays in one place.
@@ -259,7 +257,7 @@ def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | N
     This is the single source of truth for that choice, shared by the per-server
     (:func:`configure_client_mcp_server`) and batched (:func:`_managed_mcp_entry`) paths. Whether it
     applies to a *specific* server additionally requires a connection-backed mcp-services URL
-    (``AIGW_MCP_SERVICES_PATH``), which the caller checks per server. It is URL-independent, so
+    (``AIGW_MCP_SERVICES_SEGMENT``), which the caller checks per server. It is URL-independent, so
     callers can compute it once per (client, workspace) rather than once per server."""
     oauth_client = AGENT_OAUTH_CLIENT.get(client)
     if oauth_client is not None and not use_pat and oauth_client_available(workspace, oauth_client):
@@ -282,7 +280,7 @@ def configure_client_mcp_server(
     # proxy: non-connection MCPs, the skills registry, PAT auth, agents without a mapped OAuth
     # client, and workspaces where the mapped client isn't published.
     http_client = _oauth_http_client(client, workspace, use_pat=use_pat)
-    if http_client is not None and AIGW_MCP_SERVICES_PATH in url:
+    if http_client is not None and AIGW_MCP_SERVICES_SEGMENT in url:
         if client == "claude":
             removed_scopes = [
                 scope
@@ -753,7 +751,7 @@ def _is_app_mcp_server(server: dict) -> bool:
         return False
     stripped = url.rstrip("/")
     known = (
-        AIGW_MCP_SERVICES_PATH,
+        AIGW_MCP_SERVICES_SEGMENT,
         MCP_EXTERNAL_PATH,
         MCP_GENIE_PATH,
         MCP_VECTOR_SEARCH_PATH,
@@ -867,7 +865,7 @@ def _agent_managed_file_entries(
         if agent == "claude":
             # A native HTTP+OAuth entry is only valid for a connection-backed mcp-services URL;
             # anything else stays on the stdio proxy so both delivery paths resolve identically.
-            if AIGW_MCP_SERVICES_PATH not in url:
+            if AIGW_MCP_SERVICES_SEGMENT not in url:
                 continue
             entries[name] = claude.managed_mcp_entry(url)
         elif agent == "codex":
@@ -894,8 +892,10 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
       Claude CLI, PAT auth, or a workspace without the OAuth client), plus every non-Claude/Codex
       MCP client, which keeps its existing behavior.
 
-    Returns the servers resolved this run. Raises ``RuntimeError`` on a discovery failure; the caller
-    keeps it best-effort.
+    Returns the servers resolved this run. Propagates the distinct
+    :class:`McpServiceListingRateLimited` when discovery is rate-limited (HTTP 429), so the caller
+    can skip MCP setup for the run without treating it as a hard failure; any other discovery
+    failure raises plain ``RuntimeError``. Either way the caller keeps it best-effort.
     """
     selector = managed.get("mcp_servers")
     selector = selector if isinstance(selector, dict) else {}
@@ -1199,7 +1199,7 @@ def _managed_mcp_entry(
     workspace) (or ``None``); the caller computes it once per client so the batch loop doesn't
     re-probe ``oauth_client_available`` per server. HTTP+OAuth applies here only when that client is
     set AND this server's URL is a connection-backed mcp-services URL; otherwise the stdio proxy."""
-    use_http = http_client is not None and AIGW_MCP_SERVICES_PATH in url
+    use_http = http_client is not None and AIGW_MCP_SERVICES_SEGMENT in url
     if client == "claude":
         if use_http:
             return claude.managed_mcp_entry(url)
@@ -1404,6 +1404,21 @@ def _skills_entries(servers: list[dict]) -> list[dict]:
     return [s for s in servers if s.get("kind") == SKILLS_MCP_KIND]
 
 
+class McpServiceListingRateLimited(RuntimeError):
+    """MCP-service discovery (`ListMcpServices`) was rate-limited (HTTP 429).
+
+    A distinct ``RuntimeError`` subtype so the managed reconcile path can skip MCP setup for this
+    run gracefully — an info note, no config change — rather than surfacing a hard failure. A
+    transient 429 (e.g. many clients calling `ug configure` at once) must not break configure or
+    unregister already-configured servers; the next `ug configure` retries."""
+
+    def __init__(self, location: str) -> None:
+        self.location = location
+        super().__init__(
+            f"MCP service discovery for `{location}` was rate-limited (HTTP 429); try again shortly."
+        )
+
+
 def _resolve_location_mcp_servers(
     workspace: str,
     profile: str | None,
@@ -1417,8 +1432,10 @@ def _resolve_location_mcp_servers(
     Strict replacement for mcp-services: the returned list is exactly the ones
     discovered at ``location`` (any previously-registered mcp-service outside it
     is removed by ``apply_mcp_server_changes``), plus any existing skills
-    connection, preserved untouched. Raises ``RuntimeError`` for an invalid
-    location (HTTP 404 from the listing API) or any other listing failure.
+    connection, preserved untouched. Raises the distinct
+    :class:`McpServiceListingRateLimited` when discovery is rate-limited (HTTP 429) so callers can
+    skip gracefully, and plain ``RuntimeError`` for an invalid location (HTTP 404 from the listing
+    API) or any other listing failure.
 
     When ``services`` is given, the discovered set is narrowed to exactly that
     subset (matched by full name like ``system.ai.github`` or bare short name
@@ -1439,6 +1456,11 @@ def _resolve_location_mcp_servers(
             f"Invalid location: `{location}` is not a valid Unity Catalog schema "
             "in this workspace (or you lack USE permission on it)."
         )
+    if reason and reason.startswith("HTTP 429"):
+        # A transient rate-limit must not break `ug configure` or unregister already-configured
+        # servers. Raise a distinct type so the managed path skips MCP setup this run with an info
+        # note (leaving existing servers untouched) and retries on the next configure.
+        raise McpServiceListingRateLimited(location)
     if reason:
         raise RuntimeError(f"Failed to list MCP services at `{location}`: {reason}")
     if not names:
@@ -2147,8 +2169,8 @@ def _mcp_server_location(server: dict) -> str:
         return "skills"
     url = str(server.get("url") or "")
     stripped = url.rstrip("/")
-    if AIGW_MCP_SERVICES_PATH in url:
-        return url.split(AIGW_MCP_SERVICES_PATH, 1)[1] or "mcp-service"
+    if AIGW_MCP_SERVICES_SEGMENT in url:
+        return connection_from_url(url) or "mcp-service"
     if MCP_EXTERNAL_PATH in url:
         return f"connection:{stripped.rsplit('/', 1)[-1]}"
     if MCP_GENIE_PATH in url:

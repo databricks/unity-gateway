@@ -3559,6 +3559,30 @@ class TestConfigureAgentsSelection:
         cli_mod._configure_managed_mcp_servers({"enabled_agents": {"claude": {}}})
         assert warned and "boom" in warned[0]
 
+    def test_configure_managed_mcp_servers_skips_gracefully_on_rate_limit(self, monkeypatch):
+        # A 429 during MCP discovery is an info note (bypass), not a scary warning, and never aborts
+        # configure. Existing servers are left untouched (reconcile raised before touching them).
+        import ucode.cli as cli_mod
+        from ucode.mcp import McpServiceListingRateLimited
+
+        monkeypatch.setattr(
+            cli_mod,
+            "reconcile_managed_mcp_servers",
+            lambda managed, agents: (_ for _ in ()).throw(
+                McpServiceListingRateLimited("system.ai")
+            ),
+        )
+        notes: list[str] = []
+        warned: list[str] = []
+        monkeypatch.setattr(cli_mod, "print_note", lambda msg: notes.append(msg))
+        monkeypatch.setattr(cli_mod, "print_warning", lambda msg: warned.append(msg))
+
+        result = cli_mod._configure_managed_mcp_servers({"enabled_agents": {"claude": {}}})
+
+        assert result == []
+        assert warned == []  # not surfaced as a failure
+        assert notes and "rate-limited" in notes[0].lower() and "429" in notes[0]
+
     def test_unmanaged_workspace_reconciles_managed_mcp_servers(self, monkeypatch):
         # Switching to a workspace with no managed config must still run the MCP reconcile (with a
         # None managed config) so servers a prior managed workspace registered are unregistered,

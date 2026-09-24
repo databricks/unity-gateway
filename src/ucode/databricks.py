@@ -1975,6 +1975,13 @@ def delete_coding_agent_config(workspace: str, token: str, name: str) -> str | N
 # --- MCP services (parallel to model services) -----------------------------
 
 
+# Canonical path segment of an AI Gateway MCP-services endpoint
+# (``https://<ws>/ai-gateway/mcp-services/<catalog>.<schema>.<service>``). This is
+# the single source of truth: URL building (below), connection-backed detection
+# (`mcp_connection_login.connection_from_url`), and URL-shape classification
+# (`mcp.py`) all reference this one constant.
+AIGW_MCP_SERVICES_SEGMENT = "/ai-gateway/mcp-services/"
+
 _MCP_SERVICE_NAME_PREFIX = "mcp-services/"
 
 
@@ -2042,7 +2049,7 @@ def list_mcp_services(
 
 
 def build_mcp_service_url(workspace: str, full_name: str) -> str:
-    return f"{workspace}/ai-gateway/mcp-services/{full_name}"
+    return f"{workspace}{AIGW_MCP_SERVICES_SEGMENT}{full_name}"
 
 
 def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
