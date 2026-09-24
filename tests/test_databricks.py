@@ -28,6 +28,7 @@ from ucode.databricks import (
     build_otel_headers_argv,
     build_otel_headers_shell_command,
     build_otel_traces_endpoint,
+    build_pi_base_urls,
     build_shared_base_urls,
     build_skills_mcp_url,
     build_tool_base_url,
@@ -276,6 +277,15 @@ class TestBuildOpencodeBaseUrls:
     def test_returns_anthropic_gemini_and_oss(self):
         urls = build_opencode_base_urls(WS)
         assert urls["anthropic"] == f"{WS}/ai-gateway/anthropic/v1"
+        assert urls["gemini"] == f"{WS}/ai-gateway/gemini/v1beta"
+        assert urls["oss"] == f"{WS}/ai-gateway/mlflow/v1"
+
+
+class TestBuildPiBaseUrls:
+    def test_returns_all_supported_model_families(self):
+        urls = build_pi_base_urls(WS)
+        assert urls["claude"] == f"{WS}/ai-gateway/anthropic"
+        assert urls["openai"] == f"{WS}/ai-gateway/codex/v1"
         assert urls["gemini"] == f"{WS}/ai-gateway/gemini/v1beta"
         assert urls["oss"] == f"{WS}/ai-gateway/mlflow/v1"
 

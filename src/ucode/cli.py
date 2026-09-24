@@ -168,7 +168,7 @@ _DISCOVERY_CONSUMERS: dict[str, tuple[str, ...]] = {
     "claude": ("claude", "opencode", "copilot", "pi"),
     "codex": ("codex", "copilot", "pi"),
     "gemini": ("gemini", "opencode", "pi"),
-    "oss": ("opencode",),
+    "oss": ("opencode", "pi"),
 }
 
 
@@ -598,7 +598,7 @@ def configure_shared_state(
     want_codex = fetch_all or "codex" in tools or "copilot" in tools or "pi" in tools
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
     # configure must persist that discovered family too.
-    want_oss = fetch_all or "opencode" in tools or "codex" in tools
+    want_oss = fetch_all or "opencode" in tools or "codex" in tools or "pi" in tools
 
     claude_reason: str | None = None
     gemini_reason: str | None = None

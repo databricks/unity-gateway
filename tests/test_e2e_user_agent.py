@@ -385,7 +385,22 @@ class TestGeminiUserAgent:
 
 
 class TestPiUserAgent:
-    def test_user_agent_arrives_at_gateway(self, tmp_path, monkeypatch, capture_server):
+    @pytest.mark.parametrize(
+        ("model_family", "model", "request_path"),
+        [
+            ("claude", "test-claude-model", "/ai-gateway/anthropic"),
+            ("oss", "system.ai.kimi-k2-7-code", "/ai-gateway/mlflow/v1/chat/completions"),
+        ],
+    )
+    def test_user_agent_arrives_at_gateway(
+        self,
+        tmp_path,
+        monkeypatch,
+        capture_server,
+        model_family,
+        model,
+        request_path,
+    ):
         import ucode.config_io as config_io_mod
         from ucode.agents import pi
 
@@ -404,14 +419,16 @@ class TestPiUserAgent:
 
         state = {
             "workspace": capture_server.base_url,
-            "claude_models": {"sonnet": "test-claude-model"},
+            "claude_models": {"sonnet": model} if model_family == "claude" else {},
             "codex_models": [],
             "gemini_models": [],
+            "oss_models": [model] if model_family == "oss" else [],
             "base_urls": {
                 "pi": {
                     "claude": f"{capture_server.base_url}/ai-gateway/anthropic",
                     "openai": f"{capture_server.base_url}/ai-gateway/codex/v1",
                     "gemini": f"{capture_server.base_url}/ai-gateway/gemini/v1beta",
+                    "oss": f"{capture_server.base_url}/ai-gateway/mlflow/v1",
                 },
             },
         }
@@ -421,7 +438,7 @@ class TestPiUserAgent:
                 "ucode.agents.pi.get_databricks_token",
                 lambda ws, profile=None, **kwargs: "test-token",
             )
-            pi.write_tool_config(state, "test-claude-model", token="test-token")
+            pi.write_tool_config(state, model, token="test-token")
 
         env = pi.build_runtime_env("test-token")
         # Pi now resolves its apiKey by running `ucode auth-token`. The static
@@ -430,6 +447,6 @@ class TestPiUserAgent:
         env["DATABRICKS_BEARER"] = "test-token"
         result = _run_until_first_request(pi.validate_cmd("pi"), env)
 
-        req = capture_server.first_request_with_path_prefix("/ai-gateway/anthropic")
+        req = capture_server.first_request_with_path_prefix(request_path)
         assert req is not None, _no_request_msg(capture_server, result)
         _assert_ua(req, _expected_ua("pi", "pi"))

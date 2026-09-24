@@ -285,6 +285,9 @@ class TestCheckGatewayEndpoint:
     def test_pi_available_with_gemini(self):
         assert check_gateway_endpoint({"gemini_models": ["gemini-2"]}, "pi") is True
 
+    def test_pi_available_with_oss(self):
+        assert check_gateway_endpoint({"oss_models": ["system.ai.glm-5-2"]}, "pi") is True
+
     def test_pi_unavailable_when_no_models(self):
         assert check_gateway_endpoint({}, "pi") is False
 

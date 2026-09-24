@@ -1227,6 +1227,9 @@ class TestPiLaunch:
                 out.append(("codex", model))
         for model in e2e_state.get("gemini_models") or []:
             out.append(("gemini", model))
+        for model in e2e_state.get("oss_models") or []:
+            if not _model_is_skipped(model, "pi"):
+                out.append(("oss", model))
         return out
 
     def test_incompatible_models_are_skipped(self):
@@ -1241,12 +1244,23 @@ class TestPiLaunch:
         }
         assert self._all_models(state) == [("codex", "databricks-gpt-5-4")]
 
+    def test_oss_models_are_included(self):
+        state = {"oss_models": ["system.ai.kimi-k3", "system.ai.glm-5-3"]}
+        assert self._all_models(state) == [
+            ("oss", "system.ai.kimi-k3"),
+            ("oss", "system.ai.glm-5-3"),
+        ]
+
     def test_launch_pi_per_model(self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token):
         import ucode.config_io as config_io_mod
         from ucode.agents import pi
 
         _require_binary("pi")
-        models = self._all_models(e2e_state)
+        _, _, _, oss_models, oss_reason = discover_model_services(e2e_workspace, e2e_token)
+        assert oss_reason is None, oss_reason
+        assert oss_models, "No Pi OSS models were discovered on the E2E workspace"
+        pi_state = {**e2e_state, "oss_models": oss_models}
+        models = self._all_models(pi_state)
         if not models:
             pytest.skip("No Pi-compatible models available on this workspace")
 
@@ -1276,7 +1290,7 @@ class TestPiLaunch:
                     lambda ws, profile=None, **kwargs: e2e_token,
                 )
                 pi.write_tool_config(
-                    {**e2e_state, "workspace": e2e_workspace},
+                    pi_state,
                     model,
                     token=e2e_token,
                 )
