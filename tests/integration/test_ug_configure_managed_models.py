@@ -88,7 +88,7 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session):
 
     catalog = fetch_anthropic_provider_catalog(
         CLAUDE_MPS_DEFAULTS_WORKSPACE,
-        os.environ["DATABRICKS_BEARER"],
+        target_bearer,
         MANAGED_CLAUDE_PROVIDER_SERVICE,
     )
     expected_families = ("opus", "sonnet", "haiku", "fable")

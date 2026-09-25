@@ -230,9 +230,10 @@ Codex model-list request with the parent-schema header, including the dedicated 
 service and no out-of-schema models. A Claude service is included only if that API
 advertises it as compatible. Extra, missing, or duplicate app-server entries fail.
 Claude provider discovery still requires the exact `--claude-provider-model` ID
-in its cache. For the default `claude-haiku-4-5-20251001` fixture, Claude deduplicates
-it into the native Haiku picker row (Haiku 4.5), so the assertion checks that row
-instead of requiring the gateway's raw display name. Custom Model Services must
+in its cache. For the default `claude-haiku-4-5-20251001` fixture, Claude can
+deduplicate it into the native Haiku picker row (Haiku 4.5), while an explicit
+provider or parent replacement picker can render the raw gateway ID/display name;
+the assertion accepts either numbered-row form. Custom Model Services must
 still appear by their gateway IDs or display names in a numbered picker row;
 startup banners and footer text cannot satisfy discovery assertions. Cases 7–14 send no inference prompts;
 they only configure, list models, and open/close the picker. Other live CUJs perform

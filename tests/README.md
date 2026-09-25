@@ -105,7 +105,8 @@ numbering is unchanged and is not the source of these repository IDs.
 Managed Codex state comparisons exclude `.codex/tmp/arg0`, the disposable executable
 links recreated by Codex version checks; persistent agent files remain compared.
 Claude discovery assertions match numbered picker rows, not startup banners or
-footers. Offline regressions cover that distinction and native Haiku/Opus/Sonnet deduplication.
+footers. Offline regressions cover that distinction, native Haiku/Opus/Sonnet
+deduplication, and raw catalog ID/display-name rows for scoped pickers.
 Managed discovery expectations come from separate read-only, provider-scoped
 model-list requests; they do not rely solely on ug's generated catalog.
 
