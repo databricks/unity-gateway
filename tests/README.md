@@ -20,8 +20,8 @@ quoted executable paths and replacement of legacy `ucode` routing/web-search hel
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
-`test_databricks.py` checks complete paginated Anthropic catalogs, including scoped routing
-headers, gateway pages with null cursor fields, and failures while fetching later pages.
+`test_databricks.py` checks bounded Anthropic catalog requests with `limit=1000`, including
+scoped routing headers and model display metadata.
 The managed-default and discovery integration journeys below check the generated settings
 and real picker.
 

@@ -36,6 +36,7 @@ def test_anthropic_provider_page_preserves_ids_and_labels():
         {"data": [{"id": "a", "display_name": 7}], "has_more": False},
         _page("a", "a"),
         _page("a", has_more="false"),
+        _page("a", has_more=True),
         _page("a", has_more=True, last_id=""),
     ],
 )
@@ -74,15 +75,9 @@ def test_codex_provider_catalog_rejects_invalid_evidence(payload):
         catalog.parse_codex_provider_catalog(payload)
 
 
-@pytest.mark.parametrize(
-    "explicit_cursor", [True, False], ids=["explicit-cursor", "gateway-cursor"]
-)
-def test_anthropic_provider_fetch_paginates_and_rejects_cross_page_duplicates(
-    monkeypatch, explicit_cursor
-):
+def test_anthropic_provider_fetch_paginates_and_rejects_cross_page_duplicates(monkeypatch):
     requests = []
-    last_id = "a" if explicit_cursor else None
-    pages = iter([_page("a", has_more=True, last_id=last_id), _page("b")])
+    pages = iter([_page("a", has_more=True, last_id="a"), _page("b")])
 
     def get_json(url, headers):
         requests.append((url, headers))
@@ -99,7 +94,7 @@ def test_anthropic_provider_fetch_paginates_and_rejects_cross_page_duplicates(
         assert headers["Authorization"] == "Bearer token"
         assert headers["Databricks-Model-Provider-Service"] == "c.s.mps"
 
-    pages = iter([_page("a", has_more=True, last_id=last_id), _page("a")])
+    pages = iter([_page("a", has_more=True, last_id="a"), _page("a")])
     with pytest.raises(AssertionError, match="repeated model id"):
         catalog.fetch_anthropic_provider_catalog("https://workspace", "token", "c.s.mps")
 

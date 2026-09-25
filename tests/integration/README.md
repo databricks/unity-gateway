@@ -257,9 +257,7 @@ the independently fetched catalog for MPS. Labeled default rows appear first, fo
 catalog model, including models also used as defaults; catalog labels are retained. Direct renderer
 tests cover default/catalog composition, while focused CLI regressions cover partial family
 mappings, explicit model selection, and preservation of static model lists. Neither case injects
-a config. The MPS comparison requires the full catalog across all API pages, using the same
-target-workspace bearer as the launch. When the gateway omits `last_id`, pagination uses the
-last returned model ID as `after_id`. Each obtains a token for its
+a config. Each obtains a token for its
 target workspace using OAuth client credentials. The two target service-principal client IDs are
 constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-2 and
 `UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET` for northeast-2. As with the base workspace, the runner

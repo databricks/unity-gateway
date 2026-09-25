@@ -86,9 +86,7 @@ def parse_anthropic_provider_page(payload: object) -> AnthropicProviderPage:
     if last_id is not None and (not isinstance(last_id, str) or not last_id.strip()):
         _fail(f"Anthropic provider catalog page had an invalid last_id: {payload!r}")
     if has_more and last_id is None:
-        # AI Gateway omits cursor fields but accepts the final model ID as after_id.
-        # All model IDs and the nonempty page have already been validated above.
-        last_id = models[-1][0]
+        _fail("Anthropic provider catalog page requested another page without last_id")
 
     return AnthropicProviderPage(tuple(models), has_more, last_id)
 
