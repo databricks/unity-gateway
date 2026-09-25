@@ -17,11 +17,12 @@ disabled; that requires a disposable workstation/VM with an explicit sudo policy
 
 ## Run a specific combination
 
-Prerequisites: Python 3.12+, uv, Node/npm, and Databricks CLI 1.17.0. The runner
-installs the requested agents into a new npm prefix and ug into a new virtualenv.
-Pytest and the PTY/screen libraries (pexpect and pyte) live in a different virtualenv, so they cannot accidentally supply a
-missing application dependency. No packages are installed into your existing
-agent installations or checkout's `.venv`.
+Prerequisites: Python 3.12+, uv, and Node/npm. Live runs also require Databricks
+CLI 1.17.0 and a POSIX host. The runner installs the requested agents into a new
+npm prefix and ug into a new virtualenv. Pytest and, for live runs, the PTY/screen
+libraries (pexpect and pyte) live in a different virtualenv, so they cannot accidentally
+supply a missing application dependency. No packages are installed into your
+existing agent installations or checkout's `.venv`.
 CI pins Databricks CLI 1.17.0 in the live and managed integration lanes. The
 runner's isolated `PATH` exposes that selected CLI, so skills journeys meet ug's
 CLI minimum without falling back to another version installed on the machine.
@@ -83,6 +84,10 @@ This explicitly selects only the installation checks; it does not claim a live
 integration pass. Requested live checks fail when credentials, binaries, models,
 or capabilities are missing. There are no capability-based skips or retries of
 failed model tasks. A failing historical version should remain a failing result.
+The installation-only path also runs natively on Windows, using the installed
+`ug.exe` and `ucode.exe` entry points. Windows live PTY/TUI journeys, managed
+settings, and signal behavior still require separate implementation and coverage;
+requesting a live run on Windows exits with guidance to use `--installation-only`.
 
 Installation checks also invoke both `ug` and `ucode` auth helpers using the public
 bearer override and drive their real local web-search MCP handshake/tool listing.
@@ -345,10 +350,21 @@ The **CI** workflow calls **Integration** on pull requests and pushes to `main`,
 starting alongside unit tests and the existing agent e2e shards. Integration has
 no dependency on agent e2e; a failure there does not prevent integration from running.
 The final required `e2e` check waits for both suites and requires both to succeed.
-It runs directly on fresh GitHub Ubuntu VMs, not inside the optional Docker image.
+The required installation and live jobs run directly on fresh GitHub Ubuntu VMs,
+not inside the optional Docker image. An advisory `windows-server-latest` job runs
+the five credential-free checks in `test_installation.py` (installation, CLI,
+auth-helper, and local MCP) and
+uploads `integration-installation-windows` evidence. It uses `continue-on-error`
+and is not part of `All integration tests` until the initial Windows issues are fixed.
+The Windows job authenticates to the Databricks JFrog package proxy using
+GitHub OIDC, following the organization's SDK CI setup. Its actual OS image is
+recorded in `versions.json`; the organization can update the image behind the
+runner label. The two POSIX version-floor journeys are outside this Windows subset.
+It installs only Claude as the runner prerequisite; the five selected checks
+exercise ug and its local helpers, not either agent's inference path.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
-Its installation job needs no credentials. For same-repository PRs, the live jobs
+Installation jobs need no workspace credentials. For same-repository PRs, the live jobs
 reuse the existing `UCODE_TEST_WORKSPACE` and `DATABRICKS_BEARER` secrets; the full
 Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workflow
 uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
@@ -383,8 +399,9 @@ shards and other PRs; this limit does not guarantee freedom from rate limits.
 No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
-The **All integration tests** check requires installation, workspace validation, smoke,
-both full lanes, and both **Managed config** lanes to pass for full/live runs. Each tracing
+The **All integration tests** check requires Linux installation, workspace validation, smoke,
+both full lanes, and both **Managed config** lanes to pass for full/live runs; the advisory
+Windows installation lane is not yet included. Each tracing
 journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
 a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
 and installation subsets do not select managed tests and do not require them.
@@ -476,7 +493,7 @@ python3.12 scripts/run_integration.py \
 Each job uses fresh consumer dependency resolution. There is no default dependency
 matrix. Manual dispatch accepts an
 optional `dependency` such as `tomlkit==0.14.0`, equivalent to the local runner's
-`--dependency` option. Jobs use Ubuntu 22.04; newer Ubuntu runner
+`--dependency` option. Live agent jobs use Ubuntu 22.04; newer Ubuntu runner
 policies prevented Codex's bubblewrap tool from reading even the test file in the
 first run. The agent sandbox is not disabled or bypassed.
 The workflow consumes the stored bearer; it does not mint or refresh credentials.
@@ -528,7 +545,8 @@ gh run download RUN_ID -R databricks/unity-gateway \
 ```
 
 Use `integration-full-AGENT` for a full lane, `integration-smoke-AGENT` for
-smoke, or `integration-installation` for package failures. Older runs used
+smoke, `integration-installation` for Linux package failures, or
+`integration-installation-windows` for native Windows package failures. Older runs used
 `integration-full-AGENT-GROUP`, `integration-cujs`, or numbered `integration-live-*`
 artifacts; download the name
 shown on that run. Read `versions.json` for the

@@ -85,6 +85,94 @@ jobs:
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
 
+  # Advisory while the first native Windows failures are diagnosed. Once they
+  # are fixed, remove continue-on-error and add this job to the cujs required set.
+  installation-windows:
+    name: Windows installation tests
+    runs-on: windows-server-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PACKAGE_INDEX: https://databricks.jfrog.io/artifactory/api/pypi/db-pypi/simple
+      NPM_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.19.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: 0.9.8
+      - name: Authenticate to JFrog with GitHub OIDC
+        id: jfrog
+        uses: jfrog/setup-jfrog-cli@279b1f629f43dd5bc658d8361ac4802a7ef8d2d5  # v4.9.1
+        env:
+          JF_URL: https://databricks.jfrog.io
+        with:
+          oidc-provider-name: github-actions
+      - name: Diagnose older Codex package availability
+        continue-on-error: true
+        shell: pwsh
+        env:
+          UG_INTEGRATION_NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/ug-npm-probe-cache
+        run: |
+          $config = Join-Path $env:RUNNER_TEMP "ug-npm-probe.npmrc"
+          @'
+          registry=https://databricks.jfrog.io/artifactory/api/npm/db-npm/
+          //databricks.jfrog.io/artifactory/api/npm/db-npm/:_authToken=${UG_INTEGRATION_NPM_TOKEN}
+          fetch-retries=0
+          fetch-timeout=30000
+          '@ | Set-Content -LiteralPath $config -Encoding ascii
+          $failed = $false
+          foreach ($version in @("0.145.0", "0.100.0")) {
+            Write-Host "Checking @openai/codex@$version metadata through JFrog (not installing)"
+            npm --userconfig $config view "@openai/codex@$version" version --json
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+          }
+          if ($failed) { exit 1 }
+      - name: Test a fresh installed package without workspace credentials
+        shell: pwsh
+        env:
+          # uv 0.9.8 resolves credentials for the named default index from
+          # UV_INDEX_<NAME>_USERNAME/PASSWORD without placing them in its URL.
+          UV_DEFAULT_INDEX: databricks-pypi=${{ env.PACKAGE_INDEX }}
+          UV_INDEX_DATABRICKS_PYPI_USERNAME: ${{ steps.jfrog.outputs.oidc-user }}
+          UV_INDEX_DATABRICKS_PYPI_PASSWORD: ${{ steps.jfrog.outputs.oidc-token }}
+          UG_INTEGRATION_NPM_TOKEN: ${{ steps.jfrog.outputs.oidc-token }}
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP "ug-integration"
+          $runnerArgs = @(
+            "--python", "3.12",
+            "--ug-version", $env:UG_VERSION,
+            "--entry-point", $env:ENTRY_POINT,
+            "--claude-version", $env:CLAUDE_VERSION,
+            "--default-index", $env:UV_DEFAULT_INDEX,
+            "--npm-registry", $env:NPM_REGISTRY,
+            "--installation-only",
+            "--output", $output
+          )
+          uv run --no-project --python 3.12 python scripts/run_integration.py @runnerArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload Windows installation evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: integration-installation-windows
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/ug-integration/*.json
+            ${{ runner.temp }}/ug-integration/*.txt
+            ${{ runner.temp }}/ug-integration/*.xml
+            ${{ runner.temp }}/ug-integration/*.log
+            ${{ runner.temp }}/ug-integration/artifacts/
+            ${{ runner.temp }}/ug-integration/wheels/
+
   workspace:
     name: Workspace validation
     if: ${{ inputs.suite != 'installation' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
@@ -257,6 +345,7 @@ jobs:
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    # installation-windows remains advisory until its initial platform issues are fixed.
     needs: [installation, workspace, smoke, full, managed]
     runs-on: ubuntu-latest
     timeout-minutes: 5
