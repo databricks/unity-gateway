@@ -56,7 +56,7 @@ SKILL_BASE_DIR_NAMES = (".claude/skills", ".agents/skills")
 # Parallel skill fetches per schema; writes stay sequential (they prompt).
 _MAX_FETCH_WORKERS = 8
 
-SKILL_UPDATE_BUDGET_SECONDS = 30.0
+SKILL_UPDATE_BUDGET_SECONDS = 60.0
 
 
 # --- On-disk writer --------------------------------------------------------
