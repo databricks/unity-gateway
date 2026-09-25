@@ -230,6 +230,7 @@ class TestDoctorFlow:
         check = Check("thing", "warn", "broken", suggestion)
         with (
             self._only([check]),
+            patch("sys.stdin.isatty", return_value=True),
             patch.object(doctor_mod, "prompt_yes_no_default", return_value=True),
         ):
             rc = doctor()
@@ -242,6 +243,7 @@ class TestDoctorFlow:
         check = Check("thing", "warn", "broken", suggestion)
         with (
             self._only([check]),
+            patch("sys.stdin.isatty", return_value=True),
             patch.object(doctor_mod, "prompt_yes_no_default", return_value=False),
         ):
             doctor()
@@ -252,11 +254,12 @@ class TestDoctorFlow:
         check = Check("thing", "error", "broken", suggestion)
         with (
             self._only([check]),
+            patch("sys.stdin.isatty", return_value=True),
             patch.object(doctor_mod, "prompt_yes_no_default", return_value=True),
             patch.object(doctor_mod, "print_warning") as warn,
         ):
             rc = doctor()
-        assert rc == 0
+        assert rc == 1
         warn.assert_called()
 
     def test_ok_check_is_never_prompted(self):
@@ -267,3 +270,72 @@ class TestDoctorFlow:
         ):
             doctor()
         prompt.assert_not_called()
+
+
+class TestDoctorNonInteractive:
+    def test_piped_run_never_prompts_or_applies(self):
+        applied = []
+        suggestion = Suggestion("Fix it?", lambda: applied.append(True) or True)
+        check = Check("thing", "error", "broken", suggestion)
+        with (
+            patch.object(doctor_mod, "_gather_checks", return_value=[check]),
+            patch("sys.stdin.isatty", return_value=False),
+            patch.object(doctor_mod, "prompt_yes_no_default") as prompt,
+        ):
+            rc = doctor()
+        prompt.assert_not_called()
+        assert applied == []
+        assert rc == 1
+
+    def test_stdin_none_does_not_raise(self):
+        check = Check("thing", "ok", "healthy")
+        with (
+            patch.object(doctor_mod, "_gather_checks", return_value=[check]),
+            patch("sys.stdin", None),
+        ):
+            rc = doctor()
+        assert rc == 0
+
+
+class TestDoctorExitCode:
+    def _run(self, checks: list[Check], interactive: bool = False, prompt_answer: bool = False):
+        with (
+            patch.object(doctor_mod, "_gather_checks", return_value=checks),
+            patch("sys.stdin.isatty", return_value=interactive),
+            patch.object(doctor_mod, "prompt_yes_no_default", return_value=prompt_answer),
+        ):
+            return doctor()
+
+    def test_unresolved_error_returns_1(self):
+        assert self._run([Check("thing", "error", "broken")]) == 1
+
+    def test_warn_only_returns_0(self):
+        assert self._run([Check("thing", "warn", "meh")]) == 0
+
+    def test_ok_returns_0(self):
+        assert self._run([Check("thing", "ok", "healthy")]) == 0
+
+    def test_resolved_error_returns_0(self):
+        suggestion = Suggestion("Fix it?", lambda: True)
+        check = Check("thing", "error", "broken", suggestion)
+        assert self._run([check], interactive=True, prompt_answer=True) == 0
+
+
+class TestGatherChecksIsolation:
+    def test_failing_inspector_does_not_suppress_others(self):
+        ok = Check("npm", "ok", "fine")
+        with (
+            patch.object(doctor_mod, "_check_uv", side_effect=RuntimeError("boom")),
+            patch.object(doctor_mod, "_check_npm", return_value=ok),
+            patch.object(doctor_mod, "_check_databricks_cli", return_value=None),
+            patch.object(doctor_mod, "_check_workspace", return_value=None),
+            patch.object(doctor_mod, "_check_databricks_auth", return_value=None),
+            patch.object(doctor_mod, "_check_anthropic_env_collision", return_value=None),
+            patch.object(doctor_mod, "_check_agent_clis", return_value=[]),
+            patch.object(doctor_mod, "_check_ug", return_value=None),
+        ):
+            checks = doctor_mod._gather_checks()
+        assert ok in checks
+        uv = next(c for c in checks if c.name == "uv")
+        assert uv.status == "error"
+        assert uv.detail.startswith("check could not run")
