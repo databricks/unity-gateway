@@ -33,7 +33,6 @@ from ucode.agents import (
     install_databricks_ai_tools_for_agents,
     install_tool_binary,
     normalize_tool,
-    prepare_launch_model,
     resolve_gemini_provider_model,
     resolve_launch_model,
     resolve_provider_models,
@@ -43,6 +42,7 @@ from ucode.agents import codex as codex_agent
 from ucode.agents import (
     launch as launch_agent,
 )
+from ucode.agents import opencode as opencode_agent
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
@@ -2812,13 +2812,12 @@ def _launch_tool(
             managed_model = (
                 managed_launch_model(managed, recommendation, tool) if managed is not None else None
             )
-            model, launch_model = prepare_launch_model(
-                tool,
-                state,
-                model,
-                managed_model,
-                ctx.args,
-            )
+            launch_model = managed_model
+            if tool == "opencode":
+                requested_model = explicit_model_arg_value(ctx.args) or model
+                if requested_model is not None:
+                    model = opencode_agent.resolve_explicit_model(requested_model, state)
+                    launch_model = model
             state, resolved_model = resolve_launch_model(tool, state, launch_model)
             # The admin's model outranks a smart-routing pick too. Claude only launches on it when
             # pinned as ANTHROPIC_MODEL (route_root_model).

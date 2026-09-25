@@ -292,25 +292,6 @@ def default_model_for_tool(tool: str, state: dict) -> str | None:
     return _MODULES[tool].default_model(state)
 
 
-def prepare_launch_model(
-    tool: str,
-    state: dict,
-    model: str | None,
-    managed_model: str | None,
-    tool_args: list[str],
-) -> tuple[str | None, str | None]:
-    """Prepare a user model and the initial candidate for shared resolution.
-
-    Agents may provide a ``prepare_launch_model`` hook when their native model
-    selector needs launch-specific normalization. Agents without the hook keep
-    the existing ``model``/``managed_model`` precedence unchanged.
-    """
-    preparer = getattr(_MODULES[tool], "prepare_launch_model", None)
-    if callable(preparer):
-        return preparer(state, model, managed_model, tool_args)
-    return model, managed_model
-
-
 def resolve_launch_model(
     tool: str,
     state: dict,
