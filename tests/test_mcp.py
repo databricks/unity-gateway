@@ -284,6 +284,48 @@ class TestConfigureClientMcpServer:
         assert probed == []  # AGENT_OAUTH_CLIENT has no entry for codex → no probe
 
 
+class TestUnionMissing:
+    def test_adds_requested_agent_to_existing_server(self):
+        server = {
+            "name": "databricks-sql",
+            "url": f"{WS}/api/2.0/mcp/sql",
+            "auth": "proxy",
+            "clients": ["opencode", "copilot"],
+        }
+
+        result = mcp._union_missing([server], [], ["claude"])
+
+        assert result == [{**server, "clients": ["opencode", "copilot", "claude"]}]
+        assert server["clients"] == ["opencode", "copilot"]
+
+    def test_preserves_existing_agents_for_a_selected_server(self):
+        existing = {"name": "databricks-sql", "clients": ["opencode", "copilot"]}
+        selected = {"name": "databricks-sql", "clients": ["claude"]}
+
+        assert mcp._union_missing([existing], [selected], ["claude"]) == [
+            {"name": "databricks-sql", "clients": ["opencode", "copilot", "claude"]}
+        ]
+
+    def test_keeps_existing_agent_binding_once(self):
+        server = {"name": "databricks-sql", "clients": ["claude"]}
+
+        assert mcp._union_missing([server], [], ["claude"]) == [server]
+
+    def test_preserves_nameless_entry(self):
+        server = {"url": f"{WS}/api/2.0/mcp/external/legacy", "clients": ["opencode"]}
+
+        assert mcp._union_missing([server], [], ["claude"]) == [server]
+
+    def test_keeps_skill_entry_on_its_existing_agents(self):
+        server = {
+            "name": mcp.SKILLS_MCP_SERVER_NAME,
+            "kind": mcp.SKILLS_MCP_KIND,
+            "clients": ["opencode"],
+        }
+
+        assert mcp._union_missing([server], [server], ["claude"]) == [server]
+
+
 class TestMcpPicker:
     def test_prompt_uses_scrolling_checkbox_selector(self, monkeypatch):
         checkbox_calls: list[dict] = []
@@ -1780,6 +1822,36 @@ class TestAddMcpCommand:
 
         assert configured == [("claude", "system-ai-github")]
         assert saved_states[-1]["mcp_servers"][0]["clients"] == ["claude"]
+
+    def test_agents_adds_existing_server_to_named_agent(self, monkeypatch, capsys):
+        existing = {
+            "name": "system-ai-github",
+            "url": f"{WS}/ai-gateway/mcp-services/system.ai.github",
+            "auth": "proxy",
+            "clients": ["codex"],
+        }
+        saved_states: list[dict] = []
+        configured: list[tuple[str, str]] = []
+        _stub_location_base(
+            monkeypatch,
+            {"workspace": WS, "available_tools": ["claude", "codex"], "mcp_servers": [existing]},
+        )
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude", "codex"])
+        monkeypatch.setattr(
+            mcp, "list_mcp_services", lambda workspace, token, parent: (["system.ai.github"], None)
+        )
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda client, name, url, *a, **kw: configured.append((client, name)) or [],
+        )
+        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
+
+        assert mcp.add_mcp_command(location="system.ai", agents={"claude"}) == 0
+
+        assert configured == [("claude", "system-ai-github")]
+        assert saved_states[-1]["mcp_servers"] == [{**existing, "clients": ["codex", "claude"]}]
+        assert "Added" not in capsys.readouterr().out
 
     def test_agents_not_configured_raises(self, monkeypatch):
         """`--agents` naming an agent that isn't configured for MCP is a clear error
