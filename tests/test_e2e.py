@@ -424,6 +424,8 @@ E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     "grok": frozenset({"codex", "copilot", "pi"}),
     # These Gemini endpoints hang OpenCode well past its E2E timeout.
     "databricks-gemini-3-1-flash-lite": frozenset({"opencode"}),
+    # Image-only Gemini endpoints reject function calling, which Pi's launch smoke requires.
+    "flash-lite-image": frozenset({"pi"}),
     # These endpoints do not support Copilot's MLflow chat route.
     "-codex": frozenset({"copilot"}),
     "gpt-5-5": frozenset({"copilot"}),
@@ -1226,7 +1228,8 @@ class TestPiLaunch:
             if not _model_is_skipped(model, "pi"):
                 out.append(("codex", model))
         for model in e2e_state.get("gemini_models") or []:
-            out.append(("gemini", model))
+            if not _model_is_skipped(model, "pi"):
+                out.append(("gemini", model))
         return out
 
     def test_incompatible_models_are_skipped(self):
