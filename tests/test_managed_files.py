@@ -399,6 +399,7 @@ class TestSudoReplace:
                 tool="claude",
                 display="Claude Code",
                 owned_paths=[["env"]],
+                parser=json.loads,
             )
 
         assert result == "unchanged"
@@ -638,6 +639,7 @@ class TestManagedFileLifecycle:
             tool="claude",
             display="Claude Code",
             owned_paths=[["ucode"]],
+            parser=json.loads,
         )
 
         assert result == "written"
@@ -655,6 +657,7 @@ class TestManagedFileLifecycle:
             tool="claude",
             display="Claude Code",
             owned_paths=[["ucode"]],
+            parser=json.loads,
         )
 
         assert result == "unsupported"
@@ -674,6 +677,7 @@ class TestManagedFileLifecycle:
                 tool="claude",
                 display="Claude Code",
                 owned_paths=[["ucode"]],
+                parser=json.loads,
             )
         assert (backup_dir / "manifest.json").exists()
 
@@ -693,6 +697,7 @@ class TestManagedFileLifecycle:
                 tool="claude",
                 display="Claude Code",
                 owned_paths=[["ucode"]],
+                parser=json.loads,
             )
 
     def test_reconcile_backs_up_before_write(self, tmp_path, backup_dir, monkeypatch):
@@ -710,6 +715,7 @@ class TestManagedFileLifecycle:
             tool="claude",
             display="Claude Code",
             owned_paths=[["ucode"]],
+            parser=json.loads,
         )
 
         assert result == "written"
@@ -739,6 +745,7 @@ class TestManagedFileLifecycle:
                     tool=tool,
                     display=tool.title(),
                     owned_paths=[["ucode"]],
+                    parser=json.loads,
                 )
 
         assert notes == ["Enter password to configure settings for Codex and Claude Code."]
@@ -757,10 +764,56 @@ class TestManagedFileLifecycle:
             tool="claude",
             display="Claude Code",
             owned_paths=[["env"]],
+            parser=json.loads,
         )
 
         assert result == "unchanged"
         assert not backup_dir.exists()
+
+    def test_semantic_noop_with_parser_retains_bytes_without_write(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        path = tmp_path / "managed.json"
+        path.write_text('{"b": 2, "a": 1}\n', encoding="utf-8")  # admin key order
+        monkeypatch.setattr(
+            managed_files, "_sudo_replace", lambda *args: pytest.fail("must not write")
+        )
+
+        result = managed_files.reconcile_managed_file(
+            path,
+            '{"a": 1, "b": 2}\n',  # same content, different serialization
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["a"]],
+            parser=json.loads,
+        )
+
+        assert result == "unchanged"
+        assert path.read_text() == '{"b": 2, "a": 1}\n'  # exact bytes retained
+        assert not backup_dir.exists()
+
+    def test_semantically_different_with_parser_still_writes(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        # The semantic check uses this function's own fresh read, so a genuinely different live
+        # value (e.g. a concurrent device-management replacement) is never mistaken for a no-op.
+        path = tmp_path / "managed.json"
+        path.write_text('{"a": 1}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            managed_files, "_sudo_replace", lambda t, text: t.write_text(text, encoding="utf-8")
+        )
+
+        result = managed_files.reconcile_managed_file(
+            path,
+            '{"a": 2}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["a"]],
+            parser=json.loads,
+        )
+
+        assert result == "written"
+        assert json.loads(path.read_text()) == {"a": 2}
 
     def test_verified_check_uses_fingerprint(self, tmp_path):
         path = tmp_path / "managed.json"
@@ -786,6 +839,7 @@ class TestManagedFileLifecycle:
             tool="claude",
             display="Claude Code",
             owned_paths=[["ucode"]],
+            parser=json.loads,
         )
 
         result = managed_files.revert_managed_file(
@@ -813,6 +867,7 @@ class TestManagedFileLifecycle:
             tool="claude",
             display="Claude Code",
             owned_paths=[["ucode"]],
+            parser=json.loads,
         )
 
         result = managed_files.revert_managed_file(
@@ -839,6 +894,7 @@ class TestManagedFileLifecycle:
             tool="claude",
             display="Claude Code",
             owned_paths=[["ucode"]],
+            parser=json.loads,
         )
         path.write_text(
             '{"enterprise": "new-policy", "ucode": "gateway", "new": true}\n',
@@ -874,6 +930,7 @@ class TestManagedFileLifecycle:
                 tool="claude",
                 display="Claude Code",
                 owned_paths=[["ucode"]],
+                parser=json.loads,
             )
 
         assert calls == 2
@@ -894,9 +951,88 @@ class TestManagedFileLifecycle:
                 tool="claude",
                 display="Claude Code",
                 owned_paths=[["ucode"]],
+                parser=json.loads,
             )
 
         assert json.loads(path.read_text()) == {"enterprise": "new"}
+
+
+class TestSemanticEqual:
+    @pytest.mark.parametrize(
+        "left,right,expected",
+        [
+            ({"a": 1, "b": 2}, {"b": 2, "a": 1}, True),  # mapping order ignored
+            ({"a": 1}, {"a": 1, "b": 2}, False),  # extra key
+            ({"a": 1}, {"a": 2}, False),
+            ([1, 2, 3], [1, 2, 3], True),
+            ([1, 2, 3], [3, 2, 1], False),  # array order significant
+            ([1, 2], [1, 2, 3], False),
+            (True, 1, False),  # bool never equals int
+            (1, True, False),
+            (False, 0, False),
+            (True, True, True),
+            (1, 1.0, False),  # int never equals float
+            (1, 1, True),
+            ("1", 1, False),
+            ("x", "x", True),
+            (None, None, True),
+            (None, 0, False),
+            ({"x": [{"k": True}]}, {"x": [{"k": True}]}, True),  # nested
+            ({"x": [{"k": True}]}, {"x": [{"k": 1}]}, False),  # nested bool vs int
+        ],
+    )
+    def test_scalars_and_containers(self, left, right, expected):
+        assert managed_files.is_semantically_equal(left, right) is expected
+
+    def test_nan_floats_compare_equal(self):
+        # A config that already holds a NaN must not be rewritten on every launch.
+        assert managed_files.is_semantically_equal(float("nan"), float("nan")) is True
+        assert managed_files.is_semantically_equal({"x": float("nan")}, {"x": float("nan")}) is True
+        assert managed_files.is_semantically_equal(float("nan"), 1.0) is False
+
+    def test_unwraps_tomlkit_values(self):
+        import tomlkit
+
+        doc = tomlkit.parse('b = true\ni = 1\n[t]\nk = "v"\n')
+        assert (
+            managed_files.is_semantically_equal(doc, {"b": True, "i": 1, "t": {"k": "v"}}) is True
+        )
+        # A parsed-TOML bool still never equals an int.
+        assert managed_files.is_semantically_equal(doc, {"b": 1, "i": 1, "t": {"k": "v"}}) is False
+
+
+def test_revert_semantic_noop_preserves_bytes_without_sudo(tmp_path, backup_dir, monkeypatch):
+    # An admin who edited ug's owned value to their own leaves nothing for revert to remove; the
+    # three-way merge is a semantic no-op and must not shell out to sudo just to reserialize.
+    path = tmp_path / "managed.json"
+    monkeypatch.setattr(
+        managed_files, "_sudo_replace", lambda t, text: t.write_text(text, encoding="utf-8")
+    )
+    path.write_text('{"enterprise": true}\n', encoding="utf-8")
+    managed_files.reconcile_managed_file(
+        path,
+        '{"enterprise": true, "ucode": "v1"}\n',
+        tool="claude",
+        display="Claude Code",
+        owned_paths=[["ucode"]],
+        parser=json.loads,
+    )
+    admin_text = '{"ucode":"admin","enterprise":true,"note":"x"}\n'  # reordered + extra key
+    path.write_text(admin_text, encoding="utf-8")
+
+    def no_sudo(*args, **kwargs):
+        pytest.fail("semantic no-op must not invoke sudo")
+
+    monkeypatch.setattr(managed_files, "_sudo_replace", no_sudo)
+    monkeypatch.setattr(managed_files, "_sudo_remove", no_sudo)
+
+    managed_files.revert_managed_file(
+        "claude",
+        display="Claude Code",
+        parser=json.loads,
+        dumper=lambda doc: json.dumps(doc, sort_keys=True) + "\n",
+    )
+    assert path.read_text() == admin_text  # exact bytes preserved
 
 
 def test_managed_writes_disabled_without_tty(monkeypatch):
