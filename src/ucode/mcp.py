@@ -2140,7 +2140,8 @@ def _parse_codex_mcp_list(output: str) -> dict[str, str]:
 
     Codex reports config state (``enabled``/``disabled``), not a health probe. Columns are
     separated by runs of two-plus spaces; the name is the first column and the state column holds
-    ``enabled`` or ``disabled``. The header row (first column ``Name``) is skipped.
+    ``enabled`` or ``disabled``. The header row and prose lines are skipped, so an unrecognized
+    line contributes nothing rather than a bogus entry.
     """
     statuses: dict[str, str] = {}
     for raw in output.splitlines():
@@ -2149,7 +2150,9 @@ def _parse_codex_mcp_list(output: str) -> dict[str, str]:
             continue
         fields = re.split(r"\s{2,}", line)
         name = fields[0].strip()
-        if not name or name == "Name":
+        # Registered MCP server names are single tokens (the health parser assumes the same), so a
+        # first column with a space is prose: the header, or the "no servers configured" message.
+        if not name or name == "Name" or " " in name:
             continue
         state = LIVE_UNKNOWN
         for field in fields[1:]:
@@ -2162,12 +2165,17 @@ def _parse_codex_mcp_list(output: str) -> dict[str, str]:
 
 
 def parse_mcp_list_output(client: str, output: str) -> dict[str, str]:
-    """Parse an agent's `mcp list` output into ``{server_name: live-state}`` (best-effort)."""
-    if _is_missing_mcp_server_output(output):
+    """Parse an agent's `mcp list` output into ``{server_name: live-state}`` (best-effort).
+
+    Parse the rows first, and read the output as "no servers configured" only when none parsed.
+    That check looks for phrases like "not found", which also appear inside a single server's
+    failure detail (``Failed to connect - HTTP 404 Not Found``), so checking it up front would
+    let one broken server empty the whole listing.
+    """
+    parsed = _parse_codex_mcp_list(output) if client == "codex" else _parse_health_mcp_list(output)
+    if not parsed and _is_missing_mcp_server_output(output):
         return {}
-    if client == "codex":
-        return _parse_codex_mcp_list(output)
-    return _parse_health_mcp_list(output)
+    return parsed
 
 
 def _run_mcp_list(client: str) -> str | None:
