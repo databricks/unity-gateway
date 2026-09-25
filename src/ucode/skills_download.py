@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
@@ -54,6 +55,8 @@ SKILL_BASE_DIR_NAMES = (".claude/skills", ".agents/skills")
 
 # Parallel skill fetches per schema; writes stay sequential (they prompt).
 _MAX_FETCH_WORKERS = 8
+
+SKILL_UPDATE_BUDGET_SECONDS = 30.0
 
 
 # --- On-disk writer --------------------------------------------------------
@@ -448,7 +451,7 @@ def _eligible_launch_refresh_records(records: list[dict], workspace: str) -> lis
 
 
 def _get_updated_refs(
-    workspace: str, token: str, records: list[dict]
+    workspace: str, token: str, records: list[dict], deadline: float
 ) -> list[tuple[dict, SkillRef]]:
     """Pair each record to re-download with its current skill: one whose UC source is newer than
     its download, or one whose on-disk copy is only partly present and needs restoring to mirror UC.
@@ -457,31 +460,44 @@ def _get_updated_refs(
     unauthorized) is skipped, leaving its on-disk copy alone. Times are parsed before comparing
     so the two RFC-3339 forms UC emits sort chronologically. A record with no parseable recorded
     ``uc_update_time`` predates attribution, so it is refreshed once to backfill the field.
+    Stops waiting once ``deadline`` (a ``time.monotonic()`` value) passes, acting on whatever
+    resolved in time; unresolved records keep their on-disk copy and are retried next sweep.
     """
     if not records:
         return []
     pairs: list[tuple[dict, SkillRef]] = []
-    with ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(records))) as pool:
+    pool = ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(records)))
+    try:
         futures = {pool.submit(get_skill, workspace, token, r["fqn"]): r for r in records}
-        for future in as_completed(futures):
-            ref = future.result()
-            if ref is None:
-                continue
-            record = futures[future]
-            stored = parse_update_time(record.get("uc_update_time"))
-            current = parse_update_time(ref.uc_update_time)
-            is_newer = stored is None or (current is not None and current > stored)
-            if is_newer or _record_dirs_missing(record):
-                pairs.append((record, ref))
+        try:
+            for future in as_completed(futures, timeout=max(0.0, deadline - time.monotonic())):
+                ref = future.result()
+                if ref is None:
+                    continue
+                record = futures[future]
+                stored = parse_update_time(record.get("uc_update_time"))
+                current = parse_update_time(ref.uc_update_time)
+                is_newer = stored is None or (current is not None and current > stored)
+                if is_newer or _record_dirs_missing(record):
+                    pairs.append((record, ref))
+        except TimeoutError:
+            pass  # out of budget: act on whatever resolved in time
+    finally:
+        # Reads are safe to abandon; don't block the launch on in-flight calls.
+        pool.shutdown(wait=False, cancel_futures=True)
     return pairs
 
 
-def _update_stale_skills(workspace: str, token: str, pairs: list[tuple[dict, SkillRef]]) -> int:
+def _update_stale_skills(
+    workspace: str, token: str, pairs: list[tuple[dict, SkillRef]], deadline: float
+) -> int:
     """Re-download each stale skill into its own base and refresh its manifest record.
 
     Overwrites in place with no prompt, since the developer already chose to download these,
     and only manifest-attributed directories are touched, so a user-authored skill of the same
     name is never overwritten. Returns how many skills were rewritten.
+    Stops starting new work once ``deadline`` passes; a skill is only ever fully written or
+    left untouched, never interrupted mid-write.
     """
     home = os.path.normpath(str(Path.home()))
     refs_by_base: dict[str, list[SkillRef]] = {}
@@ -490,6 +506,8 @@ def _update_stale_skills(workspace: str, token: str, pairs: list[tuple[dict, Ski
 
     updated = 0
     for base, refs in refs_by_base.items():
+        if time.monotonic() >= deadline:
+            break
         path = None if base == home else base
         roots = skill_dir_roots(path)
         written = _fetch_bundles_and_write(workspace, token, refs, roots, label="Updating skills")
@@ -505,7 +523,8 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
     ``last_update_check`` stamp, so back-to-back launches make no network calls. A record whose
     directories the user deleted entirely is forgotten; one only partly deleted is re-downloaded
     to restore the mirror. Best-effort: any failure is reported and the launch proceeds on
-    whatever is already on disk.
+    whatever is already on disk. The whole sweep is bounded to ``SKILL_UPDATE_BUDGET_SECONDS``;
+    when it runs out, checks/updates done so far stand and the rest wait for the next sweep.
     """
     try:
         now = datetime.now(UTC)
@@ -523,8 +542,9 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
         if present:
             print_note("Checking Unity Catalog for downloaded skill updates...")
             token = get_databricks_token(workspace, state.get("profile"))
-            pairs = _get_updated_refs(workspace, token, present)
-            updated = _update_stale_skills(workspace, token, pairs)
+            deadline = time.monotonic() + SKILL_UPDATE_BUDGET_SECONDS
+            pairs = _get_updated_refs(workspace, token, present, deadline)
+            updated = _update_stale_skills(workspace, token, pairs, deadline)
             if updated:
                 print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
     except Exception as exc:  # noqa: BLE001 - a skill refresh must never block a launch
