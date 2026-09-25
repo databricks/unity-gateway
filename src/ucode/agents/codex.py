@@ -630,6 +630,15 @@ def managed_mcp_entry(argv: list[str]) -> dict:
     return {"command": argv[0], "args": list(argv[1:])}
 
 
+def managed_mcp_http_entry(url: str, client_id: str) -> dict:
+    """A ``[mcp_servers.<name>]`` **direct HTTP+OAuth** entry: Codex is the OAuth client and drives
+    the connection login itself (the batched analogue of ``add_codex_http_mcp_server``). ``url`` is
+    both the server URL and the RFC 8707 ``oauth_resource``; ``client_id`` is the published
+    ``codex-cli`` app. Codex derives its per-server loopback ``/callback/<hash>`` redirect at login,
+    so no callback need be written here."""
+    return {"url": url, "oauth_resource": url, "oauth": {"client_id": client_id}}
+
+
 def user_mcp_config_path() -> Path:
     """The file ``codex mcp add`` writes user-scope MCP servers to: ``$CODEX_HOME/config.toml`` when
     that env var is set (the ``codex`` CLI honors it), else the default ``~/.codex/config.toml``. A
