@@ -87,7 +87,9 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session):
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
 
     catalog = fetch_anthropic_provider_catalog(
-        workspace, os.environ["DATABRICKS_BEARER"], MANAGED_CLAUDE_PROVIDER_SERVICE
+        CLAUDE_MPS_DEFAULTS_WORKSPACE,
+        os.environ["DATABRICKS_BEARER"],
+        MANAGED_CLAUDE_PROVIDER_SERVICE,
     )
     expected_families = ("opus", "sonnet", "haiku", "fable")
     command = [str(session.binary), "claude", "--", "--version"]

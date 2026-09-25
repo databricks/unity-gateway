@@ -251,11 +251,12 @@ cover focused model, MCP, skills, and lifecycle shapes, including per-agent mode
 and managed skill cleanup. The two Claude default-model cases read published MPS and Unity
 Catalog sources directly from `eng-ml-inference-batch-inference-us-west-2` and
 `eng-ml-inference-ap-northeast-2`, respectively, then verify both generated settings files retain
-all admin-authored family defaults. Their replacement pickers contain those mapped defaults plus the independently fetched catalog
-for MPS. Labeled default rows appear first, followed by every catalog model, including models
-also used as defaults; catalog labels are retained. Direct renderer tests cover default/catalog
-composition, while focused CLI regressions cover partial family mappings, explicit model selection,
-and preservation of static model lists. Neither case injects a config. Each obtains a token for its
+all admin-authored family defaults. Their replacement pickers contain those mapped defaults plus
+the independently fetched catalog for MPS. Labeled default rows appear first, followed by every
+catalog model, including models also used as defaults; catalog labels are retained. Direct renderer
+tests cover default/catalog composition, while focused CLI regressions cover partial family
+mappings, explicit model selection, and preservation of static model lists. Neither case injects
+a config. Each obtains a token for its
 target workspace using OAuth client credentials. The two target service-principal client IDs are
 constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-2 and
 `UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET` for northeast-2. As with the base workspace, the runner
