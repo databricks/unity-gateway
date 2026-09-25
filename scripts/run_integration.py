@@ -22,6 +22,7 @@ import sys
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +42,50 @@ MANAGED_DEFAULTS_TARGETS = (
         "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET",
     ),
 )
+UV_INDEX_CREDENTIAL_ENV = (
+    "UV_INDEX_DATABRICKS_PYPI_USERNAME",
+    "UV_INDEX_DATABRICKS_PYPI_PASSWORD",
+)
+NPM_TOKEN_ENV = "UG_INTEGRATION_NPM_TOKEN"
+INSTALLER_CREDENTIAL_ENV = (*UV_INDEX_CREDENTIAL_ENV, NPM_TOKEN_ENV)
+
+
+def installer_environment(
+    base_environment: Mapping[str, str],
+    source_environment: Mapping[str, str],
+    credential_keys: Iterable[str],
+    npm_user_config: Path | None = None,
+) -> dict[str, str]:
+    """Add only supported installer credentials to an isolated environment."""
+    environment = dict(base_environment)
+    for key in credential_keys:
+        if value := source_environment.get(key):
+            environment[key] = value
+    if npm_user_config is not None:
+        environment["npm_config_userconfig"] = str(npm_user_config)
+    return environment
+
+
+def npm_user_config(registry: str) -> str:
+    """Configure npm auth through an environment reference, never a raw token."""
+    parsed = urllib.parse.urlsplit(registry)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("The npm registry must be an absolute HTTP(S) URL.")
+    if parsed.username or parsed.password:
+        raise ValueError("The npm registry URL must not contain credentials.")
+    registry = registry.rstrip("/") + "/"
+    auth_path = parsed.path.rstrip("/") + "/"
+    return (
+        f"registry={registry}\n"
+        f"//{parsed.netloc}{auth_path}:_authToken=${{{NPM_TOKEN_ENV}}}\n"
+        "always-auth=true\n"
+    )
+
+
+def redact_secrets(value: str, secrets: Iterable[str]) -> str:
+    for secret in sorted({secret for secret in secrets if secret}, key=len, reverse=True):
+        value = value.replace(secret, "<redacted>")
+    return value
 
 
 def process_group_options() -> dict:
@@ -358,6 +403,16 @@ def main() -> int:
     base_env["npm_config_fetch_timeout"] = "30000"
     base_env["UV_CACHE_DIR"] = str(output / "cache")
     base_env["UV_DEFAULT_INDEX"] = args.default_index
+    npm_token = os.environ.get(NPM_TOKEN_ENV, "")
+    npm_config = None
+    if npm_token:
+        npm_config = output / "installer.npmrc"
+        # npm expands the environment reference at request time. The short-lived
+        # token is never written to disk or included in an argument or URL.
+        npm_config.write_text(npm_user_config(args.npm_registry))
+    python_install_env = installer_environment(base_env, os.environ, UV_INDEX_CREDENTIAL_ENV)
+    npm_install_env = installer_environment(base_env, os.environ, (NPM_TOKEN_ENV,), npm_config)
+    installer_secrets = tuple(os.environ.get(key, "") for key in INSTALLER_CREDENTIAL_ENV)
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
     second_bearer = os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
@@ -369,16 +424,17 @@ def main() -> int:
     )
 
     def redact(value: str) -> str:
-        for secret in (
-            bearer,
-            second_bearer,
-            oauth_token,
-            *target_bearers.values(),
-            *client_secrets,
-        ):
-            if secret:
-                value = value.replace(secret, "<redacted>")
-        return value
+        return redact_secrets(
+            value,
+            (
+                bearer,
+                second_bearer,
+                oauth_token,
+                *target_bearers.values(),
+                *client_secrets,
+                *installer_secrets,
+            ),
+        )
 
     def run(command, *, cwd=output, env=base_env, timeout=600) -> str:
         timed_out = False
@@ -458,7 +514,11 @@ def main() -> int:
                     "No checkout in this image. Pass --ug-version or mount --ug-wheel."
                 )
             wheels = output / "wheels"
-            run([uv, "build", "--wheel", "--out-dir", wheels, ROOT], cwd=ROOT)
+            run(
+                [uv, "build", "--wheel", "--out-dir", wheels, ROOT],
+                cwd=ROOT,
+                env=python_install_env,
+            )
             (wheel,) = wheels.glob("*.whl")
             report["git_commit"] = run(["git", "rev-parse", "HEAD"], cwd=ROOT)
             report["tracked_diff"] = run(
@@ -489,7 +549,8 @@ def main() -> int:
                 "--constraint",
                 constraints.as_uri(),
                 package,
-            ]
+            ],
+            env=python_install_env,
         )
         run([uv, "pip", "check", "--python", python])
         freeze = run([uv, "pip", "freeze", "--python", python])
@@ -556,7 +617,8 @@ def main() -> int:
                     "--no-fund",
                     "--registry",
                     args.npm_registry,
-                ]
+                ],
+                env=npm_install_env,
             )
         else:
             run(
@@ -571,7 +633,8 @@ def main() -> int:
                     "--registry",
                     args.npm_registry,
                     *[f"{AGENT_PACKAGES[a]}@{getattr(args, f'{a}_version')}" for a in agents],
-                ]
+                ],
+                env=npm_install_env,
             )
         shutil.copyfile(npm_prefix / "package-lock.json", output / "npm-lock.json")
         report["npm_packages"] = json.loads(
@@ -677,7 +740,8 @@ def main() -> int:
                 "--default-index",
                 args.default_index,
                 *test_dependencies,
-            ]
+            ],
+            env=python_install_env,
         )
         (output / "test-dependencies.txt").write_text(
             run([uv, "pip", "freeze", "--python", test_python]) + "\n"
