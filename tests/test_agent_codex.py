@@ -1677,6 +1677,63 @@ class TestCodexManagedConfig:
         assert doc["approval_policy"] == "on-request"
         assert "model" not in doc
 
+    def _sudo_counting_env(self, tmp_path, monkeypatch):
+        """Real reconcile flow (semantic no-op check included) with sudo writes counted."""
+        config_path = tmp_path / ".codex" / "ucode.config.toml"
+        managed_path = tmp_path / "etc-codex" / "managed_config.toml"
+        sudo_writes: list[str] = []
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "codex-ucode-config.backup.toml")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
+        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", tmp_path / "managed-backups")
+        monkeypatch.setattr(
+            managed_files, "MANAGED_BACKUP_MANIFEST_PATH", tmp_path / "managed-backups" / "m.json"
+        )
+
+        def _write(target, text):
+            sudo_writes.append(text)
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", _write)
+        return managed_path, sudo_writes
+
+    def test_reapply_unchanged_config_invokes_no_sudo(self, tmp_path, monkeypatch):
+        # Codex parity: repeated launches with an unchanged config reach a fixed point with no
+        # further privileged writes.
+        managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+        codex.write_tool_config(state)
+        baseline = len(sudo_writes)
+        assert baseline >= 1
+        first_bytes = managed_path.read_bytes()
+        codex.write_tool_config(state)
+        codex.write_tool_config(state)
+        assert len(sudo_writes) == baseline  # semantic no-op: no additional privileged writes
+        assert managed_path.read_bytes() == first_bytes
+
+    def test_admin_unrelated_edit_invokes_no_sudo(self, tmp_path, monkeypatch):
+        # An admin's unrelated top-level key is preserved and does not force a ug rewrite.
+        managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+        codex.write_tool_config(state)
+        baseline = len(sudo_writes)
+        # Prepend an unrelated top-level key (valid TOML: bare keys precede table headers).
+        managed_path.write_text(
+            'approval_policy = "on-request"\n' + managed_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        before = managed_path.read_bytes()
+        codex.write_tool_config(state)
+        assert len(sudo_writes) == baseline  # unrelated edit did not force a rewrite
+        assert managed_path.read_bytes() == before
+        assert read_toml_safe(managed_path)["approval_policy"] == "on-request"
+
     def test_provider_settings_stay_launch_scoped(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
         managed_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1854,7 +1911,7 @@ class TestCodexReconcileManagedMcp:
         monkeypatch.setattr(codex, "read_managed_file", lambda path: existing_text)
         monkeypatch.setattr(codex, "mark_managed_file_verified", lambda *a, **k: None)
 
-        def fake_reconcile(path, desired_text, *, tool, display, owned_paths):
+        def fake_reconcile(path, desired_text, *, tool, display, owned_paths, parser=None):
             captured.update(text=desired_text, tool=tool, owned_paths=owned_paths)
 
         monkeypatch.setattr(codex, "reconcile_managed_file", fake_reconcile)

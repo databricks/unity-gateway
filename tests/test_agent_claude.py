@@ -1197,6 +1197,69 @@ class TestWriteToolConfigManagedSettings:
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
         assert not any(line.startswith("x-team:") for line in custom_headers())
 
+    def _sudo_counting_env(self, tmp_path, monkeypatch):
+        """Real reconcile flow with privileged writes counted instead of actually run."""
+        managed_path = tmp_path / "managed-settings.json"
+        backup_dir = tmp_path / "managed-backups"
+        sudo_writes: list[str] = []
+        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backup_dir)
+        monkeypatch.setattr(
+            managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backup_dir / "manifest.json"
+        )
+
+        def _write(target, text):
+            sudo_writes.append(text)
+            target.write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", _write)
+        monkeypatch.setattr(managed_files, "_sudo_remove", lambda *a: sudo_writes.append("remove"))
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        monkeypatch.setattr(
+            claude,
+            "refresh_managed_config",
+            lambda *a, **kw: _managed_config_result({"claude": {}}),
+        )
+        return managed_path, sudo_writes
+
+    def test_reapply_unchanged_config_invokes_no_sudo(self, tmp_path, monkeypatch):
+        # Repeated `ug claude` launches with an unchanged config and an intact managed file must
+        # reach a fixed point: exactly one privileged write, then none.
+        managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        state = {"workspace": WS, "codex_models": [], "claude_http_headers": {"x-team": "eng-ml"}}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert len(sudo_writes) == 1
+        first_bytes = managed_path.read_bytes()
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert len(sudo_writes) == 1  # no further privileged writes
+        assert managed_path.read_bytes() == first_bytes  # exact bytes preserved
+
+    def test_admin_unrelated_edit_invokes_no_sudo(self, tmp_path, monkeypatch):
+        # An admin's unrelated edit (a new policy key, keys reordered) is preserved and does not
+        # trigger a ug privileged write, because the composed document is semantically unchanged.
+        managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        state = {"workspace": WS, "codex_models": [], "claude_http_headers": {"x-team": "eng-ml"}}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert len(sudo_writes) == 1
+        doc = json.loads(managed_path.read_text())
+        # Reserialize with an unrelated admin key placed first and ug keys reordered after it.
+        managed_path.write_text(
+            json.dumps({"adminPolicy": {"z": 1, "a": 2}, **doc}), encoding="utf-8"
+        )
+        before = managed_path.read_bytes()
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert len(sudo_writes) == 1  # unrelated edit did not force a rewrite
+        assert managed_path.read_bytes() == before
+        assert json.loads(managed_path.read_text())["adminPolicy"] == {"z": 1, "a": 2}
+
     def test_managed_file_applies_model_default_precedence(self, monkeypatch):
         managed_defaults = self._write_managed_model_defaults(
             monkeypatch,
@@ -2559,7 +2622,7 @@ class TestClaudeReconcileManagedMcp:
         monkeypatch.setattr(claude, "read_managed_file", lambda path: existing_text)
         monkeypatch.setattr(claude, "mark_managed_file_verified", lambda *a, **k: None)
 
-        def fake_reconcile(path, desired_text, *, tool, display, owned_paths):
+        def fake_reconcile(path, desired_text, *, tool, display, owned_paths, parser=None):
             captured.update(text=desired_text, tool=tool, owned_paths=owned_paths)
 
         monkeypatch.setattr(claude, "reconcile_managed_file", fake_reconcile)

@@ -255,7 +255,7 @@ def _parse_managed_settings(text: str) -> dict:
 
 
 def _dump_managed_settings(settings: dict) -> str:
-    return json.dumps(settings, indent=2) + "\n"
+    return json.dumps(settings, indent=2, sort_keys=True) + "\n"
 
 
 def managed_settings_are_current(state: dict) -> bool:
@@ -852,6 +852,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             tool="claude",
             display="Claude Code",
             owned_paths=[[MANAGED_MCP_SETTINGS_KEY]],
+            parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
         return False
@@ -1300,6 +1301,7 @@ def _reconcile_managed_settings(
             tool="claude",
             display="Claude Code",
             owned_paths=owned_paths,
+            parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
         conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
