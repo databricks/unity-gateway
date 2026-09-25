@@ -32,6 +32,7 @@ from ucode.databricks import (
     MIN_DATABRICKS_CLI_VERSION,
     build_tool_base_url,
     databricks_cli_version,
+    get_databricks_token,
     has_valid_databricks_auth,
     install_databricks_cli,
     run_databricks_login,
@@ -348,10 +349,71 @@ def _check_databricks_auth() -> Check | None:
     if not workspace:
         return None
     profile = state.get("profile")
+
+    # Branch 1: Static DATABRICKS_BEARER set
+    bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
+    if bearer:
+        return Check(
+            "Databricks auth",
+            "warn",
+            "DATABRICKS_BEARER is set but ug cannot verify it here; launches will fail if it is invalid or expired (gateway access not verified).",
+        )
+
+    # Branch 2: DATABRICKS_BEARER_COMMAND set
+    command = os.environ.get("DATABRICKS_BEARER_COMMAND", "").strip()
+    if command:
+        with spinner("Verifying Databricks credentials..."):
+            try:
+                token = get_databricks_token(workspace, profile)
+                obtained = bool(token)
+            except RuntimeError:
+                obtained = False
+        if obtained:
+            return Check(
+                "Databricks auth",
+                "ok",
+                "DATABRICKS_BEARER_COMMAND produces a token (gateway access not verified).",
+            )
+        else:
+            return Check(
+                "Databricks auth",
+                "error",
+                "DATABRICKS_BEARER_COMMAND did not produce a token; launches will fail to authenticate.",
+            )
+
+    # Branch 3: Custom OAuth configured
+    if isinstance(state.get("custom_oauth"), dict):
+        custom_profile = state["custom_oauth"].get("profile")
+        if isinstance(custom_profile, str) and custom_profile.strip():
+            custom_profile = custom_profile.strip()
+            with spinner("Verifying Databricks credentials..."):
+                ok = has_valid_databricks_auth(workspace, custom_profile)
+            if ok:
+                return Check(
+                    "Databricks auth",
+                    "ok",
+                    "custom OAuth client credentials are obtainable (gateway access not verified).",
+                )
+            else:
+                return Check(
+                    "Databricks auth",
+                    "warn",
+                    "custom OAuth client has no obtainable token yet; run a ug command that authenticates (gateway access not verified).",
+                )
+        else:
+            return Check(
+                "Databricks auth",
+                "warn",
+                "custom OAuth is configured but not yet authenticated (unverified).",
+            )
+
+    # Branch 4: Standard OAuth / PAT
     with spinner("Verifying Databricks credentials..."):
         ok = has_valid_databricks_auth(workspace, profile)
     if ok:
-        return Check("Databricks auth", "ok", "credentials are valid")
+        return Check(
+            "Databricks auth", "ok", "credentials are obtainable (gateway access not verified)."
+        )
 
     def _login() -> bool:
         try:
@@ -363,7 +425,7 @@ def _check_databricks_auth() -> Check | None:
     return Check(
         "Databricks auth",
         "warn",
-        "no valid credentials for this workspace (launches will fail to authenticate)",
+        "no obtainable credentials for this workspace (launches will fail to authenticate)",
         Suggestion("Log in to Databricks now?", _login),
     )
 
