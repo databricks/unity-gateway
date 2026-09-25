@@ -182,22 +182,25 @@ def apply_json_mcp_diff(
     remove: set[str],
     *,
     backup_path: Path | None = None,
-) -> None:
+) -> set[str]:
     """Apply an ``add``/``remove`` MCP-server diff to the ``key`` map in a JSON config, in one
     read-modify-write. Shared by the agents whose MCP servers live in a JSON object keyed by name
     (copilot/cursor/gemini/opencode); the developer's own entries and every other key are kept.
-    ``backup_path`` snapshots the file first when the agent keeps a revert backup."""
+    ``backup_path`` snapshots the file first when the agent keeps a revert backup. Returns the subset
+    of ``remove`` names that were actually present (so callers can report only real removals)."""
     if backup_path is not None:
         backup_existing_file(path, backup_path)
     existing = read_json_safe(path)
     servers = existing.get(key)
     if not isinstance(servers, dict):
         servers = {}
+    removed = {name for name in remove if name in servers}
     for name in remove:
         servers.pop(name, None)
     servers.update(add)
     existing[key] = servers
     write_json_file(path, existing)
+    return removed
 
 
 def read_toml_safe(path: Path) -> tomlkit.TOMLDocument:

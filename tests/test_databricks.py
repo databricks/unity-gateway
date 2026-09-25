@@ -2501,6 +2501,39 @@ class TestProbeUnityGatewayCapabilities:
         )
         assert not db_mod._looks_like_scope_failure("HTTP 403: Missing Unity Catalog grants")
 
+    def test_definitive_auth_failure_matches_invalid_token_403(self):
+        # A stale PAT 403s with an "Invalid access token" body — that's the token being
+        # rejected, not a missing grant, so it must classify as a definitive auth failure.
+        assert db_mod._looks_like_definitive_auth_failure(
+            'HTTP 403 Forbidden: {"error_code":403,"message":"Invalid access token."}'
+        )
+        assert db_mod._looks_like_definitive_auth_failure("HTTP 401: Unauthorized")
+        assert db_mod._looks_like_definitive_auth_failure("HTTP 400: Invalid Token")
+        # A plain permission 403 (missing grant) is left to permission routing.
+        assert not db_mod._looks_like_definitive_auth_failure(
+            "HTTP 403: Missing Unity Catalog grants"
+        )
+
+    def test_raise_for_invalid_access_token(self):
+        with pytest.raises(db_mod.AuthTokenError, match="expired or invalid") as e:
+            db_mod.raise_for_invalid_access_token(WS, "HTTP 403 Forbidden: Invalid access token.")
+        assert "databricks auth login" in str(e.value)
+        assert "PAT" in str(e.value)
+        # No-op for a permission 403 or a clean result, so best-effort discovery still skips quietly.
+        db_mod.raise_for_invalid_access_token(WS, "HTTP 403: Missing Unity Catalog grants")
+        db_mod.raise_for_invalid_access_token(WS, None)
+
+    def test_invalid_token_403_routes_to_reauth_in_probe(self, monkeypatch):
+        # The gateway probe should also route a token-invalid 403 to re-auth guidance,
+        # not the "missing grants" permission message.
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token: (None, "HTTP 403 Forbidden: Invalid access token."),
+        )
+        with pytest.raises(RuntimeError, match="rejected the access token"):
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
     def test_model_service_forbidden_reports_permission_error(self, monkeypatch):
         calls: list[str] = []
 
@@ -3942,3 +3975,39 @@ class TestWalkCatalogSchemasCancellation:
         assert reason is None
         assert len(collected) == N // 2
         assert all("." in r for r in collected)
+
+
+class TestMcpServiceNeedsConnectionLogin:
+    """`mcp_service_needs_connection_login` classifies whether an mcp-service needs a per-user
+    connection sign-in (from its source_connection's securable_kind)."""
+
+    def _mock_http(self, monkeypatch, details=None, err=None):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **k: (details, err))
+
+    def test_true_for_oauth_u2m_connection(self, monkeypatch):
+        self._mock_http(
+            monkeypatch,
+            details={
+                "config": {
+                    "source_connection": {"securable_kind": "CONNECTION_HTTP_OAUTH_U2M_MAPPING"}
+                }
+            },
+        )
+        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.github") is True
+
+    def test_false_when_no_source_connection(self, monkeypatch):
+        # e.g. system.ai.web_search: no backing connection, so no per-user login (AIGTWY-4856).
+        self._mock_http(monkeypatch, details={"config": {"internal": {}}})
+        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.web_search") is False
+
+    def test_false_for_non_u2m_kind(self, monkeypatch):
+        self._mock_http(
+            monkeypatch,
+            details={"config": {"source_connection": {"securable_kind": "CONNECTION_MYSQL"}}},
+        )
+        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.pg") is False
+
+    def test_false_on_lookup_error(self, monkeypatch):
+        # Safe default: an unreachable API must not push a service into an OAuth flow.
+        self._mock_http(monkeypatch, details=None, err="HTTP 500")
+        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.github") is False
