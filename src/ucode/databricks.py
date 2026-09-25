@@ -1313,6 +1313,31 @@ class PermissionDeniedError(RuntimeError):
     denial for a consumer."""
 
 
+class AuthTokenError(RuntimeError):
+    """The workspace rejected the access token *itself* — expired or invalid — as
+    opposed to a valid identity missing a grant (:class:`PermissionDeniedError`).
+
+    A ``--use-pat`` profile is never validated locally (the static PAT is exported
+    as ``DATABRICKS_BEARER`` and returned unchecked), so a stale PAT only surfaces
+    on the first real API call. Discovery callers let this propagate as a hard,
+    actionable error instead of skipping the source, so an expired/invalid token
+    is reported rather than looking like an empty workspace (AIGTWY-4843)."""
+
+
+def raise_for_invalid_access_token(workspace: str, reason: str | None) -> None:
+    """Raise :class:`AuthTokenError` with re-auth guidance when ``reason`` shows the
+    workspace rejected the token itself. No-op for any other failure (permission,
+    transient) so a best-effort discovery caller can still skip a source quietly."""
+    if reason and _looks_like_definitive_auth_failure(reason):
+        raise AuthTokenError(
+            f"Databricks rejected the access token for {workspace} — it is expired or "
+            f"invalid ({reason}). Re-authenticate:\n"
+            f"  databricks auth login --host {workspace}\n"
+            "If this profile uses a personal access token (PAT), generate a new token "
+            "and update it in ~/.databrickscfg."
+        )
+
+
 def _looks_like_cli_permission_error(stderr: str | None) -> bool:
     """Whether a Databricks CLI stderr indicates an authorization failure.
 
@@ -2050,6 +2075,36 @@ def list_mcp_services(
 
 def build_mcp_service_url(workspace: str, full_name: str) -> str:
     return f"{workspace}{AIGW_MCP_SERVICES_SEGMENT}{full_name}"
+
+
+# Connection securable kinds that use per-user OAuth (U2M): the mcp-service only vends its tools
+# after a one-time per-user sign-in to the backing SaaS. Mirrors the webapp's
+# `hasGenericAccessTokenFlowKnownKinds`. A service with no source connection (e.g.
+# `system.ai.web_search`) needs no sign-in — just the Databricks token.
+OAUTH_U2M_CONNECTION_KINDS = frozenset(
+    {
+        "CONNECTION_HTTP_OAUTH_U2M_MAPPING",
+        "CONNECTION_HTTP_DCR",
+        "CONNECTION_SLACK_OAUTH_U2M_MAPPING",
+    }
+)
+
+
+def mcp_service_needs_connection_login(workspace: str, token: str, full_name: str) -> bool:
+    """Whether an AI Gateway mcp-service is backed by a per-user OAuth (U2M) connection, and so
+    needs a one-time connection sign-in before it vends tools.
+
+    Reads the service's ``config.source_connection.securable_kind`` via a per-service GET (the
+    listing omits it). No source connection (e.g. ``system.ai.web_search``), a non-U2M kind, or a
+    failed lookup all return ``False`` — the safe default: such services work with only the
+    Databricks token that ``ug mcp-proxy`` injects, and must not be pushed into a connection-login
+    OAuth flow they can't complete (AIGTWY-4856)."""
+    prefix = f"https://{workspace_hostname(workspace)}/api/2.1/unity-catalog"
+    details, err = _http_get_json(f"{prefix}/mcp-services/{quote(full_name, safe='')}", token)
+    if err is not None or not isinstance(details, dict):
+        return False
+    kind = ((details.get("config") or {}).get("source_connection") or {}).get("securable_kind")
+    return kind in OAUTH_U2M_CONNECTION_KINDS
 
 
 def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
@@ -3009,14 +3064,18 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
 
 
 def _looks_like_definitive_auth_failure(reason: str) -> bool:
-    """True when the token itself is rejected (401, or an invalid-token 400).
+    """True when the token itself is rejected (expired or invalid).
 
-    A 403 is left to the scope and permission routing, since it can mean a
-    missing OAuth scope or missing Unity Catalog grants rather than a bad token.
+    Matches a 401, an invalid-token 400 (the AI Gateway's `Invalid Token`), or a
+    403 whose body reports an invalid access token (Unity Catalog rejects a stale
+    PAT this way, e.g. `HTTP 403 Forbidden: ...Invalid access token...`). A *plain*
+    403 with no token-invalid wording is left to the scope and permission routing,
+    since it can mean a missing OAuth scope or Unity Catalog grants, not a bad token.
     """
-    if "HTTP 401" in reason:
+    lowered = reason.lower()
+    if "http 401" in lowered:
         return True
-    return "HTTP 400" in reason and "invalid token" in reason.lower()
+    return "invalid token" in lowered or "invalid access token" in lowered
 
 
 def _looks_like_scope_failure(reason: str) -> bool:

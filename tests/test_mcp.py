@@ -176,6 +176,8 @@ class TestConfigureClientMcpServer:
         monkeypatch.setattr(
             mcp, "oauth_client_available", lambda ws, client_id: claude_code_available
         )
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         monkeypatch.setattr(claude, "remove_claude_mcp_server", lambda name, scope: False)
         monkeypatch.setattr(
             claude,
@@ -194,6 +196,17 @@ class TestConfigureClientMcpServer:
         mcp.configure_client_mcp_server("claude", "github", AIGW_MCP_URL, WS, "p")
         assert http_calls == [("github", AIGW_MCP_URL)]
         assert proxy_calls == []
+
+    def test_claude_no_login_service_uses_proxy(self, monkeypatch):
+        # A no-login mcp-service (e.g. web_search: no backing connection) must NOT get the native
+        # HTTP+OAuth entry even when claude-code is available -- it uses the stdio proxy, so it is
+        # never forced into a connection-login OAuth flow it can't complete (AIGTWY-4856).
+        http_calls, proxy_calls = self._capture_claude(monkeypatch, claude_code_available=True)
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: False)
+        url = f"{WS}/ai-gateway/mcp-services/system.ai.web_search"
+        mcp.configure_client_mcp_server("claude", "web_search", url, WS, "p")
+        assert http_calls == []
+        assert len(proxy_calls) == 1
 
     def test_claude_aigw_service_falls_back_to_proxy_without_client(self, monkeypatch):
         http_calls, proxy_calls = self._capture_claude(monkeypatch, claude_code_available=False)
@@ -221,6 +234,8 @@ class TestConfigureClientMcpServer:
         monkeypatch.setattr(
             mcp, "oauth_client_available", lambda ws, client_id: cursor_client_available
         )
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         monkeypatch.setattr(
             mcp.cursor,
             "write_http_mcp_server_config",
@@ -321,9 +336,9 @@ class TestMcpPicker:
         # Databricks SQL is not promoted as an up-front picker entry.
         assert "Databricks SQL" not in choices_by_title
 
-    def test_additive_picker_shows_configured_servers_as_disabled(self):
-        """In `ucode mcp add` mode an already-configured server can't be removed, so
-        it's shown as a non-toggleable note rather than a pre-checked box."""
+    def test_additive_picker_hides_configured_servers(self):
+        """In `ucode mcp add` an already-configured server has nothing to add, so it's hidden
+        entirely — the picker lists only servers you can add."""
         choices = mcp.build_mcp_picker_choices(
             ["github-mcp", "slack-mcp"],
             [],
@@ -332,10 +347,8 @@ class TestMcpPicker:
             additive=True,
         )
         choices_by_title = {choice.title: choice for choice in choices}
-        configured = choices_by_title["Connection: github-mcp"]
-        assert configured.disabled == "already configured"
-        assert configured.checked is False
-        # A not-yet-configured server stays an addable, toggleable choice.
+        # The already-configured server is gone; only the addable one remains.
+        assert "Connection: github-mcp" not in choices_by_title
         assert choices_by_title["Connection: slack-mcp"].disabled is None
 
     def test_removal_picker_lists_configured_servers_with_their_clients(self, monkeypatch):
@@ -584,6 +597,8 @@ class TestApplyMcpServerChanges:
             mcp.claude, "write_user_mcp_servers", lambda a, r: writes.append((a, r))
         )
         monkeypatch.setattr(mcp, "oauth_client_available", lambda ws, cid: True)
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         url = f"{WS}/ai-gateway/mcp-services/system.ai.github"
         working = [{"name": "system-ai-github", "url": url, "clients": ["claude"]}]
 
@@ -614,7 +629,9 @@ class TestManagedMcpEntry:
         assert e["type"] == "stdio"
         assert e == mcp.claude.user_stdio_mcp_entry(self._argv())
 
-    def test_claude_http_when_http_client_and_mcp_services_url(self):
+    def test_claude_http_when_http_client_and_mcp_services_url(self, monkeypatch):
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         e = mcp._managed_mcp_entry(
             "claude",
             self.MCP_URL,
@@ -635,6 +652,17 @@ class TestManagedMcpEntry:
         )
         assert e["type"] == "stdio"
 
+    def test_claude_stdio_when_no_login_mcp_service(self, monkeypatch):
+        # A no-login mcp-service (web_search) uses the proxy even with an http_client, so it works
+        # without a connection-login OAuth prompt (AIGTWY-4856).
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: False)
+        url = f"{WS}/ai-gateway/mcp-services/system.ai.web_search"
+        e = mcp._managed_mcp_entry(
+            "claude", url, WS, None, use_pat=False, always_load=False, http_client="claude-code"
+        )
+        assert e["type"] == "stdio"
+
     def test_claude_always_load_stdio_entry(self):
         e = mcp._managed_mcp_entry(
             "claude", self.MCP_URL, WS, None, use_pat=False, always_load=True, http_client=None
@@ -642,7 +670,9 @@ class TestManagedMcpEntry:
         assert e.get("alwaysLoad") is True and e["type"] == "stdio"
         assert e == mcp.claude.user_stdio_mcp_entry(self._argv(), always_load=True)
 
-    def test_cursor_http_entry_uses_client_id(self):
+    def test_cursor_http_entry_uses_client_id(self, monkeypatch):
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         e = mcp._managed_mcp_entry(
             "cursor",
             self.MCP_URL,
@@ -930,16 +960,18 @@ class TestConfigureMcpCommand:
         ]
 
     def test_mcp_service_choice_known_vs_unknown(self):
-        # Unregistered -> an add-choice; already-registered -> a removable toggle
-        # (replace mode) or a disabled note (mcp add, additive).
+        # Unregistered -> an add-choice; already-registered -> a removable toggle in replace
+        # mode, and hidden (None) under `mcp add` since there is nothing to add.
         add = mcp._mcp_service_choice("mycat.sch.weather", set(), additive=False)
         assert (
             add.value == f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}mycat.sch.weather"
         )
         toggle = mcp._mcp_service_choice("mycat.sch.weather", {"mycat-sch-weather"}, additive=False)
         assert toggle.value == "mycat-sch-weather" and toggle.checked
-        note = mcp._mcp_service_choice("mycat.sch.weather", {"mycat-sch-weather"}, additive=True)
-        assert note.value == "mycat-sch-weather" and note.disabled
+        assert (
+            mcp._mcp_service_choice("mycat.sch.weather", {"mycat-sch-weather"}, additive=True)
+            is None
+        )
 
     def test_skips_slow_walks_unless_source_selected(self, monkeypatch):
         """Vector Search and UC functions walk the workspace and are OFF by
@@ -1032,7 +1064,7 @@ class TestConfigureMcpCommand:
 
     def test_drops_stale_foreign_workspace_mcp_entries(self, monkeypatch, capsys):
         saved_states: list[dict] = []
-        cleanup_calls: list[tuple[str, str]] = []
+        writes: list[tuple[dict, set]] = []
         other_ws = "https://other-workspace.cloud.databricks.com"
         stale_entry = {
             "name": "databricks-genie-foreign",
@@ -1062,9 +1094,7 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch, "databricks-sql")
         monkeypatch.setattr(
-            mcp,
-            "remove_client_mcp_server",
-            lambda client, name: cleanup_calls.append((client, name)) or [],
+            mcp.claude, "write_user_mcp_servers", lambda a, r: writes.append((a, r))
         )
         monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
 
@@ -1073,14 +1103,14 @@ class TestConfigureMcpCommand:
         output = capsys.readouterr().out
         assert "Dropping 1 stale MCP entry" in output
         assert "databricks-genie-foreign" in output
-        # codex is listed on the stale entry but not installed -> skipped.
-        assert cleanup_calls == [("claude", "databricks-genie-foreign")]
+        # One batched user-scope removal for claude (codex is on the entry but isn't installed).
+        assert writes == [({}, {"databricks-genie-foreign"})]
         assert saved_states, "expected sanitized state to be persisted"
         assert saved_states[0]["mcp_servers"] == [kept_entry]
 
     def test_removes_orphan_mcp_entries_from_other_workspace_buckets(self, monkeypatch, capsys):
         saved_states: list[dict] = []
-        cleanup_calls: list[tuple[str, str]] = []
+        writes: list[tuple[dict, set]] = []
         other_ws = "https://other-workspace.cloud.databricks.com"
         current_entry = {
             "name": "databricks-sql",
@@ -1120,10 +1150,11 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch, "databricks-sql")
+        # The batched writer reports the names it actually removed; the orphan was present.
         monkeypatch.setattr(
-            mcp,
-            "remove_client_mcp_server",
-            lambda client, name: cleanup_calls.append((client, name)) or [mcp.MCP_USER_SCOPE],
+            mcp.claude,
+            "write_user_mcp_servers",
+            lambda a, r: (writes.append((a, r)), set(r))[1],
         )
         monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
 
@@ -1132,20 +1163,15 @@ class TestConfigureMcpCommand:
         output = capsys.readouterr().out
         assert "left over from previously-configured workspaces" in output
         assert "orphan-mcp" in output
-        # codex was in orphan-mcp's clients but isn't installed -> skipped.
-        assert cleanup_calls == [("claude", "orphan-mcp")]
+        # One batched user-scope removal for claude (codex was on the entry but isn't installed).
+        assert writes == [({}, {"orphan-mcp"})]
 
-    def test_skips_orphan_warning_when_nothing_was_actually_removed(self, monkeypatch, capsys):
-        """Re-running the MCP configure flow on the same workspace shouldn't repeat the warning
-        if the leftover entries were already removed by a previous run."""
-        cleanup_calls: list[tuple[str, str]] = []
+    def test_skips_orphan_warning_when_no_leftover_entries(self, monkeypatch, capsys):
+        """No leftover entries tracked in other workspaces -> no removal and no warning. A prior
+        switch clears the other buckets, so later same-workspace runs land here instead of
+        re-purging (and re-printing) the same already-removed servers every time."""
+        writes: list[tuple[dict, set]] = []
         other_ws = "https://other-workspace.cloud.databricks.com"
-        orphan_entry = {
-            "name": "orphan-mcp",
-            "url": f"{other_ws}/api/2.0/mcp/external/orphan-mcp",
-            "auth": "proxy",
-            "clients": ["claude"],
-        }
 
         monkeypatch.setattr(
             mcp,
@@ -1157,10 +1183,7 @@ class TestConfigureMcpCommand:
             "load_full_state",
             lambda: {
                 "current_workspace": WS,
-                "workspaces": {
-                    WS: {},
-                    other_ws: {"mcp_servers": [orphan_entry]},
-                },
+                "workspaces": {WS: {}, other_ws: {"mcp_servers": []}},
             },
         )
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
@@ -1168,11 +1191,8 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch)
-        # Stub returns empty list -> "entry wasn't in this agent's config".
         monkeypatch.setattr(
-            mcp,
-            "remove_client_mcp_server",
-            lambda client, name: cleanup_calls.append((client, name)) or [],
+            mcp.claude, "write_user_mcp_servers", lambda a, r: writes.append((a, r))
         )
         monkeypatch.setattr(mcp, "save_state", lambda state: None)
 
@@ -1180,8 +1200,7 @@ class TestConfigureMcpCommand:
 
         output = capsys.readouterr().out
         assert "left over from previously-configured workspaces" not in output
-        # The removal attempt was still made (cheap and safe); we just don't announce it.
-        assert cleanup_calls == [("claude", "orphan-mcp")]
+        assert writes == []
 
     def test_warns_when_app_selection_is_no_longer_discoverable(self, monkeypatch, capsys):
         saved_states: list[dict] = []
@@ -2874,8 +2893,25 @@ class TestRevertMcpConfigs:
 
 
 class TestPurgeCrossWorkspaceSkillsEntry:
-    @pytest.mark.parametrize("copied_clients", [["claude"], ["claude", "codex"]])
-    def test_workspace_switch_removes_each_client_once(self, monkeypatch, copied_clients):
+    @staticmethod
+    def _capture_batched_writes(monkeypatch, clients, *, returns="all"):
+        """Stub ``write_user_mcp_servers`` on each client module, recording ``(add, remove)`` and
+        returning the names it "removed" so the caller reports only real removals: ``"all"`` = every
+        requested name was present, ``"none"`` = the entries were already gone."""
+        writes: dict[str, list[tuple[dict, set]]] = {c: [] for c in clients}
+
+        def make(client):
+            def _write(add, remove):
+                writes[client].append((add, remove))
+                return set(remove) if returns == "all" else set()
+
+            return _write
+
+        for client in clients:
+            monkeypatch.setattr(getattr(mcp, client), "write_user_mcp_servers", make(client))
+        return writes
+
+    def test_workspace_switch_removes_residue_once_per_client(self, monkeypatch):
         from ucode import state as state_mod
 
         monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
@@ -2889,31 +2925,106 @@ class TestPurgeCrossWorkspaceSkillsEntry:
         # the new bucket before invoking cleanup.
         state = state_mod.load_state()
         state["workspace"] = WS
-        state["mcp_servers"] = [{**skills_entry, "clients": copied_clients}]
+        state["mcp_servers"] = [skills_entry]
         state_mod.save_state(state)
-        removed: list[tuple[str, str]] = []
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude", "codex"])
-        monkeypatch.setattr(
-            mcp,
-            "remove_client_mcp_server",
-            lambda client, name: removed.append((client, name)) or ["user"],
-        )
+        writes = self._capture_batched_writes(monkeypatch, ["claude", "codex"])
 
         mcp.purge_cross_workspace_mcp_residue(state, WS)
 
-        assert removed == [
-            ("claude", mcp.SKILLS_MCP_SERVER_NAME),
-            ("codex", mcp.SKILLS_MCP_SERVER_NAME),
-        ]
+        # One batched user-scope removal per installed client (deduped across the foreign-host copy
+        # and the previous workspace's record), instead of a CLI/config removal per (client, scope).
+        for client in writes:
+            assert writes[client] == [({}, {mcp.SKILLS_MCP_SERVER_NAME})]
         full = state_mod.load_full_state()
+        # The copied entry is gone from the current bucket, and the previous workspace's own bucket
+        # is preserved so switching back to it still recognizes the configured server.
         assert full["workspaces"][WS]["mcp_servers"] == []
         assert full["workspaces"][foreign]["mcp_servers"] == [skills_entry]
 
-    @pytest.mark.parametrize("copied_to_current", [True, False], ids=["copied", "orphan"])
-    @pytest.mark.parametrize("failure", ["timeout", "missing-binary", "command-error"])
-    def test_removal_failure_warns_and_continues(
-        self, monkeypatch, capsys, copied_to_current, failure
-    ):
+    def test_reports_residue_removed_from_other_workspace(self, monkeypatch, capsys):
+        from ucode import state as state_mod
+
+        monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
+        monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
+        other = "https://other.databricks.com"
+        entry = {"name": "databricks-sql", "url": f"{other}/api/2.0/mcp/sql", "clients": ["claude"]}
+        state_mod.save_state({"workspace": other, "mcp_servers": [entry]})
+        state = {"workspace": WS, "mcp_servers": []}
+        state_mod.save_state(state)
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
+        writes = self._capture_batched_writes(monkeypatch, ["claude"])
+
+        mcp.purge_cross_workspace_mcp_residue(state, WS)
+
+        assert writes["claude"] == [({}, {"databricks-sql"})]
+        out = _unwrap(capsys.readouterr().out)
+        assert (
+            "Removed 1 MCP entry left over from previously-configured workspaces: databricks-sql"
+            in out
+        )
+        # The other workspace's bucket record is preserved for a later switch back.
+        assert state_mod.load_full_state()["workspaces"][other]["mcp_servers"] == [entry]
+
+    def test_repeat_run_silent_when_entries_already_removed(self, monkeypatch, capsys):
+        from ucode import state as state_mod
+
+        monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
+        monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
+        other = "https://other.databricks.com"
+        entry = {"name": "databricks-sql", "url": f"{other}/api/2.0/mcp/sql", "clients": ["claude"]}
+        state_mod.save_state({"workspace": other, "mcp_servers": [entry]})
+        state = {"workspace": WS, "mcp_servers": []}
+        state_mod.save_state(state)
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
+        # The entry is already gone from Claude's config, so the batched write removes nothing.
+        writes = self._capture_batched_writes(monkeypatch, ["claude"], returns="none")
+
+        mcp.purge_cross_workspace_mcp_residue(state, WS)
+
+        # The removal is still attempted (cheap), but nothing was actually removed, so there is no
+        # warning to repeat on every run and the previous workspace's bucket stays intact.
+        assert writes["claude"] == [({}, {"databricks-sql"})]
+        assert "left over from previously-configured workspaces" not in _unwrap(
+            capsys.readouterr().out
+        )
+        assert state_mod.load_full_state()["workspaces"][other]["mcp_servers"] == [entry]
+
+    def test_skips_names_the_current_workspace_manages(self, monkeypatch, capsys):
+        from ucode import state as state_mod
+
+        monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
+        monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
+        other = "https://other.databricks.com"
+        shared = {"name": "system-ai-github", "url": f"{other}/x", "clients": ["claude"]}
+        state_mod.save_state({"workspace": other, "mcp_servers": [shared]})
+        # The current workspace registers the same-named server through its managed set (the
+        # `system.ai` default lives in `managed_mcp_servers`).
+        state = {
+            "workspace": WS,
+            "mcp_servers": [],
+            "managed_mcp_servers": [{"name": "system-ai-github", "clients": ["claude"]}],
+        }
+        state_mod.save_state(state)
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
+        writes = self._capture_batched_writes(monkeypatch, ["claude"])
+
+        mcp.purge_cross_workspace_mcp_residue(state, WS)
+
+        # system-ai-github is the current workspace's own managed server, so it must NOT be treated
+        # as cross-workspace residue — purging it would delete the live entry the reconcile just
+        # added (keyed by name), churning and re-warning on every `configure`.
+        assert writes["claude"] == []
+        assert "left over from previously-configured workspaces" not in _unwrap(
+            capsys.readouterr().out
+        )
+
+    @pytest.mark.parametrize(
+        "failure",
+        [RuntimeError("config is locked"), OSError("no such file"), None],
+        ids=["runtime", "os", "timeout"],
+    )
+    def test_removal_failure_warns_and_continues(self, monkeypatch, capsys, failure):
         from ucode import state as state_mod
 
         monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
@@ -2922,38 +3033,30 @@ class TestPurgeCrossWorkspaceSkillsEntry:
         skills_entry = mcp._resolve_skills_mcp_servers(
             foreign, ["claude", "codex"], _by_client(["claude", "codex"], ["a.b"]), []
         )[0]
-        state_mod.save_state({"workspace": foreign, "mcp_servers": [skills_entry]})
-        state = {"workspace": WS, "mcp_servers": [skills_entry] if copied_to_current else []}
+        state = {"workspace": WS, "mcp_servers": [skills_entry]}
         state_mod.save_state(state)
-        calls: list[list[str]] = []
+        codex_writes: list[tuple[dict, set]] = []
 
-        def run_removal(args, **kwargs):
-            calls.append(args)
-            assert args[1:4] == ["mcp", "remove", mcp.SKILLS_MCP_SERVER_NAME]
-            if args[0] == "claude":
-                if failure == "timeout":
-                    raise mcp.subprocess.TimeoutExpired(args, kwargs["timeout"])
-                if failure == "missing-binary":
-                    raise FileNotFoundError(2, "No such file or directory", "claude")
-                raise mcp.subprocess.CalledProcessError(1, args, stderr="config is locked")
-            assert args[0] == "codex"
-            return mcp.subprocess.CompletedProcess(args, 0, stdout="Removed", stderr="")
+        def claude_write(add, remove):
+            raise mcp.subprocess.TimeoutExpired(["claude"], 5) if failure is None else failure
 
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude", "codex"])
-        # Exercise the real client dispatch and exception conversion, stopping
-        # only at the subprocess boundary so no installed agent is modified.
-        monkeypatch.setattr(mcp.subprocess, "run", run_removal)
+        monkeypatch.setattr(mcp.claude, "write_user_mcp_servers", claude_write)
+        monkeypatch.setattr(
+            mcp.codex,
+            "write_user_mcp_servers",
+            lambda a, r: (codex_writes.append((a, r)), set(r))[1],
+        )
 
         mcp.purge_cross_workspace_mcp_residue(state, WS)
 
-        assert sorted(args[0] for args in calls) == ["claude", "codex"]
         output = _unwrap(capsys.readouterr().out)
-        assert output.count("Failed to remove `databricks-skill-registry` from Claude Code") == 1
+        # A client whose batched write fails is warned about; the others still complete.
+        assert output.count("Failed to remove stale MCP entries from Claude Code") == 1
+        assert codex_writes == [({}, {mcp.SKILLS_MCP_SERVER_NAME})]
         assert state_mod.load_state()["mcp_servers"] == []
-        assert state_mod.load_full_state()["workspaces"][foreign]["mcp_servers"] == [skills_entry]
 
     def test_drops_foreign_workspace_skills_entry(self, monkeypatch):
-        removed: list[tuple[str, str]] = []
         saved_states: list[dict] = []
         foreign = "https://other.databricks.com"
         skills_entry = mcp._resolve_skills_mcp_servers(
@@ -2965,16 +3068,12 @@ class TestPurgeCrossWorkspaceSkillsEntry:
 
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "load_full_state", lambda: {})
-        monkeypatch.setattr(
-            mcp,
-            "remove_client_mcp_server",
-            lambda client, name: removed.append((client, name)) or ["user"],
-        )
+        writes = self._capture_batched_writes(monkeypatch, ["claude"])
         monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
 
         mcp.purge_cross_workspace_mcp_residue(state, WS)
 
-        assert removed == [("claude", mcp.SKILLS_MCP_SERVER_NAME)]
+        assert writes["claude"] == [({}, {mcp.SKILLS_MCP_SERVER_NAME})]
         assert state["mcp_servers"] == []
 
 
@@ -3222,6 +3321,8 @@ class TestReconcileManagedMcpServers:
             mcp.claude, "managed_mcp_uses_managed_file", lambda ws, *, use_pat: claude_eligible
         )
         monkeypatch.setattr(mcp.codex, "managed_mcp_uses_managed_file", lambda: codex_eligible)
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
 
         def claude_reconcile(state, servers):
             captured["claude"] = servers
@@ -3584,6 +3685,118 @@ class TestSingleSourceSkipsPrompt:
         assert captured["allow_back"] is None  # back-nav no longer requested
 
 
+class TestManagedServersAreNotReAdded:
+    """`ug mcp add` must say so, and not duplicate, when managed config already provides a server."""
+
+    def _stub_managed_files(self, monkeypatch, claude_urls=None, codex_urls=None):
+        monkeypatch.setattr(mcp.claude, "read_managed_mcp_urls", lambda: dict(claude_urls or {}))
+        monkeypatch.setattr(mcp.codex, "read_managed_mcp_urls", lambda: dict(codex_urls or {}))
+
+    def test_enumeration_merges_state_and_managed_files_scoped_by_agent(self, monkeypatch):
+        self._stub_managed_files(
+            monkeypatch, claude_urls={"from-file": "u1"}, codex_urls={"codex-only": "u2"}
+        )
+        state = {"managed_mcp_servers": [{"name": "from-state", "url": "u", "clients": ["claude"]}]}
+
+        assert mcp.managed_mcp_server_names(state, {"claude"}) == {"from-state", "from-file"}
+        assert mcp.managed_mcp_server_names(state, {"codex"}) == {"codex-only"}
+        assert mcp.managed_mcp_server_names(state) == {"from-state", "from-file", "codex-only"}
+
+    @pytest.mark.parametrize("additive", [True, False])
+    def test_managed_service_is_hidden_from_the_picker(self, additive):
+        # A managed server is never ug's to add or remove here (it lives in the OS-managed file),
+        # so it's hidden in both modes rather than shown as an inert row.
+        assert (
+            mcp._mcp_service_choice(
+                "system.ai.github", {"system-ai-github"}, additive, {"system-ai-github"}
+            )
+            is None
+        )
+
+    def test_unmanaged_service_is_still_offered_as_an_add(self):
+        choice = mcp._mcp_service_choice("system.ai.other", set(), True, {"system-ai-github"})
+        assert choice is not None
+        assert choice.disabled is None
+        assert choice.value.startswith(mcp.MCP_ADD_PREFIX)
+
+    def test_add_picker_shows_only_addable_services(self):
+        # Under `ug mcp add`, the picker lists only what you can add: a managed service and one
+        # ug already configured are both hidden; an unconfigured one is offered.
+        choices = mcp.build_mcp_picker_choices(
+            [],
+            [],
+            [],
+            [{"name": "system-ai-slack", "url": f"{WS}/ai-gateway/mcp-services/system.ai.slack"}],
+            available_mcp_service_names=[
+                "system.ai.github",
+                "system.ai.slack",
+                "system.ai.web_search",
+            ],
+            additive=True,
+            managed_names={"system-ai-github"},
+        )
+        titles = [c.title for c in choices]
+        assert titles == [
+            "MCP: system.ai.web_search"
+        ]  # github (managed) + slack (configured) hidden
+
+    def test_replace_picker_hides_managed_but_keeps_own_as_toggle(self):
+        # Replace mode still lets you remove your own servers (pre-checked toggle), but a managed
+        # one stays hidden since ug can't remove it here either.
+        choices = mcp.build_mcp_picker_choices(
+            [],
+            [],
+            [],
+            [{"name": "system-ai-slack", "url": f"{WS}/ai-gateway/mcp-services/system.ai.slack"}],
+            available_mcp_service_names=["system.ai.github", "system.ai.slack"],
+            additive=False,
+            managed_names={"system-ai-github"},
+        )
+        by_title = {c.title: c for c in choices}
+        assert "MCP: system.ai.github" not in by_title  # managed: hidden
+        assert by_title["MCP: system.ai.slack"].checked is True  # own: removable toggle
+
+    def test_drop_managed_servers_reports_what_it_skipped(self, capsys):
+        servers = [
+            {"name": "system-ai-github", "url": "a", "clients": ["claude"]},
+            {"name": "system-ai-web-search", "url": "b", "clients": ["claude"]},
+        ]
+        kept = mcp._drop_managed_servers(servers, {"system-ai-github"})
+
+        assert [s["name"] for s in kept] == ["system-ai-web-search"]
+        out = capsys.readouterr().out
+        assert "managed configuration" in out
+        assert "system-ai-github" in out
+
+    def test_location_add_skips_an_already_managed_service(self, monkeypatch, capsys):
+        # The reported case: adding a service managed config already provides used to report a
+        # successful add and write a duplicate user-scope registration shadowing the managed one.
+        configured: list[str] = []
+        saved_states: list[dict] = []
+        _stub_location_base(monkeypatch, {**CLAUDE_STATE})
+        self._stub_managed_files(monkeypatch, claude_urls={"system-ai-github": "managed-url"})
+        monkeypatch.setattr(
+            mcp,
+            "list_mcp_services",
+            lambda *a, **kw: (["system.ai.github", "system.ai.slack"], None),
+        )
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda client, name, url, *a, **kw: configured.append(name) or [],
+        )
+        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
+
+        assert mcp.add_mcp_command(location="system.ai") == 0
+
+        # Only the unmanaged service is registered, and the skip is reported rather than silent.
+        assert configured == ["system-ai-slack"]
+        assert [s["name"] for s in saved_states[-1]["mcp_servers"]] == ["system-ai-slack"]
+        out = capsys.readouterr().out
+        assert "system-ai-github" in out
+        assert "managed configuration" in out
+
+
 class TestDiscoverySkipsPermissionErrors:
     def test_discover_mcp_source_skips_permission_denied_quietly(self, monkeypatch, capsys):
         def boom():
@@ -3600,6 +3813,27 @@ class TestDiscoverySkipsPermissionErrors:
         assert mcp._discover_mcp_source("Genie spaces", boom) == []
         out = capsys.readouterr().out
         assert "network down" in out
+
+    def test_discover_mcp_source_reraises_invalid_token(self):
+        # A rejected token is a blocker, not a skippable source: it must propagate
+        # (AIGTWY-4843) instead of being swallowed like a permission/transient error.
+        def boom():
+            raise mcp.AuthTokenError("token rejected")
+
+        with pytest.raises(mcp.AuthTokenError, match="token rejected"):
+            mcp._discover_mcp_source("MCP services", boom)
+
+    def test_discover_mcp_service_names_raises_on_invalid_token(self, monkeypatch):
+        # An invalid/expired PAT 403s with an "Invalid access token" body; the reason
+        # was previously discarded, so `ug mcp add` silently discovered nothing.
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda workspace, profile=None: "pat")
+        monkeypatch.setattr(
+            mcp,
+            "list_mcp_services",
+            lambda workspace, token: ([], "HTTP 403 Forbidden: Invalid access token."),
+        )
+        with pytest.raises(mcp.AuthTokenError, match="expired or invalid"):
+            mcp.discover_mcp_service_names(WS)
 
 
 # Real-shaped `claude mcp list` output: `<name>: <cmd|url …> - <glyph> <status>`, health-probed.
@@ -3631,6 +3865,28 @@ class TestParseMcpListOutput:
     def test_claude_header_line_is_not_a_server(self):
         # The "Checking MCP server health…" header must not become a bogus entry.
         assert "Checking" not in mcp.parse_mcp_list_output("claude", CLAUDE_MCP_LIST)
+
+    @pytest.mark.parametrize(
+        "failure_detail",
+        ["HTTP 404 Not Found", "sh: 1: my-bin: not found", 'no server named "x"'],
+    )
+    def test_one_servers_failure_detail_does_not_discard_the_listing(self, failure_detail):
+        # One broken server must not hide the healthy ones, even when its failure detail
+        # contains a phrase that also marks a "no servers configured" listing.
+        output = (
+            CLAUDE_MCP_LIST
+            + f"broken: https://h/mcp (HTTP) - ✘ Failed to connect — {failure_detail}\n"
+        )
+        parsed = mcp.parse_mcp_list_output("claude", output)
+        assert parsed["github"] == mcp.LIVE_CONNECTED
+        assert parsed["web_search"] == mcp.LIVE_CONNECTED
+        assert parsed["broken"] == mcp.LIVE_FAILED
+
+    def test_no_servers_message_still_reads_as_empty(self):
+        # A real "no servers" listing must still come back empty, including for codex, whose
+        # table parser would otherwise read the message itself as a server name.
+        for client in ("claude", "gemini", "codex"):
+            assert mcp.parse_mcp_list_output(client, "No MCP servers configured.") == {}
 
     def test_parses_codex_enabled_disabled_table(self):
         assert mcp.parse_mcp_list_output("codex", CODEX_MCP_LIST) == {

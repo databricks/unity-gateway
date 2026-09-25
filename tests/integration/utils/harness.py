@@ -13,7 +13,7 @@ import threading
 import time
 from pathlib import Path
 
-from .constants import CODEX_TEST_MODEL
+from .constants import CLAUDE_TEST_MODEL, CODEX_TEST_MODEL
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
@@ -179,7 +179,10 @@ class UserSession:
             usable = [
                 value for value in values if value.startswith(prefix) and "astra" not in value
             ]
-            model = CODEX_TEST_MODEL if CODEX_TEST_MODEL in usable else next(iter(usable), "")
+            # Prefer the pinned test model: discovery can list a new model before the gateway serves
+            # it (e.g. a fresh Claude release returning 404), which would fail unrelated PRs.
+            preferred = CLAUDE_TEST_MODEL if agent == "claude" else CODEX_TEST_MODEL
+            model = preferred if preferred in usable else next(iter(usable), "")
             source = "ug configure discovery"
         assert model, (
             f"ug configure found no system.ai model for {agent}; use --{agent}-model to reproduce a specific model."

@@ -255,7 +255,7 @@ def _parse_managed_settings(text: str) -> dict:
 
 
 def _dump_managed_settings(settings: dict) -> str:
-    return json.dumps(settings, indent=2) + "\n"
+    return json.dumps(settings, indent=2, sort_keys=True) + "\n"
 
 
 def managed_settings_are_current(state: dict) -> bool:
@@ -744,20 +744,23 @@ def _read_claude_config_for_rewrite(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     """Apply ``add``/``remove`` to Claude's user-scope ``mcpServers`` (``~/.claude.json``, or under
     ``$CLAUDE_CONFIG_DIR``) in a single read-modify-write, instead of one ``claude mcp`` subprocess
     per server (each ~0.3-0.8s; a large managed set is otherwise dozens of them run serially). The
-    developer's own servers and every other key in the file are preserved.
+    developer's own servers and every other key in the file are preserved. Returns the subset of
+    ``remove`` names that were actually present (so callers can report only real removals).
 
     If the file exists but can't be parsed as a JSON object, we must not clobber it, so we defer to
     the per-server ``claude`` CLI (which edits the file in place) for exactly the changed entries."""
     path = claude_mcp_config_path()
     config = _read_claude_config_for_rewrite(path)
     if config is None:
+        removed: set[str] = set()
         for name in remove:
-            for scope in MCP_CLEANUP_SCOPES:
-                remove_claude_mcp_server(name, scope)
+            # Clean every scope (not short-circuited), recording the name if any scope had it.
+            if [scope for scope in MCP_CLEANUP_SCOPES if remove_claude_mcp_server(name, scope)]:
+                removed.add(name)
         for name, entry in add.items():
             if entry.get("type") == "http":
                 oauth = entry.get("oauth") or {}
@@ -769,16 +772,18 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
                 )
             else:
                 add_claude_mcp_server(name, entry, MCP_USER_SCOPE)
-        return
+        return removed
 
     servers = config.get("mcpServers")
     if not isinstance(servers, dict):
         servers = {}
+    removed = {name for name in remove if name in servers}
     for name in remove:
         servers.pop(name, None)
     servers.update(add)
     config["mcpServers"] = servers
     write_json_file(path, config)
+    return removed
 
 
 def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
@@ -852,6 +857,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             tool="claude",
             display="Claude Code",
             owned_paths=[[MANAGED_MCP_SETTINGS_KEY]],
+            parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
         return False
@@ -1300,6 +1306,7 @@ def _reconcile_managed_settings(
             tool="claude",
             display="Claude Code",
             owned_paths=owned_paths,
+            parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
         conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)

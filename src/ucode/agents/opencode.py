@@ -348,9 +348,11 @@ def remove_mcp_server_config(name: str) -> bool:
     return True
 
 
-def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
-    """Apply ``add``/``remove`` to OpenCode's `mcp` table in a single read-modify-write."""
-    apply_json_mcp_diff(OPENCODE_CONFIG_PATH, "mcp", add, remove, backup_path=OPENCODE_BACKUP_PATH)
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
+    """Apply ``add``/``remove`` to OpenCode's `mcp` table in a single read-modify-write. Returns the names actually removed."""
+    return apply_json_mcp_diff(
+        OPENCODE_CONFIG_PATH, "mcp", add, remove, backup_path=OPENCODE_BACKUP_PATH
+    )
 
 
 def default_model(state: dict) -> str | None:
