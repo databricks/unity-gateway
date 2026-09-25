@@ -27,6 +27,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_PACKAGES = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
+MANAGED_DEFAULTS_TARGETS = (
+    (
+        "UG_MPS_DEFAULTS_BEARER",
+        "https://eng-ml-inference-batch-inference-us-west-2.cloud.databricks.com",
+        "1c359c0f-58bc-42ac-a74f-079ccb173676",
+        "UG_MPS_DEFAULTS_CLIENT_SECRET",
+    ),
+    (
+        "UG_PARENT_SCHEMA_DEFAULTS_BEARER",
+        "https://eng-ml-inference-ap-northeast-2.cloud.databricks.com",
+        "95e267dc-4393-4360-9d45-4b9b13b2d370",
+        "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET",
+    ),
+)
 
 
 def process_group_options() -> dict:
@@ -50,9 +64,8 @@ def npm_executable(bin_dir: Path, name: str) -> Path:
 def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
     """Mint a short-lived workspace token for a service principal via OAuth client credentials.
 
-    The managed e2e workspace authenticates as a service principal, whose M2M tokens expire
-    hourly, so CI mints one per run from `DATABRICKS_CLIENT_ID`/`DATABRICKS_CLIENT_SECRET` rather
-    than storing a long-lived bearer.
+    Managed-workspace M2M tokens expire hourly, so the runner mints them from client credentials
+    rather than storing long-lived bearers for the base or Claude defaults workspaces.
     """
     basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
     body = urllib.parse.urlencode(
@@ -151,6 +164,16 @@ def arguments():
         help="Only model exposed by the Anthropic MPS discovery fixture.",
     )
     parser.add_argument(
+        "--claude-bedrock-allow-all-provider",
+        default="main.ucode.e2e_bedrock_all_models_enabled",
+        help="Bedrock MPS with allow_all_targets and no declared targets, for the #811 CUJ.",
+    )
+    parser.add_argument(
+        "--claude-bedrock-allow-all-model",
+        default="global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        help="Explicit Bedrock model id the allow_all CUJ pins (the service declares no targets).",
+    )
+    parser.add_argument(
         "--codex-provider",
         default="main.ucode.ci_openai_mps",
         help="Existing OpenAI MPS selected in the configure CUJ.",
@@ -192,6 +215,7 @@ def arguments():
         default=os.environ.get("UCODE_TEST_SECOND_WORKSPACE"),
         help="Second real workspace for workspace_switch CUJs; requires DATABRICKS_SECOND_BEARER.",
     )
+    parser.add_argument("--warehouse-id", default=os.environ.get("UG_INTEGRATION_WAREHOUSE_ID"))
     parser.add_argument("--output", type=Path, help="New results directory; never reused.")
     parser.add_argument("--installation-only", action="store_true", help="No workspace calls.")
     parser.add_argument(
@@ -337,9 +361,21 @@ def main() -> int:
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
     second_bearer = os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    target_bearers: dict[str, str] = {}
+    client_secrets = (
+        os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
+        os.environ.get("UG_MPS_DEFAULTS_CLIENT_SECRET", ""),
+        os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", ""),
+    )
 
     def redact(value: str) -> str:
-        for secret in (bearer, second_bearer, oauth_token):
+        for secret in (
+            bearer,
+            second_bearer,
+            oauth_token,
+            *target_bearers.values(),
+            *client_secrets,
+        ):
             if secret:
                 value = value.replace(secret, "<redacted>")
         return value
@@ -380,6 +416,8 @@ def main() -> int:
             "claude_provider": args.claude_provider,
             "claude_relayed_provider": args.claude_relayed_provider,
             "claude_provider_model": args.claude_provider_model,
+            "claude_bedrock_allow_all_provider": args.claude_bedrock_allow_all_provider,
+            "claude_bedrock_allow_all_model": args.claude_bedrock_allow_all_model,
             "codex_provider": args.codex_provider,
             "codex_provider_model": args.codex_provider_model,
             "parent_schema": args.parent_schema,
@@ -388,6 +426,7 @@ def main() -> int:
             "dependencies": args.dependency,
             "workspace": args.workspace,
             "second_workspace": args.second_workspace,
+            "warehouse_id": args.warehouse_id,
         },
         "platform": platform.platform(),
         "installation_only": args.installation_only,
@@ -617,6 +656,14 @@ def main() -> int:
             if client_id and client_secret:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
+        if not args.installation_only:
+            for bearer_env, target_workspace, client_id, secret_env in MANAGED_DEFAULTS_TARGETS:
+                secret = os.environ.get(secret_env, "").strip()
+                if args.workspace.rstrip("/") == target_workspace:
+                    target_bearers[bearer_env] = bearer
+                elif secret:
+                    target_bearers[bearer_env] = mint_m2m_token(target_workspace, client_id, secret)
+
         test_dependencies = ["pytest==9.0.3"]
         if os.name == "posix":
             test_dependencies.extend(["pexpect==4.9.0", "pyte==0.8.2"])
@@ -644,6 +691,8 @@ def main() -> int:
                 "UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER": args.claude_relayed_provider,
                 "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN": oauth_token,
                 "UG_INTEGRATION_CLAUDE_PROVIDER_MODEL": args.claude_provider_model,
+                "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_PROVIDER": args.claude_bedrock_allow_all_provider,
+                "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL": args.claude_bedrock_allow_all_model,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
                 "UG_INTEGRATION_PARENT_SCHEMA": args.parent_schema,
@@ -651,8 +700,13 @@ def main() -> int:
                 "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
                 "DATABRICKS_BEARER": bearer,
+                "UG_MPS_DEFAULTS_BEARER": target_bearers.get("UG_MPS_DEFAULTS_BEARER", ""),
+                "UG_PARENT_SCHEMA_DEFAULTS_BEARER": target_bearers.get(
+                    "UG_PARENT_SCHEMA_DEFAULTS_BEARER", ""
+                ),
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
                 "DATABRICKS_SECOND_BEARER": second_bearer,
+                "UG_INTEGRATION_WAREHOUSE_ID": args.warehouse_id or "",
             }
         )
         for agent in agents:

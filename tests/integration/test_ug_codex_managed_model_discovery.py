@@ -21,6 +21,7 @@ from utils.provider_catalog import (
     fetch_codex_provider_catalog,
     parse_codex_provider_catalog,
 )
+from utils.terminal import TerminalProcess
 
 pytestmark = [pytest.mark.managed_fixture, pytest.mark.codex]
 
@@ -83,6 +84,10 @@ def _assert_managed_provider_catalog(session, models, expected: CodexProviderCat
     # in Codex's generated profile.
     assert "model_catalog_json" not in config, config
 
+    shared_config = tomllib.loads((session.home / ".codex" / "config.toml").read_text())
+    app_catalog_path = session.home / ".ucode" / "codex-model-catalog.json"
+    assert shared_config.get("model_catalog_json") == str(app_catalog_path), shared_config
+
     managed_cache = json.loads((session.home / ".ucode/managed-config.json").read_text())
     raw_config = managed_cache.get("config")
     enabled_agents = raw_config.get("enabled_agents") if isinstance(raw_config, dict) else None
@@ -103,6 +108,7 @@ def _assert_managed_provider_catalog(session, models, expected: CodexProviderCat
     catalog_paths = list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
     assert len(catalog_paths) == 1, catalog_paths
     catalog = json.loads(catalog_paths[0].read_text())
+    assert json.loads(app_catalog_path.read_text()) == catalog
     catalog_ids = parse_codex_provider_catalog(catalog)
     session.record(
         "managed-provider-catalog.json",
@@ -127,10 +133,18 @@ def test_case_02_managed_codex_uses_admin_discovery_after_configure(
 ):
     """Scenario: configure managed Codex, then launch its app server.
 
-    Expected: the independently fetched provider catalog exactly matches both the generated
-    catalog and the app-server model list.
+    Expected: the independently fetched provider catalog exactly matches the generated catalog,
+    ug-launched app server, and fresh bare app server. Real `ug revert` then removes the ug-owned
+    shared catalog pointer and stable catalog while preserving a user-owned Codex setting.
     """
     session = live_session
+    user_config = session.home / ".codex" / "config.toml"
+    original_user_config = (
+        "# user-owned Codex settings\n[notice]\nhide_rate_limit_model_nudge = true\n"
+    )
+    user_config.parent.mkdir(parents=True)
+    user_config.write_text(original_user_config)
+
     configured = session.run(
         "configure",
         "--workspace",
@@ -144,6 +158,19 @@ def test_case_02_managed_codex_uses_admin_discovery_after_configure(
     models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
 
     _assert_managed_provider_catalog(session, models, _managed_codex_provider_catalog)
+    app_models = session.codex_model_ids(
+        ["app-server", "--listen", "stdio://"], name="bare-codex-models", binary="codex"
+    )
+    assert app_models == models, (app_models, models)
+
+    with TerminalProcess(
+        session, "ug", [str(session.binary), "revert"], "managed-discovery-revert"
+    ) as terminal:
+        terminal.finish()
+    shared_config = tomllib.loads(user_config.read_text())
+    assert "model_catalog_json" not in shared_config, shared_config
+    assert tomllib.loads(user_config.read_text()) == tomllib.loads(original_user_config)
+    assert not (session.home / ".ucode" / "codex-model-catalog.json").exists()
 
 
 def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(
@@ -151,8 +178,8 @@ def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(
 ):
     """Scenario: launch managed Codex with --workspace from fresh state.
 
-    Expected: the independently fetched provider catalog exactly matches both the generated
-    catalog and the app-server model list.
+    Expected: the independently fetched provider catalog exactly matches the generated catalog,
+    ug-launched app server, and fresh bare app server.
     """
     session = live_session
     models = session.codex_model_ids(
@@ -160,6 +187,10 @@ def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(
     )
 
     _assert_managed_provider_catalog(session, models, _managed_codex_provider_catalog)
+    app_models = session.codex_model_ids(
+        ["app-server", "--listen", "stdio://"], name="bare-codex-models", binary="codex"
+    )
+    assert app_models == models, (app_models, models)
 
 
 def test_case_04_managed_codex_rejects_provider_override_after_configure(

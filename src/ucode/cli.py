@@ -89,6 +89,7 @@ from ucode.managed_config import (
     normalize_managed_config,
     refresh_managed_config,
 )
+from ucode.managed_files import managed_write_session
 from ucode.managed_resolve import (
     managed_claude_family_models,
     managed_default_model,
@@ -105,6 +106,7 @@ from ucode.managed_resolve import (
 from ucode.mcp import (
     MCP_CLIENTS,
     SKILLS_MCP_KIND,
+    McpServiceListingRateLimited,
     add_mcp_command,
     add_skills_command,
     available_mcp_clients,
@@ -113,6 +115,7 @@ from ucode.mcp import (
     configure_skills_mcp_picker_command,
     configured_mcp_clients,
     list_mcp_command,
+    managed_mcp_server_names,
     purge_cross_workspace_mcp_residue,
     reconcile_managed_mcp_servers,
     remove_mcp_command,
@@ -790,6 +793,34 @@ def configure_workspace_command(
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
 ) -> int:
+    """Configure a workspace while sharing one lazy privileged settings session.
+
+    Agent setup and managed MCP reconciliation can update the same machine-wide Claude/Codex
+    files at different points in the flow. Keeping one command-scoped worker means every changed
+    file is handled under the same sudo authentication; a no-op configure never starts it.
+    """
+    with managed_write_session():
+        return _configure_workspace_command(
+            tool,
+            selected_tools,
+            workspaces,
+            use_pat=use_pat,
+            databricks_ai_tools_enabled=databricks_ai_tools_enabled,
+            custom_oauth=custom_oauth,
+            offer_optional_setup=offer_optional_setup,
+        )
+
+
+def _configure_workspace_command(
+    tool: str | None = None,
+    selected_tools: list[str] | None = None,
+    workspaces: list[tuple[str, str | None]] | None = None,
+    *,
+    use_pat: bool = False,
+    databricks_ai_tools_enabled: bool | None = None,
+    custom_oauth: CustomOAuthConfig | None = None,
+    offer_optional_setup: bool = False,
+) -> int:
     if tool is not None and selected_tools is not None:
         raise RuntimeError("Use either --agent or --agents, not both.")
 
@@ -1209,10 +1240,7 @@ def status() -> int:
                 and server.get("kind") != SKILLS_MCP_KIND
             }
             # Managed servers ug delivers through an OS-managed file live in that file, not state.
-            if tool == "claude":
-                mcp_names |= claude_agent.read_managed_mcp_urls().keys()
-            elif tool == "codex":
-                mcp_names |= codex_agent.read_managed_mcp_urls().keys()
+            mcp_names |= managed_mcp_server_names(state, {tool})
             rows.append(("MCP servers", str(len(mcp_names))))
             rows.append(("Skills", str(skill_counts_by_agent.get(tool, 0))))
         base_url = state.get("base_urls", {}).get(tool)
@@ -2400,6 +2428,15 @@ def _configure_managed_mcp_servers(managed: dict | None) -> list[str]:
     agents = {tool for tool in managed_enabled_tools(managed) if tool in MCP_CLIENTS}
     try:
         registered = reconcile_managed_mcp_servers(managed, agents)
+    except McpServiceListingRateLimited:
+        # A transient 429 while discovering the workspace's MCP services: skip MCP setup for this
+        # run (existing servers are left untouched) with an info note instead of a hard failure, so
+        # `ug configure` still completes. The next configure retries.
+        print_note(
+            "Skipped workspace MCP setup this run — MCP service discovery was rate-limited "
+            "(HTTP 429). Existing MCP servers are unchanged; run `ug configure` again to retry."
+        )
+        return []
     except RuntimeError as exc:
         print_warning(f"Could not register your workspace's MCP servers: {exc}")
         return []
@@ -2554,7 +2591,10 @@ def _launch_tool(
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []
         )
-        ensure_bootstrap_dependencies(tool)
+        ensure_bootstrap_dependencies(
+            tool,
+            skip_cli_version_check=skip_preflight,
+        )
         if needs_auto_configure:
             if custom_oauth is None:
                 _auto_configure_tool(tool)
@@ -2850,14 +2890,16 @@ def _launch_tool(
 
 # Launch-only escape hatch for managed/headless launchers (e.g. omnigent) that
 # have already run `ug configure`: skip the ~5-10s per-launch auth + AI
-# Gateway re-validation. Distinct from the configure-only `--skip-validate`,
-# which skips the model smoke test.
+# Gateway re-validation, plus the Databricks CLI minimum-version check (whose
+# `databricks aitools` floor otherwise false-positives on a usable public-preview
+# build). Distinct from the configure-only `--skip-validate`, which skips the
+# model smoke test.
 SkipPreflightOption = Annotated[
     bool,
     typer.Option(
         "--skip-preflight",
-        help="Skip the per-launch Databricks auth + AI Gateway re-validation, trusting a "
-        "prior `ug configure`.",
+        help="Skip the per-launch Databricks auth + AI Gateway re-validation (and the "
+        "Databricks CLI minimum-version check), trusting a prior `ug configure`.",
     ),
 ]
 
@@ -2959,7 +3001,7 @@ def _launch_managed_default(
     if not current:
         console.print(ctx.get_help())
         return
-    install_databricks_cli()
+    install_databricks_cli(skip_version_check=skip_preflight)
     apply_pat_environment(state)
     coding_agent_config_feature_disabled = False
     if dry_run:

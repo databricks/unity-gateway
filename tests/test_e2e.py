@@ -424,12 +424,19 @@ E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     "grok": frozenset({"codex", "copilot", "pi"}),
     # These Gemini endpoints hang OpenCode well past its E2E timeout.
     "databricks-gemini-3-1-flash-lite": frozenset({"opencode"}),
-    # Codex-tuned and newer GPT endpoints do not support Copilot's MLflow chat route.
+    # Image-only Gemini endpoints reject function calling, which Pi's launch smoke requires.
+    "flash-lite-image": frozenset({"pi"}),
+    # These endpoints do not support Copilot's MLflow chat route.
     "-codex": frozenset({"copilot"}),
     "gpt-5-5": frozenset({"copilot"}),
-    "gpt-5-6": frozenset({"copilot"}),
-    # Astra has limited allowance in production and will hit 429s if tested.
-    "astra": frozenset({"codex", "copilot", "pi", "web_search"}),
+    # Copilot's chat-completions route cannot combine reasoning with function tools for these
+    # models. Pi also fails against the Luna and Sol variants.
+    "gpt-5-6-luna": frozenset({"copilot", "pi"}),
+    "gpt-5-6-sol": frozenset({"copilot", "pi"}),
+    "gpt-5-6-terra": frozenset({"copilot"}),
+    "gpt-6-astra": frozenset({"copilot"}),
+    "gpt-6-luna": frozenset({"copilot", "pi"}),
+    "gpt-6-sol": frozenset({"copilot", "pi"}),
 }
 
 
@@ -1145,9 +1152,23 @@ class TestCopilotLaunch:
             out.append(("codex", model))
         return out
 
-    def test_astra_is_skipped(self):
-        state = {"codex_models": ["databricks-gpt-6-astra", "databricks-gpt-5-4"]}
-        assert self._all_models(state) == [("codex", "databricks-gpt-5-4")]
+    def test_incompatible_models_are_skipped(self):
+        state = {
+            "codex_models": [
+                "databricks-gpt-5-6-luna",
+                "databricks-gpt-5-6-sol",
+                "databricks-gpt-5-6-terra",
+                "databricks-gpt-6-astra",
+                "databricks-gpt-6-luna",
+                "databricks-gpt-6-sol",
+                "databricks-gpt-5-4",
+                "databricks-gpt-5-6",
+            ]
+        }
+        assert self._all_models(state) == [
+            ("codex", "databricks-gpt-5-4"),
+            ("codex", "databricks-gpt-5-6"),
+        ]
 
     def test_launch_copilot_per_model(
         self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
@@ -1207,11 +1228,20 @@ class TestPiLaunch:
             if not _model_is_skipped(model, "pi"):
                 out.append(("codex", model))
         for model in e2e_state.get("gemini_models") or []:
-            out.append(("gemini", model))
+            if not _model_is_skipped(model, "pi"):
+                out.append(("gemini", model))
         return out
 
-    def test_astra_is_skipped(self):
-        state = {"codex_models": ["databricks-gpt-6-astra", "databricks-gpt-5-4"]}
+    def test_incompatible_models_are_skipped(self):
+        state = {
+            "codex_models": [
+                "databricks-gpt-5-6-luna",
+                "databricks-gpt-5-6-sol",
+                "databricks-gpt-6-luna",
+                "databricks-gpt-6-sol",
+                "databricks-gpt-5-4",
+            ]
+        }
         assert self._all_models(state) == [("codex", "databricks-gpt-5-4")]
 
     def test_launch_pi_per_model(self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token):
@@ -1292,9 +1322,9 @@ def _first_codex_model(e2e_state: dict) -> str:
     return models[0]
 
 
-def test_web_search_skips_astra():
+def test_web_search_supports_astra():
     state = {"codex_models": ["databricks-gpt-6-astra", "databricks-gpt-5-4"]}
-    assert _first_codex_model(state) == "databricks-gpt-5-4"
+    assert _first_codex_model(state) == "databricks-gpt-6-astra"
 
 
 class TestWebSearchResponsesApi:

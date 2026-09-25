@@ -39,10 +39,16 @@ from types import ModuleType, TracebackType
 from typing import Protocol, Self
 
 import anyio
+from anyio import to_thread
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.stdio import stdio_server
 
-from ucode.databricks import ensure_pat_bearer, get_databricks_token
+from ucode.databricks import (
+    ensure_pat_bearer,
+    get_databricks_token,
+    mcp_service_needs_connection_login,
+)
+from ucode.mcp_connection_login import connection_from_url, run_connection_login
 
 # Exit code used when the proxy cannot continue. MCP clients surface a non-zero
 # exit far more usefully than a timeout, so bail out instead of hanging.
@@ -111,29 +117,91 @@ def _fail_fast(message: str) -> None:
     raise SystemExit(AUTH_FAILURE_EXIT_CODE)
 
 
-def _build_token_auth(workspace: str, profile: str | None):
-    """Build an httpx ``Auth`` that injects a fresh bearer on every request.
+def _build_token_auth(url: str, workspace: str, profile: str | None, *, use_pat: bool = False):
+    """Build an httpx ``Auth`` that injects a fresh bearer and drives the
+    per-connection login **lazily, on a 401** — not eagerly at startup.
 
-    The base class comes from whichever httpx the SDK uses (see ``_httpx``), so
-    the returned auth is accepted by that SDK's ``AsyncClient``. Behaviour is
-    identical across flavours — ``Auth.auth_flow`` has the same generator
-    contract in httpx and httpx2."""
+    The bearer is the Databricks *workspace* token (read from the CLI session,
+    refreshed as it nears expiry). For a connection-backed AI Gateway service,
+    the gateway answers with an RFC 9728 ``401`` until the user holds the per-user
+    connection credential. Rather than block startup logging in every configured
+    server (which pops N browsers and stalls the agent's MCP startup), we let the
+    bridge come up immediately — ``tools/list`` needs no credential — and only
+    run ``databricks auth login --resource`` when a request actually gets a 401.
+    So a browser opens only for a service you actually *use*, one at a time, and
+    an already-signed-in service never prompts. The login runs at most once per
+    session; PAT profiles have no connection OAuth to drive, so they never do it.
+
+    The base class comes from whichever httpx the SDK uses (see ``_httpx``); the
+    sync and async flavours share the same generator contract. The async client
+    uses ``async_auth_flow``, so the blocking login runs off the event loop."""
     httpx = _httpx()
+    # PAT auth has no interactive OAuth to drive, so never treat it as connection-backed.
+    connection = None if use_pat else connection_from_url(url)
+    login = {"attempted": False}
+
+    def _mint(request):
+        # get_databricks_token honors the DATABRICKS_BEARER short-circuit and PAT
+        # profiles internally. A RuntimeError means the session is dead (expired
+        # refresh token, logged-out profile); raising from inside auth_flow would
+        # tear through the transport's task group and stall the process, so
+        # translate it into a terminal ProxyAuthError.
+        try:
+            token = get_databricks_token(workspace, profile)
+        except RuntimeError as exc:
+            raise ProxyAuthError(str(exc)) from exc
+        request.headers["Authorization"] = f"Bearer {token}"
+
+    def _needs_connection_login(response) -> bool:
+        # A 401 from a connection-backed service means the per-user credential is
+        # missing. Only drive the login once per session — if it doesn't resolve
+        # the 401, re-running it on every subsequent request would loop browsers.
+        return connection is not None and response.status_code == 401 and not login["attempted"]
+
+    def _connection_login_or_fail() -> bool:
+        """Drive the one-time connection sign-in for a 401. Returns whether a login was actually
+        performed, so the caller retries the request only then.
+
+        A 401 is only fixable by a connection sign-in when the service is actually connection-backed
+        (its UC connection uses per-user OAuth-U2M). A no-login service (e.g. system.ai.web_search)
+        that 401s has a bad Databricks token, not a missing connection credential — so don't open a
+        doomed connection-login browser it can't complete (AIGTWY-4856), and don't bother retrying.
+        Classified once, on the first 401; a token/lookup failure also skips the login."""
+        login["attempted"] = True
+        if connection is None:  # unreachable via _needs_connection_login; narrows for the checker
+            return False
+        try:
+            token = get_databricks_token(workspace, profile)
+        except RuntimeError:
+            return False
+        if not mcp_service_needs_connection_login(workspace, token, connection):
+            return False
+        ok, detail = run_connection_login(url, workspace, profile=profile)
+        if not ok:
+            raise ProxyAuthError(f"connection login for '{connection}' failed: {detail}")
+        return True
 
     class _DatabricksTokenAuth(httpx.Auth):
         def auth_flow(self, request):
-            # get_databricks_token honors the DATABRICKS_BEARER short-circuit and
-            # PAT profiles internally; --use-pat is surfaced via the env ucode set.
-            # A RuntimeError here means auth is dead (expired refresh token,
-            # logged-out profile). Raising it from inside auth_flow would tear
-            # through the transport's task group and stall the process until the
-            # client times out, so translate it into a terminal ProxyAuthError the
-            # caller reports cleanly.
-            try:
-                token = get_databricks_token(workspace, profile)
-            except RuntimeError as exc:
-                raise ProxyAuthError(str(exc)) from exc
-            request.headers["Authorization"] = f"Bearer {token}"
+            _mint(request)
+            response = yield request
+            if not _needs_connection_login(response):
+                return
+            if not _connection_login_or_fail():
+                return
+            _mint(request)
+            yield request
+
+        async def async_auth_flow(self, request):
+            _mint(request)
+            response = yield request
+            if not _needs_connection_login(response):
+                return
+            # Run the blocking browser login off the event loop so the bridge's
+            # other pumps aren't starved while the user completes the sign-in.
+            if not await to_thread.run_sync(_connection_login_or_fail):
+                return
+            _mint(request)
             yield request
 
     return _DatabricksTokenAuth()
@@ -166,9 +234,9 @@ async def _pump_upstream[T](
     raise ProxyTransportError("upstream MCP transport closed unexpectedly")
 
 
-async def _run(url: str, workspace: str, profile: str | None) -> None:
+async def _run(url: str, workspace: str, profile: str | None, use_pat: bool = False) -> None:
     httpx = _httpx()
-    auth = _build_token_auth(workspace, profile)
+    auth = _build_token_auth(url, workspace, profile, use_pat=use_pat)
     # 2.x-native shape: hand the transport a pre-built AsyncClient carrying our
     # per-request auth. Works on mcp 1.28+ and 2.x; `streamable_http_client`
     # yields a (read, write) pair in both.
@@ -237,6 +305,13 @@ def serve(url: str, workspace: str, profile: str | None = None, *, use_pat: bool
             "Set DATABRICKS_BEARER, or reconfigure the profile."
         )
 
+    # The per-connection sign-in is NOT driven here. Doing it eagerly at startup
+    # blocks the agent's MCP startup and, with N configured connection-backed
+    # servers, pops N browsers at once and stalls until each times out. Instead
+    # the bridge opens immediately (tools/list needs no credential) and the login
+    # is driven lazily, on a 401, from the httpx auth flow (see _build_token_auth)
+    # — so a browser opens only for a service whose tool you actually call.
+
     # Pre-flight the token before opening the bridge. Without this, the first
     # token failure surfaces from inside the transport's task group, where it can
     # stall the process instead of erroring out.
@@ -246,7 +321,7 @@ def serve(url: str, workspace: str, profile: str | None = None, *, use_pat: bool
         _fail_fast(str(exc))
 
     try:
-        anyio.run(_run, url, workspace, profile)
+        anyio.run(_run, url, workspace, profile, use_pat)
     except BaseException as exc:  # noqa: BLE001 - re-raised unless it's a known proxy failure
         # Errors raised inside the transport arrive wrapped by its task group.
         # Report expected auth/transport failures without hiding programming bugs.

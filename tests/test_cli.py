@@ -2607,7 +2607,7 @@ class TestAutoConfigureOnFirstRun:
         ):
             result = runner.invoke(app, ["claude"])
         assert result.exit_code == 0, result.output
-        mock_bootstrap.assert_called_once_with("claude")
+        mock_bootstrap.assert_called_once_with("claude", skip_cli_version_check=False)
         mock_auto.assert_called_once_with("claude")
 
     def test_triggers_when_tool_not_in_available_tools(self):
@@ -2632,7 +2632,7 @@ class TestAutoConfigureOnFirstRun:
         ):
             result = runner.invoke(app, ["claude"])
         assert result.exit_code == 0, result.output
-        mock_bootstrap.assert_called_once_with("claude")
+        mock_bootstrap.assert_called_once_with("claude", skip_cli_version_check=False)
         mock_auto.assert_called_once_with("claude")
 
     def test_skipped_when_already_configured(self):
@@ -2655,8 +2655,29 @@ class TestAutoConfigureOnFirstRun:
             patch("ucode.cli.launch_agent"),
         ):
             runner.invoke(app, ["claude"])
-        mock_bootstrap.assert_called_once_with("claude")
+        mock_bootstrap.assert_called_once_with("claude", skip_cli_version_check=False)
         mock_auto.assert_not_called()
+
+    def test_skip_preflight_bypasses_cli_version_check(self):
+        """`--skip-preflight` tells bootstrap to skip the CLI minimum-version gate,
+        so a public-preview `databricks` (e.g. v0.299.2) isn't a false positive."""
+        with (
+            patch("ucode.cli.ensure_bootstrap_dependencies") as mock_bootstrap,
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli._auto_configure_tool"),
+            patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.ensure_provider_state", return_value=MINIMAL_STATE),
+            patch(
+                "ucode.cli.resolve_launch_model",
+                return_value=(MINIMAL_STATE, "databricks-claude-sonnet-4"),
+            ),
+            patch("ucode.cli.configure_tool", return_value=MINIMAL_STATE),
+            patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
+            patch("ucode.cli.launch_agent"),
+        ):
+            result = runner.invoke(app, ["claude", "--skip-preflight"])
+        assert result.exit_code == 0, result.output
+        mock_bootstrap.assert_called_once_with("claude", skip_cli_version_check=True)
 
 
 @pytest.mark.parametrize(
@@ -3106,6 +3127,35 @@ class TestConfigureAgentsSelection:
         # the managed-branch test overrides this.
         monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda state, **_k: (None, False))
 
+    def test_workspace_configuration_uses_one_command_scoped_managed_write_session(
+        self, monkeypatch
+    ):
+        events: list[str] = []
+
+        @contextlib.contextmanager
+        def capture_session():
+            events.append("enter")
+            try:
+                yield
+            finally:
+                events.append("exit")
+
+        monkeypatch.setattr(cli_mod, "managed_write_session", capture_session)
+        monkeypatch.setattr(
+            cli_mod,
+            "_configure_workspace_command",
+            lambda *args, **kwargs: events.append("configure") or 17,
+        )
+
+        assert (
+            cli_mod.configure_workspace_command(
+                selected_tools=["claude", "codex"],
+                workspaces=[("https://example.databricks.com", None)],
+            )
+            == 17
+        )
+        assert events == ["enter", "configure", "exit"]
+
     @pytest.mark.parametrize(("keys", "expected"), [(" \r", ["codex"]), ("\r", [])])
     def test_interactive_picker_installs_only_checked_agents(self, monkeypatch, keys, expected):
         state = {**MINIMAL_STATE, "available_tools": []}
@@ -3537,6 +3587,30 @@ class TestConfigureAgentsSelection:
         # Must not raise: a failed MCP registration warns but never aborts configure.
         cli_mod._configure_managed_mcp_servers({"enabled_agents": {"claude": {}}})
         assert warned and "boom" in warned[0]
+
+    def test_configure_managed_mcp_servers_skips_gracefully_on_rate_limit(self, monkeypatch):
+        # A 429 during MCP discovery is an info note (bypass), not a scary warning, and never aborts
+        # configure. Existing servers are left untouched (reconcile raised before touching them).
+        import ucode.cli as cli_mod
+        from ucode.mcp import McpServiceListingRateLimited
+
+        monkeypatch.setattr(
+            cli_mod,
+            "reconcile_managed_mcp_servers",
+            lambda managed, agents: (_ for _ in ()).throw(
+                McpServiceListingRateLimited("system.ai")
+            ),
+        )
+        notes: list[str] = []
+        warned: list[str] = []
+        monkeypatch.setattr(cli_mod, "print_note", lambda msg: notes.append(msg))
+        monkeypatch.setattr(cli_mod, "print_warning", lambda msg: warned.append(msg))
+
+        result = cli_mod._configure_managed_mcp_servers({"enabled_agents": {"claude": {}}})
+
+        assert result == []
+        assert warned == []  # not surfaced as a failure
+        assert notes and "rate-limited" in notes[0].lower() and "429" in notes[0]
 
     def test_unmanaged_workspace_reconciles_managed_mcp_servers(self, monkeypatch):
         # Switching to a workspace with no managed config must still run the MCP reconcile (with a
@@ -4358,29 +4432,31 @@ class TestConfigureSharedStateMcpCleanup:
         }
         mcp.save_state({"workspace": old_workspace, "mcp_servers": [entry]})
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
-        calls = []
+        calls: list[tuple[dict, set]] = []
 
-        def time_out(args, **kwargs):
-            assert args[:4] == ["claude", "mcp", "remove", "databricks-skill-registry"]
-            calls.append(args)
-            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+        def time_out(add, remove):
+            calls.append((add, remove))
+            raise subprocess.TimeoutExpired(["claude"], 5)
 
-        monkeypatch.setattr(mcp.subprocess, "run", time_out)
+        monkeypatch.setattr(mcp.claude, "write_user_mcp_servers", time_out)
 
         state = cli_mod.configure_shared_state(new_workspace, force_login=True)
 
         assert state["workspace"] == new_workspace
         assert state["mcp_servers"] == []
         assert "_discovery_reasons" in state
-        assert len(calls) == 1
+        assert calls == [({}, {"databricks-skill-registry"})]
         full = state_mod.load_full_state()
         assert full["current_workspace"] == new_workspace
         assert full["workspaces"][new_workspace]["mcp_servers"] == []
+        # The previous workspace's own bucket is always preserved so switching back still recognizes
+        # its configured servers.
         assert full["workspaces"][old_workspace]["mcp_servers"] == [entry]
         output = " ".join(_strip_ansi(capsys.readouterr().out).split())
         assert "Unity Gateway connected" in output
         assert "Dropping 1 stale MCP entry" in output
-        assert "Failed to remove `databricks-skill-registry` from Claude Code" in output
+        assert "Failed to remove stale MCP entries from Claude Code" in output
+        assert "left over from previously-configured workspaces" not in output
 
     def test_purges_residue_when_workspace_changes(self, monkeypatch):
         import ucode.cli as cli_mod

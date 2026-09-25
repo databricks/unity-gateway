@@ -224,3 +224,42 @@ def test_ug_claude_reports_unsupported_short_model_option(live_session, workspac
     assert expected.returncode != 0 and "unknown option '-m'" in expected.stderr
     assert actual.returncode == expected.returncode
     assert "unknown option '-m'" in actual.stderr
+
+
+def test_ug_claude_headless_allow_all_bedrock_provider(
+    live_session, workspace, claude_bedrock_allow_all_provider, claude_bedrock_allow_all_model
+):
+    """Scenario: launch Claude through a Bedrock MPS with allow_all_targets and no declared
+    targets (issue #811), pinning an explicit Bedrock model.
+
+    Expected: ug accepts the provider (rather than rejecting it as "exposes no Claude models"),
+    and the real file task completes through Bedrock.
+    """
+    session = live_session
+    task = FileTask(session)
+    session.run(
+        "configure",
+        "--agents",
+        "claude",
+        "--workspace",
+        workspace,
+        "--skip-validate",
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+    )
+    result = session.run(
+        "claude",
+        "--provider",
+        claude_bedrock_allow_all_provider,
+        "--model",
+        claude_bedrock_allow_all_model,
+        "--",
+        "-p",
+        task.prompt,
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Read",
+        timeout=240,
+    )
+    task.assert_headless_answer("claude", result)

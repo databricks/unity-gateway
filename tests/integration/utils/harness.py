@@ -13,7 +13,7 @@ import threading
 import time
 from pathlib import Path
 
-from .constants import CODEX_TEST_MODEL
+from .constants import CLAUDE_TEST_MODEL, CODEX_TEST_MODEL
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
@@ -179,7 +179,10 @@ class UserSession:
             usable = [
                 value for value in values if value.startswith(prefix) and "astra" not in value
             ]
-            model = CODEX_TEST_MODEL if CODEX_TEST_MODEL in usable else next(iter(usable), "")
+            # Prefer the pinned test model: discovery can list a new model before the gateway serves
+            # it (e.g. a fresh Claude release returning 404), which would fail unrelated PRs.
+            preferred = CLAUDE_TEST_MODEL if agent == "claude" else CODEX_TEST_MODEL
+            model = preferred if preferred in usable else next(iter(usable), "")
             source = "ug configure discovery"
         assert model, (
             f"ug configure found no system.ai model for {agent}; use --{agent}-model to reproduce a specific model."
@@ -220,9 +223,10 @@ class UserSession:
         timeout: int = 120,
         request: tuple[str, dict] | None = None,
         name: str = "app-server",
+        binary: str | None = None,
     ) -> dict:
         """Speak the real Codex stdio protocol and require an initialize response."""
-        command = [str(self.binary), "codex", *args]
+        command = [binary, *args] if binary else [str(self.binary), "codex", *args]
         messages: queue.Queue = queue.Queue()
         transcript: list[str] = []
         diagnostics: list[str] = []
@@ -309,7 +313,9 @@ class UserSession:
                 f"{name}.json", {"argv": command, "stdout": transcript, "stderr": diagnostics}
             )
 
-    def codex_model_ids(self, args: list[str], name: str = "codex-models") -> list[str]:
+    def codex_model_ids(
+        self, args: list[str], name: str = "codex-models", *, binary: str | None = None
+    ) -> list[str]:
         """Ask the real Codex app-server for the catalog its model picker uses."""
         response = self.app_server_handshake(
             args,
@@ -318,6 +324,7 @@ class UserSession:
                 {"cursor": None, "limit": 1000, "includeHidden": False},
             ),
             name=f"{name}-app-server",
+            binary=binary,
         )
         result = response["result"]
         models = result.get("data")
