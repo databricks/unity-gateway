@@ -45,7 +45,7 @@ jobs:
             package: '@anthropic-ai/claude-code@2.1.274'
           - group: codex
             name: Agent launch tests · Codex
-            keyword: TestCodexLaunch or (TestModelProviderLaunch and codex)
+            keyword: TestCodexLaunch
             package: '@openai/codex'
           - group: gemini
             name: Agent launch tests · Gemini
@@ -78,8 +78,6 @@ jobs:
       # apiKeyHelper short-circuit to this value when set. Tokens are
       # short-lived (~1h); rotate when CI starts failing with 401s.
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
-      # Subscription OAuth token for the relayed-launch e2e test; the test skips when unset.
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       AGENT_PACKAGE: ${{ matrix.package }}
       TEST_KEYWORD: ${{ matrix.keyword }}
     steps:
