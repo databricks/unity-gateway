@@ -45,7 +45,7 @@ class TestNpmCheck:
 
 class TestDatabricksCliCheck:
     def test_error_and_install_suggestion_when_missing(self):
-        with patch.object(doctor_mod.shutil, "which", return_value=None):
+        with patch.object(doctor_mod, "databricks_cli_installed", return_value=False):
             check = _check_databricks_cli()
         assert check.status == "error"
         assert check.suggestion is not None
@@ -56,7 +56,7 @@ class TestDatabricksCliCheck:
         # not a hard failure.
         old = (MIN_DATABRICKS_CLI_VERSION[0], MIN_DATABRICKS_CLI_VERSION[1] - 1, 0)
         with (
-            patch.object(doctor_mod.shutil, "which", return_value="/usr/bin/databricks"),
+            patch.object(doctor_mod, "databricks_cli_installed", return_value=True),
             patch.object(doctor_mod, "databricks_cli_version", return_value=old),
         ):
             check = _check_databricks_cli()
@@ -66,7 +66,7 @@ class TestDatabricksCliCheck:
 
     def test_ok_when_at_or_above_floor(self):
         with (
-            patch.object(doctor_mod.shutil, "which", return_value="/usr/bin/databricks"),
+            patch.object(doctor_mod, "databricks_cli_installed", return_value=True),
             patch.object(
                 doctor_mod, "databricks_cli_version", return_value=MIN_DATABRICKS_CLI_VERSION
             ),
@@ -77,7 +77,7 @@ class TestDatabricksCliCheck:
 
     def test_warn_when_version_unreadable(self):
         with (
-            patch.object(doctor_mod.shutil, "which", return_value="/usr/bin/databricks"),
+            patch.object(doctor_mod, "databricks_cli_installed", return_value=True),
             patch.object(doctor_mod, "databricks_cli_version", return_value=None),
         ):
             check = _check_databricks_cli()
