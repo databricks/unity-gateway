@@ -7,13 +7,16 @@ import os
 import sys
 import threading
 import time
+from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from ucode.agents import claude
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, claude_pty, routing, v2
+from ucode.smart_routing import claude_hooks, claude_pty, claude_statusline, pricing, routing, v2
+from ucode.smart_routing.pricing import ModelPrice
 
 
 class TestManagedModelPicker:
@@ -390,6 +393,7 @@ class TestV2Launch:
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.delenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, raising=False)
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "")
         monkeypatch.setenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "")
@@ -456,6 +460,178 @@ class TestV2Launch:
         assert not captured["settings_path"].exists()
         # The model-setting guard is a first-prompt concern; user settings stay untouched.
         assert json.loads(user_settings.read_text()) == {"model": "opus"}
+        # The savings statusline is opt-in, so the user's own statusline is left alone.
+        assert "statusLine" not in settings
+
+
+class TestSavingsStatusline:
+    """``ENABLE_SMART_ROUTING_SAVINGS`` puts the savings row in the per-launch settings."""
+
+    @staticmethod
+    def _launch(monkeypatch, tmp_path, *, first_prompt: bool) -> dict:
+        user_settings = tmp_path / "settings.json"
+        user_settings.write_text(
+            json.dumps({"statusLine": {"type": "command", "command": "my-line", "padding": 1}})
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, "1")
+        if first_prompt:
+            monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+            monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
+        else:
+            monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+            monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
+        monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
+        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        monkeypatch.setattr(
+            v2,
+            "list_anthropic_model_catalog",
+            lambda *_args: AnthropicModelCatalog(
+                model_ids=["system.ai.claude-opus-4-8"], model_id_to_display_name={}
+            ),
+        )
+        captured: dict = {}
+
+        def capture_settings(argv) -> None:
+            captured["settings"] = json.loads(Path(argv[argv.index("--settings") + 1]).read_text())
+
+        def fake_pty(argv, **_kwargs):
+            capture_settings(argv)
+            return 0
+
+        class FakeProcess:
+            def __init__(self, argv, **_kwargs):
+                capture_settings(argv)
+
+            def wait(self):
+                return 0
+
+        def fake_rates(workspace, token, model_services):
+            captured["rates_request"] = (workspace, token, model_services)
+            return [
+                {
+                    "model_service": "system.ai.claude-opus-4-8",
+                    "cost_by_dollars": {
+                        "input_per_million_tokens": 5,
+                        "output_per_million_tokens": 25,
+                    },
+                }
+            ], None
+
+        class InlineThread:
+            """Runs the price refresh inline so the test can observe the cache it writes."""
+
+            def __init__(self, *, target, args, **_kwargs):
+                self._target, self._args = target, args
+
+            def start(self):
+                self._target(*self._args)
+
+        monkeypatch.setattr(claude_pty, "run_claude_pty", fake_pty)
+        monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
+        monkeypatch.setattr(v2, "fetch_endpoint_rates", fake_rates)
+        monkeypatch.setattr(v2, "threading", SimpleNamespace(Thread=InlineThread))
+
+        with pytest.raises(SystemExit):
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                [],
+                binary="claude",
+                user_settings_path=user_settings,
+                launch_model="opus",
+                compose_settings=lambda _args: ({}, []),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+        return captured
+
+    def test_subagent_only_wraps_the_user_statusline(self, monkeypatch, tmp_path):
+        status_line = self._launch(monkeypatch, tmp_path, first_prompt=False)["settings"][
+            "statusLine"
+        ]
+
+        assert status_line["type"] == "command"
+        assert status_line["padding"] == 1
+        command = status_line["command"]
+        assert "\nmy-line\n" in command
+        assert f"-m {claude_statusline.MODULE}" in command
+        assert f"--state-dir {tmp_path / claude_statusline.STATE_DIRNAME}" in command
+        price_cache = pricing.price_cache_path(tmp_path, "https://example.com")
+        assert f"--price-cache {price_cache}" in command
+        # The baseline follows the main model the user chose.
+        assert "--baseline-session-start" not in command
+
+    def test_first_prompt_routing_uses_the_pre_routing_baseline(self, monkeypatch, tmp_path):
+        status_line = self._launch(monkeypatch, tmp_path, first_prompt=True)["settings"][
+            "statusLine"
+        ]
+
+        assert "--baseline-session-start" in status_line["command"]
+
+    def test_caches_endpoint_rates_for_the_launch_models(self, monkeypatch, tmp_path):
+        captured = self._launch(monkeypatch, tmp_path, first_prompt=False)
+
+        # The `opus` alias isn't a model service, so only the catalog id is priced.
+        assert captured["rates_request"] == (
+            "https://example.com",
+            "token",
+            ["system.ai.claude-opus-4-8"],
+        )
+        cached = pricing.read_price_cache(pricing.price_cache_path(tmp_path, "https://example.com"))
+        assert cached is not None
+        assert cached[0] == {
+            "claude-opus-4-8": ModelPrice(input=Decimal("5"), output=Decimal("25"))
+        }
+
+
+class TestSavingsPriceRefresh:
+    def test_prices_routable_and_main_models_by_system_ai_name(self):
+        services = v2._savings_model_services(
+            [
+                "system.ai.claude-opus-4-8[1m]",
+                "anthropic-aigw-73ea02b2-system.ai.glm-5-2",
+                "databricks-claude-sonnet-5",
+                "opus",
+                None,
+            ],
+            {
+                "env": {
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "system.ai.claude-opus-5-5",
+                    "UNRELATED": "system.ai.not-a-main-model",
+                }
+            },
+        )
+
+        assert services == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-opus-5-5",
+            "system.ai.claude-sonnet-5",
+            "system.ai.glm-5-2",
+        ]
+
+    @pytest.mark.parametrize(
+        "fetch",
+        [
+            lambda *_args: ([], "HTTP 404 Not Found"),
+            lambda *_args: (_ for _ in ()).throw(RuntimeError("rates API down")),
+        ],
+    )
+    def test_failed_refresh_keeps_the_previous_cache(self, monkeypatch, tmp_path, fetch):
+        cache = tmp_path / "model-prices.json"
+        pricing.write_price_cache(
+            cache, {"claude-opus-4-8": ModelPrice(input=Decimal("5"))}, now=1.0
+        )
+        monkeypatch.setattr(v2, "fetch_endpoint_rates", fetch)
+
+        v2._refresh_savings_prices(
+            "https://example.com", "token", ["system.ai.claude-opus-4-8"], cache
+        )
+
+        cached = pricing.read_price_cache(cache)
+        assert cached is not None and cached[1] == "1.0"
 
 
 class TestV2ModelPickerDiscovery:

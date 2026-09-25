@@ -189,7 +189,10 @@ configuration, each journey injects only a tracing-enabled CodingAgentConfig inp
 the suite's managed-config stub seam; the agents, inference, OTLP export, and table
 verification remain real. Each adds the prompt's UUID as a trace-safe
 `ug_integration_marker` attribute, resolves the destination table from the workspace tracing
-configuration, waits 30 seconds, and queries that table through an existing SQL warehouse.
+configuration, waits 30 seconds, and queries that table through an existing SQL warehouse
+(a running one if any, else a serverless one). A query may wait up to 10 minutes for the
+warehouse to start or queue it before its 180-second execution limit applies, and a timeout
+reports which of the two it hit.
 The tests assert that a span with the marker arrived and identifies the requested model.
 
 Scoped discovery additionally requires Model Services

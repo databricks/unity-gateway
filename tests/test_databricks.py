@@ -4027,3 +4027,69 @@ class TestMcpServiceNeedsConnectionLogin:
         # Safe default: an unreachable API must not push a service into an OAuth flow.
         self._mock_http(monkeypatch, details=None, err="HTTP 500")
         assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.github") is False
+
+
+class TestFetchEndpointRates:
+    def test_requests_system_ai_services_as_get_body(self, monkeypatch):
+        seen = {}
+
+        def fake_send(method, url, token, payload, **kwargs):
+            seen.update(method=method, url=url, token=token, payload=payload)
+            return {
+                "model_service_rates": [
+                    {
+                        "model_service": "system.ai.glm-5-3",
+                        "cost_by_dollars": {"input_per_million_tokens": 1.4},
+                    },
+                    "not-a-rate",
+                ]
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_send_json", fake_send)
+
+        rates, reason = db_mod.fetch_endpoint_rates(
+            WS, "tok", ["system.ai.glm-5-3", "claude-opus-4-8", "system.ai.claude-sonnet-5"]
+        )
+
+        assert reason is None
+        assert rates == [
+            {
+                "model_service": "system.ai.glm-5-3",
+                "cost_by_dollars": {"input_per_million_tokens": 1.4},
+            }
+        ]
+        # The API rejects names outside system.ai, so they never reach the request.
+        assert seen == {
+            "method": "GET",
+            "url": f"{WS}/api/ai-gateway/v2/endpoint-rates:batchGet",
+            "token": "tok",
+            "payload": {
+                "databricks_hosted_model_services": [
+                    "system.ai.claude-sonnet-5",
+                    "system.ai.glm-5-3",
+                ]
+            },
+        }
+
+    def test_skips_the_request_without_system_ai_services(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_http_send_json", lambda *args, **kwargs: pytest.fail("no request expected")
+        )
+
+        assert db_mod.fetch_endpoint_rates(WS, "tok", ["claude-opus-4-8"]) == (
+            [],
+            "no system.ai model services to price",
+        )
+
+    @pytest.mark.parametrize(
+        ("response", "expected"),
+        [
+            ((None, "HTTP 404 Not Found"), ([], "HTTP 404 Not Found")),
+            ((["unexpected"], None), ([], "endpoint-rates returned an unexpected response shape")),
+            (({}, None), ([], None)),
+        ],
+    )
+    def test_reports_failures_without_raising(self, monkeypatch, response, expected):
+        monkeypatch.setattr(db_mod, "_http_send_json", lambda *args, **kwargs: response)
+
+        assert db_mod.fetch_endpoint_rates(WS, "tok", ["system.ai.glm-5-3"]) == expected
