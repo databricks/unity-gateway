@@ -4,6 +4,7 @@ and download orchestration."""
 from __future__ import annotations
 
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1234,7 +1235,7 @@ class TestGetUpdatedRefs:
         }
         monkeypatch.setattr(sd, "get_skill", lambda ws, tok, fqn: current[fqn])
 
-        pairs = sd._get_updated_refs(WS, "token", records)
+        pairs = sd._get_updated_refs(WS, "token", records, time.monotonic() + 30)
 
         assert {r["fqn"] for r, _ in pairs} == {
             "main.default.newer",
@@ -1244,7 +1245,25 @@ class TestGetUpdatedRefs:
 
     def test_empty_records_makes_no_pool(self, monkeypatch):
         monkeypatch.setattr(sd, "get_skill", lambda *a: pytest.fail("should not fetch"))
-        assert sd._get_updated_refs(WS, "token", []) == []
+        assert sd._get_updated_refs(WS, "token", [], time.monotonic() + 30) == []
+
+    def test_expired_deadline_stops_waiting(self, monkeypatch):
+        release = threading.Event()
+
+        def blocking_get_skill(*_args):
+            release.wait(timeout=5)
+            return None
+
+        monkeypatch.setattr(sd, "get_skill", blocking_get_skill)
+        start = time.monotonic()
+        try:
+            pairs = sd._get_updated_refs(
+                WS, "token", [{"fqn": "main.default.triage"}], time.monotonic() - 1
+            )
+        finally:
+            release.set()
+        assert pairs == []
+        assert time.monotonic() - start < 1.0
 
 
 class TestUpdateStaleSkills:
@@ -1258,7 +1277,10 @@ class TestUpdateStaleSkills:
         )
 
         updated = sd._update_stale_skills(
-            WS, "token", [({"base": str(home)}, _skill("triage", "2026-09-01T00:00:00Z"))]
+            WS,
+            "token",
+            [({"base": str(home)}, _skill("triage", "2026-09-01T00:00:00Z"))],
+            time.monotonic() + 30,
         )
 
         assert updated == 1
@@ -1267,6 +1289,19 @@ class TestUpdateStaleSkills:
         stored = skills_state.list_downloaded()
         assert stored[0]["fqn"] == "main.default.triage"
         assert stored[0]["uc_update_time"] == "2026-09-01T00:00:00Z"
+
+    def test_expired_deadline_skips_downloads(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setattr(
+            sd, "_fetch_bundles", lambda *a, **k: pytest.fail("should not fetch past deadline")
+        )
+        updated = sd._update_stale_skills(
+            WS,
+            "token",
+            [({"base": str(tmp_path)}, _skill("triage", "2026-09-01T00:00:00Z"))],
+            time.monotonic() - 1,
+        )
+        assert updated == 0
 
 
 def _record_download(home, monkeypatch, *, uc_update_time="2026-01-01T00:00:00Z", on_disk=True):
