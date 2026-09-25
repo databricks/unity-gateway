@@ -217,6 +217,29 @@ class UserSession:
         )
         return ids
 
+    def claude_gateway_cache_ready(self, expected_ids: list[str] | None = None) -> bool:
+        """Report whether Claude's gateway cache has landed, without asserting.
+
+        Claude Code writes ``cache/gateway-models.json`` asynchronously while the
+        model picker discovers the gateway catalog, so a test must wait for the
+        cache before reading it or capturing the picker.  Return True once the
+        cache is a well-formed, non-empty catalog and, when ``expected_ids`` is
+        given, contains every one of them.  Tolerate a missing or half-written
+        file by returning False so callers can poll.
+        """
+        path = Path(self.env["CLAUDE_CONFIG_DIR"]) / "cache/gateway-models.json"
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return False
+        models = payload.get("models") if isinstance(payload, dict) else None
+        if not isinstance(models, list) or not models:
+            return False
+        ids = {model.get("id") for model in models if isinstance(model, dict)}
+        if expected_ids is None:
+            return True
+        return set(expected_ids) <= ids
+
     def app_server_handshake(
         self,
         args: list[str],
