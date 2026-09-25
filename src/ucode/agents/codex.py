@@ -650,10 +650,11 @@ def _read_user_config_for_rewrite(path: Path) -> tomlkit.TOMLDocument | None:
         return None
 
 
-def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     """Apply ``add``/``remove`` to Codex's user-scope ``[mcp_servers]`` (``~/.codex/config.toml``,
     or under ``$CODEX_HOME``) in a single read-modify-write, instead of one ``codex mcp`` subprocess
-    per server. Other tables and the developer's own servers are preserved.
+    per server. Other tables and the developer's own servers are preserved. Returns the subset of
+    ``remove`` names that were actually present (so callers can report only real removals).
 
     If the file exists but can't be parsed, defer to the per-server ``codex`` CLI rather than
     overwrite it."""
@@ -662,22 +663,23 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
     path = user_mcp_config_path()
     doc = _read_user_config_for_rewrite(path)
     if doc is None:
-        for name in remove:
-            remove_codex_mcp_server(name)
+        removed = {name for name in remove if remove_codex_mcp_server(name)}
         for name, entry in add.items():
             add_codex_mcp_server(name, [entry["command"], *entry.get("args", [])])
-        return
+        return removed
 
     table = doc.get(MANAGED_MCP_CONFIG_KEY)
     if not isinstance(table, dict):
         table = tomlkit.table()
         doc[MANAGED_MCP_CONFIG_KEY] = table
+    removed = {name for name in remove if name in table}
     for name in remove:
         if name in table:
             del table[name]
     for name, entry in add.items():
         table[name] = entry
     write_toml_file(path, doc)
+    return removed
 
 
 def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:

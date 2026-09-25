@@ -1064,7 +1064,7 @@ class TestConfigureMcpCommand:
 
     def test_drops_stale_foreign_workspace_mcp_entries(self, monkeypatch, capsys):
         saved_states: list[dict] = []
-        cleanup_calls: list[tuple[str, str]] = []
+        writes: list[tuple[dict, set]] = []
         other_ws = "https://other-workspace.cloud.databricks.com"
         stale_entry = {
             "name": "databricks-genie-foreign",
@@ -1094,9 +1094,7 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch, "databricks-sql")
         monkeypatch.setattr(
-            mcp,
-            "remove_client_mcp_server",
-            lambda client, name: cleanup_calls.append((client, name)) or [],
+            mcp.claude, "write_user_mcp_servers", lambda a, r: writes.append((a, r))
         )
         monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
 
@@ -1105,14 +1103,14 @@ class TestConfigureMcpCommand:
         output = capsys.readouterr().out
         assert "Dropping 1 stale MCP entry" in output
         assert "databricks-genie-foreign" in output
-        # codex is listed on the stale entry but not installed -> skipped.
-        assert cleanup_calls == [("claude", "databricks-genie-foreign")]
+        # One batched user-scope removal for claude (codex is on the entry but isn't installed).
+        assert writes == [({}, {"databricks-genie-foreign"})]
         assert saved_states, "expected sanitized state to be persisted"
         assert saved_states[0]["mcp_servers"] == [kept_entry]
 
     def test_removes_orphan_mcp_entries_from_other_workspace_buckets(self, monkeypatch, capsys):
         saved_states: list[dict] = []
-        cleanup_calls: list[tuple[str, str]] = []
+        writes: list[tuple[dict, set]] = []
         other_ws = "https://other-workspace.cloud.databricks.com"
         current_entry = {
             "name": "databricks-sql",
@@ -1152,10 +1150,11 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch, "databricks-sql")
+        # The batched writer reports the names it actually removed; the orphan was present.
         monkeypatch.setattr(
-            mcp,
-            "remove_client_mcp_server",
-            lambda client, name: cleanup_calls.append((client, name)) or [mcp.MCP_USER_SCOPE],
+            mcp.claude,
+            "write_user_mcp_servers",
+            lambda a, r: (writes.append((a, r)), set(r))[1],
         )
         monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
 
@@ -1164,20 +1163,15 @@ class TestConfigureMcpCommand:
         output = capsys.readouterr().out
         assert "left over from previously-configured workspaces" in output
         assert "orphan-mcp" in output
-        # codex was in orphan-mcp's clients but isn't installed -> skipped.
-        assert cleanup_calls == [("claude", "orphan-mcp")]
+        # One batched user-scope removal for claude (codex was on the entry but isn't installed).
+        assert writes == [({}, {"orphan-mcp"})]
 
-    def test_skips_orphan_warning_when_nothing_was_actually_removed(self, monkeypatch, capsys):
-        """Re-running the MCP configure flow on the same workspace shouldn't repeat the warning
-        if the leftover entries were already removed by a previous run."""
-        cleanup_calls: list[tuple[str, str]] = []
+    def test_skips_orphan_warning_when_no_leftover_entries(self, monkeypatch, capsys):
+        """No leftover entries tracked in other workspaces -> no removal and no warning. A prior
+        switch clears the other buckets, so later same-workspace runs land here instead of
+        re-purging (and re-printing) the same already-removed servers every time."""
+        writes: list[tuple[dict, set]] = []
         other_ws = "https://other-workspace.cloud.databricks.com"
-        orphan_entry = {
-            "name": "orphan-mcp",
-            "url": f"{other_ws}/api/2.0/mcp/external/orphan-mcp",
-            "auth": "proxy",
-            "clients": ["claude"],
-        }
 
         monkeypatch.setattr(
             mcp,
@@ -1189,10 +1183,7 @@ class TestConfigureMcpCommand:
             "load_full_state",
             lambda: {
                 "current_workspace": WS,
-                "workspaces": {
-                    WS: {},
-                    other_ws: {"mcp_servers": [orphan_entry]},
-                },
+                "workspaces": {WS: {}, other_ws: {"mcp_servers": []}},
             },
         )
         monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/usr/bin/{binary}")
@@ -1200,11 +1191,8 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch)
-        # Stub returns empty list -> "entry wasn't in this agent's config".
         monkeypatch.setattr(
-            mcp,
-            "remove_client_mcp_server",
-            lambda client, name: cleanup_calls.append((client, name)) or [],
+            mcp.claude, "write_user_mcp_servers", lambda a, r: writes.append((a, r))
         )
         monkeypatch.setattr(mcp, "save_state", lambda state: None)
 
@@ -1212,8 +1200,7 @@ class TestConfigureMcpCommand:
 
         output = capsys.readouterr().out
         assert "left over from previously-configured workspaces" not in output
-        # The removal attempt was still made (cheap and safe); we just don't announce it.
-        assert cleanup_calls == [("claude", "orphan-mcp")]
+        assert writes == []
 
     def test_warns_when_app_selection_is_no_longer_discoverable(self, monkeypatch, capsys):
         saved_states: list[dict] = []
@@ -2906,8 +2893,25 @@ class TestRevertMcpConfigs:
 
 
 class TestPurgeCrossWorkspaceSkillsEntry:
-    @pytest.mark.parametrize("copied_clients", [["claude"], ["claude", "codex"]])
-    def test_workspace_switch_removes_each_client_once(self, monkeypatch, copied_clients):
+    @staticmethod
+    def _capture_batched_writes(monkeypatch, clients, *, returns="all"):
+        """Stub ``write_user_mcp_servers`` on each client module, recording ``(add, remove)`` and
+        returning the names it "removed" so the caller reports only real removals: ``"all"`` = every
+        requested name was present, ``"none"`` = the entries were already gone."""
+        writes: dict[str, list[tuple[dict, set]]] = {c: [] for c in clients}
+
+        def make(client):
+            def _write(add, remove):
+                writes[client].append((add, remove))
+                return set(remove) if returns == "all" else set()
+
+            return _write
+
+        for client in clients:
+            monkeypatch.setattr(getattr(mcp, client), "write_user_mcp_servers", make(client))
+        return writes
+
+    def test_workspace_switch_removes_residue_once_per_client(self, monkeypatch):
         from ucode import state as state_mod
 
         monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
@@ -2921,31 +2925,106 @@ class TestPurgeCrossWorkspaceSkillsEntry:
         # the new bucket before invoking cleanup.
         state = state_mod.load_state()
         state["workspace"] = WS
-        state["mcp_servers"] = [{**skills_entry, "clients": copied_clients}]
+        state["mcp_servers"] = [skills_entry]
         state_mod.save_state(state)
-        removed: list[tuple[str, str]] = []
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude", "codex"])
-        monkeypatch.setattr(
-            mcp,
-            "remove_client_mcp_server",
-            lambda client, name: removed.append((client, name)) or ["user"],
-        )
+        writes = self._capture_batched_writes(monkeypatch, ["claude", "codex"])
 
         mcp.purge_cross_workspace_mcp_residue(state, WS)
 
-        assert removed == [
-            ("claude", mcp.SKILLS_MCP_SERVER_NAME),
-            ("codex", mcp.SKILLS_MCP_SERVER_NAME),
-        ]
+        # One batched user-scope removal per installed client (deduped across the foreign-host copy
+        # and the previous workspace's record), instead of a CLI/config removal per (client, scope).
+        for client in writes:
+            assert writes[client] == [({}, {mcp.SKILLS_MCP_SERVER_NAME})]
         full = state_mod.load_full_state()
+        # The copied entry is gone from the current bucket, and the previous workspace's own bucket
+        # is preserved so switching back to it still recognizes the configured server.
         assert full["workspaces"][WS]["mcp_servers"] == []
         assert full["workspaces"][foreign]["mcp_servers"] == [skills_entry]
 
-    @pytest.mark.parametrize("copied_to_current", [True, False], ids=["copied", "orphan"])
-    @pytest.mark.parametrize("failure", ["timeout", "missing-binary", "command-error"])
-    def test_removal_failure_warns_and_continues(
-        self, monkeypatch, capsys, copied_to_current, failure
-    ):
+    def test_reports_residue_removed_from_other_workspace(self, monkeypatch, capsys):
+        from ucode import state as state_mod
+
+        monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
+        monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
+        other = "https://other.databricks.com"
+        entry = {"name": "databricks-sql", "url": f"{other}/api/2.0/mcp/sql", "clients": ["claude"]}
+        state_mod.save_state({"workspace": other, "mcp_servers": [entry]})
+        state = {"workspace": WS, "mcp_servers": []}
+        state_mod.save_state(state)
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
+        writes = self._capture_batched_writes(monkeypatch, ["claude"])
+
+        mcp.purge_cross_workspace_mcp_residue(state, WS)
+
+        assert writes["claude"] == [({}, {"databricks-sql"})]
+        out = _unwrap(capsys.readouterr().out)
+        assert (
+            "Removed 1 MCP entry left over from previously-configured workspaces: databricks-sql"
+            in out
+        )
+        # The other workspace's bucket record is preserved for a later switch back.
+        assert state_mod.load_full_state()["workspaces"][other]["mcp_servers"] == [entry]
+
+    def test_repeat_run_silent_when_entries_already_removed(self, monkeypatch, capsys):
+        from ucode import state as state_mod
+
+        monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
+        monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
+        other = "https://other.databricks.com"
+        entry = {"name": "databricks-sql", "url": f"{other}/api/2.0/mcp/sql", "clients": ["claude"]}
+        state_mod.save_state({"workspace": other, "mcp_servers": [entry]})
+        state = {"workspace": WS, "mcp_servers": []}
+        state_mod.save_state(state)
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
+        # The entry is already gone from Claude's config, so the batched write removes nothing.
+        writes = self._capture_batched_writes(monkeypatch, ["claude"], returns="none")
+
+        mcp.purge_cross_workspace_mcp_residue(state, WS)
+
+        # The removal is still attempted (cheap), but nothing was actually removed, so there is no
+        # warning to repeat on every run and the previous workspace's bucket stays intact.
+        assert writes["claude"] == [({}, {"databricks-sql"})]
+        assert "left over from previously-configured workspaces" not in _unwrap(
+            capsys.readouterr().out
+        )
+        assert state_mod.load_full_state()["workspaces"][other]["mcp_servers"] == [entry]
+
+    def test_skips_names_the_current_workspace_manages(self, monkeypatch, capsys):
+        from ucode import state as state_mod
+
+        monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
+        monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
+        other = "https://other.databricks.com"
+        shared = {"name": "system-ai-github", "url": f"{other}/x", "clients": ["claude"]}
+        state_mod.save_state({"workspace": other, "mcp_servers": [shared]})
+        # The current workspace registers the same-named server through its managed set (the
+        # `system.ai` default lives in `managed_mcp_servers`).
+        state = {
+            "workspace": WS,
+            "mcp_servers": [],
+            "managed_mcp_servers": [{"name": "system-ai-github", "clients": ["claude"]}],
+        }
+        state_mod.save_state(state)
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
+        writes = self._capture_batched_writes(monkeypatch, ["claude"])
+
+        mcp.purge_cross_workspace_mcp_residue(state, WS)
+
+        # system-ai-github is the current workspace's own managed server, so it must NOT be treated
+        # as cross-workspace residue — purging it would delete the live entry the reconcile just
+        # added (keyed by name), churning and re-warning on every `configure`.
+        assert writes["claude"] == []
+        assert "left over from previously-configured workspaces" not in _unwrap(
+            capsys.readouterr().out
+        )
+
+    @pytest.mark.parametrize(
+        "failure",
+        [RuntimeError("config is locked"), OSError("no such file"), None],
+        ids=["runtime", "os", "timeout"],
+    )
+    def test_removal_failure_warns_and_continues(self, monkeypatch, capsys, failure):
         from ucode import state as state_mod
 
         monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
@@ -2954,38 +3033,30 @@ class TestPurgeCrossWorkspaceSkillsEntry:
         skills_entry = mcp._resolve_skills_mcp_servers(
             foreign, ["claude", "codex"], _by_client(["claude", "codex"], ["a.b"]), []
         )[0]
-        state_mod.save_state({"workspace": foreign, "mcp_servers": [skills_entry]})
-        state = {"workspace": WS, "mcp_servers": [skills_entry] if copied_to_current else []}
+        state = {"workspace": WS, "mcp_servers": [skills_entry]}
         state_mod.save_state(state)
-        calls: list[list[str]] = []
+        codex_writes: list[tuple[dict, set]] = []
 
-        def run_removal(args, **kwargs):
-            calls.append(args)
-            assert args[1:4] == ["mcp", "remove", mcp.SKILLS_MCP_SERVER_NAME]
-            if args[0] == "claude":
-                if failure == "timeout":
-                    raise mcp.subprocess.TimeoutExpired(args, kwargs["timeout"])
-                if failure == "missing-binary":
-                    raise FileNotFoundError(2, "No such file or directory", "claude")
-                raise mcp.subprocess.CalledProcessError(1, args, stderr="config is locked")
-            assert args[0] == "codex"
-            return mcp.subprocess.CompletedProcess(args, 0, stdout="Removed", stderr="")
+        def claude_write(add, remove):
+            raise mcp.subprocess.TimeoutExpired(["claude"], 5) if failure is None else failure
 
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude", "codex"])
-        # Exercise the real client dispatch and exception conversion, stopping
-        # only at the subprocess boundary so no installed agent is modified.
-        monkeypatch.setattr(mcp.subprocess, "run", run_removal)
+        monkeypatch.setattr(mcp.claude, "write_user_mcp_servers", claude_write)
+        monkeypatch.setattr(
+            mcp.codex,
+            "write_user_mcp_servers",
+            lambda a, r: (codex_writes.append((a, r)), set(r))[1],
+        )
 
         mcp.purge_cross_workspace_mcp_residue(state, WS)
 
-        assert sorted(args[0] for args in calls) == ["claude", "codex"]
         output = _unwrap(capsys.readouterr().out)
-        assert output.count("Failed to remove `databricks-skill-registry` from Claude Code") == 1
+        # A client whose batched write fails is warned about; the others still complete.
+        assert output.count("Failed to remove stale MCP entries from Claude Code") == 1
+        assert codex_writes == [({}, {mcp.SKILLS_MCP_SERVER_NAME})]
         assert state_mod.load_state()["mcp_servers"] == []
-        assert state_mod.load_full_state()["workspaces"][foreign]["mcp_servers"] == [skills_entry]
 
     def test_drops_foreign_workspace_skills_entry(self, monkeypatch):
-        removed: list[tuple[str, str]] = []
         saved_states: list[dict] = []
         foreign = "https://other.databricks.com"
         skills_entry = mcp._resolve_skills_mcp_servers(
@@ -2997,16 +3068,12 @@ class TestPurgeCrossWorkspaceSkillsEntry:
 
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "load_full_state", lambda: {})
-        monkeypatch.setattr(
-            mcp,
-            "remove_client_mcp_server",
-            lambda client, name: removed.append((client, name)) or ["user"],
-        )
+        writes = self._capture_batched_writes(monkeypatch, ["claude"])
         monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
 
         mcp.purge_cross_workspace_mcp_residue(state, WS)
 
-        assert removed == [("claude", mcp.SKILLS_MCP_SERVER_NAME)]
+        assert writes["claude"] == [({}, {mcp.SKILLS_MCP_SERVER_NAME})]
         assert state["mcp_servers"] == []
 
 

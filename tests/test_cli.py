@@ -4432,29 +4432,31 @@ class TestConfigureSharedStateMcpCleanup:
         }
         mcp.save_state({"workspace": old_workspace, "mcp_servers": [entry]})
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
-        calls = []
+        calls: list[tuple[dict, set]] = []
 
-        def time_out(args, **kwargs):
-            assert args[:4] == ["claude", "mcp", "remove", "databricks-skill-registry"]
-            calls.append(args)
-            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+        def time_out(add, remove):
+            calls.append((add, remove))
+            raise subprocess.TimeoutExpired(["claude"], 5)
 
-        monkeypatch.setattr(mcp.subprocess, "run", time_out)
+        monkeypatch.setattr(mcp.claude, "write_user_mcp_servers", time_out)
 
         state = cli_mod.configure_shared_state(new_workspace, force_login=True)
 
         assert state["workspace"] == new_workspace
         assert state["mcp_servers"] == []
         assert "_discovery_reasons" in state
-        assert len(calls) == 1
+        assert calls == [({}, {"databricks-skill-registry"})]
         full = state_mod.load_full_state()
         assert full["current_workspace"] == new_workspace
         assert full["workspaces"][new_workspace]["mcp_servers"] == []
+        # The previous workspace's own bucket is always preserved so switching back still recognizes
+        # its configured servers.
         assert full["workspaces"][old_workspace]["mcp_servers"] == [entry]
         output = " ".join(_strip_ansi(capsys.readouterr().out).split())
         assert "Unity Gateway connected" in output
         assert "Dropping 1 stale MCP entry" in output
-        assert "Failed to remove `databricks-skill-registry` from Claude Code" in output
+        assert "Failed to remove stale MCP entries from Claude Code" in output
+        assert "left over from previously-configured workspaces" not in output
 
     def test_purges_residue_when_workspace_changes(self, monkeypatch):
         import ucode.cli as cli_mod
