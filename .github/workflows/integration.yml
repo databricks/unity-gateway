@@ -73,7 +73,7 @@ jobs:
             --default-index "$PACKAGE_INDEX" --installation-only --output "$RUNNER_TEMP/ug-integration"
       - name: Upload installation evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: integration-installation
           include-hidden-files: true
@@ -153,7 +153,7 @@ jobs:
             "${args[@]}" -- -m "$TEST_MARKER"
       - name: Upload live test evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: ${{ env.ARTIFACT_NAME }}
           include-hidden-files: true
@@ -242,7 +242,7 @@ jobs:
             "${args[@]}" -- -m "(managed or managed_fixture or workspace_switch) and $AGENT"
       - name: Upload managed test evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: ${{ env.ARTIFACT_NAME }}
           include-hidden-files: true
