@@ -4,6 +4,9 @@ and download orchestration."""
 from __future__ import annotations
 
 import threading
+import time
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -16,8 +19,19 @@ from ucode.skills_download import (
     skill_dir_roots,
     write_skill,
 )
+from ucode.skills_state import SkillInstall
 
 WS = "https://example.databricks.com"
+
+
+def _skill(securable_name: str, uc_update_time: str) -> SkillRef:
+    return SkillRef(
+        catalog="main",
+        schema="default",
+        securable_name=securable_name,
+        bundle_name=securable_name,
+        uc_update_time=uc_update_time,
+    )
 
 
 def ref(
@@ -1179,3 +1193,225 @@ class TestRemoveDownloadedSkillsCommand:
         sd.remove_downloaded_skills_command([], path=None)
 
         assert [r["fqn"] for r in offered] == ["ml.prod.pii"]  # managed skill withheld
+
+
+class TestEligibleLaunchRecords:
+    def test_keeps_current_workspace_non_managed_downloads(self, tmp_path):
+        home, proj, other = tmp_path / "home", tmp_path / "proj", tmp_path / "other"
+        records = [
+            {"fqn": "a.b.home", "workspace": WS, "scope": "user", "base": str(home)},
+            {"fqn": "a.b.proj", "workspace": WS, "scope": "project", "base": str(proj)},
+            {"fqn": "a.b.other", "workspace": WS, "scope": "project", "base": str(other)},
+            {"fqn": "a.b.managed", "workspace": WS, "scope": "managed", "base": str(home)},
+            {"fqn": "a.b.otherws", "workspace": "https://x", "scope": "user", "base": str(home)},
+        ]
+
+        eligible = sd._eligible_launch_refresh_records(records, WS)
+
+        assert {r["fqn"] for r in eligible} == {"a.b.home", "a.b.proj", "a.b.other"}
+
+
+class TestGetUpdatedRefs:
+    def test_flags_only_newer_or_unversioned(self, monkeypatch):
+        records = [
+            {"fqn": "main.default.newer", "uc_update_time": "2026-01-01T00:00:00Z"},
+            {"fqn": "main.default.same", "uc_update_time": "2026-01-01T00:00:00Z"},
+            {"fqn": "main.default.older", "uc_update_time": "2026-06-01T00:00:00Z"},
+            {"fqn": "main.default.unversioned"},
+            {"fqn": "main.default.gone", "uc_update_time": "2026-01-01T00:00:00Z"},
+            # Mixed RFC-3339 precision: stored whole-second, UC edited to a sub-second later time.
+            {"fqn": "main.default.subsecond", "uc_update_time": "2026-06-26T05:58:25Z"},
+            # Stored sub-second, UC now on an earlier whole second: must NOT be judged newer.
+            {"fqn": "main.default.roundup", "uc_update_time": "2026-06-26T05:58:25.400Z"},
+        ]
+        current = {
+            "main.default.newer": _skill("newer", "2026-02-01T00:00:00Z"),
+            "main.default.same": _skill("same", "2026-01-01T00:00:00Z"),
+            "main.default.older": _skill("older", "2026-01-01T00:00:00Z"),
+            "main.default.unversioned": _skill("unversioned", "2026-01-01T00:00:00Z"),
+            "main.default.gone": None,
+            "main.default.subsecond": _skill("subsecond", "2026-06-26T05:58:25.400Z"),
+            "main.default.roundup": _skill("roundup", "2026-06-26T05:58:25Z"),
+        }
+        monkeypatch.setattr(sd, "get_skill", lambda ws, tok, fqn: current[fqn])
+
+        pairs = sd._get_updated_refs(WS, "token", records, time.monotonic() + 30)
+
+        assert {r["fqn"] for r, _ in pairs} == {
+            "main.default.newer",
+            "main.default.unversioned",
+            "main.default.subsecond",
+        }
+
+    def test_empty_records_makes_no_pool(self, monkeypatch):
+        monkeypatch.setattr(sd, "get_skill", lambda *a: pytest.fail("should not fetch"))
+        assert sd._get_updated_refs(WS, "token", [], time.monotonic() + 30) == []
+
+    def test_expired_deadline_stops_waiting(self, monkeypatch):
+        release = threading.Event()
+
+        def blocking_get_skill(*_args):
+            release.wait(timeout=5)
+            return None
+
+        monkeypatch.setattr(sd, "get_skill", blocking_get_skill)
+        start = time.monotonic()
+        try:
+            pairs = sd._get_updated_refs(
+                WS, "token", [{"fqn": "main.default.triage"}], time.monotonic() - 1
+            )
+        finally:
+            release.set()
+        assert pairs == []
+        assert time.monotonic() - start < 1.0
+
+
+class TestUpdateStaleSkills:
+    def test_overwrites_both_roots_and_refreshes_record(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setattr(
+            sd,
+            "_fetch_bundles",
+            lambda ws, tok, refs, label: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
+        )
+
+        updated = sd._update_stale_skills(
+            WS,
+            "token",
+            [({"base": str(home)}, _skill("triage", "2026-09-01T00:00:00Z"))],
+            time.monotonic() + 30,
+        )
+
+        assert updated == 1
+        for family in (".claude/skills", ".agents/skills"):
+            assert (home / family / "triage" / "SKILL.md").read_bytes() == b"fresh"
+        stored = skills_state.list_downloaded()
+        assert stored[0]["fqn"] == "main.default.triage"
+        assert stored[0]["uc_update_time"] == "2026-09-01T00:00:00Z"
+
+    def test_expired_deadline_skips_downloads(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setattr(
+            sd, "_fetch_bundles", lambda *a, **k: pytest.fail("should not fetch past deadline")
+        )
+        updated = sd._update_stale_skills(
+            WS,
+            "token",
+            [({"base": str(tmp_path)}, _skill("triage", "2026-09-01T00:00:00Z"))],
+            time.monotonic() - 1,
+        )
+        assert updated == 0
+
+
+def _record_download(home, monkeypatch, *, uc_update_time="2026-01-01T00:00:00Z", on_disk=True):
+    """Record a home-scoped download of `triage`, writing its dirs when `on_disk`."""
+    monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))
+    dirs = tuple(str(home / family / "triage") for family in (".claude/skills", ".agents/skills"))
+    if on_disk:
+        for directory in dirs:
+            Path(directory).mkdir(parents=True)
+            (Path(directory) / "SKILL.md").write_bytes(b"old")
+    skills_state.record_downloads(
+        [
+            SkillInstall(
+                fqn="main.default.triage",
+                bundle_name="triage",
+                workspace=WS,
+                scope="user",
+                base=str(home),
+                dirs=dirs,
+                uc_update_time=uc_update_time,
+            )
+        ]
+    )
+
+
+class TestRefreshOnLaunch:
+    def test_rate_limited_skips_network(self, monkeypatch):
+        skills_state.set_last_update_check(datetime.now(UTC))
+        monkeypatch.setattr(sd, "list_downloaded", lambda: pytest.fail("should not read"))
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *a, **k: pytest.fail("no token"))
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+    def test_no_eligible_records_is_silent_and_skips_token(self, monkeypatch):
+        monkeypatch.setattr(sd, "list_downloaded", list)
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *a, **k: pytest.fail("no token"))
+        notes: list[str] = []
+        monkeypatch.setattr(sd, "print_note", notes.append)
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert skills_state.last_update_check() is not None
+        assert notes == []  # no "Checking..." line for users with no downloaded skills
+
+    def test_fail_open_reports_and_continues(self, monkeypatch):
+        def boom():
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(sd, "list_downloaded", boom)
+        notes: list[str] = []
+        monkeypatch.setattr(sd, "print_note", notes.append)
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert any("boom" in note for note in notes)
+        assert skills_state.last_update_check() is not None
+
+    def test_manually_deleted_skill_is_forgotten_not_redownloaded(self, tmp_path, monkeypatch):
+        _record_download(tmp_path / "home", monkeypatch, on_disk=False)
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *a, **k: pytest.fail("no token"))
+        monkeypatch.setattr(sd, "get_skill", lambda *a, **k: pytest.fail("no fetch"))
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert skills_state.list_downloaded() == []
+        assert skills_state.last_update_check() is not None
+
+    def test_partially_deleted_skill_is_redownloaded_to_restore_mirror(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        _record_download(home, monkeypatch)
+        removed = home / ".agents/skills/triage"
+        (removed / "SKILL.md").unlink()
+        removed.rmdir()
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(
+            sd, "get_skill", lambda ws, tok, fqn: _skill("triage", "2026-01-01T00:00:00Z")
+        )
+        monkeypatch.setattr(
+            sd,
+            "_fetch_bundles",
+            lambda ws, tok, refs, label: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
+        )
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert (home / ".claude/skills/triage/SKILL.md").read_bytes() == b"fresh"
+        assert (home / ".agents/skills/triage/SKILL.md").read_bytes() == b"fresh"
+        assert skills_state.list_downloaded()[0]["fqn"] == "main.default.triage"
+
+    def test_updates_changed_skill_end_to_end(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        _record_download(home, monkeypatch)
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(
+            sd, "get_skill", lambda ws, tok, fqn: _skill("triage", "2026-09-01T00:00:00Z")
+        )
+        monkeypatch.setattr(
+            sd,
+            "_fetch_bundles",
+            lambda ws, tok, refs, label: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
+        )
+        messages: list[str] = []
+        monkeypatch.setattr(sd, "print_success", messages.append)
+        notes: list[str] = []
+        monkeypatch.setattr(sd, "print_note", notes.append)
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert (home / ".claude/skills/triage/SKILL.md").read_bytes() == b"fresh"
+        assert skills_state.list_downloaded()[0]["uc_update_time"] == "2026-09-01T00:00:00Z"
+        assert skills_state.last_update_check() is not None
+        assert any("Checking Unity Catalog" in note for note in notes)
+        assert any("Updated 1" in m for m in messages)

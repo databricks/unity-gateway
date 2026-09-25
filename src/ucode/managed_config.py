@@ -37,6 +37,7 @@ from ucode.databricks import (
     fetch_model_recommendation,
     get_databricks_token,
 )
+from ucode.string_utils import parse_update_time
 from ucode.ui import console, print_warning
 
 MANAGED_CONFIG_PATH = config_io.APP_DIR / "managed-config.json"
@@ -447,20 +448,6 @@ def managed_update_time(managed: dict | None) -> str | None:
     return _str(_as_dict(managed).get("update_time"))
 
 
-def _parse_update_time(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    # An offset-less timestamp (e.g. a stub value) parses tz-naive; pin it to UTC so it can be
-    # compared against the tz-aware persisted watermark without raising.
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt
-
-
 def managed_config_is_newer(fetched: dict | None, applied_update_time: str | None) -> bool:
     """True when ``fetched`` is a newer version than the last one applied locally.
 
@@ -468,8 +455,8 @@ def managed_config_is_newer(fetched: dict | None, applied_update_time: str | Non
     re-applies it rather than trusting possibly-stale local settings; no previously-applied watermark
     also counts as newer (the first apply).
     """
-    fetched_ut = _parse_update_time(managed_update_time(fetched))
-    applied_ut = _parse_update_time(applied_update_time)
+    fetched_ut = parse_update_time(managed_update_time(fetched))
+    applied_ut = parse_update_time(applied_update_time)
     if fetched_ut is None or applied_ut is None:
         return True
     return fetched_ut > applied_ut
@@ -731,7 +718,7 @@ def _cached_result_if_fresh(workspace: str) -> ManagedConfigResult | None:
     if data.get("workspace") != workspace:
         return None
     # Reuses the RFC-3339 parser the update-time watermark uses; None (missing/unparseable) is stale.
-    retrieved_at = _parse_update_time(_str(data.get("retrieved_at")))
+    retrieved_at = parse_update_time(_str(data.get("retrieved_at")))
     if retrieved_at is None:
         return None
     age = _utcnow() - retrieved_at
