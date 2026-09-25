@@ -860,12 +860,11 @@ def ensure_databricks_cli_version(
 
     parsed = [(path, version) for path, version in clis if version is not None]
     if not parsed:
-        # Best-effort sample for the error message: the first candidate's raw
+        # Best-effort sample for the error message: the binary we'd run's raw
         # `--version` output (already known unparseable, but worth showing why).
-        sample_path = clis[0][0]
         try:
             result = run(
-                [sample_path, "--version"],
+                [databricks_cli_path(), "--version"],
                 check=False,
                 capture_output=True,
                 text=True,

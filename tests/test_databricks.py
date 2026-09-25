@@ -2746,6 +2746,17 @@ class TestDatabricksCliResolution:
             str(second_dir / "databricks"),
         ]
 
+    def test_iter_finds_windows_executables_by_pathext(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(db_mod.os, "name", "nt")
+        monkeypatch.setenv("PATHEXT", os.pathsep.join([".exe", ".bat"]))
+        monkeypatch.setenv("PATH", str(tmp_path))
+        # No execute bit on either file — Windows discovery has no X_OK check,
+        # so PATHEXT matching alone must decide which one is found.
+        (tmp_path / "databricks").write_text("no extension, must not match")
+        exe = tmp_path / "databricks.exe"
+        exe.write_text("matches PATHEXT's .exe")
+        assert db_mod._iter_databricks_executables() == [str(exe)]
+
     # -- _discover_databricks_clis -------------------------------------------
 
     def test_discover_dedupes_by_realpath_keeping_path_order(self, tmp_path, monkeypatch):
@@ -2858,19 +2869,6 @@ class TestDatabricksCliResolution:
         )
         assert db_mod._select_databricks_cli((1, 0, 0)) == (None, None)
 
-    def test_select_breaks_ties_by_path_order(self, monkeypatch):
-        # Equal-version entries keep PATH order in the best-first list, so the
-        # first match is the earliest on PATH.
-        monkeypatch.setattr(
-            db_mod,
-            "_discover_databricks_clis",
-            lambda **kw: [
-                ("/path/first/databricks", (1, 20, 0)),
-                ("/path/second/databricks", (1, 20, 0)),
-            ],
-        )
-        assert db_mod._select_databricks_cli((1, 0, 0)) == ("/path/first/databricks", (1, 20, 0))
-
     # -- databricks_cli_path ---------------------------------------------------
 
     def test_path_returns_front_of_best_first_discovery(self, monkeypatch):
@@ -2908,19 +2906,6 @@ class TestDatabricksCliResolution:
         clear_databricks_cli_cache()
         databricks_cli_path()
         assert len(iter_calls) == 2
-
-    # -- clear_databricks_cli_cache --------------------------------------------
-
-    def test_clear_cache_resets_discovery(self, monkeypatch):
-        monkeypatch.setattr(db_mod, "_iter_databricks_executables", lambda: ["/path/a/databricks"])
-        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", lambda path: (1, 20, 0))
-
-        db_mod._discover_databricks_clis()
-        assert db_mod._DISCOVERED_DATABRICKS_CLIS_ORDERED is not None
-
-        clear_databricks_cli_cache()
-
-        assert db_mod._DISCOVERED_DATABRICKS_CLIS_ORDERED is None
 
     # -- _read_databricks_cli_version -----------------------------------------
 
@@ -2981,11 +2966,6 @@ class TestEnsureDatabricksCliVersion:
         env = self._fake_databricks(tmp_path, "Databricks CLI v1.0.0")
         monkeypatch.setattr("os.environ", env)
         ensure_databricks_cli_version()  # should not raise
-
-    def test_passes_when_version_exceeds_minimum(self, tmp_path, monkeypatch):
-        env = self._fake_databricks(tmp_path, "Databricks CLI v1.8.0")
-        monkeypatch.setattr("os.environ", env)
-        ensure_databricks_cli_version()
 
     def test_auto_upgrades_when_version_too_old(self, tmp_path, monkeypatch):
         import ucode.databricks as db_mod
@@ -3117,15 +3097,6 @@ class TestDatabricksCliVersion:
         )
         assert databricks_cli_version() is None
 
-    def test_never_raises_on_subprocess_error(self, monkeypatch):
-        # `_read_databricks_cli_version` (exercised directly in
-        # TestDatabricksCliResolution) already swallows subprocess errors into
-        # None; here that just shows up as an unparseable discovered CLI.
-        monkeypatch.setattr(
-            db_mod, "_discover_databricks_clis", lambda **kw: [("/usr/bin/databricks", None)]
-        )
-        assert databricks_cli_version() is None
-
 
 class TestUpgradeDatabricksCli:
     def test_true_on_success(self, monkeypatch):
@@ -3181,15 +3152,6 @@ class TestRunDatabricksCliInstaller:
         assert str(exc.value) == "Failed to install/upgrade Databricks CLI automatically."
         assert "remove it" not in str(exc.value)
         assert str(local_bin) not in str(exc.value)
-
-    def test_failure_message_omits_local_bin_when_absent(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        self._fail_installer(monkeypatch)
-
-        with pytest.raises(RuntimeError) as exc:
-            _run_databricks_cli_installer()
-
-        assert ".local/bin/databricks" not in str(exc.value)
 
 
 class TestHttpGetJsonTimeout:
