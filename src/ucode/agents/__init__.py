@@ -296,13 +296,37 @@ def resolve_launch_model(
     tool: str,
     state: dict,
     explicit_model: str | None,
+    *,
+    user_model: str | None = None,
+    forwarded_model: str | None = None,
+    allow_missing_model: bool = False,
 ) -> tuple[dict, str | None]:
-    model = explicit_model or default_model_for_tool(tool, state)
-    # if model is not specified for codex, then launch with harness's default model.
-    if not model and tool != "codex":
+    """Resolve the model used to configure and launch ``tool``.
+
+    ``explicit_model`` is the initial/default candidate (including a managed
+    default). ``user_model`` is the invocation-scoped option; OpenCode also
+    accepts a forwarded native selector, which takes precedence over it.
+    Provider-backed launches can set ``allow_missing_model`` when discovery is
+    intentionally skipped.
+    """
+    requested_model = (forwarded_model or user_model) if tool == "opencode" else user_model
+    launch_model = (
+        requested_model if tool == "opencode" and requested_model is not None else explicit_model
+    )
+    model = launch_model
+    if not model and not allow_missing_model:
+        model = default_model_for_tool(tool, state)
+    # If model is not specified for codex, then launch with the harness's default model.
+    if not model and tool != "codex" and not allow_missing_model:
         raise RuntimeError(
             f"No models available for {tool}. Run `ucode configure` to set up your workspace."
         )
+    # Claude's explicit model remains launch-scoped and is applied through LaunchOptions.
+    # Other agents need the selected model in their generated configuration.
+    if requested_model and tool != "claude":
+        model = requested_model
+    if tool == "opencode" and requested_model is not None:
+        model = opencode.resolve_explicit_model(requested_model, state)
     return state, model
 
 

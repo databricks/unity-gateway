@@ -465,10 +465,6 @@ def _launch_policy_patches(
             "ucode.cli.resolve_provider_models", return_value=(None, None, False)
         ) as resolve_provider,
         patch("ucode.cli.resolve_gemini_provider_model", return_value=("gemini-2.0-flash", None)),
-        patch(
-            "ucode.cli.resolve_launch_model",
-            return_value=(launch_state, "databricks-claude-sonnet-4"),
-        ),
         patch("ucode.cli.configure_tool", return_value=launch_state) as configure,
         patch("ucode.cli.launch_agent") as launch,
     ):

@@ -42,7 +42,6 @@ from ucode.agents import codex as codex_agent
 from ucode.agents import (
     launch as launch_agent,
 )
-from ucode.agents import opencode as opencode_agent
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
@@ -2577,10 +2576,6 @@ def _launch_tool(
         forwarded_model = (
             explicit_model_arg_value(ctx.args) if tool in {"claude", "codex", "opencode"} else None
         )
-        # `--model` is exposed by the claude and gemini launch commands. Under a provider it selects
-        # which of the service's targets/tiers to launch on, rather than being rejected — see the
-        # provider branch below.
-        requested_model = (forwarded_model or model) if tool == "opencode" else model
         # An explicit --workspace targets that workspace for this launch (and
         # auto-configures it if unseen), so `ug claude --provider ... --workspace ...`
         # works without a prior `ug configure`.
@@ -2761,7 +2756,17 @@ def _launch_tool(
             # Routing through a Model Provider Service pins no Databricks model;
             # managed UC discovery likewise lets the agent select from the parent schema. Skip model
             # resolution, which would otherwise fail when global discovery found no models.
-            resolved_model = None
+            if tool == "opencode":
+                state, resolved_model = resolve_launch_model(
+                    tool,
+                    state,
+                    None,
+                    user_model=model,
+                    forwarded_model=forwarded_model,
+                    allow_missing_model=True,
+                )
+            else:
+                resolved_model = None
             managed_source_model = (
                 managed_launch_model(managed or {}, recommendation, tool)
                 if tool == "claude" and (managed_provider or managed_parent_schema)
@@ -2803,27 +2808,17 @@ def _launch_tool(
             managed_model = (
                 managed_launch_model(managed, recommendation, tool) if managed is not None else None
             )
-            launch_model = (
-                requested_model
-                if tool == "opencode" and requested_model is not None
-                else managed_model
+            state, resolved_model = resolve_launch_model(
+                tool,
+                state,
+                managed_model,
+                user_model=model,
+                forwarded_model=forwarded_model,
             )
-            state, resolved_model = resolve_launch_model(tool, state, launch_model)
             # The admin's model outranks a smart-routing pick too. Claude only launches on it when
-            # pinned as ANTHROPIC_MODEL (route_root_model); other agents take `resolved_model`,
-            # which already holds it from resolve_launch_model above.
-            if managed_model:
-                if tool == "claude":
-                    route_root_model = managed_model
-                else:
-                    resolved_model = managed_model
-            # An explicit `--model` is the user's own choice and outranks everything above (managed
-            # default, smart-routing pick). Non-claude agents take it as the resolved model, which
-            # Codex keeps an explicit --model in ctx.args and passes it to its CLI verbatim.
-            if requested_model and tool != "claude":
-                resolved_model = requested_model
-        if tool == "opencode" and requested_model is not None:
-            resolved_model = opencode_agent.resolve_explicit_model(requested_model, state)
+            # pinned as ANTHROPIC_MODEL (route_root_model).
+            if managed_model and tool == "claude":
+                route_root_model = managed_model
         state = configure_tool(
             tool,
             state,
@@ -2887,8 +2882,8 @@ def _launch_tool(
             # initial/fallback model and still participates in a routed session.
             user_pinned_model=(
                 resolved_model
-                if tool == "opencode" and requested_model is not None
-                else model or forwarded_model
+                if tool == "opencode" and (forwarded_model or model) is not None
+                else (model or forwarded_model)
             ),
             provider=provider,
         )
