@@ -1111,7 +1111,6 @@ class TestConfigureMcpCommand:
     def test_removes_orphan_mcp_entries_from_other_workspace_buckets(self, monkeypatch, capsys):
         saved_states: list[dict] = []
         writes: list[tuple[dict, set]] = []
-        forgotten: list[tuple[str, set]] = []
         other_ws = "https://other-workspace.cloud.databricks.com"
         current_entry = {
             "name": "databricks-sql",
@@ -1151,13 +1150,11 @@ class TestConfigureMcpCommand:
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
         monkeypatch.setattr(mcp, "discover_app_mcp_servers", lambda workspace, profile=None: [])
         _patch_mcp_choices(monkeypatch, "databricks-sql")
+        # The batched writer reports the names it actually removed; the orphan was present.
         monkeypatch.setattr(
-            mcp.claude, "write_user_mcp_servers", lambda a, r: writes.append((a, r))
-        )
-        monkeypatch.setattr(
-            mcp,
-            "forget_mcp_servers_in_other_workspaces",
-            lambda ws, names: forgotten.append((ws, set(names))),
+            mcp.claude,
+            "write_user_mcp_servers",
+            lambda a, r: (writes.append((a, r)), set(r))[1],
         )
         monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
 
@@ -1168,8 +1165,6 @@ class TestConfigureMcpCommand:
         assert "orphan-mcp" in output
         # One batched user-scope removal for claude (codex was on the entry but isn't installed).
         assert writes == [({}, {"orphan-mcp"})]
-        # The other workspace's bucket is cleared so a later configure doesn't re-purge it.
-        assert forgotten == [(WS, {"orphan-mcp"})]
 
     def test_skips_orphan_warning_when_no_leftover_entries(self, monkeypatch, capsys):
         """No leftover entries tracked in other workspaces -> no removal and no warning. A prior
@@ -2899,15 +2894,21 @@ class TestRevertMcpConfigs:
 
 class TestPurgeCrossWorkspaceSkillsEntry:
     @staticmethod
-    def _capture_batched_writes(monkeypatch, clients):
-        """Stub ``write_user_mcp_servers`` on each client module, recording ``(add, remove)`` calls."""
+    def _capture_batched_writes(monkeypatch, clients, *, returns="all"):
+        """Stub ``write_user_mcp_servers`` on each client module, recording ``(add, remove)`` and
+        returning the names it "removed" so the caller reports only real removals: ``"all"`` = every
+        requested name was present, ``"none"`` = the entries were already gone."""
         writes: dict[str, list[tuple[dict, set]]] = {c: [] for c in clients}
+
+        def make(client):
+            def _write(add, remove):
+                writes[client].append((add, remove))
+                return set(remove) if returns == "all" else set()
+
+            return _write
+
         for client in clients:
-            monkeypatch.setattr(
-                getattr(mcp, client),
-                "write_user_mcp_servers",
-                lambda a, r, _c=client: writes[_c].append((a, r)),
-            )
+            monkeypatch.setattr(getattr(mcp, client), "write_user_mcp_servers", make(client))
         return writes
 
     def test_workspace_switch_removes_residue_once_per_client(self, monkeypatch):
@@ -2936,22 +2937,19 @@ class TestPurgeCrossWorkspaceSkillsEntry:
         for client in writes:
             assert writes[client] == [({}, {mcp.SKILLS_MCP_SERVER_NAME})]
         full = state_mod.load_full_state()
-        # The copied entry is gone from the current bucket, and the previous workspace's own record
-        # is forgotten so a later configure doesn't rediscover and re-purge it.
+        # The copied entry is gone from the current bucket, and the previous workspace's own bucket
+        # is preserved so switching back to it still recognizes the configured server.
         assert full["workspaces"][WS]["mcp_servers"] == []
-        assert full["workspaces"][foreign]["mcp_servers"] == []
+        assert full["workspaces"][foreign]["mcp_servers"] == [skills_entry]
 
-    def test_repeat_purge_is_noop_after_buckets_cleared(self, monkeypatch, capsys):
+    def test_reports_residue_removed_from_other_workspace(self, monkeypatch, capsys):
         from ucode import state as state_mod
 
         monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
         monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
-        foreign = "https://other.databricks.com"
-        skills_entry = mcp._resolve_skills_mcp_servers(
-            foreign, ["claude"], _by_client(["claude"], ["a.b"]), []
-        )[0]
-        state_mod.save_state({"workspace": foreign, "mcp_servers": [skills_entry]})
-        # Switch to WS carrying no entries: only the previous workspace's record remains.
+        other = "https://other.databricks.com"
+        entry = {"name": "databricks-sql", "url": f"{other}/api/2.0/mcp/sql", "clients": ["claude"]}
+        state_mod.save_state({"workspace": other, "mcp_servers": [entry]})
         state = {"workspace": WS, "mcp_servers": []}
         state_mod.save_state(state)
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
@@ -2959,19 +2957,67 @@ class TestPurgeCrossWorkspaceSkillsEntry:
 
         mcp.purge_cross_workspace_mcp_residue(state, WS)
 
-        assert "left over from previously-configured workspaces" in _unwrap(capsys.readouterr().out)
-        assert writes["claude"] == [({}, {mcp.SKILLS_MCP_SERVER_NAME})]
-        assert state_mod.load_full_state()["workspaces"][foreign]["mcp_servers"] == []
+        assert writes["claude"] == [({}, {"databricks-sql"})]
+        out = _unwrap(capsys.readouterr().out)
+        assert (
+            "Removed 1 MCP entry left over from previously-configured workspaces: databricks-sql"
+            in out
+        )
+        # The other workspace's bucket record is preserved for a later switch back.
+        assert state_mod.load_full_state()["workspaces"][other]["mcp_servers"] == [entry]
 
-        # Second run on the same workspace: the residue was forgotten, so nothing is removed or
-        # reported (the recurrence the purge used to hit every run).
-        writes["claude"].clear()
+    def test_repeat_run_silent_when_entries_already_removed(self, monkeypatch, capsys):
+        from ucode import state as state_mod
+
+        monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
+        monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
+        other = "https://other.databricks.com"
+        entry = {"name": "databricks-sql", "url": f"{other}/api/2.0/mcp/sql", "clients": ["claude"]}
+        state_mod.save_state({"workspace": other, "mcp_servers": [entry]})
+        state = {"workspace": WS, "mcp_servers": []}
+        state_mod.save_state(state)
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
+        # The entry is already gone from Claude's config, so the batched write removes nothing.
+        writes = self._capture_batched_writes(monkeypatch, ["claude"], returns="none")
+
         mcp.purge_cross_workspace_mcp_residue(state, WS)
 
+        # The removal is still attempted (cheap), but nothing was actually removed, so there is no
+        # warning to repeat on every run and the previous workspace's bucket stays intact.
+        assert writes["claude"] == [({}, {"databricks-sql"})]
         assert "left over from previously-configured workspaces" not in _unwrap(
             capsys.readouterr().out
         )
+        assert state_mod.load_full_state()["workspaces"][other]["mcp_servers"] == [entry]
+
+    def test_skips_names_the_current_workspace_manages(self, monkeypatch, capsys):
+        from ucode import state as state_mod
+
+        monkeypatch.setattr(state_mod, "APP_DIR", state_mod.STATE_PATH.parent)
+        monkeypatch.setattr(state_mod, "build_agent_state", lambda state: {})
+        other = "https://other.databricks.com"
+        shared = {"name": "system-ai-github", "url": f"{other}/x", "clients": ["claude"]}
+        state_mod.save_state({"workspace": other, "mcp_servers": [shared]})
+        # The current workspace registers the same-named server through its managed set (the
+        # `system.ai` default lives in `managed_mcp_servers`).
+        state = {
+            "workspace": WS,
+            "mcp_servers": [],
+            "managed_mcp_servers": [{"name": "system-ai-github", "clients": ["claude"]}],
+        }
+        state_mod.save_state(state)
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude"])
+        writes = self._capture_batched_writes(monkeypatch, ["claude"])
+
+        mcp.purge_cross_workspace_mcp_residue(state, WS)
+
+        # system-ai-github is the current workspace's own managed server, so it must NOT be treated
+        # as cross-workspace residue — purging it would delete the live entry the reconcile just
+        # added (keyed by name), churning and re-warning on every `configure`.
         assert writes["claude"] == []
+        assert "left over from previously-configured workspaces" not in _unwrap(
+            capsys.readouterr().out
+        )
 
     @pytest.mark.parametrize(
         "failure",
@@ -2997,7 +3043,9 @@ class TestPurgeCrossWorkspaceSkillsEntry:
         monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude", "codex"])
         monkeypatch.setattr(mcp.claude, "write_user_mcp_servers", claude_write)
         monkeypatch.setattr(
-            mcp.codex, "write_user_mcp_servers", lambda a, r: codex_writes.append((a, r))
+            mcp.codex,
+            "write_user_mcp_servers",
+            lambda a, r: (codex_writes.append((a, r)), set(r))[1],
         )
 
         mcp.purge_cross_workspace_mcp_residue(state, WS)

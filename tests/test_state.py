@@ -12,7 +12,6 @@ from ucode.state import (
     STATE_VERSION,
     build_agent_state,
     clear_state,
-    forget_mcp_servers_in_other_workspaces,
     get_applied_managed_update_time,
     get_provider_service,
     hydrate_state,
@@ -314,49 +313,6 @@ class TestBuildAgentState:
 # ---------------------------------------------------------------------------
 # mark_tool_managed
 # ---------------------------------------------------------------------------
-
-
-class TestForgetMcpServersInOtherWorkspaces:
-    OTHER = "https://other.databricks.com"
-
-    def _seed(self):
-        save_state({"workspace": self.OTHER, "mcp_servers": [{"name": "sys-a"}, {"name": "sys-b"}]})
-        save_state({"workspace": FAKE_WS, "mcp_servers": [{"name": "sys-a"}]})
-
-    def test_drops_named_entries_from_other_buckets_only(self):
-        self._seed()
-        forget_mcp_servers_in_other_workspaces(FAKE_WS, {"sys-a", "sys-b"})
-        full = load_full_state()
-        # The other workspace's records are gone; the current workspace is untouched.
-        assert full["workspaces"][self.OTHER]["mcp_servers"] == []
-        assert full["workspaces"][FAKE_WS]["mcp_servers"] == [{"name": "sys-a"}]
-
-    def test_keeps_unnamed_entries(self):
-        self._seed()
-        forget_mcp_servers_in_other_workspaces(FAKE_WS, {"sys-a"})
-        assert load_full_state()["workspaces"][self.OTHER]["mcp_servers"] == [{"name": "sys-b"}]
-
-    def test_no_names_is_noop(self):
-        self._seed()
-        forget_mcp_servers_in_other_workspaces(FAKE_WS, set())
-        assert load_full_state()["workspaces"][self.OTHER]["mcp_servers"] == [
-            {"name": "sys-a"},
-            {"name": "sys-b"},
-        ]
-
-    def test_respects_dry_run(self):
-        import ucode.config_io as config_io_mod
-
-        self._seed()
-        config_io_mod.set_dry_run(True)
-        try:
-            forget_mcp_servers_in_other_workspaces(FAKE_WS, {"sys-a"})
-        finally:
-            config_io_mod.set_dry_run(False)
-        assert load_full_state()["workspaces"][self.OTHER]["mcp_servers"] == [
-            {"name": "sys-a"},
-            {"name": "sys-b"},
-        ]
 
 
 class TestMarkToolManaged:

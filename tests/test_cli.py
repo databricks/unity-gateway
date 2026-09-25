@@ -4449,8 +4449,8 @@ class TestConfigureSharedStateMcpCleanup:
         full = state_mod.load_full_state()
         assert full["current_workspace"] == new_workspace
         assert full["workspaces"][new_workspace]["mcp_servers"] == []
-        # The batched removal failed, so the previous workspace's record is kept for a later retry
-        # rather than being forgotten.
+        # The previous workspace's own bucket is always preserved so switching back still recognizes
+        # its configured servers.
         assert full["workspaces"][old_workspace]["mcp_servers"] == [entry]
         output = " ".join(_strip_ansi(capsys.readouterr().out).split())
         assert "Unity Gateway connected" in output
