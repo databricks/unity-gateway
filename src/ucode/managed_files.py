@@ -11,6 +11,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -295,6 +296,39 @@ def managed_file_conflicts(
     return conflicts
 
 
+def _unwrap(value: object) -> object:
+    """Return a plain-Python view of a value, unwrapping tomlkit items so it compares by content."""
+    unwrap = getattr(value, "unwrap", None)
+    if callable(unwrap):
+        try:
+            return unwrap()
+        except Exception:  # noqa: BLE001
+            return value
+    return value
+
+
+def is_semantically_equal(current: object, desired: object) -> bool:
+    """Whether two parsed configs are equal ignoring map order, keeping array order, with strict scalar types."""
+    current, desired = _unwrap(current), _unwrap(desired)
+    if isinstance(current, bool) or isinstance(desired, bool):
+        return isinstance(current, bool) and isinstance(desired, bool) and current == desired
+    if isinstance(current, dict) and isinstance(desired, dict):
+        if set(current.keys()) != set(desired.keys()):
+            return False
+        return all(is_semantically_equal(current[key], desired[key]) for key in current)
+    if isinstance(current, (list, tuple)) and isinstance(desired, (list, tuple)):
+        if len(current) != len(desired):
+            return False
+        return all(is_semantically_equal(a, b) for a, b in zip(current, desired, strict=True))
+    if isinstance(current, float) and isinstance(desired, float):
+        return (math.isnan(current) and math.isnan(desired)) or current == desired
+    if isinstance(current, int) and isinstance(desired, int):
+        return current == desired
+    if isinstance(current, str) and isinstance(desired, str):
+        return current == desired
+    return type(current) is type(desired) and current == desired
+
+
 def managed_file_status(
     state: dict,
     tool: str,
@@ -346,6 +380,7 @@ def reconcile_managed_file(
     tool: str,
     display: str,
     owned_paths: list[list[str]],
+    parser: ManagedParser,
 ) -> str:
     """Back up, atomically write, and verify one OS-managed settings file.
 
@@ -370,6 +405,15 @@ def reconcile_managed_file(
     current_text = read_managed_file(path)
     if current_text == desired_text:
         return "unchanged"
+    if current_text is not None:
+        try:
+            semantically_unchanged = is_semantically_equal(
+                parser(current_text), parser(desired_text)
+            )
+        except RuntimeError:
+            semantically_unchanged = False
+        if semantically_unchanged:
+            return "unchanged"
     if is_dry_run():
         console.print(f"\n[bold]\\[dry run] {path} (via sudo)[/bold]\n{desired_text}")
         return "written"
@@ -456,7 +500,9 @@ def revert_managed_file(
         owned_paths = entry.get("owned_paths")
         paths = owned_paths if isinstance(owned_paths, list) else []
         reverted = _three_way_revert(current_doc, original_doc, last_doc, paths)
-        desired_text = dumper(reverted)
+        desired_text = (
+            current_text if is_semantically_equal(reverted, current_doc) else dumper(reverted)
+        )
 
     if desired_text != current_text:
         if not managed_writes_allowed():

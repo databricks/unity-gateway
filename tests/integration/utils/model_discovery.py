@@ -21,8 +21,11 @@ def claude_model_in_picker(screen: str, model_id: str, display_name: str | None)
     """
     rows = [row.group("label") for row in _CLAUDE_PICKER_ROW.finditer(screen)]
     if model_id == "claude-haiku-4-5-20251001":
-        # Claude deduplicates this gateway model into its built-in Haiku 4.5 row.
-        return any(re.search(r"^Haiku\b[^\n]*\bHaiku 4\.5\b", row) for row in rows)
+        # Claude can deduplicate this gateway model into its built-in Haiku 4.5 row. An explicit
+        # provider or parent catalog can instead render the raw model id, so fall through to the
+        # generic ID/display-name check when the native row is absent.
+        if any(re.search(r"^Haiku\b[^\n]*\bHaiku 4\.5\b", row) for row in rows):
+            return True
     if model_id in _CLAUDE_NATIVE_PICKER_LABELS:
         # Bare native IDs can also be deduplicated into built-in family rows.
         # Match the exact family/version, never a banner or another native version.
