@@ -597,6 +597,7 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
             tool="codex",
             display="Codex",
             owned_paths=MANAGED_KEYS,
+            parser=_parse_managed_config,
         )
     except ManagedFileWriteUnavailable:
         conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
@@ -727,6 +728,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             tool="codex",
             display="Codex",
             owned_paths=[[MANAGED_MCP_CONFIG_KEY]],
+            parser=_parse_managed_config,
         )
     except ManagedFileWriteUnavailable:
         return False
