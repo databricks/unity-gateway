@@ -43,10 +43,23 @@ class TestModelKey:
             "databricks-claude-opus-4-8",
             "anthropic-aigw-1a2b3c4d-claude-opus-4-8",
             "SYSTEM.AI.Claude-Opus-4-8",
+            "anthropic.claude-opus-4-8",
+            "global.anthropic.claude-opus-4-8",
+            "us.anthropic.claude-opus-4-8-20260101-v1:0",
+            "claude-opus-4-8@default",
         ],
     )
     def test_collapses_gateway_spellings(self, model):
         assert pricing.model_key(model) == "claude-opus-4-8"
+
+    def test_matches_a_served_bedrock_id_to_the_requested_model(self):
+        # The gateway reports Haiku responses by their Bedrock id.
+        assert pricing.model_key("anthropic.claude-haiku-4-5-20251001-v1:0") == pricing.model_key(
+            "system.ai.claude-haiku-4-5"
+        )
+
+    def test_unwraps_non_claude_gateway_models(self):
+        assert pricing.model_key("anthropic-aigw-73ea02b2-system.ai.glm-5-2") == "glm-5-2"
 
     def test_keeps_distinct_models_distinct(self):
         assert pricing.model_key("system.ai.claude-sonnet-5") != pricing.model_key(
@@ -113,7 +126,7 @@ class TestTokenCost:
 
 class TestPriceCache:
     def test_round_trips_prices_under_model_keys(self, tmp_path):
-        path = tmp_path / "cache" / pricing.PRICE_CACHE_FILENAME
+        path = tmp_path / "cache" / "model-prices.json"
         pricing.write_price_cache(
             path, {"system.ai.claude-opus-4-8": OPUS, "claude-sonnet-4": SONNET_4}, now=100.0
         )
@@ -124,10 +137,10 @@ class TestPriceCache:
         prices, fingerprint = cached
         assert prices == {"claude-opus-4-8": OPUS, "claude-sonnet-4": SONNET_4}
         assert fingerprint == "100.0"
-        assert [entry.name for entry in path.parent.iterdir()] == [pricing.PRICE_CACHE_FILENAME]
+        assert [entry.name for entry in path.parent.iterdir()] == ["model-prices.json"]
 
     def test_fingerprint_changes_on_refresh(self, tmp_path):
-        path = tmp_path / pricing.PRICE_CACHE_FILENAME
+        path = tmp_path / "model-prices.json"
         pricing.write_price_cache(path, {"claude-opus-4-8": OPUS}, now=100.0)
         first = pricing.read_price_cache(path)
         pricing.write_price_cache(path, {"claude-opus-4-8": OPUS}, now=200.0)
@@ -145,10 +158,97 @@ class TestPriceCache:
         ],
     )
     def test_unusable_cache_reads_as_absent(self, tmp_path, content):
-        path = tmp_path / pricing.PRICE_CACHE_FILENAME
+        path = tmp_path / "model-prices.json"
         path.write_text(content)
 
         assert pricing.read_price_cache(path) is None
 
     def test_missing_cache_reads_as_absent(self, tmp_path):
         assert pricing.read_price_cache(tmp_path / "missing.json") is None
+
+
+class TestEndpointRates:
+    def test_reads_dollar_rates_keyed_by_model_service(self):
+        # Shape of the gateway's endpoint-rates response.
+        rates = [
+            {
+                "model_service": "system.ai.claude-fable-5",
+                "cost_by_dbu": {"input_per_million_tokens": 142.858},
+                "cost_by_dollars": {
+                    "input_per_million_tokens": 10.00006,
+                    "output_per_million_tokens": 50.00002,
+                },
+            },
+            {
+                "model_service": "system.ai.glm-5-3",
+                "cost_by_dollars": {
+                    "input_per_million_tokens": 1.4,
+                    "output_per_million_tokens": 4.3999998,
+                },
+            },
+        ]
+
+        assert pricing.prices_from_endpoint_rates(rates) == {
+            "system.ai.claude-fable-5": ModelPrice(
+                input=Decimal("10.00006"), output=Decimal("50.00002")
+            ),
+            "system.ai.glm-5-3": ModelPrice(input=Decimal("1.4"), output=Decimal("4.3999998")),
+        }
+
+    def test_reads_cache_rates_when_the_api_returns_them(self):
+        rates = [
+            {
+                "model_service": "system.ai.claude-opus-4-8",
+                "cost_by_dollars": {
+                    "input_per_million_tokens": 5,
+                    "output_per_million_tokens": 25,
+                    "cache_read_per_million_tokens": 0.5,
+                    "cache_write_per_million_tokens": 6.25,
+                    "cache_write_1hr_per_million_tokens": 10,
+                },
+            }
+        ]
+
+        assert pricing.prices_from_endpoint_rates(rates) == {"system.ai.claude-opus-4-8": OPUS}
+
+    def test_skips_models_without_dollar_rates(self):
+        rates = [
+            # The API omits dollars when the org has no DBU-to-dollar conversion configured.
+            {"model_service": "system.ai.glm-5-3", "cost_by_dbu": {"input_per_million_tokens": 20}},
+            {"model_service": "system.ai.kimi-k3", "cost_by_dollars": {}},
+            {"cost_by_dollars": {"input_per_million_tokens": 1}},
+            "not-a-rate",
+        ]
+
+        assert pricing.prices_from_endpoint_rates(rates) == {}
+
+    def test_endpoint_prices_survive_the_cache(self, tmp_path):
+        path = tmp_path / "model-prices.json"
+        prices = pricing.prices_from_endpoint_rates(
+            [
+                {
+                    "model_service": "system.ai.claude-haiku-4-5",
+                    "cost_by_dollars": {
+                        "input_per_million_tokens": 1,
+                        "output_per_million_tokens": 5,
+                    },
+                }
+            ]
+        )
+        pricing.write_price_cache(path, prices)
+
+        cached = pricing.read_price_cache(path)
+
+        assert cached is not None
+        served = pricing.model_key("anthropic.claude-haiku-4-5-20251001-v1:0")
+        assert cached[0][served] == ModelPrice(input=Decimal("1"), output=Decimal("5"))
+
+
+class TestPriceCachePath:
+    def test_is_stable_per_workspace_and_distinct_across_workspaces(self, tmp_path):
+        first = pricing.price_cache_path(tmp_path, "https://A.cloud.databricks.com/")
+
+        assert first == pricing.price_cache_path(tmp_path, "https://a.cloud.databricks.com")
+        assert first != pricing.price_cache_path(tmp_path, "https://b.cloud.databricks.com")
+        assert first.parent == tmp_path
+        assert first.name.startswith("model-prices-") and first.suffix == ".json"

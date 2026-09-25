@@ -7,6 +7,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import uuid
@@ -25,6 +26,7 @@ from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
 from ucode.databricks import (
     AnthropicModelCatalog,
     build_auth_token_argv,
+    fetch_endpoint_rates,
     get_databricks_token,
     list_anthropic_model_catalog,
     list_anthropic_models,
@@ -145,13 +147,12 @@ def savings_statusline_enabled(env: MutableMapping[str, str] | None = None) -> b
 
 
 def _install_savings_statusline(
-    settings: dict, user_settings_path: Path, *, baseline_session_start: bool
+    settings: dict, user_settings_path: Path, *, price_cache: Path, baseline_session_start: bool
 ) -> None:
     """Point the per-launch ``statusLine`` at the savings row, wrapping the user's own statusline.
 
-    The row reads per-token prices from a local cache, since a statusline refresh can't wait on the
-    network. Until the AI Gateway price endpoint lands, nothing writes that cache and the row stays
-    hidden; the fetch belongs here, keyed by the launch's Claude model ids plus the main model.
+    The row reads per-token prices from ``price_cache``, since a statusline refresh can't wait on
+    the network; ``_start_savings_price_refresh`` fills it.
     """
     state_dir = APP_DIR / claude_statusline.STATE_DIRNAME
     claude_statusline.prune_state(state_dir)
@@ -162,9 +163,67 @@ def _install_savings_statusline(
         original,
         python=sys.executable,
         state_dir=state_dir,
-        price_cache=APP_DIR / pricing.PRICE_CACHE_FILENAME,
+        price_cache=price_cache,
         baseline_session_start=baseline_session_start,
     )
+
+
+# Claude settings env keys that name the main model a session may start on.
+_MAIN_MODEL_ENV_KEYS = (
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+)
+
+
+def _savings_model_services(models: list[str | None], settings: dict) -> list[str]:
+    """The ``system.ai`` model services a session's responses can be priced against.
+
+    Covers the routable models plus the main model, which the baseline prices every token at and
+    which can come from a pinned ``--model`` or Claude's default-model env rather than the catalog.
+    """
+    env = settings.get("env")
+    env = env if isinstance(env, dict) else {}
+    candidates = [*models, *(env.get(key) for key in _MAIN_MODEL_ENV_KEYS)]
+    services: set[str] = set()
+    for model in candidates:
+        if not isinstance(model, str) or not model:
+            continue
+        name = _canonical_claude_model_id(_unwrapped_claude_model_id(model.strip()))
+        name = name.removesuffix("[1m]")
+        if name.startswith("system.ai."):
+            services.add(name)
+    return sorted(services)
+
+
+def _refresh_savings_prices(
+    workspace: str, token: str, model_services: list[str], price_cache: Path
+) -> None:
+    """Fetch this launch's per-token rates and cache them for the savings statusline.
+
+    On failure the previous cache stays; without one the row stays hidden.
+    """
+    try:
+        rates, _reason = fetch_endpoint_rates(workspace, token, model_services)
+        prices = pricing.prices_from_endpoint_rates(rates)
+        if prices:
+            pricing.write_price_cache(price_cache, prices)
+    except Exception:  # noqa: BLE001 - a background refresh must never surface in the agent's TUI
+        return
+
+
+def _start_savings_price_refresh(
+    workspace: str, token: str, model_services: list[str], price_cache: Path
+) -> None:
+    """Refresh prices off the launch path so a slow rates API never delays Claude's startup."""
+    threading.Thread(
+        target=_refresh_savings_prices,
+        args=(workspace, token, model_services, price_cache),
+        name="ug-savings-prices",
+        daemon=True,
+    ).start()
 
 
 def enable_smart_routing(
@@ -529,8 +588,18 @@ def launch_claude(
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)
     if savings_statusline_enabled():
+        price_cache = pricing.price_cache_path(APP_DIR, workspace)
         _install_savings_statusline(
-            settings, user_settings_path, baseline_session_start=route_first_prompt
+            settings,
+            user_settings_path,
+            price_cache=price_cache,
+            baseline_session_start=route_first_prompt,
+        )
+        _start_savings_price_refresh(
+            workspace,
+            token,
+            _savings_model_services([*model_ids, launch_model], settings),
+            price_cache,
         )
     write_json_file(settings_path, settings)
     model_args = launch_model_args(remaining, launch_model)

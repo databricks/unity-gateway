@@ -72,7 +72,7 @@ class Session:
         self.transcript.parent.mkdir(parents=True)
         self.transcript.touch()
         self.state_dir = root / "claude-savings"
-        self.price_cache = root / pricing.PRICE_CACHE_FILENAME
+        self.price_cache = root / "model-prices.json"
 
     def subagent(self, agent_id: str) -> Path:
         return self.transcript.with_suffix("") / "subagents" / f"agent-{agent_id}.jsonl"
@@ -109,6 +109,26 @@ class TestRender:
 
         # Baseline $0.38005 (all tokens at Opus) - actual $0.19705 = $0.183 saved (48%).
         assert session.render() == "Smart routing saved ~$0.18 (48%) vs Opus 4.8"
+
+    def test_prices_a_served_bedrock_id_with_its_system_ai_rate(self, session):
+        haiku = ModelPrice(
+            input=Decimal("1"),
+            output=Decimal("5"),
+            cache_read=Decimal("0.1"),
+            cache_write_5m=Decimal("1.25"),
+            cache_write_1h=Decimal("2"),
+        )
+        # Endpoint rates are keyed by system.ai name; Haiku responses carry its Bedrock id.
+        pricing.write_price_cache(
+            session.price_cache, {**PRICES, "system.ai.claude-haiku-4-5": haiku}, now=2.0
+        )
+        append(
+            session.subagent("a1"),
+            response("msg-sub", "anthropic.claude-haiku-4-5-20251001-v1:0", SUBAGENT_USAGE),
+        )
+
+        # $0.061 on Haiku (1k*1 + 20k*2 + 4k*5) vs $0.305 at Opus rates.
+        assert session.render() == "Smart routing saved ~$0.24 (80%) vs Opus 4.8"
 
     def test_counts_a_response_split_across_records_once(self, session):
         append(session.subagent("a1"), response("msg-sub", SONNET_ID, SUBAGENT_USAGE))

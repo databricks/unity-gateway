@@ -1,14 +1,11 @@
 """Per-token model prices and the cost of coding-agent token usage.
 
-The launcher caches prices at ``PRICE_CACHE_FILENAME`` for the savings statusline to read; this
-module defines that cache and the arithmetic. The AI Gateway price source is not wired in yet, so
-nothing writes the cache. Whatever supplies it must give, for each model:
-
-- an id that ``model_key`` matches to the ``model`` Claude Code records for each response (the
-  gateway's Messages response ``model``) and to the statusline's ``model.id``;
-- USD per million tokens for input, output, cache read, 5-minute and 1-hour cache writes, plus any
-  long-context tier (the prompt-token threshold and its rates);
-- no entry, or no rate, where the model or a token class isn't priced; never zero.
+The launcher fetches rates from the AI Gateway's endpoint-rates API (``prices_from_endpoint_rates``)
+and caches them per workspace (``price_cache_path``) for the savings statusline to read; this module
+defines that cache and the arithmetic. A token class with no rate makes a response unpriceable, and
+the statusline hides the estimate rather than undercount it. The API returns input and output rates
+today, so sessions that use prompt caching stay hidden until it also returns cache rates: fixed
+multipliers don't hold across models (Opus 5.5 cache reads bill at 0.05x input, Opus 4.8's at 0.1x).
 
 Stdlib-only on purpose: the savings statusline imports this on every Claude Code refresh, and the
 CLI's usual imports (Rich, Typer, the Databricks SDK, even ``urllib.request``) cost enough startup
@@ -17,37 +14,44 @@ for Claude Code to cancel the run.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, fields
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, NamedTuple
 
-PRICE_CACHE_FILENAME = "model-prices.json"
 _PRICE_CACHE_VERSION = 1
 _MILLION = Decimal(1_000_000)
 _CONTEXT_SUFFIX_RE = re.compile(r"\[[^\]]*\]$")
 _ANTHROPIC_AIGW_PREFIX_RE = re.compile(r"^anthropic-aigw-[0-9a-f]{8}-")
+# The gateway reports some served models by their provider id, e.g. Bedrock's
+# `anthropic.claude-haiku-4-5-20251001-v1:0` for a request to `system.ai.claude-haiku-4-5`.
+_PROVIDER_PREFIX_RE = re.compile(r"^(?:(?:us|eu|apac|au|jp|global)\.)?anthropic\.")
+_PROVIDER_SUFFIX_RE = re.compile(r"(?:-20\d{6})?(?:-v\d+(?::\d+)?)?$")
 
 
 def model_key(model: str) -> str:
     """Collapse the spellings of one model id that Claude Code and the gateway use.
 
-    Mirrors ``routing.unwrap_anthropic_gateway_model`` + ``routing.normalize_model`` (and drops a
-    ``[1m]`` context-window selector, which names a window rather than a price) without importing
-    ``routing``, whose ``urllib.request`` import alone costs ~0.2s of statusline startup.
+    Mirrors ``routing.unwrap_anthropic_gateway_model`` + ``routing.normalize_model`` without
+    importing ``routing``, whose ``urllib.request`` import alone costs ~0.2s of statusline startup.
+    Also drops a ``[1m]`` context-window selector (a window, not a price) and the provider prefix
+    and date/version suffix of a served id, so it keys the same as the requested model.
     """
     name = _CONTEXT_SUFFIX_RE.sub("", (model or "").strip().lower())
     name = _ANTHROPIC_AIGW_PREFIX_RE.sub("", name).rsplit("/", 1)[-1]
     for prefix in ("databricks-", "system.ai."):
         if name.startswith(prefix):
-            return name[len(prefix) :]
-    return name
+            name = name[len(prefix) :]
+            break
+    name = _PROVIDER_PREFIX_RE.sub("", name).split("@", 1)[0]
+    return _PROVIDER_SUFFIX_RE.sub("", name)
 
 
 @dataclass(frozen=True)
@@ -166,6 +170,41 @@ def _load_price(raw: object) -> ModelPrice | None:
     if isinstance(threshold, bool) or not isinstance(threshold, int) or long_context is None:
         threshold, long_context = None, None
     return ModelPrice(**rates, long_context_threshold=threshold, long_context=long_context)
+
+
+def prices_from_endpoint_rates(rates: Iterable[object]) -> dict[str, ModelPrice]:
+    """Map endpoint-rates ``EndpointRate`` entries to prices keyed by their model service.
+
+    Uses ``cost_by_dollars``, which the API omits when the org has no DBU-to-dollar conversion
+    configured; those models are left unpriced rather than shown in DBUs.
+    """
+    prices: dict[str, ModelPrice] = {}
+    for rate in rates:
+        if not isinstance(rate, Mapping):
+            continue
+        service = rate.get("model_service")
+        dollars = rate.get("cost_by_dollars")
+        if not isinstance(service, str) or not service or not isinstance(dollars, Mapping):
+            continue
+        # `TokenCostPerMillion` fields. The cache ones follow the gateway's existing
+        # `ExternalModelPricing` names and are read once the endpoint-rates API returns them.
+        price = ModelPrice(
+            input=_rate(dollars.get("input_per_million_tokens")),
+            output=_rate(dollars.get("output_per_million_tokens")),
+            cache_read=_rate(dollars.get("cache_read_per_million_tokens")),
+            cache_write_5m=_rate(dollars.get("cache_write_per_million_tokens")),
+            cache_write_1h=_rate(dollars.get("cache_write_1hr_per_million_tokens")),
+        )
+        if price.input is not None or price.output is not None:
+            prices[service] = price
+    return prices
+
+
+def price_cache_path(app_dir: Path, workspace: str) -> Path:
+    """The workspace's price cache; dollar rates depend on its org's DBU conversion."""
+    host = workspace.strip().lower().removeprefix("https://").rstrip("/")
+    digest = hashlib.sha256(host.encode("utf-8")).hexdigest()[:16]
+    return app_dir / f"model-prices-{digest}.json"
 
 
 def write_price_cache(
