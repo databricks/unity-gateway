@@ -115,6 +115,7 @@ from ucode.mcp import (
     configure_skills_mcp_picker_command,
     configured_mcp_clients,
     list_mcp_command,
+    managed_mcp_server_names,
     purge_cross_workspace_mcp_residue,
     reconcile_managed_mcp_servers,
     remove_mcp_command,
@@ -1239,10 +1240,7 @@ def status() -> int:
                 and server.get("kind") != SKILLS_MCP_KIND
             }
             # Managed servers ug delivers through an OS-managed file live in that file, not state.
-            if tool == "claude":
-                mcp_names |= claude_agent.read_managed_mcp_urls().keys()
-            elif tool == "codex":
-                mcp_names |= codex_agent.read_managed_mcp_urls().keys()
+            mcp_names |= managed_mcp_server_names(state, {tool})
             rows.append(("MCP servers", str(len(mcp_names))))
             rows.append(("Skills", str(skill_counts_by_agent.get(tool, 0))))
         base_url = state.get("base_urls", {}).get(tool)
