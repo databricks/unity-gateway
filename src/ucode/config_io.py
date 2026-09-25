@@ -5,9 +5,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from collections.abc import Callable
 from pathlib import Path
-from typing import NotRequired, TypedDict, cast
+from typing import TypedDict, cast
 
 import tomlkit
 import tomlkit.exceptions
@@ -21,7 +20,6 @@ class ToolSpec(TypedDict):
     display: str
     config_path: Path
     backup_path: Path
-    resolve_explicit_model: NotRequired[Callable[[str, dict], str]]
 
 
 APP_DIR = Path.home() / ".ucode"

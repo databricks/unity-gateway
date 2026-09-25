@@ -180,7 +180,7 @@ These are unit/component checks; they do not establish live sudo password-prompt
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
 | Native macOS/Windows managed settings, resize/signals | Separate platform coverage needed |
 | Other agents | Current scope is Claude Code and Codex |
-| OpenCode `--model` / `-m` | Unit/component tests cover CLI forwarding, configured model selection, launch arguments, and rejection of unknown models; no dedicated live integration journey |
+| OpenCode `--model` / `-m` | Unit/component tests cover raw CLI forwarding, configured model selection, launch arguments, and rejection of unknown models in the OpenCode launcher before starting the native process; no dedicated live integration journey |
 
 See [integration/README.md](integration/README.md) for commands, CI, artifacts,
 and reproduction. Follow [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md) when

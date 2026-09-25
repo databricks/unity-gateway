@@ -2573,7 +2573,7 @@ def _launch_tool(
         # `--model` lands in ctx.args instead of a ucode option. It still determines the effective
         # launch model and should therefore win in the launch summary.
         forwarded_model = (
-            explicit_model_arg_value(ctx.args) if tool in {"claude", "codex"} else None
+            explicit_model_arg_value(ctx.args) if tool in {"claude", "codex", "opencode"} else None
         )
         # An explicit --workspace targets that workspace for this launch (and
         # auto-configures it if unseen), so `ug claude --provider ... --workspace ...`
@@ -2811,22 +2811,16 @@ def _launch_tool(
             managed_model = (
                 managed_launch_model(managed, recommendation, tool) if managed is not None else None
             )
-            launch_model = managed_model
-            resolver = TOOL_SPECS[tool].get("resolve_explicit_model")
-            if resolver is not None:
-                requested_model = explicit_model_arg_value(ctx.args) or model
-                if requested_model is not None:
-                    model = resolver(requested_model, state)
-                    launch_model = model
-            state, resolved_model = resolve_launch_model(tool, state, launch_model)
+            state, resolved_model = resolve_launch_model(
+                tool,
+                state,
+                # Claude keeps the user's model launch-scoped through LaunchOptions below.
+                managed_model if tool == "claude" else (forwarded_model or model or managed_model),
+            )
             # The admin's model outranks a smart-routing pick too. Claude only launches on it when
             # pinned as ANTHROPIC_MODEL (route_root_model).
             if managed_model and tool == "claude":
                 route_root_model = managed_model
-            # A developer's explicit model outranks a managed default and smart-routing pick. Claude
-            # keeps its explicit model launch-scoped through LaunchOptions below.
-            if model and tool != "claude":
-                resolved_model = model
         if coding_agent_config_defaults and not state.get("claude_static_models") and not relayed:
             picker_catalog = claude_agent.default_model_picker_catalog(
                 coding_agent_config_defaults,
@@ -2903,7 +2897,7 @@ def _launch_tool(
             explicit_prompt=explicit_prompt,
             # Only a developer's explicit model disables routing. A managed default is the
             # initial/fallback model and still participates in a routed session.
-            user_pinned_model=model or forwarded_model,
+            user_pinned_model=model if model is not None else forwarded_model,
             provider=provider,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")

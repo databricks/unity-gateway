@@ -27,7 +27,7 @@ from ucode.databricks import (
 from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
-from .args import LaunchOptions, has_explicit_model_arg
+from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
 
 OPENCODE_XDG_CONFIG_HOME = APP_DIR / "opencode-xdg"
 OPENCODE_CONFIG_DIR = OPENCODE_XDG_CONFIG_HOME / "opencode"
@@ -228,9 +228,6 @@ def resolve_explicit_model(model: str, state: dict) -> str:
     )
 
 
-SPEC["resolve_explicit_model"] = resolve_explicit_model
-
-
 def _oss_model_overlay(model: str, ua_header: dict[str, str]) -> dict:
     """Per-model overlay for an OSS model entry.
 
@@ -423,8 +420,10 @@ def build_runtime_env(token: str, state: dict | None = None) -> dict[str, str]:
 
 
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
-    """Launch OpenCode with the CLI-resolved model and on-demand token refresh."""
-    model = options.user_pinned_model
+    """Launch OpenCode with the selected model and on-demand token refresh."""
+    model = explicit_model_arg_value(tool_args) or options.user_pinned_model
+    if model is not None:
+        model = resolve_explicit_model(model, state)
     token = _configure_launch(state, model)
     env = build_runtime_env(token, state)
 
