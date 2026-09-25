@@ -1,6 +1,7 @@
 """CUJs for the installed ``ug usage`` budget summary."""
 
 import json
+import os
 import re
 from decimal import Decimal
 
@@ -22,7 +23,7 @@ def _read_managed_cache(session) -> dict:
 
 @pytest.mark.managed
 @pytest.mark.claude
-def test_ug_usage_managed_config(live_session, workspace):
+def test_ug_usage_managed_config(live_session):
     """Scenario: configure Claude in the dedicated usage workspace, then run ``ug usage``.
 
     Expected: the real configure path caches the published CodingAgentConfig for this workspace;
@@ -30,10 +31,12 @@ def test_ug_usage_managed_config(live_session, workspace):
     spend meter without the unavailable fallback.
     """
     session = live_session
-    assert workspace == _MANAGED_USAGE_WORKSPACE, (
-        "test_ug_usage_managed_config must run against the dedicated usage workspace "
-        f"{_MANAGED_USAGE_WORKSPACE}; got {workspace!r}"
+    target_bearer = os.environ.get("UG_USAGE_BEARER", "").strip()
+    assert target_bearer, (
+        "The runner needs UG_USAGE_CLIENT_ID and UG_USAGE_CLIENT_SECRET for the dedicated "
+        f"usage workspace ({_MANAGED_USAGE_WORKSPACE})."
     )
+    session.env["DATABRICKS_BEARER"] = target_bearer
     session.run("configure", "--workspace", _MANAGED_USAGE_WORKSPACE, "--skip-upgrade", timeout=240)
 
     cache = _read_managed_cache(session)
