@@ -89,6 +89,7 @@ from ucode.managed_config import (
     normalize_managed_config,
     refresh_managed_config,
 )
+from ucode.managed_files import managed_write_session
 from ucode.managed_resolve import (
     managed_claude_family_models,
     managed_default_model,
@@ -114,6 +115,7 @@ from ucode.mcp import (
     configure_skills_mcp_picker_command,
     configured_mcp_clients,
     list_mcp_command,
+    managed_mcp_server_names,
     purge_cross_workspace_mcp_residue,
     reconcile_managed_mcp_servers,
     remove_mcp_command,
@@ -791,6 +793,34 @@ def configure_workspace_command(
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
 ) -> int:
+    """Configure a workspace while sharing one lazy privileged settings session.
+
+    Agent setup and managed MCP reconciliation can update the same machine-wide Claude/Codex
+    files at different points in the flow. Keeping one command-scoped worker means every changed
+    file is handled under the same sudo authentication; a no-op configure never starts it.
+    """
+    with managed_write_session():
+        return _configure_workspace_command(
+            tool,
+            selected_tools,
+            workspaces,
+            use_pat=use_pat,
+            databricks_ai_tools_enabled=databricks_ai_tools_enabled,
+            custom_oauth=custom_oauth,
+            offer_optional_setup=offer_optional_setup,
+        )
+
+
+def _configure_workspace_command(
+    tool: str | None = None,
+    selected_tools: list[str] | None = None,
+    workspaces: list[tuple[str, str | None]] | None = None,
+    *,
+    use_pat: bool = False,
+    databricks_ai_tools_enabled: bool | None = None,
+    custom_oauth: CustomOAuthConfig | None = None,
+    offer_optional_setup: bool = False,
+) -> int:
     if tool is not None and selected_tools is not None:
         raise RuntimeError("Use either --agent or --agents, not both.")
 
@@ -1210,10 +1240,7 @@ def status() -> int:
                 and server.get("kind") != SKILLS_MCP_KIND
             }
             # Managed servers ug delivers through an OS-managed file live in that file, not state.
-            if tool == "claude":
-                mcp_names |= claude_agent.read_managed_mcp_urls().keys()
-            elif tool == "codex":
-                mcp_names |= codex_agent.read_managed_mcp_urls().keys()
+            mcp_names |= managed_mcp_server_names(state, {tool})
             rows.append(("MCP servers", str(len(mcp_names))))
             rows.append(("Skills", str(skill_counts_by_agent.get(tool, 0))))
         base_url = state.get("base_urls", {}).get(tool)

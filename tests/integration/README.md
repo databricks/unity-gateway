@@ -9,6 +9,12 @@ The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
 
+The sudo-session regression checks live in `../test_managed_files.py` and `../test_cli.py`.
+They cover shared-worker invocation counts, shutdown/cancellation, and temporary-file failure
+handling without sudo.
+This integration suite does not yet assert password-prompt counts with sudo credential caching
+disabled; that requires a disposable workstation/VM with an explicit sudo policy.
+
 ## Run a specific combination
 
 Prerequisites: Python 3.12+, uv, Node/npm, and Databricks CLI 1.17.0. The runner
