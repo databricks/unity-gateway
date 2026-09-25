@@ -177,6 +177,48 @@ Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
 with `ug configure` to control installation.
 
+## Claude Routing Plugin Lifetime
+
+Smart routing's generated agent definitions are a temporary, per-launch plugin,
+not a globally installed Claude plugin. A launch with smart routing disabled
+passes no generated plugin to Claude. Either `ENABLE_SMART_ROUTING_V2=1` or
+`ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1` enables routing (workspace-managed routing
+configuration can also enable it).
+
+The generated plugin is removed on exit, including setup and process-launch
+failures. Every subsequent Claude launch also removes abandoned plugin directories
+left by terminated UG processes. A lock inherited by Claude protects plugins
+still used by active sessions, even if their UG parent has exited. Cleanup leaves
+user plugins and unrelated directories alone.
+
+## Claude Debug Logs
+
+To capture Claude's native debug logs, including plugin refresh and agent-routing
+events, set a directory for the next launch:
+
+```bash
+UG_CLAUDE_DEBUG_LOG_DIR="$HOME/ug-debug" isaac
+# Or launch directly:
+UG_CLAUDE_DEBUG_LOG_DIR="$HOME/ug-debug" ug claude
+```
+
+This requires a UG version containing this option. Each launch creates a unique
+`claude-*.log` file, prints its absolute path to stderr, and retains the file after
+exit. Files are created with owner-only permissions. The option applies to normal,
+smart-routed, and relayed Claude launches. An explicit `--debug-file` takes
+precedence. Unset the variable to stop creating logs; remove retained files when
+finished investigating.
+
+To locate evidence of the missing-agent failure:
+
+```bash
+rg -n 'Auto-refreshing plugins|refreshActivePlugins|Agent type .*not found' "$HOME/ug-debug"/claude-*.log
+```
+
+This is local capture, not automatic upload or recovery of previous sessions.
+Review logs before sharing: Claude debug output can contain prompts, paths, and
+other sensitive session details.
+
 ## Managed Files
 
 `ug` backs up files before overwriting them. `ug revert` restores backups.

@@ -23,7 +23,25 @@ keyboard selection: nothing is selected by default, selecting Codex installs onl
 Codex, and submitting an empty selection installs nothing. Rendering checks cover
 the selected and empty checkboxes. These are local component checks, not live gateway tests.
 
+`TestClaudeDebugLogs` in `test_agent_claude.py` covers opt-in native debug-log
+capture through `UG_CLAUDE_DEBUG_LOG_DIR`: unique private files, caller flag
+precedence, stderr-only notices, actionable filesystem errors, and forwarding
+through normal, smart-routed, and relayed launches. These are component checks;
+they do not claim remote log retrieval or a live Claude session.
+
+`TestRoutingPluginCleanup` in `test_claude_smart_routing_v2.py` checks disabled
+launch cleanup, both enabled routing modes, setup/launch failures, and preservation
+of active and unrelated plugins. Real subprocess/PTY checks verify that the plugin
+lease survives exec and protects a Claude child after its parent closes the lease.
+These component checks do not invoke model inference.
+
 ## CUJ coverage matrix
+
+`test_repro_stale_claude_subagent.py` checks the diagnostic script's evidence
+classification using synthetic event fixtures. These are parser tests, not a
+reproduction of Claude's missing route-agent incident. The script's
+`--interactive` mode exercises Claude's plugin refresh in a real TUI; its
+headless mode does not. Neither mode exercises Isaac's launcher.
 
 These are **implemented assertions**, not a claim that every version passes.
 Consult the run's JUnit report and artifacts for results. Each function states

@@ -162,6 +162,12 @@ arm. The agent's interactive spawn decision, interactive explicit-model bypass, 
 dedicated smart-routing CI shards remain deferred; unit/component routing tests do not
 establish that live behavior.
 
+The Claude hook contract now expects the plugin-qualified
+`ucode-smart-routing:ucode-route-*` agent name. Plugin-refresh survival is tested
+separately by the manual interactive diagnostic
+`scripts/repro_stale_claude_subagent.py --interactive`; it is not claimed as
+automated integration coverage here.
+
 The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
 completes a file task on two models: a bare Anthropic id the subscription serves
 directly (`route=relay`) and a Databricks-hosted `system.ai` id the loopback proxy

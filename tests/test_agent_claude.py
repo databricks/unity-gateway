@@ -1972,6 +1972,99 @@ class TestRegisterWebSearchMcp:
         assert result["workspace"] == WS
 
 
+class TestClaudeDebugLogs:
+    @pytest.fixture(autouse=True)
+    def clear_debug_env(self, monkeypatch):
+        monkeypatch.delenv(claude.DEBUG_LOG_DIR_ENV_VAR, raising=False)
+
+    def test_disabled_leaves_arguments_and_files_unchanged(self, tmp_path, capsys):
+        arguments = ["--print", "hello"]
+        existing = set(tmp_path.iterdir())
+        assert claude._with_debug_log(arguments) == arguments
+        assert set(tmp_path.iterdir()) == existing
+        assert capsys.readouterr().err == ""
+
+    def test_unique_private_logs_and_stderr_notice(self, tmp_path, monkeypatch, capsys):
+        directory = tmp_path / "logs with spaces"
+        monkeypatch.setenv(claude.DEBUG_LOG_DIR_ENV_VAR, str(directory))
+        arguments = ["--print", "hello"]
+
+        first = claude._with_debug_log(arguments)
+        second = claude._with_debug_log(arguments)
+
+        assert arguments == ["--print", "hello"]
+        assert first[0] == second[0] == "--debug-file"
+        assert first[2:] == second[2:] == arguments
+        assert first[1] != second[1]
+        for filename in (first[1], second[1]):
+            log = Path(filename)
+            assert log.is_absolute() and log.parent == directory
+            assert log.is_file()
+            if os.name != "nt":
+                assert log.stat().st_mode & 0o777 == 0o600
+        output = capsys.readouterr()
+        assert output.out == ""
+        assert "Claude debug log:" in output.err
+
+    @pytest.mark.parametrize(
+        "arguments", [["--debug-file", "chosen.log"], ["--debug-file=chosen.log"]]
+    )
+    def test_explicit_debug_file_wins(self, tmp_path, monkeypatch, arguments):
+        directory = tmp_path / "unused"
+        monkeypatch.setenv(claude.DEBUG_LOG_DIR_ENV_VAR, str(directory))
+        assert claude._with_debug_log(arguments) == arguments
+        assert not directory.exists()
+
+    def test_prompt_separator_does_not_disable_logging(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(claude.DEBUG_LOG_DIR_ENV_VAR, str(tmp_path))
+        arguments = ["--", "--debug-file=prompt-text"]
+        result = claude._with_debug_log(arguments)
+        assert result[0] == "--debug-file"
+        assert result[2:] == arguments
+
+    def test_expands_home_directory(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(claude.Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv(claude.DEBUG_LOG_DIR_ENV_VAR, "~/logs")
+        result = claude._with_debug_log([])
+        assert Path(result[1]).parent == tmp_path / "logs"
+
+    def test_invalid_directory_is_actionable(self, tmp_path, monkeypatch):
+        invalid = tmp_path / "file"
+        invalid.write_text("keep me")
+        monkeypatch.setenv(claude.DEBUG_LOG_DIR_ENV_VAR, str(invalid))
+        with pytest.raises(RuntimeError, match="UG_CLAUDE_DEBUG_LOG_DIR.*writable directory"):
+            claude._with_debug_log([])
+        assert invalid.read_text() == "keep me"
+
+    @pytest.mark.parametrize("mode", ["normal", "smart", "relayed", "pinned"])
+    def test_log_forwarded_through_each_launch_path(self, tmp_path, monkeypatch, mode):
+        monkeypatch.setenv(claude.DEBUG_LOG_DIR_ENV_VAR, str(tmp_path))
+        captured = []
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: captured.append(argv))
+        monkeypatch.setattr(
+            claude, "_launch_relayed", lambda state, binary, args: captured.append(args)
+        )
+        monkeypatch.setattr(
+            claude.smart_routing_v2,
+            "launch_claude",
+            lambda state, args, **kwargs: captured.append(args),
+        )
+        state = {"claude_relayed": mode == "relayed"}
+        options = LaunchOptions(
+            launch_smart_routing=mode == "smart",
+            user_pinned_model="sonnet" if mode == "pinned" else None,
+        )
+        claude.launch(state, ["--print", "hello"], options=options)
+
+        assert len(captured) == 1
+        argv = captured[0]
+        assert argv[-2:] == ["--print", "hello"]
+        logfile = Path(argv[argv.index("--debug-file") + 1])
+        assert logfile.is_file()
+        assert logfile.parent == tmp_path
+
+
 class TestClaudeLaunch:
     def test_gateway_discovery_enabled_for_relayed_provider(self, monkeypatch):
         calls: list[tuple[dict, str, list[str]]] = []
