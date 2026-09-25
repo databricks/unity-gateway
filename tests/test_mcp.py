@@ -336,9 +336,9 @@ class TestMcpPicker:
         # Databricks SQL is not promoted as an up-front picker entry.
         assert "Databricks SQL" not in choices_by_title
 
-    def test_additive_picker_shows_configured_servers_as_disabled(self):
-        """In `ucode mcp add` mode an already-configured server can't be removed, so
-        it's shown as a non-toggleable note rather than a pre-checked box."""
+    def test_additive_picker_hides_configured_servers(self):
+        """In `ucode mcp add` an already-configured server has nothing to add, so it's hidden
+        entirely — the picker lists only servers you can add."""
         choices = mcp.build_mcp_picker_choices(
             ["github-mcp", "slack-mcp"],
             [],
@@ -347,10 +347,8 @@ class TestMcpPicker:
             additive=True,
         )
         choices_by_title = {choice.title: choice for choice in choices}
-        configured = choices_by_title["Connection: github-mcp"]
-        assert configured.disabled == "already configured"
-        assert configured.checked is False
-        # A not-yet-configured server stays an addable, toggleable choice.
+        # The already-configured server is gone; only the addable one remains.
+        assert "Connection: github-mcp" not in choices_by_title
         assert choices_by_title["Connection: slack-mcp"].disabled is None
 
     def test_removal_picker_lists_configured_servers_with_their_clients(self, monkeypatch):
@@ -962,16 +960,18 @@ class TestConfigureMcpCommand:
         ]
 
     def test_mcp_service_choice_known_vs_unknown(self):
-        # Unregistered -> an add-choice; already-registered -> a removable toggle
-        # (replace mode) or a disabled note (mcp add, additive).
+        # Unregistered -> an add-choice; already-registered -> a removable toggle in replace
+        # mode, and hidden (None) under `mcp add` since there is nothing to add.
         add = mcp._mcp_service_choice("mycat.sch.weather", set(), additive=False)
         assert (
             add.value == f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}mycat.sch.weather"
         )
         toggle = mcp._mcp_service_choice("mycat.sch.weather", {"mycat-sch-weather"}, additive=False)
         assert toggle.value == "mycat-sch-weather" and toggle.checked
-        note = mcp._mcp_service_choice("mycat.sch.weather", {"mycat-sch-weather"}, additive=True)
-        assert note.value == "mycat-sch-weather" and note.disabled
+        assert (
+            mcp._mcp_service_choice("mycat.sch.weather", {"mycat-sch-weather"}, additive=True)
+            is None
+        )
 
     def test_skips_slow_walks_unless_source_selected(self, monkeypatch):
         """Vector Search and UC functions walk the workspace and are OFF by
@@ -3685,6 +3685,118 @@ class TestSingleSourceSkipsPrompt:
         assert captured["allow_back"] is None  # back-nav no longer requested
 
 
+class TestManagedServersAreNotReAdded:
+    """`ug mcp add` must say so, and not duplicate, when managed config already provides a server."""
+
+    def _stub_managed_files(self, monkeypatch, claude_urls=None, codex_urls=None):
+        monkeypatch.setattr(mcp.claude, "read_managed_mcp_urls", lambda: dict(claude_urls or {}))
+        monkeypatch.setattr(mcp.codex, "read_managed_mcp_urls", lambda: dict(codex_urls or {}))
+
+    def test_enumeration_merges_state_and_managed_files_scoped_by_agent(self, monkeypatch):
+        self._stub_managed_files(
+            monkeypatch, claude_urls={"from-file": "u1"}, codex_urls={"codex-only": "u2"}
+        )
+        state = {"managed_mcp_servers": [{"name": "from-state", "url": "u", "clients": ["claude"]}]}
+
+        assert mcp.managed_mcp_server_names(state, {"claude"}) == {"from-state", "from-file"}
+        assert mcp.managed_mcp_server_names(state, {"codex"}) == {"codex-only"}
+        assert mcp.managed_mcp_server_names(state) == {"from-state", "from-file", "codex-only"}
+
+    @pytest.mark.parametrize("additive", [True, False])
+    def test_managed_service_is_hidden_from_the_picker(self, additive):
+        # A managed server is never ug's to add or remove here (it lives in the OS-managed file),
+        # so it's hidden in both modes rather than shown as an inert row.
+        assert (
+            mcp._mcp_service_choice(
+                "system.ai.github", {"system-ai-github"}, additive, {"system-ai-github"}
+            )
+            is None
+        )
+
+    def test_unmanaged_service_is_still_offered_as_an_add(self):
+        choice = mcp._mcp_service_choice("system.ai.other", set(), True, {"system-ai-github"})
+        assert choice is not None
+        assert choice.disabled is None
+        assert choice.value.startswith(mcp.MCP_ADD_PREFIX)
+
+    def test_add_picker_shows_only_addable_services(self):
+        # Under `ug mcp add`, the picker lists only what you can add: a managed service and one
+        # ug already configured are both hidden; an unconfigured one is offered.
+        choices = mcp.build_mcp_picker_choices(
+            [],
+            [],
+            [],
+            [{"name": "system-ai-slack", "url": f"{WS}/ai-gateway/mcp-services/system.ai.slack"}],
+            available_mcp_service_names=[
+                "system.ai.github",
+                "system.ai.slack",
+                "system.ai.web_search",
+            ],
+            additive=True,
+            managed_names={"system-ai-github"},
+        )
+        titles = [c.title for c in choices]
+        assert titles == [
+            "MCP: system.ai.web_search"
+        ]  # github (managed) + slack (configured) hidden
+
+    def test_replace_picker_hides_managed_but_keeps_own_as_toggle(self):
+        # Replace mode still lets you remove your own servers (pre-checked toggle), but a managed
+        # one stays hidden since ug can't remove it here either.
+        choices = mcp.build_mcp_picker_choices(
+            [],
+            [],
+            [],
+            [{"name": "system-ai-slack", "url": f"{WS}/ai-gateway/mcp-services/system.ai.slack"}],
+            available_mcp_service_names=["system.ai.github", "system.ai.slack"],
+            additive=False,
+            managed_names={"system-ai-github"},
+        )
+        by_title = {c.title: c for c in choices}
+        assert "MCP: system.ai.github" not in by_title  # managed: hidden
+        assert by_title["MCP: system.ai.slack"].checked is True  # own: removable toggle
+
+    def test_drop_managed_servers_reports_what_it_skipped(self, capsys):
+        servers = [
+            {"name": "system-ai-github", "url": "a", "clients": ["claude"]},
+            {"name": "system-ai-web-search", "url": "b", "clients": ["claude"]},
+        ]
+        kept = mcp._drop_managed_servers(servers, {"system-ai-github"})
+
+        assert [s["name"] for s in kept] == ["system-ai-web-search"]
+        out = capsys.readouterr().out
+        assert "managed configuration" in out
+        assert "system-ai-github" in out
+
+    def test_location_add_skips_an_already_managed_service(self, monkeypatch, capsys):
+        # The reported case: adding a service managed config already provides used to report a
+        # successful add and write a duplicate user-scope registration shadowing the managed one.
+        configured: list[str] = []
+        saved_states: list[dict] = []
+        _stub_location_base(monkeypatch, {**CLAUDE_STATE})
+        self._stub_managed_files(monkeypatch, claude_urls={"system-ai-github": "managed-url"})
+        monkeypatch.setattr(
+            mcp,
+            "list_mcp_services",
+            lambda *a, **kw: (["system.ai.github", "system.ai.slack"], None),
+        )
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda client, name, url, *a, **kw: configured.append(name) or [],
+        )
+        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
+
+        assert mcp.add_mcp_command(location="system.ai") == 0
+
+        # Only the unmanaged service is registered, and the skip is reported rather than silent.
+        assert configured == ["system-ai-slack"]
+        assert [s["name"] for s in saved_states[-1]["mcp_servers"]] == ["system-ai-slack"]
+        out = capsys.readouterr().out
+        assert "system-ai-github" in out
+        assert "managed configuration" in out
+
+
 class TestDiscoverySkipsPermissionErrors:
     def test_discover_mcp_source_skips_permission_denied_quietly(self, monkeypatch, capsys):
         def boom():
@@ -3753,6 +3865,28 @@ class TestParseMcpListOutput:
     def test_claude_header_line_is_not_a_server(self):
         # The "Checking MCP server health…" header must not become a bogus entry.
         assert "Checking" not in mcp.parse_mcp_list_output("claude", CLAUDE_MCP_LIST)
+
+    @pytest.mark.parametrize(
+        "failure_detail",
+        ["HTTP 404 Not Found", "sh: 1: my-bin: not found", 'no server named "x"'],
+    )
+    def test_one_servers_failure_detail_does_not_discard_the_listing(self, failure_detail):
+        # One broken server must not hide the healthy ones, even when its failure detail
+        # contains a phrase that also marks a "no servers configured" listing.
+        output = (
+            CLAUDE_MCP_LIST
+            + f"broken: https://h/mcp (HTTP) - ✘ Failed to connect — {failure_detail}\n"
+        )
+        parsed = mcp.parse_mcp_list_output("claude", output)
+        assert parsed["github"] == mcp.LIVE_CONNECTED
+        assert parsed["web_search"] == mcp.LIVE_CONNECTED
+        assert parsed["broken"] == mcp.LIVE_FAILED
+
+    def test_no_servers_message_still_reads_as_empty(self):
+        # A real "no servers" listing must still come back empty, including for codex, whose
+        # table parser would otherwise read the message itself as a server name.
+        for client in ("claude", "gemini", "codex"):
+            assert mcp.parse_mcp_list_output(client, "No MCP servers configured.") == {}
 
     def test_parses_codex_enabled_disabled_table(self):
         assert mcp.parse_mcp_list_output("codex", CODEX_MCP_LIST) == {
