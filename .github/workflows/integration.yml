@@ -227,6 +227,8 @@ jobs:
           DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
           UG_MPS_DEFAULTS_CLIENT_SECRET: ${{ matrix.agent == 'claude' && secrets.UG_MPS_DEFAULTS_CLIENT_SECRET || '' }}
           UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET: ${{ matrix.agent == 'claude' && secrets.UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET || '' }}
+          UG_USAGE_CLIENT_ID: ${{ matrix.agent == 'claude' && secrets.UG_USAGE_CLIENT_ID || '' }}
+          UG_USAGE_CLIENT_SECRET: ${{ matrix.agent == 'claude' && secrets.UG_USAGE_CLIENT_SECRET || '' }}
           UCODE_TEST_SECOND_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
           DATABRICKS_SECOND_BEARER: ${{ secrets.DATABRICKS_BEARER }}
         run: |

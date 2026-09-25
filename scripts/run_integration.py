@@ -40,6 +40,7 @@ MANAGED_DEFAULTS_TARGETS = (
         "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET",
     ),
 )
+MANAGED_USAGE_WORKSPACE = "https://eng-ml-inference-team-eu-west-2.cloud.databricks.com"
 
 
 def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
@@ -301,6 +302,7 @@ def main() -> int:
         os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
         os.environ.get("UG_MPS_DEFAULTS_CLIENT_SECRET", ""),
         os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", ""),
+        os.environ.get("UG_USAGE_CLIENT_SECRET", ""),
     )
 
     def redact(value: str) -> str:
@@ -581,6 +583,13 @@ def main() -> int:
                 elif secret:
                     target_bearers[bearer_env] = mint_m2m_token(target_workspace, client_id, secret)
 
+            usage_client_id = os.environ.get("UG_USAGE_CLIENT_ID", "").strip()
+            usage_client_secret = os.environ.get("UG_USAGE_CLIENT_SECRET", "").strip()
+            if usage_client_id and usage_client_secret:
+                target_bearers["UG_USAGE_BEARER"] = mint_m2m_token(
+                    MANAGED_USAGE_WORKSPACE, usage_client_id, usage_client_secret
+                )
+
         run(
             [
                 uv,
@@ -620,6 +629,7 @@ def main() -> int:
                 "UG_PARENT_SCHEMA_DEFAULTS_BEARER": target_bearers.get(
                     "UG_PARENT_SCHEMA_DEFAULTS_BEARER", ""
                 ),
+                "UG_USAGE_BEARER": target_bearers.get("UG_USAGE_BEARER", ""),
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
                 "DATABRICKS_SECOND_BEARER": second_bearer,
                 "UG_INTEGRATION_WAREHOUSE_ID": args.warehouse_id or "",

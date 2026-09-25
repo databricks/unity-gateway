@@ -125,6 +125,7 @@ test_ug_configure_managed_models.py     # injected model sources, smart-routing 
 test_ug_configure_managed_mcp.py        # injected managed MCP list
 test_ug_configure_managed_skills.py     # injected managed skills: download, coexist, reconcile away
 test_ug_configure_managed_lifecycle.py  # none -> A -> B -> MPS -> none: reconcile, clear on MPS/no-config
+test_ug_usage.py                        # usage with and without a published managed config
 test_installation.py                   # fresh installed package
 utils/                                # process/terminal/evidence helpers and Docker files
 ```
@@ -239,10 +240,11 @@ startup banners and footer text cannot satisfy discovery assertions. Cases 7–1
 they only configure, list models, and open/close the picker. Other live CUJs perform
 real model tasks.
 
-There are **60 live cases** (including 12 TUI journeys) and **7 installation
-checks** with both agents. A separate **6 managed-workspace cases** (one per agent, an idempotent
-re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
-workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
+There are **61 live cases** (including 12 TUI journeys) and **7 installation
+checks** with both agents. A separate **7 managed-workspace cases** (one per agent, an idempotent
+re-configure, a cache-TTL journey, two Claude defaults cases, and managed usage; marker `managed`)
+run against workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below.
+One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
 A further **25 `managed_fixture`
 cases** use `UCODE_MANAGED_CONFIG_STUB`. Twelve explicit configured/fresh Claude and Codex
@@ -264,7 +266,7 @@ constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-
 mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
 `ug configure` and Claude. The client secrets do not enter the pytest process.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 99 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 101 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -375,12 +377,12 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 60 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 61 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 26 |
+| Claude | `live and claude` | 27 |
 | Codex | `live and codex` | 34 |
 
 Each lane installs only its agent CLI, once, and runs all its configure, headless,
@@ -404,15 +406,21 @@ cannot still be running when that gate passes. Full coverage on PRs needs no lab
 
 ### Managed-workspace journeys
 
-`test_ug_configure_managed.py` (marker `managed`, not `live`) runs in its own per-agent
-**Managed config** jobs against a second workspace that publishes an admin CodingAgentConfig,
-whereas unmanaged live cases require a workspace without one. `ug configure` applies the admin config
+`test_ug_configure_managed.py` (marker `managed`, not `live`) runs in the per-agent **Managed
+config** jobs against the primary managed-test workspace. The managed case in `test_ug_usage.py`
+runs once in the Claude lane against the dedicated budget-enabled
+`eng-ml-inference-team-eu-west-2` workspace. Unmanaged live cases require a workspace without a
+published config. `ug configure` applies the admin config
 with no agent selector, and each agent's generated config exposes exactly the admin's static
 `model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog). The managed
 Codex case also checks stderr guidance to restart the daemon after publication,
 that the shared app config points at the stable catalog, and that a fresh
 bare Codex app-server returns the expected visible model before the existing TUI prompt/input
-assertion. It does not claim GUI rendering or inference coverage.
+assertion. It does not claim GUI rendering or inference coverage. The usage case requires the
+real `ug usage` command to render budget spend from its dedicated workspace. The runner mints that
+workspace's short-lived token as `UG_USAGE_BEARER` from its dedicated OAuth client credentials;
+the client must be assigned to the workspace. The live
+usage case separately verifies the unavailable-budget result when no managed config is published.
 
 Two `managed` cases in `test_ug_configure_managed_models.py` target separate published configs:
 west-2 must publish a Claude MPS source with Anthropic family defaults, and northeast-2 must
@@ -420,10 +428,11 @@ publish a Claude `system.ai` parent-schema source with Unity Catalog family defa
 fetches the config; the tests assert the generated private and OS-managed Claude settings after
 launch. Their exact required defaults and source headers are reflected in the tests.
 
-Treat that published CodingAgentConfig as shared CI fixture state. The managed lanes assert its
-exact model ids and its both-agent enablement, so editing the managed workspace's config (models,
-enabled agents, or defaults) breaks these lanes until the constants in `test_ug_configure_managed.py`
-are updated to match. Do not change it casually.
+Treat these published CodingAgentConfigs as shared CI fixture state. The primary managed lanes
+assert exact model ids and both-agent enablement, the defaults cases assert their source-specific
+models, and the usage case requires a configured budget. Editing any of these workspaces can break
+its lane until the corresponding test constants or prerequisites are updated. Do not change them
+casually.
 
 The `managed_fixture` journeys use `UCODE_MANAGED_CONFIG_STUB` to short-circuit only the
 managed-config HTTP read for config shapes that workspace does not publish. The Claude discovery
@@ -464,7 +473,10 @@ these same-repository secrets rather than storing a long-lived bearer:
   Its client ID (`1c359c0f-58bc-42ac-a74f-079ccb173676`) is in the runner code.
 - `UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET`: OAuth client secret for the northeast-2 Claude
   defaults workspace. Its client ID (`95e267dc-4393-4360-9d45-4b9b13b2d370`) is in the runner code.
-  CI passes these two repository secrets only to the managed Claude lane.
+- `UG_USAGE_CLIENT_ID` / `UG_USAGE_CLIENT_SECRET`: OAuth client credentials for the dedicated
+  `eng-ml-inference-team-eu-west-2` budget workspace. The runner mints `UG_USAGE_BEARER` from
+  them and passes only that short-lived bearer to the usage test. CI passes these target credentials
+  only to the managed Claude lane.
 
 Run it locally the same way, pointing at the managed workspace:
 
@@ -473,6 +485,10 @@ export UCODE_TEST_WORKSPACE=https://<managed-workspace>
 export DATABRICKS_CLIENT_ID=<sp-app-id> DATABRICKS_CLIENT_SECRET=<sp-oauth-secret>
 python scripts/run_integration.py --claude-version <v> --codex-version <v> -- -m managed
 ```
+
+The managed usage case additionally requires `UG_USAGE_CLIENT_ID` and
+`UG_USAGE_CLIENT_SECRET` for the dedicated EU West budget workspace. The runner mints its
+short-lived `UG_USAGE_BEARER`; the credentials must be authorized for that workspace.
 
 To run only the two Claude defaults cases locally, set the base managed workspace and its
 `DATABRICKS_CLIENT_ID` / `DATABRICKS_CLIENT_SECRET` as above, set both target-specific client
@@ -681,7 +697,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 60 live cases. For the seven installation checks, run the same
+This runs all 61 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.
