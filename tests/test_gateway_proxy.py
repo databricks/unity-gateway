@@ -63,13 +63,30 @@ class TestForwardedRequestHeaders:
         assert "Content-Length" not in out
         assert "Connection" not in out
 
-    def test_extra_strip_removes_named_headers(self):
-        handler = _FakeHandler({"Databricks-Model-Provider-Service": "cat.s.mps", "Keep": "me"})
+    def test_injects_extra_headers(self):
+        handler = _FakeHandler({"Authorization": "Bearer client-value"})
         out = gateway_proxy.forwarded_request_headers(
-            handler, "t", extra_strip=frozenset({"databricks-model-provider-service"})
+            handler,
+            "dbx",
+            extra_headers={
+                "Authorization": "Bearer proxy-oauth",
+                "Databricks-Model-Provider-Service": "main.default.mps",
+            },
         )
-        assert "Databricks-Model-Provider-Service" not in out
-        assert out["Keep"] == "me"
+        # Proxy-owned values win over any client-supplied header of the same name.
+        assert out["Authorization"] == "Bearer proxy-oauth"
+        assert out["Databricks-Model-Provider-Service"] == "main.default.mps"
+        # The swap header is still injected alongside.
+        assert out["X-Databricks-AI-Gateway-Token"] == "Bearer dbx"
+
+    def test_strips_named_client_headers(self):
+        # A client-supplied x-api-key must not reach upstream when the proxy owns auth.
+        handler = _FakeHandler({"x-api-key": "sk-ant-oat-leak", "Accept": "application/json"})
+        out = gateway_proxy.forwarded_request_headers(
+            handler, "dbx", strip_client_headers=frozenset({"x-api-key"})
+        )
+        assert "x-api-key" not in {k.lower() for k in out}
+        assert out["Accept"] == "application/json"
 
     def test_databricks_route_swaps_authorization_and_drops_relay_headers(self):
         # OSS path: the Databricks token replaces the caller's OAuth in Authorization, and
@@ -85,7 +102,7 @@ class TestForwardedRequestHeaders:
             handler,
             "dbx-token",
             gateway_proxy.AUTHORIZATION_HEADER,
-            extra_strip=gateway_proxy._DATABRICKS_ROUTE_STRIP,
+            strip_client_headers=gateway_proxy._DATABRICKS_ROUTE_STRIP,
         )
         assert out["Authorization"] == "Bearer dbx-token"
         assert "X-Databricks-AI-Gateway-Token" not in out

@@ -38,6 +38,7 @@ from ucode.agents import (
     resolve_provider_models,
 )
 from ucode.agents import claude as claude_agent
+from ucode.agents import claude_desktop as claude_desktop_agent
 from ucode.agents import codex as codex_agent
 from ucode.agents import (
     launch as launch_agent,
@@ -3208,6 +3209,66 @@ def claude_cmd(
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
             )
+
+
+@app.command("claude-desktop", rich_help_panel="Launch")
+def claude_desktop_cmd(
+    provider: Annotated[
+        str,
+        typer.Option(
+            "--provider",
+            help="UC Model Provider Service (<catalog>.<schema>.<name>) to route through — "
+            "typically a relayed Claude Max/Enterprise service.",
+        ),
+    ],
+    workspace: WorkspaceOption = None,
+    profile: Annotated[
+        str | None,
+        typer.Option("--profile", help="Databricks CLI profile to authenticate with."),
+    ] = None,
+    models: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--model",
+            help="Model id to expose in Desktop (repeatable). Populates the config so Desktop "
+            "skips model discovery; e.g. --model claude-opus-4-8 --model claude-sonnet-4-5.",
+        ),
+    ] = None,
+    restart_if_running: Annotated[
+        bool,
+        typer.Option(
+            "--restart/--no-restart",
+            help="Restart Claude Desktop if it's already running so it picks up the config "
+            "(macOS). A closed Desktop is always launched; use --no-restart to leave a running "
+            "instance alone and quit/reopen it yourself.",
+        ),
+    ] = True,
+) -> None:
+    """Launch Claude Desktop / Cowork through Databricks AI Gateway (experimental).
+
+    Establishes the Databricks + Anthropic auth sessions, starts a loopback refresh
+    proxy that keeps both credentials fresh, writes a Desktop gateway config pointing
+    at it, and (re)launches Desktop. Stays running to keep the proxy alive — leave it
+    open while you use Desktop.
+    """
+    resolved_workspace = workspace or load_state().get("workspace")
+    if not resolved_workspace:
+        print_err("No workspace configured. Pass --workspace <url> (or run `ug configure` first).")
+        raise typer.Exit(1)
+    resolved_profile = profile or load_state().get("profile")
+    try:
+        claude_desktop_agent.launch(
+            resolved_workspace,
+            resolved_profile,
+            provider=provider,
+            models=models,
+            restart_if_running=restart_if_running,
+        )
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from exc
+    except KeyboardInterrupt:
+        raise typer.Exit(130) from None
 
 
 @app.command(
