@@ -213,7 +213,12 @@ and duplicate raw IDs still fail. Cases 8/10 require ug's discovered `system.ai`
 models while leaving Codex's model and reasoning preferences unset, and expose
 Codex's native catalog without a scoped file.
 Cases 11–14 retain the exact provider/parent catalog assertions for supported launch
-overrides. Obsolete disable-flag scenarios and duplicate managed variants are
+overrides. Cases 11/13 also require explicit Claude provider/model-location launches to replace
+built-in picker rows when no managed config exists. They also check that the remaining
+Default row names the model in the scoped fixture catalog, selected through the launch-only
+`ANTHROPIC_DEFAULT_MODEL` environment variable. Unit tests cover the existing Opus, Sonnet,
+then Haiku preference for catalogs with multiple families. Plain Claude launches retain native defaults.
+Obsolete disable-flag scenarios and duplicate managed variants are
 removed, not skipped; managed discovery and rejection remain covered by Cases
 1–6. Repository scenario numbers run consecutively from 01 to 14, with
 configured/fresh variants sharing a number. External design-document numbering
@@ -225,9 +230,10 @@ Codex model-list request with the parent-schema header, including the dedicated 
 service and no out-of-schema models. A Claude service is included only if that API
 advertises it as compatible. Extra, missing, or duplicate app-server entries fail.
 Claude provider discovery still requires the exact `--claude-provider-model` ID
-in its cache. For the default `claude-haiku-4-5-20251001` fixture, Claude deduplicates
-it into the native Haiku picker row (Haiku 4.5), so the assertion checks that row
-instead of requiring the gateway's raw display name. Custom Model Services must
+in its cache. For the default `claude-haiku-4-5-20251001` fixture, Claude can
+deduplicate it into the native Haiku picker row (Haiku 4.5), while an explicit
+provider or parent replacement picker can render the raw gateway ID/display name;
+the assertion accepts either numbered-row form. Custom Model Services must
 still appear by their gateway IDs or display names in a numbered picker row;
 startup banners and footer text cannot satisfy discovery assertions. Cases 7–14 send no inference prompts;
 they only configure, list models, and open/close the picker. Other live CUJs perform
@@ -246,7 +252,12 @@ cover focused model, MCP, skills, and lifecycle shapes, including per-agent mode
 and managed skill cleanup. The two Claude default-model cases read published MPS and Unity
 Catalog sources directly from `eng-ml-inference-batch-inference-us-west-2` and
 `eng-ml-inference-ap-northeast-2`, respectively, then verify both generated settings files retain
-all admin-authored family defaults. Neither case injects a config. Each obtains a token for its
+all admin-authored family defaults. Their replacement pickers contain those mapped defaults plus
+the independently fetched catalog for MPS. Labeled default rows appear first, followed by every
+catalog model, including models also used as defaults; catalog labels are retained. Direct renderer
+tests cover default/catalog composition, while focused CLI regressions cover partial family
+mappings, explicit model selection, and preservation of static model lists. Neither case injects
+a config. Each obtains a token for its
 target workspace using OAuth client credentials. The two target service-principal client IDs are
 constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-2 and
 `UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET` for northeast-2. As with the base workspace, the runner
@@ -420,9 +431,9 @@ module fetches the workspace's published config once, replaces Claude's static m
 `main.default.ci_e2e_anthropic_mps`, drops incompatible static defaults, and reuses that fixture
 across all configured/fresh scenarios. The Codex module does the same with
 `main.default.ci_e2e_openai_mps`. Separate read-only, provider-scoped model-list requests
-establish expected IDs independently of the generated agent files. The tests require Claude's
-native cache to match those IDs and a cached model to appear in a numbered picker row
-(including native Haiku 4.5, Opus 5, and Sonnet 5 deduplication), alongside its admin header.
+establish expected IDs independently of the generated agent files. With no authored defaults,
+Claude's native cache and replacement picker must match those IDs, preserve catalog display names,
+and show a model in a numbered picker row alongside its admin header.
 Codex's scoped and stable catalogs, ug-launched app server, and fresh bare app server must match
 its independently fetched IDs. The configured Codex journey subsequently runs real `ug revert`,
 verifies that the shared pointer and stable catalog are gone, and checks that a user-owned setting
