@@ -137,6 +137,75 @@ class TestRenderOverlay:
         )
         assert overlay["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "system.ai.claude-haiku-4-6"
 
+    def test_default_model_picker_catalog_adds_uc_long_context_suffixes(self):
+        catalog = claude.default_model_picker_catalog(
+            {
+                "opus": "system.ai.claude-opus-4-8",
+                "sonnet": "system.ai.claude-sonnet-4-6",
+                "haiku": "system.ai.claude-haiku-4-5",
+            }
+        )
+
+        assert catalog.model_ids == [
+            "system.ai.claude-opus-4-8[1m]",
+            "system.ai.claude-sonnet-4-6[1m]",
+            "system.ai.claude-haiku-4-5",
+        ]
+        assert catalog.model_id_to_display_name == {
+            "system.ai.claude-opus-4-8[1m]": "Claude Opus 4.8",
+            "system.ai.claude-sonnet-4-6[1m]": "Claude Sonnet 4.6",
+            "system.ai.claude-haiku-4-5": "Claude Haiku 4.5",
+        }
+
+    def test_mps_picker_renders_default_shortcuts_before_catalog_rows(self):
+        provider = "main.default.anthropic-mps"
+        sonnet = "anthropic.claude-sonnet-4-6"
+        opus = "anthropic.claude-opus-4-8"
+        fable = "anthropic.claude-fable-5-1"
+        defaults = {"sonnet": sonnet, "haiku": sonnet, "fable": fable}
+        catalog = claude.default_model_picker_catalog(
+            defaults,
+            provider=provider,
+            discovered_catalog=db_mod.AnthropicModelCatalog(
+                model_ids=[sonnet, opus],
+                model_id_to_display_name={sonnet: "Gateway Sonnet", opus: "Gateway Opus"},
+                model_id_to_description={sonnet: "Configured Sonnet", opus: "Discovered Opus"},
+            ),
+        )
+        overlay, _ = claude.render_overlay(
+            WS, None, provider=provider, provider_models=defaults, picker_catalog=catalog
+        )
+
+        assert overlay["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == sonnet
+        assert overlay["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == sonnet
+        assert overlay["modelPicker"] == {
+            "replaceBuiltInOptions": True,
+            "options": [
+                {"model": "sonnet", "label": "Default Sonnet", "description": sonnet},
+                {"model": "haiku", "label": "Default Haiku", "description": sonnet},
+                {"model": "fable", "label": "Default Fable", "description": fable},
+                {"model": sonnet, "label": "Gateway Sonnet", "description": "Configured Sonnet"},
+                {"model": opus, "label": "Gateway Opus", "description": "Discovered Opus"},
+            ],
+        }
+
+    @pytest.mark.parametrize(
+        "configured_model", ["system.ai.claude-sonnet-5", "system.ai.claude-sonnet-5[1m]"]
+    )
+    def test_default_model_picker_catalog_keeps_launch_model_exact(self, configured_model):
+        catalog = claude.default_model_picker_catalog(
+            {
+                "opus": "system.ai.claude-opus-4-8",
+                "sonnet": configured_model,
+            },
+            launch_model="system.ai.claude-sonnet-5",
+        )
+
+        assert catalog.model_ids == [
+            "system.ai.claude-opus-4-8[1m]",
+            "system.ai.claude-sonnet-5",
+        ]
+
     def test_custom_model_does_not_persist_model_selection(self):
         # Explicit model selection is launch-scoped and must not be written to settings.
         overlay, _ = claude.render_overlay(
@@ -1323,7 +1392,12 @@ class TestWriteToolConfigManagedSettings:
         assert not set(claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS.values()) & env.keys()
 
     @pytest.mark.parametrize("with_catalog", [False, True])
-    def test_parent_schema_prunes_previous_static_picker(self, monkeypatch, with_catalog):
+    @pytest.mark.parametrize(
+        "source", [{"parent_schema": "main.default"}, {"provider": "main.default.anthropic"}]
+    )
+    def test_discovery_source_prunes_previous_static_picker(
+        self, monkeypatch, with_catalog, source
+    ):
         private_writes: list = []
         managed_writes: list = []
         picker = {
@@ -1353,9 +1427,7 @@ class TestWriteToolConfigManagedSettings:
             if with_catalog
             else None
         )
-        updated = claude.write_tool_config(
-            state, None, parent_schema="main.default", picker_catalog=catalog
-        )
+        updated = claude.write_tool_config(state, None, **source, picker_catalog=catalog)
 
         for written in (private_writes[0][1], json.loads(managed_writes[0][1])):
             assert "availableModels" not in written
@@ -2069,6 +2141,7 @@ class TestClaudeLaunch:
         calls: list[list[str]] = []
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.delenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, raising=False)
+        monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
@@ -2076,39 +2149,143 @@ class TestClaudeLaunch:
         claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
 
         assert os.environ["OAUTH_TOKEN"] == "token"
+        assert "ANTHROPIC_DEFAULT_MODEL" not in os.environ
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
 
     def test_launch_model_is_only_set_for_current_process(self, monkeypatch):
         calls: list[list[str]] = []
         monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+        monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
 
         claude.launch(
-            {"workspace": WS, "profile": "test"},
+            {
+                "workspace": WS,
+                "profile": "test",
+                "_claude_launch_default_model": "main.default.claude-sonnet-5",
+            },
             [],
             options=LaunchOptions(user_pinned_model="cat.schema.model"),
         )
 
         assert os.environ["ANTHROPIC_MODEL"] == "cat.schema.model"
+        assert os.environ["ANTHROPIC_DEFAULT_MODEL"] == "main.default.claude-sonnet-5"
         assert calls[0][:2] == ["claude", "--settings"]
         settings = json.loads(calls[0][2])
         assert settings["env"]["ANTHROPIC_MODEL"] == "cat.schema.model"
 
-    def test_managed_picker_replaces_stale_saved_model_for_this_launch(self, monkeypatch):
+    def test_launch_default_model_is_inherited_by_smart_routing(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
+        monkeypatch.setattr(v2, "launch_claude", Mock())
+
+        claude.launch(
+            {
+                "workspace": WS,
+                "_claude_launch_default_model": "main.default.claude-sonnet-5",
+            },
+            ["fix this bug"],
+            options=LaunchOptions(launch_smart_routing=True),
+        )
+
+        assert os.environ["ANTHROPIC_DEFAULT_MODEL"] == "main.default.claude-sonnet-5"
+        v2.launch_claude.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ("saved_model", "picker_sonnet", "configured_sonnet"),
+        [
+            ("sonnet", "system.ai.claude-sonnet-5[1m]", "system.ai.claude-sonnet-5[1m]"),
+            ("sonnet[1m]", "system.ai.claude-sonnet-5[1m]", "system.ai.claude-sonnet-5[1m]"),
+            ("sonnet[200k]", "system.ai.claude-sonnet-5[1m]", "system.ai.claude-sonnet-5[1m]"),
+            (
+                "system.ai.claude-sonnet-5",
+                "system.ai.claude-sonnet-5[1m]",
+                "system.ai.claude-sonnet-5[1m]",
+            ),
+            (
+                "system.ai.claude-sonnet-5[1m]",
+                "system.ai.claude-sonnet-5",
+                "system.ai.claude-sonnet-5",
+            ),
+            (
+                "system.ai.claude-sonnet-5[200k]",
+                "system.ai.claude-sonnet-5[1m]",
+                "system.ai.claude-sonnet-5[1m]",
+            ),
+            (
+                "system.ai.claude-sonnet-5[1m]",
+                "system.ai.claude-sonnet-5[1m]",
+                "system.ai.claude-sonnet-5[1m]",
+            ),
+            ("system.ai.claude-sonnet-5", "sonnet", "system.ai.claude-sonnet-5[1m]"),
+            ("sonnet", "main.models.balanced", "main.models.balanced"),
+        ],
+    )
+    def test_managed_picker_preserves_available_saved_model(
+        self, monkeypatch, tmp_path, saved_model, picker_sonnet, configured_sonnet
+    ):
         calls: list[list[str]] = []
-        picker_models = ["main.andy.test-anth", "main.andy.test-claude"]
+        user_settings_path = tmp_path / "settings.json"
+        user_settings = json.dumps({"model": saved_model, "permissions": {"allow": ["Read"]}})
+        user_settings_path.write_text(user_settings)
+        settings_path = tmp_path / "ucode-settings.json"
+        settings = json.dumps({"env": {"ANTHROPIC_DEFAULT_SONNET_MODEL": configured_sonnet}})
+        settings_path.write_text(settings)
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_settings_path)
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
-        monkeypatch.setattr(
-            claude,
-            "read_json_safe",
-            lambda path: (
-                {"model": "system.ai.claude-sonnet-5"}
-                if path == claude.CLAUDE_USER_SETTINGS_PATH
-                else {"env": {}}
-            ),
+
+        claude.launch(
+            {
+                "workspace": WS,
+                "_claude_launch_picker_models": [
+                    "system.ai.claude-opus-4-8[1m]",
+                    picker_sonnet,
+                ],
+            },
+            [],
+            options=LaunchOptions(),
         )
+
+        assert calls == [["claude", "--settings", str(settings_path)]]
+        assert user_settings_path.read_text() == user_settings
+        assert settings_path.read_text() == settings
+
+    @pytest.mark.parametrize(
+        ("saved_model", "configured_sonnet"),
+        [
+            ("system.ai.claude-sonnet-4-6", "system.ai.claude-sonnet-5[1m]"),
+            ("system.ai.claude-sonnet-4-6[1m]", "system.ai.claude-sonnet-5[1m]"),
+            ("sonnet", "system.ai.claude-sonnet-4-6[1m]"),
+            ("sonnet", None),
+            ("haiku", "system.ai.claude-sonnet-5[1m]"),
+            (None, "system.ai.claude-sonnet-5[1m]"),
+        ],
+    )
+    def test_managed_picker_replaces_stale_saved_model_for_this_launch(
+        self, monkeypatch, tmp_path, saved_model, configured_sonnet
+    ):
+        calls: list[list[str]] = []
+        picker_models = ["system.ai.claude-opus-4-8[1m]", "system.ai.claude-sonnet-5[1m]"]
+        user_settings_path = tmp_path / "settings.json"
+        user_settings = json.dumps({"model": saved_model})
+        user_settings_path.write_text(user_settings)
+        settings_path = tmp_path / "ucode-settings.json"
+        settings = json.dumps(
+            {
+                "env": (
+                    {"ANTHROPIC_DEFAULT_SONNET_MODEL": configured_sonnet}
+                    if configured_sonnet
+                    else {}
+                )
+            }
+        )
+        settings_path.write_text(settings)
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_settings_path)
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
 
         claude.launch(
             {
@@ -2120,8 +2297,10 @@ class TestClaudeLaunch:
             options=LaunchOptions(),
         )
 
-        settings = json.loads(calls[0][2])
-        assert settings["model"] == picker_models[0]
+        launch_settings = json.loads(calls[0][2])
+        assert launch_settings["model"] == picker_models[0]
+        assert user_settings_path.read_text() == user_settings
+        assert settings_path.read_text() == settings
 
     @pytest.mark.parametrize(
         "tool_args",
