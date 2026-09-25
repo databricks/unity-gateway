@@ -33,6 +33,7 @@ from ucode.agents import (
     install_databricks_ai_tools_for_agents,
     install_tool_binary,
     normalize_tool,
+    prepare_launch_model,
     resolve_gemini_provider_model,
     resolve_launch_model,
     resolve_provider_models,
@@ -2574,7 +2575,7 @@ def _launch_tool(
         # `--model` lands in ctx.args instead of a ucode option. It still determines the effective
         # launch model and should therefore win in the launch summary.
         forwarded_model = (
-            explicit_model_arg_value(ctx.args) if tool in {"claude", "codex", "opencode"} else None
+            explicit_model_arg_value(ctx.args) if tool in {"claude", "codex"} else None
         )
         # An explicit --workspace targets that workspace for this launch (and
         # auto-configures it if unseen), so `ug claude --provider ... --workspace ...`
@@ -2756,17 +2757,7 @@ def _launch_tool(
             # Routing through a Model Provider Service pins no Databricks model;
             # managed UC discovery likewise lets the agent select from the parent schema. Skip model
             # resolution, which would otherwise fail when global discovery found no models.
-            if tool == "opencode":
-                state, resolved_model = resolve_launch_model(
-                    tool,
-                    state,
-                    None,
-                    user_model=model,
-                    forwarded_model=forwarded_model,
-                    allow_missing_model=True,
-                )
-            else:
-                resolved_model = None
+            resolved_model = None
             managed_source_model = (
                 managed_launch_model(managed or {}, recommendation, tool)
                 if tool == "claude" and (managed_provider or managed_parent_schema)
@@ -2808,17 +2799,22 @@ def _launch_tool(
             managed_model = (
                 managed_launch_model(managed, recommendation, tool) if managed is not None else None
             )
-            state, resolved_model = resolve_launch_model(
+            model, launch_model = prepare_launch_model(
                 tool,
                 state,
+                model,
                 managed_model,
-                user_model=model,
-                forwarded_model=forwarded_model,
+                ctx.args,
             )
+            state, resolved_model = resolve_launch_model(tool, state, launch_model)
             # The admin's model outranks a smart-routing pick too. Claude only launches on it when
             # pinned as ANTHROPIC_MODEL (route_root_model).
             if managed_model and tool == "claude":
                 route_root_model = managed_model
+            # A developer's explicit model outranks a managed default and smart-routing pick. Claude
+            # keeps its explicit model launch-scoped through LaunchOptions below.
+            if model and tool != "claude":
+                resolved_model = model
         state = configure_tool(
             tool,
             state,
@@ -2880,11 +2876,7 @@ def _launch_tool(
             explicit_prompt=explicit_prompt,
             # Only a developer's explicit model disables routing. A managed default is the
             # initial/fallback model and still participates in a routed session.
-            user_pinned_model=(
-                resolved_model
-                if tool == "opencode" and (forwarded_model or model) is not None
-                else (model or forwarded_model)
-            ),
+            user_pinned_model=model or forwarded_model,
             provider=provider,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")

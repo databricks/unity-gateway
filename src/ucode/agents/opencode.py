@@ -27,7 +27,7 @@ from ucode.databricks import (
 from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
-from .args import LaunchOptions, has_explicit_model_arg
+from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
 
 OPENCODE_XDG_CONFIG_HOME = APP_DIR / "opencode-xdg"
 OPENCODE_CONFIG_DIR = OPENCODE_XDG_CONFIG_HOME / "opencode"
@@ -226,6 +226,20 @@ def resolve_explicit_model(model: str, state: dict) -> str:
     raise RuntimeError(
         f"OpenCode model '{selector}' is not configured for managed provider '{provider}'."
     )
+
+
+def prepare_launch_model(
+    state: dict,
+    model: str | None,
+    managed_model: str | None,
+    tool_args: list[str],
+) -> tuple[str | None, str | None]:
+    """Resolve an invocation model before the shared launch resolver runs."""
+    selected = explicit_model_arg_value(tool_args) or model
+    if selected is None:
+        return None, managed_model
+    selected = resolve_explicit_model(selected, state)
+    return selected, selected
 
 
 def _oss_model_overlay(model: str, ua_header: dict[str, str]) -> dict:
