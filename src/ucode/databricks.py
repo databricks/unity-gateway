@@ -2825,10 +2825,20 @@ def _get_anthropic_models_json(
             return combined_payload, None
 
         if cursor is None:
-            return None, (
-                f"Anthropic model catalog page {page_number} indicated has_more but "
-                "did not provide a last_id cursor"
-            )
+            # AI Gateway omits wire cursors for Claude Code; its final model id is accepted by
+            # the same after_id parser used for subsequent pages.
+            if not page_models:
+                return None, (
+                    f"Anthropic model catalog page {page_number} indicated has_more but "
+                    "had no models from which to derive a last_id cursor"
+                )
+            final_model_id = page_models[-1].get("id")
+            if not isinstance(final_model_id, str) or not final_model_id.strip():
+                return None, (
+                    f"Anthropic model catalog page {page_number} indicated has_more but "
+                    "its final model had an invalid id for the pagination cursor"
+                )
+            cursor = final_model_id
         if cursor in seen_cursors:
             return None, (
                 f"Anthropic model catalog repeated pagination cursor {cursor!r} "

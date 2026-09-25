@@ -469,12 +469,64 @@ class TestDiscoverClaudeModels:
         )
 
     @pytest.mark.parametrize(
-        ("pages", "expected_error"),
+        ("scope_kwargs", "expected_headers"),
         [
             (
-                [{"data": [{"id": "claude-first"}], "has_more": True}],
-                "did not provide a last_id cursor",
+                {"parent_schema": "main.default"},
+                {"Databricks-Model-Service-Parent-Schema": "main.default"},
             ),
+            (
+                {"provider": "main.default.anthropic"},
+                {"Databricks-Model-Provider-Service": "main.default.anthropic"},
+            ),
+        ],
+        ids=["parent-schema", "provider-service"],
+    )
+    def test_paginates_gateway_catalog_without_last_id(
+        self, monkeypatch, scope_kwargs, expected_headers
+    ):
+        pages = {
+            None: {
+                "data": [{"id": "claude-first", "display_name": "First model"}],
+                "has_more": True,
+                "last_id": None,
+            },
+            "claude-first": {
+                "data": [{"id": "claude-second", "display_name": "Second model"}],
+                "has_more": False,
+                "last_id": None,
+            },
+        }
+        requests = []
+
+        def fake_get(url, token, **kwargs):
+            query = parse_qs(url.partition("?")[2])
+            cursor = query.get("after_id", [None])[0]
+            requests.append((url, token, kwargs))
+            return pages[cursor], None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token", **scope_kwargs)
+
+        assert catalog.model_ids == ["claude-first", "claude-second"]
+        assert catalog.model_id_to_display_name == {
+            "claude-first": "First model",
+            "claude-second": "Second model",
+        }
+        assert catalog.error_msg is None
+        assert [request[0] for request in requests] == [
+            f"{WS}/ai-gateway/anthropic/v1/models",
+            f"{WS}/ai-gateway/anthropic/v1/models?after_id=claude-first",
+        ]
+        assert all(request[1] == "token" for request in requests)
+        assert all(
+            request[2] == {"max_retries": 2, "headers": expected_headers} for request in requests
+        )
+
+    @pytest.mark.parametrize(
+        ("pages", "expected_error"),
+        [
             (
                 [
                     {"data": [{"id": "claude-first"}], "has_more": True, "last_id": "same"},
@@ -483,7 +535,7 @@ class TestDiscoverClaudeModels:
                 "repeated pagination cursor",
             ),
         ],
-        ids=["missing-cursor", "repeated-cursor"],
+        ids=["repeated-cursor"],
     )
     def test_rejects_invalid_anthropic_pagination_cursor(self, monkeypatch, pages, expected_error):
         requests = []
@@ -500,6 +552,29 @@ class TestDiscoverClaudeModels:
         assert catalog.model_id_to_display_name == {}
         assert catalog.error_msg is not None and expected_error in catalog.error_msg
         assert len(requests) == len(pages)
+
+    @pytest.mark.parametrize(
+        ("payload", "expected_error"),
+        [
+            (
+                {"data": [], "has_more": True, "last_id": None},
+                "had no models from which to derive a last_id cursor",
+            ),
+            (
+                {"data": [{"id": ""}], "has_more": True, "last_id": None},
+                "final model had an invalid id for the pagination cursor",
+            ),
+        ],
+        ids=["empty-page", "invalid-final-id"],
+    )
+    def test_rejects_invalid_anthropic_fallback_cursor(self, monkeypatch, payload, expected_error):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
+
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token")
+
+        assert catalog.model_ids == []
+        assert catalog.model_id_to_display_name == {}
+        assert catalog.error_msg is not None and expected_error in catalog.error_msg
 
     def test_rejects_anthropic_page_fetch_failure_without_partial_success(self, monkeypatch):
         calls = []
