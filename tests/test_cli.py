@@ -2539,6 +2539,24 @@ class TestRevert:
         assert "Claude Code MCP config: restored" in result.output
 
 
+class TestRevertDryRun:
+    def test_dry_run_revert_errors_without_mutating_anything(self):
+        with (
+            patch("ucode.cli.revert") as mock_revert,
+            patch("ucode.cli.revert_mcp_configs") as mock_revert_mcp,
+            patch("ucode.cli.clear_state") as mock_clear_state,
+            patch("ucode.cli.restore_file") as mock_restore_file,
+        ):
+            result = runner.invoke(app, ["--dry-run", "revert"])
+
+        assert result.exit_code == 2, result.output
+        assert "revert does not support --dry-run" in _strip_ansi(result.output)
+        mock_revert.assert_not_called()
+        mock_revert_mcp.assert_not_called()
+        mock_clear_state.assert_not_called()
+        mock_restore_file.assert_not_called()
+
+
 class TestDoctorCommand:
     def test_invokes_doctor(self):
         with patch("ucode.doctor.doctor", return_value=0) as mock_doctor:
