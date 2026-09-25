@@ -2573,11 +2573,8 @@ def _launch_tool(
         # `--model` lands in ctx.args instead of a ucode option. It still determines the effective
         # launch model and should therefore win in the launch summary.
         forwarded_model = (
-            explicit_model_arg_value(ctx.args) if tool in {"claude", "codex"} else None
+            explicit_model_arg_value(ctx.args) if tool in {"claude", "codex", "opencode"} else None
         )
-        # `--model` is exposed by the claude and gemini launch commands. Under a provider it selects
-        # which of the service's targets/tiers to launch on, rather than being rejected — see the
-        # provider branch below.
         # An explicit --workspace targets that workspace for this launch (and
         # auto-configures it if unseen), so `ug claude --provider ... --workspace ...`
         # works without a prior `ug configure`.
@@ -2814,20 +2811,16 @@ def _launch_tool(
             managed_model = (
                 managed_launch_model(managed, recommendation, tool) if managed is not None else None
             )
-            state, resolved_model = resolve_launch_model(tool, state, managed_model)
+            state, resolved_model = resolve_launch_model(
+                tool,
+                state,
+                # Claude keeps the user's model launch-scoped through LaunchOptions below.
+                managed_model if tool == "claude" else (forwarded_model or model or managed_model),
+            )
             # The admin's model outranks a smart-routing pick too. Claude only launches on it when
-            # pinned as ANTHROPIC_MODEL (route_root_model); other agents take `resolved_model`,
-            # which already holds it from resolve_launch_model above.
-            if managed_model:
-                if tool == "claude":
-                    route_root_model = managed_model
-                else:
-                    resolved_model = managed_model
-            # An explicit `--model` is the user's own choice and outranks everything above (managed
-            # default, smart-routing pick). Non-claude agents take it as the resolved model, which
-            # Codex keeps an explicit --model in ctx.args and passes it to its CLI verbatim.
-            if model and tool != "claude":
-                resolved_model = model
+            # pinned as ANTHROPIC_MODEL (route_root_model).
+            if managed_model and tool == "claude":
+                route_root_model = managed_model
         if coding_agent_config_defaults and not state.get("claude_static_models") and not relayed:
             picker_catalog = claude_agent.default_model_picker_catalog(
                 coding_agent_config_defaults,
@@ -2904,7 +2897,7 @@ def _launch_tool(
             explicit_prompt=explicit_prompt,
             # Only a developer's explicit model disables routing. A managed default is the
             # initial/fallback model and still participates in a routed session.
-            user_pinned_model=model or forwarded_model,
+            user_pinned_model=model if model is not None else forwarded_model,
             provider=provider,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
@@ -3277,10 +3270,19 @@ def gemini_cmd(
 )
 def opencode_cmd(
     ctx: typer.Context,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            "-m",
+            help="Configured model ID or OpenCode provider/model for this launch. "
+            "Pass before any `--` separator.",
+        ),
+    ] = None,
     skip_preflight: SkipPreflightOption = False,
 ) -> None:
     """Launch OpenCode via Databricks."""
-    _launch_tool("opencode", ctx, skip_preflight=skip_preflight)
+    _launch_tool("opencode", ctx, model=model, skip_preflight=skip_preflight)
 
 
 @app.command(

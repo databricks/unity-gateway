@@ -15,6 +15,11 @@ handling without sudo.
 This integration suite does not yet assert password-prompt counts with sudo credential caching
 disabled; that requires a disposable workstation/VM with an explicit sudo policy.
 
+OpenCode `--model` / `-m` selection is covered by unit/component tests in
+`test_cli.py` and `test_agent_opencode.py`: the shared CLI passes raw model values,
+and the OpenCode launcher validates and converts them before starting the native
+process. This suite has no dedicated live OpenCode model-selection journey.
+
 ## Run a specific combination
 
 Prerequisites: Python 3.12+, uv, Node/npm, and Databricks CLI 1.17.0. The runner

@@ -27,7 +27,7 @@ from ucode.databricks import (
 from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
-from .args import LaunchOptions
+from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
 
 OPENCODE_XDG_CONFIG_HOME = APP_DIR / "opencode-xdg"
 OPENCODE_CONFIG_DIR = OPENCODE_XDG_CONFIG_HOME / "opencode"
@@ -191,6 +191,41 @@ def _resolve_model_selector(model: str, opencode_models: dict[str, list[str]]) -
         return f"databricks-oss/{model}"
 
     return model
+
+
+def resolve_explicit_model(model: str, state: dict) -> str:
+    """Resolve and validate a model explicitly selected for an OpenCode launch.
+
+    Databricks model ids are exposed in family buckets in ucode state, while
+    OpenCode addresses those models through managed provider ids. Other
+    provider/model selectors belong to OpenCode and are passed through.
+    """
+    selector = model.strip()
+    if not selector:
+        raise RuntimeError("OpenCode model must not be empty.")
+
+    opencode_models = state.get("opencode_models") or {}
+    resolved = _resolve_model_selector(selector, opencode_models)
+    if "/" not in selector:
+        if resolved != selector:
+            return resolved
+        raise RuntimeError(
+            f"OpenCode model '{selector}' is not configured. "
+            "Choose a discovered model id or pass a provider/model selector."
+        )
+
+    provider, _, model_id = selector.partition("/")
+    if not provider or not model_id:
+        raise RuntimeError("OpenCode model selector must use provider/model form.")
+    managed_providers = {path[-1] for path in PROVIDER_KEYS}
+    if provider not in managed_providers:
+        return selector
+
+    if _resolve_model_selector(model_id, opencode_models) == selector:
+        return selector
+    raise RuntimeError(
+        f"OpenCode model '{selector}' is not configured for managed provider '{provider}'."
+    )
 
 
 def _oss_model_overlay(model: str, ua_header: dict[str, str]) -> dict:
@@ -369,8 +404,8 @@ def default_model(state: dict) -> str | None:
     return oss[0] if oss else None
 
 
-def _configure_launch(state: dict) -> str:
-    model = default_model(state)
+def _configure_launch(state: dict, model: str | None = None) -> str:
+    model = model or default_model(state)
     if not model:
         raise RuntimeError("No OpenCode model is configured.")
     _, token = write_tool_config(state, model)
@@ -385,9 +420,24 @@ def build_runtime_env(token: str, state: dict | None = None) -> dict[str, str]:
 
 
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
-    """Launch OpenCode with on-demand token refresh from its local plugin."""
-    token = _configure_launch(state)
+    """Launch OpenCode with the selected model and on-demand token refresh."""
+    model = explicit_model_arg_value(tool_args) or options.user_pinned_model
+    if model is not None:
+        model = resolve_explicit_model(model, state)
+    token = _configure_launch(state, model)
     env = build_runtime_env(token, state)
+
+    if model is not None and not has_explicit_model_arg(tool_args):
+        try:
+            separator = tool_args.index("--")
+        except ValueError:
+            separator = len(tool_args)
+        tool_args = [
+            *tool_args[:separator],
+            "--model",
+            model,
+            *tool_args[separator:],
+        ]
 
     proc = subprocess.Popen([SPEC["binary"], *tool_args], env=env)
     try:

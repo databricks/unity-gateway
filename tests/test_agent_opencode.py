@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from unittest.mock import patch
 
+import pytest
+
 from ucode.agents import opencode
+from ucode.agents.args import LaunchOptions
 
 WS = "https://example.databricks.com"
 
@@ -400,6 +404,138 @@ class TestOpencodeValidateCmd:
     def test_has_prompt(self):
         cmd = opencode.validate_cmd("opencode")
         assert len(cmd) > 2
+
+
+class TestOpencodeLaunchModel:
+    def test_resolves_configured_bare_and_native_selectors(self):
+        state = {
+            "opencode_models": {
+                "anthropic": ["claude-sonnet"],
+                "gemini": ["gemini-2"],
+                "oss": ["system.ai.kimi-k2-7-code"],
+            }
+        }
+
+        assert opencode.resolve_explicit_model("gemini-2", state) == "databricks-google/gemini-2"
+        assert (
+            opencode.resolve_explicit_model("openrouter/anthropic/claude-sonnet", state)
+            == "openrouter/anthropic/claude-sonnet"
+        )
+
+    def test_rejects_unknown_and_mismatched_managed_selectors(self):
+        state = {"opencode_models": {"anthropic": ["claude-sonnet"]}}
+
+        with pytest.raises(RuntimeError, match="not configured"):
+            opencode.resolve_explicit_model("missing-model", state)
+        with pytest.raises(RuntimeError, match="managed provider"):
+            opencode.resolve_explicit_model("databricks-google/claude-sonnet", state)
+
+    @pytest.mark.parametrize(
+        ("model", "tool_args", "selector", "expected_args"),
+        [
+            (
+                None,
+                ["run", "prompt"],
+                "databricks-anthropic/claude-sonnet",
+                ["run", "prompt"],
+            ),
+            (
+                "databricks-google/gemini-2",
+                ["run", "--", "--model", "literal"],
+                "databricks-google/gemini-2",
+                ["run", "--model", "databricks-google/gemini-2", "--", "--model", "literal"],
+            ),
+            (
+                "gemini-2",
+                ["run", "prompt"],
+                "databricks-google/gemini-2",
+                ["run", "prompt", "--model", "databricks-google/gemini-2"],
+            ),
+            (
+                "claude-sonnet",
+                ["run", "--model", "databricks-google/gemini-2"],
+                "databricks-google/gemini-2",
+                ["run", "--model", "databricks-google/gemini-2"],
+            ),
+            (
+                "openrouter/anthropic/claude-sonnet",
+                ["run", "--model", "openrouter/anthropic/claude-sonnet"],
+                "openrouter/anthropic/claude-sonnet",
+                ["run", "--model", "openrouter/anthropic/claude-sonnet"],
+            ),
+        ],
+    )
+    def test_launch_preserves_selection_and_saved_defaults(
+        self, tmp_path, monkeypatch, model, tool_args, selector, expected_args
+    ):
+        config_file = tmp_path / "opencode.json"
+        monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", config_file)
+        monkeypatch.setattr(opencode, "OPENCODE_BACKUP_PATH", tmp_path / "opencode-backup.json")
+        state = {
+            "workspace": WS,
+            "base_urls": {"opencode": _base_urls()},
+            "opencode_models": {"anthropic": ["claude-sonnet"], "gemini": ["gemini-2"]},
+            "opencode_default_model": "claude-sonnet",
+            "managed_configs": {},
+        }
+        original_state = deepcopy(state)
+        original_args = list(tool_args)
+        with (
+            patch("ucode.agents.opencode.get_databricks_token", return_value="tok"),
+            patch("ucode.agents.opencode.agent_version", return_value="1.0.220"),
+            patch("ucode.agents.opencode.save_state"),
+            patch("ucode.agents.opencode.subprocess.Popen") as popen,
+        ):
+            popen.return_value.wait.return_value = 7
+            with pytest.raises(SystemExit) as exc_info:
+                opencode.launch(state, tool_args, options=LaunchOptions(user_pinned_model=model))
+
+        assert exc_info.value.code == 7
+        assert json.loads(config_file.read_text())["model"] == selector
+        assert popen.call_args.args[0] == ["opencode", *expected_args]
+        assert tool_args == original_args
+        assert state["opencode_models"] == original_state["opencode_models"]
+        assert state["opencode_default_model"] == original_state["opencode_default_model"]
+
+    def test_allows_custom_provider_model_without_catalog(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "opencode.json"
+        monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", config_file)
+        monkeypatch.setattr(opencode, "OPENCODE_BACKUP_PATH", tmp_path / "opencode-backup.json")
+        state = {
+            "workspace": WS,
+            "base_urls": {"opencode": _base_urls()},
+            "opencode_models": {},
+            "managed_configs": {},
+        }
+        args = ["run", "--model=hosted/my-model"]
+        with (
+            patch("ucode.agents.opencode.get_databricks_token", return_value="tok"),
+            patch("ucode.agents.opencode.agent_version", return_value="1.0.220"),
+            patch("ucode.agents.opencode.save_state"),
+            patch("ucode.agents.opencode.subprocess.Popen") as popen,
+        ):
+            popen.return_value.wait.return_value = 0
+            with pytest.raises(SystemExit):
+                opencode.launch(state, args, options=LaunchOptions(user_pinned_model="ignored"))
+
+        assert json.loads(config_file.read_text())["model"] == "hosted/my-model"
+        assert popen.call_args.args[0] == ["opencode", "run", "--model=hosted/my-model"]
+
+    def test_rejects_invalid_model_before_configure_and_process(self):
+        state = {"opencode_models": {"anthropic": ["claude-sonnet"]}}
+        with (
+            patch("ucode.agents.opencode._configure_launch") as configure,
+            patch("ucode.agents.opencode.subprocess.Popen") as popen,
+            pytest.raises(RuntimeError, match="not configured"),
+        ):
+            opencode.launch(
+                state,
+                ["run", "--model", "missing-model"],
+                options=LaunchOptions(),
+            )
+
+        configure.assert_not_called()
+        popen.assert_not_called()
 
 
 class TestWriteToolConfigStaleProviderCleanup:
