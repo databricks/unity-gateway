@@ -1654,6 +1654,194 @@ class TestWriteToolConfigManagedSettings:
 
         assert managed_writes == []
 
+    @pytest.mark.parametrize("interactive", [False, True])
+    def test_preserves_external_managed_telemetry_when_ug_tracing_is_disabled(
+        self, monkeypatch, interactive
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        telemetry_env = {key: f"admin-{key}" for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS}
+        admin = {"env": telemetry_env, "otelHeadersHelper": "admin-otel-helper"}
+        self._patch(monkeypatch, private_writes, managed_writes, {str(FAKE_MANAGED_PATH): admin})
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: interactive)
+
+        for _ in range(2):
+            claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+
+        if interactive:
+            for _, text in managed_writes:
+                written = json.loads(text)
+                assert {key: written["env"][key] for key in telemetry_env} == telemetry_env
+                assert written["otelHeadersHelper"] == admin["otelHeadersHelper"]
+        else:
+            assert managed_writes == []
+
+    @pytest.mark.parametrize("baseline_has_telemetry", [False, True])
+    def test_restores_known_managed_telemetry_baseline(self, monkeypatch, baseline_has_telemetry):
+        private_writes: list = []
+        managed_writes: list = []
+        last = {
+            "env": {key: f"ug-{key}" for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS},
+            "otelHeadersHelper": "ug-otel-helper",
+        }
+        baseline = (
+            {"env": {"OTEL_TRACES_EXPORTER": "console"}, "otelHeadersHelper": "admin-helper"}
+            if baseline_has_telemetry
+            else {}
+        )
+        self._patch(monkeypatch, private_writes, managed_writes, {str(FAKE_MANAGED_PATH): last})
+        monkeypatch.setattr(
+            claude,
+            "managed_file_snapshots",
+            lambda *a: managed_files.ManagedFileSnapshots(baseline, last),
+        )
+
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_models": [],
+                "managed_configs": {"claude": {"keys": [["otelHeadersHelper"]]}},
+            },
+            None,
+        )
+
+        written = json.loads(managed_writes[0][1])
+        assert {
+            key: written["env"][key]
+            for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS
+            if key in written["env"]
+        } == baseline.get("env", {})
+        assert written.get("otelHeadersHelper") == baseline.get("otelHeadersHelper")
+
+    @pytest.mark.parametrize("unknown_snapshot", ["baseline", "last", "admin_edit", "null_edit"])
+    def test_preserves_managed_telemetry_with_unknown_ownership_or_admin_edits(
+        self, monkeypatch, unknown_snapshot
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        last = {
+            "env": {key: f"ug-{key}" for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS},
+            "otelHeadersHelper": "ug-helper",
+        }
+        live = json.loads(json.dumps(last))
+        if unknown_snapshot == "admin_edit":
+            live["env"]["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = "https://admin.example/traces"
+        elif unknown_snapshot == "null_edit":
+            last.pop("otelHeadersHelper")
+            live["otelHeadersHelper"] = None
+        self._patch(monkeypatch, private_writes, managed_writes, {str(FAKE_MANAGED_PATH): live})
+        monkeypatch.setattr(
+            claude,
+            "managed_file_snapshots",
+            lambda *a: managed_files.ManagedFileSnapshots(
+                None if unknown_snapshot == "baseline" else {},
+                None if unknown_snapshot == "last" else last,
+            ),
+        )
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_models": [],
+                "managed_configs": {"claude": {"keys": [["otelHeadersHelper"]]}},
+            },
+            None,
+        )
+
+        assert managed_writes == []
+
+    def test_preserved_admin_telemetry_is_not_reclaimed_after_an_unrelated_write(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        last = {
+            "env": {key: f"ug-{key}" for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS},
+            "otelHeadersHelper": "ug-helper",
+        }
+        admin = json.loads(json.dumps(last))
+        admin["env"]["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = "https://admin.example/traces"
+        existing = {str(FAKE_MANAGED_PATH): admin}
+        snapshots = managed_files.ManagedFileSnapshots({}, last)
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setattr(claude, "managed_file_snapshots", lambda *a: snapshots)
+
+        # Model the writer's full-document snapshot after changing an unrelated gateway field.
+        def record_write(path, text, **kwargs):
+            document = json.loads(text)
+            existing[str(path)] = document
+            snapshots.last_applied_by_ug = document
+            managed_writes.append((str(path), text))
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", record_write)
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "managed_configs": {"claude": {"keys": [["otelHeadersHelper"]]}},
+        }
+
+        for _ in range(2):
+            state = claude.write_tool_config(state, None)
+            written = existing[str(FAKE_MANAGED_PATH)]
+            assert {key: written["env"][key] for key in admin["env"]} == admin["env"]
+            assert written["otelHeadersHelper"] == admin["otelHeadersHelper"]
+            assert ["otelHeadersHelper"] not in state["managed_configs"]["claude"]["keys"]
+
+    def test_explicit_ug_tracing_still_rejects_conflicting_managed_telemetry(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(
+            monkeypatch,
+            private_writes,
+            managed_writes,
+            {str(FAKE_MANAGED_PATH): {"env": {"OTEL_TRACES_EXPORTER": "console"}}},
+        )
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+
+        with pytest.raises(RuntimeError, match="env.OTEL_TRACES_EXPORTER"):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": [], "claude_otel_tracing": True}, None
+            )
+
+        assert managed_writes == []
+
+    @pytest.mark.parametrize("write_unavailable", [False, True])
+    def test_headless_isaac_headers_and_telemetry_are_compatible(
+        self, monkeypatch, write_unavailable
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        headers = (
+            "x-databricks-use-coding-agent-mode: true\n"
+            "databricks-ai-gateway-request-tags: source=isaac-cli"
+        )
+        admin = {
+            "env": {
+                "ANTHROPIC_CUSTOM_HEADERS": headers,
+                "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "https://admin.example/traces",
+            },
+            "otelHeadersHelper": "isaac-otel-helper",
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, {str(FAKE_MANAGED_PATH): admin})
+        # The Isaac repro has no managed CodingAgentConfig, so its OS-managed headers are preserved.
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result(None)
+        )
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: write_unavailable)
+        if write_unavailable:
+
+            def deny_write(*args, **kwargs):
+                raise managed_files.ManagedFileWriteUnavailable("sudo denied")
+
+            monkeypatch.setattr(claude, "reconcile_managed_file", deny_write)
+
+        for _ in range(2):
+            claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+
+        assert managed_writes == []
+        assert admin["env"]["ANTHROPIC_CUSTOM_HEADERS"] == headers
+
     def test_sudo_failure_uses_local_settings_when_managed_file_is_compatible(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []

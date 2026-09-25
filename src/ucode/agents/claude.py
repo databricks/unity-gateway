@@ -209,6 +209,10 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
         SMART_ROUTER_RECIPE_HEADER.casefold(),
     }
 )
+# These attribute inference traffic; neither selects the gateway or provider.
+CLAUDE_OPTIONAL_ATTRIBUTION_HEADER_NAMES = frozenset(
+    {"user-agent", SMART_ROUTER_RECIPE_HEADER.casefold()}
+)
 # Relayed drops the user scope to deliberately omit the stale apiKeyHelper. Only applied to relayed
 # launches — normal launches keep loading user settings (hooks/permissions) as before.
 _RELAYED_SETTING_SOURCES = "project,local"
@@ -1106,7 +1110,7 @@ def write_tool_config(
                 if key not in overlay_env:
                     merged_env.pop(key, None)
             for key in CLAUDE_OTEL_TRACE_ENV_KEYS:
-                if key not in overlay_env:
+                if key not in overlay_env and managed_settings_snapshots is None:
                     merged_env.pop(key, None)
             # deep_merge_dict keeps keys already in the file, so drop the ones ucode no
             # longer writes.
@@ -1128,7 +1132,10 @@ def write_tool_config(
                         else:
                             merged.pop(key, None)
         if "otelHeadersHelper" not in overlay_for_merge:
-            merged.pop("otelHeadersHelper", None)
+            if managed_settings_snapshots is None:
+                merged.pop("otelHeadersHelper", None)
+            elif ["otelHeadersHelper"] in previous_keys:
+                _restore_managed_telemetry(merged, managed_settings_snapshots)
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
@@ -1181,6 +1188,36 @@ def write_tool_config(
     return state
 
 
+def _restore_managed_telemetry(settings: dict, snapshots: ManagedFileSnapshots) -> None:
+    """Restore only an unchanged UG-written telemetry group with a known baseline."""
+    baseline = snapshots.original_before_ug
+    last_applied = snapshots.last_applied_by_ug
+    if baseline is None or last_applied is None:
+        return
+
+    def telemetry_values(document: dict) -> dict:
+        env = document.get("env") or {}
+        values = {key: env[key] for key in CLAUDE_OTEL_TRACE_ENV_KEYS if key in env}
+        if "otelHeadersHelper" in document:
+            values["otelHeadersHelper"] = document["otelHeadersHelper"]
+        return values
+
+    # Treat the exporter and its auth helper as a unit: an admin edit to either must not
+    # leave a half-restored configuration. Dict membership distinguishes absent from null.
+    if telemetry_values(settings) != telemetry_values(last_applied):
+        return
+    baseline_env = baseline.get("env") or {}
+    for key in CLAUDE_OTEL_TRACE_ENV_KEYS:
+        if key in baseline_env:
+            settings["env"][key] = copy.deepcopy(baseline_env[key])
+        else:
+            settings["env"].pop(key, None)
+    if "otelHeadersHelper" in baseline:
+        settings["otelHeadersHelper"] = copy.deepcopy(baseline["otelHeadersHelper"])
+    else:
+        settings.pop("otelHeadersHelper", None)
+
+
 def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str:
     """Preserve user headers while replacing the header names managed by ucode.
 
@@ -1227,6 +1264,46 @@ def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str
         if name not in replaced_names:
             merged.append(ucode_lines_by_name[name])
     return "\n".join(merged)
+
+
+def _required_custom_headers(value: object) -> dict[str, str] | None:
+    if not isinstance(value, str):
+        return None
+    headers: dict[str, str] = {}
+    for line in value.splitlines():
+        if not line.strip():
+            continue
+        name, separator, header_value = line.partition(":")
+        if (
+            not separator
+            or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name)
+            or name.lower() in headers
+            or any(ord(char) < 32 and char != "\t" or ord(char) == 127 for char in header_value)
+        ):
+            return None
+        headers[name.lower()] = header_value.strip()
+    return {
+        name: header_value
+        for name, header_value in headers.items()
+        if name not in CLAUDE_OPTIONAL_ATTRIBUTION_HEADER_NAMES
+    }
+
+
+def _managed_settings_conflicts(
+    existing: dict, desired: dict, owned_paths: list[list[str]]
+) -> list[str]:
+    conflicts = managed_file_conflicts(existing, desired, owned_paths)
+    header_path = f"env.{ANTHROPIC_CUSTOM_HEADERS_ENV_KEY}"
+    if header_path in conflicts:
+        existing_headers = _required_custom_headers(
+            (existing.get("env") or {}).get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY)
+        )
+        desired_headers = _required_custom_headers(
+            (desired.get("env") or {}).get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY)
+        )
+        if existing_headers is not None and existing_headers == desired_headers:
+            conflicts.remove(header_path)
+    return conflicts
 
 
 def _reconcile_managed_settings(
@@ -1284,7 +1361,7 @@ def _reconcile_managed_settings(
     desired_settings = compose(existing)
     _preserve_permission_denies(managed_before, desired_settings)
     if not managed_writes_allowed():
-        conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
+        conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
         if conflicts:
             raise RuntimeError(
                 "Claude Code configuration cannot be applied non-interactively because "
@@ -1304,7 +1381,7 @@ def _reconcile_managed_settings(
             parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
-        conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
+        conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
         if conflicts:
             raise
         print_warning(
