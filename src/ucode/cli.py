@@ -42,7 +42,6 @@ from ucode.agents import codex as codex_agent
 from ucode.agents import (
     launch as launch_agent,
 )
-from ucode.agents import opencode as opencode_agent
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
@@ -2813,10 +2812,11 @@ def _launch_tool(
                 managed_launch_model(managed, recommendation, tool) if managed is not None else None
             )
             launch_model = managed_model
-            if tool == "opencode":
+            resolver = TOOL_SPECS[tool].get("resolve_explicit_model")
+            if resolver is not None:
                 requested_model = explicit_model_arg_value(ctx.args) or model
                 if requested_model is not None:
-                    model = opencode_agent.resolve_explicit_model(requested_model, state)
+                    model = resolver(requested_model, state)
                     launch_model = model
             state, resolved_model = resolve_launch_model(tool, state, launch_model)
             # The admin's model outranks a smart-routing pick too. Claude only launches on it when

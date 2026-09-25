@@ -228,6 +228,9 @@ def resolve_explicit_model(model: str, state: dict) -> str:
     )
 
 
+SPEC["resolve_explicit_model"] = resolve_explicit_model
+
+
 def _oss_model_overlay(model: str, ua_header: dict[str, str]) -> dict:
     """Per-model overlay for an OSS model entry.
 
