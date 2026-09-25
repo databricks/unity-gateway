@@ -71,6 +71,7 @@ _HTTP_GET_RETRY_BASE_SECONDS = 1.0
 _HTTP_GET_RETRY_MAX_SECONDS = 5.0
 _HTTP_GET_RETRY_AFTER_JITTER_SECONDS = 0.25
 _ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES = 2
+_ANTHROPIC_MODEL_DISCOVERY_MAX_PAGES = 20
 
 
 @dataclass(frozen=True)
@@ -2774,12 +2775,75 @@ def _get_anthropic_models_json(
         headers = {MODEL_PROVIDER_SERVICE_HEADER: provider}
     elif parent_schema is not None:
         headers = {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema}
-    return _http_get_json(
-        f"https://{hostname}{ANTHROPIC_MODELS_PATH}",
-        token,
-        max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
-        **({"headers": headers} if headers is not None else {}),
-    )
+    base_url = f"https://{hostname}{ANTHROPIC_MODELS_PATH}"
+    url = base_url
+    all_models: list[dict] = []
+    seen_cursors: set[str] = set()
+
+    for page_number in range(1, _ANTHROPIC_MODEL_DISCOVERY_MAX_PAGES + 1):
+        payload, reason = _http_get_json(
+            url,
+            token,
+            max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
+            **({"headers": headers} if headers is not None else {}),
+        )
+        if payload is None:
+            detail = reason or "unknown error"
+            return None, f"failed to fetch Anthropic model catalog page {page_number}: {detail}"
+        if not isinstance(payload, dict):
+            return None, f"Anthropic model catalog page {page_number} was not a JSON object"
+
+        page_models = payload.get("data")
+        if not isinstance(page_models, list):
+            return None, (
+                f"Anthropic model catalog page {page_number} had invalid data; expected a list"
+            )
+        for model_index, model in enumerate(page_models):
+            if not isinstance(model, dict):
+                return None, (
+                    f"Anthropic model catalog page {page_number} had invalid model "
+                    f"at index {model_index}; expected an object"
+                )
+        all_models.extend(page_models)
+
+        has_more = payload.get("has_more", False)
+        if not isinstance(has_more, bool):
+            return None, (
+                f"Anthropic model catalog page {page_number} had invalid has_more; "
+                "expected a boolean"
+            )
+
+        cursor = payload.get("last_id")
+        if cursor is not None and (not isinstance(cursor, str) or not cursor.strip()):
+            return None, (
+                f"Anthropic model catalog page {page_number} had invalid last_id; "
+                "expected a non-empty string"
+            )
+        if not has_more:
+            combined_payload = dict(payload)
+            combined_payload["data"] = all_models
+            return combined_payload, None
+
+        if cursor is None:
+            return None, (
+                f"Anthropic model catalog page {page_number} indicated has_more but "
+                "did not provide a last_id cursor"
+            )
+        if cursor in seen_cursors:
+            return None, (
+                f"Anthropic model catalog repeated pagination cursor {cursor!r} "
+                f"on page {page_number}"
+            )
+        seen_cursors.add(cursor)
+        if page_number == _ANTHROPIC_MODEL_DISCOVERY_MAX_PAGES:
+            return None, (
+                "Anthropic model catalog exceeded the maximum of "
+                f"{_ANTHROPIC_MODEL_DISCOVERY_MAX_PAGES} pages"
+            )
+        url = f"{base_url}?{urlencode({'after_id': cursor})}"
+
+    # The loop always returns either a completed catalog or a page/cursor error.
+    return None, "Anthropic model catalog pagination terminated unexpectedly"
 
 
 def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | None]:
