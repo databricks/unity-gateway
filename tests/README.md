@@ -18,6 +18,10 @@ the distribution rename with mocked installer calls, including failure recovery 
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
+`test_agent_claude.py` covers OS-managed telemetry ownership and headless configuration;
+`test_claude_managed_headers.py` covers optional attribution versus required-header conflicts.
+These are unit/component regressions, not automated Isaac or live telemetry-export coverage.
+
 Agent-picker regression coverage in `test_ui.py` and `test_cli.py` drives actual
 keyboard selection: nothing is selected by default, selecting Codex installs only
 Codex, and submitting an empty selection installs nothing. Rendering checks cover
