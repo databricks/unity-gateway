@@ -190,6 +190,63 @@ jobs:
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}
     steps: *live-steps
 
+  # TEMPORARY (do not merge): stress the Claude model-discovery cases 10x to
+  # confirm the async gateway-discovery wait removed the flake. Runs the six
+  # `test_ug_claude_model_discovery.py` cases in ten independent, freshly
+  # installed environments. Not wired into the `e2e` aggregate gate.
+  discovery-stress:
+    name: Discovery stress · Claude (${{ matrix.iteration }}/10)
+    if: ${{ !cancelled() && needs.workspace.result == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs: [workspace]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 70
+    strategy:
+      # Report every iteration, and never overlap same-agent shards against the
+      # shared e2e workspace so a scheduling clash cannot masquerade as a flake.
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        iteration: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    env:
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AGENT: claude
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.19.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: 0.9.8
+      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+        with:
+          version: 1.17.0
+      - name: Stress the Claude model-discovery cases against the e2e workspace
+        shell: bash
+        run: |
+          uv run --no-project --python 3.12 python scripts/run_integration.py \
+            --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
+            --claude-version "$CLAUDE_VERSION" \
+            --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
+            -- -m "live and claude" -k "model_discovery"
+      - name: Upload stress evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: integration-discovery-stress-${{ matrix.iteration }}
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/ug-integration/*.json
+            ${{ runner.temp }}/ug-integration/*.txt
+            ${{ runner.temp }}/ug-integration/*.xml
+            ${{ runner.temp }}/ug-integration/*.log
+            ${{ runner.temp }}/ug-integration/artifacts/
+            ${{ runner.temp }}/ug-integration/wheels/
+
   managed:
     name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
     if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && inputs.suite != 'tui' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
