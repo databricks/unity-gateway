@@ -10,6 +10,25 @@ from utils.terminal import AgentTerminal
 pytestmark = [pytest.mark.claude, pytest.mark.usefixtures("unmanaged_workspace")]
 
 
+def _scoped_models_visible(session, expected_ids):
+    """Wait predicate: scoped discovery has cached the expected ids and rendered them.
+
+    Claude Code v2.1.280 populates the gateway cache and the picker rows
+    asynchronously after the picker shell first renders, so capturing the screen
+    or reading the cache too early races discovery.  Gate on the cache landing
+    (covers the post-exit cache read) and every expected id showing a picker row
+    (covers a scoped model, e.g. a parent-schema catalog entry, that renders
+    after the built-in shell).
+    """
+
+    def visible(text):
+        return session.claude_gateway_cache_ready(expected_ids) and all(
+            claude_model_in_picker(text, model_id, None) for model_id in expected_ids
+        )
+
+    return visible
+
+
 def _assert_scoped_models_in_picker(session, screen, expected_ids):
     models = session.claude_gateway_models()
     assert [model.get("id") for model in models] == expected_ids, models
@@ -26,6 +45,12 @@ def _assert_scoped_models_in_picker(session, screen, expected_ids):
     description = " ".join(default_row.group(1).split())
     assert f"currently {display_names[0]}" in description, screen
     assert "Set by ANTHROPIC_DEFAULT_MODEL" in description, screen
+
+
+def _system_models_visible(session):
+    """Wait predicate: system-model discovery has landed in the gateway cache."""
+
+    return lambda _text: session.claude_gateway_cache_ready()
 
 
 def _assert_system_models_in_picker(session, screen):
@@ -78,7 +103,7 @@ def test_case_07_configured_claude_discovers_system_models(live_session, workspa
     command = [str(session.binary), "claude"]
     with AgentTerminal(session, "claude", command, "case-07-system-models") as tui:
         tui.boot()
-        screen = tui.open_model_picker()
+        screen = tui.open_model_picker(model_visible=_system_models_visible(session))
         tui.exit_normally()
 
     _assert_system_models_in_picker(session, screen)
@@ -96,7 +121,7 @@ def test_case_09_fresh_claude_discovers_system_models(live_session, workspace):
     command = [str(session.binary), "claude", "--workspace", workspace]
     with AgentTerminal(session, "claude", command, "case-09-system-models") as tui:
         tui.boot()
-        screen = tui.open_model_picker()
+        screen = tui.open_model_picker(model_visible=_system_models_visible(session))
         tui.exit_normally()
 
     _assert_system_models_in_picker(session, screen)
@@ -127,7 +152,9 @@ def test_case_11_configured_claude_provider_discovers_models_by_default(
     command = [str(session.binary), "claude", "--provider", claude_provider]
     with AgentTerminal(session, "claude", command, "case-11-provider-default") as tui:
         tui.boot()
-        screen = tui.open_model_picker()
+        screen = tui.open_model_picker(
+            model_visible=_scoped_models_visible(session, [claude_provider_model])
+        )
         tui.exit_normally()
 
     _assert_scoped_models_in_picker(session, screen, [claude_provider_model])
@@ -155,7 +182,9 @@ def test_case_11_fresh_claude_provider_discovers_models_by_default(
     ]
     with AgentTerminal(session, "claude", command, "case-11-provider-default") as tui:
         tui.boot()
-        screen = tui.open_model_picker()
+        screen = tui.open_model_picker(
+            model_visible=_scoped_models_visible(session, [claude_provider_model])
+        )
         tui.exit_normally()
 
     _assert_scoped_models_in_picker(session, screen, [claude_provider_model])
@@ -187,7 +216,9 @@ def test_case_13_configured_claude_model_location_overrides_saved_setup(
     command = [str(session.binary), "claude", "--model-location", parent_schema]
     with AgentTerminal(session, "claude", command, "case-13-location-default") as tui:
         tui.boot()
-        screen = tui.open_model_picker()
+        screen = tui.open_model_picker(
+            model_visible=_scoped_models_visible(session, [claude_parent_model])
+        )
         tui.exit_normally()
 
     _assert_scoped_models_in_picker(session, screen, [claude_parent_model])
@@ -215,7 +246,9 @@ def test_case_13_fresh_claude_model_location_discovers_parent_models(
     ]
     with AgentTerminal(session, "claude", command, "case-13-location-default") as tui:
         tui.boot()
-        screen = tui.open_model_picker()
+        screen = tui.open_model_picker(
+            model_visible=_scoped_models_visible(session, [claude_parent_model])
+        )
         tui.exit_normally()
 
     _assert_scoped_models_in_picker(session, screen, [claude_parent_model])
