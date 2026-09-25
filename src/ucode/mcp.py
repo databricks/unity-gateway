@@ -38,6 +38,7 @@ from ucode.databricks import (
 from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
     CLAUDE_CODE_OAUTH_CLIENT_ID,
+    CODEX_CLI_OAUTH_CLIENT_ID,
     CURSOR_OAUTH_CLIENT_ID,
     oauth_client_available,
 )
@@ -79,13 +80,18 @@ MCP_SQL_PATH = "/api/2.0/mcp/sql"
 # Both need the app *published on the workspace* (checked per-workspace via
 # `oauth_client_available`) and its loopback `/callback` redirect registered on
 # `/oidc` — which lacks dynamic client registration, so a pre-registered client is
-# required. Agents whose `mcp add` accept only a static bearer, not an OAuth client
-# — codex (`--bearer-token-env-var`), gemini (`--header`) — stay on the stdio proxy
-# even where their apps exist; add one here (with its registration branch below)
-# once its CLI can pin a client.
+# required.
+#   - Codex: a `url` server with `oauth.client_id` (`codex mcp add --oauth-client-id
+#     --oauth-resource`). Codex derives a per-MCP-server callback path
+#     (`/callback/<hash>`) that can't be pre-registered, so `/oidc` accepts it via the
+#     `enableCodexLoopbackRedirectExemption` SAFE flag (loopback + codex-cli only).
+# Agents whose `mcp add` accepts only a static bearer, not an OAuth client — gemini
+# (`--header`) — stay on the stdio proxy even where their apps exist; add one here
+# (with its registration branch below) once its CLI can pin a client.
 AGENT_OAUTH_CLIENT = {
     "claude": CLAUDE_CODE_OAUTH_CLIENT_ID,
     "cursor": CURSOR_OAUTH_CLIENT_ID,
+    "codex": CODEX_CLI_OAUTH_CLIENT_ID,
 }
 
 MCP_CLIENTS = {
@@ -159,6 +165,37 @@ def add_codex_mcp_server(name: str, argv: list[str]) -> None:
         )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"Failed to add MCP server '{name}' via codex CLI.") from exc
+
+
+def add_codex_http_mcp_server(name: str, url: str, client_id: str) -> None:
+    """Register a Databricks MCP endpoint as a **direct HTTP** server so Codex is the OAuth client
+    and drives the RFC 8707 connection login itself, instead of the token-injecting stdio proxy.
+
+    `--oauth-client-id` pins the published `codex-cli` app and `--oauth-resource` sends the
+    connection FQN as the RFC 8707 resource so `/oidc` drives the connection's SaaS login. Codex
+    derives its own per-server loopback `/callback/<hash>` redirect at login time; `/oidc` accepts
+    that unregistered path via the `enableCodexLoopbackRedirectExemption` flag (loopback host only)."""
+    try:
+        subprocess.run(
+            [
+                "codex",
+                "mcp",
+                "add",
+                name,
+                "--url",
+                url,
+                "--oauth-client-id",
+                client_id,
+                "--oauth-resource",
+                url,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"Failed to add HTTP MCP server '{name}' via codex CLI.") from exc
 
 
 def remove_codex_mcp_server(name: str) -> bool:
@@ -322,6 +359,10 @@ def configure_client_mcp_server(
             return removed_scopes
         if client == "cursor":
             removed = cursor.write_http_mcp_server_config(name, url, client_id=http_client)
+            return [MCP_USER_SCOPE] if removed else []
+        if client == "codex":
+            removed = remove_codex_mcp_server(name)
+            add_codex_http_mcp_server(name, url, client_id=http_client)
             return [MCP_USER_SCOPE] if removed else []
 
     # Every other case registers the `ug mcp-proxy ...` stdio command; the proxy
@@ -1336,6 +1377,8 @@ def _managed_mcp_entry(
         return claude.user_stdio_mcp_entry(argv, always_load=always_load)
     if client == "cursor" and native_client is not None:
         return cursor.build_http_mcp_server_entry(url, native_client)
+    if client == "codex" and native_client is not None:
+        return codex.managed_mcp_http_entry(url, native_client)
     argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
     if client == "codex":
         return codex.managed_mcp_entry(argv)
