@@ -129,12 +129,9 @@ jobs:
 
   integration:
     name: Integration
-    # Gate on lint, then run alongside unit/agent tests. The explicit
-    # needs.lint success check preserves "an agent failure must not skip
-    # integration" (via !cancelled()) while still skipping when lint fails —
-    # !cancelled() alone would let it run through a lint failure.
     needs: lint
-    if: ${{ !cancelled() && needs.lint.result == 'success' }}
+    # The condition ensures integration tests if lint passes and the overal workflow is not cancelled
+    if: ${{ needs.lint.result == 'success' && !cancelled() }}
     uses: ./.github/workflows/integration.yml
     secrets: inherit
 
