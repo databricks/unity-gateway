@@ -241,7 +241,38 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${args[@]}" -- -m "(managed or managed_fixture or workspace_switch) and $AGENT"
+            "${args[@]}" -- -m "(managed or managed_fixture or workspace_switch) and $AGENT" \
+            -k "not test_ug_usage_managed_config"
+      - name: Run managed usage case against the dedicated usage workspace
+        if: ${{ !cancelled() && matrix.agent == 'claude' }}
+        shell: bash
+        env:
+          # This managed config publishes the budget used by the `ug usage` assertion. The
+          # runner mints a token for this host from the same admin service-principal secrets.
+          UCODE_TEST_WORKSPACE: https://eng-ml-inference-team-eu-west-2.cloud.databricks.com
+          DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
+        run: |
+          args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION")
+          if [[ -n "$DEPENDENCY" ]]; then
+            args+=(--dependency "$DEPENDENCY")
+          fi
+          uv run --no-project --python 3.12 python scripts/run_integration.py \
+            --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
+            --default-index "$PACKAGE_INDEX" \
+            --output "$RUNNER_TEMP/ug-integration-managed-usage" \
+            "${args[@]}" -- -m "managed and claude" -k "test_ug_usage_managed_config"
+      - name: Upload managed usage test evidence
+        if: ${{ !cancelled() && matrix.agent == 'claude' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: integration-managed-usage
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/ug-integration-managed-usage/*.json
+            ${{ runner.temp }}/ug-integration-managed-usage/*.txt
+            ${{ runner.temp }}/ug-integration-managed-usage/*.xml
+            ${{ runner.temp }}/ug-integration-managed-usage/*.log
       - name: Upload managed test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2

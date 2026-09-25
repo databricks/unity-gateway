@@ -11,6 +11,7 @@ _USAGE_SUMMARY = re.compile(
     r"\$(?P<total>[0-9][0-9,]*\.\d{2})\s+\((?P<percent>\d+)%\)"
 )
 _USAGE_METER = re.compile(r"\[(?P<meter>[█░]{30})\]")
+_MANAGED_USAGE_WORKSPACE = "https://eng-ml-inference-team-eu-west-2.cloud.databricks.com"
 
 
 def _read_managed_cache(session) -> dict:
@@ -22,17 +23,21 @@ def _read_managed_cache(session) -> dict:
 @pytest.mark.managed
 @pytest.mark.claude
 def test_ug_usage_managed_config(live_session, workspace):
-    """Scenario: configure Claude in the managed workspace, then run ``ug usage``.
+    """Scenario: configure Claude in the dedicated usage workspace, then run ``ug usage``.
 
     Expected: the real configure path caches the published CodingAgentConfig for this workspace;
     ``ug usage`` exits successfully and renders parseable dollars, percentage, and a 30-cell
     spend meter without the unavailable fallback.
     """
     session = live_session
-    session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+    assert workspace == _MANAGED_USAGE_WORKSPACE, (
+        "test_ug_usage_managed_config must run against the dedicated usage workspace "
+        f"{_MANAGED_USAGE_WORKSPACE}; got {workspace!r}"
+    )
+    session.run("configure", "--workspace", _MANAGED_USAGE_WORKSPACE, "--skip-upgrade", timeout=240)
 
     cache = _read_managed_cache(session)
-    assert cache.get("workspace") == workspace, cache
+    assert cache.get("workspace") == _MANAGED_USAGE_WORKSPACE, cache
     assert cache.get("outcome") == "published", cache
     config = cache.get("config")
     assert isinstance(config, dict), cache
