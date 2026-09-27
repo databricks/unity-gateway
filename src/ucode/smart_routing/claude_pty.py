@@ -22,9 +22,11 @@ import termios
 import threading
 import time
 import tty
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+from ucode.child_env import resolve_agent_argv
 
 MAX_MODEL_NAME_LEN = 200
 CONFIRM_TIMEOUT_S = 3.0
@@ -294,8 +296,12 @@ def run_claude_pty(
     model_switch_persisted: Callable[[], bool] = lambda: True,
     restore_model_setting: Callable[[], None] = lambda: None,
     log_path: Path | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> int:
     """Run Claude in a PTY, switch its model, and replay the first prompt."""
+
+    if env is not None:
+        argv = resolve_agent_argv(argv)
 
     def log(message: str) -> None:
         if log_path is None:
@@ -334,7 +340,10 @@ def run_claude_pty(
 
     pid, master_fd = pty.fork()
     if pid == 0:
-        os.execvp(argv[0], argv)
+        if env is None:
+            os.execvp(argv[0], argv)
+        else:
+            os.execve(argv[0], argv, dict(env))
         os._exit(127)
 
     previous_winch = signal.getsignal(signal.SIGWINCH)

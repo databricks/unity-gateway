@@ -14,6 +14,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ucode import gateway_proxy
+from ucode.child_env import (
+    agent_custom_env,
+    build_child_env,
+    env_name_identity,
+    resolve_agent_argv,
+    validate_agent_env,
+)
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -67,6 +74,7 @@ from ucode.managed_ownership import (
     DestinationPlan,
     apply_source,
     leaf_paths,
+    retired_environment,
     source_for_writer,
 )
 from ucode.managed_source import SelectedManagedSource
@@ -1025,6 +1033,8 @@ def write_tool_config(
     picker_catalog: AnthropicModelCatalog | None = None,
     selected_source: SelectedManagedSource | None = None,
 ) -> dict:
+    validate_agent_env(state, "claude")
+    custom_env = agent_custom_env(state, "claude")
     selected_source = source_for_writer(state, "claude", selected_source)
     if selected_source is not None:
         selected_source.check_target(state["workspace"], "claude")
@@ -1072,6 +1082,8 @@ def write_tool_config(
         picker_catalog=picker_catalog,
         managed_http_headers=state.get("claude_http_headers"),
     )
+    overlay["env"].update(custom_env)
+    managed_keys.extend(["env", key] for key in custom_env)
     source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
     # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
     # written by this launch, and remove only previously owned picker keys that no longer apply.
@@ -1388,7 +1400,16 @@ def write_tool_config(
                     optional=True,
                     writable=not relayed,
                     compatible=(
-                        (lambda existing, desired: not _relayed_settings_conflicts(existing))
+                        (
+                            lambda existing, desired: (
+                                not _relayed_settings_conflicts(existing)
+                                and not managed_file_conflicts(
+                                    existing,
+                                    {"env": custom_env},
+                                    [["env", key] for key in custom_env],
+                                )
+                            )
+                        )
                         if relayed
                         else lambda existing, desired: (
                             not managed_file_conflicts(existing, desired, managed_file_keys)
@@ -1397,7 +1418,7 @@ def write_tool_config(
                     compatible_scope="relay-compatible" if relayed else "local-compatible",
                 )
             )
-        scopes = apply_source(selected_source, plans)
+        scopes = apply_source(selected_source, plans, process_env_keys=set(custom_env))
         if managed_path is not None:
             mark_managed_file_verified(
                 state, "claude", managed_path, scope=scopes["managed_settings"]
@@ -1695,13 +1716,31 @@ def _merge_claude_settings(base: dict, overlay: dict) -> dict:
     return merged
 
 
-def _compose_v2_settings(tool_args: list[str]) -> tuple[dict, list[str]]:
+def _compose_v2_settings(
+    tool_args: list[str], *, retired_env_keys: set[str] | None = None
+) -> tuple[dict, list[str]]:
     """Compose caller settings with ucode's Claude settings for a v2 launch."""
     caller_values, remaining = _extract_caller_settings(tool_args)
     settings: dict = {}
     for value in caller_values:
         settings = _merge_claude_settings(settings, _load_caller_settings(value))
-    return _merge_claude_settings(settings, read_json_safe(CLAUDE_SETTINGS_PATH)), remaining
+    settings = _merge_claude_settings(settings, read_json_safe(CLAUDE_SETTINGS_PATH))
+    _scrub_retired_settings_env(settings, retired_env_keys)
+    return settings, remaining
+
+
+def _scrub_retired_settings_env(settings: dict, retired_env_keys: set[str] | None) -> None:
+    env = settings.get("env")
+    if isinstance(env, dict):
+        retired = {env_name_identity(key) for key in retired_env_keys or ()}
+        for key in list(env):
+            if env_name_identity(key) in retired:
+                env.pop(key)
+
+
+def _retired_custom_env_keys(state: dict) -> set[str]:
+    current = {env_name_identity(key) for key in agent_custom_env(state, "claude")}
+    return {key for key in retired_environment("claude") if env_name_identity(key) not in current}
 
 
 def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[str]:
@@ -1726,6 +1765,8 @@ def _build_claude_argv(
     tool_args: list[str],
     relayed: bool = False,
     settings_override: dict | None = None,
+    *,
+    retired_env_keys: set[str] | None = None,
 ) -> list[str]:
     """Build the ``claude`` argv, composing any caller ``--settings`` with
     ucode's managed settings.
@@ -1749,7 +1790,7 @@ def _build_claude_argv(
     """
     source_args = ["--setting-sources", _RELAYED_SETTING_SOURCES] if relayed else []
     caller_values, remaining = _extract_caller_settings(tool_args)
-    if not caller_values and settings_override is None:
+    if not caller_values and settings_override is None and not retired_env_keys:
         # No caller --settings: hand Claude ucode's settings file directly (the
         # common path; behavior unchanged).
         return [binary, *source_args, "--settings", str(CLAUDE_SETTINGS_PATH), *tool_args]
@@ -1761,6 +1802,7 @@ def _build_claude_argv(
     merged = _merge_claude_settings(caller_settings, read_json_safe(CLAUDE_SETTINGS_PATH))
     if settings_override is not None:
         merged = _merge_claude_settings(merged, settings_override)
+    _scrub_retired_settings_env(merged, retired_env_keys)
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
         merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
@@ -1823,10 +1865,26 @@ def _rewrite_relayed_port(state: dict, port: int) -> None:
         write_json_file(CLAUDE_SETTINGS_PATH, settings)
 
 
-def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
+def _launch_relayed(
+    state: dict,
+    binary: str,
+    tool_args: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    retired_env_keys: set[str] | None = None,
+) -> None:
     """Relayed launch: sign into the Claude subscription, start the loopback
     refresh proxy, then run Claude Code alongside it (the proxy must outlive the
     exec, so we spawn-and-wait rather than replacing the process)."""
+    validate_agent_env(state, "claude")
+    child_env = (
+        env
+        if env is not None
+        else build_child_env(state, "claude", generated={"OAUTH_TOKEN": None})
+    )
+    if retired_env_keys is None:
+        retired_env_keys = _retired_custom_env_keys(state)
+    binary = resolve_agent_argv([binary])[0]
     _ensure_subscription_login()
     workspace = state["workspace"]
     port = state.get("relayed_proxy_port")
@@ -1849,12 +1907,16 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess.Popen(_build_claude_argv(binary, tool_args, relayed=True))
     try:
-        returncode = proc.wait()
-    except KeyboardInterrupt:
-        proc.send_signal(signal.SIGINT)
-        returncode = proc.wait()
+        proc = subprocess.Popen(
+            _build_claude_argv(binary, tool_args, relayed=True, retired_env_keys=retired_env_keys),
+            env=child_env,
+        )
+        try:
+            returncode = proc.wait()
+        except KeyboardInterrupt:
+            proc.send_signal(signal.SIGINT)
+            returncode = proc.wait()
     finally:
         cache.stop()
         server.shutdown()
@@ -1868,18 +1930,33 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
+    validate_agent_env(state, "claude")
     binary = SPEC["binary"]
     workspace = state.get("workspace")
-    if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
-        # Discovery is launch-scoped. Pass it in the process environment rather
-        # than persisting it in Claude's private or OS-managed settings.
-        os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-    if state.get("claude_relayed"):
-        _launch_relayed(state, binary, tool_args)
-        return
     launch_default_model = state.get("_claude_launch_default_model")
-    if isinstance(launch_default_model, str) and launch_default_model:
-        os.environ["ANTHROPIC_DEFAULT_MODEL"] = launch_default_model
+    gateway_discovery = bool(
+        workspace
+        and (
+            state.get("_claude_gateway_discovery")
+            or os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1"
+        )
+    )
+    generated: dict[str, str | None] = {
+        GATEWAY_MODEL_DISCOVERY_ENV_VAR: "1" if gateway_discovery else None,
+        "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1" if gateway_discovery else None,
+        "ANTHROPIC_DEFAULT_MODEL": (
+            launch_default_model
+            if isinstance(launch_default_model, str) and launch_default_model
+            else None
+        ),
+        "ANTHROPIC_MODEL": options.user_pinned_model,
+        "OAUTH_TOKEN": None,
+    }
+    child_env = build_child_env(state, "claude", generated=generated)
+    retired_env_keys = _retired_custom_env_keys(state)
+    if state.get("claude_relayed"):
+        _launch_relayed(state, binary, tool_args, env=child_env, retired_env_keys=retired_env_keys)
+        return
     # Smart routing needs Unix PTY support, which Windows does not provide.
     if options.launch_smart_routing and os.name == "nt":
         raise RuntimeError(
@@ -1894,17 +1971,19 @@ def launch(
             user_settings_path=CLAUDE_USER_SETTINGS_PATH,
             # With no user pin, let Claude resolve its starting model from its own settings.
             launch_model=options.user_pinned_model,
-            compose_settings=_compose_v2_settings,
+            compose_settings=lambda args: _compose_v2_settings(
+                args, retired_env_keys=retired_env_keys
+            ),
             launch_model_args=_launch_model_args,
             model_name=_maybe_add_1m_suffix,
+            env=child_env,
         )
         return
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
-        os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
+        child_env["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
     launch_args = list(tool_args)
     if options.user_pinned_model:
-        os.environ["ANTHROPIC_MODEL"] = options.user_pinned_model
         settings_override = {"env": {"ANTHROPIC_MODEL": options.user_pinned_model}}
         launch_args = [
             *_launch_model_args(tool_args, options.user_pinned_model),
@@ -1927,7 +2006,15 @@ def launch(
                 # overwriting the user's saved selection. This also prevents Claude from appending
                 # that stale built-in selection to an otherwise replaced picker.
                 settings_override = {"model": picker_models[0]}
-    exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
+    exec_or_spawn(
+        _build_claude_argv(
+            binary,
+            launch_args,
+            settings_override=settings_override,
+            retired_env_keys=retired_env_keys,
+        ),
+        env=child_env,
+    )
 
 
 def validate_cmd(binary: str) -> list[str]:

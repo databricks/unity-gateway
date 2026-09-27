@@ -12,6 +12,11 @@ from ucode.smart_routing import codex_interposer, codex_routing, v2
 WS = "https://example.databricks.com"
 
 
+@pytest.fixture(autouse=True)
+def resolve_mocked_agent_boundary(monkeypatch):
+    monkeypatch.setattr(v2, "resolve_agent_argv", lambda argv: ["/resolved/codex", *argv[1:]])
+
+
 def test_smart_routing_switch_message_is_boxed():
     message = v2.format_routing_notice("model-x", "Because X.")
 
@@ -98,7 +103,7 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.144.0")
         monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "token")
         monkeypatch.setattr(v2, "launch_codex", lambda *args, **kwargs: pytest.fail("launched"))
-        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
+        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv, **kwargs: launches.append(argv))
 
         codex.launch(
             {"workspace": WS},
@@ -181,6 +186,7 @@ class TestLaunchCodex:
         token_calls = []
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
+        monkeypatch.setenv("OAUTH_TOKEN", "parent-token")
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
 
@@ -227,6 +233,7 @@ class TestLaunchCodex:
                     "profile": "myprof",
                     "codex_models": ["system.ai.gpt-5-6-sol"],
                     "oss_models": ["system.ai.glm-5-2"],
+                    "codex_custom_env": {"EMPTY": "", "LINES": "one\ntwo", "PATH": "/child/tools"},
                 },
                 ["--search"],
                 binary="codex",
@@ -236,7 +243,7 @@ class TestLaunchCodex:
 
         assert exc.value.code == 7
         assert processes[0].argv[:7] == [
-            "codex",
+            "/resolved/codex",
             "app-server",
             "--config",
             'model_provider="Databricks"',
@@ -260,8 +267,16 @@ class TestLaunchCodex:
         ]
         assert processes[0].kwargs["env"][v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
         assert processes[0].kwargs["env"]["CODEX_HOME"] == "/user/codex-home"
+        for process in processes:
+            assert process.kwargs["env"]["EMPTY"] == ""
+            assert process.kwargs["env"]["LINES"] == "one\ntwo"
+            assert process.kwargs["env"]["PATH"] == "/child/tools"
+            assert process.kwargs["env"]["OAUTH_TOKEN"] == "token-1"
+        assert processes[0].kwargs["env"] is not processes[1].kwargs["env"]
+        assert os.environ["OAUTH_TOKEN"] == "parent-token"
+        assert "LINES" not in os.environ
         assert processes[1].argv == [
-            "codex",
+            "/resolved/codex",
             "--remote",
             "ws://127.0.0.1:41002",
             "--model",
@@ -334,12 +349,34 @@ class TestLaunchCodex:
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
 
-    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("auth_mode", ["oauth", "pat", "custom-oauth"])
+    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch, auth_mode):
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setenv("OAUTH_TOKEN", "parent-token")
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        custom_oauth = {
+            "client_id": "test-client",
+            "redirect_url": "http://localhost",
+            "scopes": ["offline_access", "all-apis"],
+            "profile": "test-profile",
+        }
+        monkeypatch.setenv(
+            "ENABLE_CUSTOM_OAUTH_FROM_CLI", "1" if auth_mode == "custom-oauth" else "0"
+        )
+        if auth_mode == "pat":
+            monkeypatch.setenv("DATABRICKS_BEARER", "test-pat")
+        if auth_mode == "custom-oauth":
+            monkeypatch.setattr(
+                v2,
+                "get_databricks_token",
+                lambda *_args, **_kwargs: pytest.fail(
+                    "custom OAuth must use its configured client"
+                ),
+            )
+            monkeypatch.setattr(v2, "get_custom_client_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(
             v2.subprocess,
             "Popen",
@@ -351,16 +388,24 @@ class TestLaunchCodex:
             lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not interpose"),
         )
         execd = []
+        environments = []
 
-        def fake_exec(argv):
+        def fake_exec(argv, *, env):
             execd.append(argv)
+            environments.append(env)
             raise SystemExit(0)
 
         monkeypatch.setattr(v2, "exec_or_spawn", fake_exec)
 
         with pytest.raises(SystemExit) as exc:
             v2.launch_codex(
-                {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
+                {
+                    "workspace": WS,
+                    "codex_models": ["system.ai.gpt-5-6-sol"],
+                    "codex_custom_env": {"EMPTY": "", "LINES": "one\ntwo"},
+                    "use_pat": auth_mode == "pat",
+                    "custom_oauth": custom_oauth if auth_mode == "custom-oauth" else None,
+                },
                 ["--search"],
                 binary="codex",
                 start_model="gpt-start",
@@ -369,7 +414,7 @@ class TestLaunchCodex:
 
         assert exc.value.code == 0
         (argv,) = execd
-        assert argv[0] == "codex"
+        assert argv[0] == "/resolved/codex"
         assert argv[-1] == "--search"
         assert 'model="gpt-start"' in argv
         hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
@@ -377,7 +422,10 @@ class TestLaunchCodex:
         assert "--model system.ai.gpt-5-6-sol" in hook_override
         # The hook subprocesses inherit the launch environment and pass the routing gate.
         assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
-        assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
+        assert environments[0][v2.OAUTH_TOKEN_ENV_VAR] == "token"
+        assert environments[0]["EMPTY"] == ""
+        assert environments[0]["LINES"] == "one\ntwo"
+        assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "parent-token"
 
     def test_v2_pre_tool_hook_preserves_user_hooks(self, tmp_path, monkeypatch):
         codex_home = tmp_path / ".codex"

@@ -20,6 +20,7 @@ from typing import cast
 import tomlkit
 
 from ucode import managed_files as files
+from ucode.child_env import agent_custom_env, env_name_identity, validate_env_name
 from ucode.config_io import is_dry_run
 from ucode.managed_source import SelectedManagedSource
 from ucode.ui import print_warning
@@ -77,9 +78,13 @@ def source_for_writer(
         selected_source.check_target(state["workspace"], agent)
         return selected_source
     application = applied_source(agent)
-    enrolled = application is not None or any(
-        entry.get("agent") == agent and "active_effects" in entry
-        for entry in files._manifest_files(files._load_manifest()).values()
+    enrolled = (
+        bool(agent_custom_env(state, agent))
+        or application is not None
+        or any(
+            entry.get("agent") == agent and "active_effects" in entry
+            for entry in files._manifest_files(files._load_manifest()).values()
+        )
     )
     if not enrolled:
         return None
@@ -550,6 +555,14 @@ def _transaction(
                 )
             )
         declarations = handoff.get("agents", {}).get(agent, {})
+        current_keys = (
+            {
+                env_name_identity(validate_env_name(name, "process_env"))
+                for name in (process_env_keys or ())
+            }
+            if not release
+            else set()
+        )
         declaration_key = f"{owner}:{handoff.get('migration_version')}:{agent}"
         declaration_digest = files._sha256(_canonical(declarations))
         signatures = manifest.setdefault("handoff_declarations", {})
@@ -563,12 +576,45 @@ def _transaction(
             )
         migrations: dict[str, tuple[str, str]] = {}
         receipts = manifest.setdefault("migration_receipts", {})
+        env_receipt: tuple[str, str] | None = None
+        retired_declarations: set[str] = set()
         for target in {
             item["target"]
             for action in ("adopt", "retire")
             for item in declarations.get(action, [])
         }:
             if target == "process_env":
+                env_declarations = {
+                    action: [
+                        item for item in declarations.get(action, []) if item["target"] == target
+                    ]
+                    for action in ("adopt", "retire")
+                }
+                for items in env_declarations.values():
+                    for item in items:
+                        path = item.get("path")
+                        if not isinstance(path, list) or len(path) != 1 or "elements" in item:
+                            raise RuntimeError(
+                                "process_env handoff requires one variable name and no elements."
+                            )
+                        validate_env_name(path[0], "handoff.process_env")
+                receipt_key = f"{owner}:{handoff['migration_version']}:{agent}:process_env"
+                digest = files._sha256(_canonical(env_declarations))
+                if receipt_key in receipts and receipts[receipt_key] != digest:
+                    raise RuntimeError(
+                        f"Handoff declarations changed for {agent}.process_env; increment migration_version."
+                    )
+                if receipt_key not in receipts:
+                    for item in env_declarations["adopt"]:
+                        name = env_name_identity(item["path"][0])
+                        if name not in current_keys:
+                            raise RuntimeError(
+                                f"Handoff adoption requires a current custom_env declaration for {name}."
+                            )
+                    retired_declarations = {
+                        env_name_identity(item["path"][0]) for item in env_declarations["retire"]
+                    }
+                    env_receipt = (receipt_key, digest)
                 continue
             matching = [(key, plan) for key, plan in by_key.items() if plan.target == target]
             if len(matching) != 1:
@@ -795,6 +841,16 @@ def _transaction(
                 entry["migration_provenance"] = provenance
             proposed_entries[key] = entry
         source_record = _source_record(source, owner)
+        previous_env = {
+            env_name_identity(name): value
+            for name, value in manifest.setdefault("process_env", {}).get(agent, {}).items()
+        }
+        previous_env.update(
+            {
+                env_name_identity(name): value
+                for name, value in pending.get("process_env", {}).items()
+            }
+        )
         journal = {
             "source": source_record,
             "operation": "release" if release else "apply",
@@ -805,6 +861,7 @@ def _transaction(
                 if entry.get("agent") == agent and entry.get("active_effects")
             },
             "attempted": [],
+            "process_env": {**previous_env, **dict.fromkeys(current_keys, owner)},
             "before": {key: text for key, _, text, _, _, _ in prepared},
         }
         manifest.setdefault("pending", {})[agent] = journal
@@ -877,9 +934,20 @@ def _transaction(
         entries.update(proposed_entries)
         if handoff:
             signatures[declaration_key] = declaration_digest
-        retired = manifest.setdefault("retired_env", {}).setdefault(agent, {})
-        previous_env = manifest.setdefault("process_env", {}).get(agent, {})
-        current_keys = set(process_env_keys or ()) if not release else set()
+        retired = {
+            env_name_identity(name): value
+            for name, value in manifest.setdefault("retired_env", {}).get(agent, {}).items()
+        }
+        manifest["retired_env"][agent] = retired
+        if (
+            current_keys
+            or retired_declarations
+            or any(
+                restore or previous_owner == owner
+                for previous_owner in [*previous_env.values(), *retired.values()]
+            )
+        ):
+            scopes["process_env"] = "released" if release else "applied"
         for key, previous_owner in previous_env.items():
             if not release and key not in current_keys:
                 retired[key] = previous_owner
@@ -897,12 +965,22 @@ def _transaction(
                 application["status"] = "released"
             manifest.setdefault("releases", {})[f"{agent}:{owner}"] = "released"
         else:
+            for key in retired_declarations:
+                retired[key] = owner
             for key in current_keys:
                 retired.pop(key, None)
             manifest["process_env"][agent] = dict.fromkeys(current_keys, owner)
+            if env_receipt is not None:
+                receipt_key, digest = env_receipt
+                receipts[receipt_key] = digest
             source_record["rendered_digest"] = files._sha256(
                 _canonical(
-                    {key: entry["active_effects"] for key, entry in proposed_entries.items()}
+                    {
+                        "destinations": {
+                            key: entry["active_effects"] for key, entry in proposed_entries.items()
+                        },
+                        "process_env_keys": sorted(current_keys),
+                    }
                 )
             )
             manifest.setdefault("applications", {})[agent] = source_record

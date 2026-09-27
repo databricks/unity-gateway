@@ -255,7 +255,14 @@ contribution; Codex checks persistent catalog cleanup. An installation-only case
 checks repeated release before setup through both installed entry points without
 credentials. Release is distinct from the fixture's final broad `ug revert`.
 
-There are **65 live cases** (including 16 TUI journeys) and **10 installation
+`test_ug_custom_environment.py` validates reserved-variable rejection in the
+installed CLI and exact environment delivery through completed real Claude and
+Codex TUI shell tasks. Subsequent launches remove owned variables despite stale
+parent values; Claude also receives stale caller `--settings`. An unrelated
+inherited variable must survive. Only named test variables are inspected, never
+the complete environment. This does not cover independently opened desktop apps.
+
+There are **67 live cases** (including 18 TUI journeys) and **11 installation
 checks** with both agents. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
@@ -280,7 +287,7 @@ constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-
 mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
 `ug configure` and Claude. The client secrets do not enter the pytest process.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 107 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 110 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -391,11 +398,11 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 65 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 67 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
-- Claude: marker `live and claude`, 29 cases.
-- Codex: marker `live and codex`, 36 cases.
+- Claude: marker `live and claude`, 30 cases.
+- Codex: marker `live and codex`, 37 cases.
 
 Each lane installs only its agent CLI, once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
@@ -695,7 +702,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 65 live cases. For the ten installation checks, run the same
+This runs all 67 live cases. For the eleven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

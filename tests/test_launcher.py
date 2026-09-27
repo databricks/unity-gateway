@@ -10,6 +10,32 @@ from ucode import launcher
 
 
 class TestExecOrSpawn:
+    @pytest.mark.parametrize("platform", ["posix", "nt"])
+    def test_explicit_environment_uses_resolved_binary_and_copy(self, platform):
+        environment = {"PATH": "/child/tools", "EMPTY": "", "LINES": "one\ntwo"}
+        proc = MagicMock()
+        proc.wait.return_value = 0
+        with (
+            patch.object(launcher.os, "name", platform),
+            patch.object(
+                launcher, "resolve_agent_argv", return_value=["/original/agent", "--help"]
+            ) as resolve,
+            patch.object(launcher.os, "execve") as execve,
+            patch.object(launcher.subprocess, "Popen", return_value=proc) as popen,
+        ):
+            if platform == "nt":
+                with pytest.raises(SystemExit):
+                    launcher.exec_or_spawn(["agent", "--help"], env=environment)
+                popen.assert_called_once_with(["/original/agent", "--help"], env=environment)
+                assert popen.call_args.kwargs["env"] is not environment
+            else:
+                launcher.exec_or_spawn(["agent", "--help"], env=environment)
+                execve.assert_called_once_with(
+                    "/original/agent", ["/original/agent", "--help"], environment
+                )
+                assert execve.call_args.args[2] is not environment
+            resolve.assert_called_once_with(["agent", "--help"])
+
     def test_posix_uses_execvp(self):
         # On POSIX the agent process replaces ucode via execvp — no Popen.
         with (

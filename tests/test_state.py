@@ -101,6 +101,20 @@ class TestLoadFullState:
 
 
 class TestSaveLoadRoundTrip:
+    def test_custom_environment_and_launch_markers_never_persist_from_overlay(self):
+        transient = {
+            "claude_custom_env": {"SECRET": "test-sensitive"},
+            "codex_custom_env": {"EMPTY": ""},
+            "_claude_gateway_discovery": True,
+        }
+        state = {"workspace": FAKE_WS, **transient, state_mod.MANAGED_OVERLAY_KEY: transient}
+        save_state(state)
+        text = state_mod.STATE_PATH.read_text()
+        assert "test-sensitive" not in text
+        for key in transient:
+            assert key not in text
+            assert state[key] == transient[key]
+
     def test_round_trip(self):
         state = {
             "workspace": FAKE_WS,

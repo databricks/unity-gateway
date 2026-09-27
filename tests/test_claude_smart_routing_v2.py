@@ -16,6 +16,11 @@ from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import claude_hooks, claude_pty, routing, v2
 
 
+@pytest.fixture(autouse=True)
+def resolve_mocked_agent_boundary(monkeypatch):
+    monkeypatch.setattr(v2, "resolve_agent_argv", lambda argv: ["/resolved/claude", *argv[1:]])
+
+
 class TestManagedModelPicker:
     def test_reads_model_ids_from_managed_picker(self, tmp_path, monkeypatch):
         path = tmp_path / "managed-settings.json"
@@ -195,6 +200,49 @@ class TestSmartRoutingEnvVars:
 
 
 class TestV2Launch:
+    def test_spawn_failure_cleans_transient_settings_without_parent_changes(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv("OAUTH_TOKEN", "parent-token")
+        monkeypatch.setattr(v2, "_launch_token", lambda *_args: "fresh-token")
+        monkeypatch.setattr(
+            v2,
+            "_model_picker_catalog",
+            lambda: AnthropicModelCatalog(
+                model_ids=["system.ai.claude-sonnet-5"], model_id_to_display_name={}
+            ),
+        )
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["/bin/ug"])
+        captured = {}
+
+        def fail_spawn(argv, *, env):
+            captured.update(env)
+            assert Path(argv[argv.index("--settings") + 1]).exists()
+            raise OSError("mocked spawn failure")
+
+        monkeypatch.setattr(v2.subprocess, "Popen", fail_spawn)
+        with pytest.raises(OSError, match="mocked spawn failure"):
+            v2.launch_claude(
+                {
+                    "workspace": "https://example.com",
+                    "claude_custom_env": {"UG_CHILD_ONLY": "exact\n"},
+                },
+                [],
+                binary="claude",
+                user_settings_path=tmp_path / "user.json",
+                launch_model=None,
+                compose_settings=lambda _args: ({}, []),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+        assert not list(tmp_path.glob("claude-v2-*.json"))
+        assert captured["OAUTH_TOKEN"] == "fresh-token"
+        assert captured["UG_CHILD_ONLY"] == "exact\n"
+        assert os.environ["OAUTH_TOKEN"] == "parent-token"
+        assert "UG_CHILD_ONLY" not in os.environ
+
     def test_strips_gateway_prefix_for_interposer(self):
         model = "anthropic-aigw-73ea02b2-system.ai.glm-5-2"
         assert v2._unwrapped_claude_model_id(model) == "system.ai.glm-5-2"
@@ -235,6 +283,7 @@ class TestV2Launch:
 
         def fake_run(argv, **kwargs):
             captured["argv"] = argv
+            captured["env"] = kwargs["env"]
             agents_index = argv.index("--agents")
             captured["agents"] = json.loads(argv[agents_index + 1])
             captured["routed_model"] = kwargs["route_prompt"]("fix the parser")
@@ -256,7 +305,10 @@ class TestV2Launch:
         monkeypatch.setattr(claude_pty, "run_claude_pty", fake_run)
         with pytest.raises(SystemExit) as exc:
             v2.launch_claude(
-                {"workspace": "https://example.com"},
+                {
+                    "workspace": "https://example.com",
+                    "claude_custom_env": {"EMPTY": "", "LINES": "one\ntwo"},
+                },
                 ["--debug"],
                 binary="claude",
                 user_settings_path=user_settings,
@@ -267,6 +319,11 @@ class TestV2Launch:
             )
 
         assert exc.value.code == 0
+        assert captured["argv"][0] == "/resolved/claude"
+        assert captured["env"]["OAUTH_TOKEN"] == "token"
+        assert captured["env"]["EMPTY"] == ""
+        assert captured["env"]["LINES"] == "one\ntwo"
+        assert "LINES" not in os.environ
         assert captured["argv"][3:5] == ["--model", "opus"]
         assert captured["argv"][-1] == "--debug"
         assert captured["routed_model"] == claude_pty.FirstPromptRoute(
@@ -414,6 +471,7 @@ class TestV2Launch:
         class FakeProcess:
             def __init__(self, argv, **_kwargs):
                 captured["argv"] = argv
+                captured["env"] = _kwargs["env"]
                 settings_path = Path(argv[argv.index("--settings") + 1])
                 captured["settings_path"] = settings_path
                 captured["settings"] = json.loads(settings_path.read_text())
@@ -429,7 +487,10 @@ class TestV2Launch:
 
         with pytest.raises(SystemExit) as exc:
             v2.launch_claude(
-                {"workspace": "https://example.com"},
+                {
+                    "workspace": "https://example.com",
+                    "claude_custom_env": {"EMPTY": "", "LINES": "one\ntwo"},
+                },
                 [],
                 binary="claude",
                 user_settings_path=user_settings,
@@ -440,6 +501,11 @@ class TestV2Launch:
             )
 
         assert exc.value.code == 4
+        assert captured["argv"][0] == "/resolved/claude"
+        assert captured["env"]["EMPTY"] == ""
+        assert captured["env"]["LINES"] == "one\ntwo"
+        assert captured["env"]["OAUTH_TOKEN"] == "token"
+        assert "LINES" not in os.environ
         settings = captured["settings"]
         env = settings["env"]
         assert env[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
@@ -482,7 +548,13 @@ class TestV2ModelPickerDiscovery:
             )
 
         monkeypatch.setattr(v2, "list_anthropic_model_catalog", fake_discovery)
-        monkeypatch.setattr(claude_pty, "run_claude_pty", lambda _argv, **_kwargs: 0)
+        child_environments = []
+
+        def capture_pty(_argv, **kwargs):
+            child_environments.append(kwargs["env"])
+            return 0
+
+        monkeypatch.setattr(claude_pty, "run_claude_pty", capture_pty)
 
         with pytest.raises(SystemExit) as exc:
             v2.launch_claude(
@@ -496,10 +568,10 @@ class TestV2ModelPickerDiscovery:
                 model_name=claude._maybe_add_1m_suffix,
             )
         assert exc.value.code == 0
-        return discovery_calls
+        return discovery_calls, child_environments[0]
 
     def test_model_picker_disables_model_discovery(self, tmp_path, monkeypatch):
-        discovery_calls = self._launch(
+        discovery_calls, child_environment = self._launch(
             monkeypatch,
             tmp_path,
             picker_catalog=AnthropicModelCatalog(
@@ -510,16 +582,21 @@ class TestV2ModelPickerDiscovery:
         # The picker supplied the models, so discovery never ran and the launch left
         # gateway model discovery disabled instead of enabling it alongside the picker.
         assert discovery_calls == 0
+        assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in child_environment
         assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in os.environ
         assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
     def test_no_model_picker_enables_model_discovery(self, tmp_path, monkeypatch):
-        discovery_calls = self._launch(monkeypatch, tmp_path, picker_catalog=None)
+        discovery_calls, child_environment = self._launch(
+            monkeypatch, tmp_path, picker_catalog=None
+        )
         # Without a picker the router falls back to gateway discovery and enables Claude
         # Code's model-discovery feature for the launch.
         assert discovery_calls == 1
-        assert os.environ.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY") == "1"
-        assert os.environ.get("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY") == "1"
+        assert child_environment["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert child_environment["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in os.environ
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
 
 class TestSubagentRouting:
@@ -773,6 +850,7 @@ capture_path.write_text(json.dumps({
     "command": model_command.decode(),
     "replayed": replayed.decode(),
     "restored_before_replay": restored_path.exists(),
+    "child_value": os.environ["UG_PTY_TEST"],
 }))
 """.lstrip()
         )
@@ -791,6 +869,7 @@ capture_path.write_text(json.dumps({
             ),
             socket_path=socket_path,
             restore_model_setting=lambda: restored.write_text("restored"),
+            env={"UG_PTY_TEST": " exact\nvalue ", "HOME": str(tmp_path)},
         )
 
         assert result == 0
@@ -798,4 +877,5 @@ capture_path.write_text(json.dumps({
             "command": "/model system.ai.claude-sonnet-5\r",
             "replayed": "\x1b[200~fix\nthe parser\x1b[201~\r",
             "restored_before_replay": True,
+            "child_value": " exact\nvalue ",
         }

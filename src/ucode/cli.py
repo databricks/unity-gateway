@@ -46,6 +46,7 @@ from ucode.agents import (
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
+from ucode.child_env import validate_agent_env
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
@@ -2652,6 +2653,11 @@ def _launch_tool(
         if selected_source is not None:
             selected_source = replace(selected_source, workspace=workspace)
             managed = selected_source.manifest
+            if tool in {"claude", "codex"}:
+                validate_agent_env(
+                    resolve_state(managed or {}, existing, tool, selected_source=selected_source),
+                    tool,
+                )
             preflight_managed_resources(selected_source, previous_state)
             preflight_source_transition(selected_source)
             _reject_managed_launch_source_options(
@@ -2735,8 +2741,9 @@ def _launch_tool(
         # Unmanaged Claude launches discover gateway models automatically; with no
         # provider or parent header the gateway defaults to system.ai. Managed
         # configs opt into discovery by selecting an MPS or Unity Catalog location.
-        if tool == "claude" and (managed is None or managed_provider or managed_parent_schema):
-            os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
+        claude_gateway_discovery = tool == "claude" and bool(
+            managed is None or managed_provider or managed_parent_schema
+        )
         # The environment switch remains a developer override; managed config is the workspace
         # policy equivalent and must take effect before launch options are computed.
         managed_smart_routing_enabled = _managed_smart_routing_enabled(managed, tool)
@@ -2779,6 +2786,10 @@ def _launch_tool(
                 )
         elif not coding_agent_config_feature_disabled:
             print_note("No managed coding agent config found; using your own settings")
+        if tool in {"claude", "codex"}:
+            validate_agent_env(state, tool)
+        if tool == "claude":
+            state["_claude_gateway_discovery"] = claude_gateway_discovery
         if provider and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
