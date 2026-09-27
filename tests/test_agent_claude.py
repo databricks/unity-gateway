@@ -940,7 +940,7 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(
             claude,
             "managed_file_snapshots",
-            lambda tool, parser: managed_files.ManagedFileSnapshots(None, None),
+            lambda tool, parser, path=None: managed_files.ManagedFileSnapshots(None, None),
         )
         # Deterministic managed path, and a mocked sudo writer so NO real sudo/`/etc` write happens.
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: FAKE_MANAGED_PATH)
@@ -1479,7 +1479,7 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(
             claude,
             "managed_file_snapshots",
-            lambda tool, parser: managed_files.ManagedFileSnapshots(
+            lambda tool, parser, path=None: managed_files.ManagedFileSnapshots(
                 {}, existing[str(FAKE_MANAGED_PATH)]
             ),
         )
@@ -1510,7 +1510,9 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(
             claude,
             "managed_file_snapshots",
-            lambda tool, parser: managed_files.ManagedFileSnapshots({}, {"env": {"MY_OWN": "x"}}),
+            lambda tool, parser, path=None: managed_files.ManagedFileSnapshots(
+                {}, {"env": {"MY_OWN": "x"}}
+            ),
         )
         state = {"workspace": WS, "claude_models": {"opus": "system.ai.claude-opus-4-8"}}
 
@@ -1540,7 +1542,9 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(
             claude,
             "managed_file_snapshots",
-            lambda tool, parser: managed_files.ManagedFileSnapshots(dict(admin), dict(admin)),
+            lambda tool, parser, path=None: managed_files.ManagedFileSnapshots(
+                dict(admin), dict(admin)
+            ),
         )
         state = {"workspace": WS, "claude_models": {"opus": "system.ai.claude-opus-4-8"}}
 
@@ -1576,7 +1580,7 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(
             claude,
             "managed_file_snapshots",
-            lambda tool, parser: managed_files.ManagedFileSnapshots({}, ucode_last),
+            lambda tool, parser, path=None: managed_files.ManagedFileSnapshots({}, ucode_last),
         )
         state = {"workspace": WS, "claude_models": {"opus": "system.ai.claude-opus-4-8"}}
 
@@ -1597,7 +1601,7 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(
             claude,
             "managed_file_snapshots",
-            lambda tool, parser: managed_files.ManagedFileSnapshots(
+            lambda tool, parser, path=None: managed_files.ManagedFileSnapshots(
                 None, {"env": dict(stale_fable)}
             ),
         )
@@ -1631,7 +1635,7 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(
             claude,
             "managed_file_snapshots",
-            lambda tool, parser: managed_files.ManagedFileSnapshots(None, {"env": {}}),
+            lambda tool, parser, path=None: managed_files.ManagedFileSnapshots(None, {"env": {}}),
         )
         static = ["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-4-6"]
         state = {"workspace": WS, "codex_models": [], "claude_static_models": static}
@@ -3001,3 +3005,329 @@ class TestWriteUserMcpServers:
         written = config_dir / ".claude.json"
         assert json.loads(written.read_text())["mcpServers"]["svc"] == {"type": "http", "url": "u"}
         assert not default_path.exists()  # the default location is untouched
+
+
+class TestOwnedClaudeDestinations:
+    @pytest.fixture(autouse=True)
+    def isolate(self, tmp_path, monkeypatch):
+        self.private = tmp_path / "claude" / "ucode-settings.json"
+        self.managed = tmp_path / "managed-settings.json"
+        self.mcp = tmp_path / ".claude.json"
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", self.private)
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", tmp_path / "user-settings.json")
+        monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "claude-backup.json")
+        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", self.mcp)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: self.managed)
+        monkeypatch.setattr(claude, "agent_version", lambda _: "2.1.268")
+        monkeypatch.setattr(claude, "ug_version", lambda: "test")
+        monkeypatch.setattr(claude, "ug_binary", lambda: "/test/ug")
+        monkeypatch.setattr(claude, "build_auth_shell_command", lambda *a, **kw: "ug auth-token")
+        monkeypatch.setattr(claude, "build_otel_headers_shell_command", lambda *a, **kw: "ug otel")
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(
+            managed_files, "_SUDO_REPLACE_TARGETS", {managed_files.current_os(): {self.managed}}
+        )
+        self.writes = []
+
+        def privileged_write(path, text, *, expected_text=None):
+            assert managed_files.read_managed_file(path) == expected_text
+            self.writes.append(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", privileged_write)
+        self.save = Mock()
+        monkeypatch.setattr(claude, "save_state", self.save)
+        monkeypatch.setattr(
+            claude, "_register_web_search_mcp", Mock(side_effect=AssertionError("unexpected CLI"))
+        )
+
+    def source(self, *, workspace=WS, kind="file", owner=None):
+        from ucode.managed_source import SelectedManagedSource
+
+        manifest = {"enabled_agents": {"claude": {}}}
+        if owner:
+            manifest["handoff"] = {
+                "schema_version": 1,
+                "owner": owner,
+                "migration_version": 1,
+                "agents": {},
+            }
+        return SelectedManagedSource(
+            kind=kind,
+            workspace=workspace,
+            agent="claude",
+            digest="same-input-digest",
+            _manifest_json=json.dumps(manifest) if kind == "file" else None,
+        )
+
+    def test_file_to_api_none_cleans_edited_headers_and_telemetry(self):
+        state = {
+            "workspace": WS,
+            "claude_http_headers": {"X-Old": "old"},
+            "claude_otel_tracing": True,
+        }
+        claude.write_tool_config(state, None, selected_source=self.source())
+        for path in (self.private, self.managed):
+            doc = json.loads(path.read_text())
+            doc["env"]["ANTHROPIC_CUSTOM_HEADERS"] += "\nX-Edited: drift"
+            doc["env"]["UNRELATED"] = "keep"
+            path.write_text(json.dumps(doc))
+
+        claude.write_tool_config({"workspace": WS}, None, selected_source=self.source(kind="api"))
+
+        for path in (self.private, self.managed):
+            doc = json.loads(path.read_text())
+            assert "X-Old" not in doc["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+            assert "X-Edited" not in doc["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+            assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in doc["env"]
+            assert "otelHeadersHelper" not in doc
+            assert doc["env"]["UNRELATED"] == "keep"
+
+    @pytest.mark.parametrize("route_root_model", [None, "discovered"])
+    def test_preserves_unowned_defaults_helper_and_permission_contributions(self, route_root_model):
+        from ucode.managed_ownership import release_owner
+
+        original = {
+            "env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "admin-default"},
+            "otelHeadersHelper": "admin-helper",
+            "permissions": {"deny": ["Read(secret)"]},
+        }
+        self.managed.write_text(json.dumps(original))
+        state = {
+            "workspace": WS,
+            "codex_models": ["search-model"],
+            "claude_models": {"opus": "discovered"},
+        }
+        claude.write_tool_config(
+            state,
+            None,
+            route_root_model=route_root_model,
+            selected_source=self.source(owner="isaac"),
+        )
+        configured = json.loads(self.managed.read_text())
+        assert configured["permissions"]["deny"] == ["Read(secret)", "WebSearch"]
+        assert configured["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "admin-default"
+        assert configured["otelHeadersHelper"] == "admin-helper"
+        release_owner("isaac", "claude")
+        restored = json.loads(self.managed.read_text())
+        assert restored["permissions"]["deny"] == ["Read(secret)"]
+        assert restored["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "admin-default"
+        assert restored["otelHeadersHelper"] == "admin-helper"
+
+    def test_invalid_managed_destination_preflights_private_and_mcp(self):
+        self.private.parent.mkdir()
+        self.private.write_text('{"keep":"private"}')
+        self.mcp.write_text('{"keep":"mcp"}')
+        self.managed.write_text("invalid-json")
+        with pytest.raises(RuntimeError):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": ["search-model"]},
+                None,
+                selected_source=self.source(),
+            )
+        assert self.private.read_text() == '{"keep":"private"}'
+        assert self.mcp.read_text() == '{"keep":"mcp"}'
+        self.save.assert_not_called()
+
+    def test_partial_failure_has_no_success_and_retry_preserves_new_sibling(self, monkeypatch):
+        from ucode.managed_ownership import applied_source
+
+        writer = managed_files._sudo_replace
+        monkeypatch.setattr(
+            managed_files, "_sudo_replace", Mock(side_effect=RuntimeError("failure"))
+        )
+        with pytest.raises(RuntimeError, match="failure"):
+            claude.write_tool_config({"workspace": WS}, None, selected_source=self.source())
+        pending = applied_source("claude")
+        assert pending is not None and pending["status"] == "pending"
+        self.save.assert_not_called()
+        doc = json.loads(self.private.read_text())
+        doc["keep"] = "newer"
+        self.private.write_text(json.dumps(doc))
+        monkeypatch.setattr(managed_files, "_sudo_replace", writer)
+        claude.write_tool_config({"workspace": WS}, None, selected_source=self.source())
+        assert json.loads(self.private.read_text())["keep"] == "newer"
+        applied = applied_source("claude")
+        assert applied is not None and applied["status"] == "applied"
+
+    def test_equal_takeover_records_owner_without_privileged_write(self):
+        from ucode.managed_ownership import release_owner
+
+        state = {"workspace": WS, "codex_models": ["search-model"]}
+        claude.write_tool_config(state, None, selected_source=self.source(kind="api"))
+        self.writes.clear()
+        claude.write_tool_config(state, None, selected_source=self.source(owner="isaac"))
+        assert self.writes == []
+        assert release_owner("isaac", "claude")
+        for path in (self.private, self.managed):
+            doc = json.loads(path.read_text())
+            assert "apiKeyHelper" not in doc
+            assert "ANTHROPIC_BASE_URL" not in doc.get("env", {})
+        assert "web_search" not in json.loads(self.mcp.read_text()).get("mcpServers", {})
+
+    def test_workspace_cycle_rewrites_actual_destination_with_identical_digest(self):
+        for workspace in (WS, "https://other.databricks.com", WS):
+            claude.write_tool_config(
+                {"workspace": workspace}, None, selected_source=self.source(workspace=workspace)
+            )
+            assert json.loads(self.managed.read_text())["env"]["ANTHROPIC_BASE_URL"].startswith(
+                workspace
+            )
+
+    def test_private_backup_import_preserves_original_api_baseline(self):
+        from ucode.managed_ownership import release_owner
+
+        baseline = '{"keep":"original"}'
+        claude.CLAUDE_BACKUP_PATH.write_text(baseline)
+        self.private.parent.mkdir()
+        self.private.write_text('{"apiKeyHelper":"previous-generated","keep":"live"}')
+        state = {"workspace": WS, "managed_configs": {"claude": {"keys": [["apiKeyHelper"]]}}}
+        claude.write_tool_config(state, None, selected_source=self.source())
+        snapshots = managed_files.managed_file_snapshots("claude", json.loads, self.private)
+        assert snapshots.original_before_ug == {"keep": "original"}
+        release_owner("local-file", "claude")
+        assert json.loads(self.private.read_text()) == {"keep": "live"}
+
+    def test_project_web_search_conflict_fails_before_settings_writes(self, tmp_path):
+        (tmp_path / ".mcp.json").write_text('{"mcpServers":{"web_search":{"command":"old"}}}')
+        with pytest.raises(RuntimeError, match="project MCP"):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": ["search-model"]},
+                None,
+                selected_source=self.source(),
+            )
+        assert not self.private.exists()
+        assert not self.managed.exists()
+        self.save.assert_not_called()
+
+    def test_release_removes_family_defaults_added_during_composition(self):
+        from ucode.managed_ownership import release_owner
+
+        claude.write_tool_config(
+            {"workspace": WS},
+            None,
+            parent_schema="main.models",
+            coding_agent_config_defaults={"opus": "main.models.opus"},
+            selected_source=self.source(),
+        )
+        for path in (self.private, self.managed):
+            assert (
+                json.loads(path.read_text())["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"]
+                == "main.models.opus"
+            )
+        release_owner("local-file", "claude")
+        for path in (self.private, self.managed):
+            assert "ANTHROPIC_DEFAULT_OPUS_MODEL" not in json.loads(path.read_text()).get("env", {})
+
+    @pytest.mark.parametrize("kind", ["api", "file"])
+    @pytest.mark.parametrize("cleanup", ["release", "revert", "omission"])
+    def test_launch_model_derived_defaults_are_owned_and_cleaned(self, monkeypatch, kind, cleanup):
+        from ucode.managed_ownership import release_owner
+
+        original = {"unrelated": "keep"}
+        self.managed.write_text(json.dumps(original))
+        model = "system.ai.claude-opus-4-8"
+        selected = self.source(kind=kind)
+        claude.write_tool_config(
+            {"workspace": WS, "claude_models": {"opus": model}, "claude_static_models": [model]},
+            model,
+            route_root_model=model,
+            selected_source=selected,
+        )
+        path = ["env", "ANTHROPIC_DEFAULT_OPUS_MODEL"]
+        entry = managed_files._find_entry(managed_files._load_manifest(), "claude", self.managed)
+        assert {"path": path, "value": model + "[1m]"} in entry["active_effects"]
+        assert json.loads(self.managed.read_text())["env"][path[-1]] == model + "[1m]"
+
+        if cleanup == "release":
+            release_owner("workspace-api" if kind == "api" else "local-file", "claude")
+        elif cleanup == "revert":
+            monkeypatch.setattr(
+                managed_files, "_sudo_replace", lambda target, text: target.write_text(text)
+            )
+            managed_files.revert_managed_file(
+                "claude",
+                display="Claude Code",
+                parser=json.loads,
+                dumper=json.dumps,
+                path=self.managed,
+            )
+        else:
+            claude.write_tool_config({"workspace": WS}, None, selected_source=selected)
+
+        restored = json.loads(self.managed.read_text())
+        assert path[-1] not in restored.get("env", {})
+        assert restored["unrelated"] == "keep"
+        if cleanup != "omission":
+            assert restored == original
+
+    def test_picker_omission_preserves_new_user_options_and_siblings(self):
+        state = {"workspace": WS, "claude_static_models": ["first"]}
+        claude.write_tool_config(state, None, selected_source=self.source())
+        user_option = {"model": "user-model", "label": "User model"}
+        for path in (self.private, self.managed):
+            doc = json.loads(path.read_text())
+            doc["modelPicker"]["options"].append(user_option)
+            doc["modelPicker"]["custom"] = "keep"
+            path.write_text(json.dumps(doc))
+        state.pop("claude_static_models")
+        claude.write_tool_config(
+            state, None, parent_schema="main.models", selected_source=self.source()
+        )
+        for path in (self.private, self.managed):
+            assert json.loads(path.read_text())["modelPicker"] == {
+                "options": [user_option],
+                "custom": "keep",
+            }
+
+    def test_stale_workspace_keys_do_not_delete_later_unowned_values(self):
+        first_state = {"workspace": WS, "claude_otel_tracing": True}
+        claude.write_tool_config(first_state, None, selected_source=self.source())
+        second_workspace = "https://other.databricks.com"
+        claude.write_tool_config(
+            {"workspace": second_workspace},
+            None,
+            selected_source=self.source(workspace=second_workspace),
+        )
+        for path in (self.private, self.managed):
+            doc = json.loads(path.read_text())
+            doc["otelHeadersHelper"] = "later-user-helper"
+            path.write_text(json.dumps(doc))
+        first_state.pop("claude_otel_tracing")
+        claude.write_tool_config(first_state, None, selected_source=self.source())
+        for path in (self.private, self.managed):
+            assert json.loads(path.read_text())["otelHeadersHelper"] == "later-user-helper"
+
+    def test_legacy_api_telemetry_migrates_once_without_os_snapshot(self, monkeypatch):
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        state = {"workspace": WS, "claude_otel_tracing": True}
+        claude.write_tool_config(state, None)
+        state.pop("claude_otel_tracing")
+        claude.write_tool_config(state, None, selected_source=self.source())
+        doc = json.loads(self.private.read_text())
+        assert "otelHeadersHelper" not in doc
+        assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in doc.get("env", {})
+        doc["otelHeadersHelper"] = "new-user-helper"
+        self.private.write_text(json.dumps(doc))
+        claude.write_tool_config(state, None, selected_source=self.source())
+        assert json.loads(self.private.read_text())["otelHeadersHelper"] == "new-user-helper"
+
+    def test_legacy_web_search_omission_preserves_other_mcp_servers(self):
+        previous = claude._web_search_mcp_entry(WS, "old-search", "old-profile")
+        self.mcp.write_text(
+            json.dumps(
+                {
+                    "userID": "keep",
+                    "mcpServers": {"web_search": previous, "other": {"command": "keep"}},
+                }
+            )
+        )
+        state = {"workspace": WS, claude.WEB_SEARCH_MCP_STATE_KEY: previous}
+        claude.write_tool_config(state, None, selected_source=self.source())
+        assert json.loads(self.mcp.read_text()) == {
+            "userID": "keep",
+            "mcpServers": {"other": {"command": "keep"}},
+        }

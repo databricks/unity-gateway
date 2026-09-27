@@ -52,9 +52,16 @@ def launch_home(tmp_path, monkeypatch):
     monkeypatch.setattr(codex_config, "DEFAULT_CODEX_CONFIG_PATH", paths["codex"])
     monkeypatch.setattr(codex_config, "codex_managed_config_path", lambda: paths["codex_managed"])
     monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+    monkeypatch.setattr(
+        managed_files,
+        "_SUDO_REPLACE_TARGETS",
+        {managed_files.current_os(): frozenset({paths["claude_managed"], paths["codex_managed"]})},
+    )
 
-    def replace_managed(path, text):
+    def replace_managed(path, text, *, expected_text=...):
         assert path in (paths["claude_managed"], paths["codex_managed"])
+        if expected_text is not ...:
+            assert managed_files.read_managed_file(path) == expected_text
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
 
@@ -93,6 +100,7 @@ def launch_home(tmp_path, monkeypatch):
         "prepare_codex_catalog",
         lambda _binary, names: {"models": [{"slug": name, "visibility": "list"} for name in names]},
     )
+    monkeypatch.setattr(codex, "validate_codex_catalog", lambda *a: None)
     return SimpleNamespace(
         paths=paths,
         bootstrap=bootstrap,
@@ -413,8 +421,13 @@ def test_file_suppresses_saved_provider_at_final_codex_launch_and_restores_api_p
     codex.launch(effective, ["exec", "hello"], options=LaunchOptions())
     assert "main.saved.provider" not in str(process.call_args)
     monkeypatch.setattr(cli, "resolve_provider_models", lambda *a: (None, None, False))
+    catalog_fetch = Mock(
+        return_value={"models": [{"slug": "provider-model", "visibility": "list"}]}
+    )
+    monkeypatch.setattr(codex, "_fetch_codex_model_catalog", catalog_fetch)
     result = runner.invoke(cli.app, ["codex"])
     assert result.exit_code == 0, result.output
+    assert catalog_fetch.call_args.kwargs["identifier"] == "main.saved.provider"
     assert h.launch.call_args.args[1]["_codex_launch_provider"] == "main.saved.provider"
 
 
@@ -445,3 +458,36 @@ def test_claude_caller_settings_remain_forwarded(launch_home):
     assert h.launch.call_args.args[2] == args
     assert h.launch.call_args.kwargs["options"].user_pinned_model == "user-model"
     assert caller.read_text() == '{"userSetting": true}'
+
+
+def test_release_then_api_configure_then_file_takeover_removes_new_api_effects(
+    launch_home, monkeypatch
+):
+    h = launch_home
+    policy = h.root / "policy.json"
+    write_policy(policy, "codex", "system.ai.gpt-file", headers={"X-File": "first"})
+    first = runner.invoke(cli.app, ["codex", "-f", str(policy)])
+    assert first.exit_code == 0, first.output
+    released = runner.invoke(
+        cli.app, ["managed-config", "release", "--owner", "local-file", "--agent", "codex"]
+    )
+    assert released.exit_code == 0, released.output
+    monkeypatch.setattr(
+        managed_config,
+        "refresh_managed_config",
+        lambda *_args, **_kwargs: managed_config.ManagedConfigResult(None, False),
+    )
+    configured = state.load_state()
+    configured["codex_http_headers"] = {"X-API": "after-release"}
+    codex.write_tool_config(configured)
+    assert (
+        read_toml_safe(h.paths["codex"])["model_providers"]["Databricks"]["http_headers"]["X-API"]
+        == "after-release"
+    )
+    write_policy(policy, "codex", "system.ai.gpt-file", headers={"X-File": "second"})
+    second = runner.invoke(cli.app, ["codex", "-f", str(policy)])
+    assert second.exit_code == 0, second.output
+    for path in (h.paths["codex"], h.paths["codex_managed"]):
+        headers = read_toml_safe(path)["model_providers"]["Databricks"]["http_headers"]
+        assert headers["X-File"] == "second"
+        assert "X-API" not in headers

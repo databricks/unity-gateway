@@ -177,7 +177,7 @@ def harness(tmp_path, monkeypatch):
     monkeypatch.setattr(
         claude,
         "managed_file_snapshots",
-        lambda tool, parser: managed_files.ManagedFileSnapshots(
+        lambda tool, parser, path=None: managed_files.ManagedFileSnapshots(
             None,
             json.loads(h.claude_managed.read_text()) if h.claude_managed.exists() else None,
         ),

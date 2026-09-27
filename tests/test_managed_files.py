@@ -511,6 +511,59 @@ class TestSudoReplace:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="The managed writer is Unix-only")
 class TestManagedWorkerShell:
+    @pytest.mark.parametrize("mode", ["once", "session"])
+    def test_expected_content_rechecked_after_approval_delay(self, tmp_path, mode):
+        source = tmp_path / "source.json"
+        source.write_text("desired\n")
+        target = tmp_path / "managed_config.toml"
+        target.write_text("planned snapshot\n")
+        expected = managed_files._sha256(target.read_text())
+        # Model a policy edit while sudo waits for approval, before the privileged worker starts.
+        target.write_text("new administrator policy\n")
+        script = managed_files._SUDO_REPLACE_SCRIPT.replace(
+            "/etc/codex/managed_config.toml", str(target)
+        )
+        arguments = [
+            "/bin/sh",
+            "-c",
+            script,
+            "expected-content-test",
+            mode,
+            managed_files.current_os().value,
+        ]
+        request = None
+        if mode == "once":
+            arguments.extend([str(source), str(target), expected])
+        else:
+            request = (
+                " ".join(
+                    [
+                        "REPLACE",
+                        "1",
+                        managed_files._encode_worker_arg(str(source)),
+                        managed_files._encode_worker_arg(str(target)),
+                        expected,
+                    ]
+                )
+                + "\nQUIT\n"
+            )
+        result = subprocess.run(
+            arguments,
+            input=request,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={"PATH": os.defpath, "SUDO_UID": str(os.getuid())},
+        )
+        if mode == "once":
+            assert result.returncode == 73
+            assert "changed concurrently" in result.stderr
+        else:
+            assert result.returncode == 0
+            assert result.stdout.startswith("ERROR 1 73 ")
+        assert target.read_text() == "new administrator policy\n"
+        assert not list(tmp_path.glob(".managed_config.toml.ucode.*"))
+
     @pytest.mark.parametrize("failed_step", ["", "metadata", "content", "rename"])
     def test_real_shell_preserves_file_on_failed_step(self, tmp_path, failed_step):
         """Exercise the actual shell protocol without sudo, using only temporary files."""
@@ -705,7 +758,7 @@ class TestManagedFileLifecycle:
         path.write_text('{"enterprise": true}\n', encoding="utf-8")
 
         def replace(target, text):
-            assert (backup_dir / "claude-managed-settings.backup.json").exists()
+            assert (backup_dir / managed_files._backup_filename("claude", target)).exists()
             target.write_text(text, encoding="utf-8")
 
         monkeypatch.setattr(managed_files, "_sudo_replace", replace)
@@ -719,11 +772,11 @@ class TestManagedFileLifecycle:
         )
 
         assert result == "written"
-        assert (backup_dir / "claude-managed-settings.backup.json").read_text() == (
+        assert (backup_dir / managed_files._backup_filename("claude", path)).read_text() == (
             '{"enterprise": true}\n'
         )
         manifest = json.loads((backup_dir / "manifest.json").read_text())
-        assert manifest["files"]["claude"]["original_existed"] is True
+        assert managed_files._find_entry(manifest, "claude", path)["original_existed"] is True
 
     def test_batch_messages_name_all_agents_once(self, tmp_path, backup_dir, monkeypatch):
         notes: list[str] = []
@@ -751,7 +804,7 @@ class TestManagedFileLifecycle:
         assert notes == ["Enter password to configure settings for Codex and Claude Code."]
         assert successes == ["Settings configured for Codex and Claude Code"]
 
-    def test_unchanged_file_never_creates_backup(self, tmp_path, backup_dir, monkeypatch):
+    def test_unchanged_file_records_backup_and_ownership(self, tmp_path, backup_dir, monkeypatch):
         path = tmp_path / "managed.json"
         path.write_text("same", encoding="utf-8")
         monkeypatch.setattr(
@@ -768,7 +821,9 @@ class TestManagedFileLifecycle:
         )
 
         assert result == "unchanged"
-        assert not backup_dir.exists()
+        entry = managed_files._find_entry(managed_files._load_manifest(), "claude", path)
+        assert entry["owned_paths"] == [["env"]]
+        assert managed_files._original_text(entry) == "same"
 
     def test_semantic_noop_with_parser_retains_bytes_without_write(
         self, tmp_path, backup_dir, monkeypatch
@@ -790,7 +845,9 @@ class TestManagedFileLifecycle:
 
         assert result == "unchanged"
         assert path.read_text() == '{"b": 2, "a": 1}\n'  # exact bytes retained
-        assert not backup_dir.exists()
+        entry = managed_files._find_entry(managed_files._load_manifest(), "claude", path)
+        assert entry["owned_paths"] == [["a"]]
+        assert managed_files._original_text(entry) == '{"b": 2, "a": 1}\n'
 
     def test_semantically_different_with_parser_still_writes(
         self, tmp_path, backup_dir, monkeypatch

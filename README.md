@@ -84,11 +84,51 @@ the five-minute API cache at `~/.ucode/managed-config.json`; omitting `-f` resto
 the ordinary workspace API source. `--refresh` bypasses that API cache. File
 launches always reread their input and skip workspace budget recommendations.
 
-Local files currently reject `handoff`, `custom_env`, `native_settings`, and
+Local files currently reject `custom_env`, `native_settings`, and
 `native_requirements`, plus nonempty `mcp_servers`, `skills`, `smart_defaults`, and
 legacy `spend_tiers`. Isaac plugin and MCP assets remain separate. Existing
 same-workspace UC resources are retained outside the file's ownership. A workspace
 transition requiring UC MCP or managed-skill cleanup stops with migration guidance.
+
+File applications own their declared effects under the stable owner `local-file`,
+independent of filename and workspace. Updating or omitting a field reconciles its
+previously owned value, including edited values, while preserving unrelated fields.
+Ownership, original backups, applied source metadata, and recovery journals live
+together under `~/.ucode/managed-backups`. A failed application blocks launch and
+retains its journal for retry. Status and doctor report the applied file source;
+`ug export` continues to export workspace API configuration.
+
+Integrations can supply an optional top-level `handoff` object:
+
+```json
+{
+  "schema_version": 1,
+  "owner": "integration-name",
+  "migration_version": 1,
+  "agents": {
+    "claude": {
+      "adopt": [{"target": "private_settings", "path": ["apiKeyHelper"]}],
+      "retire": [{"target": "managed_settings", "path": ["env", "RETIRED_VARIABLE"]}]
+    }
+  }
+}
+```
+
+Adoption requires a field the current application declares. Targets are fixed
+agent surfaces: `user_settings`, `private_settings`, and `managed_settings`.
+The file cannot choose filesystem destinations. Array declarations use an
+`elements` list of exact contributions, preserving other elements and sibling
+hook handlers. Changing migration declarations requires a new positive
+`migration_version`; replaying a completed retirement preserves later user values.
+The `requirements` and `process_env` handoff targets are not supported yet.
+
+An integration can remove its current generated settings, routing, authentication,
+and catalog effects with `ug managed-config release --owner integration-name --agent claude`
+(or `--agent codex`). Release is idempotent, does not discover models or launch an
+agent, and preserves effects transferred to another owner. It may require an
+interactive terminal to clean machine-wide settings. Release removes current
+effects; the separate `ug revert` command restores original backups. Disabled
+agents with outstanding effects must be released before changing the enabled set.
 
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when

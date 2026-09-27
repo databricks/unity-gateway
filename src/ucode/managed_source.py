@@ -28,6 +28,7 @@ AgentExtensionParser = Callable[[object, str, str, dict], object]
 SourceExtensionParser = Callable[[object, str], object]
 AGENT_EXTENSION_PARSERS: dict[str, AgentExtensionParser] = {}
 SOURCE_EXTENSION_PARSERS: dict[str, SourceExtensionParser] = {}
+SUPPORTED_HANDOFF_TARGETS = {"user_settings", "private_settings", "managed_settings"}
 _AGENT_EXTENSIONS = {"custom_env", "native_settings", "native_requirements"}
 _METADATA = {
     "name",
@@ -113,6 +114,64 @@ def _agent(value: object, path: str) -> str:
     if tool is None:
         _invalid(path, "unknown agent")
     return tool
+
+
+def _handoff(value: object, path: str) -> dict:
+    handoff = _object(value, path)
+    _fields(handoff, {"schema_version", "owner", "migration_version", "agents"}, path)
+    if type(handoff.get("schema_version")) is not int or handoff["schema_version"] != 1:
+        _invalid(f"{path}.schema_version", "expected version 1")
+    version = handoff.get("migration_version")
+    if type(version) is not int or version < 1:
+        _invalid(f"{path}.migration_version", "expected a positive integer")
+    owner = _string(handoff.get("owner"), f"{path}.owner")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", owner) or owner == "workspace-api":
+        _invalid(f"{path}.owner", "expected a stable non-reserved owner identifier")
+    agents = _object(handoff.get("agents"), f"{path}.agents")
+    for agent, declarations in agents.items():
+        if agent not in {"claude", "codex"}:
+            _invalid(f"{path}.agents.{agent}", "handoff supports claude and codex")
+        location = f"{path}.agents.{agent}"
+        declarations = _object(declarations, location)
+        _fields(declarations, {"adopt", "retire"}, location)
+        declared_paths = []
+        for action, items in declarations.items():
+            if not isinstance(items, list):
+                _invalid(f"{location}.{action}", "expected an array")
+            for index, item in enumerate(items):
+                entry_path = f"{location}.{action}[{index}]"
+                item = _object(item, entry_path)
+                _fields(item, {"target", "path", "elements"}, entry_path)
+                target = item.get("target")
+                if not isinstance(target, str) or target not in SUPPORTED_HANDOFF_TARGETS:
+                    _invalid(f"{entry_path}.target", "this build cannot apply this handoff target")
+                parts = item.get("path")
+                if (
+                    not isinstance(parts, list)
+                    or not parts
+                    or any(
+                        not isinstance(part, str) or not part or part.isdecimal() or "\x00" in part
+                        for part in parts
+                    )
+                ):
+                    _invalid(
+                        f"{entry_path}.path", "expected nonempty field names without array indexes"
+                    )
+                if "elements" in item and not isinstance(item["elements"], list):
+                    _invalid(
+                        f"{entry_path}.elements", "expected an array of explicit contributions"
+                    )
+                for other_target, other_parts in declared_paths:
+                    if target == other_target and (
+                        parts == other_parts[: len(parts)]
+                        or other_parts == parts[: len(other_parts)]
+                    ):
+                        _invalid(f"{entry_path}.path", "overlapping handoff declarations")
+                declared_paths.append((target, parts))
+    return handoff
+
+
+SOURCE_EXTENSION_PARSERS["handoff"] = _handoff
 
 
 def _fqn(value: object, path: str, parts: int) -> str:

@@ -250,6 +250,44 @@ def _gather_checks() -> list[Check]:
     checks.extend(c for c in optional if c is not None)
     checks.extend(_check_agent_clis())
     checks.append(_check_ug())
+    checks.extend(_check_applied_sources())
+    return checks
+
+
+def _check_applied_sources() -> list[Check]:
+    from ucode.managed_ownership import applied_source
+
+    checks = []
+    for agent in ("claude", "codex"):
+        try:
+            source = applied_source(agent)
+        except RuntimeError:
+            checks.append(
+                Check(
+                    f"{agent} managed application",
+                    "error",
+                    "Unreadable ownership metadata; repair ~/.ucode/managed-backups before applying settings.",
+                )
+            )
+            continue
+        if not source or source.get("status") == "released":
+            continue
+        if source.get("status") == "pending":
+            checks.append(
+                Check(
+                    f"{agent} managed application",
+                    "error",
+                    "An application is incomplete. Retry its source or release its owner before launching.",
+                )
+            )
+        elif source.get("kind") == "file":
+            checks.append(
+                Check(
+                    f"{agent} managed application",
+                    "ok",
+                    f"Applied file {source.get('path')}, owner {source.get('owner')}, workspace {source.get('workspace')}.",
+                )
+            )
     return checks
 
 

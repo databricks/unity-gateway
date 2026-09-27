@@ -63,6 +63,12 @@ from ucode.managed_files import (
     reconcile_managed_file,
     revert_managed_file,
 )
+from ucode.managed_ownership import (
+    DestinationPlan,
+    apply_source,
+    leaf_paths,
+    source_for_writer,
+)
 from ucode.managed_source import SelectedManagedSource
 from ucode.mcp_oauth import (
     CLAUDE_CODE_OAUTH_CLIENT_ID,
@@ -308,6 +314,10 @@ def _managed_relayed_conflicts(path: Path) -> list[str]:
             f"Cannot safely inspect Claude Code managed settings at {path}: {exc}. Repair the "
             "file or contact your administrator."
         ) from exc
+    return _relayed_settings_conflicts(settings)
+
+
+def _relayed_settings_conflicts(settings: dict) -> list[str]:
     conflicts: list[str] = []
     if settings.get("apiKeyHelper"):
         conflicts.append("apiKeyHelper")
@@ -1015,12 +1025,13 @@ def write_tool_config(
     picker_catalog: AnthropicModelCatalog | None = None,
     selected_source: SelectedManagedSource | None = None,
 ) -> dict:
+    selected_source = source_for_writer(state, "claude", selected_source)
     if selected_source is not None:
         selected_source.check_target(state["workspace"], "claude")
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
     # revert would restore that snapshot instead of deleting the file.
-    if not is_tool_managed(state, "claude"):
+    if selected_source is None and not is_tool_managed(state, "claude"):
         backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
     # A managed config makes ug authoritative over the whole custom-header value, so it is
     # overwritten wholesale; without one, preserve the developer's own pre-existing headers. Reuses
@@ -1033,6 +1044,11 @@ def write_tool_config(
     )
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
+    web_search_entry = (
+        _web_search_mcp_entry(state["workspace"], web_search_model, state.get("profile"))
+        if web_search_model
+        else None
+    )
     # Relayed inference points at a local refresh proxy; its loopback base URL is
     # recorded in state so launch starts the proxy on the matching port.
     relayed_base_url = relayed_proxy_base_url(state) if relayed else None
@@ -1062,7 +1078,10 @@ def write_tool_config(
     stale_picker_keys = [
         key
         for key in CLAUDE_MANAGED_PICKER_KEYS
-        if [key] in previous_keys and key not in overlay and (provider or parent_schema)
+        if [key] in previous_keys
+        and key not in overlay
+        and (provider or parent_schema)
+        and selected_source is None
     ]
     managed_file_keys = list(managed_keys)
     for path in (
@@ -1161,19 +1180,21 @@ def write_tool_config(
         merged_env = merged.get("env")
         if isinstance(merged_env, dict):
             for key in CLAUDE_MANAGED_MODEL_ENV_KEYS:
-                if key not in overlay_env:
+                if key not in overlay_env and (selected_source is None or source_scoped_defaults):
                     merged_env.pop(key, None)
             for key in CLAUDE_CONDITIONAL_ENV_KEYS:
                 if key not in overlay_env:
                     merged_env.pop(key, None)
             for key in CLAUDE_OTEL_TRACE_ENV_KEYS:
-                if key not in overlay_env:
+                if key not in overlay_env and (selected_source is None):
                     merged_env.pop(key, None)
             # deep_merge_dict keeps keys already in the file, so drop the ones ucode no
             # longer writes.
             for key in CLAUDE_REMOVED_ENV_KEYS:
                 merged_env.pop(key, None)
-        if not any(key in overlay_for_merge for key in CLAUDE_MANAGED_PICKER_KEYS):
+        if selected_source is None and not any(
+            key in overlay_for_merge for key in CLAUDE_MANAGED_PICKER_KEYS
+        ):
             if managed_settings_snapshots is None:
                 for key in CLAUDE_MANAGED_PICKER_KEYS:
                     merged.pop(key, None)
@@ -1188,39 +1209,204 @@ def write_tool_config(
                             merged[key] = baseline[key]
                         else:
                             merged.pop(key, None)
-        if "otelHeadersHelper" not in overlay_for_merge:
+        if "otelHeadersHelper" not in overlay_for_merge and selected_source is None:
             merged.pop("otelHeadersHelper", None)
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
-    managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
-    write_json_file(
-        CLAUDE_SETTINGS_PATH,
-        _compose(
-            read_json_safe(CLAUDE_SETTINGS_PATH),
-            enforce_model_default_hierarchy=source_scoped_defaults,
-            managed_settings_snapshots=None,
-        ),
+    managed_path = _managed_settings_path()
+    managed_snapshots = (
+        managed_file_snapshots("claude", _parse_managed_settings, managed_path)
+        if selected_source is None
+        else None
     )
 
-    _reconcile_managed_settings(
-        state,
-        lambda base: _compose(
+    def compose_private(base: dict) -> dict:
+        before = copy.deepcopy(base)
+        desired = _compose(
+            base,
+            enforce_model_default_hierarchy=source_scoped_defaults,
+            managed_settings_snapshots=None,
+        )
+        if selected_source is not None:
+            _preserve_permission_denies(before, desired)
+        return desired
+
+    def compose_managed(base: dict) -> dict:
+        before = copy.deepcopy(base)
+        desired = _compose(
             base,
             enforce_model_default_hierarchy=(
                 source_scoped_defaults or (provider is None and parent_schema is None)
             ),
             managed_settings_snapshots=managed_snapshots,
-        ),
-        managed_file_keys,
-        relayed,
-    )
-
-    if web_search_model:
-        web_search_entry = _web_search_mcp_entry(
-            state["workspace"], web_search_model, state.get("profile")
         )
-        if not _web_search_mcp_is_current(state, web_search_entry):
+        _preserve_permission_denies(before, desired)
+        return desired
+
+    if selected_source is None:
+        write_json_file(CLAUDE_SETTINGS_PATH, compose_private(read_json_safe(CLAUDE_SETTINGS_PATH)))
+        _reconcile_managed_settings(state, compose_managed, managed_file_keys, relayed)
+    else:
+        owned_paths = leaf_paths(overlay)
+        for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items():
+            path = ["env", key]
+            if family in (coding_agent_config_defaults or {}) and path not in owned_paths:
+                owned_paths.append(path)
+        contributions = {
+            tuple(path): value
+            for path in owned_paths
+            if isinstance((value := _setting_path(overlay, path)), list)
+        }
+        plans = [
+            DestinationPlan(
+                target="private_settings",
+                path=CLAUDE_SETTINGS_PATH,
+                parser=_parse_managed_settings,
+                dumper=_dump_managed_settings,
+                compose=compose_private,
+                owned_paths=owned_paths,
+                contributions=contributions,
+                baseline_text=(
+                    CLAUDE_BACKUP_PATH.read_text(encoding="utf-8")
+                    if CLAUDE_BACKUP_PATH.exists()
+                    else None
+                ),
+                baseline_supplied=(CLAUDE_BACKUP_PATH.exists() or is_tool_managed(state, "claude")),
+                legacy_owned_paths=[
+                    path
+                    for path in previous_keys
+                    if (len(path) == 2 and path[0] == "env")
+                    or path in [["apiKeyHelper"], ["otelHeadersHelper"]]
+                ],
+            )
+        ]
+        handoff = (selected_source.manifest or {}).get("handoff", {})
+        declarations = handoff.get("agents", {}).get("claude", {})
+        if any(
+            entry.get("target") == "user_settings"
+            for operation in ("adopt", "retire")
+            for entry in declarations.get(operation, [])
+        ):
+            plans.append(
+                DestinationPlan(
+                    target="user_settings",
+                    path=CLAUDE_USER_SETTINGS_PATH,
+                    parser=_parse_managed_settings,
+                    dumper=_dump_managed_settings,
+                    compose=lambda base: base,
+                    owned_paths=[],
+                )
+            )
+        if web_search_entry is not None or state.get(WEB_SEARCH_MCP_STATE_KEY):
+            mcp_overlay = (
+                {"mcpServers": {WEB_SEARCH_MCP_NAME: web_search_entry}}
+                if web_search_entry is not None
+                else {}
+            )
+            project_mcp_path = Path.cwd() / ".mcp.json"
+            project_text = read_managed_file(project_mcp_path)
+            if project_text is not None:
+                project_config = _parse_managed_settings(project_text)
+                if WEB_SEARCH_MCP_NAME in project_config.get("mcpServers", {}):
+                    raise RuntimeError(
+                        f"Managed web search conflicts with project MCP settings at {project_mcp_path}. "
+                        "Remove the project web_search registration before retrying."
+                    )
+
+            def compose_mcp(base: dict) -> dict:
+                for project in (base.get("projects") or {}).values():
+                    if isinstance(project, dict) and WEB_SEARCH_MCP_NAME in project.get(
+                        "mcpServers", {}
+                    ):
+                        raise RuntimeError(
+                            "Managed web search cannot replace a project-local web_search MCP "
+                            "registration. Remove that registration before retrying."
+                        )
+                return deep_merge_dict(base, copy.deepcopy(mcp_overlay))
+
+            mcp_paths = leaf_paths(mcp_overlay)
+            previous_entry = state.get(WEB_SEARCH_MCP_STATE_KEY)
+            previous_overlay = (
+                {"mcpServers": {WEB_SEARCH_MCP_NAME: previous_entry}}
+                if isinstance(previous_entry, dict)
+                else {}
+            )
+            legacy_effects = []
+            for path in leaf_paths(previous_overlay):
+                value = _setting_path(previous_overlay, path)
+                effect = {"path": path, "value": value}
+                if isinstance(value, list):
+                    effect["elements"] = value
+                legacy_effects.append(effect)
+            plans.append(
+                DestinationPlan(
+                    target="web_search_mcp",
+                    path=claude_mcp_config_path(),
+                    parser=_parse_managed_settings,
+                    dumper=_dump_managed_settings,
+                    compose=compose_mcp,
+                    owned_paths=mcp_paths,
+                    contributions={
+                        tuple(path): value
+                        for path in mcp_paths
+                        if isinstance((value := _setting_path(mcp_overlay, path)), list)
+                    },
+                    baseline_supplied=isinstance(previous_entry, dict),
+                    legacy_effects=legacy_effects,
+                )
+            )
+        if managed_path is not None:
+
+            def managed_owned_paths(existing: dict, desired: dict) -> list[list[str]]:
+                paths = list(owned_paths)
+                configured_defaults = coding_agent_config_defaults or {}
+                for family, key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.items():
+                    path = ["env", key]
+                    if (
+                        family not in configured_defaults
+                        and _setting_path(existing, path) is not None
+                        and _setting_path(existing, path) == _setting_path(desired, path)
+                    ):
+                        paths = [owned for owned in paths if owned != path]
+                    elif _setting_path(desired, path) is not None and path not in paths:
+                        # Composition can add discovered defaults even when a launch model
+                        # suppresses their initial overlay entries.
+                        paths.append(path)
+                return paths
+
+            plans.append(
+                DestinationPlan(
+                    target="managed_settings",
+                    path=managed_path,
+                    parser=_parse_managed_settings,
+                    dumper=_dump_managed_settings,
+                    compose=(lambda base: base) if relayed else compose_managed,
+                    owned_paths=[] if relayed else managed_owned_paths,
+                    contributions={} if relayed else contributions,
+                    privileged=True,
+                    optional=True,
+                    writable=not relayed,
+                    compatible=(
+                        (lambda existing, desired: not _relayed_settings_conflicts(existing))
+                        if relayed
+                        else lambda existing, desired: (
+                            not managed_file_conflicts(existing, desired, managed_file_keys)
+                        )
+                    ),
+                    compatible_scope="relay-compatible" if relayed else "local-compatible",
+                )
+            )
+        scopes = apply_source(selected_source, plans)
+        if managed_path is not None:
+            mark_managed_file_verified(
+                state, "claude", managed_path, scope=scopes["managed_settings"]
+            )
+
+    if web_search_model is not None and web_search_entry is not None:
+        if selected_source is not None:
+            state[WEB_SEARCH_MCP_STATE_KEY] = web_search_entry
+        elif not _web_search_mcp_is_current(state, web_search_entry):
             # Registration runs multiple `claude mcp` subprocesses and can take several seconds.
             registration_success = _register_web_search_mcp(
                 state["workspace"], web_search_model, state.get("profile")
@@ -1240,6 +1426,15 @@ def write_tool_config(
     state = mark_tool_managed(state, "claude", managed_keys)
     save_state(state)
     return state
+
+
+def _setting_path(settings: dict, path: list[str]) -> object:
+    value: object = settings
+    for key in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
 
 
 def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str:

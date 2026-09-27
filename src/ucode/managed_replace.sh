@@ -52,6 +52,7 @@ replace_one() (
     set -eu
     source_path=$1
     target=$2
+    expected=${3:-}
     parent=${target%/*}
     target_name=${target##*/}
     staging_template="$parent/.$target_name.ucode.XXXXXX"
@@ -196,6 +197,21 @@ replace_one() (
         printf '%s\n' "Refusing to replace symlinked managed settings: $target" >&2
         exit 1
     fi
+    if [ -n "$expected" ]; then
+        actual=absent
+        if [ -f "$target" ]; then
+            if [ "$platform" = macos ]; then
+                hash_output=$(shasum -a 256 "$target") || exit 1
+            else
+                hash_output=$(sha256sum "$target") || exit 1
+            fi
+            actual=${hash_output%% *}
+        fi
+        if [ "$actual" != "$expected" ]; then
+            printf 'Managed settings changed concurrently at %s; preserved the newer file.\n' "$target" >&2
+            exit 73
+        fi
+    fi
     run_step mv -f "$staging" "$target"
     staging=
     run_step restore_target_flags
@@ -205,15 +221,15 @@ replace_one() (
 
 case "$mode" in
     once)
-        replace_one "$1" "$2"
+        replace_one "$1" "$2" "${3:-}"
         ;;
     session)
-        while IFS=' ' read -r operation request_id source_arg target_arg; do
+        while IFS=' ' read -r operation request_id source_arg target_arg expected_arg; do
             case "$operation" in
                 REPLACE)
                     source_path=$(decode_arg "$source_arg")
                     target=$(decode_arg "$target_arg")
-                    if error_output=$(replace_one "$source_path" "$target" 2>&1); then
+                    if error_output=$(replace_one "$source_path" "$target" "$expected_arg" 2>&1); then
                         printf 'OK %s\n' "$request_id"
                     else
                         status=$?
