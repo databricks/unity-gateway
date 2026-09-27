@@ -16,6 +16,7 @@ from typing import Literal, NoReturn
 from urllib.parse import urlsplit
 
 from ucode import config_io
+from ucode.child_env import env_name_identity, validate_custom_env, validate_env_name
 from ucode.managed_config import (
     AGENT_ENUM_TO_TOOL,
     AGENT_NAME_TO_TOOL,
@@ -26,9 +27,9 @@ from ucode.managed_config import (
 
 AgentExtensionParser = Callable[[object, str, str, dict], object]
 SourceExtensionParser = Callable[[object, str], object]
-AGENT_EXTENSION_PARSERS: dict[str, AgentExtensionParser] = {}
+AGENT_EXTENSION_PARSERS: dict[str, AgentExtensionParser] = {"custom_env": validate_custom_env}
 SOURCE_EXTENSION_PARSERS: dict[str, SourceExtensionParser] = {}
-SUPPORTED_HANDOFF_TARGETS = {"user_settings", "private_settings", "managed_settings"}
+SUPPORTED_HANDOFF_TARGETS = {"user_settings", "private_settings", "managed_settings", "process_env"}
 _AGENT_EXTENSIONS = {"custom_env", "native_settings", "native_requirements"}
 _METADATA = {
     "name",
@@ -161,13 +162,20 @@ def _handoff(value: object, path: str) -> dict:
                     _invalid(
                         f"{entry_path}.elements", "expected an array of explicit contributions"
                     )
+                if target == "process_env":
+                    if len(parts) != 1 or "elements" in item:
+                        _invalid(
+                            entry_path, "process_env requires one variable name and no elements"
+                        )
+                    validate_env_name(parts[0], entry_path)
+                identity_parts = [env_name_identity(parts[0])] if target == "process_env" else parts
                 for other_target, other_parts in declared_paths:
                     if target == other_target and (
-                        parts == other_parts[: len(parts)]
-                        or other_parts == parts[: len(other_parts)]
+                        identity_parts == other_parts[: len(identity_parts)]
+                        or other_parts == identity_parts[: len(other_parts)]
                     ):
                         _invalid(f"{entry_path}.path", "overlapping handoff declarations")
-                declared_paths.append((target, parts))
+                declared_paths.append((target, identity_parts))
     return handoff
 
 

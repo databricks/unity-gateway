@@ -147,7 +147,7 @@ def test_first_use_applies_file_with_real_settings_and_preserves_api_cache(
     h.auth.assert_called_once_with(WS, "selected-profile")
     assert state.load_state()["available_tools"] == [agent]
     assert "_manifest_json" not in state.STATE_PATH.read_text()
-    assert "local" not in state.STATE_PATH.read_text()
+    assert '"local"' not in state.STATE_PATH.read_text()
     for key in (agent, f"{agent}_managed"):
         assert h.paths[key].exists()
         if agent == "claude":
@@ -184,6 +184,27 @@ def test_invalid_file_precedes_every_write_or_bootstrap(launch_home, agent, inva
     h.auth.assert_not_called()
     h.launch.assert_not_called()
     h.api.assert_not_called()
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_saved_tracing_environment_conflict_precedes_bootstrap_and_writes(launch_home, agent):
+    h = launch_home
+    state.save_state({"workspace": WS, f"{agent}_otel_tracing": True})
+    policy = h.root / "tracing-conflict.json"
+    raw = wire(agent)
+    raw["enabled_agents"][0]["config"]["custom_env"] = {
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "hidden-endpoint"
+    }
+    policy.write_text(json.dumps(raw))
+    before = {path: path.read_bytes() for path in h.root.rglob("*") if path.is_file()}
+    result = runner.invoke(cli.app, [agent, "--config-file", str(policy), "--workspace", WS])
+    assert result.exit_code != 0
+    assert "conflict with enabled UG tracing" in " ".join(result.output.split())
+    assert "hidden-endpoint" not in result.output
+    assert {path: path.read_bytes() for path in h.root.rglob("*") if path.is_file()} == before
+    h.bootstrap.assert_not_called()
+    h.auth.assert_not_called()
+    h.launch.assert_not_called()
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
@@ -238,7 +259,7 @@ def test_exactly_one_read_and_one_context_through_all_consumers(launch_home, mon
     result = runner.invoke(cli.app, ["claude", "-f", str(path)])
     assert result.exit_code == 0, result.output
     assert reads == [path]
-    assert len(sources) == 4
+    assert len(sources) == 5  # Includes resolved tracing validation before bootstrap.
     assert all(source is sources[0] for source in sources)
     assert sources[0].resolved_path == path
     assert sources[0].workspace == WS

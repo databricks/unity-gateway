@@ -752,7 +752,8 @@ class TestSubcommandRouting:
             result = runner.invoke(app, ["claude"])
 
         assert result.exit_code == 0, result.output
-        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert calls["launch"].call_args.args[1]["_claude_gateway_discovery"] is True
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
         calls["list_catalog"].assert_not_called()
         assert calls["configure"].call_args.kwargs["picker_catalog"] is None
         assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
@@ -786,7 +787,8 @@ class TestSubcommandRouting:
         )
         calls["resolve_model"].assert_not_called()
         assert calls["launch"].call_args.args[2] == []
-        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert calls["launch"].call_args.args[1]["_claude_gateway_discovery"] is True
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
     def test_claude_model_location_preserves_explicit_model(self):
         with _launch_policy_patches(None) as calls:
@@ -863,7 +865,8 @@ class TestSubcommandRouting:
             calls["launch"].call_args.args[1]["_claude_launch_default_model"] == "claude-opus-4-8"
         )
         assert calls["launch"].call_args.args[2] == []
-        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert calls["launch"].call_args.args[1]["_claude_gateway_discovery"] is True
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
     def test_claude_relayed_provider_keeps_native_picker(self):
         with _launch_policy_patches(None) as calls:
@@ -1278,7 +1281,8 @@ class TestManagedClaudeModelDiscovery:
             assert (
                 calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == expected_models
             )
-        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert calls["launch"].call_args.args[1]["_claude_gateway_discovery"] is True
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
     @pytest.mark.parametrize(
         ("source", "model_args", "default_model"),
@@ -3610,7 +3614,9 @@ class TestConfigureAgentsSelection:
             cli_mod.configure_workspace_command(tool="claude", workspaces=[("https://w.com", None)])
             == 0
         )
-        configure.assert_called_once_with("claude", state, parent_schema="main.models")
+        configure.assert_called_once_with(
+            "claude", {**state, "claude_custom_env": {}}, parent_schema="main.models"
+        )
 
     def test_managed_codex_parent_is_passed_to_generic_configure(self, monkeypatch):
         state = {
@@ -3666,7 +3672,9 @@ class TestConfigureAgentsSelection:
         assert result.exit_code == 0, result.output
         assert "(Provider: Databricks)" in _strip_ansi(result.output)
         refresh.assert_called_once_with(state, force_refresh=True)
-        configure.assert_called_once_with("codex", state, parent_schema="main.models")
+        configure.assert_called_once_with(
+            "codex", {**state, "codex_custom_env": {}}, parent_schema="main.models"
+        )
         install_ai_tools.assert_called_once_with(["codex"], state, force_refresh=False)
 
     def test_managed_config_fails_when_no_enabled_agent_is_available(self, monkeypatch):

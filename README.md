@@ -84,8 +84,8 @@ the five-minute API cache at `~/.ucode/managed-config.json`; omitting `-f` resto
 the ordinary workspace API source. `--refresh` bypasses that API cache. File
 launches always reread their input and skip workspace budget recommendations.
 
-Local files currently reject `custom_env`, `native_settings`, and
-`native_requirements`, plus nonempty `mcp_servers`, `skills`, `smart_defaults`, and
+Local files currently reject `native_settings` and `native_requirements`,
+plus nonempty `mcp_servers`, `skills`, `smart_defaults`, and
 legacy `spend_tiers`. Isaac plugin and MCP assets remain separate. Existing
 same-workspace UC resources are retained outside the file's ownership. A workspace
 transition requiring UC MCP or managed-skill cleanup stops with migration guidance.
@@ -120,7 +120,11 @@ The file cannot choose filesystem destinations. Array declarations use an
 `elements` list of exact contributions, preserving other elements and sibling
 hook handlers. Changing migration declarations requires a new positive
 `migration_version`; replaying a completed retirement preserves later user values.
-The `requirements` and `process_env` handoff targets are not supported yet.
+The `process_env` target addresses one environment name, for example
+`{"target": "process_env", "path": ["RETIRED_VARIABLE"]}`. It does not accept
+`elements`. Adoption requires a currently declared custom variable; retirement
+suppresses an inherited variable once under the named owner. The `requirements`
+target is not supported yet.
 
 An integration can remove its current generated settings, routing, authentication,
 and catalog effects with `ug managed-config release --owner integration-name --agent claude`
@@ -129,6 +133,34 @@ agent, and preserves effects transferred to another owner. It may require an
 interactive terminal to clean machine-wide settings. Release removes current
 effects; the separate `ug revert` command restores original backups. Disabled
 agents with outstanding effects must be released before changing the enabled set.
+
+Each agent's `config.custom_env` is a map of environment names to exact strings:
+
+```json
+"custom_env": {
+  "TEAM_CONTEXT": "engineering",
+  "OTEL_RESOURCE_ATTRIBUTES": "service.namespace=development",
+  "EMPTY_VALUE": ""
+}
+```
+
+Claude receives these through its settings and child process environment. Codex
+receives an actual process environment overlay, including its TUI and app-server;
+`shell_environment_policy.set` is not used as a substitute. Values are transient
+UG launch inputs, not saved developer preferences. Removed owned keys stay absent
+from subsequent agent launches even when the parent shell still supplies them.
+Unrelated inherited variables are preserved.
+
+UG rejects non-string values, invalid names, NULs, generated authentication,
+routing and config-home controls, and conflicts with explicitly enabled UG tracing.
+OTEL variables otherwise follow the same rules as every custom variable. A custom
+`PATH` affects the agent and its children, not UG authentication or lookup of the
+initial agent executable. Bare agent launches and independently opened desktop
+apps do not receive this runtime overlay.
+
+The published `tracing.enabled` flag remains additive: `false` or omission does
+not disable a saved explicit UG tracing preference. Conflicting custom exporters
+are rejected against that effective preference too.
 
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when

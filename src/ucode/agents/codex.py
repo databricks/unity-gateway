@@ -18,6 +18,12 @@ import tomlkit
 from tomlkit.exceptions import ParseError
 
 from ucode import gateway_proxy
+from ucode.child_env import (
+    agent_custom_env,
+    build_child_env,
+    resolve_agent_argv,
+    validate_agent_env,
+)
 from ucode.codex_config import (
     catalog_slugs,
     codex_config_args,
@@ -411,6 +417,7 @@ def write_tool_config(
     parent_schema: str | None = None,
     selected_source: SelectedManagedSource | None = None,
 ) -> dict:
+    validate_agent_env(state, "codex")
     selected_source = source_for_writer(state, "codex", selected_source)
     if selected_source is not None:
         selected_source.check_target(state["workspace"], "codex")
@@ -798,7 +805,7 @@ def _write_owned_tool_config(
                     generated_artifact=True,
                 )
             )
-    scopes = apply_source(source, plans)
+    scopes = apply_source(source, plans, process_env_keys=set(agent_custom_env(state, "codex")))
     if managed_path is not None:
         mark_managed_file_verified(state, "codex", managed_path, scope=scopes["managed_settings"])
     state = mark_tool_managed(state, "codex", private_owned)
@@ -1328,6 +1335,8 @@ def _launch_codex_with_otel_proxy(
     base_argv: list[str],
     tool_args: list[str],
     workspace: str,
+    *,
+    env: dict[str, str] | None = None,
 ) -> None:
     """Run the loopback OTLP refresh proxy for the session, with Codex as a child.
 
@@ -1335,6 +1344,8 @@ def _launch_codex_with_otel_proxy(
     exec-replacing this process; mirrors Claude's relayed launch. The proxy binds an
     OS-assigned port and tears everything down when Codex exits (or fails to spawn).
     """
+    child_env = env if env is not None else build_child_env(state, "codex")
+    base_argv = resolve_agent_argv(base_argv)
     server, cache, client = gateway_proxy.start_otel_proxy(
         workspace, _otel_token_provider(state, workspace)
     )
@@ -1342,12 +1353,13 @@ def _launch_codex_with_otel_proxy(
     server_thread.start()
     endpoint = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1/traces"
     otel_args = codex_config_args(_otel_proxy_overlay(endpoint))
-    proc = subprocess.Popen([*base_argv, *otel_args, *tool_args])
     try:
-        returncode = proc.wait()
-    except KeyboardInterrupt:
-        proc.send_signal(signal.SIGINT)
-        returncode = proc.wait()
+        proc = subprocess.Popen([*base_argv, *otel_args, *tool_args], env=child_env)
+        try:
+            returncode = proc.wait()
+        except KeyboardInterrupt:
+            proc.send_signal(signal.SIGINT)
+            returncode = proc.wait()
     finally:
         cache.stop()
         server.shutdown()
@@ -1362,15 +1374,19 @@ def _run_codex(
     *,
     otel_tracing: bool,
     workspace: str | None,
+    env: dict[str, str] | None = None,
 ) -> None:
     """Launch Codex — via the loopback proxy when OTLP tracing is on, else exec-replace."""
     if tool_args[:1] == ["update"]:
         # exec replaces ug, so reattach only on a later validated refresh.
         detach_app_model_catalog()
     if otel_tracing and workspace:
-        _launch_codex_with_otel_proxy(state, base_argv, tool_args, workspace)
+        _launch_codex_with_otel_proxy(state, base_argv, tool_args, workspace, env=env)
     else:
-        exec_or_spawn([*base_argv, *tool_args])
+        exec_or_spawn(
+            [*base_argv, *tool_args],
+            env=env if env is not None else build_child_env(state, "codex"),
+        )
 
 
 def launch(
@@ -1379,6 +1395,7 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
+    validate_agent_env(state, "codex")
     if options.launch_smart_routing:
         _launch_smart_routing(state, tool_args)
         return
@@ -1410,7 +1427,7 @@ def launch(
     otel_tracing = bool(workspace and state.get("codex_otel_tracing"))
     if workspace:
         token = _launch_token(state, workspace)
-        os.environ["OAUTH_TOKEN"] = token
+    child_env = build_child_env(state, "codex", generated={"OAUTH_TOKEN": token})
     if _use_legacy_layout():
         print_warning_err(
             f"Codex {agent_version(binary)} is outdated. Upgrade Codex to "
@@ -1423,6 +1440,7 @@ def launch(
             tool_args,
             otel_tracing=otel_tracing,
             workspace=workspace,
+            env=child_env,
         )
         return
     # Layer ucode's named profile as ordinary config overrides. Unlike
@@ -1459,6 +1477,7 @@ def launch(
                 tool_args,
                 otel_tracing=otel_tracing,
                 workspace=workspace,
+                env=child_env,
             )
             return
         try:
@@ -1505,6 +1524,7 @@ def launch(
         tool_args,
         otel_tracing=otel_tracing,
         workspace=workspace,
+        env=child_env,
     )
 
 

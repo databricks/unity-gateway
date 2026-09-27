@@ -322,6 +322,13 @@ def resolve_state(
         managed = selected_source.manifest or {}
     resolved = dict(state)
     overlay: dict[str, object] = {}
+    # File environment is invocation-only, including an explicit empty map on omission.
+    if tool in ("claude", "codex"):
+        resolved[f"{tool}_custom_env"] = (
+            dict(_as_dict(_agent_entry(managed, tool).get("custom_env")))
+            if selected_source is not None and selected_source.kind == "file"
+            else {}
+        )
     for key, value in managed_state_overrides(managed, tool).items():
         if value != state.get(key):
             overlay[key] = state.get(key)

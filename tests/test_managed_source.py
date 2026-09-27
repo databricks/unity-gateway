@@ -99,7 +99,7 @@ def test_rejects_raw_types_and_semantics_before_normalization(field, value, erro
     assert "private" not in str(error.value)
 
 
-@pytest.mark.parametrize("field", ["custom_env", "native_settings", "native_requirements"])
+@pytest.mark.parametrize("field", ["native_settings", "native_requirements"])
 @pytest.mark.parametrize("value", [{}, None, {"secret": "private"}])
 def test_unimplemented_extensions_never_silently_disappear(field, value):
     config = wire()
@@ -120,7 +120,7 @@ def test_selector_and_budget_restrictions(field, value):
 def test_full_manifest_validation_includes_unrequested_agent():
     config = wire()
     config["enabled_agents"].extend(wire("claude")["enabled_agents"])
-    config["enabled_agents"][1]["config"]["custom_env"] = {}
+    config["enabled_agents"][1]["config"]["custom_env"] = {"INVALID": False}
     with pytest.raises(RuntimeError, match=r"enabled_agents\[1\].config.custom_env"):
         validate_file_config(config, "codex")
 

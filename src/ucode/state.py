@@ -81,12 +81,20 @@ def _without_managed_overlay(state: dict) -> dict:
     Returns a new dict and leaves ``state`` untouched, so the caller keeps the layered values it
     needs for rendering and repeated saves stay idempotent.
     """
-    state = {key: value for key, value in state.items() if key != "_codex_prepared_catalog"}
+    transient = {
+        "_codex_prepared_catalog",
+        "_claude_gateway_discovery",
+        "claude_custom_env",
+        "codex_custom_env",
+    }
+    state = {key: value for key, value in state.items() if key not in transient}
     overlay = state.get(MANAGED_OVERLAY_KEY)
     if not isinstance(overlay, dict):
         return state
     persisted = {key: value for key, value in state.items() if key != MANAGED_OVERLAY_KEY}
     for key, value in overlay.items():
+        if key in transient:
+            continue
         # A key the developer never set is dropped rather than persisted as None.
         if value is None:
             persisted.pop(key, None)

@@ -2049,24 +2049,45 @@ class TestRegisterWebSearchMcp:
 
 
 class TestClaudeLaunch:
+    @pytest.fixture(autouse=True)
+    def isolate_settings(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", tmp_path / "settings.json")
+
+    def _capture_launch(self, monkeypatch, calls):
+        self.child_envs = []
+
+        def execute(argv, *, env):
+            calls.append(argv)
+            self.child_envs.append(env)
+
+        monkeypatch.setattr(claude, "exec_or_spawn", execute)
+
     def test_gateway_discovery_enabled_for_relayed_provider(self, monkeypatch):
-        calls: list[tuple[dict, str, list[str]]] = []
+        relay = Mock()
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
-        monkeypatch.setattr(
-            claude,
-            "_launch_relayed",
-            lambda state, binary, tool_args: calls.append((state, binary, tool_args)),
-        )
+        monkeypatch.setattr(claude, "_launch_relayed", relay)
         state = {"workspace": WS, "claude_relayed": True}
 
         claude.launch(state, ["--debug"], options=LaunchOptions())
 
-        assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
-        assert calls == [(state, "claude", ["--debug"])]
+        assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in os.environ
+        assert relay.call_args.args == (state, "claude", ["--debug"])
+        assert relay.call_args.kwargs["env"]["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
-    def test_relayed_launch_uses_refresh_proxy(self, monkeypatch):
+    def test_relayed_launch_uses_refresh_proxy(self, monkeypatch, tmp_path):
         calls: list[tuple] = []
+        monkeypatch.setenv("UG_TEST_CUSTOM", "parent")
+        monkeypatch.setenv("OAUTH_TOKEN", "parent-token")
+        parent_bin = tmp_path / "parent-bin"
+        child_bin = tmp_path / "child-bin"
+        for directory in (parent_bin, child_bin):
+            directory.mkdir()
+            executable = directory / "claude"
+            executable.touch()
+            executable.chmod(0o755)
+        monkeypatch.setenv("PATH", str(parent_bin))
 
         class Server:
             server_address = ("127.0.0.1", 12345)
@@ -2086,13 +2107,15 @@ class TestClaudeLaunch:
                 calls.append(("close",))
 
         class Process:
-            def __init__(self, argv):
-                calls.append(("popen", argv))
+            def __init__(self, argv, *, env):
+                calls.append(("popen", argv, env))
 
             def wait(self):
                 return 0
 
         def start_relay_proxy(workspace, token_provider, port):
+            assert os.environ["UG_TEST_CUSTOM"] == "parent"
+            assert os.environ["PATH"] == str(parent_bin)
             calls.append(("proxy", workspace, port, token_provider(False)))
             return Server(), Cache(), Client()
 
@@ -2113,6 +2136,11 @@ class TestClaudeLaunch:
                     "profile": "test",
                     "claude_relayed": True,
                     "relayed_proxy_port": 12345,
+                    "claude_custom_env": {
+                        "UG_TEST_CUSTOM": "child\nvalue",
+                        "UG_TEST_EMPTY": "",
+                        "PATH": str(child_bin),
+                    },
                 },
                 ["--debug"],
                 options=LaunchOptions(),
@@ -2126,6 +2154,158 @@ class TestClaudeLaunch:
             f"tok:{WS}:test:False",
         )
         assert calls[-3:] == [("stop",), ("shutdown",), ("close",)]
+        spawned = next(call for call in calls if call[0] == "popen")
+        assert spawned[1][0] == str(parent_bin / "claude")
+        assert spawned[2]["UG_TEST_CUSTOM"] == "child\nvalue"
+        assert spawned[2]["UG_TEST_EMPTY"] == ""
+        assert spawned[2]["PATH"] == str(child_bin)
+        assert "OAUTH_TOKEN" not in spawned[2]
+        assert os.environ["UG_TEST_CUSTOM"] == "parent"
+        assert os.environ["OAUTH_TOKEN"] == "parent-token"
+
+    def test_relay_spawn_failure_cleans_proxy_without_mutating_parent(self, monkeypatch):
+        server = Mock(server_address=("127.0.0.1", 12345))
+        cache = Mock()
+        client = Mock()
+        monkeypatch.setenv("UG_TEST_CUSTOM", "parent")
+        monkeypatch.setattr(claude, "resolve_agent_argv", lambda argv: ["/test/claude"])
+        monkeypatch.setattr(claude, "_ensure_subscription_login", lambda: None)
+        monkeypatch.setattr(
+            claude.gateway_proxy, "start_relay_proxy", lambda *args: (server, cache, client)
+        )
+        popen = Mock(side_effect=OSError("spawn failed"))
+        monkeypatch.setattr(claude.subprocess, "Popen", popen)
+
+        with pytest.raises(OSError, match="spawn failed"):
+            claude.launch(
+                {
+                    "workspace": WS,
+                    "claude_relayed": True,
+                    "relayed_proxy_port": 12345,
+                    "claude_custom_env": {"UG_TEST_CUSTOM": "child"},
+                },
+                [],
+                options=LaunchOptions(),
+            )
+
+        assert popen.call_args.kwargs["env"]["UG_TEST_CUSTOM"] == "child"
+        cache.stop.assert_called_once_with()
+        server.shutdown.assert_called_once_with()
+        client.close.assert_called_once_with()
+        assert os.environ["UG_TEST_CUSTOM"] == "parent"
+
+    @pytest.mark.parametrize("use_pat", [False, True])
+    def test_custom_env_only_reaches_child_after_fresh_auth(self, monkeypatch, use_pat):
+        calls = []
+        self._capture_launch(monkeypatch, calls)
+        monkeypatch.setenv("UG_TEST_CUSTOM", "parent")
+        monkeypatch.setenv("UG_TEST_UNRELATED", "keep")
+        monkeypatch.setenv("OAUTH_TOKEN", "stale-token")
+        monkeypatch.setenv("ANTHROPIC_MODEL", "stale-model")
+        monkeypatch.setenv("ANTHROPIC_DEFAULT_MODEL", "stale-default")
+        parent_path = os.environ.get("PATH")
+
+        def token(workspace, profile):
+            assert (workspace, profile) == (WS, "test")
+            assert os.environ["UG_TEST_CUSTOM"] == "parent"
+            assert os.environ.get("PATH") == parent_path
+            return "fresh-pat" if use_pat else "fresh-oauth"
+
+        monkeypatch.setattr(claude, "get_databricks_token", token)
+        custom = {"UG_TEST_CUSTOM": "  line one\nline two  ", "UG_TEST_EMPTY": "", "PATH": ""}
+        claude.launch(
+            {"workspace": WS, "profile": "test", "use_pat": use_pat, "claude_custom_env": custom},
+            [],
+            options=LaunchOptions(),
+        )
+
+        child = self.child_envs[0]
+        assert {key: child[key] for key in custom} == custom
+        assert child["UG_TEST_UNRELATED"] == "keep"
+        assert child["OAUTH_TOKEN"] == ("fresh-pat" if use_pat else "fresh-oauth")
+        assert "ANTHROPIC_MODEL" not in child
+        assert "ANTHROPIC_DEFAULT_MODEL" not in child
+        assert os.environ["OAUTH_TOKEN"] == "stale-token"
+        assert os.environ["UG_TEST_CUSTOM"] == "parent"
+        assert os.environ.get("PATH") == parent_path
+
+    def test_custom_oauth_cli_drops_stale_inherited_token(self, monkeypatch):
+        calls = []
+        self._capture_launch(monkeypatch, calls)
+        monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
+        monkeypatch.setenv("OAUTH_TOKEN", "stale-token")
+        monkeypatch.setattr(
+            claude, "get_databricks_token", Mock(side_effect=AssertionError("ordinary auth"))
+        )
+        helper = "ug auth-token --profile ug-oauth-client"
+        claude.CLAUDE_SETTINGS_PATH.write_text(json.dumps({"apiKeyHelper": helper}))
+
+        claude.launch(
+            {
+                "workspace": WS,
+                "custom_oauth": {"profile": "ug-oauth-client"},
+                "claude_custom_env": {"UG_TEST_CUSTOM": "custom"},
+            },
+            [],
+            options=LaunchOptions(),
+        )
+
+        assert "OAUTH_TOKEN" not in self.child_envs[0]
+        assert self.child_envs[0]["UG_TEST_CUSTOM"] == "custom"
+        assert json.loads(claude.CLAUDE_SETTINGS_PATH.read_text())["apiKeyHelper"] == helper
+        assert os.environ["OAUTH_TOKEN"] == "stale-token"
+
+    @pytest.mark.parametrize("inherited", [False, True])
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_cli_discovery_marker_only_changes_child(self, monkeypatch, inherited, enabled):
+        calls = []
+        self._capture_launch(monkeypatch, calls)
+        monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1" if inherited else "0")
+        monkeypatch.setenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "stale")
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *args: "token")
+
+        claude.launch(
+            {"workspace": WS, "_claude_gateway_discovery": enabled}, [], options=LaunchOptions()
+        )
+
+        for key in (
+            claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR,
+            "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+        ):
+            assert self.child_envs[0].get(key) == ("1" if inherited or enabled else None)
+        assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "stale"
+        assert os.environ[claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR] == ("1" if inherited else "0")
+
+    def test_sequential_agents_do_not_leak_custom_env(self, monkeypatch, tmp_path):
+        from ucode.agents import codex
+
+        calls = []
+        self._capture_launch(monkeypatch, calls)
+        monkeypatch.delenv("UG_TEST_CLAUDE", raising=False)
+        monkeypatch.delenv("UG_TEST_CODEX", raising=False)
+        profile = tmp_path / "codex.toml"
+        profile.write_text('model_provider = "Databricks"\n')
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile)
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.154.0")
+        monkeypatch.setattr(codex, "clear_model_preferences", lambda _: False)
+        codex_exec = Mock()
+        monkeypatch.setattr(codex, "exec_or_spawn", codex_exec)
+
+        claude.launch(
+            {"claude_custom_env": {"UG_TEST_CLAUDE": "first"}}, [], options=LaunchOptions()
+        )
+        codex.launch({"codex_custom_env": {"UG_TEST_CODEX": "second"}}, [], options=LaunchOptions())
+        claude.launch({}, [], options=LaunchOptions())
+
+        assert self.child_envs[0]["UG_TEST_CLAUDE"] == "first"
+        assert "UG_TEST_CODEX" not in self.child_envs[0]
+        codex_child = codex_exec.call_args.kwargs["env"]
+        assert codex_child["UG_TEST_CODEX"] == "second"
+        assert "UG_TEST_CLAUDE" not in codex_child
+        assert "UG_TEST_CLAUDE" not in self.child_envs[1]
+        assert "UG_TEST_CODEX" not in self.child_envs[1]
+        assert "UG_TEST_CLAUDE" not in os.environ
+        assert "UG_TEST_CODEX" not in os.environ
 
     def test_smart_routing_on_windows_is_not_supported(self, monkeypatch):
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
@@ -2148,11 +2328,12 @@ class TestClaudeLaunch:
         monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        self._capture_launch(monkeypatch, calls)
 
         claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
 
-        assert os.environ["OAUTH_TOKEN"] == "token"
+        assert self.child_envs[0]["OAUTH_TOKEN"] == "token"
+        assert "OAUTH_TOKEN" not in os.environ
         assert "ANTHROPIC_DEFAULT_MODEL" not in os.environ
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
 
@@ -2161,7 +2342,7 @@ class TestClaudeLaunch:
         monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
         monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        self._capture_launch(monkeypatch, calls)
 
         claude.launch(
             {
@@ -2173,8 +2354,10 @@ class TestClaudeLaunch:
             options=LaunchOptions(user_pinned_model="cat.schema.model"),
         )
 
-        assert os.environ["ANTHROPIC_MODEL"] == "cat.schema.model"
-        assert os.environ["ANTHROPIC_DEFAULT_MODEL"] == "main.default.claude-sonnet-5"
+        assert self.child_envs[0]["ANTHROPIC_MODEL"] == "cat.schema.model"
+        assert self.child_envs[0]["ANTHROPIC_DEFAULT_MODEL"] == "main.default.claude-sonnet-5"
+        assert "ANTHROPIC_MODEL" not in os.environ
+        assert "ANTHROPIC_DEFAULT_MODEL" not in os.environ
         assert calls[0][:2] == ["claude", "--settings"]
         settings = json.loads(calls[0][2])
         assert settings["env"]["ANTHROPIC_MODEL"] == "cat.schema.model"
@@ -2192,8 +2375,11 @@ class TestClaudeLaunch:
             options=LaunchOptions(launch_smart_routing=True),
         )
 
-        assert os.environ["ANTHROPIC_DEFAULT_MODEL"] == "main.default.claude-sonnet-5"
         v2.launch_claude.assert_called_once()
+        assert v2.launch_claude.call_args.kwargs["env"]["ANTHROPIC_DEFAULT_MODEL"] == (
+            "main.default.claude-sonnet-5"
+        )
+        assert "ANTHROPIC_DEFAULT_MODEL" not in os.environ
 
     @pytest.mark.parametrize(
         ("saved_model", "picker_sonnet", "configured_sonnet"),
@@ -2238,7 +2424,7 @@ class TestClaudeLaunch:
         monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_settings_path)
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        self._capture_launch(monkeypatch, calls)
 
         claude.launch(
             {
@@ -2289,7 +2475,7 @@ class TestClaudeLaunch:
         monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_settings_path)
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        self._capture_launch(monkeypatch, calls)
 
         claude.launch(
             {
@@ -2318,7 +2504,7 @@ class TestClaudeLaunch:
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(v2, "launch_claude", Mock())
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        self._capture_launch(monkeypatch, calls)
 
         claude.launch({"workspace": WS}, tool_args, options=LaunchOptions())
 
@@ -2337,16 +2523,16 @@ class TestClaudeLaunch:
             options=LaunchOptions(launch_smart_routing=True),
         )
 
-        launch_v2.assert_called_once_with(
-            {"workspace": WS},
-            tool_args,
-            binary="claude",
-            user_settings_path=claude.CLAUDE_USER_SETTINGS_PATH,
-            launch_model=None,
-            compose_settings=claude._compose_v2_settings,
-            launch_model_args=claude._launch_model_args,
-            model_name=claude._maybe_add_1m_suffix,
-        )
+        launch_v2.assert_called_once()
+        assert launch_v2.call_args.args == ({"workspace": WS}, tool_args)
+        kwargs = launch_v2.call_args.kwargs
+        assert kwargs["binary"] == "claude"
+        assert kwargs["user_settings_path"] == claude.CLAUDE_USER_SETTINGS_PATH
+        assert kwargs["launch_model"] is None
+        assert kwargs["compose_settings"](tool_args) == claude._compose_v2_settings(tool_args)
+        assert kwargs["launch_model_args"] is claude._launch_model_args
+        assert kwargs["model_name"] is claude._maybe_add_1m_suffix
+        assert "OAUTH_TOKEN" not in kwargs["env"]
 
     def test_gateway_discovery_uses_direct_gateway(self, monkeypatch):
         calls: list[list[str]] = []
@@ -2354,12 +2540,14 @@ class TestClaudeLaunch:
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        self._capture_launch(monkeypatch, calls)
 
         claude.launch({"workspace": WS, "profile": "test"}, ["--debug"], options=LaunchOptions())
 
-        assert os.environ["OAUTH_TOKEN"] == "token"
-        assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert self.child_envs[0]["OAUTH_TOKEN"] == "token"
+        assert self.child_envs[0]["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert "OAUTH_TOKEN" not in os.environ
+        assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in os.environ
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
 
     def test_gateway_discovery_enabled_under_provider(self, monkeypatch):
@@ -2368,7 +2556,7 @@ class TestClaudeLaunch:
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+        self._capture_launch(monkeypatch, calls)
 
         claude.launch(
             {
@@ -2380,7 +2568,8 @@ class TestClaudeLaunch:
             options=LaunchOptions(),
         )
 
-        assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert self.child_envs[0]["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in os.environ
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), "--debug"]]
 
 
@@ -3062,6 +3251,148 @@ class TestOwnedClaudeDestinations:
             digest="same-input-digest",
             _manifest_json=json.dumps(manifest) if kind == "file" else None,
         )
+
+    @pytest.mark.parametrize("smart_routing", [False, True])
+    def test_custom_env_lifecycle_scrubs_native_caller_and_child_values(
+        self, monkeypatch, smart_routing
+    ):
+        self.private.parent.mkdir()
+        for path in (self.private, self.managed):
+            path.write_text('{"env":{"UG_TEST_UNRELATED":"native-keep"}}')
+        monkeypatch.setenv("UG_TEST_RETIRED", "inherited-A")
+        monkeypatch.setenv("UG_TEST_CURRENT", "inherited-A")
+        monkeypatch.setenv("UG_TEST_UNRELATED", "inherited-keep")
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *args: "fresh-token")
+        boundary = Mock()
+        monkeypatch.setattr(claude, "exec_or_spawn", boundary)
+        monkeypatch.setattr(v2, "launch_claude", boundary)
+        caller = json.dumps({"env": {"UG_TEST_RETIRED": "caller-A", "UG_TEST_CALLER": "keep"}})
+        initial = {
+            "UG_TEST_RETIRED": "A",
+            "UG_TEST_CURRENT": "  line one\nline two  ",
+            "UG_TEST_EMPTY": "",
+            "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318",
+        }
+        scenarios = [
+            (WS, initial),
+            ("https://other.databricks.com", {"UG_TEST_CURRENT": "B"}),
+            ("https://other.databricks.com", {}),
+            ("https://other.databricks.com", {}),
+        ]
+        for workspace, custom in scenarios:
+            state = {"workspace": workspace, "claude_custom_env": custom}
+            claude.write_tool_config(state, None, selected_source=self.source(workspace=workspace))
+            claude.launch(
+                state,
+                ["--settings", caller, "prompt"],
+                options=LaunchOptions(launch_smart_routing=smart_routing),
+            )
+            if smart_routing:
+                composed, remaining = boundary.call_args.kwargs["compose_settings"](
+                    ["--settings", caller, "prompt"]
+                )
+                assert remaining == ["prompt"]
+            else:
+                argv = boundary.call_args.args[0]
+                composed = json.loads(argv[argv.index("--settings") + 1])
+            child = boundary.call_args.kwargs["env"]
+            for path in (self.private, self.managed):
+                native = json.loads(path.read_text())["env"]
+                for key in initial:
+                    assert native.get(key) == custom.get(key)
+                assert native["UG_TEST_UNRELATED"] == "native-keep"
+            for key in initial:
+                assert child.get(key) == custom.get(key)
+                assert composed["env"].get(key) == custom.get(key)
+            assert composed["env"]["UG_TEST_CALLER"] == "keep"
+            assert child["UG_TEST_UNRELATED"] == "inherited-keep"
+        assert boundary.call_count == 4
+        assert os.environ["UG_TEST_RETIRED"] == "inherited-A"
+        assert os.environ["UG_TEST_CURRENT"] == "inherited-A"
+        assert json.loads(caller)["env"]["UG_TEST_RETIRED"] == "caller-A"
+
+    @pytest.mark.parametrize("existing_value", [None, "exact\nvalue"])
+    def test_relay_custom_env_uses_private_settings_without_os_writes(
+        self, monkeypatch, existing_value
+    ):
+        native = {"env": {"UG_TEST_UNRELATED": "keep"}}
+        if existing_value is not None:
+            native["env"]["UG_TEST_CUSTOM"] = existing_value
+        original = json.dumps(native)
+        self.managed.write_text(original)
+        monkeypatch.setattr(claude, "relayed_proxy_base_url", lambda _: "http://127.0.0.1:9999")
+
+        claude.write_tool_config(
+            {"workspace": WS, "claude_custom_env": {"UG_TEST_CUSTOM": "exact\nvalue"}},
+            None,
+            relayed=True,
+            selected_source=self.source(),
+        )
+
+        settings = json.loads(self.private.read_text())
+        assert settings["env"]["UG_TEST_CUSTOM"] == "exact\nvalue"
+        assert "apiKeyHelper" not in settings
+        assert self.managed.read_text() == original
+        assert self.writes == []
+
+    def test_relay_custom_env_rejects_conflicting_os_value_before_private_write(self, monkeypatch):
+        original = '{"env":{"UG_TEST_CUSTOM":"machine-value"}}'
+        self.managed.write_text(original)
+        monkeypatch.setattr(claude, "relayed_proxy_base_url", lambda _: "http://127.0.0.1:9999")
+
+        with pytest.raises(RuntimeError):
+            claude.write_tool_config(
+                {"workspace": WS, "claude_custom_env": {"UG_TEST_CUSTOM": "desired-value"}},
+                None,
+                relayed=True,
+                selected_source=self.source(),
+            )
+
+        assert not self.private.exists()
+        assert self.managed.read_text() == original
+        assert self.writes == []
+        self.save.assert_not_called()
+
+    def test_relay_rejects_required_previous_os_cleanup_before_private_write(self, monkeypatch):
+        claude.write_tool_config(
+            {"workspace": WS, "claude_custom_env": {"UG_TEST_RETIRED": "old"}},
+            None,
+            selected_source=self.source(),
+        )
+        before = {path: path.read_bytes() for path in (self.private, self.managed)}
+        self.writes.clear()
+        monkeypatch.setattr(claude, "relayed_proxy_base_url", lambda _: "http://127.0.0.1:9999")
+
+        with pytest.raises(RuntimeError):
+            claude.write_tool_config(
+                {"workspace": WS}, None, relayed=True, selected_source=self.source()
+            )
+
+        assert {path: path.read_bytes() for path in before} == before
+        assert self.writes == []
+
+    @pytest.mark.parametrize(
+        "custom",
+        [
+            {"OAUTH_TOKEN": "private-value"},
+            {"UG_TEST_CUSTOM": "private\x00value"},
+            {"OTEL_EXPORTER_OTLP_ENDPOINT": "private-value"},
+        ],
+    )
+    def test_invalid_resolved_custom_env_fails_before_writes_and_auth(self, monkeypatch, custom):
+        token = Mock(side_effect=AssertionError("auth before validation"))
+        monkeypatch.setattr(claude, "get_databricks_token", token)
+        state = {"workspace": WS, "claude_otel_tracing": True, "claude_custom_env": custom}
+        with pytest.raises(RuntimeError) as error:
+            claude.write_tool_config(state, None, selected_source=self.source())
+        assert "private-value" not in str(error.value)
+        with pytest.raises(RuntimeError):
+            claude.launch(state, [], options=LaunchOptions())
+        token.assert_not_called()
+        assert not self.private.exists()
+        assert not self.managed.exists()
+        assert not claude.CLAUDE_BACKUP_PATH.exists()
+        self.save.assert_not_called()
 
     def test_file_to_api_none_cleans_edited_headers_and_telemetry(self):
         state = {

@@ -221,6 +221,148 @@ class TestWorkspaceOrgId:
 
 
 class TestBuildDatabricksCliEnv:
+    @pytest.mark.parametrize("callback", ["auth-token", "custom-oauth", "otel-headers"])
+    def test_generated_callback_preserves_auth_path_after_custom_agent_path(
+        self, tmp_path, monkeypatch, callback
+    ):
+        from typer.testing import CliRunner
+
+        from ucode import child_env, cli
+
+        original_bin = tmp_path / "original"
+        original_bin.mkdir()
+        executable = original_bin / "databricks"
+        executable.write_text("unused mocked executable\n")
+        executable.chmod(0o700)
+        inherited = {
+            "PATH": str(original_bin),
+            "HOME": str(tmp_path),
+            "ENABLE_CUSTOM_OAUTH_FROM_CLI": "1",
+        }
+        child = child_env.build_child_env(
+            {"claude_custom_env": {"PATH": str(tmp_path / "agent-tools")}},
+            "claude",
+            inherited=inherited,
+        )
+        monkeypatch.setattr(os, "environ", child)
+        calls = []
+
+        def capture(args, **kwargs):
+            assert args[0] == str(executable)
+            assert kwargs["env"]["PATH"] == str(original_bin)
+            calls.append(args)
+            value = (
+                {
+                    "profiles": [
+                        {"name": "original-profile", "host": WS, "auth_type": "databricks-cli"}
+                    ]
+                }
+                if "profiles" in args
+                else {"access_token": "fresh-callback-token"}
+            )
+            return subprocess.CompletedProcess(args, 0, json.dumps(value), "")
+
+        monkeypatch.setattr(subprocess, "run", capture)
+        command = [
+            "otel-headers" if callback == "otel-headers" else "auth-token",
+            "--host",
+            WS,
+            "--force-refresh",
+        ]
+        if callback == "custom-oauth":
+            command.extend(
+                [
+                    "--client-id",
+                    "custom-client",
+                    "--scopes",
+                    "offline_access,all-apis",
+                    "--profile",
+                    "original-profile",
+                ]
+            )
+        result = CliRunner().invoke(cli.app, command)
+        assert result.exit_code == 0, result.output
+        if callback == "otel-headers":
+            assert json.loads(result.stdout) == {"Authorization": "Bearer fresh-callback-token"}
+        else:
+            assert result.stdout.strip() == "fresh-callback-token"
+        assert "--force-refresh" in calls[-1]
+        assert "original-profile" in calls[-1]
+        if callback != "custom-oauth":
+            assert "profiles" in calls[0]
+        assert os.environ["PATH"] == str(tmp_path / "agent-tools")
+        assert inherited["PATH"] == str(original_bin)
+
+    def test_external_bearer_command_uses_original_auth_path(self, tmp_path, monkeypatch):
+        from ucode import child_env
+
+        executable = tmp_path / "credential-broker"
+        executable.write_text("unused mocked executable\n")
+        executable.chmod(0o700)
+        child = child_env.build_child_env(
+            {"codex_custom_env": {"PATH": "/agent/tools"}},
+            "codex",
+            inherited={
+                "PATH": str(tmp_path),
+                "DATABRICKS_BEARER_COMMAND": "credential-broker --refresh",
+            },
+        )
+        monkeypatch.setattr(os, "environ", child)
+
+        def capture(args, **kwargs):
+            assert args == [str(executable), "--refresh"]
+            assert kwargs["env"]["PATH"] == str(tmp_path)
+            return subprocess.CompletedProcess(args, 0, "fresh-broker-token", "")
+
+        monkeypatch.setattr(subprocess, "run", capture)
+        assert get_databricks_token(WS) == "fresh-broker-token"
+        assert child["PATH"] == "/agent/tools"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'broker.exe --scope "opaque value"',
+            '"C:\\original tools\\broker.exe" --scope "opaque value"',
+        ],
+    )
+    def test_windows_bearer_command_pins_executable_and_preserves_command_line(
+        self, monkeypatch, command
+    ):
+        import ntpath
+        from types import SimpleNamespace
+
+        from ucode import child_env
+
+        inherited = {
+            "PATH": r"C:\agent-tools",
+            child_env.ORIGINAL_PATH_ENV: r"C:\original tools",
+            "DATABRICKS_BEARER_COMMAND": command,
+        }
+        fake_os = SimpleNamespace(name="nt", path=ntpath, environ=inherited)
+        monkeypatch.setattr(db_mod, "os", fake_os)
+        monkeypatch.setattr(child_env, "os", fake_os)
+        resolved = r"C:\original tools\broker.exe"
+        searched = []
+
+        def which(name, *, path):
+            searched.append((name, path))
+            return resolved
+
+        monkeypatch.setattr(db_mod.shutil, "which", which)
+
+        def capture(args, **kwargs):
+            assert args == command
+            assert kwargs["executable"] == resolved
+            assert kwargs["env"]["PATH"] == r"C:\original tools"
+            return subprocess.CompletedProcess(args, 0, "fresh-windows-token", "")
+
+        monkeypatch.setattr(subprocess, "run", capture)
+        assert get_databricks_token(WS) == "fresh-windows-token"
+        assert searched == [
+            (resolved if command.startswith('"') else "broker.exe", r"C:\original tools")
+        ]
+        assert inherited["PATH"] == r"C:\agent-tools"
+
     def test_sets_databricks_host(self):
         env = build_databricks_cli_env(WS)
         assert env["DATABRICKS_HOST"] == WS

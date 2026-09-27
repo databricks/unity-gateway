@@ -25,9 +25,37 @@ from ucode.managed_resolve import (
     recommended_agent,
     resolve_state,
 )
+from ucode.managed_source import SelectedManagedSource
 from ucode.state import MANAGED_OVERLAY_KEY
 
 WORKSPACE = "https://ws.example.com"
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_custom_environment_is_file_only_per_agent_and_transient(agent):
+    managed = {
+        "enabled_agents": {
+            "claude": {"custom_env": {"TEST": "claude\n"}},
+            "codex": {"custom_env": {"TEST": ""}},
+        }
+    }
+    selected = SelectedManagedSource(
+        kind="file", workspace=WORKSPACE, agent=agent, _manifest_json=json.dumps(managed)
+    )
+    original = {"workspace": WORKSPACE, f"{agent}_custom_env": {"STALE": "old"}}
+    resolved = resolve_state(managed, original, agent, selected_source=selected)
+    assert resolved[f"{agent}_custom_env"] == managed["enabled_agents"][agent]["custom_env"]
+    assert original[f"{agent}_custom_env"] == {"STALE": "old"}
+    omitted = SelectedManagedSource(
+        kind="file", workspace=WORKSPACE, agent=agent, _manifest_json="{}"
+    )
+    assert resolve_state({}, resolved, agent, selected_source=omitted)[f"{agent}_custom_env"] == {}
+    assert resolve_state(managed, resolved, agent)[f"{agent}_custom_env"] == {}
+    state_mod.save_state(resolved)
+    persisted = state_mod.STATE_PATH.read_text()
+    assert "custom_env" not in persisted
+    assert "STALE" not in persisted
+
 
 # A normalized managed config, as `managed_config.normalize_managed_config` produces it.
 MANAGED = {

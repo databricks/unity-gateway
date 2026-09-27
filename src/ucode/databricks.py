@@ -30,6 +30,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
+from ucode.child_env import auth_dependency_env
 from ucode.config_io import APP_DIR
 from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
@@ -196,7 +197,7 @@ def _log_auth_diagnostics() -> None:
         return
 
     try:
-        version_result = subprocess.run(
+        version_result = run(
             ["databricks", "--version"],
             check=False,
             capture_output=True,
@@ -209,7 +210,7 @@ def _log_auth_diagnostics() -> None:
         _debug("databricks --version", f"exception: {type(exc).__name__}: {exc}")
 
     try:
-        profiles_result = subprocess.run(
+        profiles_result = run(
             ["databricks", "auth", "profiles", "--output", "json"],
             check=False,
             capture_output=True,
@@ -653,6 +654,25 @@ def run(
     env: dict[str, str] | None = None,
     timeout: int | None = None,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+    executable_override: dict[str, Any] = {}
+    auth_env = auth_dependency_env(env)
+    if auth_env is not None:
+        env = auth_env
+        command = args[0] if isinstance(args, list) and args else args
+        if isinstance(command, str) and command:
+            if isinstance(args, str) and os.name == "nt":
+                match = re.match(r'^\s*(?:"([^"]+)"|(\S+))', args)
+                command = (match.group(1) or match.group(2)) if match else args
+            executable = shutil.which(command, path=env["PATH"])
+            if executable is None:
+                raise FileNotFoundError(
+                    f"Cannot find authentication dependency {command} on UG's original PATH."
+                )
+            # Windows does not use the supplied env's PATH for executable lookup.
+            if isinstance(args, str):
+                executable_override["executable"] = os.path.abspath(executable)
+            else:
+                args = [os.path.abspath(executable), *args[1:]]
     return subprocess.run(
         args,
         check=check,
@@ -660,11 +680,12 @@ def run(
         text=text,
         env=env,
         timeout=timeout,
+        **executable_override,
     )
 
 
 def build_databricks_cli_env(workspace: str, profile: str | None = None) -> dict[str, str]:
-    env = os.environ.copy()
+    env = auth_dependency_env() or os.environ.copy()
     env["DATABRICKS_HOST"] = workspace
     if profile is None:
         env.pop("DATABRICKS_CONFIG_PROFILE", None)

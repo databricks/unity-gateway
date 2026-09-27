@@ -374,6 +374,163 @@ def test_retired_environment_survives_two_omissions_and_release_is_owner_scoped(
     assert ownership.retired_environment("claude") == {"NEW"}
 
 
+def process_handoff(action, name):
+    declaration = handoff(action, [name])
+    declaration["agents"]["claude"][action][0]["target"] = "process_env"
+    return declaration
+
+
+def test_process_adoption_requires_current_declaration_before_writes(destinations):
+    path = destinations["claude"]
+    selected = source(handoff=process_handoff("adopt", "ADOPTED"))
+    with pytest.raises(RuntimeError, match="current custom_env declaration"):
+        ownership.apply_source(selected, [plan(path, {"generated": True})])
+    assert not path.exists()
+    assert ownership.applied_source("claude") is None
+    ownership.apply_source(selected, [plan(path, {})], process_env_keys={"ADOPTED"})
+    assert files._load_manifest()["process_env"]["claude"] == {"ADOPTED": "integration"}
+    ownership.apply_source(selected, [plan(path, {})])
+    assert ownership.retired_environment("claude") == {"ADOPTED"}
+
+
+def test_process_retirement_is_durable_one_time_and_transfer_safe(destinations):
+    from ucode.child_env import build_child_env
+
+    selected = source(handoff=process_handoff("retire", "OLD"))
+    path = destinations["claude"]
+    for _ in range(2):
+        ownership.apply_source(selected, [plan(path, {})])
+        assert build_child_env({}, "claude", inherited={"OLD": "parent-stale", "KEEP": "user"}) == {
+            "KEEP": "user"
+        }
+    manifest = files._load_manifest()
+    assert "integration:1:claude:process_env" in manifest["migration_receipts"]
+    assert ownership.release_owner("integration", "claude")
+    ownership.apply_source(selected, [plan(path, {})])
+    assert ownership.retired_environment("claude") == set()
+    assert build_child_env({}, "claude", inherited={"OLD": "new-user"}) == {"OLD": "new-user"}
+    ownership.apply_source(source(owner="next"), [plan(path, {})], process_env_keys={"OLD"})
+    ownership.release_owner("integration", "claude")
+    assert files._load_manifest()["process_env"]["claude"] == {"OLD": "next"}
+    ownership.apply_source(source(owner="next", workspace="https://b.example"), [plan(path, {})])
+    assert ownership.retired_environment("claude") == {"OLD"}
+    ownership.release_owner("integration", "claude")
+    assert ownership.retired_environment("claude") == {"OLD"}
+
+
+def test_process_receipt_is_not_committed_when_destination_write_fails(destinations, monkeypatch):
+    path = destinations["claude"]
+    selected = source(handoff=process_handoff("retire", "OLD"))
+    original = ownership._atomic_replace
+    monkeypatch.setattr(ownership, "_atomic_replace", Mock(side_effect=OSError("test failure")))
+    with pytest.raises(OSError, match="test failure"):
+        ownership.apply_source(selected, [plan(path, {"generated": True})])
+    assert "integration:1:claude:process_env" not in files._load_manifest()["migration_receipts"]
+    assert ownership.retired_environment("claude") == set()
+    monkeypatch.setattr(ownership, "_atomic_replace", original)
+    ownership.apply_source(selected, [plan(path, {"generated": True})])
+    assert ownership.retired_environment("claude") == {"OLD"}
+
+
+def test_process_handoff_changed_receipt_rejected(destinations):
+    path = destinations["claude"]
+    ownership.apply_source(source(handoff=process_handoff("retire", "OLD")), [plan(path, {})])
+    with pytest.raises(RuntimeError, match="increment migration_version"):
+        ownership.apply_source(
+            source(handoff=process_handoff("retire", "NEW")), [plan(path, {"new": 1})]
+        )
+    assert get(path) == {}
+
+
+@pytest.mark.parametrize("final_source", ["file", "api"])
+def test_failed_applications_retain_process_ownership_across_source_changes(
+    destinations, monkeypatch, final_source
+):
+    from ucode.child_env import build_child_env
+
+    private, managed = destinations["claude"], destinations["managed"]
+    original = ownership._atomic_replace
+
+    def fail_managed(path, text, previous):
+        if path == managed:
+            raise OSError("blocked managed write")
+        original(path, text, previous)
+
+    monkeypatch.setattr(ownership, "_atomic_replace", fail_managed)
+    for owner, name in [("first", "OLD"), ("second", "NEXT")]:
+        selected = source(owner=owner)
+        with pytest.raises(OSError, match="blocked managed write"):
+            ownership.apply_source(
+                selected,
+                [
+                    plan(private, {"env": {name: owner}}),
+                    plan(managed, {"env": {name: owner}}, "managed_settings"),
+                ],
+                process_env_keys={name},
+            )
+        assert get(private) == {"env": {name: owner}}
+    assert files._load_manifest()["pending"]["claude"]["process_env"] == {
+        "OLD": "first",
+        "NEXT": "second",
+    }
+    monkeypatch.setattr(ownership, "_atomic_replace", original)
+    selected = (
+        source(owner="third")
+        if final_source == "file"
+        else SelectedManagedSource.from_api((None, False), "https://b.example", "claude")
+    )
+    ownership.apply_source(selected, [plan(private, {}), plan(managed, {}, "managed_settings")])
+    assert get(private) == {}
+    assert ownership.retired_environment("claude") == {"OLD", "NEXT"}
+    for _ in range(2):
+        assert build_child_env(
+            {}, "claude", inherited={"OLD": "stale", "NEXT": "stale", "KEEP": "user"}
+        ) == {"KEEP": "user"}
+    ownership.release_owner("first", "claude")
+    assert ownership.retired_environment("claude") == {"NEXT"}
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"target": "process_env", "path": ["ONE", "TWO"]},
+        {"target": "process_env", "path": ["ONE"], "elements": []},
+        {"target": "process_env", "path": ["OAUTH_TOKEN"]},
+        {"target": "process_env", "path": ["INVALID-NAME"]},
+    ],
+)
+def test_invalid_process_handoff_is_rejected_by_parser(item):
+    from tests.test_managed_source import wire
+
+    raw = wire("claude")
+    raw["handoff"] = process_handoff("retire", "OLD")
+    raw["handoff"]["agents"]["claude"]["retire"] = [item]
+    with pytest.raises(RuntimeError):
+        validate_file_config(raw, "claude")
+
+
+def test_windows_process_names_share_one_ownership_identity(destinations, monkeypatch):
+    from types import SimpleNamespace
+
+    from tests.test_managed_source import wire
+    from ucode import child_env
+
+    monkeypatch.setattr(child_env, "os", SimpleNamespace(name="nt", environ={}))
+    path = destinations["claude"]
+    ownership.apply_source(source(), [plan(path, {})], process_env_keys={"Review_Key"})
+    ownership.apply_source(source(), [plan(path, {})], process_env_keys={"REVIEW_KEY"})
+    assert ownership.retired_environment("claude") == set()
+    ownership.apply_source(source(), [plan(path, {})])
+    assert child_env.build_child_env({}, "claude", inherited={"review_key": "stale"}) == {}
+    raw = wire("claude")
+    raw["handoff"] = process_handoff("adopt", "Review_Key")
+    raw["handoff"]["agents"]["claude"]["retire"] = [
+        {"target": "process_env", "path": ["REVIEW_KEY"]}
+    ]
+    with pytest.raises(RuntimeError, match="overlapping handoff declarations"):
+        validate_file_config(raw, "claude")
+
+
 def test_release_cli_does_not_discover_or_launch(destinations, monkeypatch):
     path = destinations["claude"]
     put(path, {"personal": 1})
@@ -661,9 +818,7 @@ def test_explicit_api_configure_transitions_active_and_released_file_source(
     assert get(path) == {"file_header": "new"}
 
 
-@pytest.mark.parametrize(
-    "target", ["requirements", "process_env", "/tmp/arbitrary", "model_catalog"]
-)
+@pytest.mark.parametrize("target", ["requirements", "/tmp/arbitrary", "model_catalog"])
 def test_handoff_rejects_unavailable_or_internal_targets(target):
     raw = {
         "spec_version": 1,
