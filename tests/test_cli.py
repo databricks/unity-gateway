@@ -48,19 +48,20 @@ def _jwt(expires_at: float) -> str:
 
 
 @pytest.fixture(autouse=True)
-def no_state_writes():
+def no_state_writes(monkeypatch):
     """Prevent any test from writing to the real state file on disk."""
-    with (
-        patch("ucode.state.save_state"),
-        patch("ucode.cli.save_state"),
-        patch("ucode.agents.__init__.save_state"),
-        patch("ucode.agents.codex.save_state"),
-        patch("ucode.agents.claude.save_state"),
-        patch("ucode.agents.claude._managed_settings_path", return_value=None),
-        patch("ucode.agents.gemini.save_state"),
-        patch("ucode.agents.opencode.save_state"),
+    # Share teardown ordering with tests that override the same functions.
+    for target in (
+        "ucode.state.save_state",
+        "ucode.cli.save_state",
+        "ucode.agents.save_state",
+        "ucode.agents.codex.save_state",
+        "ucode.agents.claude.save_state",
+        "ucode.agents.gemini.save_state",
+        "ucode.agents.opencode.save_state",
     ):
-        yield
+        monkeypatch.setattr(target, MagicMock())
+    monkeypatch.setattr("ucode.agents.claude._managed_settings_path", lambda: None)
 
 
 MINIMAL_STATE = {
@@ -530,6 +531,7 @@ class TestSubcommandRouting:
             patches[5],
             patches[6],
             patches[7],
+            patch("ucode.cli.ensure_databricks_auth") as mock_auth,
             patch("ucode.cli.set_current_workspace") as mock_set,
         ):
             result = runner.invoke(
@@ -537,6 +539,9 @@ class TestSubcommandRouting:
                 ["claude", "--workspace", "https://eng-ml-inference.staging.cloud.databricks.com/"],
             )
         assert result.exit_code == 0, result.output
+        mock_auth.assert_called_once_with(
+            "https://eng-ml-inference.staging.cloud.databricks.com", None
+        )
         mock_set.assert_called_once_with("https://eng-ml-inference.staging.cloud.databricks.com")
 
     def test_no_workspace_flag_leaves_current_workspace(self):
@@ -2776,6 +2781,17 @@ class TestDoctorCommand:
 
 
 class TestAutoConfigureOnFirstRun:
+    @pytest.fixture(autouse=True)
+    def first_launch_auth(self):
+        with (
+            patch("ucode.cli.ensure_databricks_auth"),
+            patch(
+                "ucode.cli._prompt_for_configuration",
+                return_value=(MINIMAL_STATE["workspace"], None),
+            ),
+        ):
+            yield
+
     @pytest.mark.parametrize("tool", list(cli_mod.TOOL_SPECS))
     @pytest.mark.parametrize("has_workspace", [False, True])
     def test_launch_autoconfigures_without_test_prompt(self, tool, has_workspace):
@@ -2794,14 +2810,15 @@ class TestAutoConfigureOnFirstRun:
             ) as mock_configure,
             patch("ucode.cli.ensure_provider_state", return_value=configured_state),
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
-            patch("ucode.cli.configure_tool", return_value=configured_state),
+            patch("ucode.cli.configure_tool", return_value=configured_state) as mock_write,
             patch("ucode.cli.restore_file") as mock_restore,
             patch("ucode.cli.launch_agent") as mock_launch,
         ):
             result = runner.invoke(app, [tool])
 
         assert result.exit_code == 0, result.output
-        mock_configure.assert_called_once_with(tool, configured_state)
+        mock_configure.assert_not_called()
+        mock_write.assert_called_once()
         mock_restore.assert_not_called()
         mock_launch.assert_called_once()
         assert mock_launch.call_args.args[:2] == (tool, configured_state)
@@ -2813,8 +2830,7 @@ class TestAutoConfigureOnFirstRun:
         with (
             patch("ucode.cli.ensure_bootstrap_dependencies") as mock_bootstrap,
             patch("ucode.cli.load_state", return_value=empty_state),
-            patch("ucode.cli._auto_configure_tool") as mock_auto,
-            patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE) as mock_shared,
             patch(
                 "ucode.cli.ensure_provider_state",
                 return_value=configured_state,
@@ -2830,7 +2846,7 @@ class TestAutoConfigureOnFirstRun:
             result = runner.invoke(app, ["claude"])
         assert result.exit_code == 0, result.output
         mock_bootstrap.assert_called_once_with("claude", skip_cli_version_check=False)
-        mock_auto.assert_called_once_with("claude")
+        mock_shared.assert_called_once()
 
     def test_triggers_when_tool_not_in_available_tools(self):
         """Auto-configure runs when workspace exists but the tool wasn't configured."""
@@ -2838,8 +2854,7 @@ class TestAutoConfigureOnFirstRun:
         with (
             patch("ucode.cli.ensure_bootstrap_dependencies") as mock_bootstrap,
             patch("ucode.cli.load_state", return_value=state_without_tool),
-            patch("ucode.cli._auto_configure_tool") as mock_auto,
-            patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE) as mock_shared,
             patch(
                 "ucode.cli.ensure_provider_state",
                 return_value=MINIMAL_STATE,
@@ -2855,14 +2870,14 @@ class TestAutoConfigureOnFirstRun:
             result = runner.invoke(app, ["claude"])
         assert result.exit_code == 0, result.output
         mock_bootstrap.assert_called_once_with("claude", skip_cli_version_check=False)
-        mock_auto.assert_called_once_with("claude")
+        mock_shared.assert_called_once()
 
     def test_skipped_when_already_configured(self):
         """Auto-configure is skipped when workspace and tool are already set up."""
         with (
             patch("ucode.cli.ensure_bootstrap_dependencies") as mock_bootstrap,
             patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
-            patch("ucode.cli._auto_configure_tool") as mock_auto,
+            patch("ucode.cli.ensure_databricks_auth") as mock_first_auth,
             patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
             patch(
                 "ucode.cli.ensure_provider_state",
@@ -2878,7 +2893,7 @@ class TestAutoConfigureOnFirstRun:
         ):
             runner.invoke(app, ["claude"])
         mock_bootstrap.assert_called_once_with("claude", skip_cli_version_check=False)
-        mock_auto.assert_not_called()
+        mock_first_auth.assert_not_called()
 
     def test_skip_preflight_bypasses_cli_version_check(self):
         """`--skip-preflight` tells bootstrap to skip the CLI minimum-version gate,
@@ -2886,7 +2901,6 @@ class TestAutoConfigureOnFirstRun:
         with (
             patch("ucode.cli.ensure_bootstrap_dependencies") as mock_bootstrap,
             patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
-            patch("ucode.cli._auto_configure_tool"),
             patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
             patch("ucode.cli.ensure_provider_state", return_value=MINIMAL_STATE),
             patch(
@@ -4843,7 +4857,7 @@ class TestSkipPreflightFlag:
     def _patches(cfg):
         return [
             patch("ucode.cli.ensure_bootstrap_dependencies"),
-            patch("ucode.cli._auto_configure_tool"),
+            patch("ucode.cli.ensure_databricks_auth"),
             patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
             patch("ucode.cli.ensure_provider_state", return_value=MINIMAL_STATE),
             patch("ucode.cli.configure_shared_state", cfg),

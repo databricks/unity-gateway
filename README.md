@@ -51,6 +51,45 @@ On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
 
+Claude and Codex also accept a local coding-agent configuration on each launch:
+
+```bash
+ug claude --config-file './agent config.json' -- --settings ./claude-settings.json
+ug codex -f ./agent-config.json exec 'Explain this project'
+ucode codex -f ./agent-config.json -- 'Start a session'
+```
+
+Put `-f` / `--config-file` before the `--` separator. Arguments after it belong to
+the agent, including its own `-f`. The file uses the published `CodingAgentConfig`
+JSON shape, for example:
+
+```json
+{
+  "spec_version": 1,
+  "enabled_agents": [
+    {
+      "agent": "CODING_AGENT_CODEX",
+      "config": {
+        "default_models": {"default_model": "system.ai.databricks-gpt-5-2"}
+      }
+    }
+  ]
+}
+```
+
+The requested agent must be enabled. Every launch reads and validates the entire
+file before bootstrap or settings writes, including first use. Invalid files stop
+the launch without falling back to workspace policy. File contents never enter
+the five-minute API cache at `~/.ucode/managed-config.json`; omitting `-f` restores
+the ordinary workspace API source. `--refresh` bypasses that API cache. File
+launches always reread their input and skip workspace budget recommendations.
+
+Local files currently reject `handoff`, `custom_env`, `native_settings`, and
+`native_requirements`, plus nonempty `mcp_servers`, `skills`, `smart_defaults`, and
+legacy `spend_tiers`. Isaac plugin and MCP assets remain separate. Existing
+same-workspace UC resources are retained outside the file's ownership. A workspace
+transition requiring UC MCP or managed-skill cleanup stops with migration guidance.
+
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`

@@ -70,6 +70,7 @@ from ucode.managed_files import (
     reconcile_managed_file,
     revert_managed_file,
 )
+from ucode.managed_source import SelectedManagedSource
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.codex_hooks import (
     remove_smart_routing_hooks,
@@ -401,7 +402,10 @@ def write_tool_config(
     model: str | None = None,
     provider: str | None = None,
     parent_schema: str | None = None,
+    selected_source: SelectedManagedSource | None = None,
 ) -> dict:
+    if selected_source is not None:
+        selected_source.check_target(state["workspace"], "codex")
     workspace = state["workspace"]
     # Leave model selection to Codex. The gateway still receives the configured
     # provider and authentication settings, while Codex uses its own default.
@@ -770,7 +774,6 @@ def default_model(state: dict) -> str | None:
         return state["codex_default_model"]
     if smart_routing_v2.smart_routing_enabled():
         return _smart_routing_config_model(state)
-    clear_model_preferences(state)
     return None
 
 

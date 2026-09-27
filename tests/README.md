@@ -30,6 +30,14 @@ keyboard selection: nothing is selected by default, selecting Codex installs onl
 Codex, and submitting an empty selection installs nothing. Rendering checks cover
 the selected and empty checkboxes. These are local component checks, not live gateway tests.
 
+Local file input is covered by strict-parser cases in `test_managed_source.py`
+and isolated launch/source-transition cases in `test_file_launch.py`. These check
+validation before writes, one selected input per invocation, API-cache preservation,
+fresh setup, immediate updates, and forwarded arguments. They are component checks.
+`integration/test_ug_file_config.py` adds two installed-CLI invalid-input checks and
+two real-agent first-launch/update journeys. Live execution requires the isolated
+integration runner and explicitly supplied workspace credentials.
+
 ## CUJ coverage matrix
 
 These are **implemented assertions**, not a claim that every version passes.
@@ -82,11 +90,11 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_and_ucode_auth_helpers_emit_only_the_supplied_bearer` | Run both auth helper commands with the public bearer override, with and without forced refresh | Exact token-only stdout, no warnings or ANSI escapes; no workspace authentication or saved state |
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
-With both agents selected there are **60 live cases** (12 interactive TUI cases),
+With both agents selected there are **62 live cases** (14 interactive TUI cases),
 **6 managed-workspace cases** (marker `managed`, run against workspaces that
 publish a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
 **25 managed-fixture cases** (marker `managed_fixture`, with only
-the CodingAgentConfig input injected), and **7 installation checks**. The 14 retained numbered scenarios
+the CodingAgentConfig input injected), and **9 installation checks**. The 14 retained numbered scenarios
 comprise **24 explicit journeys**: 12 managed configured/fresh executions and 12 unmanaged
 executions. Thirteen additional managed-fixture cases cover focused model, MCP, skills,
 and lifecycle shapes; two published-config cases cover Claude defaults. Parametrization varies
@@ -130,7 +138,7 @@ dependency graph to reproduce a user's combination. Every relevant same-reposito
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
 journeys for both agents, in two parallel jobs. After smoke finishes, the full
-suite runs all 60 live cases across two parallel agent jobs: one Claude VM and one
+suite runs all 62 live cases across two parallel agent jobs: one Claude VM and one
 Codex VM, each running its configure, headless, and commands/lifecycle cases
 serially. Each agent is installed once for the full suite, and no two full jobs
 for the same agent overlap within a run.

@@ -8,6 +8,7 @@ import shutil
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from enum import StrEnum
 from importlib import metadata
 from typing import Annotated, Any
@@ -98,11 +99,17 @@ from ucode.managed_resolve import (
     managed_launch_model,
     managed_provider_family_models,
     managed_provider_service,
+    managed_static_models,
     managed_supplies_models,
     managed_unity_catalog_location,
     managed_unservable_models,
     recommended_agent,
     resolve_state,
+)
+from ucode.managed_source import (
+    SelectedManagedSource,
+    preflight_managed_resources,
+    read_file_source,
 )
 from ucode.mcp import (
     MCP_CLIENTS,
@@ -138,6 +145,8 @@ from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRS
 from ucode.state import (
     clear_state,
     get_provider_service,
+    hydrate_state,
+    load_full_state,
     load_state,
     save_state,
     set_current_workspace,
@@ -469,6 +478,7 @@ def configure_shared_state(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     clear_custom_oauth: bool = False,
+    selected_source: SelectedManagedSource | None = None,
 ) -> dict:
     """Log into Databricks, verify AI Gateway, fetch model lists, persist state.
 
@@ -490,6 +500,11 @@ def configure_shared_state(
     the saved model lists are preserved.
     """
     workspace = normalize_workspace_url(workspace)
+    if selected_source is not None:
+        selected_source.check_target(workspace)
+        skip_model_discovery = skip_model_discovery or managed_supplies_models(
+            selected_source.manifest, selected_source.agent
+        )
     prior_state = load_state()
     previous_workspace = prior_state.get("workspace")
     if use_pat is None:
@@ -2230,35 +2245,6 @@ def claude_router_hook_cmd(
         sys.stdout.write(json.dumps(output))
 
 
-def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = None) -> None:
-    """Configure a tool for launch without sending a separate validation prompt.
-
-    The real agent session follows immediately; explicit configure retains the
-    test-prompt validation.
-    """
-    existing = load_state()
-    workspace = existing.get("workspace")
-    profile = existing.get("profile")
-    if not workspace:
-        workspace, profile = _prompt_for_configuration(tool)
-    configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
-    state = configure_shared_state(workspace, profile=profile, tools=[tool], **configure_kwargs)
-
-    state = configure_single_tool(tool, state)
-
-    spec = TOOL_SPECS[tool]
-    console.print(
-        Panel(
-            f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]\n"
-            f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
-            f"[dim](Provider: {_provider_summary(tool, state)})[/dim]",
-            title="Configuration Complete",
-            style="green",
-            expand=False,
-        )
-    )
-
-
 CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
 
 
@@ -2334,14 +2320,14 @@ def _reject_managed_launch_source_options(
         )
 
 
-def _fetch_managed_config(state: dict) -> ManagedConfigResult:
+def _fetch_managed_config(state: dict, *, force_refresh: bool = False) -> ManagedConfigResult:
     """The workspace's managed config for this launch, plus whether the feature is disabled.
 
     ``ManagedConfigResult(None, True)`` when the workspace has the feature disabled server-side;
     ``ManagedConfigResult(None, False)`` when the feature is on but no config is published.
     """
     with spinner("Loading..."):
-        return refresh_managed_config(state)
+        return refresh_managed_config(state, **({"force_refresh": True} if force_refresh else {}))
 
 
 def _note_recommended_agent(recommendation: dict | None, tool: str) -> None:
@@ -2558,6 +2544,7 @@ def _launch_tool(
     model: str | None = None,
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    config_file: str | None = None,
 ) -> None:
     try:
         tool = normalize_tool(tool_name)
@@ -2581,41 +2568,81 @@ def _launch_tool(
         # An explicit --workspace targets that workspace for this launch (and
         # auto-configures it if unseen), so `ug claude --provider ... --workspace ...`
         # works without a prior `ug configure`.
-        if workspace_url:
-            set_current_workspace(normalize_workspace_url(workspace_url))
-        existing = load_state()
+        previous_state = load_state()
+        workspace = (
+            normalize_workspace_url(workspace_url)
+            if workspace_url
+            else previous_state.get("workspace")
+        )
+        selected_source = (
+            read_file_source(config_file, workspace or "", tool)
+            if config_file is not None
+            else None
+        )
+        existing = previous_state
+        if workspace and workspace != previous_state.get("workspace"):
+            existing = hydrate_state(
+                {
+                    **load_full_state().get("workspaces", {}).get(workspace, {}),
+                    "workspace": workspace,
+                }
+            )
+        if not workspace:
+            workspace, profile = _prompt_for_configuration(tool)
+            workspace = normalize_workspace_url(workspace)
+            existing = {"workspace": workspace, "profile": profile}
+        if selected_source is not None:
+            selected_source = replace(selected_source, workspace=workspace)
+            managed = selected_source.manifest
+            preflight_managed_resources(selected_source, previous_state)
+            _reject_managed_launch_source_options(
+                managed, provider=provider, parent_schema=parent_schema
+            )
         # Workspaces configured with --use-pat export the profile's PAT as
         # DATABRICKS_BEARER up front so every auth check below (and the
         # launched agent itself) uses the static token instead of OAuth.
         if not custom_oauth_cli_enabled(custom_oauth):
             apply_pat_environment(existing)
-        needs_auto_configure = not existing.get("workspace") or tool not in (
-            existing.get("available_tools") or []
-        )
+        needs_auto_configure = tool not in (existing.get("available_tools") or [])
         ensure_bootstrap_dependencies(
             tool,
             skip_cli_version_check=skip_preflight,
         )
-        if needs_auto_configure:
-            if custom_oauth is None:
-                _auto_configure_tool(tool)
-            else:
-                _auto_configure_tool(tool, custom_oauth=custom_oauth)
-        state = ensure_provider_state(tool)
+        if selected_source is None:
+            # A first API read needs working credentials, but must precede agent settings writes.
+            if needs_auto_configure and managed is None:
+                if custom_oauth_cli_enabled(custom_oauth) and custom_oauth is not None:
+                    ensure_custom_oauth_cli_token(workspace, custom_oauth)
+                else:
+                    ensure_databricks_auth(workspace, existing.get("profile"))
+            result = (
+                _fetch_managed_config(existing, **({"force_refresh": True} if refresh else {}))
+                if managed is None
+                else ManagedConfigResult(managed, False)
+            )
+            selected_source = SelectedManagedSource.from_api(result, workspace, tool)
+            managed = selected_source.manifest
+            if workspace != previous_state.get("workspace"):
+                preflight_managed_resources(selected_source, previous_state)
+        _reject_disabled_agent(managed, tool)
+        state = (
+            ensure_provider_state(tool)
+            if not needs_auto_configure
+            and workspace == previous_state.get("workspace")
+            and selected_source.kind == "api"
+            else existing
+        )
         # Remembered before the fallback below collapses the two cases: a managed config may not
         # silently override a provider the user typed on the command line (it errors instead).
         explicit_provider = provider
         # An explicit --provider overrides the persisted choice; otherwise fall
         # back to whatever `ug configure` saved for this tool.
         provider = provider or get_provider_service(state, tool)
-        state = _migrate_legacy_smart_routing(state)
         # Fetched before `configure_shared_state` because it decides whether this agent may launch
         # at all and whether the model discovery below can be skipped.
         # Bare `ucode` already fetched one to choose the agent; refetching would double the
         # control-plane round trip and any fallback warning it printed.
-        coding_agent_config_feature_disabled = False
-        if managed is None:
-            managed, coding_agent_config_feature_disabled = _fetch_managed_config(state)
+        coding_agent_config_feature_disabled = selected_source.feature_disabled
         _reject_managed_launch_source_options(
             managed,
             provider=explicit_provider,
@@ -2626,7 +2653,9 @@ def _launch_tool(
         if parent_schema is not None and not is_valid_catalog_schema(parent_schema):
             raise RuntimeError("--model-location must be `<catalog>.<schema>`.")
         # Checked before discovery, which can take tens of seconds, so a blocked launch fails fast.
-        _reject_disabled_agent(managed, tool)
+        if workspace != previous_state.get("workspace"):
+            set_current_workspace(workspace)
+        state = _migrate_legacy_smart_routing(state)
         managed_provider = managed_provider_service(managed or {}, tool)
         managed_parent_schema = (
             managed_unity_catalog_location(managed or {}, tool)
@@ -2641,6 +2670,8 @@ def _launch_tool(
             # rewriting it; the admin's location exists only for this launch.
             provider = None
             parent_schema = managed_parent_schema
+        elif selected_source.kind == "file":
+            provider = None
         # Unmanaged Claude launches discover gateway models automatically; with no
         # provider or parent header the gateway defaults to system.ai. Managed
         # configs opt into discovery by selecting an MPS or Unity Catalog location.
@@ -2666,17 +2697,20 @@ def _launch_tool(
                 bool(provider) or bool(managed_parent_schema) or managed_models_known
             ),
             skip_preflight=skip_preflight,
+            selected_source=selected_source,
             **configure_kwargs,
         )
         # An admin-published managed config wins over the developer's own settings. Layered on after
         # `configure_shared_state`, whose returned state it overrides, and before the provider and
         # model are settled below — the two state files are never merged on disk.
         # Bare `ucode` already read one to choose the agent; refetching would double the round trip.
-        if recommendation is None:
+        if selected_source.kind == "file":
+            recommendation = None
+        elif recommendation is None:
             recommendation = _fetch_budget_recommendation(state, managed)
         _note_recommended_agent(recommendation, tool)
         if managed is not None:
-            state = resolve_state(managed, state, tool)
+            state = resolve_state(managed, state, tool, selected_source=selected_source)
             unservable = managed_unservable_models(managed, tool)
             if unservable:
                 print_warning(
@@ -2814,7 +2848,14 @@ def _launch_tool(
             managed_model = (
                 managed_launch_model(managed, recommendation, tool) if managed is not None else None
             )
-            state, resolved_model = resolve_launch_model(tool, state, managed_model)
+            routing_fallback = (
+                next(iter(managed_static_models(managed or {}, tool) or []), None)
+                if selected_source.kind == "file" and managed_smart_routing_enabled
+                else None
+            )
+            state, resolved_model = resolve_launch_model(
+                tool, state, managed_model or routing_fallback
+            )
             # The admin's model outranks a smart-routing pick too. Claude only launches on it when
             # pinned as ANTHROPIC_MODEL (route_root_model); other agents take `resolved_model`,
             # which already holds it from resolve_launch_model above.
@@ -2848,7 +2889,13 @@ def _launch_tool(
             custom_model=None,
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
+            selected_source=selected_source,
         )
+        if needs_auto_configure:
+            state["available_tools"] = list(
+                dict.fromkeys([*(state.get("available_tools") or []), tool])
+            )
+            save_state(state)
         if picker_catalog and picker_catalog.model_ids:
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
             # replaced. Keep the catalog launch-scoped and leave the user's settings alone.
@@ -3086,6 +3133,14 @@ def _print_no_managed_config_guidance() -> None:
 )
 def codex_cmd(
     ctx: typer.Context,
+    config_file: Annotated[
+        str | None,
+        typer.Option(
+            "--config-file",
+            "-f",
+            help="Apply a local coding-agent JSON config on this launch. Pass before `--`.",
+        ),
+    ] = None,
     provider: Annotated[
         str | None,
         typer.Option(
@@ -3150,6 +3205,7 @@ def codex_cmd(
                 workspace_url=workspace,
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
+                config_file=config_file,
             )
 
 
@@ -3161,6 +3217,14 @@ def codex_cmd(
 )
 def claude_cmd(
     ctx: typer.Context,
+    config_file: Annotated[
+        str | None,
+        typer.Option(
+            "--config-file",
+            "-f",
+            help="Apply a local coding-agent JSON config on this launch. Pass before `--`.",
+        ),
+    ] = None,
     provider: Annotated[
         str | None,
         typer.Option(
@@ -3237,6 +3301,7 @@ def claude_cmd(
                 workspace_url=workspace,
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
+                config_file=config_file,
             )
 
 

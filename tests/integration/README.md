@@ -239,7 +239,15 @@ startup banners and footer text cannot satisfy discovery assertions. Cases 7–1
 they only configure, list models, and open/close the picker. Other live CUJs perform
 real model tasks.
 
-There are **60 live cases** (including 12 TUI journeys) and **7 installation
+`test_ug_file_config.py` covers direct local-file launches without a preceding
+`configure` command. Both real agents complete a TUI file task, then consume an
+updated file within five minutes. Claude's picker and Codex's real app-server
+model list must reflect the update without creating the API config cache.
+The two installation-only cases invoke both `ug` and `ucode`, verifying invalid
+input creates no state and Codex app-server stdout remains empty. These cases
+use public input files, not the managed-config stub.
+
+There are **62 live cases** (including 14 TUI journeys) and **9 installation
 checks** with both agents. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
@@ -375,7 +383,7 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 60 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 62 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
@@ -681,7 +689,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 60 live cases. For the seven installation checks, run the same
+This runs all 62 live cases. For the nine installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

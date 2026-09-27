@@ -909,15 +909,15 @@ class TestCodexDefaultModel:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", tmp_path / "ucode.config.toml")
         monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
 
-    def test_clears_profile_model_preferences(self, tmp_path):
+    def test_reading_default_model_preserves_profile_preferences(self, tmp_path):
         codex.CODEX_CONFIG_PATH.write_text(
             'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "medium"\n', encoding="utf-8"
         )
 
         assert codex.default_model({"codex_models": ["system.ai.gpt-5-6-luna"]}) is None
         doc = read_toml_safe(codex.CODEX_CONFIG_PATH)
-        assert "model" not in doc
-        assert "model_reasoning_effort" not in doc
+        assert doc["model"] == "gpt-5.6-sol"
+        assert doc["model_reasoning_effort"] == "medium"
 
     def test_none_when_no_configured_model(self):
         assert codex.default_model({}) is None

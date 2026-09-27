@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import cast
 
 from ucode.databricks import ANTHROPIC_FAMILIES, classify_model_family
+from ucode.managed_source import SelectedManagedSource
 from ucode.state import MANAGED_OVERLAY_KEY
 
 # Proto model-config slot -> the family key `claude.py`'s render_overlay reads. The manifest keeps
@@ -186,6 +187,10 @@ def managed_supplies_models(managed: dict | None, tool: str) -> bool:
     model_config = _agent_model_config(managed or {}, tool)
     if _str(model_config.get("model_provider_service")) or _str(model_config.get("default_model")):
         return True
+    if _str(model_config.get("unity_catalog_location")) or model_config.get("model_services"):
+        return True
+    if model_config.get("default_models_by_model_family"):
+        return True
     models = model_config.get("models")
     if isinstance(models, dict):
         return any(_str(value) for value in models.values())
@@ -300,7 +305,9 @@ def managed_launch_model(managed: dict, recommendation: dict | None, tool: str) 
     return managed_default_model(managed, tool)
 
 
-def resolve_state(managed: dict, state: dict, tool: str) -> dict:
+def resolve_state(
+    managed: dict, state: dict, tool: str, *, selected_source: SelectedManagedSource | None = None
+) -> dict:
     """Return a copy of ``state`` with ``tool``'s managed values layered on top.
 
     ``write_tool_config`` reads its models and provider out of the state dict it is handed, so
@@ -310,6 +317,9 @@ def resolve_state(managed: dict, state: dict, tool: str) -> dict:
     settings reach the generated agent config files without ``state.json`` losing what the developer
     configured. The two files are never merged on disk.
     """
+    if selected_source is not None:
+        selected_source.check_target(state["workspace"], tool)
+        managed = selected_source.manifest or {}
     resolved = dict(state)
     overlay: dict[str, object] = {}
     for key, value in managed_state_overrides(managed, tool).items():
@@ -322,6 +332,12 @@ def resolve_state(managed: dict, state: dict, tool: str) -> dict:
         if providers.get(tool) != provider:
             overlay["provider_services"] = state.get("provider_services")
             providers[tool] = provider
+            resolved["provider_services"] = providers
+    elif selected_source is not None and selected_source.kind == "file":
+        providers = dict(_as_dict(state.get("provider_services")))
+        if tool in providers:
+            overlay["provider_services"] = state.get("provider_services")
+            providers.pop(tool)
             resolved["provider_services"] = providers
     if overlay:
         resolved[MANAGED_OVERLAY_KEY] = overlay

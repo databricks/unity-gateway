@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 from urllib.parse import parse_qs
 
 import pytest
@@ -24,6 +24,12 @@ from ucode.custom_oauth import (
 WS = "https://example.databricks.com"
 TEST_SCOPES = ("offline_access", "catalog.catalogs:read")
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_custom_oauth_mode(monkeypatch):
+    """These SDK OAuth cases must not inherit the separate CLI OAuth mode."""
+    monkeypatch.delenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", raising=False)
 
 
 class TestCustomOAuthLock:
@@ -336,6 +342,28 @@ class TestConfigureCustomOAuth:
 
 
 class TestLaunchCustomOAuth:
+    @pytest.fixture
+    def first_use_launch(self, monkeypatch, tmp_path):
+        state = {"workspace": WS, "profile": None}
+        configure_shared = Mock(wraps=cli_mod.configure_shared_state)
+        configure = Mock(return_value=state)
+        launch = Mock()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("ENABLE_SMART_ROUTING", raising=False)
+        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
+        monkeypatch.setattr(cli_mod, "save_state", Mock())
+        monkeypatch.setattr(cli_mod, "ensure_bootstrap_dependencies", Mock())
+        monkeypatch.setattr(cli_mod, "ensure_databricks_auth", Mock())
+        monkeypatch.setattr(cli_mod, "find_profile_name_for_host", lambda _workspace: None)
+        monkeypatch.setattr(cli_mod, "_fetch_managed_config", Mock(return_value=(None, False)))
+        monkeypatch.setattr(cli_mod, "configure_shared_state", configure_shared)
+        monkeypatch.setattr(
+            cli_mod, "resolve_launch_model", lambda _tool, state, _model: (state, "test-model")
+        )
+        monkeypatch.setattr(cli_mod, "configure_tool", configure)
+        monkeypatch.setattr(cli_mod, "launch_agent", launch)
+        return state, configure_shared, configure, launch
+
     @pytest.mark.parametrize("command", ["auth-token", "configure", "claude", "codex"])
     def test_options_are_hidden(self, command):
         result = runner.invoke(app, [command, "--help"])
@@ -369,34 +397,65 @@ class TestLaunchCustomOAuth:
             "scopes": ["offline_access", "model-serving"],
         }
 
-    def test_auto_configure_receives_custom_oauth(self):
+    def test_first_use_launch_receives_custom_oauth(self, first_use_launch):
+        state, configure_shared, configure, launch = first_use_launch
         custom_oauth = {
             "client_id": "custom-client",
             "redirect_url": "http://localhost:8020/callback",
             "scopes": ["offline_access", "model-serving"],
         }
-        state = {"workspace": WS, "profile": None, "available_tools": ["codex"]}
-        with (
-            patch("ucode.cli.load_state", return_value=state),
-            patch("ucode.cli.configure_shared_state", return_value=state) as configure_shared,
-            patch("ucode.cli.configure_single_tool", return_value=state),
-        ):
-            cli_mod._auto_configure_tool("codex", custom_oauth=custom_oauth)
+        result = runner.invoke(
+            app,
+            [
+                "codex",
+                "--skip-preflight",
+                "--client-id",
+                custom_oauth["client_id"],
+                "--redirect-url",
+                custom_oauth["redirect_url"],
+                "--scopes",
+                ",".join(custom_oauth["scopes"]),
+            ],
+        )
 
+        assert result.exit_code == 0, result.output
         configure_shared.assert_called_once_with(
             WS,
             profile=None,
             tools=["codex"],
+            skip_model_discovery=False,
+            skip_preflight=True,
+            selected_source=ANY,
             custom_oauth=custom_oauth,
         )
+        configure.assert_called_once()
+        launch.assert_called_once()
+        assert launch.call_args.args[:2] == ("codex", state)
+        assert state["custom_oauth"] == custom_oauth
+        assert state["available_tools"] == ["codex"]
 
-    def test_auto_configure_does_not_clear_custom_oauth(self):
-        state = {"workspace": WS, "profile": None, "available_tools": ["claude"]}
-        with (
-            patch("ucode.cli.load_state", return_value=state),
-            patch("ucode.cli.configure_shared_state", return_value=state) as configure_shared,
-            patch("ucode.cli.configure_single_tool", return_value=state),
-        ):
-            cli_mod._auto_configure_tool("claude")
+    def test_first_use_launch_does_not_clear_custom_oauth(self, first_use_launch):
+        state, configure_shared, configure, launch = first_use_launch
+        custom_oauth = {
+            "client_id": "saved-client",
+            "redirect_url": "http://localhost:8020/callback",
+            "scopes": ["offline_access", "model-serving"],
+        }
+        state["custom_oauth"] = custom_oauth
 
-        configure_shared.assert_called_once_with(WS, profile=None, tools=["claude"])
+        result = runner.invoke(app, ["claude", "--skip-preflight"])
+
+        assert result.exit_code == 0, result.output
+        configure_shared.assert_called_once_with(
+            WS,
+            profile=None,
+            tools=["claude"],
+            skip_model_discovery=False,
+            skip_preflight=True,
+            selected_source=ANY,
+        )
+        configure.assert_called_once()
+        launch.assert_called_once()
+        assert launch.call_args.args[:2] == ("claude", state)
+        assert state["custom_oauth"] == custom_oauth
+        assert state["available_tools"] == ["claude"]
