@@ -19,6 +19,7 @@ from ucode import managed_ownership as ownership
 from ucode.agents import claude, codex
 from ucode.config_io import deep_merge_dict
 from ucode.managed_source import SelectedManagedSource, validate_file_config
+from ucode.native_settings import compose_native_settings, native_ownership
 
 
 def source(agent="claude", *, owner=None, workspace="https://a.example", handoff=None):
@@ -204,6 +205,95 @@ def test_whole_array_adoption_conflict_precedes_any_write(destinations):
         ownership.apply_source(selected, [plan(path, {"allow": ["managed"]})])
     assert get(path) == {"allow": ["personal", "managed"]}
     assert ownership.applied_source("claude") is None
+
+
+def native_plan(path, native, *, tool="claude"):
+    paths, contributions, exact = native_ownership(tool, native)
+    return ownership.DestinationPlan(
+        "private_settings",
+        path,
+        json.loads,
+        lambda doc: json.dumps(doc) + "\n",
+        lambda base: compose_native_settings(tool, base, native, target="private_settings"),
+        paths,
+        contributions=contributions,
+        exact_array_paths=exact,
+    )
+
+
+@pytest.mark.parametrize("incoming", [[], ["new"], ["unowned-secret"]])
+def test_exact_native_array_requires_explicit_handoff_before_any_write(destinations, incoming):
+    path = destinations["claude"]
+    put(path, {"companyAnnouncements": ["unowned-secret"]})
+    with pytest.raises(RuntimeError, match="explicit adopt or retire.*migration_version") as error:
+        ownership.apply_source(source(), [native_plan(path, {"companyAnnouncements": incoming})])
+    assert "unowned-secret" not in str(error.value)
+    assert get(path) == {"companyAnnouncements": ["unowned-secret"]}
+    assert ownership.applied_source("claude") is None
+
+
+def test_exact_array_adoption_preserves_declared_order_and_detects_later_user_elements(
+    destinations,
+):
+    path = destinations["claude"]
+    put(path, {"companyAnnouncements": ["first", "second"]})
+    selected = source(
+        handoff=handoff("adopt", ["companyAnnouncements"], elements=["second", "first"])
+    )
+    native = {"companyAnnouncements": ["second", "first"]}
+    ownership.apply_source(selected, [native_plan(path, native)])
+    assert get(path) == native
+    ownership.apply_source(selected, [native_plan(path, native)])
+    put(path, {"companyAnnouncements": ["second", "first", "personal"]})
+    with pytest.raises(RuntimeError, match="Unowned array elements"):
+        ownership.apply_source(selected, [native_plan(path, native)])
+    assert get(path)["companyAnnouncements"] == ["second", "first", "personal"]
+    ownership.release_owner("integration", "claude")
+    assert get(path) == {"companyAnnouncements": ["personal"]}
+    put(path, {"companyAnnouncements": ["first", "second"]})
+    with pytest.raises(RuntimeError, match="Unowned array elements"):
+        ownership.apply_source(selected, [native_plan(path, native)])
+
+
+@pytest.mark.parametrize("replacement", [[], ["new"]])
+def test_exact_array_retirement_allows_replacement_and_owned_empty_leaf(destinations, replacement):
+    path = destinations["claude"]
+    put(path, {"companyAnnouncements": ["legacy"], "personal": True})
+    selected = source(handoff=handoff("retire", ["companyAnnouncements"], elements=["legacy"]))
+    native = {"companyAnnouncements": replacement}
+    ownership.apply_source(selected, [native_plan(path, native)])
+    assert get(path) == {"companyAnnouncements": replacement, "personal": True}
+    entry = files._find_entry(files._load_manifest(), "claude", path)
+    assert entry["active_effects"] == [
+        {"path": ["companyAnnouncements"], "value": replacement, "elements": replacement}
+    ]
+    ownership.apply_source(selected, [native_plan(path, native)])
+    assert get(path)["companyAnnouncements"] == replacement
+    ownership.release_owner("integration", "claude")
+    assert get(path) == {"personal": True}
+
+
+def test_exact_org_array_cannot_be_replaced_with_scalar_without_retirement(destinations):
+    path = destinations["claude"]
+    put(path, {"forceLoginOrgUUID": ["old"]})
+    native = {"forceLoginOrgUUID": "new"}
+    with pytest.raises(RuntimeError, match="Unowned array elements"):
+        ownership.apply_source(source(), [native_plan(path, native)])
+    selected = source(handoff=handoff("retire", ["forceLoginOrgUUID"], elements=["old"]))
+    ownership.apply_source(selected, [native_plan(path, native)])
+    assert get(path) == native
+
+
+def test_owned_native_exporter_can_switch_variant_after_cleanup(destinations):
+    path = destinations["claude"]
+    first = {"otel": {"exporter": {"otlp-grpc": {"endpoint": "first"}}}}
+    second = {"otel": {"exporter": {"otlp-http": {"endpoint": "second", "protocol": "json"}}}}
+    put(path, {"otel": {"metrics_exporter": "statsig"}})
+    for native in (first, second, {"otel": {"exporter": "none"}}):
+        ownership.apply_source(source(), [native_plan(path, native, tool="codex")])
+        assert get(path) == {"otel": {"metrics_exporter": "statsig", **native["otel"]}}
+    ownership.apply_source(source(), [native_plan(path, {}, tool="codex")])
+    assert get(path) == {"otel": {"metrics_exporter": "statsig"}}
 
 
 def test_adoption_requires_current_effect_and_arrays_explicit_contributions(destinations):
@@ -818,7 +908,7 @@ def test_explicit_api_configure_transitions_active_and_released_file_source(
     assert get(path) == {"file_header": "new"}
 
 
-@pytest.mark.parametrize("target", ["requirements", "/tmp/arbitrary", "model_catalog"])
+@pytest.mark.parametrize("target", ["/tmp/arbitrary", "model_catalog"])
 def test_handoff_rejects_unavailable_or_internal_targets(target):
     raw = {
         "spec_version": 1,

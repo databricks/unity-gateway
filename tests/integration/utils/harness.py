@@ -221,7 +221,7 @@ class UserSession:
         self,
         args: list[str],
         timeout: int = 120,
-        request: tuple[str, dict] | None = None,
+        request: tuple[str, dict | None] | None = None,
         name: str = "app-server",
         binary: str | None = None,
     ) -> dict:

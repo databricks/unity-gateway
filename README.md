@@ -84,8 +84,7 @@ the five-minute API cache at `~/.ucode/managed-config.json`; omitting `-f` resto
 the ordinary workspace API source. `--refresh` bypasses that API cache. File
 launches always reread their input and skip workspace budget recommendations.
 
-Local files currently reject `native_settings` and `native_requirements`,
-plus nonempty `mcp_servers`, `skills`, `smart_defaults`, and
+Local files reject nonempty `mcp_servers`, `skills`, `smart_defaults`, and
 legacy `spend_tiers`. Isaac plugin and MCP assets remain separate. Existing
 same-workspace UC resources are retained outside the file's ownership. A workspace
 transition requiring UC MCP or managed-skill cleanup stops with migration guidance.
@@ -123,8 +122,8 @@ hook handlers. Changing migration declarations requires a new positive
 The `process_env` target addresses one environment name, for example
 `{"target": "process_env", "path": ["RETIRED_VARIABLE"]}`. It does not accept
 `elements`. Adoption requires a currently declared custom variable; retirement
-suppresses an inherited variable once under the named owner. The `requirements`
-target is not supported yet.
+suppresses an inherited variable once under the named owner. Codex also supports
+the fixed `requirements` target for declared native requirements.
 
 An integration can remove its current generated settings, routing, authentication,
 and catalog effects with `ug managed-config release --owner integration-name --agent claude`
@@ -161,6 +160,20 @@ apps do not receive this runtime overlay.
 The published `tracing.enabled` flag remains additive: `false` or omission does
 not disable a saved explicit UG tracing preference. Conflicting custom exporters
 are rejected against that effective preference too.
+
+Local `config.native_settings` declares supported native Claude or Codex settings.
+Codex additionally accepts `config.native_requirements`, initially only
+`{"features":{"fast_mode":false}}`. Requirements are written to the actual
+OS policy destination, not a private-file fallback. Required policy write failures
+stop launch. Generic native settings do not transfer Isaac's conditional user
+preferences unless those fields are explicitly declared.
+
+See [the local integration contract](docs/local-managed-config.md) for the exact
+native inventory, fixed destinations, migration rules, examples, and limitations.
+The initial native subset is pinned to Claude 2.1.268 and Codex 0.154.0.
+Nonempty native extensions are rejected on known legacy Codex layouts. Claude
+org-login pins are rejected because UG does not establish compatible first-party
+OAuth enforcement. Ordinary launches without these extensions remain supported.
 
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when

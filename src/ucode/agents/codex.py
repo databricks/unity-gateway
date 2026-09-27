@@ -29,6 +29,7 @@ from ucode.codex_config import (
     codex_config_args,
     codex_config_precedence_paths,
     codex_managed_config_path,
+    codex_requirements_path,
     custom_catalog_models,
 )
 from ucode.config_io import (
@@ -84,6 +85,14 @@ from ucode.managed_ownership import (
     source_for_writer,
 )
 from ucode.managed_source import SelectedManagedSource
+from ucode.native_settings import (
+    agent_native_requirements,
+    agent_native_settings,
+    compose_native_settings,
+    native_ownership,
+    preflight_native_launch,
+    validate_native_base,
+)
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.codex_hooks import (
     remove_smart_routing_hooks,
@@ -407,7 +416,28 @@ def configured_paths(state: dict) -> list[str]:
         and not get_provider_service(state, "codex")
     ):
         paths.append(str(CODEX_MODEL_CATALOG_PATH))
+    if agent_native_requirements(state, "codex").get("features"):
+        requirements_path = codex_requirements_path()
+        if requirements_path is not None:
+            paths.append(str(requirements_path))
     return paths
+
+
+def _preflight_native_settings(state: dict) -> tuple[dict, dict, frozenset[str]]:
+    native = agent_native_settings(state, "codex")
+    requirements = agent_native_requirements(state, "codex")
+    scopes = preflight_native_launch(
+        "codex",
+        native,
+        requirements,
+        os_managed_supported=(
+            codex_managed_config_path() is not None
+            and (not requirements or codex_requirements_path() is not None)
+        ),
+        resolved_tracing_enabled=bool(state.get("codex_otel_tracing")),
+        legacy_codex=bool((native or requirements) and _use_legacy_layout()),
+    )
+    return native, requirements, scopes
 
 
 def write_tool_config(
@@ -418,10 +448,19 @@ def write_tool_config(
     selected_source: SelectedManagedSource | None = None,
 ) -> dict:
     validate_agent_env(state, "codex")
+    native, requirements, required_scopes = _preflight_native_settings(state)
     selected_source = source_for_writer(state, "codex", selected_source)
     if selected_source is not None:
         selected_source.check_target(state["workspace"], "codex")
-        return _write_owned_tool_config(state, selected_source, provider, parent_schema)
+        return _write_owned_tool_config(
+            state,
+            selected_source,
+            provider,
+            parent_schema,
+            native=native,
+            requirements=requirements,
+            required_scopes=required_scopes,
+        )
     workspace = state["workspace"]
     # Leave model selection to Codex. The gateway still receives the configured
     # provider and authentication settings, while Codex uses its own default.
@@ -606,6 +645,10 @@ def _write_owned_tool_config(
     source: SelectedManagedSource,
     provider: str | None,
     parent_schema: str | None,
+    *,
+    native: dict,
+    requirements: dict,
+    required_scopes: frozenset[str],
 ) -> dict:
     legacy = _use_legacy_layout()
     static_models = state.get("codex_static_models")
@@ -643,14 +686,18 @@ def _write_owned_tool_config(
     )
     _set_provider_header(overlay, None)
     owned_paths = leaf_paths(overlay)
+    native_paths, native_contributions, native_exact_arrays = native_ownership("codex", native)
+    owned_paths.extend(path for path in native_paths if path not in owned_paths)
     contributions: dict[tuple[str, ...], list] = {
         ("model_providers", CODEX_MODEL_PROVIDER_NAME, "auth", "args"): overlay["model_providers"][
             CODEX_MODEL_PROVIDER_NAME
         ]["auth"]["args"]
     }
+    contributions.update(native_contributions)
     previous_keys = ((state.get("managed_configs") or {}).get("codex") or {}).get("keys", [])
 
-    def compose(base: dict, *, include_catalog: bool = True) -> dict:
+    def compose(base: dict, *, target: str, include_catalog: bool = True) -> dict:
+        validate_native_base("codex", base, native, target=target)
         _compose_profile_config(
             base,
             overlay,
@@ -661,7 +708,7 @@ def _write_owned_tool_config(
             previous_keys=[],
         )
         sync_smart_routing_hooks(base, state, enabled=False)
-        return base
+        return compose_native_settings("codex", base, native, target=target)
 
     path = LEGACY_CODEX_CONFIG_PATH if legacy else CODEX_CONFIG_PATH
     backup = LEGACY_CODEX_BACKUP_PATH if legacy else CODEX_BACKUP_PATH
@@ -672,9 +719,12 @@ def _write_owned_tool_config(
             path=path,
             parser=_parse_managed_config,
             dumper=tomlkit.dumps,
-            compose=compose,
+            compose=lambda base: compose(
+                base, target="user_settings" if legacy else "private_settings"
+            ),
             owned_paths=private_owned,
             contributions=contributions,
+            exact_array_paths=native_exact_arrays,
             baseline_text=backup.read_text(encoding="utf-8") if backup.exists() else None,
             baseline_supplied=backup.exists() or is_tool_managed(state, "codex"),
             legacy_owned_paths=[
@@ -692,14 +742,48 @@ def _write_owned_tool_config(
                 path=managed_path,
                 parser=_parse_managed_config,
                 dumper=tomlkit.dumps,
-                compose=lambda base: compose(base, include_catalog=False),
+                compose=lambda base: compose(
+                    base, target="managed_settings", include_catalog=False
+                ),
                 owned_paths=owned_paths,
                 contributions=contributions,
+                exact_array_paths=native_exact_arrays,
                 privileged=True,
-                optional=True,
+                optional="managed_settings" not in required_scopes,
                 compatible=lambda existing, desired: (
                     not managed_file_conflicts(existing, desired, owned_paths)
                 ),
+            )
+        )
+    requirements_paths, requirements_contributions, requirements_exact_arrays = native_ownership(
+        "codex", requirements
+    )
+    declarations = (source.manifest or {}).get("handoff", {}).get("agents", {}).get("codex", {})
+    requirements_handoff = any(
+        item.get("target") == "requirements"
+        for operation in ("adopt", "retire")
+        for item in declarations.get(operation, [])
+    )
+    if requirements_paths or requirements_handoff:
+        requirements_path = codex_requirements_path()
+        if requirements_path is None:
+            raise RuntimeError("Codex native requirements are unsupported on this platform.")
+
+        def compose_requirements(base: dict) -> dict:
+            validate_native_base("codex", base, requirements, target="requirements")
+            return compose_native_settings("codex", base, requirements, target="requirements")
+
+        plans.append(
+            DestinationPlan(
+                target="requirements",
+                path=requirements_path,
+                parser=_parse_managed_config,
+                dumper=tomlkit.dumps,
+                compose=compose_requirements,
+                owned_paths=requirements_paths,
+                contributions=requirements_contributions,
+                exact_array_paths=requirements_exact_arrays,
+                privileged=True,
             )
         )
     if not legacy:
@@ -869,6 +953,19 @@ def revert_managed_config() -> str:
         display="Codex",
         parser=_parse_managed_config,
         dumper=tomlkit.dumps,
+    )
+
+
+def revert_managed_requirements() -> str:
+    path = codex_requirements_path()
+    if path is None:
+        return "unchanged"
+    return revert_managed_file(
+        "codex",
+        display="Codex requirements",
+        parser=_parse_managed_config,
+        dumper=tomlkit.dumps,
+        path=path,
     )
 
 
@@ -1312,13 +1409,12 @@ def _reject_managed_model_catalog() -> None:
 def _otel_proxy_overlay(endpoint: str) -> dict:
     """Codex OTLP trace exporter pointed at the loopback proxy — no auth header, since
     the proxy injects a freshly-minted Databricks token that codex could not refresh."""
+    # A second whole-otel override would replace native log/metrics CLI settings.
     return {
-        "otel": {
-            "trace_exporter": {
-                "otlp-http": {
-                    "endpoint": endpoint,
-                    "protocol": "binary",
-                }
+        "otel.trace_exporter": {
+            "otlp-http": {
+                "endpoint": endpoint,
+                "protocol": "binary",
             }
         }
     }
@@ -1396,6 +1492,7 @@ def launch(
     options: LaunchOptions,
 ) -> None:
     validate_agent_env(state, "codex")
+    _preflight_native_settings(state)
     if options.launch_smart_routing:
         _launch_smart_routing(state, tool_args)
         return

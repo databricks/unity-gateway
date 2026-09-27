@@ -9,6 +9,31 @@ WS = "https://example.databricks.com"
 
 
 class TestCodexConfigArgs:
+    def test_native_exporters_preserve_literal_header_keys_and_empty_arrays(self):
+        native = {
+            "otel": {
+                "environment": "source",
+                "exporter": "none",
+                "metrics_exporter": {
+                    "otlp-http": {
+                        "endpoint": "https://metrics.example",
+                        "protocol": "binary",
+                        "headers": {"x.routing.scope": "metrics", 'x-quoted"key': "value\nnext"},
+                    }
+                },
+                "trace_exporter": {"otlp-grpc": {"endpoint": "https://traces.example"}},
+            },
+            "tui": {"status_line": []},
+        }
+
+        args = codex_config_args(native)
+
+        assert args[::2] == ["--config", "--config"]
+        assert tomlkit.parse("\n".join(args[1::2])) == native
+        # Codex splits override paths on literal dots, so header names stay inside TOML values.
+        assert args[1].startswith("otel={")
+        assert '"x.routing.scope"' in args[1]
+
     def test_layers_provider_overrides_without_replacing_user_config(self, monkeypatch):
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")

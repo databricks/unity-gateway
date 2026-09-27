@@ -23,6 +23,7 @@ from ucode import managed_files as files
 from ucode.child_env import agent_custom_env, env_name_identity, validate_env_name
 from ucode.config_io import is_dry_run
 from ucode.managed_source import SelectedManagedSource
+from ucode.native_settings import agent_native_requirements, agent_native_settings
 from ucode.ui import print_warning
 
 OwnedPaths = list[list[str]] | Callable[[dict, dict], list[list[str]]]
@@ -37,6 +38,7 @@ class DestinationPlan:
     compose: Callable[[dict], dict]
     owned_paths: OwnedPaths
     contributions: dict[tuple[str, ...], list] = field(default_factory=dict)
+    exact_array_paths: frozenset[tuple[str, ...]] = frozenset()
     privileged: bool = False
     optional: bool = False
     compatible: Callable[[dict, dict], bool] | None = None
@@ -80,6 +82,8 @@ def source_for_writer(
     application = applied_source(agent)
     enrolled = (
         bool(agent_custom_env(state, agent))
+        or bool(agent_native_settings(state, agent))
+        or bool(agent_native_requirements(state, agent))
         or application is not None
         or any(
             entry.get("agent") == agent and "active_effects" in entry
@@ -316,6 +320,7 @@ def _registered_plan(agent: str, target: str, path: Path) -> DestinationPlan:
             "private_settings": {codex.CODEX_CONFIG_PATH},
             "user_settings": {codex.LEGACY_CODEX_CONFIG_PATH, codex._legacy_config_path()},
             "managed_settings": {codex.codex_managed_config_path()},
+            "requirements": {codex.codex_requirements_path()},
             "model_catalog": {codex.CODEX_MODEL_CATALOG_PATH},
         }
         parser, dumper = codex._parse_managed_config, tomlkit.dumps
@@ -340,7 +345,7 @@ def _registered_plan(agent: str, target: str, path: Path) -> DestinationPlan:
         dumper,
         lambda doc: doc,
         [],
-        privileged=target == "managed_settings",
+        privileged=target in {"managed_settings", "requirements"},
         delete_when_empty=target in {"model_catalog", "scoped_model_catalog"},
     )
 
@@ -540,7 +545,7 @@ def _transaction(
         for key, entry in effective.items():
             if entry.get("agent") != agent or not (entry.get("active_effects") or restore):
                 continue
-            if restore and entry.get("scope") == "managed_settings":
+            if restore and entry.get("scope") in {"managed_settings", "requirements"}:
                 continue
             if release and not restore and entry.get("owner") != owner:
                 continue
@@ -756,8 +761,22 @@ def _transaction(
                         )
             # Recompose contribution arrays from the cleaned live remainder and the
             # declared source elements, never claim user elements merged by adapters.
+            for path in plan.exact_array_paths if not release else ():
+                remainder = files._path_value(base, list(path))
+                if not isinstance(remainder, list):
+                    continue
+                adopted_elements = []
+                if key in migrations:
+                    for item in declarations.get("adopt", []):
+                        if item["target"] == plan.target and tuple(item["path"]) == path:
+                            adopted_elements = item.get("elements", [])
+                if _remove_elements(remainder, adopted_elements):
+                    raise RuntimeError(
+                        f"Unowned array elements at {plan.target}.{'.'.join(path)}; "
+                        "declare explicit adopt or retire elements and increment migration_version."
+                    )
             for effect in effects:
-                if "elements" in effect:
+                if "elements" in effect and tuple(effect["path"]) not in plan.exact_array_paths:
                     remainder = files._path_value(base, effect["path"])
                     prior = next(
                         (

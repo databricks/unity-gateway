@@ -57,6 +57,35 @@ def test_custom_environment_is_file_only_per_agent_and_transient(agent):
     assert "STALE" not in persisted
 
 
+@pytest.mark.parametrize(
+    "agent,extension,value",
+    [
+        ("claude", "native_settings", {"permissions": {"deny": ["Bash"]}}),
+        ("codex", "native_settings", {"tui": {"status_line": []}}),
+        ("codex", "native_requirements", {"features": {"fast_mode": False}}),
+    ],
+)
+def test_native_extensions_are_independent_file_only_values(agent, extension, value):
+    managed = {"enabled_agents": {agent: {extension: value}}}
+    selected = SelectedManagedSource(
+        kind="file", workspace=WORKSPACE, agent=agent, _manifest_json=json.dumps(managed)
+    )
+    key = f"{agent}_{extension}"
+    original = {"workspace": WORKSPACE, key: {"stale": "old"}}
+    resolved = resolve_state(managed, original, agent, selected_source=selected)
+    assert resolved[key] == value
+    assert original[key] == {"stale": "old"}
+    next(iter(resolved[key].values())).clear()
+    assert selected.manifest["enabled_agents"][agent][extension] == value
+    assert resolve_state(managed, original, agent)[key] == {}
+    omitted = SelectedManagedSource(
+        kind="file", workspace=WORKSPACE, agent=agent, _manifest_json="{}"
+    )
+    assert resolve_state({}, original, agent, selected_source=omitted)[key] == {}
+    state_mod.save_state(resolve_state(managed, original, agent, selected_source=selected))
+    assert key not in state_mod.STATE_PATH.read_text()
+
+
 # A normalized managed config, as `managed_config.normalize_managed_config` produces it.
 MANAGED = {
     "name": "coding-agent-configs/abc-123",
