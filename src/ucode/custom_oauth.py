@@ -21,6 +21,7 @@ from ucode.databricks import (
     external_bearer_configured,
     get_databricks_token,
     has_valid_databricks_auth,
+    login_browser_env,
     run,
     save_databricks_cli_oauth_profile,
 )
@@ -165,7 +166,8 @@ def ensure_custom_oauth_cli_token(
         "--scopes",
         ",".join(scope for scope in config["scopes"] if scope != "offline_access"),
     ]
-    run(login_args, timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000)
+    with login_browser_env(os.environ.copy()) as env:
+        run(login_args, env=env, timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000)
     return get_databricks_token(workspace, profile)
 
 

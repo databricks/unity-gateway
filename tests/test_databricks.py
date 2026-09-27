@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import stat
 import subprocess
 import threading
 import time
+import webbrowser
 from decimal import Decimal
+from pathlib import Path
 from urllib.parse import parse_qs
 
 import pytest
@@ -48,6 +52,7 @@ from ucode.databricks import (
 
 WS = "https://example.databricks.com"
 WS_HOST = "example.databricks.com"
+LOGIN_URL = f"{WS}/oidc/v1/authorize?state=test-state&redirect_uri=http%3A%2F%2Flocalhost"
 
 
 class _FakeResponse:
@@ -64,6 +69,149 @@ class _FakeResponse:
 
     def read(self):
         return self._body
+
+
+def test_login_browser_prints_intact_url_before_opening(monkeypatch, capsys):
+    url = "https://workspace.example/oidc/v1/authorize?state=" + ("s" * 400) + "&scope=all-apis"
+    seen: list[str] = []
+
+    def opener(value: str) -> bool:
+        assert "BROWSER" not in os.environ
+        output = capsys.readouterr()
+        assert output.out == ""
+        assert url in output.err.splitlines()
+        seen.append(value)
+        return True
+
+    monkeypatch.setattr(webbrowser, "open_new_tab", opener)
+
+    env = os.environ.copy()
+    env.pop("BROWSER", None)
+    with db_mod.login_browser_env(env) as child:
+        monkeypatch.setattr(db_mod.os, "environ", child)
+        db_mod._open_login_browser(url)
+    assert seen == [url]
+
+
+@pytest.mark.parametrize("result", [False, OSError("browser unavailable")])
+def test_open_failure_keeps_url_available(monkeypatch, capsys, result):
+    url = "https://workspace.example/authorize?client_id=client&state=long-value"
+
+    def opener(_value: str):
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.delenv("BROWSER", raising=False)
+    monkeypatch.setattr(webbrowser, "open_new_tab", opener)
+
+    db_mod._open_login_browser(url)
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert url in output.err.splitlines()
+    assert "Automatic browser launch failed" in output.err
+    assert "Traceback" not in output.err
+
+
+def test_none_browser_prints_url_without_launching(monkeypatch, capsys):
+    url = "https://workspace.example/authorize?state=manual"
+    launches = []
+    # Observe both browser boundaries without opening a real browser on regression.
+    monkeypatch.setattr(webbrowser, "open_new_tab", lambda value: launches.append(value) or True)
+    monkeypatch.setattr(db_mod.subprocess, "run", lambda args, **kwargs: launches.append(args))
+    env = os.environ.copy()
+    env["BROWSER"] = "none"
+
+    with db_mod.login_browser_env(env) as child:
+        monkeypatch.setattr(db_mod.os, "environ", child)
+        db_mod._open_login_browser(url)
+
+    output = capsys.readouterr()
+    assert launches == []
+    assert output.out == ""
+    assert url in output.err.splitlines()
+
+
+def test_launcher_forwards_exact_encoded_url_to_browser_path_with_spaces(tmp_path):
+    output_path = tmp_path / "captured url.txt"
+    observer = tmp_path / "browser executable with spaces"
+    observer.write_text(
+        "#!/bin/sh\n" + f'printf "%s" "$1" > {shlex.quote(str(output_path))}\n',
+        encoding="utf-8",
+    )
+    observer.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    url = (
+        "https://workspace.example/oidc/v1/authorize?client_id=client%20id&"
+        "redirect_uri=http%3A%2F%2Flocalhost%3A8020%2Fcallback&state=s%2Bvalue%26scope"
+    )
+    env = os.environ.copy()
+    env["BROWSER"] = str(observer)
+
+    with db_mod.login_browser_env(env) as child:
+        result = subprocess.run(
+            [child["BROWSER"], url],
+            env=child,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+
+    assert output_path.read_text(encoding="utf-8") == url
+    assert result.stdout == ""
+    assert url in result.stderr.splitlines()
+
+
+def test_cli_login_shows_copyable_url(monkeypatch, capfd):
+    monkeypatch.setenv("BROWSER", "none")
+    calls = []
+
+    def login(args, *, env, timeout):
+        # Replace the networked CLI, but run its actual browser hook with a test URL.
+        calls.append((args, env, timeout))
+        subprocess.run([env["BROWSER"], LOGIN_URL], env=env, check=True, timeout=10)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(db_mod, "run", login)
+    db_mod.run_databricks_login(WS, "test-profile")
+
+    output = capfd.readouterr()
+    assert LOGIN_URL in output.err
+    assert LOGIN_URL not in output.out
+    args, env, timeout = calls[0]
+    assert args[:7] == [
+        "databricks",
+        "auth",
+        "login",
+        "--host",
+        WS,
+        "--profile",
+        "test-profile",
+    ]
+    assert timeout == 300
+    assert not Path(env["BROWSER"]).exists()
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (subprocess.CalledProcessError(1, "databricks"), "failed"),
+        (subprocess.TimeoutExpired("databricks", 300), "timed out"),
+    ],
+)
+def test_login_failure_cleans_up_browser_launcher(monkeypatch, failure, message):
+    launchers = []
+
+    def login(args, *, env, timeout):
+        launchers.append(Path(env["BROWSER"]))
+        raise failure
+
+    monkeypatch.setattr(db_mod, "run", login)
+    with pytest.raises(RuntimeError, match=message):
+        db_mod.run_databricks_login(WS, "test-profile")
+    assert len(launchers) == 1
+    assert not launchers[0].exists()
 
 
 class TestFetchCodexMpsModelCatalog:

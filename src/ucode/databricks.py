@@ -16,10 +16,12 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from email.message import Message
@@ -71,6 +73,14 @@ _HTTP_GET_RETRY_BASE_SECONDS = 1.0
 _HTTP_GET_RETRY_MAX_SECONDS = 5.0
 _HTTP_GET_RETRY_AFTER_JITTER_SECONDS = 0.25
 _ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES = 2
+_LOGIN_BROWSER_ORIGINAL_ENV = "UCODE_LOGIN_BROWSER_ORIGINAL"
+_LOGIN_BROWSER_CODE = (
+    "from ucode.databricks import _open_login_browser; import sys; _open_login_browser(sys.argv[1])"
+)
+_LOGIN_BROWSER_COPY_URL_MESSAGE = "Copy and paste this URL into your browser if needed:\n"
+_LOGIN_BROWSER_FAILURE_MESSAGE = (
+    "Automatic browser launch failed; copy and paste the URL above into your browser.\n"
+)
 
 
 @dataclass(frozen=True)
@@ -1072,6 +1082,58 @@ def apply_pat_environment(state: dict) -> None:
     ensure_pat_bearer(state.get("profile"))
 
 
+@contextmanager
+def login_browser_env(env: dict[str, str]) -> Iterator[dict[str, str]]:
+    """Yield a copied environment with a temporary URL-forwarding browser."""
+    child_env = dict(env)
+    child_env[_LOGIN_BROWSER_ORIGINAL_ENV] = env.get("BROWSER", "")
+    command = [sys.executable, "-c", _LOGIN_BROWSER_CODE]
+    with tempfile.TemporaryDirectory(prefix="ug-login-browser-") as directory:
+        if os.name == "nt":
+            launcher = Path(directory) / "ug-login-browser.cmd"
+            launcher.write_text(
+                f"@echo off\r\n{subprocess.list2cmdline(command)} %*\r\n",
+                encoding="utf-8",
+                newline="",
+            )
+        else:
+            launcher = Path(directory) / "ug-login-browser"
+            launcher.write_text(
+                f'#!/bin/sh\nexec {shlex.join(command)} "$@"\n',
+                encoding="utf-8",
+                newline="",
+            )
+            launcher.chmod(0o700)
+        child_env["BROWSER"] = str(launcher)
+        yield child_env
+
+
+def _open_login_browser(url: str) -> None:
+    """Print an OAuth URL and open it using the user's original browser setting."""
+    original_browser = os.environ.pop(_LOGIN_BROWSER_ORIGINAL_ENV, "")
+    if original_browser:
+        os.environ["BROWSER"] = original_browser
+    else:
+        os.environ.pop("BROWSER", None)
+
+    # Plain stderr avoids Rich markup and preserves the URL as one flushed line.
+    print(_LOGIN_BROWSER_COPY_URL_MESSAGE, end="", file=sys.stderr)
+    print(url, file=sys.stderr, flush=True)
+    if original_browser == "none":
+        return
+    try:
+        if original_browser:
+            # CLI BROWSER semantics are one executable path, not a shell command.
+            subprocess.run([original_browser, url], check=True)
+        else:
+            import webbrowser
+
+            if webbrowser.open_new_tab(url) is False:
+                raise RuntimeError("webbrowser did not open a browser")
+    except Exception:
+        print(_LOGIN_BROWSER_FAILURE_MESSAGE, end="", file=sys.stderr, flush=True)
+
+
 def run_databricks_login(workspace: str, profile: str | None = None) -> None:
     """Run databricks auth login unconditionally.
 
@@ -1080,7 +1142,7 @@ def run_databricks_login(workspace: str, profile: str | None = None) -> None:
     refreshed in place rather than overwriting another profile's tokens."""
     print_section("Databricks Login")
     print_kv("Workspace", workspace)
-    print_note("A browser may open for `databricks auth login`.")
+    print_note("Use the browser that opens, or copy the sign-in URL into your preferred browser.")
     try:
         profile_name = profile or find_profile_name_for_host(workspace)
         cmd = [
@@ -1091,7 +1153,8 @@ def run_databricks_login(workspace: str, profile: str | None = None) -> None:
             workspace,
             *_profile_args(profile_name),
         ]
-        run(cmd, env=build_databricks_cli_env(workspace, profile_name), timeout=300)
+        with login_browser_env(build_databricks_cli_env(workspace, profile_name)) as env:
+            run(cmd, env=env, timeout=300)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError("`databricks auth login` failed.") from exc
     except subprocess.TimeoutExpired as exc:

@@ -30,6 +30,10 @@ keyboard selection: nothing is selected by default, selecting Codex installs onl
 Codex, and submitting an empty selection installs nothing. Rendering checks cover
 the selected and empty checkboxes. These are local component checks, not live gateway tests.
 
+`test_databricks.py` and `test_custom_oauth.py` cover copyable sign-in URLs,
+automatic browser launch, manual sign-in fallback, and the regular and custom-client
+CLI login paths. These are local component checks; they do not perform a live login.
+
 ## CUJ coverage matrix
 
 These are **implemented assertions**, not a claim that every version passes.

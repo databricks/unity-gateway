@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -13,6 +14,7 @@ from databricks.sdk import oauth
 from typer.testing import CliRunner
 
 import ucode.cli as cli_mod
+import ucode.custom_oauth as custom_oauth
 import ucode.databricks as db_mod
 from ucode.cli import app
 from ucode.custom_oauth import (
@@ -22,8 +24,53 @@ from ucode.custom_oauth import (
 )
 
 WS = "https://example.databricks.com"
+LOGIN_URL = f"{WS}/oidc/v1/authorize?state=test-state&redirect_uri=http%3A%2F%2Flocalhost"
 TEST_SCOPES = ("offline_access", "catalog.catalogs:read")
 runner = CliRunner()
+
+
+def test_custom_cli_login_shows_copyable_url(monkeypatch, capfd):
+    monkeypatch.setenv("BROWSER", "none")
+    calls = []
+
+    def login(args, *, env, timeout):
+        # Replace the networked CLI, but run its actual browser hook with a test URL.
+        calls.append((args, env, timeout))
+        subprocess.run([env["BROWSER"], LOGIN_URL], env=env, check=True, timeout=10)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(custom_oauth, "run", login)
+    monkeypatch.setattr(custom_oauth, "ensure_databricks_cli_version", lambda _: None)
+    monkeypatch.setattr(custom_oauth, "external_bearer_configured", lambda: False)
+    monkeypatch.setattr(custom_oauth, "has_valid_databricks_auth", lambda *_: False)
+    monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_: "test-token")
+    token = custom_oauth.ensure_custom_oauth_cli_token(
+        WS,
+        {
+            "client_id": "test-client",
+            "scopes": ["offline_access", "all-apis"],
+            "redirect_url": "http://localhost:8020",
+            "profile": "test-profile",
+        },
+    )
+    assert token == "test-token"
+
+    output = capfd.readouterr()
+    assert LOGIN_URL in output.err
+    assert LOGIN_URL not in output.out
+    args, env, timeout = calls[0]
+    assert args[:7] == [
+        "databricks",
+        "auth",
+        "login",
+        "--host",
+        WS,
+        "--profile",
+        "test-profile",
+    ]
+    assert args[7:] == ["--client-id", "test-client", "--scopes", "all-apis"]
+    assert timeout == 180
+    assert not Path(env["BROWSER"]).exists()
 
 
 class TestCustomOAuthLock:
