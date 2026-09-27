@@ -48,19 +48,20 @@ def _jwt(expires_at: float) -> str:
 
 
 @pytest.fixture(autouse=True)
-def no_state_writes():
+def no_state_writes(monkeypatch):
     """Prevent any test from writing to the real state file on disk."""
-    with (
-        patch("ucode.state.save_state"),
-        patch("ucode.cli.save_state"),
-        patch("ucode.agents.__init__.save_state"),
-        patch("ucode.agents.codex.save_state"),
-        patch("ucode.agents.claude.save_state"),
-        patch("ucode.agents.claude._managed_settings_path", return_value=None),
-        patch("ucode.agents.gemini.save_state"),
-        patch("ucode.agents.opencode.save_state"),
+    # Share teardown ordering with tests that override the same functions.
+    for target in (
+        "ucode.state.save_state",
+        "ucode.cli.save_state",
+        "ucode.agents.save_state",
+        "ucode.agents.codex.save_state",
+        "ucode.agents.claude.save_state",
+        "ucode.agents.gemini.save_state",
+        "ucode.agents.opencode.save_state",
     ):
-        yield
+        monkeypatch.setattr(target, MagicMock())
+    monkeypatch.setattr("ucode.agents.claude._managed_settings_path", lambda: None)
 
 
 MINIMAL_STATE = {

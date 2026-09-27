@@ -26,6 +26,7 @@ from ucode.databricks import (
 )
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import managed_write_batch
+from ucode.managed_source import SelectedManagedSource
 from ucode.state import get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
 from ucode.ui import (
@@ -403,11 +404,15 @@ def configure_tool(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
+    selected_source: SelectedManagedSource | None = None,
 ) -> dict:
+    if selected_source is not None:
+        selected_source.check_target(state["workspace"], tool)
+    source_kwargs = {"selected_source": selected_source} if selected_source is not None else {}
     result: dict | tuple[dict, str]
     if tool == "codex":
         result = codex.write_tool_config(
-            state, model, provider=provider, parent_schema=parent_schema
+            state, model, provider=provider, parent_schema=parent_schema, **source_kwargs
         )
     elif tool == "claude":
         # A Model Provider Service or parent schema routes by header and discovers models natively,
@@ -425,6 +430,7 @@ def configure_tool(
             coding_agent_config_defaults=coding_agent_config_defaults,
             parent_schema=parent_schema,
             picker_catalog=picker_catalog,
+            **source_kwargs,
         )
     else:
         # Every tool in this branch needs a model — including gemini under a provider,
