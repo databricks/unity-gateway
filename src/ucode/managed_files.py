@@ -251,7 +251,9 @@ class ManagedFileSnapshots:
     last_applied_by_ug: dict | None
 
 
-def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnapshots:
+def managed_file_snapshots(
+    tool: str, parser: ManagedParser, path: Path | None = None
+) -> ManagedFileSnapshots:
     """Return the parsed baseline and last-applied snapshots of ``tool``'s managed file.
 
     ``original_before_ug`` is the pre-ucode baseline; ``last_applied_by_ug`` is what ucode last
@@ -271,7 +273,7 @@ def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnaps
             return None
 
     try:
-        entry = _manifest_files(_load_manifest()).get(tool)
+        entry = _find_entry(_load_manifest(), tool, path)
         if not isinstance(entry, dict):
             return ManagedFileSnapshots(None, None)
         return ManagedFileSnapshots(
@@ -382,6 +384,26 @@ def reconcile_managed_file(
     owned_paths: list[list[str]],
     parser: ManagedParser,
 ) -> str:
+    from ucode.managed_ownership import _lock
+
+    with (
+        _lock(MANAGED_BACKUP_DIR / "manifest.lock"),
+        _lock(MANAGED_BACKUP_DIR / "locks" / (_sha256(str(path.absolute())) + ".lock")),
+    ):
+        return _reconcile_managed_file(
+            path, desired_text, tool=tool, display=display, owned_paths=owned_paths, parser=parser
+        )
+
+
+def _reconcile_managed_file(
+    path: Path,
+    desired_text: str,
+    *,
+    tool: str,
+    display: str,
+    owned_paths: list[list[str]],
+    parser: ManagedParser,
+) -> str:
     """Back up, atomically write, and verify one OS-managed settings file.
 
     The first pre-ucode contents are retained until ``ucode revert``. Subsequent writes update only
@@ -404,6 +426,9 @@ def reconcile_managed_file(
         )
     current_text = read_managed_file(path)
     if current_text == desired_text:
+        if not is_dry_run():
+            _ensure_backup(tool, path, current_text)
+            _record_last_applied(tool, path, desired_text, owned_paths)
         return "unchanged"
     if current_text is not None:
         try:
@@ -413,6 +438,9 @@ def reconcile_managed_file(
         except RuntimeError:
             semantically_unchanged = False
         if semantically_unchanged:
+            if not is_dry_run():
+                _ensure_backup(tool, path, current_text)
+                _record_last_applied(tool, path, current_text, owned_paths)
             return "unchanged"
     if is_dry_run():
         console.print(f"\n[bold]\\[dry run] {path} (via sudo)[/bold]\n{desired_text}")
@@ -467,10 +495,25 @@ def revert_managed_file(
     display: str,
     parser: ManagedParser,
     dumper: ManagedDumper,
+    path: Path | None = None,
+) -> str:
+    from ucode.managed_ownership import _lock
+
+    with _lock(MANAGED_BACKUP_DIR / "manifest.lock"):
+        return _revert_managed_file(tool, display=display, parser=parser, dumper=dumper, path=path)
+
+
+def _revert_managed_file(
+    tool: str,
+    *,
+    display: str,
+    parser: ManagedParser,
+    dumper: ManagedDumper,
+    path: Path | None = None,
 ) -> str:
     """Restore one managed file from its baseline while preserving later external edits."""
     manifest = _load_manifest()
-    entry = _manifest_files(manifest).get(tool)
+    entry = _find_entry(manifest, tool, path)
     if not isinstance(entry, dict):
         return "unchanged"
     path = Path(str(entry.get("path") or ""))
@@ -481,10 +524,15 @@ def revert_managed_file(
             f"Refusing to restore {display} managed settings through symlink {path}."
         )
     current_text = read_managed_file(path)
+    entry = _pending_revert_entry(manifest, tool, entry, current_text)
+    if entry.get("active_effects"):
+        from ucode.managed_ownership import _registered_plan
+
+        _registered_plan(tool, entry["scope"], path)
     original_text = _original_text(entry)
     last_text = _snapshot_text(entry, "last_applied_file")
 
-    if current_text == last_text:
+    if current_text == last_text and "active_effects" not in entry:
         desired_text = original_text
     elif current_text is None or last_text is None:
         desired_text = current_text
@@ -503,6 +551,8 @@ def revert_managed_file(
         desired_text = (
             current_text if is_semantically_equal(reverted, current_doc) else dumper(reverted)
         )
+        if not reverted and original_text is None:
+            desired_text = None
 
     if desired_text != current_text:
         if not managed_writes_allowed():
@@ -535,6 +585,49 @@ def revert_managed_file(
     return "restored"
 
 
+def _pending_revert_entry(manifest: dict, tool: str, baseline: dict, current: str | None) -> dict:
+    """Use verified partial-apply snapshots without replacing the original baseline."""
+    entry = deepcopy(baseline)
+    key = _destination_key(tool, Path(entry["path"]), entry["scope"])
+    pending = manifest.get("pending", {}).get(tool, {})
+    candidates = [(pending.get("recovery_entries", {}).get(key), _MISSING)]
+    if key in pending.get("attempted", []):
+        candidates.append(
+            (pending.get("entries", {}).get(key), pending.get("before", {}).get(key, _MISSING))
+        )
+    for candidate, before in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        snapshot = candidate.get("last_applied_file")
+        inherited_snapshots = {baseline.get("last_applied_file"), entry.get("last_applied_file")}
+        verified = isinstance(snapshot, str) and snapshot not in inherited_snapshots
+        changed_effects = candidate.get("active_effects", []) != entry.get("active_effects", [])
+        if not verified and (not isinstance(snapshot, str) or changed_effects):
+            known_before = before
+            if known_before is _MISSING:
+                known_before = _snapshot_text(entry, "last_applied_file")
+                if known_before is None:
+                    known_before = _original_text(entry)
+            if current != known_before:
+                raise RuntimeError(
+                    f"Cannot safely revert {tool} managed settings at {entry['path']}: "
+                    "an incomplete write has no verified snapshot. Recovery journal and backups "
+                    "were retained; retry the application or release its owner before reverting."
+                )
+        if isinstance(snapshot, str) and (
+            snapshot != baseline.get("last_applied_file") or not entry.get("last_applied_file")
+        ):
+            entry["last_applied_file"] = snapshot
+            entry["last_applied_sha256"] = candidate.get("last_applied_sha256")
+        paths = entry.setdefault("owned_paths", [])
+        for path in candidate.get("owned_paths", []):
+            if path not in paths:
+                paths.append(deepcopy(path))
+        if "active_effects" in candidate:
+            entry["active_effects"] = deepcopy(candidate["active_effects"])
+    return entry
+
+
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -547,6 +640,22 @@ def _manifest_files(manifest: dict) -> dict:
     return files
 
 
+def _destination_key(tool: str, path: Path, scope: str = "managed_settings") -> str:
+    identity = f"{tool}\0{scope}\0{path.absolute()}"
+    return f"{tool}-{_sha256(identity)[:24]}"
+
+
+def _find_entry(manifest: dict, tool: str, path: Path | None = None) -> dict | None:
+    for entry in _manifest_files(manifest).values():
+        if not isinstance(entry, dict) or entry.get("agent") != tool:
+            continue
+        if path is not None and entry.get("path") == str(path.absolute()):
+            return entry
+        if path is None and entry.get("scope") == "managed_settings":
+            return entry
+    return None
+
+
 def _load_manifest() -> dict:
     try:
         if MANAGED_BACKUP_MANIFEST_PATH.is_symlink():
@@ -555,16 +664,26 @@ def _load_manifest() -> dict:
                 f"{MANAGED_BACKUP_MANIFEST_PATH}."
             )
         if not MANAGED_BACKUP_MANIFEST_PATH.exists():
-            return {"version": 1, "files": {}}
+            return {"version": 2, "files": {}}
         manifest = json.loads(MANAGED_BACKUP_MANIFEST_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(
             f"Cannot read managed-settings backup manifest at {MANAGED_BACKUP_MANIFEST_PATH}: {exc}"
         ) from exc
-    if not isinstance(manifest, dict) or manifest.get("version") != 1:
+    if not isinstance(manifest, dict) or manifest.get("version") not in (1, 2):
         raise RuntimeError(
             f"Unsupported managed-settings backup manifest at {MANAGED_BACKUP_MANIFEST_PATH}."
         )
+    if manifest["version"] == 1:
+        upgraded = {}
+        for tool, entry in _manifest_files(manifest).items():
+            if not isinstance(entry, dict) or not Path(str(entry.get("path", ""))).is_absolute():
+                raise RuntimeError("Invalid managed-settings backup destination.")
+            entry.setdefault("agent", tool)
+            entry.setdefault("scope", "managed_settings")
+            upgraded[_destination_key(entry["agent"], Path(entry["path"]))] = entry
+        manifest["files"] = upgraded
+        manifest["version"] = 2
     return manifest
 
 
@@ -577,10 +696,18 @@ def _write_private_file(path: Path, text: str) -> None:
         mode="w", dir=MANAGED_BACKUP_DIR, delete=False, encoding="utf-8"
     ) as tmp:
         tmp.write(text)
+        tmp.flush()
+        os.fsync(tmp.fileno())
         tmp_path = Path(tmp.name)
     try:
         os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, path)
+        if os.name != "nt":
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
@@ -592,18 +719,18 @@ def _write_manifest(manifest: dict) -> None:
 
 def _backup_filename(tool: str, path: Path) -> str:
     suffix = path.suffix or ".txt"
-    return f"{tool}-managed-settings.backup{suffix}"
+    return f"{_destination_key(tool, path)}.backup{suffix}"
 
 
 def _last_applied_filename(tool: str, path: Path) -> str:
     suffix = path.suffix or ".txt"
-    return f"{tool}-managed-settings.last-applied{suffix}"
+    return f"{_destination_key(tool, path)}.last-applied{suffix}"
 
 
 def _ensure_backup(tool: str, path: Path, current_text: str | None) -> bool:
     manifest = _load_manifest()
     files = _manifest_files(manifest)
-    existing = files.get(tool)
+    existing = _find_entry(manifest, tool, path)
     if isinstance(existing, dict):
         if existing.get("path") != str(path):
             raise RuntimeError(
@@ -615,7 +742,9 @@ def _ensure_backup(tool: str, path: Path, current_text: str | None) -> bool:
         return False
 
     entry: dict[str, Any] = {
-        "path": str(path),
+        "path": str(path.absolute()),
+        "agent": tool,
+        "scope": "managed_settings",
         "original_existed": current_text is not None,
         "owned_paths": [],
     }
@@ -624,7 +753,7 @@ def _ensure_backup(tool: str, path: Path, current_text: str | None) -> bool:
         _write_private_file(MANAGED_BACKUP_DIR / backup_file, current_text)
         entry["backup_file"] = backup_file
         entry["original_sha256"] = _sha256(current_text)
-    files[tool] = entry
+    files[_destination_key(tool, path)] = entry
     _write_manifest(manifest)
     return True
 
@@ -633,14 +762,15 @@ def _record_last_applied(
     tool: str, path: Path, desired_text: str, owned_paths: list[list[str]]
 ) -> None:
     manifest = _load_manifest()
-    entry = _manifest_files(manifest).get(tool)
+    entry = _find_entry(manifest, tool, path)
     if not isinstance(entry, dict):
         raise RuntimeError(f"Missing managed-settings backup metadata for {tool}.")
     last_file = _last_applied_filename(tool, path)
     _write_private_file(MANAGED_BACKUP_DIR / last_file, desired_text)
     entry["last_applied_file"] = last_file
     entry["last_applied_sha256"] = _sha256(desired_text)
-    known_paths = entry.get("owned_paths") if isinstance(entry.get("owned_paths"), list) else []
+    stored_paths = entry.get("owned_paths")
+    known_paths = stored_paths if isinstance(stored_paths, list) else []
     for owned_path in owned_paths:
         if owned_path not in known_paths:
             known_paths.append(list(owned_path))
@@ -672,22 +802,34 @@ def _original_text(entry: dict) -> str | None:
 
 def _backup_label(tool: str) -> str:
     try:
-        entry = _manifest_files(_load_manifest()).get(tool)
+        entry = _find_entry(_load_manifest(), tool)
     except RuntimeError:
         return "invalid"
     return "available" if isinstance(entry, dict) else "none"
 
 
 def _delete_backup(tool: str, manifest: dict, entry: dict) -> None:
-    for key in ("backup_file", "last_applied_file"):
-        filename = entry.get(key)
-        if isinstance(filename, str):
-            try:
-                _snapshot_path(filename).unlink(missing_ok=True)
-            except OSError as exc:
-                raise RuntimeError(f"Could not remove managed-settings backup: {exc}") from exc
-    _manifest_files(manifest).pop(tool, None)
+    key = _destination_key(tool, Path(entry["path"]), entry["scope"])
+    snapshots = [entry, _manifest_files(manifest).pop(key, {})]
+    pending = manifest.get("pending", {}).get(tool, {})
+    for section in ("entries", "recovery_entries"):
+        snapshots.append(pending.get(section, {}).pop(key, {}))
+    pending.get("before", {}).pop(key, None)
+    if "attempted" in pending:
+        pending["attempted"] = [attempted for attempted in pending["attempted"] if attempted != key]
+    paths = {
+        _snapshot_path(candidate[field])
+        for candidate in snapshots
+        for field in ("backup_file", "last_applied_file")
+        if isinstance(candidate.get(field), str)
+    }
+    # Persist removal of journal references before deleting their recovery snapshots.
     _write_manifest(manifest)
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise RuntimeError(f"Could not remove managed-settings backup: {exc}") from exc
 
 
 def _snapshot_path(filename: str) -> Path:
@@ -747,7 +889,7 @@ def _three_way_revert(current: dict, original: dict, last: dict, paths: list) ->
         current_value = _path_value(reverted, path)
         original_value = _path_value(original, path)
         last_value = _path_value(last, path)
-        if current_value == last_value:
+        if is_semantically_equal(current_value, last_value):
             if original_value is _MISSING:
                 _delete_path_value(reverted, path)
             else:
@@ -756,8 +898,10 @@ def _three_way_revert(current: dict, original: dict, last: dict, paths: list) ->
         if not isinstance(current_value, list) or not isinstance(last_value, list):
             continue
         original_list = original_value if isinstance(original_value, list) else []
-        additions = [item for item in last_value if item not in original_list]
-        cleaned = [item for item in current_value if item not in additions]
+        from ucode.managed_ownership import _remove_elements
+
+        additions = _remove_elements(last_value, original_list)
+        cleaned = _remove_elements(current_value, additions)
         if cleaned:
             _set_path_value(reverted, path, cleaned)
         else:
@@ -823,7 +967,7 @@ class _SudoReplaceWorker:
         """Whether this worker can still serve requests (authenticated and running)."""
         return not self._broken and self.process.poll() is None
 
-    def replace(self, path: Path, source_path: str) -> None:
+    def replace(self, path: Path, source_path: str, expected: str | None = None) -> None:
         request_id = str(self._next_request_id)
         self._next_request_id += 1
         fields = (
@@ -832,6 +976,8 @@ class _SudoReplaceWorker:
             _encode_worker_arg(source_path),
             _encode_worker_arg(str(path)),
         )
+        if expected is not None:
+            fields = (*fields, expected)
         try:
             self.stdin.write(" ".join(fields) + "\n")
             self.stdin.flush()
@@ -920,6 +1066,7 @@ def _session_worker() -> _SudoReplaceWorker:
 
 
 def _sudo_remove(path: Path) -> None:
+    _validate_sudo_replace_target(path)
     original_flags = _clear_immutable(path)
     try:
         subprocess.run(
@@ -930,7 +1077,7 @@ def _sudo_remove(path: Path) -> None:
             _restore_immutable(path, original_flags)
 
 
-def _sudo_replace(path: Path, desired_text: str) -> None:
+def _sudo_replace(path: Path, desired_text: str, *, expected_text: object = _MISSING) -> None:
     """Atomically replace ``path`` while preserving metadata and file flags."""
     if not managed_writes_allowed():
         raise RuntimeError("Refusing to invoke sudo for managed settings non-interactively.")
@@ -941,14 +1088,25 @@ def _sudo_replace(path: Path, desired_text: str) -> None:
         tmp.write(desired_text)
         tmp_path = tmp.name
     try:
+        expected = (
+            None
+            if expected_text is _MISSING
+            else "absent"
+            if expected_text is None
+            else _sha256(cast(str, expected_text))
+        )
         if _managed_write_session_depth:
-            _session_worker().replace(path, tmp_path)
+            if expected is None:
+                _session_worker().replace(path, tmp_path)
+            else:
+                _session_worker().replace(path, tmp_path, expected)
         else:
             subprocess.run(
                 _sudo_replace_command(
                     "once",
                     tmp_path,
                     str(path),
+                    *([expected] if expected is not None else []),
                 ),
                 capture_output=True,
                 text=True,

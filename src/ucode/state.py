@@ -81,6 +81,7 @@ def _without_managed_overlay(state: dict) -> dict:
     Returns a new dict and leaves ``state`` untouched, so the caller keeps the layered values it
     needs for rendering and repeated saves stay idempotent.
     """
+    state = {key: value for key, value in state.items() if key != "_codex_prepared_catalog"}
     overlay = state.get(MANAGED_OVERLAY_KEY)
     if not isinstance(overlay, dict):
         return state

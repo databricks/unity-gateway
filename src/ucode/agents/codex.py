@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import os
 import re
 import signal
@@ -69,6 +70,12 @@ from ucode.managed_files import (
     read_managed_file,
     reconcile_managed_file,
     revert_managed_file,
+)
+from ucode.managed_ownership import (
+    DestinationPlan,
+    apply_source,
+    leaf_paths,
+    source_for_writer,
 )
 from ucode.managed_source import SelectedManagedSource
 from ucode.smart_routing import v2 as smart_routing_v2
@@ -404,8 +411,10 @@ def write_tool_config(
     parent_schema: str | None = None,
     selected_source: SelectedManagedSource | None = None,
 ) -> dict:
+    selected_source = source_for_writer(state, "codex", selected_source)
     if selected_source is not None:
         selected_source.check_target(state["workspace"], "codex")
+        return _write_owned_tool_config(state, selected_source, provider, parent_schema)
     workspace = state["workspace"]
     # Leave model selection to Codex. The gateway still receives the configured
     # provider and authentication settings, while Codex uses its own default.
@@ -486,19 +495,9 @@ def write_tool_config(
     )
 
     def compose(base: dict, *, include_catalog: bool = True) -> dict:
-        prune_key_paths(base, _PROVIDER_HTTP_HEADERS_KEY_PATHS)
-        deep_merge_dict(base, copy.deepcopy(overlay))
-        # deep_merge can't drop keys, so clear model preferences from an earlier run.
-        if chosen_model is None and not smart_routing_v2.smart_routing_enabled():
-            for key in ("model", "model_reasoning_effort"):
-                base.pop(key, None)
-        if include_catalog:
-            if catalog_path:
-                base["model_catalog_json"] = catalog_path
-            else:
-                base.pop("model_catalog_json", None)
-        _set_provider_header(base, None)
-        return base
+        return _compose_profile_config(
+            base, overlay, chosen_model, catalog_path, include_catalog=include_catalog
+        )
 
     if catalog is not None:
         sync_app_model_catalog(catalog)
@@ -518,6 +517,313 @@ def write_tool_config(
     _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
+    return state
+
+
+def _compose_profile_config(
+    base: dict,
+    overlay: dict,
+    chosen_model: str | None,
+    catalog_path: str | None,
+    *,
+    include_catalog: bool = True,
+    legacy: bool = False,
+    previous_keys: list[list[str]] | None = None,
+) -> dict:
+    if previous_keys is None:
+        prune_key_paths(base, _PROVIDER_HTTP_HEADERS_KEY_PATHS)
+    deep_merge_dict(base, copy.deepcopy(overlay))
+    profile = base.get("profiles", {}).get(CODEX_PROFILE_NAME, {}) if legacy else base
+    if chosen_model is None and not smart_routing_v2.smart_routing_enabled():
+        for key in ("model", "model_reasoning_effort"):
+            path = ["profiles", CODEX_PROFILE_NAME, key] if legacy else [key]
+            if previous_keys is None or path in previous_keys:
+                profile.pop(key, None)
+    if include_catalog and not legacy:
+        if catalog_path:
+            base["model_catalog_json"] = catalog_path
+        elif previous_keys is None or _is_ucode_catalog_reference(base.get("model_catalog_json")):
+            base.pop("model_catalog_json", None)
+    _set_provider_header(base, None)
+    supplied_headers = overlay["model_providers"][CODEX_MODEL_PROVIDER_NAME]["http_headers"]
+    for header in (MODEL_SERVICE_PARENT_SCHEMA_HEADER, SMART_ROUTER_RECIPE_HEADER):
+        if header not in supplied_headers:
+            _set_routing_header(base, header, None)
+    return base
+
+
+def _parse_catalog(text: str) -> dict:
+    try:
+        catalog = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid Codex model catalog: {exc}") from exc
+    if not isinstance(catalog, dict):
+        raise RuntimeError("A Codex model catalog must be a JSON object.")
+    return catalog
+
+
+def _dump_catalog(catalog: dict) -> str:
+    return json.dumps(catalog, indent=2, sort_keys=True) + "\n"
+
+
+def prepare_managed_catalog(
+    state: dict, provider: str | None, parent_schema: str | None
+) -> dict | None:
+    """Discover and validate a scoped catalog before any persistent configuration changes."""
+    identifier = provider or parent_schema
+    if not identifier:
+        return None
+    _reject_managed_model_catalog()
+    workspace = state["workspace"]
+    scope = f"provider:{provider}" if provider else f"parent:{parent_schema}"
+    try:
+        catalog = _fetch_codex_model_catalog(
+            workspace,
+            _launch_token(state, workspace),
+            source=CodexCatalogSource.PROVIDER if provider else CodexCatalogSource.PARENT_SCHEMA,
+            identifier=identifier,
+        )
+        validate_codex_catalog(SPEC["binary"], catalog)
+    except CodexMpsModelCatalogUnavailable:
+        catalog = None
+    return {
+        "provider": provider,
+        "parent_schema": parent_schema,
+        "catalog": catalog,
+        "catalog_path": str(_model_catalog_path(workspace, scope)) if catalog else None,
+    }
+
+
+def _write_owned_tool_config(
+    state: dict,
+    source: SelectedManagedSource,
+    provider: str | None,
+    parent_schema: str | None,
+) -> dict:
+    legacy = _use_legacy_layout()
+    static_models = state.get("codex_static_models")
+    static_models = static_models if isinstance(static_models, list) and static_models else None
+    if legacy and static_models and not provider:
+        raise RuntimeError(
+            "This Codex version cannot use the managed static model catalog. "
+            "Upgrade Codex and verify `codex debug models --bundled` works, then retry."
+        )
+    prepared = None if legacy else prepare_managed_catalog(state, provider, parent_schema)
+    catalog = (
+        prepared["catalog"]
+        if prepared is not None
+        else prepare_codex_catalog(SPEC["binary"], static_models)
+        if static_models and not provider
+        else None
+    )
+    catalog_path = str(CODEX_MODEL_CATALOG_PATH) if catalog is not None else None
+    # Discovery catalogs stay launch-scoped; only static lists belong in the private profile.
+    private_catalog_path = catalog_path if prepared is None else None
+    shared_before = _read_app_config() if not legacy else {}
+    catalog_before = read_json_safe(CODEX_MODEL_CATALOG_PATH) if not legacy else None
+    managed_model = state.get("codex_default_model")
+    chosen_model = managed_model if isinstance(managed_model, str) else None
+    renderer = render_legacy_overlay if legacy else render_overlay
+    overlay = renderer(
+        state["workspace"],
+        chosen_model,
+        state.get("profile"),
+        use_pat=bool(state.get("use_pat")),
+        provider=provider,
+        parent_schema=parent_schema,
+        custom_oauth=state.get("custom_oauth"),
+        managed_http_headers=state.get("codex_http_headers"),
+    )
+    _set_provider_header(overlay, None)
+    owned_paths = leaf_paths(overlay)
+    contributions: dict[tuple[str, ...], list] = {
+        ("model_providers", CODEX_MODEL_PROVIDER_NAME, "auth", "args"): overlay["model_providers"][
+            CODEX_MODEL_PROVIDER_NAME
+        ]["auth"]["args"]
+    }
+    previous_keys = ((state.get("managed_configs") or {}).get("codex") or {}).get("keys", [])
+
+    def compose(base: dict, *, include_catalog: bool = True) -> dict:
+        _compose_profile_config(
+            base,
+            overlay,
+            chosen_model,
+            private_catalog_path,
+            include_catalog=include_catalog,
+            legacy=legacy,
+            previous_keys=[],
+        )
+        sync_smart_routing_hooks(base, state, enabled=False)
+        return base
+
+    path = LEGACY_CODEX_CONFIG_PATH if legacy else CODEX_CONFIG_PATH
+    backup = LEGACY_CODEX_BACKUP_PATH if legacy else CODEX_BACKUP_PATH
+    private_owned = [*owned_paths, *([["model_catalog_json"]] if private_catalog_path else [])]
+    plans = [
+        DestinationPlan(
+            target="user_settings" if legacy else "private_settings",
+            path=path,
+            parser=_parse_managed_config,
+            dumper=tomlkit.dumps,
+            compose=compose,
+            owned_paths=private_owned,
+            contributions=contributions,
+            baseline_text=backup.read_text(encoding="utf-8") if backup.exists() else None,
+            baseline_supplied=backup.exists() or is_tool_managed(state, "codex"),
+            legacy_owned_paths=[
+                path
+                for path in [*_PROVIDER_HTTP_HEADERS_KEY_PATHS, ["model"]]
+                if path in previous_keys
+            ],
+        )
+    ]
+    managed_path = None if legacy else codex_managed_config_path()
+    if managed_path is not None:
+        plans.append(
+            DestinationPlan(
+                target="managed_settings",
+                path=managed_path,
+                parser=_parse_managed_config,
+                dumper=tomlkit.dumps,
+                compose=lambda base: compose(base, include_catalog=False),
+                owned_paths=owned_paths,
+                contributions=contributions,
+                privileged=True,
+                optional=True,
+                compatible=lambda existing, desired: (
+                    not managed_file_conflicts(existing, desired, owned_paths)
+                ),
+            )
+        )
+    if not legacy:
+
+        def compose_shared(base: dict) -> dict:
+            if base.get("profile") == CODEX_PROFILE_NAME:
+                base.pop("profile", None)
+            profiles = base.get("profiles")
+            if isinstance(profiles, dict):
+                profile = profiles.get(CODEX_PROFILE_NAME)
+                if isinstance(profile, dict) and profile.get("model_provider") in (
+                    CODEX_MODEL_PROVIDER_NAME,
+                    LEGACY_CODEX_MODEL_PROVIDER_NAME,
+                ):
+                    for key in ("model_provider", "model", "model_reasoning_effort"):
+                        profile.pop(key, None)
+                    if not profile:
+                        profiles.pop(CODEX_PROFILE_NAME, None)
+                if not profiles:
+                    base.pop("profiles", None)
+            providers = base.get("model_providers")
+            if isinstance(providers, dict):
+                legacy_provider = providers.get(LEGACY_CODEX_MODEL_PROVIDER_NAME)
+                if isinstance(legacy_provider, dict):
+                    prune_key_paths(
+                        legacy_provider,
+                        leaf_paths(overlay["model_providers"][CODEX_MODEL_PROVIDER_NAME]),
+                    )
+                    if not legacy_provider:
+                        providers.pop(LEGACY_CODEX_MODEL_PROVIDER_NAME, None)
+                if not providers:
+                    base.pop("model_providers", None)
+            existing = base.get("model_catalog_json")
+            if existing is not None and not _is_ucode_catalog_reference(existing):
+                return base
+            if catalog_path and base.get("model_provider") in (
+                None,
+                CODEX_MODEL_PROVIDER_NAME,
+                LEGACY_CODEX_MODEL_PROVIDER_NAME,
+            ):
+                base["model_catalog_json"] = catalog_path
+            else:
+                base.pop("model_catalog_json", None)
+            return base
+
+        shared_backup = _legacy_backup_path()
+        if not shared_backup.exists() and LEGACY_CODEX_BACKUP_PATH.exists():
+            shared_backup = LEGACY_CODEX_BACKUP_PATH
+        plans.append(
+            DestinationPlan(
+                target="user_settings",
+                path=_legacy_config_path(),
+                parser=_parse_managed_config,
+                dumper=tomlkit.dumps,
+                compose=compose_shared,
+                owned_paths=lambda existing, desired: (
+                    [["model_catalog_json"]]
+                    if catalog_path and desired.get("model_catalog_json") == catalog_path
+                    else []
+                ),
+                baseline_text=(
+                    shared_backup.read_text(encoding="utf-8") if shared_backup.exists() else None
+                ),
+                baseline_supplied=shared_backup.exists(),
+            )
+        )
+        if catalog is not None:
+            catalog_paths = [("model_catalog", CODEX_MODEL_CATALOG_PATH)]
+            if prepared is not None and prepared["catalog_path"]:
+                catalog_paths.append(("scoped_model_catalog", Path(prepared["catalog_path"])))
+            for target, artifact_path in catalog_paths:
+                plans.append(
+                    DestinationPlan(
+                        target=target,
+                        path=artifact_path,
+                        parser=_parse_catalog,
+                        dumper=_dump_catalog,
+                        compose=lambda base: copy.deepcopy(catalog),
+                        owned_paths=leaf_paths(catalog),
+                        contributions={
+                            (key,): value
+                            for key, value in catalog.items()
+                            if isinstance(value, list)
+                        },
+                        baseline_text=None,
+                        baseline_supplied=True,
+                        delete_when_empty=True,
+                        generated_artifact=True,
+                    )
+                )
+        else:
+            plans.append(
+                DestinationPlan(
+                    target="model_catalog",
+                    path=CODEX_MODEL_CATALOG_PATH,
+                    parser=_parse_catalog,
+                    dumper=_dump_catalog,
+                    compose=lambda base: {},
+                    owned_paths=[],
+                    baseline_text=None,
+                    baseline_supplied=True,
+                    delete_when_empty=True,
+                    generated_artifact=True,
+                )
+            )
+    scopes = apply_source(source, plans)
+    if managed_path is not None:
+        mark_managed_file_verified(state, "codex", managed_path, scope=scopes["managed_settings"])
+    state = mark_tool_managed(state, "codex", private_owned)
+    save_state(state)
+    if not legacy and not is_dry_run():
+        shared_after = _read_app_config()
+        current_reference = shared_after.get("model_catalog_json")
+        if shared_before.get("model_catalog_json") != current_reference or (
+            current_reference == catalog_path and catalog is not None and catalog_before != catalog
+        ):
+            _print_app_catalog_restart_notice()
+        if (
+            catalog is not None
+            and current_reference is not None
+            and current_reference != catalog_path
+        ):
+            print_warning_err(
+                f"Codex App already uses the custom model catalog {current_reference}; leaving it unchanged."
+            )
+    state["_codex_prepared_catalog"] = prepared or {
+        "provider": provider,
+        "parent_schema": parent_schema,
+        "catalog": catalog,
+        "catalog_path": catalog_path,
+    }
     return state
 
 
@@ -1076,7 +1382,9 @@ def launch(
     if options.launch_smart_routing:
         _launch_smart_routing(state, tool_args)
         return
-    clear_model_preferences(state)
+    prepared = state.get("_codex_prepared_catalog")
+    if not isinstance(prepared, dict):
+        clear_model_preferences(state)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
     launch_provider = state.get("_codex_launch_provider")
@@ -1133,6 +1441,26 @@ def launch(
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")
     if workspace and token and (provider or parent_schema) and not updating:
+        if (
+            isinstance(prepared, dict)
+            and prepared.get("provider") == provider
+            and prepared.get("parent_schema") == parent_schema
+        ):
+            catalog = prepared.get("catalog")
+            if prepared.get("catalog_path"):
+                profile_doc["model_catalog_json"] = prepared["catalog_path"]
+            if catalog and not profile_doc.get("model") and not _tool_args_select_model(tool_args):
+                slugs = catalog_slugs(catalog)
+                if slugs:
+                    profile_doc["model"] = slugs[0]
+            _run_codex(
+                state,
+                [binary, *codex_config_args(profile_doc)],
+                tool_args,
+                otel_tracing=otel_tracing,
+                workspace=workspace,
+            )
+            return
         try:
             if provider is not None:
                 catalog_source = CodexCatalogSource.PROVIDER

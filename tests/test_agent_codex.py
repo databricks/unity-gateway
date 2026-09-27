@@ -2121,3 +2121,286 @@ class TestWriteUserMcpServers:
             "args": ["x"],
         }
         assert not default_path.exists()
+
+
+class TestOwnedCodexDestinations:
+    @pytest.fixture(autouse=True)
+    def isolate(self, tmp_path, monkeypatch):
+        self.private = tmp_path / "codex" / "ucode.config.toml"
+        self.shared = self.private.parent / "config.toml"
+        self.managed = tmp_path / "managed_config.toml"
+        self.catalog = tmp_path / "catalog.json"
+        self.private.parent.mkdir()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", self.private)
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", self.shared)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "profile-backup.toml")
+        monkeypatch.setattr(codex, "LEGACY_CODEX_BACKUP_PATH", tmp_path / "legacy-backup.toml")
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", self.catalog)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: self.managed)
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.154.0")
+        monkeypatch.setattr(codex, "ug_version", lambda: "test")
+        monkeypatch.setattr(codex, "build_auth_token_argv", lambda *a, **kw: ["ug", "auth-token"])
+        monkeypatch.setattr(codex, "_launch_token", lambda *a, **kw: "fixture-token")
+        monkeypatch.setattr(codex, "validate_codex_catalog", lambda *a: None)
+        monkeypatch.setattr(
+            codex,
+            "prepare_codex_catalog",
+            lambda binary, models: {"models": [{"slug": model} for model in models]},
+        )
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(
+            managed_files, "_SUDO_REPLACE_TARGETS", {managed_files.current_os(): {self.managed}}
+        )
+        self.writes = []
+
+        def privileged_write(path, text, **kwargs):
+            if "expected_text" in kwargs:
+                assert managed_files.read_managed_file(path) == kwargs["expected_text"]
+            self.writes.append(path)
+            path.write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", privileged_write)
+        self.save = Mock()
+        monkeypatch.setattr(codex, "save_state", self.save)
+
+    def source(self, *, workspace=WS, kind="file", owner=None):
+        from ucode.managed_source import SelectedManagedSource
+
+        manifest = {"enabled_agents": {"codex": {}}}
+        if owner:
+            manifest["handoff"] = {
+                "schema_version": 1,
+                "owner": owner,
+                "migration_version": 1,
+                "agents": {},
+            }
+        return SelectedManagedSource(
+            kind=kind,
+            workspace=workspace,
+            agent="codex",
+            digest="same-input-digest",
+            _manifest_json=json.dumps(manifest) if kind == "file" else None,
+        )
+
+    def test_release_owns_exact_provider_leaves_and_catalog_artifacts(self, capsys):
+        from ucode.managed_ownership import release_owner
+
+        self.managed.write_text(
+            '[model_providers.Databricks]\ncustom = "keep"\n'
+            '[model_providers.Databricks.http_headers]\nX-User = "keep"\n'
+        )
+        state = {"workspace": WS, "codex_static_models": ["first", "second"]}
+        codex.write_tool_config(state, selected_source=self.source(kind="api"))
+        assert "restart" in capsys.readouterr().err.lower()
+        self.writes.clear()
+        codex.write_tool_config(state, selected_source=self.source(owner="isaac"))
+        assert self.writes == []
+        assert "restart" not in capsys.readouterr().err.lower()
+        assert json.loads(self.catalog.read_text())["models"] == [
+            {"slug": "first"},
+            {"slug": "second"},
+        ]
+        assert read_toml_safe(self.shared)["model_catalog_json"] == str(self.catalog)
+        assert release_owner("isaac", "codex")
+        assert not self.catalog.exists()
+        assert "model_catalog_json" not in read_toml_safe(self.shared)
+        provider = read_toml_safe(self.managed)["model_providers"]["Databricks"]
+        assert provider == {"custom": "keep", "http_headers": {"X-User": "keep"}}
+        assert "model_provider" not in read_toml_safe(self.private)
+
+    def test_file_to_api_none_removes_edited_header_but_preserves_sibling(self):
+        codex.write_tool_config(
+            {"workspace": WS, "codex_http_headers": {"X-Old": "policy"}},
+            selected_source=self.source(),
+        )
+        for path in (self.private, self.managed):
+            doc = read_toml_safe(path)
+            headers = doc["model_providers"]["Databricks"]["http_headers"]
+            headers["X-Old"] = "drift"
+            headers["X-User"] = "keep"
+            path.write_text(codex.tomlkit.dumps(doc))
+        codex.write_tool_config({"workspace": WS}, selected_source=self.source(kind="api"))
+        for path in (self.private, self.managed):
+            headers = read_toml_safe(path)["model_providers"]["Databricks"]["http_headers"]
+            assert "X-Old" not in headers
+            assert headers["X-User"] == "keep"
+
+    @pytest.mark.parametrize("invalid_target", ["managed", "shared", "catalog"])
+    def test_all_destinations_preflight_before_private_write(self, invalid_target):
+        self.private.write_text('keep = "private"\n')
+        target = getattr(self, invalid_target)
+        target.write_text("[malformed")
+        with pytest.raises(RuntimeError):
+            codex.write_tool_config(
+                {"workspace": WS, "codex_static_models": ["first"]},
+                selected_source=self.source(),
+            )
+        assert self.private.read_text() == 'keep = "private"\n'
+        assert target.read_text() == "[malformed"
+        self.save.assert_not_called()
+
+    def test_catalog_failure_retains_pending_and_retry_converges(self, monkeypatch):
+        from ucode.managed_ownership import applied_source
+
+        replace = os.replace
+
+        def replace_except_catalog(src, dst):
+            if Path(dst) == self.catalog:
+                raise OSError("catalog replacement failed")
+            return replace(src, dst)
+
+        monkeypatch.setattr(os, "replace", replace_except_catalog)
+        state = {"workspace": WS, "codex_static_models": ["first"]}
+        with pytest.raises(OSError, match="catalog replacement failed"):
+            codex.write_tool_config(state, selected_source=self.source())
+        pending = applied_source("codex")
+        assert pending is not None and pending["status"] == "pending"
+        self.save.assert_not_called()
+        self.shared.write_text(self.shared.read_text() + 'personality = "friendly"\n')
+        monkeypatch.setattr(os, "replace", replace)
+        codex.write_tool_config(state, selected_source=self.source())
+        applied = applied_source("codex")
+        assert applied is not None and applied["status"] == "applied"
+        assert read_toml_safe(self.shared)["personality"] == "friendly"
+        assert json.loads(self.catalog.read_text())["models"] == [{"slug": "first"}]
+
+    @pytest.mark.parametrize("source_kind", ["api", "file"])
+    @pytest.mark.parametrize("previous_static", [False, True])
+    @pytest.mark.parametrize(
+        ("provider", "parent_schema"),
+        [("main.schema.provider", None), (None, "main.schema")],
+    )
+    def test_discovery_catalog_is_launch_scoped_committed_and_released(
+        self, monkeypatch, source_kind, previous_static, provider, parent_schema
+    ):
+        from ucode.managed_ownership import release_owner
+
+        fetch = Mock(return_value={"models": [{"slug": "scoped"}]})
+        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", fetch)
+        state: dict = {"workspace": WS}
+        selected = self.source(kind=source_kind, owner="isaac")
+        self.private.write_text('personality = "user-value"\n')
+        if previous_static:
+            state["codex_static_models"] = ["static-model"]
+            codex.write_tool_config(state, selected_source=selected)
+            assert read_toml_safe(self.private)["model_catalog_json"] == str(self.catalog)
+            state.pop("codex_static_models")
+        codex.write_tool_config(
+            state, provider=provider, parent_schema=parent_schema, selected_source=selected
+        )
+        scoped = Path(state["_codex_prepared_catalog"]["catalog_path"])
+        assert scoped.exists() and self.catalog.exists()
+        assert (
+            json.loads(scoped.read_text())
+            == json.loads(self.catalog.read_text())
+            == {"models": [{"slug": "scoped"}]}
+        )
+        assert "model_catalog_json" not in read_toml_safe(self.private)
+        assert "model_catalog_json" not in read_toml_safe(self.managed)
+        assert ["model_catalog_json"] not in state["managed_configs"]["codex"]["keys"]
+        assert read_toml_safe(self.shared)["model_catalog_json"] == str(self.catalog)
+        private_before_launch = self.private.read_bytes()
+        state["_codex_launch_provider"] = provider
+        state["_codex_launch_parent_schema"] = parent_schema
+        monkeypatch.setattr(
+            codex, "_write_model_catalog", Mock(side_effect=AssertionError("late write"))
+        )
+        monkeypatch.setattr(
+            codex, "sync_app_model_catalog", Mock(side_effect=AssertionError("late write"))
+        )
+        launched = Mock()
+        monkeypatch.setattr(codex, "_run_codex", launched)
+        codex.launch(state, [], options=LaunchOptions())
+        assert fetch.call_count == 1
+        assert launched.call_count == 1
+        launch_catalog = next(
+            arg for arg in launched.call_args.args[1] if arg.startswith("model_catalog_json=")
+        )
+        assert codex.tomlkit.parse(launch_catalog)["model_catalog_json"] == str(scoped)
+        assert self.private.read_bytes() == private_before_launch
+        assert release_owner("isaac" if source_kind == "file" else "workspace-api", "codex")
+        assert not scoped.exists() and not self.catalog.exists()
+        assert "model_catalog_json" not in read_toml_safe(self.shared)
+        assert read_toml_safe(self.private) == {"personality": "user-value"}
+
+    def test_preserves_custom_app_pointer_and_native_model_default(self):
+        self.shared.write_text(
+            'model_catalog_json = "/user/catalog.json"\npersonality = "friendly"\n'
+        )
+        self.managed.write_text('model = "user-model"\n')
+        codex.write_tool_config(
+            {"workspace": WS, "codex_static_models": ["first"]}, selected_source=self.source()
+        )
+        assert read_toml_safe(self.shared)["model_catalog_json"] == "/user/catalog.json"
+        assert read_toml_safe(self.managed)["model"] == "user-model"
+        from ucode.managed_ownership import release_owner
+
+        release_owner("local-file", "codex")
+        assert read_toml_safe(self.shared)["model_catalog_json"] == "/user/catalog.json"
+        assert read_toml_safe(self.managed)["model"] == "user-model"
+
+    def test_legacy_layout_release_preserves_shared_user_fields(self, monkeypatch):
+        from ucode.managed_ownership import release_owner
+
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.133.0")
+        self.shared.write_text('[profiles.ucode]\napproval_policy = "on-request"\n')
+        codex.write_tool_config({"workspace": WS}, selected_source=self.source())
+        assert read_toml_safe(self.shared)["profile"] == "ucode"
+        release_owner("local-file", "codex")
+        assert read_toml_safe(self.shared) == {
+            "profiles": {"ucode": {"approval_policy": "on-request"}}
+        }
+        assert not self.private.exists()
+
+    def test_initial_file_catalog_replaces_previous_generated_api_catalog(self):
+        self.catalog.write_text('{"models":[{"slug":"retired"}]}')
+        codex.write_tool_config(
+            {"workspace": WS, "codex_static_models": ["first"]}, selected_source=self.source()
+        )
+        assert json.loads(self.catalog.read_text())["models"] == [{"slug": "first"}]
+
+    def test_legacy_api_header_table_migrates_once_without_os_snapshot(self, monkeypatch):
+        from ucode.managed_ownership import release_owner
+
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        state = {"workspace": WS, "codex_http_headers": {"X-Previous-Api": "old"}}
+        codex.write_tool_config(state)
+        doc = read_toml_safe(self.private)
+        doc["model_providers"]["Databricks"]["http_headers"]["X-Previous-Api"] = "drift"
+        doc["model_providers"]["Databricks"]["custom"] = "keep"
+        self.private.write_text(codex.tomlkit.dumps(doc))
+        state.pop("codex_http_headers")
+        codex.write_tool_config(state, selected_source=self.source())
+        doc = read_toml_safe(self.private)
+        assert "X-Previous-Api" not in doc["model_providers"]["Databricks"]["http_headers"]
+        doc["model_providers"]["Databricks"]["http_headers"]["X-New-User"] = "keep"
+        self.private.write_text(codex.tomlkit.dumps(doc))
+        codex.write_tool_config(state, selected_source=self.source())
+        release_owner("local-file", "codex")
+        assert read_toml_safe(self.private)["model_providers"]["Databricks"] == {
+            "custom": "keep",
+            "http_headers": {"X-New-User": "keep"},
+        }
+
+    def test_legacy_os_snapshot_supplies_exact_private_header_provenance(self, monkeypatch):
+        from ucode.managed_ownership import release_owner
+
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        state = {"workspace": WS, "codex_http_headers": {"X-Previous-Api": "old"}}
+        codex.write_tool_config(state)
+        for path in (self.private, self.managed):
+            doc = read_toml_safe(path)
+            provider = doc["model_providers"]["Databricks"]
+            provider["http_headers"]["X-Previous-Api"] = "drift"
+            provider["http_headers"]["X-New-User"] = "keep"
+            provider["custom"] = "keep"
+            path.write_text(codex.tomlkit.dumps(doc))
+        state.pop("codex_http_headers")
+        codex.write_tool_config(state, selected_source=self.source())
+        release_owner("local-file", "codex")
+        for path in (self.private, self.managed):
+            assert read_toml_safe(path)["model_providers"]["Databricks"] == {
+                "custom": "keep",
+                "http_headers": {"X-New-User": "keep"},
+            }

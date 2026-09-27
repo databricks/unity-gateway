@@ -92,6 +92,12 @@ from ucode.managed_config import (
     refresh_managed_config,
 )
 from ucode.managed_files import managed_write_session
+from ucode.managed_ownership import (
+    applied_source,
+    preflight_source_transition,
+    release_owner,
+    revert_owned_destinations,
+)
 from ucode.managed_resolve import (
     managed_claude_family_models,
     managed_default_model,
@@ -902,6 +908,11 @@ def _configure_workspace_command(
     managed, _ = refresh_managed_config(state, force_refresh=True)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
+        preflight_source_transition(
+            SelectedManagedSource.from_api(
+                ManagedConfigResult(managed, False), state["workspace"], managed_tools[0]
+            )
+        )
         configured_tools: list[str] = []
         for tool_name in managed_tools:
             resolved = resolve_state(managed, state, tool_name)
@@ -1177,10 +1188,12 @@ def status() -> int:
     mcp_servers = (state.get("mcp_servers") or []) + (state.get("managed_mcp_servers") or [])
     cached_managed = load_managed_state(workspace) if workspace else None
     managed, managed_freshness = _live_status_managed_state(state, cached_managed)
+    applications = {agent: applied_source(agent) for agent in ("claude", "codex")}
     configured_tools = (
         set(state.get("available_tools") or [])
         | set(managed_configs)
         | set((managed or {}).get("enabled_agents") or {})
+        | {agent for agent, application in applications.items() if application}
     )
 
     console.print(heading("ug status"))
@@ -1211,17 +1224,43 @@ def status() -> int:
             continue
         effective_state = resolve_state(managed, model_state, tool) if managed else model_state
         agent_managed = tool in ((managed or {}).get("enabled_agents") or {})
+        application = applications.get(tool)
+        file_application = (
+            application
+            and application.get("kind") == "file"
+            and application.get("status") != "released"
+        )
+        if file_application:
+            effective_state = resolve_state(application.get("manifest") or {}, model_state, tool)
+            agent_managed = True
         provider_service = get_provider_service(effective_state, tool)
         rows = [
             (
                 "Configuration",
-                f"Workspace-managed ({managed_freshness})" if agent_managed else "Self-configured",
+                f"File-managed ({'incomplete' if application.get('status') == 'pending' else 'applied'})"
+                if file_application
+                else f"Workspace-managed ({managed_freshness})"
+                if agent_managed
+                else "Self-configured",
             ),
             (
                 "Model provider",
                 provider_service or "Databricks AI Gateway",
             ),
         ]
+        if application and application.get("status") == "pending":
+            rows.append(("Application", "Incomplete; retry the pending apply or owner release"))
+            pending_source = application.get("pending_source") or {}
+            if pending_source.get("path"):
+                rows.append(("Pending source", str(pending_source["path"])))
+        if file_application:
+            rows.extend(
+                [
+                    ("Applied source", str(application.get("path") or "local file")),
+                    ("Owner", str(application.get("owner"))),
+                    ("Applied workspace", str(application.get("workspace"))),
+                ]
+            )
         models = (
             []
             if provider_service and not effective_state.get(f"{tool}_static_models")
@@ -1276,11 +1315,11 @@ def revert() -> int:
     mcp_results = revert_mcp_configs(state)
     claude_managed_result = claude_agent.revert_managed_settings()
     codex_managed_result = codex_agent.revert_managed_config()
+    owned_restored = {tool: revert_owned_destinations(tool) for tool in ("claude", "codex")}
 
     results: dict[str, bool] = {
-        tool: restore_file(
-            spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool))
-        )
+        tool: owned_restored.get(tool, False)
+        or restore_file(spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool)))
         for tool, spec in TOOL_SPECS.items()
     }
     pi_settings_restored = restore_file(
@@ -1288,7 +1327,7 @@ def revert() -> int:
     )
     # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
     # place; restoring the per-profile file above does not undo that.
-    legacy_codex_stripped = revert_legacy_shared_config()
+    legacy_codex_stripped = False if owned_restored["codex"] else revert_legacy_shared_config()
     clear_state()
 
     print_heading("Revert")
@@ -1415,6 +1454,25 @@ app.add_typer(
     help="Inspect and manage the Databricks MCP servers ug configures for your coding agents.",
     rich_help_panel="Tools and Skills",
 )
+managed_config_app = typer.Typer(add_completion=False, no_args_is_help=True)
+app.add_typer(managed_config_app, name="managed-config", hidden=True)
+
+
+@managed_config_app.command("release")
+def managed_config_release_cmd(
+    owner: Annotated[str, typer.Option("--owner")],
+    agent: Annotated[str, typer.Option("--agent")],
+) -> None:
+    """Release one integration owner's applied effects without launching an agent."""
+    try:
+        with managed_write_session():
+            release_owner(owner, agent)
+        print_success(f"Released {owner} settings for {agent}.")
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+
+
 skill_app = typer.Typer(add_completion=False, no_args_is_help=False)
 app.add_typer(
     skill_app,
@@ -2595,6 +2653,7 @@ def _launch_tool(
             selected_source = replace(selected_source, workspace=workspace)
             managed = selected_source.manifest
             preflight_managed_resources(selected_source, previous_state)
+            preflight_source_transition(selected_source)
             _reject_managed_launch_source_options(
                 managed, provider=provider, parent_schema=parent_schema
             )
@@ -2622,6 +2681,7 @@ def _launch_tool(
             )
             selected_source = SelectedManagedSource.from_api(result, workspace, tool)
             managed = selected_source.manifest
+            preflight_source_transition(selected_source)
             if workspace != previous_state.get("workspace"):
                 preflight_managed_resources(selected_source, previous_state)
         _reject_disabled_agent(managed, tool)
