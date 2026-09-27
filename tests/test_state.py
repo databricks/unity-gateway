@@ -105,6 +105,9 @@ class TestSaveLoadRoundTrip:
         transient = {
             "claude_custom_env": {"SECRET": "test-sensitive"},
             "codex_custom_env": {"EMPTY": ""},
+            "claude_native_settings": {"otelHeadersHelper": "test-sensitive"},
+            "codex_native_settings": {"otel": {"exporter": "none"}},
+            "codex_native_requirements": {"features": {"fast_mode": False}},
             "_claude_gateway_discovery": True,
         }
         state = {"workspace": FAKE_WS, **transient, state_mod.MANAGED_OVERLAY_KEY: transient}

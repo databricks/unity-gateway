@@ -19,6 +19,7 @@ and handing the resolved state to the agent config writers, live in :mod:`ucode.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import cast
 
 from ucode.databricks import ANTHROPIC_FAMILIES, classify_model_family
@@ -322,13 +323,17 @@ def resolve_state(
         managed = selected_source.manifest or {}
     resolved = dict(state)
     overlay: dict[str, object] = {}
-    # File environment is invocation-only, including an explicit empty map on omission.
+    # File extensions are invocation-only, including empty maps on omission.
     if tool in ("claude", "codex"):
-        resolved[f"{tool}_custom_env"] = (
-            dict(_as_dict(_agent_entry(managed, tool).get("custom_env")))
-            if selected_source is not None and selected_source.kind == "file"
-            else {}
-        )
+        extensions = ["custom_env", "native_settings"]
+        if tool == "codex":
+            extensions.append("native_requirements")
+        for extension in extensions:
+            resolved[f"{tool}_{extension}"] = (
+                deepcopy(_as_dict(_agent_entry(managed, tool).get(extension)))
+                if selected_source is not None and selected_source.kind == "file"
+                else {}
+            )
     for key, value in managed_state_overrides(managed, tool).items():
         if value != state.get(key):
             overlay[key] = state.get(key)

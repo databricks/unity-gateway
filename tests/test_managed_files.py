@@ -507,6 +507,7 @@ class TestSudoReplace:
         allowed = managed_files._SUDO_REPLACE_TARGETS[os_enum]
         assert claude_agent._managed_settings_path() in allowed
         assert codex_config.codex_managed_config_path() in allowed
+        assert codex_config.codex_requirements_path() in allowed
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="The managed writer is Unix-only")

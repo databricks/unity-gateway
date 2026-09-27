@@ -4,6 +4,7 @@ import json
 import os
 
 import pytest
+import tomlkit
 
 from ucode import codex_config
 from ucode.agents import LaunchOptions, codex
@@ -45,6 +46,129 @@ def test_smart_routing_switch_message_wraps_to_fixed_width():
 
 
 class TestLaunchCodex:
+    @pytest.mark.parametrize("full_routing", [False, True])
+    def test_native_settings_reach_direct_app_server_and_remote_tui(
+        self, tmp_path, monkeypatch, full_routing
+    ):
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1" if full_routing else "0")
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "0" if full_routing else "1")
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.154.0")
+        monkeypatch.setattr(codex, "ug_version", lambda: "test")
+        monkeypatch.setattr(v2, "get_databricks_token", lambda *args: "fixture-token")
+        monkeypatch.setattr(v2, "_free_port", lambda: 41001)
+        monkeypatch.setattr(v2, "_wait_for_app_server", lambda *args, **kwargs: True)
+        monkeypatch.setattr(
+            codex_interposer,
+            "start_interposer_thread",
+            lambda *args, **kwargs: (41002, lambda: None),
+        )
+        launches = []
+
+        class Process:
+            def __init__(self, argv, **kwargs):
+                launches.append(argv)
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                pass
+
+        def execute(argv, **kwargs):
+            launches.append(argv)
+            raise SystemExit(0)
+
+        monkeypatch.setattr(v2.subprocess, "Popen", Process)
+        monkeypatch.setattr(v2, "exec_or_spawn", execute)
+        native = {
+            "tui": {"status_line": ["context-remaining", "model-name"]},
+            "otel": {
+                "environment": "source-env",
+                "metrics_exporter": {
+                    "otlp-http": {
+                        "endpoint": "https://metrics.example",
+                        "protocol": "binary",
+                        "headers": {"x.source.scope": "metrics"},
+                    }
+                },
+                "trace_exporter": {"otlp-grpc": {"endpoint": "https://traces.example"}},
+            },
+            "model_auto_compact_token_limit": 9000,
+        }
+        with pytest.raises(SystemExit) as error:
+            v2.launch_codex(
+                {
+                    "workspace": WS,
+                    "codex_native_settings": native,
+                    "codex_models": ["system.ai.gpt-5-6-sol"],
+                },
+                ["--search"],
+                binary="codex",
+                start_model="gpt-start",
+                render_overlay=codex.render_overlay,
+            )
+        assert error.value.code == 0
+        for argv in launches:
+            for arg in codex_config.codex_config_args(native):
+                assert arg in argv
+            encoded_otel = next(arg for arg in argv if arg.startswith("otel="))
+            assert tomlkit.parse(encoded_otel)["otel"] == native["otel"]
+        assert any(arg.startswith("model_providers.Databricks=") for arg in launches[0])
+        assert any(arg.startswith("hooks.PreToolUse=") for arg in launches[0])
+        if full_routing:
+            assert launches[0][1] == "app-server"
+            assert launches[1] == [
+                "/resolved/codex",
+                "--remote",
+                "ws://127.0.0.1:41002",
+                "--model",
+                "gpt-start",
+                *codex_config.codex_config_args(native),
+                "--search",
+            ]
+        else:
+            assert len(launches) == 1
+            assert launches[0][-1] == "--search"
+
+    def test_native_validation_precedes_v2_authentication(self, monkeypatch):
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.154.0")
+        monkeypatch.setattr(
+            v2, "_launch_token", lambda *args: pytest.fail("auth before validation")
+        )
+        with pytest.raises(RuntimeError, match="enabled UG tracing"):
+            v2.launch_codex(
+                {
+                    "workspace": WS,
+                    "codex_otel_tracing": True,
+                    "codex_native_settings": {"otel": {"trace_exporter": "none"}},
+                },
+                [],
+                binary="codex",
+                start_model="gpt-start",
+                render_overlay=codex.render_overlay,
+            )
+
+    @pytest.mark.parametrize("full_routing", [False, True])
+    def test_native_disabled_hooks_reject_selected_v2_before_auth(
+        self, tmp_path, monkeypatch, full_routing
+    ):
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1" if full_routing else "0")
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "0" if full_routing else "1")
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.154.0")
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: tmp_path / "managed.toml")
+        monkeypatch.setattr(
+            v2, "_launch_token", lambda *args: pytest.fail("auth before validation")
+        )
+        with pytest.raises(RuntimeError, match="features.hooks"):
+            v2.launch_codex(
+                {"workspace": WS, "codex_native_settings": {"features": {"hooks": False}}},
+                [],
+                binary="codex",
+                start_model="gpt-start",
+                render_overlay=codex.render_overlay,
+            )
+
     @pytest.mark.parametrize(
         ("tool_args", "options"),
         [

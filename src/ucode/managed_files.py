@@ -61,12 +61,14 @@ _SUDO_REPLACE_TARGETS = {
         {
             Path("/etc/claude-code/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
+            Path("/etc/codex/requirements.toml"),
         }
     ),
     OS.MACOS: frozenset(
         {
             Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
+            Path("/etc/codex/requirements.toml"),
         }
     ),
 }

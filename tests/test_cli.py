@@ -3615,7 +3615,9 @@ class TestConfigureAgentsSelection:
             == 0
         )
         configure.assert_called_once_with(
-            "claude", {**state, "claude_custom_env": {}}, parent_schema="main.models"
+            "claude",
+            {**state, "claude_custom_env": {}, "claude_native_settings": {}},
+            parent_schema="main.models",
         )
 
     def test_managed_codex_parent_is_passed_to_generic_configure(self, monkeypatch):
@@ -3673,7 +3675,14 @@ class TestConfigureAgentsSelection:
         assert "(Provider: Databricks)" in _strip_ansi(result.output)
         refresh.assert_called_once_with(state, force_refresh=True)
         configure.assert_called_once_with(
-            "codex", {**state, "codex_custom_env": {}}, parent_schema="main.models"
+            "codex",
+            {
+                **state,
+                "codex_custom_env": {},
+                "codex_native_settings": {},
+                "codex_native_requirements": {},
+            },
+            parent_schema="main.models",
         )
         install_ai_tools.assert_called_once_with(["codex"], state, force_refresh=False)
 

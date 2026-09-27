@@ -32,6 +32,12 @@ def codex_managed_config_path() -> Path | None:
     return None
 
 
+def codex_requirements_path() -> Path | None:
+    if current_os() in (OS.LINUX, OS.MACOS):
+        return Path("/etc/codex/requirements.toml")
+    return None
+
+
 def codex_config_precedence_paths(
     managed_path: Path | None,
     profile_path: Path,

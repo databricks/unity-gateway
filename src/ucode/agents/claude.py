@@ -83,6 +83,14 @@ from ucode.mcp_oauth import (
     MCP_OAUTH_CALLBACK_PORT,
     oauth_client_available,
 )
+from ucode.native_settings import (
+    agent_native_settings,
+    compose_native_settings,
+    native_ownership,
+    preflight_native_launch,
+    required_os_scopes,
+    validate_native_base,
+)
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
@@ -277,9 +285,12 @@ def managed_settings_are_current(state: dict) -> bool:
     path = _managed_settings_path()
     if path is None:
         return True
-    if state.get("claude_relayed"):
+    native_required = "managed_settings" in required_os_scopes(
+        "claude", agent_native_settings(state, "claude")
+    )
+    if state.get("claude_relayed") and not native_required:
         required_scope = "relay-compatible"
-    elif managed_writes_allowed():
+    elif native_required or managed_writes_allowed():
         required_scope = "managed"
     else:
         required_scope = None
@@ -1020,6 +1031,19 @@ def disable_smart_routing(state: dict) -> bool:
     return changed
 
 
+def _preflight_native_settings(state: dict, *, relayed: bool) -> tuple[dict, frozenset[str]]:
+    native = agent_native_settings(state, "claude")
+    scopes = preflight_native_launch(
+        "claude",
+        native,
+        os_managed_supported=_managed_settings_path() is not None,
+        relayed=relayed,
+        relayed_managed_supported=True,
+        resolved_tracing_enabled=bool(state.get("claude_otel_tracing")),
+    )
+    return native, scopes
+
+
 def write_tool_config(
     state: dict,
     model: str | None,
@@ -1035,6 +1059,9 @@ def write_tool_config(
 ) -> dict:
     validate_agent_env(state, "claude")
     custom_env = agent_custom_env(state, "claude")
+    native, required_scopes = _preflight_native_settings(state, relayed=relayed)
+    native_paths, native_contributions, native_exact_arrays = native_ownership("claude", native)
+    native_managed_required = "managed_settings" in required_scopes
     selected_source = source_for_writer(state, "claude", selected_source)
     if selected_source is not None:
         selected_source.check_target(state["workspace"], "claude")
@@ -1084,6 +1111,7 @@ def write_tool_config(
     )
     overlay["env"].update(custom_env)
     managed_keys.extend(["env", key] for key in custom_env)
+    managed_keys.extend(path for path in native_paths if path not in managed_keys)
     source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
     # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
     # written by this launch, and remove only previously owned picker keys that no longer apply.
@@ -1234,6 +1262,7 @@ def write_tool_config(
     )
 
     def compose_private(base: dict) -> dict:
+        validate_native_base("claude", base, native, target="private_settings")
         before = copy.deepcopy(base)
         desired = _compose(
             base,
@@ -1242,9 +1271,10 @@ def write_tool_config(
         )
         if selected_source is not None:
             _preserve_permission_denies(before, desired)
-        return desired
+        return compose_native_settings("claude", desired, native, target="private_settings")
 
     def compose_managed(base: dict) -> dict:
+        validate_native_base("claude", base, native, target="managed_settings")
         before = copy.deepcopy(base)
         desired = _compose(
             base,
@@ -1254,6 +1284,26 @@ def write_tool_config(
             managed_settings_snapshots=managed_snapshots,
         )
         _preserve_permission_denies(before, desired)
+        return compose_native_settings("claude", desired, native, target="managed_settings")
+
+    def compose_relay_managed(base: dict) -> dict:
+        validate_native_base("claude", base, native, target="managed_settings")
+        desired = compose_native_settings("claude", base, native, target="managed_settings")
+        conflicts = _relayed_settings_conflicts(desired) + managed_file_conflicts(
+            desired, {"env": custom_env}, [["env", key] for key in custom_env]
+        )
+        managed_env = desired.get("env")
+        if isinstance(managed_env, dict):
+            conflicts.extend(
+                f"env.{key}"
+                for key in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
+                if managed_env.get(key)
+            )
+        if conflicts:
+            raise RuntimeError(
+                "Claude relay is blocked by OS-managed settings at "
+                f"{', '.join(conflicts)}. Reconcile those fields or release their owner before retrying."
+            )
         return desired
 
     if selected_source is None:
@@ -1270,6 +1320,10 @@ def write_tool_config(
             for path in owned_paths
             if isinstance((value := _setting_path(overlay, path)), list)
         }
+        owned_paths.extend(path for path in native_paths if path not in owned_paths)
+        for path, values in native_contributions.items():
+            existing = contributions.get(path, [])
+            contributions[path] = [*existing, *(value for value in values if value not in existing)]
         plans = [
             DestinationPlan(
                 target="private_settings",
@@ -1279,6 +1333,7 @@ def write_tool_config(
                 compose=compose_private,
                 owned_paths=owned_paths,
                 contributions=contributions,
+                exact_array_paths=native_exact_arrays,
                 baseline_text=(
                     CLAUDE_BACKUP_PATH.read_text(encoding="utf-8")
                     if CLAUDE_BACKUP_PATH.exists()
@@ -1393,20 +1448,35 @@ def write_tool_config(
                     path=managed_path,
                     parser=_parse_managed_settings,
                     dumper=_dump_managed_settings,
-                    compose=(lambda base: base) if relayed else compose_managed,
-                    owned_paths=[] if relayed else managed_owned_paths,
-                    contributions={} if relayed else contributions,
+                    compose=(
+                        compose_relay_managed
+                        if relayed and native_managed_required
+                        else (lambda base: base)
+                        if relayed
+                        else compose_managed
+                    ),
+                    owned_paths=(native_paths if native_managed_required else [])
+                    if relayed
+                    else managed_owned_paths,
+                    contributions=(native_contributions if native_managed_required else {})
+                    if relayed
+                    else contributions,
+                    exact_array_paths=(
+                        native_exact_arrays
+                        if not relayed or native_managed_required
+                        else frozenset()
+                    ),
                     privileged=True,
-                    optional=True,
-                    writable=not relayed,
+                    optional=not native_managed_required,
+                    writable=not relayed or native_managed_required,
                     compatible=(
                         (
                             lambda existing, desired: (
                                 not _relayed_settings_conflicts(existing)
                                 and not managed_file_conflicts(
                                     existing,
-                                    {"env": custom_env},
-                                    [["env", key] for key in custom_env],
+                                    {**native, "env": custom_env},
+                                    [*native_paths, *[["env", key] for key in custom_env]],
                                 )
                             )
                         )
@@ -1877,6 +1947,7 @@ def _launch_relayed(
     refresh proxy, then run Claude Code alongside it (the proxy must outlive the
     exec, so we spawn-and-wait rather than replacing the process)."""
     validate_agent_env(state, "claude")
+    _preflight_native_settings(state, relayed=True)
     child_env = (
         env
         if env is not None
@@ -1931,6 +2002,7 @@ def launch(
     options: LaunchOptions,
 ) -> None:
     validate_agent_env(state, "claude")
+    _preflight_native_settings(state, relayed=bool(state.get("claude_relayed")))
     binary = SPEC["binary"]
     workspace = state.get("workspace")
     launch_default_model = state.get("_claude_launch_default_model")

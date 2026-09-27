@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+import tomlkit
 
 from ucode import managed_files
 from ucode.agents import LaunchOptions, codex
@@ -1605,7 +1606,7 @@ class TestCodexLaunch:
         server.shutdown.assert_called_once_with()
         client.close.assert_called_once_with()
         argv = popen.call_args.args[0]
-        otel = next((arg for arg in argv if arg.startswith("otel=")), None)
+        otel = next((arg for arg in argv if arg.startswith("otel.trace_exporter=")), None)
         assert otel is not None
         assert "http://127.0.0.1:54321/v1/traces" in otel
         assert 'protocol = "binary"' in otel
@@ -2256,6 +2257,7 @@ class TestOwnedCodexDestinations:
         self.private = tmp_path / "codex" / "ucode.config.toml"
         self.shared = self.private.parent / "config.toml"
         self.managed = tmp_path / "managed_config.toml"
+        self.requirements = tmp_path / "requirements.toml"
         self.catalog = tmp_path / "catalog.json"
         self.private.parent.mkdir()
         monkeypatch.chdir(tmp_path)
@@ -2265,6 +2267,7 @@ class TestOwnedCodexDestinations:
         monkeypatch.setattr(codex, "LEGACY_CODEX_BACKUP_PATH", tmp_path / "legacy-backup.toml")
         monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", self.catalog)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: self.managed)
+        monkeypatch.setattr(codex, "codex_requirements_path", lambda: self.requirements)
         monkeypatch.setattr(codex, "agent_version", lambda _: "0.154.0")
         monkeypatch.setattr(codex, "ug_version", lambda: "test")
         monkeypatch.setattr(codex, "build_auth_token_argv", lambda *a, **kw: ["ug", "auth-token"])
@@ -2277,7 +2280,9 @@ class TestOwnedCodexDestinations:
         )
         monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
         monkeypatch.setattr(
-            managed_files, "_SUDO_REPLACE_TARGETS", {managed_files.current_os(): {self.managed}}
+            managed_files,
+            "_SUDO_REPLACE_TARGETS",
+            {managed_files.current_os(): {self.managed, self.requirements}},
         )
         self.writes = []
 
@@ -2344,6 +2349,334 @@ class TestOwnedCodexDestinations:
         assert execute.call_count == 4
         assert os.environ["UG_TEST_RETIRED"] == "inherited-A"
         assert os.environ["UG_TEST_CURRENT"] == "inherited-A"
+
+    @pytest.mark.parametrize("hooks_enabled", [False, True])
+    def test_native_settings_and_requirements_deliver_preserve_and_release(
+        self, monkeypatch, hooks_enabled
+    ):
+        from ucode.managed_ownership import release_owner
+
+        original = {
+            "otel": {"environment": "user-env", "metrics_exporter": "statsig"},
+            "features": {"unrelated_flag": True},
+            "tui": {"theme": "user-theme"},
+        }
+        for path in (self.private, self.managed):
+            path.write_text(tomlkit.dumps(original))
+        self.requirements.write_text('allowed_approval_policies = ["on-request"]\n')
+        native = {
+            "features": {"hooks": hooks_enabled, "fast_mode": False},
+            "tui": {"status_line": ["model-name", "context-remaining"]},
+            "model_auto_compact_token_limit": 12000,
+            "model_auto_compact_token_limit_scope": "body_after_prefix",
+            "otel": {
+                "log_user_prompt": False,
+                "exporter": "none",
+                "trace_exporter": {
+                    "otlp-http": {
+                        "endpoint": "https://telemetry.example/traces",
+                        "protocol": "binary",
+                    }
+                },
+            },
+        }
+        state = {
+            "workspace": WS,
+            "codex_native_settings": native,
+            "codex_native_requirements": {"features": {"fast_mode": False}},
+        }
+        codex.write_tool_config(state, selected_source=self.source(owner="isaac"))
+        for path in (self.private, self.managed):
+            doc = read_toml_safe(path)
+            assert doc["features"] == {"unrelated_flag": True, **native["features"]}
+            assert doc["tui"] == {"theme": "user-theme", **native["tui"]}
+            assert doc["otel"] == {**original["otel"], **native["otel"]}
+            assert doc["model_auto_compact_token_limit"] == 12000
+            assert doc["model_auto_compact_token_limit_scope"] == "body_after_prefix"
+        assert read_toml_safe(self.requirements) == {
+            "allowed_approval_policies": ["on-request"],
+            "features": {"fast_mode": False},
+        }
+        assert str(self.requirements) in codex.configured_paths(state)
+        execute = Mock()
+        monkeypatch.setattr(codex, "exec_or_spawn", execute)
+        codex.launch(state, [], options=LaunchOptions())
+        argv = execute.call_args.args[0]
+        overrides = tomlkit.parse(
+            "\n".join(argv[index + 1] for index, arg in enumerate(argv) if arg == "--config")
+        )
+        assert overrides["features"] == {"unrelated_flag": True, **native["features"]}
+        assert overrides["model_auto_compact_token_limit"] == 12000
+        assert overrides["tui"] == {"theme": "user-theme", **native["tui"]}
+        assert overrides["otel"] == {**original["otel"], **native["otel"]}
+
+        release_owner("isaac", "codex")
+        for path in (self.private, self.managed):
+            assert read_toml_safe(path) == original
+        assert read_toml_safe(self.requirements) == {"allowed_approval_policies": ["on-request"]}
+
+    def test_native_requirements_omission_cleans_registered_destination(self):
+        codex.write_tool_config(
+            {"workspace": WS, "codex_native_requirements": {"features": {"fast_mode": False}}},
+            selected_source=self.source(),
+        )
+        self.requirements.write_text(self.requirements.read_text() + "\n[admin]\nkeep = true\n")
+        codex.write_tool_config({"workspace": WS}, selected_source=self.source())
+        assert read_toml_safe(self.requirements) == {"admin": {"keep": True}}
+
+    def test_tracing_override_preserves_private_native_log_metrics_and_environment(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: False)
+        native = {
+            "otel": {
+                "environment": "source-env",
+                "exporter": "statsig",
+                "metrics_exporter": {
+                    "otlp-http": {
+                        "endpoint": "https://metrics.example",
+                        "protocol": "binary",
+                        "headers": {"x.source.scope": "metrics"},
+                    }
+                },
+            }
+        }
+        state = {"workspace": WS, "codex_otel_tracing": True, "codex_native_settings": native}
+        codex.write_tool_config(state, selected_source=self.source())
+        assert not self.managed.exists()
+        server = Mock(server_address=("127.0.0.1", 54321))
+        cache, client = Mock(), Mock()
+        monkeypatch.setattr(
+            codex.gateway_proxy, "start_otel_proxy", lambda *args: (server, cache, client)
+        )
+        monkeypatch.setattr(codex, "resolve_agent_argv", lambda argv: ["/test/codex", *argv[1:]])
+        process = Mock()
+        process.wait.return_value = 0
+        popen = Mock(return_value=process)
+        monkeypatch.setattr(codex.subprocess, "Popen", popen)
+
+        with pytest.raises(SystemExit) as error:
+            codex.launch(state, ["exec", "task"], options=LaunchOptions())
+
+        assert error.value.code == 0
+        argv = popen.call_args.args[0]
+        layer = {}
+        # Pinned Codex builds one CLI layer by splitting paths and assigning in argument order.
+        for index, arg in enumerate(argv):
+            if arg != "--config":
+                continue
+            key, _, encoded = argv[index + 1].partition("=")
+            path = key.split(".")
+            parent = layer
+            for segment in path[:-1]:
+                parent = parent.setdefault(segment, {})
+            parent[path[-1]] = tomlkit.parse("value=" + encoded)["value"]
+        assert layer["otel"] == {
+            **native["otel"],
+            "trace_exporter": {
+                "otlp-http": {"endpoint": "http://127.0.0.1:54321/v1/traces", "protocol": "binary"}
+            },
+        }
+        cache.stop.assert_called_once_with()
+        server.shutdown.assert_called_once_with()
+        client.close.assert_called_once_with()
+
+    def test_managed_and_requirements_backups_revert_independently(self, monkeypatch):
+        original_managed = 'admin_managed = "keep"\n'
+        original_requirements = 'allowed_approval_policies = ["on-request"]\n'
+        self.managed.write_text(original_managed)
+        self.requirements.write_text(original_requirements)
+        codex.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_native_settings": {"features": {"hooks": True}},
+                "codex_native_requirements": {"features": {"fast_mode": False}},
+            },
+            selected_source=self.source(),
+        )
+        manifest = json.loads(managed_files.MANAGED_BACKUP_MANIFEST_PATH.read_text())
+        entries = [
+            entry
+            for entry in manifest["files"].values()
+            if entry["scope"] in {"managed_settings", "requirements"}
+        ]
+        assert {entry["path"] for entry in entries} == {str(self.managed), str(self.requirements)}
+        assert len({entry["backup_file"] for entry in entries}) == 2
+        assert codex.revert_managed_requirements() == "restored"
+        assert read_toml_safe(self.requirements) == tomlkit.parse(original_requirements)
+        assert read_toml_safe(self.managed)["features"]["hooks"] is True
+        assert codex.revert_managed_config() == "restored"
+        assert read_toml_safe(self.managed) == tomlkit.parse(original_managed)
+
+    @pytest.mark.parametrize("original_exists", [False, True])
+    def test_partial_apply_revert_restores_both_managed_destinations_and_new_siblings(
+        self, monkeypatch, original_exists
+    ):
+        from ucode import managed_ownership
+
+        original_managed = {"admin_managed": "baseline"} if original_exists else {}
+        original_requirements = (
+            {"allowed_approval_policies": ["on-request"]} if original_exists else {}
+        )
+        if original_exists:
+            self.managed.write_text(tomlkit.dumps(original_managed))
+            self.requirements.write_text(tomlkit.dumps(original_requirements))
+        shared_original = 'profile = "ucode"\nuser_setting = "baseline"\n'
+        self.shared.write_text(shared_original)
+        replace = managed_ownership._atomic_replace
+
+        def fail_shared_cleanup(path, text, expected):
+            if path == self.shared:
+                raise RuntimeError("shared cleanup failed")
+            replace(path, text, expected)
+
+        monkeypatch.setattr(managed_ownership, "_atomic_replace", fail_shared_cleanup)
+        monkeypatch.setattr(managed_files, "_sudo_remove", lambda path: path.unlink())
+        with pytest.raises(RuntimeError, match="shared cleanup failed"):
+            codex.write_tool_config(
+                {
+                    "workspace": WS,
+                    "codex_native_settings": {"features": {"hooks": True}},
+                    "codex_native_requirements": {"features": {"fast_mode": False}},
+                },
+                selected_source=self.source(owner="isaac"),
+            )
+        assert self.writes == [self.managed, self.requirements]
+        assert read_toml_safe(self.managed)["features"]["hooks"] is True
+        assert read_toml_safe(self.requirements)["features"]["fast_mode"] is False
+        pending = managed_ownership.applied_source("codex")
+        assert pending is not None and pending["status"] == "pending"
+        self.save.assert_not_called()
+        for path in (self.managed, self.requirements):
+            document = read_toml_safe(path)
+            document["admin_after_failure"] = "keep"
+            path.write_text(tomlkit.dumps(document))
+        monkeypatch.setattr(managed_ownership, "_atomic_replace", replace)
+
+        codex.revert_managed_config()
+        codex.revert_managed_requirements()
+        assert managed_ownership.revert_owned_destinations("codex")
+
+        assert read_toml_safe(self.managed) == {**original_managed, "admin_after_failure": "keep"}
+        assert read_toml_safe(self.requirements) == {
+            **original_requirements,
+            "admin_after_failure": "keep",
+        }
+        assert self.shared.read_text() == shared_original
+        assert not self.private.exists()
+        assert managed_ownership.applied_source("codex") is None
+        assert codex.revert_managed_config() == "unchanged"
+        assert codex.revert_managed_requirements() == "unchanged"
+        assert not managed_ownership.revert_owned_destinations("codex")
+
+    @pytest.mark.parametrize("required", ["settings", "requirements"])
+    def test_native_required_policy_cannot_fall_back_when_elevation_unavailable(
+        self, monkeypatch, required
+    ):
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: False)
+        state = {"workspace": WS, f"codex_native_{required}": {"features": {"fast_mode": False}}}
+        with pytest.raises(RuntimeError):
+            codex.write_tool_config(state, selected_source=self.source())
+        assert not self.private.exists()
+        assert not self.managed.exists()
+        assert not self.requirements.exists()
+        self.save.assert_not_called()
+
+    def test_native_requirements_write_failure_retains_pending_without_success(self, monkeypatch):
+        from ucode.managed_ownership import applied_source
+
+        writer = managed_files._sudo_replace
+
+        def fail_requirements(path, text, **kwargs):
+            if path == self.requirements:
+                raise RuntimeError("requirements elevation failed")
+            writer(path, text, **kwargs)
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", fail_requirements)
+        with pytest.raises(RuntimeError, match="requirements elevation failed"):
+            codex.write_tool_config(
+                {"workspace": WS, "codex_native_requirements": {"features": {"fast_mode": False}}},
+                selected_source=self.source(),
+            )
+        record = applied_source("codex")
+        assert record is not None and record["status"] == "pending"
+        self.save.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "existing",
+        [
+            {"otel": "invalid ancestor"},
+            {"otel": {"trace_exporter": {"otlp-grpc": {"endpoint": "https://admin.example"}}}},
+        ],
+    )
+    def test_native_incompatible_exporter_base_fails_before_private_mutation(self, existing):
+        self.managed.write_text(tomlkit.dumps(existing))
+        state = {
+            "workspace": WS,
+            "codex_native_settings": {
+                "otel": {
+                    "trace_exporter": {
+                        "otlp-http": {"endpoint": "https://source.example", "protocol": "binary"}
+                    }
+                }
+            },
+        }
+        with pytest.raises(RuntimeError, match="managed_settings.otel"):
+            codex.write_tool_config(state, selected_source=self.source())
+        assert not self.private.exists()
+        assert read_toml_safe(self.managed) == existing
+        assert self.writes == []
+        self.save.assert_not_called()
+
+    def test_native_status_line_order_empty_and_omission(self):
+        for status in (
+            ["model-name", "context-remaining"],
+            ["context-remaining", "model-name"],
+            [],
+        ):
+            codex.write_tool_config(
+                {"workspace": WS, "codex_native_settings": {"tui": {"status_line": status}}},
+                selected_source=self.source(),
+            )
+            for path in (self.private, self.managed):
+                assert read_toml_safe(path)["tui"]["status_line"] == status
+        codex.write_tool_config({"workspace": WS}, selected_source=self.source())
+        for path in (self.private, self.managed):
+            assert "status_line" not in read_toml_safe(path).get("tui", {})
+
+    @pytest.mark.parametrize("failure", ["legacy", "platform", "tracing", "requirements"])
+    def test_native_preflight_precedes_auth_catalog_and_backup(self, monkeypatch, failure):
+        native = (
+            {"tui": {"status_line": []}}
+            if failure == "legacy"
+            else {"otel": {"trace_exporter": "none"}}
+            if failure == "tracing"
+            else {"features": {"fast_mode": False}}
+        )
+        if failure == "legacy":
+            monkeypatch.setattr(codex, "agent_version", lambda _: "0.99.0")
+        elif failure == "platform":
+            monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        elif failure == "requirements":
+            monkeypatch.setattr(codex, "codex_requirements_path", lambda: None)
+        forbidden = Mock(side_effect=AssertionError("side effect before validation"))
+        monkeypatch.setattr(codex, "_launch_token", forbidden)
+        monkeypatch.setattr(codex, "prepare_managed_catalog", forbidden)
+        state = {
+            "workspace": WS,
+            "codex_native_settings": native,
+            "codex_otel_tracing": failure == "tracing",
+        }
+        if failure == "requirements":
+            state["codex_native_requirements"] = {"features": {"fast_mode": False}}
+        with pytest.raises(RuntimeError):
+            codex.write_tool_config(state, selected_source=self.source())
+        with pytest.raises(RuntimeError):
+            codex.launch(state, [], options=LaunchOptions())
+        forbidden.assert_not_called()
+        assert not self.private.exists()
+        assert not codex.CODEX_BACKUP_PATH.exists()
+        self.save.assert_not_called()
 
     @pytest.mark.parametrize(
         "custom",

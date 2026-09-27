@@ -3252,6 +3252,287 @@ class TestOwnedClaudeDestinations:
             _manifest_json=json.dumps(manifest) if kind == "file" else None,
         )
 
+    def test_native_policy_lifecycle_preserves_unrelated_hook_handlers_and_permissions(self):
+        from ucode.managed_ownership import release_owner
+
+        user_hook = {"type": "command", "command": "user-session-hook"}
+        original = {
+            "permissions": {"allow": ["Read(public)"], "deny": ["Read(secret)"]},
+            "hooks": {"SessionStart": [{"matcher": "startup", "hooks": [user_hook]}]},
+            "attribution": {"pr": "user attribution"},
+        }
+        self.private.parent.mkdir()
+        for path in (self.private, self.managed):
+            path.write_text(json.dumps(original))
+        for command in ("source-session-a", "source-session-b"):
+            native = {
+                "permissions": {"allow": ["Read(owned)"]},
+                "hooks": {
+                    "SessionStart": [
+                        {"matcher": "startup", "hooks": [{"type": "command", "command": command}]}
+                    ]
+                },
+                "sandbox": {"enabled": True},
+                "disableWorkflows": True,
+                "channelsEnabled": False,
+                "autoCompactEnabled": False,
+                "attribution": {"commit": "source attribution"},
+                "otelHeadersHelper": "source-otel-helper",
+                "statusLine": {"type": "command", "command": "source-status"},
+            }
+            state = {
+                "workspace": WS,
+                "claude_native_settings": native,
+                "claude_custom_env": {"UG_TEST_NATIVE": "custom value"},
+            }
+            claude.write_tool_config(state, None, selected_source=self.source(owner="isaac"))
+            for path in (self.private, self.managed):
+                doc = json.loads(path.read_text())
+                assert doc["permissions"] == {
+                    "allow": ["Read(public)", "Read(owned)"],
+                    "deny": ["Read(secret)"],
+                }
+                assert doc["hooks"]["SessionStart"] == [
+                    {
+                        "matcher": "startup",
+                        "hooks": [user_hook, {"type": "command", "command": command}],
+                    }
+                ]
+                for key in (
+                    "sandbox",
+                    "disableWorkflows",
+                    "channelsEnabled",
+                    "autoCompactEnabled",
+                    "otelHeadersHelper",
+                    "statusLine",
+                ):
+                    assert doc[key] == native[key]
+                assert doc["attribution"] == {
+                    "pr": "user attribution",
+                    "commit": "source attribution",
+                }
+                assert doc["env"]["UG_TEST_NATIVE"] == "custom value"
+            assert native["hooks"]["SessionStart"][0]["hooks"] == [
+                {"type": "command", "command": command}
+            ]
+
+        release_owner("isaac", "claude")
+        for path in (self.private, self.managed):
+            doc = json.loads(path.read_text())
+            assert doc == original
+
+    def test_native_closed_arrays_keep_source_order_empty_and_release(self):
+        from ucode.managed_ownership import release_owner
+
+        for messages in (["second", "first"], ["first", "second"], []):
+            claude.write_tool_config(
+                {"workspace": WS, "claude_native_settings": {"companyAnnouncements": messages}},
+                None,
+                selected_source=self.source(owner="isaac"),
+            )
+            for path in (self.private, self.managed):
+                assert json.loads(path.read_text())["companyAnnouncements"] == messages
+        release_owner("isaac", "claude")
+        for path in (self.private, self.managed):
+            assert "companyAnnouncements" not in json.loads(path.read_text())
+
+    def test_native_closed_array_requires_explicit_migration_before_private_write(self):
+        self.managed.write_text('{"companyAnnouncements":["admin notice"]}')
+        with pytest.raises(RuntimeError, match="companyAnnouncements"):
+            claude.write_tool_config(
+                {"workspace": WS, "claude_native_settings": {"companyAnnouncements": []}},
+                None,
+                selected_source=self.source(owner="isaac"),
+            )
+        assert not self.private.exists()
+        assert self.managed.read_text() == '{"companyAnnouncements":["admin notice"]}'
+        self.save.assert_not_called()
+
+    def test_native_closed_array_explicit_retirement_replaces_admin_elements(self):
+        from dataclasses import replace
+
+        self.managed.write_text('{"companyAnnouncements":["admin notice"],"unrelated":true}')
+        selected = self.source(owner="isaac")
+        manifest = selected.manifest
+        manifest["handoff"]["agents"]["claude"] = {
+            "retire": [
+                {
+                    "target": "managed_settings",
+                    "path": ["companyAnnouncements"],
+                    "elements": ["admin notice"],
+                }
+            ]
+        }
+        selected = replace(selected, _manifest_json=json.dumps(manifest))
+
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "claude_native_settings": {"companyAnnouncements": ["second", "first"]},
+            },
+            None,
+            selected_source=selected,
+        )
+
+        assert json.loads(self.managed.read_text())["companyAnnouncements"] == ["second", "first"]
+        assert json.loads(self.managed.read_text())["unrelated"] is True
+
+    def test_native_scalar_ancestor_is_not_hidden_by_generated_permissions(self):
+        self.managed.write_text('{"permissions":"unowned scalar"}')
+        with pytest.raises(RuntimeError, match="managed_settings.permissions"):
+            claude.write_tool_config(
+                {
+                    "workspace": WS,
+                    "codex_models": ["search-model"],
+                    "claude_native_settings": {"permissions": {"allow": ["Read(owned)"]}},
+                },
+                None,
+                selected_source=self.source(),
+            )
+        assert not self.private.exists()
+        assert not self.mcp.exists()
+        assert self.managed.read_text() == '{"permissions":"unowned scalar"}'
+        self.save.assert_not_called()
+
+    def test_relay_equal_native_policy_records_managed_scope_without_elevation(self, monkeypatch):
+        from ucode.managed_ownership import release_owner
+
+        native = {"sandbox": {"enabled": True}, "permissions": {"deny": ["Read(secret)"]}}
+        self.managed.write_text(json.dumps(native))
+        monkeypatch.setattr(claude, "relayed_proxy_base_url", lambda _: "http://127.0.0.1:9999")
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: False)
+        state = {"workspace": WS, "claude_relayed": True, "claude_native_settings": native}
+        claude.write_tool_config(
+            state, None, relayed=True, selected_source=self.source(owner="isaac")
+        )
+        assert self.writes == []
+        assert claude.managed_settings_are_current(state)
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        release_owner("isaac", "claude")
+        assert json.loads(self.managed.read_text()) == {}
+
+    def test_native_required_policy_cannot_fall_back_when_elevation_unavailable(self, monkeypatch):
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: False)
+        with pytest.raises(RuntimeError):
+            claude.write_tool_config(
+                {"workspace": WS, "claude_native_settings": {"sandbox": {"enabled": True}}},
+                None,
+                selected_source=self.source(),
+            )
+        assert not self.private.exists()
+        assert not self.managed.exists()
+        self.save.assert_not_called()
+
+    def test_native_required_write_failure_retains_recovery_without_success(self, monkeypatch):
+        from ucode.managed_ownership import applied_source
+
+        monkeypatch.setattr(
+            managed_files, "_sudo_replace", Mock(side_effect=RuntimeError("no elevation"))
+        )
+        with pytest.raises(RuntimeError, match="no elevation"):
+            claude.write_tool_config(
+                {"workspace": WS, "claude_native_settings": {"disableWorkflows": True}},
+                None,
+                selected_source=self.source(),
+            )
+        record = applied_source("claude")
+        assert record is not None and record["status"] == "pending"
+        self.save.assert_not_called()
+
+    def test_relay_required_native_policy_removes_prior_owned_direct_routing(self, monkeypatch):
+        claude.write_tool_config({"workspace": WS}, None, selected_source=self.source())
+        monkeypatch.setattr(claude, "relayed_proxy_base_url", lambda _: "http://127.0.0.1:9999")
+        native = {"permissions": {"deny": ["Read(secret)"]}, "attribution": {"commit": "source"}}
+        state = {
+            "workspace": WS,
+            "claude_relayed": True,
+            "claude_native_settings": native,
+            "claude_custom_env": {"UG_TEST_NATIVE": "private-only"},
+        }
+
+        claude.write_tool_config(state, None, relayed=True, selected_source=self.source())
+
+        assert json.loads(self.managed.read_text()) == native
+        assert json.loads(self.private.read_text())["env"]["UG_TEST_NATIVE"] == "private-only"
+        assert claude.managed_settings_are_current(state)
+
+    @pytest.mark.parametrize(
+        "existing",
+        [
+            {"apiKeyHelper": "admin-auth"},
+            {"env": {"UG_TEST_NATIVE": "admin-value"}},
+            {"env": {"ANTHROPIC_AUTH_TOKEN": "private-auth-value"}},
+            {"env": {"ANTHROPIC_API_KEY": "private-auth-value"}},
+        ],
+    )
+    def test_relay_required_native_policy_rejects_unowned_routing_and_env(
+        self, monkeypatch, existing
+    ):
+        self.managed.write_text(json.dumps(existing))
+        monkeypatch.setattr(claude, "relayed_proxy_base_url", lambda _: "http://127.0.0.1:9999")
+        with pytest.raises(RuntimeError, match="relay is blocked") as error:
+            claude.write_tool_config(
+                {
+                    "workspace": WS,
+                    "claude_native_settings": {"disableWorkflows": True},
+                    "claude_custom_env": {"UG_TEST_NATIVE": "source-value"},
+                },
+                None,
+                relayed=True,
+                selected_source=self.source(),
+            )
+        assert "private-auth-value" not in str(error.value)
+        assert not self.private.exists()
+        assert json.loads(self.managed.read_text()) == existing
+        assert self.writes == []
+        self.save.assert_not_called()
+
+    def test_relay_optional_native_settings_remain_private(self, monkeypatch):
+        self.managed.write_text('{"unrelated":true}')
+        monkeypatch.setattr(claude, "relayed_proxy_base_url", lambda _: "http://127.0.0.1:9999")
+        state = {
+            "workspace": WS,
+            "claude_relayed": True,
+            "claude_native_settings": {"attribution": {"commit": "source"}},
+        }
+        claude.write_tool_config(state, None, relayed=True, selected_source=self.source())
+        assert json.loads(self.private.read_text())["attribution"]["commit"] == "source"
+        assert json.loads(self.managed.read_text()) == {"unrelated": True}
+        assert self.writes == []
+        assert claude.managed_settings_are_current(state)
+
+    @pytest.mark.parametrize("relayed", [False, True])
+    @pytest.mark.parametrize("failure", ["org", "platform", "tracing"])
+    def test_native_launch_preflight_precedes_auth_backups_and_relay_port(
+        self, monkeypatch, relayed, failure
+    ):
+        native = (
+            {"forceLoginOrgUUID": "source-org"}
+            if failure == "org"
+            else {"disableWorkflows": True}
+            if failure == "platform"
+            else {"otelHeadersHelper": "source-helper"}
+        )
+        if failure == "platform":
+            monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        forbidden = Mock(side_effect=AssertionError("side effect before validation"))
+        monkeypatch.setattr(claude, "get_databricks_token", forbidden)
+        monkeypatch.setattr(claude, "relayed_proxy_base_url", forbidden)
+        state = {
+            "workspace": WS,
+            "claude_native_settings": native,
+            "claude_relayed": relayed,
+            "claude_otel_tracing": failure == "tracing",
+        }
+        with pytest.raises(RuntimeError):
+            claude.write_tool_config(state, None, relayed=relayed, selected_source=self.source())
+        with pytest.raises(RuntimeError):
+            claude.launch(state, [], options=LaunchOptions())
+        forbidden.assert_not_called()
+        assert not self.private.exists()
+        assert not claude.CLAUDE_BACKUP_PATH.exists()
+        self.save.assert_not_called()
+
     @pytest.mark.parametrize("smart_routing", [False, True])
     def test_custom_env_lifecycle_scrubs_native_caller_and_child_values(
         self, monkeypatch, smart_routing

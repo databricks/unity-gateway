@@ -24,12 +24,23 @@ from ucode.managed_config import (
     ManagedConfigResult,
     normalize_managed_config,
 )
+from ucode.native_settings import validate_native_requirements, validate_native_settings
 
 AgentExtensionParser = Callable[[object, str, str, dict], object]
 SourceExtensionParser = Callable[[object, str], object]
-AGENT_EXTENSION_PARSERS: dict[str, AgentExtensionParser] = {"custom_env": validate_custom_env}
+AGENT_EXTENSION_PARSERS: dict[str, AgentExtensionParser] = {
+    "custom_env": validate_custom_env,
+    "native_settings": validate_native_settings,
+    "native_requirements": validate_native_requirements,
+}
 SOURCE_EXTENSION_PARSERS: dict[str, SourceExtensionParser] = {}
-SUPPORTED_HANDOFF_TARGETS = {"user_settings", "private_settings", "managed_settings", "process_env"}
+SUPPORTED_HANDOFF_TARGETS = {
+    "user_settings",
+    "private_settings",
+    "managed_settings",
+    "process_env",
+    "requirements",
+}
 _AGENT_EXTENSIONS = {"custom_env", "native_settings", "native_requirements"}
 _METADATA = {
     "name",
@@ -146,6 +157,8 @@ def _handoff(value: object, path: str) -> dict:
                 target = item.get("target")
                 if not isinstance(target, str) or target not in SUPPORTED_HANDOFF_TARGETS:
                     _invalid(f"{entry_path}.target", "this build cannot apply this handoff target")
+                if target == "requirements" and agent != "codex":
+                    _invalid(f"{entry_path}.target", "requirements support only codex")
                 parts = item.get("path")
                 if (
                     not isinstance(parts, list)

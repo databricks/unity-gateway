@@ -138,6 +138,7 @@ from ucode.mcp import (
     remove_skills_locations_command,
     revert_mcp_configs,
 )
+from ucode.native_settings import validate_codex_routing_hooks
 from ucode.skills_download import (
     configure_location_skills_download_command,
     configure_selected_skills_download_command,
@@ -1316,6 +1317,7 @@ def revert() -> int:
     mcp_results = revert_mcp_configs(state)
     claude_managed_result = claude_agent.revert_managed_settings()
     codex_managed_result = codex_agent.revert_managed_config()
+    codex_requirements_result = codex_agent.revert_managed_requirements()
     owned_restored = {tool: revert_owned_destinations(tool) for tool in ("claude", "codex")}
 
     results: dict[str, bool] = {
@@ -1339,6 +1341,7 @@ def revert() -> int:
         print_kv("Codex shared config", "ucode entries removed")
     print_kv("Claude Code OS-managed settings", claude_managed_result)
     print_kv("Codex OS-managed settings", codex_managed_result)
+    print_kv("Codex OS-managed requirements", codex_requirements_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     for client, spec in MCP_CLIENTS.items():
         print_kv(
@@ -2591,6 +2594,16 @@ def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
     return agent_config.get("smart_routing_enabled") is True
 
 
+def _validate_launch_extensions(state: dict, tool: str) -> None:
+    if tool not in {"claude", "codex"}:
+        return
+    validate_agent_env(state, tool)
+    if tool == "claude":
+        claude_agent._preflight_native_settings(state, relayed=bool(state.get("claude_relayed")))
+    else:
+        codex_agent._preflight_native_settings(state)
+
+
 def _launch_tool(
     tool_name: str,
     ctx: typer.Context,
@@ -2653,16 +2666,29 @@ def _launch_tool(
         if selected_source is not None:
             selected_source = replace(selected_source, workspace=workspace)
             managed = selected_source.manifest
-            if tool in {"claude", "codex"}:
-                validate_agent_env(
-                    resolve_state(managed or {}, existing, tool, selected_source=selected_source),
-                    tool,
-                )
+            file_state = resolve_state(
+                managed or {}, existing, tool, selected_source=selected_source
+            )
+            _validate_launch_extensions(file_state, tool)
             preflight_managed_resources(selected_source, previous_state)
             preflight_source_transition(selected_source)
             _reject_managed_launch_source_options(
                 managed, provider=provider, parent_schema=parent_schema
             )
+            if (
+                tool == "codex"
+                and _launch_options(
+                    tool,
+                    ctx.args,
+                    smart_routing_enabled=(
+                        smart_routing_enabled or _managed_smart_routing_enabled(managed, tool)
+                    ),
+                    explicit_prompt=explicit_prompt,
+                    user_pinned_model=model or forwarded_model,
+                    provider=managed_provider_service(managed or {}, tool),
+                ).launch_smart_routing
+            ):
+                validate_codex_routing_hooks(file_state["codex_native_settings"])
         # Workspaces configured with --use-pat export the profile's PAT as
         # DATABRICKS_BEARER up front so every auth check below (and the
         # launched agent itself) uses the static token instead of OAuth.
@@ -2786,8 +2812,7 @@ def _launch_tool(
                 )
         elif not coding_agent_config_feature_disabled:
             print_note("No managed coding agent config found; using your own settings")
-        if tool in {"claude", "codex"}:
-            validate_agent_env(state, tool)
+        _validate_launch_extensions(state, tool)
         if tool == "claude":
             state["_claude_gateway_discovery"] = claude_gateway_discovery
         if provider and parent_schema is not None:

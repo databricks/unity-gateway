@@ -86,6 +86,9 @@ def _without_managed_overlay(state: dict) -> dict:
         "_claude_gateway_discovery",
         "claude_custom_env",
         "codex_custom_env",
+        "claude_native_settings",
+        "codex_native_settings",
+        "codex_native_requirements",
     }
     state = {key: value for key, value in state.items() if key not in transient}
     overlay = state.get(MANAGED_OVERLAY_KEY)

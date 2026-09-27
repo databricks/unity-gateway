@@ -30,11 +30,14 @@ def launch_home(tmp_path, monkeypatch):
     monkeypatch.delenv("CODEX_HOME", raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("ENABLE_SMART_ROUTING", raising=False)
+    monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
+    monkeypatch.delenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", raising=False)
     paths = {
         "claude": tmp_path / "claude" / "ucode-settings.json",
         "claude_managed": tmp_path / "etc-claude" / "managed-settings.json",
         "codex": tmp_path / "codex" / "ucode.config.toml",
         "codex_managed": tmp_path / "etc-codex" / "managed_config.toml",
+        "codex_requirements": tmp_path / "etc-codex" / "requirements.toml",
     }
     for module, tool in [(claude, "claude"), (codex, "codex")]:
         monkeypatch.setattr(module, f"{tool.upper()}_CONFIG_DIR", paths[tool].parent)
@@ -49,17 +52,26 @@ def launch_home(tmp_path, monkeypatch):
     monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", paths["codex"])
     monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", tmp_path / "codex" / "config.toml")
     monkeypatch.setattr(codex, "codex_managed_config_path", lambda: paths["codex_managed"])
+    monkeypatch.setattr(codex, "codex_requirements_path", lambda: paths["codex_requirements"])
     monkeypatch.setattr(codex_config, "DEFAULT_CODEX_CONFIG_PATH", paths["codex"])
     monkeypatch.setattr(codex_config, "codex_managed_config_path", lambda: paths["codex_managed"])
     monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
     monkeypatch.setattr(
         managed_files,
         "_SUDO_REPLACE_TARGETS",
-        {managed_files.current_os(): frozenset({paths["claude_managed"], paths["codex_managed"]})},
+        {
+            managed_files.current_os(): frozenset(
+                {paths["claude_managed"], paths["codex_managed"], paths["codex_requirements"]}
+            )
+        },
     )
 
     def replace_managed(path, text, *, expected_text=...):
-        assert path in (paths["claude_managed"], paths["codex_managed"])
+        assert path in (
+            paths["claude_managed"],
+            paths["codex_managed"],
+            paths["codex_requirements"],
+        )
         if expected_text is not ...:
             assert managed_files.read_managed_file(path) == expected_text
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -218,6 +230,205 @@ def test_disabled_agent_and_missing_option_value_do_not_bootstrap(launch_home, a
     result = runner.invoke(cli.app, [agent, "--config-file"])
     assert result.exit_code == 2
     h.bootstrap.assert_not_called()
+    h.launch.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "agent,native,requirements,tracing,unsupported,legacy,error",
+    [
+        (
+            "claude",
+            {"forceLoginOrgUUID": "hidden-org"},
+            None,
+            False,
+            False,
+            False,
+            "first-party OAuth",
+        ),
+        (
+            "claude",
+            {"sandbox": {"enabled": False}},
+            None,
+            False,
+            True,
+            False,
+            "unavailable on this platform",
+        ),
+        (
+            "claude",
+            {"otelHeadersHelper": "hidden-command"},
+            None,
+            True,
+            False,
+            False,
+            "enabled UG tracing",
+        ),
+        (
+            "codex",
+            {"otel": {"trace_exporter": "none"}},
+            None,
+            True,
+            False,
+            False,
+            "enabled UG tracing",
+        ),
+        (
+            "codex",
+            {},
+            {"features": {"fast_mode": False}},
+            False,
+            True,
+            False,
+            "unavailable on this platform",
+        ),
+        ("codex", {"tui": {"status_line": []}}, None, False, False, True, "upgrade Codex"),
+    ],
+)
+def test_native_preflight_rejects_before_bootstrap_and_writes(
+    launch_home, monkeypatch, agent, native, requirements, tracing, unsupported, legacy, error
+):
+    h = launch_home
+    state.save_state({"workspace": WS, f"{agent}_otel_tracing": tracing})
+    if unsupported:
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+    if legacy:
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.100.0")
+    raw = wire(agent)
+    raw["enabled_agents"][0]["config"]["native_settings"] = native
+    if requirements is not None:
+        raw["enabled_agents"][0]["config"]["native_requirements"] = requirements
+    policy = h.root / "native.json"
+    policy.write_text(json.dumps(raw))
+    before = {path: path.read_bytes() for path in h.root.rglob("*") if path.is_file()}
+    result = runner.invoke(cli.app, [agent, "--config-file", str(policy), "--workspace", WS])
+    assert result.exit_code != 0
+    assert error in " ".join(result.output.split())
+    assert "hidden-command" not in result.output
+    assert "hidden-org" not in result.output
+    assert {path: path.read_bytes() for path in h.root.rglob("*") if path.is_file()} == before
+    h.bootstrap.assert_not_called()
+    h.auth.assert_not_called()
+    h.launch.assert_not_called()
+
+
+def test_codex_file_requirements_apply_and_broad_revert(launch_home):
+    h = launch_home
+    requirements = h.paths["codex_requirements"]
+    requirements.parent.mkdir(parents=True)
+    original = "[features]\nother_feature = false\n"
+    requirements.write_text(original)
+    raw = wire("codex")
+    raw["enabled_agents"][0]["config"].update(
+        native_settings={"features": {"hooks": True}, "tui": {"status_line": []}},
+        native_requirements={"features": {"fast_mode": False}},
+    )
+    policy = h.root / "native.json"
+    policy.write_text(json.dumps(raw))
+    result = runner.invoke(cli.app, ["codex", "-f", str(policy), "--workspace", WS])
+    assert result.exit_code == 0, result.output
+    assert read_toml_safe(requirements) == {
+        "features": {"other_feature": False, "fast_mode": False}
+    }
+    assert read_toml_safe(h.paths["codex"])["tui"]["status_line"] == []
+    assert read_toml_safe(h.paths["codex_managed"])["features"]["hooks"] is True
+    saved = state.STATE_PATH.read_text()
+    assert "native_settings" not in saved
+    assert "native_requirements" not in saved
+    result = runner.invoke(cli.app, ["revert"])
+    assert result.exit_code == 0, result.output
+    assert requirements.read_text() == original
+    assert "Codex OS-managed requirements: restored" in result.output
+    assert state.load_state().get("workspace") is None
+
+
+@pytest.mark.parametrize("routing", ["global", "subagent", "managed", "flag"])
+def test_codex_disabled_hooks_reject_selected_routing_before_bootstrap(
+    launch_home, monkeypatch, routing
+):
+    h = launch_home
+    raw = wire("codex")
+    config = raw["enabled_agents"][0]["config"]
+    config["native_settings"] = {"features": {"hooks": False}}
+    arguments = []
+    if routing == "managed":
+        config["smart_routing"] = {"enabled": True}
+        config["models"] = {"model_services": ["system.ai.gpt-5-6-sol"]}
+    elif routing == "flag":
+        arguments = ["--enable-smart-routing"]
+    else:
+        variable = (
+            "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"
+            if routing == "subagent"
+            else "ENABLE_SMART_ROUTING_V2"
+        )
+        monkeypatch.setenv(variable, "1")
+    policy = h.root / "native-routing.json"
+    policy.write_text(json.dumps(raw))
+    before = {path: path.read_bytes() for path in h.root.rglob("*") if path.is_file()}
+    result = runner.invoke(cli.app, ["codex", "-f", str(policy), "--workspace", WS, *arguments])
+    assert result.exit_code == 1
+    output = " ".join(result.output.split())
+    assert "native_settings.features.hooks" in output
+    assert "enable hooks or disable routing" in output
+    assert {path: path.read_bytes() for path in h.root.rglob("*") if path.is_file()} == before
+    h.bootstrap.assert_not_called()
+    h.auth.assert_not_called()
+    h.launch.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "routing,arguments",
+    [
+        ("none", []),
+        ("global", ["app"]),
+        ("managed", ["app-server"]),
+        ("global", ["--", "--model", "system.ai.gpt-5-6-sol"]),
+        ("managed", ["--", "--model", "system.ai.gpt-5-6-sol"]),
+        ("subagent", ["exec", "--", "inspect a file"]),
+    ],
+)
+def test_codex_disabled_hooks_allow_launches_that_do_not_select_routing(
+    launch_home, monkeypatch, routing, arguments
+):
+    h = launch_home
+    raw = wire("codex")
+    config = raw["enabled_agents"][0]["config"]
+    config["native_settings"] = {"features": {"hooks": False}}
+    if routing == "managed":
+        config["smart_routing"] = {"enabled": True}
+        config["models"] = {"model_services": ["system.ai.gpt-5-6-sol"]}
+    elif routing != "none":
+        variable = (
+            "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"
+            if routing == "subagent"
+            else "ENABLE_SMART_ROUTING_V2"
+        )
+        monkeypatch.setenv(variable, "1")
+    policy = h.root / "native-routing.json"
+    policy.write_text(json.dumps(raw))
+    result = runner.invoke(cli.app, ["codex", "-f", str(policy), "--workspace", WS, *arguments])
+    assert result.exit_code == 0, result.output
+    assert read_toml_safe(h.paths["codex_managed"])["features"]["hooks"] is False
+    assert h.launch.call_args.kwargs["options"].launch_smart_routing is False
+    h.bootstrap.assert_called_once()
+
+
+def test_codex_disabled_hooks_preserve_existing_provider_routing_error(launch_home, monkeypatch):
+    h = launch_home
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+    raw = wire("codex")
+    raw["enabled_agents"][0]["config"].update(
+        native_settings={"features": {"hooks": False}},
+        models={"model_provider_service": "main.default.provider"},
+    )
+    policy = h.root / "native-routing.json"
+    policy.write_text(json.dumps(raw))
+    result = runner.invoke(cli.app, ["codex", "-f", str(policy), "--workspace", WS])
+    assert result.exit_code == 1
+    assert "smart routing cannot be enabled with" in " ".join(result.output.split())
+    assert "native_settings.features.hooks" not in result.output
+    h.bootstrap.assert_called_once()
     h.launch.assert_not_called()
 
 

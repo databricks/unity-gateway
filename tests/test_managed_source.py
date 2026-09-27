@@ -100,12 +100,51 @@ def test_rejects_raw_types_and_semantics_before_normalization(field, value, erro
 
 
 @pytest.mark.parametrize("field", ["native_settings", "native_requirements"])
-@pytest.mark.parametrize("value", [{}, None, {"secret": "private"}])
-def test_unimplemented_extensions_never_silently_disappear(field, value):
+@pytest.mark.parametrize("value", [None, {"secret": "private"}])
+def test_native_extensions_reject_invalid_input(field, value):
     config = wire()
     config["enabled_agents"][0]["config"][field] = value
     with pytest.raises(RuntimeError, match=field):
         validate_file_config(config, "codex")
+
+
+@pytest.mark.parametrize("field", ["native_settings", "native_requirements"])
+def test_native_extensions_accept_empty_declarations(field):
+    config = wire()
+    config["enabled_agents"][0]["config"][field] = {}
+    assert validate_file_config(config, "codex")["enabled_agents"]["codex"][field] == {}
+
+
+def test_native_extensions_preserve_nested_values_without_aliasing():
+    config = wire()
+    config["enabled_agents"][0]["config"].update(
+        native_settings={"tui": {"status_line": ["model-name"]}},
+        native_requirements={"features": {"fast_mode": False}},
+    )
+    parsed = validate_file_config(config, "codex")["enabled_agents"]["codex"]
+    assert parsed["native_requirements"] == {"features": {"fast_mode": False}}
+    parsed["native_settings"]["tui"]["status_line"].clear()
+    assert config["enabled_agents"][0]["config"]["native_settings"] == {
+        "tui": {"status_line": ["model-name"]}
+    }
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_requirements_handoff_target_is_codex_only(agent):
+    config = wire(agent)
+    config["handoff"] = {
+        "schema_version": 1,
+        "owner": "native-test",
+        "migration_version": 1,
+        "agents": {
+            agent: {"retire": [{"target": "requirements", "path": ["features", "fast_mode"]}]}
+        },
+    }
+    if agent == "claude":
+        with pytest.raises(RuntimeError, match="requirements support only codex"):
+            validate_file_config(config, agent)
+    else:
+        assert validate_file_config(config, agent)["handoff"] == config["handoff"]
 
 
 @pytest.mark.parametrize("field", ["skills", "mcp_servers", "smart_defaults", "spend_tiers"])

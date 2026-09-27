@@ -31,6 +31,7 @@ from ucode.databricks import (
     list_anthropic_models,
 )
 from ucode.launcher import exec_or_spawn
+from ucode.native_settings import compose_native_settings, validate_codex_routing_hooks
 from ucode.smart_routing import claude_routing, codex_interposer, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -585,6 +586,10 @@ def launch_codex(
     render_overlay: Callable[..., dict],
     env: Mapping[str, str] | None = None,
 ) -> NoReturn:
+    from ucode.agents.codex import _preflight_native_settings
+
+    native, _, _ = _preflight_native_settings(state)
+    validate_codex_routing_hooks(native)
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -625,6 +630,7 @@ def launch_codex(
     overlay["hooks"] = {
         "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
     }
+    overlay = compose_native_settings("codex", overlay, native, target="private_settings")
     config_args = codex_config_args(overlay)
     if not first_prompt_routing_enabled():
         # Subagent-only routing needs neither the app-server nor the interposer:
@@ -659,7 +665,15 @@ def launch_codex(
         )
         tui_url = _loopback_websocket_url(tui_port)
         tui = subprocess.Popen(
-            [binary, "--remote", tui_url, "--model", start_model, *tool_args],
+            [
+                binary,
+                "--remote",
+                tui_url,
+                "--model",
+                start_model,
+                *codex_config_args(native),
+                *tool_args,
+            ],
             env=dict(child_env),
         )
         try:
