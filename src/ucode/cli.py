@@ -3761,6 +3761,8 @@ def upgrade_cmd() -> None:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if result.returncode != 0:
             if installed_distribution == legacy_distribution and _is_distribution_cutover(result):
@@ -3859,6 +3861,8 @@ def _verify_upgraded_commands() -> None:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if result.returncode != 0:
             detail = _upgrade_failure_detail(result)

@@ -223,6 +223,8 @@ class TestUpgrade:
                 check=False,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
         ]
         assert "ucode upgraded" in result.output
@@ -259,6 +261,8 @@ class TestUpgrade:
                 check=False,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             ),
             call(["uv", "tool", "uninstall", "ucode"], check=True),
             call(["uv", "tool", "install", "--force", git_url], check=True),
@@ -267,12 +271,16 @@ class TestUpgrade:
                 check=False,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             ),
             call(
                 ["/tools/ucode", "--version"],
                 check=False,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             ),
         ]
         assert "Migrated to `unity-gateway`" in result.output
@@ -297,6 +305,8 @@ class TestUpgrade:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         assert "unity-gateway upgraded" in result.output
 
@@ -316,6 +326,8 @@ class TestUpgrade:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         assert "left unchanged" in result.output
         assert "ERROR 1" not in result.output

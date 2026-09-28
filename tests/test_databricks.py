@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from decimal import Decimal
@@ -4027,3 +4028,16 @@ class TestMcpServiceNeedsConnectionLogin:
         # Safe default: an unreachable API must not push a service into an OAuth flow.
         self._mock_http(monkeypatch, details=None, err="HTTP 500")
         assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.github") is False
+
+
+class TestRunDecodesUtf8:
+    def test_text_mode_decodes_utf8_instead_of_the_locale_code_page(self):
+        # CLIs emit UTF-8; Windows' default cp1252 decoding would fail on the 0x9d byte.
+        script = r"import sys; sys.stdout.buffer.write('“ok”'.encode('utf-8'))"
+        result = db_mod.run([sys.executable, "-c", script], capture_output=True, text=True)
+        assert result.stdout == "“ok”"
+
+    def test_binary_mode_is_unchanged(self):
+        script = r"import sys; sys.stdout.buffer.write(b'\xff')"
+        result = db_mod.run([sys.executable, "-c", script], capture_output=True)
+        assert result.stdout == b"\xff"

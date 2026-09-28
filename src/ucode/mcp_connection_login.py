@@ -59,6 +59,8 @@ def _cli_supports_resource_flag(login_binary: str) -> bool:
             timeout=20,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except (OSError, subprocess.TimeoutExpired):
         return True
