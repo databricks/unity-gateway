@@ -2183,6 +2183,9 @@ def claude_router_hook_cmd(
         return
     if event == "session-start":
         record_session_start(payload)
+        warning = smart_routing_v2.check_routed_agents_registered(payload, model or [])
+        if warning:
+            sys.stdout.write(json.dumps({"systemMessage": warning}))
         return
     if event == "record-subagent":
         record = record_subagent_start(payload)

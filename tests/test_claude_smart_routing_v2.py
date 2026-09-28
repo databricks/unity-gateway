@@ -799,3 +799,35 @@ capture_path.write_text(json.dumps({
             "replayed": "\x1b[200~fix\nthe parser\x1b[201~\r",
             "restored_before_replay": True,
         }
+
+
+class TestRoutedAgentsRegisteredCheck:
+    MODELS = ["system.ai.kimi-k3", "system.ai.claude-haiku-4-5"]
+
+    def _command(self, agent_names):
+        agents = json.dumps({name: {"model": "m"} for name in agent_names})
+        return f"claude --settings /tmp/claude-v2-1-x.json --agents {agents} --continue"
+
+    def test_warns_and_logs_missing_agents(self, tmp_path, monkeypatch):
+        log = tmp_path / "agents.jsonl"
+        monkeypatch.setattr(v2.claude_routing, "AGENT_CHECK_LOG_PATH", log)
+
+        warning = v2.check_routed_agents_registered(
+            {"session_id": "s1", "source": "startup"}, self.MODELS, self._command([])
+        )
+
+        assert warning is not None and "2/2 routed subagents" in warning
+        record = json.loads(log.read_text())
+        assert record["claude_settings"] == "/tmp/claude-v2-1-x.json"
+        assert record["missing"] == record["expected"]
+        assert "ucode-route-kimi-k3-ba377e31" in record["missing"]
+
+    def test_silent_when_all_agents_registered(self, tmp_path, monkeypatch):
+        log = tmp_path / "agents.jsonl"
+        monkeypatch.setattr(v2.claude_routing, "AGENT_CHECK_LOG_PATH", log)
+        names = sorted(v2._routed_claude_agent_definitions(self.MODELS))
+
+        warning = v2.check_routed_agents_registered({}, self.MODELS, self._command(names))
+
+        assert warning is None
+        assert json.loads(log.read_text())["missing"] == []

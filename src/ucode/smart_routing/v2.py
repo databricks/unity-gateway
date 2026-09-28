@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -37,6 +38,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
+from ucode.telemetry import ug_version
 from ucode.ui import print_warning
 
 ENABLE_SMART_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_V2"
@@ -332,6 +334,76 @@ def _route_claude_prompt(
     if decision is None:
         raise RuntimeError(error or "router returned no Claude model selection")
     return decision
+
+
+def check_routed_agents_registered(
+    payload: dict, available_models: list[str], claude_command: str | None = None
+) -> str | None:
+    """Log whether the running Claude process got every routed agent; warn if not."""
+    expected = sorted(_routed_claude_agent_definitions(available_models))
+    if claude_command is None:
+        claude_command = _claude_process_command()
+    registered = _agents_arg_names(claude_command) if claude_command else set()
+    missing = [name for name in expected if name not in registered]
+    settings = re.search(r"--settings[= ](\S+)", claude_command or "")
+    routing.append_jsonl(
+        claude_routing.AGENT_CHECK_LOG_PATH,
+        {
+            "at": time.time(),
+            "session_id": payload.get("session_id"),
+            "source": payload.get("source"),
+            "ucode_version": ug_version(),
+            "claude_process_found": claude_command is not None,
+            "claude_settings": settings.group(1) if settings else None,
+            "expected": expected,
+            "missing": missing,
+        },
+    )
+    if not missing:
+        return None
+    return (
+        f"Smart Routing: {len(missing)}/{len(expected)} routed subagents are not registered "
+        "in this Claude session, so routed subagent calls will fail. "
+        f"Details: {claude_routing.AGENT_CHECK_LOG_PATH}"
+    )
+
+
+def _claude_process_command() -> str | None:
+    """Command line of the nearest ancestor `claude` process (the hook's launcher)."""
+    pid = os.getppid()
+    for _ in range(10):
+        try:
+            result = subprocess.run(
+                ["ps", "-ww", "-o", "ppid=,args=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        fields = result.stdout.split(None, 1)
+        if len(fields) != 2 or not fields[0].isdigit():
+            return None
+        ppid, command = fields[0], fields[1].strip()
+        if "--agents" in command or command.split(" ", 1)[0].endswith("claude"):
+            return command
+        pid = int(ppid)
+    return None
+
+
+def _agents_arg_names(command: str) -> set[str]:
+    index = command.find("--agents")
+    if index == -1:
+        return set()
+    start = command.find("{", index)
+    if start == -1:
+        return set()
+    try:
+        agents, _ = json.JSONDecoder().raw_decode(command, start)
+    except ValueError:
+        return set()
+    return set(agents) if isinstance(agents, dict) else set()
 
 
 def route_claude_pre_tool_use(

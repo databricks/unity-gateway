@@ -29,6 +29,7 @@ SPAWN_AGENT_TOOL_NAMES = ("agent", "task")
 CANARY_PATH = APP_DIR / "claude-smart-routing-canary.json"
 AUDIT_PATH = APP_DIR / "claude-smart-routing-audit.jsonl"
 DECISIONS_PATH = APP_DIR / "claude-smart-routing-decisions.jsonl"
+AGENT_CHECK_LOG_PATH = APP_DIR / "debug-logs" / "claude" / "smart-routing-agents.jsonl"
 SUBAGENT_NOTICE_CONFIG = routing.SubagentNoticeConfig(
     name_field="subagent_type",
     prompt_field="prompt",
@@ -155,7 +156,7 @@ def record_subagent_start(payload: dict[str, Any]) -> dict[str, Any]:
 
 def clear_routing_artifacts() -> None:
     """Remove ucode-owned routing canary and audit files."""
-    routing.clear_artifacts((CANARY_PATH, AUDIT_PATH, DECISIONS_PATH))
+    routing.clear_artifacts((CANARY_PATH, AUDIT_PATH, DECISIONS_PATH, AGENT_CHECK_LOG_PATH))
 
 
 def _claude_model_id(model: str) -> str:

@@ -472,6 +472,11 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    """Append one JSON record, ignoring filesystem errors."""
+    _append_jsonl(path, payload)
+
+
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -82,6 +82,8 @@ def _routing_hook_argv(state: dict, event: str) -> list[str]:
         ROUTING_HOOK_COMMAND_MARKER,
         event,
     ]
+    if event == "session-start":
+        return argv + _model_args(state)
     if event != "route-subagent":
         return argv
     argv += ["--host", workspace]
@@ -92,12 +94,17 @@ def _routing_hook_argv(state: dict, event: str) -> list[str]:
         argv.append("--use-pat")
     # The route-subagent hook resolves the router's chosen arm back to a routable
     # workspace id, so it needs the discovered claude model ids.
+    return argv + _model_args(state)
+
+
+def _model_args(state: dict) -> list[str]:
+    args: list[str] = []
     claude_models = state.get("claude_models")
     if isinstance(claude_models, dict):
         for model in claude_models.values():
             if isinstance(model, str) and model:
-                argv += ["--model", model]
-    return argv
+                args += ["--model", model]
+    return args
 
 
 def _routing_command_hook(argv: list[str], *, status: str | None = None) -> dict:
