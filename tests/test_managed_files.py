@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import ucode.agents.claude as claude_agent
+import ucode.claude_settings_paths as claude_settings_paths
 import ucode.codex_config as codex_config
 import ucode.config_io as config_io
 from ucode import managed_files
@@ -502,7 +503,7 @@ class TestSudoReplace:
         """The paths the agent helpers compute must be in the sudo-replace allowlist."""
         # Both helpers bind current_os into their own module namespaces.
         monkeypatch.setattr(managed_files, "current_os", lambda: os_enum)
-        monkeypatch.setattr(claude_agent, "current_os", lambda: os_enum)
+        monkeypatch.setattr(claude_settings_paths, "current_os", lambda: os_enum)
         monkeypatch.setattr(codex_config, "current_os", lambda: os_enum)
         allowed = managed_files._SUDO_REPLACE_TARGETS[os_enum]
         assert claude_agent._managed_settings_path() in allowed

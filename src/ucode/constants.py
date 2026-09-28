@@ -3,6 +3,8 @@
 LOCALHOST = "localhost"
 LOOPBACK_HOST = "127.0.0.1"
 
+GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
+
 MODEL_PROVIDER_SERVICE_HEADER = "Databricks-Model-Provider-Service"
 MODEL_SERVICE_PARENT_SCHEMA_HEADER = "Databricks-Model-Service-Parent-Schema"
 # Names the smart-router recipe (e.g. `task_v3`) in use; sent only when smart routing is enabled.

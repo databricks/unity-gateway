@@ -14,6 +14,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ucode import gateway_proxy
+from ucode.claude_settings_paths import (
+    CLAUDE_SETTINGS_PATH,
+    CLAUDE_USER_SETTINGS_PATH,
+)
+from ucode.claude_settings_paths import managed_settings_path as _managed_settings_path
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -23,6 +28,7 @@ from ucode.config_io import (
     write_json_file,
 )
 from ucode.constants import (
+    GATEWAY_MODEL_DISCOVERY_ENV_VAR,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
@@ -47,10 +53,8 @@ from ucode.databricks import (
 from ucode.launcher import exec_or_spawn
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
-    OS,
     ManagedFileSnapshots,
     ManagedFileWriteUnavailable,
-    current_os,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -80,14 +84,9 @@ from ucode.ui import print_note, print_success, print_warning
 
 from .args import LaunchOptions, has_explicit_model_arg
 
-GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
 # If set, Claude Code launches in headless mode instead of the interactive login flow.
 CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
-CLAUDE_CONFIG_DIR = Path.home() / ".claude"
-CLAUDE_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "ucode-settings.json"
 CLAUDE_MCP_CONFIG_PATH = Path.home() / ".claude.json"
-# The default model is stored in Claude's default user settings, not the ucode settings.
-CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
 CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
 WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
 MINIMUM_CLAUDE_VERSION = (2, 1, 259)
@@ -230,16 +229,6 @@ def _apply_managed_header_lines(
 def configured_paths(state: dict) -> list[str]:
     """The Claude config file ug writes; the OS-managed file is added by the dispatcher."""
     return [str(CLAUDE_SETTINGS_PATH)]
-
-
-def _managed_settings_path() -> Path | None:
-    """OS-specific location of Claude Code's enterprise managed-settings.json.
-    Returns None on unsupported platforms."""
-    if current_os() is OS.LINUX:
-        return Path("/etc/claude-code/managed-settings.json")
-    if current_os() is OS.MACOS:
-        return Path("/Library/Application Support/ClaudeCode/managed-settings.json")
-    return None
 
 
 def _parse_managed_settings(text: str) -> dict:

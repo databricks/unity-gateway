@@ -2183,15 +2183,7 @@ def claude_router_hook_cmd(
         return
     if event == "session-start":
         record_session_start(payload)
-        warning = smart_routing_v2.check_routed_agents_registered_or_warn(
-            payload,
-            model or [],
-            [
-                claude_agent.CLAUDE_USER_SETTINGS_PATH,
-                claude_agent.CLAUDE_SETTINGS_PATH,
-                claude_agent._managed_settings_path(),
-            ],
-        )
+        warning = smart_routing_v2.check_routed_agents_registered_or_warn(payload, model or [])
         if warning:
             sys.stdout.write(json.dumps({"systemMessage": warning}))
         return

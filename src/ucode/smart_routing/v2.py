@@ -15,13 +15,18 @@ from collections.abc import Callable, MutableMapping
 from pathlib import Path
 from typing import NoReturn, TextIO
 
+from ucode.claude_settings_paths import (
+    CLAUDE_SETTINGS_PATH,
+    CLAUDE_USER_SETTINGS_PATH,
+    managed_settings_path,
+)
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
     custom_catalog_path,
 )
 from ucode.config_io import APP_DIR, read_json_safe, read_toml_safe, write_json_file
-from ucode.constants import LOOPBACK_HOST
+from ucode.constants import GATEWAY_MODEL_DISCOVERY_ENV_VAR, LOOPBACK_HOST
 from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
 from ucode.databricks import (
     AnthropicModelCatalog,
@@ -340,7 +345,6 @@ def _route_claude_prompt(
 def check_routed_agents_registered_or_warn(
     payload: dict,
     available_models: list[str],
-    persistent_settings: list[Path | None],
     claude_command: str | None = None,
     claude_launcher: str | None = None,
 ) -> str | None:
@@ -365,7 +369,7 @@ def check_routed_agents_registered_or_warn(
             "claude_launched_by": claude_launcher.split(" -", 1)[0] if claude_launcher else None,
             "claude_settings": settings.group(1) if settings else None,
             "claude_has_agents_flag": "--agents" in (claude_command or ""),
-            "persistent_router_hooks": _persistent_router_hook_files(persistent_settings),
+            "persistent_router_hooks": _persistent_router_hook_files(),
             "expected": expected,
             "registered": sorted(
                 name for name in registered if name.startswith(CLAUDE_ROUTED_AGENT_PREFIX)
@@ -412,10 +416,10 @@ def _process_command(pid: int) -> tuple[int, str] | None:
     return int(fields[0]), fields[1].strip()
 
 
-def _persistent_router_hook_files(paths: list[Path | None]) -> list[str]:
+def _persistent_router_hook_files() -> list[str]:
     """Persistent Claude settings that still carry ucode router hooks (left by older ucode)."""
     found = []
-    for path in paths:
+    for path in (CLAUDE_USER_SETTINGS_PATH, CLAUDE_SETTINGS_PATH, managed_settings_path()):
         if path is None:
             continue
         hooks = read_json_safe(path).get("hooks")
@@ -543,7 +547,6 @@ def launch_claude(
     model_name: Callable[[str], str],
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
-    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
     from ucode.smart_routing import claude_pty
 
     workspace = state.get("workspace")
