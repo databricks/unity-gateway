@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
 import ucode.skills_api as sa
@@ -339,6 +342,104 @@ class TestFetchSkillBundle:
 
         assert bundle is None
         assert reason == "HTTP 500 Server Error"
+
+    def test_concurrent_bundle_assembles_correctly(self, monkeypatch):
+        paths = [f"file_{i}.md" for i in range(10)]
+        content_map = {p: f"content {i}".encode() for i, p in enumerate(paths)}
+        monkeypatch.setattr(sa, "list_skill_files", lambda *a, **k: (paths, None))
+        monkeypatch.setattr(
+            sa, "fetch_skill_file", lambda ws, tok, c, s, leaf, rel: (content_map[rel], None)
+        )
+
+        bundle, reason = sa.fetch_skill_bundle(WS, "token", "main", "default", "triage")
+
+        assert reason is None
+        assert bundle == content_map
+
+    def test_any_file_failure_returns_none_not_partial(self, monkeypatch):
+        paths = ["a.md", "b.md", "c.md", "bad.md"]
+        monkeypatch.setattr(sa, "list_skill_files", lambda *a, **k: (paths, None))
+        monkeypatch.setattr(
+            sa,
+            "fetch_skill_file",
+            lambda ws, tok, c, s, leaf, rel: (
+                (None, "HTTP 500") if rel == "bad.md" else (b"ok", None)
+            ),
+        )
+
+        bundle, reason = sa.fetch_skill_bundle(WS, "token", "main", "default", "triage")
+
+        assert bundle is None
+        assert reason == "HTTP 500"
+
+    def test_listing_failure_does_not_call_fetch(self, monkeypatch):
+        fetched = []
+        monkeypatch.setattr(sa, "list_skill_files", lambda *a, **k: ([], "listing failed"))
+        monkeypatch.setattr(
+            sa, "fetch_skill_file", lambda *a, **k: fetched.append(a) or (b"x", None)
+        )
+
+        bundle, reason = sa.fetch_skill_bundle(WS, "token", "main", "default", "triage")
+
+        assert bundle is None
+        assert reason == "listing failed"
+        assert fetched == []
+
+    def test_concurrency_cap_never_exceeded(self, monkeypatch):
+        paths = [f"file_{i}.md" for i in range(50)]
+        monkeypatch.setattr(sa, "list_skill_files", lambda *a, **k: (paths, None))
+
+        counter_lock = threading.Lock()
+        state = {"in_flight": 0, "max_in_flight": 0}
+
+        def fake_fetch(ws, tok, c, s, leaf, rel):
+            with counter_lock:
+                state["in_flight"] += 1
+                state["max_in_flight"] = max(state["max_in_flight"], state["in_flight"])
+            time.sleep(0.005)
+            with counter_lock:
+                state["in_flight"] -= 1
+            return b"data", None
+
+        monkeypatch.setattr(sa, "fetch_skill_file", fake_fetch)
+
+        bundle, reason = sa.fetch_skill_bundle(WS, "token", "main", "default", "triage")
+
+        assert reason is None
+        assert len(bundle) == 50
+        assert state["max_in_flight"] <= sa._MAX_CONCURRENT_FILE_DOWNLOADS
+
+    def test_failure_returns_before_blocked_fetches_complete(self, monkeypatch):
+        blocker = threading.Event()
+        paths = ["fail.md", "slow_a.md", "slow_b.md"]
+        monkeypatch.setattr(sa, "list_skill_files", lambda *a, **k: (paths, None))
+
+        def fake_fetch(ws, tok, c, s, leaf, rel):
+            if rel == "fail.md":
+                return None, "HTTP 500"
+            blocker.wait()
+            return b"data", None
+
+        monkeypatch.setattr(sa, "fetch_skill_file", fake_fetch)
+
+        result = [None]
+
+        def run():
+            result[0] = sa.fetch_skill_bundle(WS, "token", "main", "default", "triage")
+
+        t = threading.Thread(target=run)
+        t.start()
+        try:
+            t.join(timeout=2.0)
+            assert not t.is_alive(), (
+                "fetch_skill_bundle did not return within 2s — fast-fail broken"
+            )
+            bundle, reason = result[0]
+            assert bundle is None
+            assert reason == "HTTP 500"
+        finally:
+            blocker.set()
+            t.join()
 
 
 class TestGetSkill:

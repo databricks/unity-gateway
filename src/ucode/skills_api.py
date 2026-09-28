@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
@@ -23,6 +24,9 @@ from ucode.databricks import (
 from ucode.ui import print_warning
 
 SKILL_FILES_API_PREFIX = "Skills"
+
+_MAX_CONCURRENT_FILE_DOWNLOADS = 32
+_file_download_slots = threading.BoundedSemaphore(_MAX_CONCURRENT_FILE_DOWNLOADS)
 
 # Wall-clock budget for the workspace-wide skill walk; a slow workspace degrades
 # to partial results instead of hanging the picker.
@@ -267,19 +271,28 @@ def fetch_skill_bundle(
 ) -> tuple[dict[str, bytes] | None, str | None]:
     """Fetch a whole skill bundle as ``{relative_path: bytes}``.
 
-    Lists the skill's files then fetches each one. All-or-nothing: a non-None
+    Lists the skill's files then fetches them concurrently. All-or-nothing: a non-None
     reason (and None bundle) means the listing or any file fetch failed, so a
     partially-downloaded skill is never written to disk.
     """
     relative_paths, reason = list_skill_files(workspace, token, catalog, schema, securable)
     if reason:
         return None, reason
+
+    def fetch(path: str) -> tuple[str, tuple[bytes | None, str | None]]:
+        with _file_download_slots:
+            return path, fetch_skill_file(workspace, token, catalog, schema, securable, path)
+
     bundle: dict[str, bytes] = {}
-    for relative_path in relative_paths:
-        content, reason = fetch_skill_file(
-            workspace, token, catalog, schema, securable, relative_path
-        )
-        if content is None:
-            return None, reason
-        bundle[relative_path] = content
-    return bundle, None
+    pool = ThreadPoolExecutor(
+        max_workers=max(1, min(_MAX_CONCURRENT_FILE_DOWNLOADS, len(relative_paths)))
+    )
+    try:
+        for future in as_completed([pool.submit(fetch, path) for path in relative_paths]):
+            path, (content, file_reason) = future.result()
+            if content is None:
+                return None, file_reason
+            bundle[path] = content
+        return bundle, None
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
