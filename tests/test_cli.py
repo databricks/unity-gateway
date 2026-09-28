@@ -3359,6 +3359,111 @@ class TestConfigureAgentFlag:
         mock_cfg.assert_not_called()
 
 
+class TestConfigureFileFlag:
+    """--config-file / -f on `ug configure`."""
+
+    @staticmethod
+    def _claude_config() -> dict:
+        return {
+            "spec_version": 1,
+            "enabled_agents": [
+                {
+                    "agent": "CODING_AGENT_CLAUDE_CODE",
+                    "config": {
+                        "models": {"model_services": ["system.ai.claude-sonnet-4-6"]},
+                        "default_models": {"default_model": "system.ai.claude-sonnet-4-6"},
+                    },
+                }
+            ],
+        }
+
+    def test_config_file_calls_configure_with_file_manifest(self, tmp_path):
+        # Case 12: -f <valid file> (no --agent) -> configure_workspace_command called with
+        # file_manifest equal to the normalized manifest; exits 0.
+        import ucode.managed_source as ms
+
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(self._claude_config()), encoding="utf-8")
+        expected_manifest = ms.load_file_managed_config(str(path))
+
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(app, ["configure", "-f", str(path)])
+
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_called_once_with(file_manifest=expected_manifest)
+
+    def test_config_file_and_agent_are_mutually_exclusive(self, tmp_path):
+        # Case 13: -f <file> --agent claude -> exit nonzero with mutual-exclusion error;
+        # configure_workspace_command NOT called.
+        path = tmp_path / "config.json"
+        path.write_text("{}")  # path must exist to reach the mutual-exclusion check
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(app, ["configure", "-f", str(path), "--agent", "claude"])
+
+        assert result.exit_code != 0
+        assert "--config-file applies to every agent" in _strip_ansi(result.output)
+        mock_cfg.assert_not_called()
+
+    def test_config_file_and_agents_are_mutually_exclusive(self, tmp_path):
+        # Case 14: -f <file> --agents claude,codex -> exits nonzero (mutual exclusion).
+        path = tmp_path / "config.json"
+        path.write_text("{}")
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(app, ["configure", "-f", str(path), "--agents", "claude,codex"])
+
+        assert result.exit_code != 0
+        assert "--config-file applies to every agent" in _strip_ansi(result.output)
+        mock_cfg.assert_not_called()
+
+    def test_missing_config_file_exits_nonzero(self, tmp_path):
+        # Case 15a: -f <missing file> -> exits nonzero; configure_workspace_command NOT called.
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(app, ["configure", "-f", str(tmp_path / "does_not_exist.json")])
+
+        assert result.exit_code != 0
+        mock_cfg.assert_not_called()
+
+    def test_malformed_config_file_exits_nonzero(self, tmp_path):
+        # Case 15b: -f <malformed JSON file> -> exits nonzero; configure_workspace_command NOT called.
+        path = tmp_path / "bad.json"
+        path.write_text("{not valid json", encoding="utf-8")
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(app, ["configure", "-f", str(path)])
+
+        assert result.exit_code != 0
+        mock_cfg.assert_not_called()
+
+    def test_config_file_with_no_known_agents_exits_nonzero(self, tmp_path):
+        # Case 16: -f <file with empty enabled_agents> -> exits nonzero with the
+        # "enables no known coding agents" error; configure_workspace_command NOT called.
+        path = tmp_path / "empty.json"
+        path.write_text(json.dumps({"spec_version": 1, "enabled_agents": []}), encoding="utf-8")
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(app, ["configure", "-f", str(path)])
+
+        assert result.exit_code != 0
+        assert "enables no known coding agents" in _strip_ansi(result.output)
+        mock_cfg.assert_not_called()
+
+
 class TestConfigureMcpFlag:
     def test_mcp_with_agents_configures_then_registers_services(self):
         with (

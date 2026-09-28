@@ -747,8 +747,15 @@ def _cached_result_if_fresh(workspace: str) -> ManagedConfigResult | None:
     return None
 
 
-def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> ManagedConfigResult:
+def refresh_managed_config(
+    state: dict, *, force_refresh: bool = False, file_manifest: dict | None = None
+) -> ManagedConfigResult:
     """Fetch the workspace's managed config and persist it as a :class:`ManagedConfigResult`.
+
+    When ``file_manifest`` is provided it is an already-validated, already-normalized manifest from a
+    ``--config-file`` argument.  It is returned immediately as the result, bypassing the TTL cache,
+    the control-plane fetch, and the on-disk persistence — the file is never written to
+    ``managed-config.json`` and is re-read from disk on every invocation.
 
     Runs on every launch so a developer picks up an admin's edits without re-running
     ``ucode configure``. A launch reuses the last read when it is younger than
@@ -772,6 +779,10 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     case (returned manifest is None), so a launch doesn't re-apply a policy the workspace has turned
     off and ``ug configure`` doesn't route into a managed-setup flow that would dead-end.
     """
+    if file_manifest is not None:
+        # Explicit --config-file input: already validated and normalized by the caller. Applied
+        # exactly like a fetched config, but never cached and never subject to the TTL or fallback.
+        return ManagedConfigResult(file_manifest, False)
     workspace = state.get("workspace")
     if not workspace:
         return ManagedConfigResult(None, False)

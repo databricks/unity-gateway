@@ -665,6 +665,30 @@ class TestRefreshManagedConfig:
         assert result is None
         assert flag is False
 
+    def test_file_manifest_returns_immediately_with_no_workspace(self, monkeypatch):
+        # Case 10: when file_manifest is set, refresh_managed_config returns that manifest and
+        # feature_disabled=False regardless of the state dict (no workspace needed).
+        monkeypatch.setattr(
+            mc_mod,
+            "get_managed_config",
+            lambda ws, tok: pytest.fail("should not fetch when file_manifest is set"),
+        )
+        sentinel = {"enabled_agents": {"claude": {}}, "_sentinel": True}
+        manifest, feature_disabled = refresh_managed_config({}, file_manifest=sentinel)
+        assert manifest is sentinel
+        assert feature_disabled is False
+
+    def test_file_manifest_never_writes_cache(self, tmp_path, monkeypatch):
+        # Case 11: file_manifest bypasses the TTL cache and on-disk persistence entirely —
+        # save_managed_state must never be called and the cache file must stay untouched.
+        cache_path = tmp_path / "managed-config.json"
+        monkeypatch.setattr(mc_mod, "MANAGED_CONFIG_PATH", cache_path)
+        saved: list = []
+        monkeypatch.setattr(mc_mod, "save_managed_state", lambda *a, **kw: saved.append(a))
+        refresh_managed_config({}, file_manifest={"enabled_agents": {"claude": {}}})
+        assert saved == []
+        assert not cache_path.exists()
+
 
 NOW = datetime(2026, 9, 16, 12, 0, 0, tzinfo=UTC)
 

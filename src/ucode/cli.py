@@ -104,6 +104,7 @@ from ucode.managed_resolve import (
     recommended_agent,
     resolve_state,
 )
+from ucode.managed_source import load_file_managed_config
 from ucode.mcp import (
     MCP_CLIENTS,
     SKILLS_MCP_KIND,
@@ -793,12 +794,16 @@ def configure_workspace_command(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
+    file_manifest: dict | None = None,
 ) -> int:
     """Configure a workspace while sharing one lazy privileged settings session.
 
     Agent setup and managed MCP reconciliation can update the same machine-wide Claude/Codex
     files at different points in the flow. Keeping one command-scoped worker means every changed
     file is handled under the same sudo authentication; a no-op configure never starts it.
+
+    ``file_manifest`` is an explicit ``--config-file`` config that stands in for the workspace's
+    managed config, applied to every agent it enables (see :func:`refresh_managed_config`).
     """
     with managed_write_session():
         return _configure_workspace_command(
@@ -809,6 +814,7 @@ def configure_workspace_command(
             databricks_ai_tools_enabled=databricks_ai_tools_enabled,
             custom_oauth=custom_oauth,
             offer_optional_setup=offer_optional_setup,
+            file_manifest=file_manifest,
         )
 
 
@@ -821,6 +827,7 @@ def _configure_workspace_command(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
+    file_manifest: dict | None = None,
 ) -> int:
     if tool is not None and selected_tools is not None:
         raise RuntimeError("Use either --agent or --agents, not both.")
@@ -883,8 +890,10 @@ def _configure_workspace_command(
 
     # A published managed config means the admin dictates the setup: apply it to every enabled agent
     # now rather than prompting the developer to pick. Configure always reads fresh so it never
-    # applies a config the admin has since changed.
-    managed, _ = refresh_managed_config(state, force_refresh=True)
+    # applies a config the admin has since changed. An explicit --config-file (file_manifest) stands
+    # in for that fetch and drives the same every-enabled-agent path; when it is None the ordinary
+    # fetch runs unchanged so no-file configure keeps its exact behavior.
+    managed, _ = refresh_managed_config(state, force_refresh=True, file_manifest=file_manifest)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
         configured_tools: list[str] = []
@@ -3375,6 +3384,16 @@ def configure(
             help="Configure a comma-separated list of agents without prompting (e.g. claude,codex).",
         ),
     ] = None,
+    config_file: Annotated[
+        str | None,
+        typer.Option(
+            "--config-file",
+            "-f",
+            help="Apply a local CodingAgentConfig JSON file (the published GET wire shape) instead "
+            "of fetching the workspace's managed config. Configures every enabled_agents entry. "
+            "Cannot be combined with --agent/--agents.",
+        ),
+    ] = None,
     workspace: Annotated[
         str | None,
         typer.Option(
@@ -3513,6 +3532,10 @@ def configure(
         install_databricks_cli()
         if agent is not None and agents is not None:
             raise RuntimeError("Use either --agent or --agents, not both.")
+        if config_file is not None and (agent is not None or agents is not None):
+            raise RuntimeError(
+                "--config-file applies to every agent the file enables; drop --agent/--agents."
+            )
         # --workspaces / --profiles are deprecated aliases of the singular flags.
         if workspace is not None and workspaces is not None:
             raise RuntimeError("Use either --workspace or --workspaces, not both.")
@@ -3546,7 +3569,25 @@ def configure(
         # MCP setup prompt so flag-driven / scripted runs are never interrupted.
         fully_interactive = False
         combined_optional_setup = False
-        if agent is not None:
+        if config_file is not None:
+            # Read and validate the file once, before any login or config writes: an invalid file
+            # fails here with no partial setup. It stands in for the managed-config fetch, so the
+            # managed-driven path below applies it to every agent the file enables.
+            file_manifest = load_file_managed_config(config_file)
+            if not managed_enabled_tools(file_manifest):
+                raise RuntimeError(
+                    "--config-file enables no known coding agents; add at least one "
+                    "enabled_agents entry (e.g. claude or codex)."
+                )
+            if workspace_entries is None:
+                configure_workspace_command(file_manifest=file_manifest, **skip_kwargs)
+            else:
+                configure_workspace_command(
+                    workspaces=workspace_entries,
+                    file_manifest=file_manifest,
+                    **skip_kwargs,
+                )
+        elif agent is not None:
             tool = normalize_tool(agent)
             install_tool_binary(
                 tool,
