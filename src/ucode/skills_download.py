@@ -46,7 +46,7 @@ from ucode.ui import (
 SKILL_BASE_DIR_NAMES = (".claude/skills", ".agents/skills")
 
 # Parallel skill fetches per schema; writes stay sequential (they prompt).
-_MAX_FETCH_WORKERS = 8
+_MAX_FETCH_WORKERS = 16
 
 
 # --- On-disk writer --------------------------------------------------------
