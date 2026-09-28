@@ -141,15 +141,15 @@ def first_prompt_routing_enabled(env: MutableMapping[str, str] | None = None) ->
 
 
 def savings_statusline_enabled(env: MutableMapping[str, str] | None = None) -> bool:
-    """Whether a smart-routed Claude launch shows the estimated-savings statusline row."""
+    """Whether a Claude launch shows the smart-routing status row (default on; ``0`` opts out)."""
     source = os.environ if env is None else env
-    return source.get(ENABLE_SAVINGS_STATUSLINE_ENV_VAR) == "1"
+    return source.get(ENABLE_SAVINGS_STATUSLINE_ENV_VAR, "1") != "0"
 
 
 def _install_savings_statusline(
     settings: dict, user_settings_path: Path, *, price_cache: Path, baseline_session_start: bool
 ) -> None:
-    """Point the per-launch ``statusLine`` at the savings row, wrapping the user's own statusline.
+    """Point the per-launch ``statusLine`` at the smart-routing row, wrapping the user's own one.
 
     The row reads per-token prices from ``price_cache``, since a statusline refresh can't wait on
     the network; ``_start_savings_price_refresh`` fills it.

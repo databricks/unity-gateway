@@ -1,7 +1,8 @@
-"""Claude Code statusline showing an estimate of what smart routing saved this session.
+"""Claude Code statusline for smart routing: a one-line row with the orchestrator plugin version,
+whether routing is on, and an estimate of what routing saved this session.
 
-``v2.launch_claude`` installs this as the session's ``statusLine`` command, wrapping any statusline
-the user already had. The estimate assumes every token the session used, main agent and subagents
+``v2`` installs this as the session's ``statusLine`` command, wrapping any statusline the user
+already had. The savings estimate assumes every token the session used, main agent and subagents
 alike, would otherwise have run on the baseline main-agent model::
 
     saved = sum(tokens * price(baseline)) - sum(tokens * price(model that served them))
@@ -48,6 +49,12 @@ _STATE_VERSION = 1
 _PRESERVED_STATUS_LINE_KEYS = ("padding", "refreshInterval", "hideVimModeIndicator")
 _SAFE_SESSION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _CENT = Decimal("0.01")
+# The Claude Code plugin whose skill drives smart routing's subagent delegation; the row shows its
+# installed version. ug doesn't install it, so the row reads whatever Claude Code recorded on disk.
+_ORCHESTRATOR_PLUGIN_NAME = "model-orchestrator"
+# A trailing 1M-context marker in a model's display name (e.g. "Opus 5.5 (1M context)") is a context
+# window, not a price, so the row drops it to stay concise.
+_CONTEXT_LABEL_RE = re.compile(r"\s*(?:\(1m context\)|\[1m\])\s*$", re.IGNORECASE)
 
 
 def effective_status_line(
@@ -85,7 +92,7 @@ def savings_status_line(
     price_cache: Path,
     baseline_session_start: bool,
 ) -> dict:
-    """The ``statusLine`` setting that prints ``original``'s row(s), then the savings row."""
+    """The ``statusLine`` setting that prints ``original``'s row(s), then the smart-routing row."""
     argv = [python, "-P", "-m", MODULE, "--state-dir", str(state_dir)]
     argv += ["--price-cache", str(price_cache)]
     if baseline_session_start:
@@ -306,8 +313,45 @@ def _transcript_paths(transcript: Path) -> list[Path]:
     return [transcript, *sorted(subagents.glob("agent-*.jsonl"))]
 
 
-def format_savings(saved: Decimal, baseline: Decimal, baseline_label: str) -> str:
-    """The row text; a negative ``saved`` (routing chose pricier models) is shown as such."""
+def _claude_config_dir() -> Path:
+    """Claude Code's config directory, honoring ``CLAUDE_CONFIG_DIR`` as Claude Code does."""
+    configured = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    return Path(configured) if configured else Path.home() / ".claude"
+
+
+def orchestrator_plugin_version(config_dir: Path | None = None) -> str | None:
+    """The installed ``model-orchestrator`` plugin version, or None when it can't be determined.
+
+    ug doesn't install the plugin, so this reads whatever Claude Code recorded in
+    ``plugins/installed_plugins.json``; a missing file, unexpected shape, or absent plugin yields
+    None and the row simply omits the version rather than inventing one.
+    """
+    base = config_dir if config_dir is not None else _claude_config_dir()
+    try:
+        payload = json.loads((base / "plugins" / "installed_plugins.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    plugins = payload.get("plugins") if isinstance(payload, dict) else None
+    if not isinstance(plugins, dict):
+        return None
+    for key, records in plugins.items():
+        # Keys are "<name>@<marketplace>"; match on the name so the marketplace can vary.
+        if not isinstance(key, str) or key.split("@", 1)[0] != _ORCHESTRATOR_PLUGIN_NAME:
+            continue
+        for record in records if isinstance(records, list) else []:
+            version = record.get("version") if isinstance(record, dict) else None
+            if isinstance(version, str) and version and version != "unknown":
+                return version
+    return None
+
+
+def _short_label(display_name: str) -> str:
+    """Drop a trailing 1M-context marker from a model label; keep the name otherwise."""
+    return _CONTEXT_LABEL_RE.sub("", display_name).strip() or display_name
+
+
+def _savings_segment(saved: Decimal, baseline: Decimal, baseline_label: str) -> str:
+    """The savings state segment; a negative ``saved`` (pricier routing) says so in words."""
     percent = Decimal(0)
     if baseline > 0:
         percent = (abs(saved) / baseline * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP)
@@ -318,17 +362,17 @@ def format_savings(saved: Decimal, baseline: Decimal, baseline_label: str) -> st
         else f"~${magnitude.quantize(_CENT, rounding=ROUND_HALF_UP):,}"
     )
     if saved >= 0:
-        return f"Smart routing saved {amount} ({percent}%) vs {baseline_label}"
-    return f"Smart routing cost {amount} more ({percent}%) than {baseline_label}"
+        return f"saved {amount} ({percent}%) vs {baseline_label}"
+    return f"cost {amount} more ({percent}%) than {baseline_label}"
 
 
-def render(
+def _compute_savings(
     raw: str, *, state_dir: Path, price_cache: Path, baseline_session_start: bool
 ) -> str | None:
-    """The savings row for one statusline payload, or None when there is nothing to claim.
+    """The savings segment for one statusline payload, or None when there is nothing to claim.
 
-    Hidden until some response ran on a model other than the baseline, and whenever any response
-    can't be priced: an undercounted figure would be worse than none.
+    None until some response ran on a model other than the baseline, and whenever any response
+    can't be priced: an undercounted figure would be worse than none. The caller then shows "on".
     """
     try:
         payload = json.loads(raw)
@@ -383,12 +427,31 @@ def render(
 
     if unpriced or rerouted <= 0 or baseline_total <= 0:
         return None
-    return format_savings(baseline_total - actual_total, baseline_total, baseline["display_name"])
+    return _savings_segment(
+        baseline_total - actual_total, baseline_total, _short_label(baseline["display_name"])
+    )
+
+
+def render(raw: str, *, state_dir: Path, price_cache: Path, baseline_session_start: bool) -> str:
+    """The one-line smart-routing row: the plugin version, then any savings.
+
+    Always returns a line. The version is omitted when it can't be read; the state is the savings
+    estimate once one can be computed, or "on" until then.
+    """
+    version = orchestrator_plugin_version()
+    prefix = "Smart routing" + (f" v{version}" if version else "")
+    segment = _compute_savings(
+        raw,
+        state_dir=state_dir,
+        price_cache=price_cache,
+        baseline_session_start=baseline_session_start,
+    )
+    return f"{prefix} · {segment if segment is not None else 'on'}"
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog=MODULE, description="Print the smart-routing savings row for a Claude Code session."
+        prog=MODULE, description="Print the smart-routing status row for a Claude Code session."
     )
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--price-cache", type=Path, required=True)
@@ -401,9 +464,9 @@ def main(argv: list[str] | None = None) -> int:
             price_cache=args.price_cache,
             baseline_session_start=args.baseline_session_start,
         )
-        if line:
-            sys.stdout.write(line + "\n")
-    except Exception:  # noqa: BLE001 - a savings error must never break the user's status row
+        # Write bytes so the middle-dot survives a non-UTF-8 stdout locale.
+        sys.stdout.buffer.write((line + "\n").encode("utf-8"))
+    except Exception:  # noqa: BLE001 - a status error must never break the user's status row
         return 0
     return 0
 

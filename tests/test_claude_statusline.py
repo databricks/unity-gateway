@@ -1,4 +1,4 @@
-"""Tests for the Claude Code smart-routing savings statusline."""
+"""Tests for the Claude Code smart-routing statusline row."""
 
 from __future__ import annotations
 
@@ -63,6 +63,40 @@ def append(path: Path, *records: dict, trailing_newline: bool = True) -> None:
         handle.write(text + ("\n" if trailing_newline else ""))
 
 
+def write_plugin_version(
+    config_dir: Path,
+    version: str,
+    *,
+    name: str = "model-orchestrator",
+    marketplace: str = "example-marketplace",
+) -> None:
+    """Write a Claude Code ``installed_plugins.json`` recording ``name`` at ``version``."""
+    plugins_dir = config_dir / "plugins"
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+    (plugins_dir / "installed_plugins.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {f"{name}@{marketplace}": [{"scope": "user", "version": version}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.fixture(autouse=True)
+def claude_config_dir(tmp_path, monkeypatch) -> Path:
+    """Point the row's plugin-version lookup at an empty per-test config dir (no version by default).
+
+    The row reads Claude Code's plugin state via ``CLAUDE_CONFIG_DIR``; isolating it keeps the
+    developer's real installed plugins out of the assertions.
+    """
+    config_dir = tmp_path / "claude-config"
+    config_dir.mkdir(exist_ok=True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    return config_dir
+
+
 class Session:
     """One Claude Code session's transcript layout plus ug's statusline state."""
 
@@ -82,7 +116,7 @@ class Session:
             {"session_id": self.session_id, "transcript_path": str(self.transcript), "model": model}
         )
 
-    def render(self, model: dict = OPUS, *, baseline_session_start: bool = False) -> str | None:
+    def render(self, model: dict = OPUS, *, baseline_session_start: bool = False) -> str:
         return claude_statusline.render(
             self.payload(model),
             state_dir=self.state_dir,
@@ -108,7 +142,7 @@ class TestRender:
         append(session.subagent("a1"), response("msg-sub", SONNET_ID, SUBAGENT_USAGE))
 
         # Baseline $0.38005 (all tokens at Opus) - actual $0.19705 = $0.183 saved (48%).
-        assert session.render() == "Smart routing saved ~$0.18 (48%) vs Opus 4.8"
+        assert session.render() == "Smart routing · saved ~$0.18 (48%) vs Opus 4.8"
 
     def test_prices_a_served_bedrock_id_with_its_system_ai_rate(self, session):
         haiku = ModelPrice(
@@ -128,7 +162,7 @@ class TestRender:
         )
 
         # $0.061 on Haiku (1k*1 + 20k*2 + 4k*5) vs $0.305 at Opus rates.
-        assert session.render() == "Smart routing saved ~$0.24 (80%) vs Opus 4.8"
+        assert session.render() == "Smart routing · saved ~$0.24 (80%) vs Opus 4.8"
 
     def test_counts_a_response_split_across_records_once(self, session):
         append(session.subagent("a1"), response("msg-sub", SONNET_ID, SUBAGENT_USAGE))
@@ -136,8 +170,8 @@ class TestRender:
         append(session.subagent("a2"), response("msg-other", SONNET_ID, SUBAGENT_USAGE, "text"))
         append(session.subagent("a2"), response("msg-other", SONNET_ID, SUBAGENT_USAGE, "tool_use"))
 
-        assert once == "Smart routing saved ~$0.18 (60%) vs Opus 4.8"
-        assert session.render() == "Smart routing saved ~$0.37 (60%) vs Opus 4.8"
+        assert once == "Smart routing · saved ~$0.18 (60%) vs Opus 4.8"
+        assert session.render() == "Smart routing · saved ~$0.37 (60%) vs Opus 4.8"
 
     def test_reads_transcripts_incrementally(self, session):
         append(session.subagent("a1"), response("msg-sub", SONNET_ID, SUBAGENT_USAGE))
@@ -148,49 +182,49 @@ class TestRender:
             trailing_newline=False,
         )
 
-        assert first == "Smart routing saved ~$0.18 (60%) vs Opus 4.8"
+        assert first == "Smart routing · saved ~$0.18 (60%) vs Opus 4.8"
         # A line Claude Code is still writing is left for the next refresh.
         assert session.render() == first
         with session.subagent("a1").open("a", encoding="utf-8") as handle:
             handle.write("\n")
-        assert session.render() == "Smart routing saved ~$0.37 (60%) vs Opus 4.8"
+        assert session.render() == "Smart routing · saved ~$0.37 (60%) vs Opus 4.8"
 
     def test_starts_over_when_a_transcript_is_rewritten(self, session):
         append(
             session.subagent("a1"),
             *(response(f"m{i}", SONNET_ID, SUBAGENT_USAGE) for i in range(3)),
         )
-        assert session.render() == "Smart routing saved ~$0.55 (60%) vs Opus 4.8"
+        assert session.render() == "Smart routing · saved ~$0.55 (60%) vs Opus 4.8"
         session.subagent("a1").write_text(
             json.dumps(response("m0", SONNET_ID, SUBAGENT_USAGE)) + "\n"
         )
 
-        assert session.render() == "Smart routing saved ~$0.18 (60%) vs Opus 4.8"
+        assert session.render() == "Smart routing · saved ~$0.18 (60%) vs Opus 4.8"
 
     def test_shows_a_net_cost_increase_honestly(self, session):
         append(session.transcript, response("msg-main", SONNET_ID, MAIN_USAGE))
         append(session.subagent("a1"), response("msg-sub", OPUS_ID, SUBAGENT_USAGE))
 
         # Baseline $0.152 (all at Sonnet) vs actual $0.335: routing cost $0.183 more.
-        assert session.render(SONNET) == "Smart routing cost ~$0.18 more (120%) than Sonnet 5"
+        assert session.render(SONNET) == "Smart routing · cost ~$0.18 more (120%) than Sonnet 5"
 
     def test_baseline_follows_the_main_model_the_user_chose(self, session):
         append(session.subagent("a1"), response("msg-sub", SONNET_ID, SUBAGENT_USAGE))
 
-        assert session.render(OPUS) == "Smart routing saved ~$0.18 (60%) vs Opus 4.8"
-        # Nothing ran on a model other than a Sonnet baseline, so there is nothing to claim.
-        assert session.render(SONNET) is None
+        assert session.render(OPUS) == "Smart routing · saved ~$0.18 (60%) vs Opus 4.8"
+        # Nothing ran on a model other than a Sonnet baseline, so there is nothing to claim yet.
+        assert session.render(SONNET) == "Smart routing · on"
 
     def test_first_prompt_routing_uses_the_pre_routing_model(self, session):
-        # The first refresh happens before the first prompt is routed.
-        assert session.render(OPUS, baseline_session_start=True) is None
+        # The first refresh happens before the first prompt is routed: nothing to claim yet.
+        assert session.render(OPUS, baseline_session_start=True) == "Smart routing · on"
         append(session.transcript, response("msg-main", SONNET_ID, MAIN_USAGE))
 
         # Main-agent tokens the router moved to Sonnet count toward savings too:
         # $0.07505 at Opus vs 10*2 + 100k*0.2 + 1k*10 = $0.03002 at Sonnet.
         assert (
             session.render(SONNET, baseline_session_start=True)
-            == "Smart routing saved ~$0.05 (60%) vs Opus 4.8"
+            == "Smart routing · saved ~$0.05 (60%) vs Opus 4.8"
         )
 
     def test_reprices_when_the_price_cache_refreshes(self, session):
@@ -211,26 +245,34 @@ class TestRender:
             now=2.0,
         )
 
-        assert before == "Smart routing saved ~$0.18 (60%) vs Opus 4.8"
-        assert session.render() == "Smart routing saved <$0.01 (0%) vs Opus 4.8"
+        assert before == "Smart routing · saved ~$0.18 (60%) vs Opus 4.8"
+        assert session.render() == "Smart routing · saved <$0.01 (0%) vs Opus 4.8"
 
     @pytest.mark.parametrize("model", ["system.ai.claude-mystery-1", ""])
-    def test_hidden_when_any_response_cannot_be_priced(self, session, model):
+    def test_shows_on_when_a_response_cannot_be_priced(self, session, model):
         append(session.subagent("a1"), response("msg-sub", SONNET_ID, SUBAGENT_USAGE))
         append(session.subagent("a2"), response("msg-x", model, SUBAGENT_USAGE))
 
-        assert session.render() is None
+        # An unpriceable response would undercount the estimate, so the row falls back to "on".
+        assert session.render() == "Smart routing · on"
 
-    def test_hidden_without_prices(self, session):
+    def test_shows_on_without_prices(self, session):
         session.price_cache.unlink()
         append(session.subagent("a1"), response("msg-sub", SONNET_ID, SUBAGENT_USAGE))
 
-        assert session.render() is None
+        assert session.render() == "Smart routing · on"
 
-    def test_hidden_when_the_baseline_model_is_unpriced(self, session):
+    def test_shows_on_when_the_baseline_model_is_unpriced(self, session):
         append(session.subagent("a1"), response("msg-sub", SONNET_ID, SUBAGENT_USAGE))
 
-        assert session.render({"id": "system.ai.claude-unknown", "display_name": "?"}) is None
+        model = {"id": "system.ai.claude-unknown", "display_name": "?"}
+        assert session.render(model) == "Smart routing · on"
+
+    def test_shows_the_orchestrator_plugin_version(self, session, claude_config_dir):
+        write_plugin_version(claude_config_dir, "0.4.4")
+        append(session.subagent("a1"), response("msg-sub", SONNET_ID, SUBAGENT_USAGE))
+
+        assert session.render() == "Smart routing v0.4.4 · saved ~$0.18 (60%) vs Opus 4.8"
 
     def test_ignores_responses_without_usage(self, session):
         append(
@@ -241,7 +283,7 @@ class TestRender:
         )
         append(session.subagent("a1"), response("msg-sub", SONNET_ID, SUBAGENT_USAGE))
 
-        assert session.render() == "Smart routing saved ~$0.18 (60%) vs Opus 4.8"
+        assert session.render() == "Smart routing · saved ~$0.18 (60%) vs Opus 4.8"
 
     @pytest.mark.parametrize(
         "raw",
@@ -253,7 +295,8 @@ class TestRender:
             json.dumps({"session_id": "s", "transcript_path": "/x.jsonl", "model": {}}),
         ],
     )
-    def test_malformed_payload_renders_nothing(self, session, raw):
+    def test_malformed_payload_still_shows_the_row(self, session, raw):
+        # No usable payload means no savings, but the version/state row still renders.
         assert (
             claude_statusline.render(
                 raw,
@@ -261,7 +304,7 @@ class TestRender:
                 price_cache=session.price_cache,
                 baseline_session_start=False,
             )
-            is None
+            == "Smart routing · on"
         )
 
     def test_unsafe_session_ids_do_not_escape_the_state_dir(self, tmp_path):
@@ -274,12 +317,76 @@ class TestRender:
         assert [path.name for path in session.state_dir.iterdir()] == [f"{hashed}.json"]
 
 
-class TestFormatSavings:
+class TestSavingsSegment:
     def test_rounds_to_cents_and_whole_percent(self):
         assert (
-            claude_statusline.format_savings(Decimal("1234.565"), Decimal("2469.13"), "Opus")
-            == "Smart routing saved ~$1,234.57 (50%) vs Opus"
+            claude_statusline._savings_segment(Decimal("1234.565"), Decimal("2469.13"), "Opus")
+            == "saved ~$1,234.57 (50%) vs Opus"
         )
+
+    def test_negative_reads_as_a_cost_increase(self):
+        assert (
+            claude_statusline._savings_segment(Decimal("-0.04"), Decimal("0.40"), "Opus 5.5")
+            == "cost ~$0.04 more (10%) than Opus 5.5"
+        )
+
+
+class TestOrchestratorPluginVersion:
+    def test_reads_the_installed_version(self, tmp_path):
+        write_plugin_version(tmp_path, "0.4.4")
+
+        assert claude_statusline.orchestrator_plugin_version(tmp_path) == "0.4.4"
+
+    def test_matches_regardless_of_marketplace_suffix(self, tmp_path):
+        write_plugin_version(tmp_path, "1.2.3", marketplace="some-other-marketplace")
+
+        assert claude_statusline.orchestrator_plugin_version(tmp_path) == "1.2.3"
+
+    def test_missing_file_is_none(self, tmp_path):
+        assert claude_statusline.orchestrator_plugin_version(tmp_path) is None
+
+    def test_skips_unknown_version_and_other_plugins(self, tmp_path):
+        (tmp_path / "plugins").mkdir()
+        (tmp_path / "plugins" / "installed_plugins.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "plugins": {
+                        "some-other-plugin@mp": [{"version": "9.9.9"}],
+                        "model-orchestrator@mp": [{"version": "unknown"}],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert claude_statusline.orchestrator_plugin_version(tmp_path) is None
+
+    def test_unexpected_shape_is_none(self, tmp_path):
+        (tmp_path / "plugins").mkdir()
+        (tmp_path / "plugins" / "installed_plugins.json").write_text("[]", encoding="utf-8")
+
+        assert claude_statusline.orchestrator_plugin_version(tmp_path) is None
+
+    def test_honors_claude_config_dir_env(self, tmp_path, monkeypatch):
+        write_plugin_version(tmp_path, "0.5.0")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+
+        assert claude_statusline.orchestrator_plugin_version() == "0.5.0"
+
+
+class TestShortLabel:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("Opus 5.5 (1M context)", "Opus 5.5"),
+            ("Opus 5.5 [1m]", "Opus 5.5"),
+            ("Sonnet 5", "Sonnet 5"),
+            ("(1M context)", "(1M context)"),
+        ],
+    )
+    def test_strips_a_trailing_context_marker(self, raw, expected):
+        assert claude_statusline._short_label(raw) == expected
 
 
 class TestStatusLineSetting:
@@ -311,7 +418,7 @@ class TestStatusLineSetting:
         user.unlink()
         assert effective({}) is None
 
-    def test_runs_only_the_savings_row_without_a_user_statusline(self, tmp_path):
+    def test_runs_only_the_status_row_without_a_user_statusline(self, tmp_path):
         setting = claude_statusline.savings_status_line(
             None,
             python="/opt/ug python/bin/python",
@@ -369,31 +476,34 @@ class TestWrappedCommand:
             input=session.payload(OPUS),
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=30,
             check=True,
         )
         return result.stdout
 
-    def test_prints_the_user_row_then_the_savings_row(self, shell, session):
+    def test_prints_the_user_row_then_the_status_row(self, shell, session):
         append(session.subagent("a1"), response("msg-sub", SONNET_ID, SUBAGENT_USAGE))
 
         # The user's command reads the same payload and prints without a trailing newline.
         original = 'sed -n \'s/.*"display_name": *"\\([^"]*\\)".*/\\1/p\' | tr -d \'\\n\''
         output = self.run(shell, session, original)
 
-        assert output == "Opus 4.8\nSmart routing saved ~$0.18 (60%) vs Opus 4.8\n"
+        assert output == "Opus 4.8\nSmart routing · saved ~$0.18 (60%) vs Opus 4.8\n"
 
-    def test_an_exit_in_the_user_command_does_not_skip_savings(self, shell, session):
+    def test_an_exit_in_the_user_command_does_not_skip_the_row(self, shell, session):
         append(session.subagent("a1"), response("msg-sub", SONNET_ID, SUBAGENT_USAGE))
 
         output = self.run(shell, session, "printf 'base\\n\\n'; exit 3")
 
-        assert output == "base\nSmart routing saved ~$0.18 (60%) vs Opus 4.8\n"
+        assert output == "base\nSmart routing · saved ~$0.18 (60%) vs Opus 4.8\n"
 
-    def test_empty_user_output_leaves_only_the_savings_row(self, shell, session):
+    def test_empty_user_output_leaves_only_the_status_row(self, shell, session):
         append(session.subagent("a1"), response("msg-sub", SONNET_ID, SUBAGENT_USAGE))
 
-        assert self.run(shell, session, "true") == "Smart routing saved ~$0.18 (60%) vs Opus 4.8\n"
+        assert (
+            self.run(shell, session, "true") == "Smart routing · saved ~$0.18 (60%) vs Opus 4.8\n"
+        )
 
 
 class TestStartupCost:

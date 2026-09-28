@@ -196,6 +196,14 @@ class TestSmartRoutingEnvVars:
         monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR)
         assert v2.first_prompt_routing_enabled()
 
+    def test_savings_statusline_is_on_by_default_and_opts_out_with_zero(self, monkeypatch):
+        monkeypatch.delenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, raising=False)
+        assert v2.savings_statusline_enabled()
+        monkeypatch.setenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, "0")
+        assert not v2.savings_statusline_enabled()
+        monkeypatch.setenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, "1")
+        assert v2.savings_statusline_enabled()
+
 
 class TestV2Launch:
     def test_strips_gateway_prefix_for_interposer(self):
@@ -393,7 +401,8 @@ class TestV2Launch:
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
-        monkeypatch.delenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, raising=False)
+        # Opt out of the (default-on) savings row to check the user's statusline is left untouched.
+        monkeypatch.setenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, "0")
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "")
         monkeypatch.setenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "")
@@ -460,7 +469,7 @@ class TestV2Launch:
         assert not captured["settings_path"].exists()
         # The model-setting guard is a first-prompt concern; user settings stay untouched.
         assert json.loads(user_settings.read_text()) == {"model": "opus"}
-        # The savings statusline is opt-in, so the user's own statusline is left alone.
+        # With the savings row opted out, the user's own statusline is left alone.
         assert "statusLine" not in settings
 
 
