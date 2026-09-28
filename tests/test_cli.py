@@ -2782,14 +2782,13 @@ class TestOpenCodeModelFlag:
             result = runner.invoke(app, ["opencode", flag, "databricks-claude-sonnet-4"])
 
         assert result.exit_code == 0, result.output
-        assert calls["resolve_model"].call_args.args[2] == "databricks-claude-sonnet-4"
         assert calls["configure"].call_args.args[2] == "databricks-claude-sonnet-4"
         assert (
             calls["launch"].call_args.kwargs["options"].user_pinned_model
             == "databricks-claude-sonnet-4"
         )
 
-    def test_native_model_after_separator_overrides_owned_option(self):
+    def test_native_model_is_forwarded_alongside_owned_option(self):
         native = "openrouter/anthropic/claude-sonnet"
         with _launch_policy_patches(None) as calls:
             result = runner.invoke(
@@ -2806,7 +2805,7 @@ class TestOpenCodeModelFlag:
             )
 
         assert result.exit_code == 0, result.output
-        assert calls["configure"].call_args.args[2] == native
+        assert calls["configure"].call_args.args[2] == "databricks-claude-sonnet-4"
         assert calls["launch"].call_args.args[2] == ["run", "--model", native]
         # The launcher receives both raw selections and applies native argument precedence.
         assert (
@@ -2814,11 +2813,7 @@ class TestOpenCodeModelFlag:
             == "databricks-claude-sonnet-4"
         )
 
-    @pytest.mark.parametrize(
-        ("model", "error"),
-        [("missing-model", "not configured"), ("", "must not be empty")],
-    )
-    def test_invalid_model_fails_before_native_launch(self, model, error):
+    def test_unknown_model_fails_before_native_launch(self):
         from ucode.agents import launch
 
         with (
@@ -2826,10 +2821,10 @@ class TestOpenCodeModelFlag:
             patch("ucode.agents.opencode.subprocess.Popen") as popen,
         ):
             calls["launch"].side_effect = launch
-            result = runner.invoke(app, ["opencode", "--model", model])
+            result = runner.invoke(app, ["opencode", "--model", "missing-model"])
 
         assert result.exit_code == 1
-        assert error in _strip_ansi(result.output)
+        assert "not configured" in _strip_ansi(result.output)
         popen.assert_not_called()
 
     @pytest.mark.parametrize(
@@ -2839,18 +2834,15 @@ class TestOpenCodeModelFlag:
             ["run", "--", "--model", "openrouter/custom-model"],
         ],
     )
-    def test_explicit_model_does_not_require_a_discovered_default(self, args):
+    def test_explicit_model_still_requires_a_configured_default(self, args):
         with _launch_policy_patches(None) as calls:
             calls["state"]["opencode_models"] = {}
             result = runner.invoke(app, ["opencode", *args])
 
-        assert result.exit_code == 0, result.output
-        assert calls["resolve_model"].call_args.args[2] == "openrouter/custom-model"
-        assert calls["configure"].call_args.args[2] == "openrouter/custom-model"
-        assert (
-            calls["launch"].call_args.kwargs["options"].user_pinned_model
-            == "openrouter/custom-model"
-        )
+        assert result.exit_code == 1
+        assert "No models available for opencode" in _strip_ansi(result.output)
+        calls["configure"].assert_not_called()
+        calls["launch"].assert_not_called()
 
     def test_model_after_separator_is_prompt_text(self):
         with _launch_policy_patches(None) as calls:

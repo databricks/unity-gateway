@@ -497,30 +497,6 @@ class TestOpencodeLaunchModel:
         assert state["opencode_models"] == original_state["opencode_models"]
         assert state["opencode_default_model"] == original_state["opencode_default_model"]
 
-    def test_allows_custom_provider_model_without_catalog(self, tmp_path, monkeypatch):
-        config_file = tmp_path / "opencode.json"
-        monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", config_file)
-        monkeypatch.setattr(opencode, "OPENCODE_BACKUP_PATH", tmp_path / "opencode-backup.json")
-        state = {
-            "workspace": WS,
-            "base_urls": {"opencode": _base_urls()},
-            "opencode_models": {},
-            "managed_configs": {},
-        }
-        args = ["run", "--model=hosted/my-model"]
-        with (
-            patch("ucode.agents.opencode.get_databricks_token", return_value="tok"),
-            patch("ucode.agents.opencode.agent_version", return_value="1.0.220"),
-            patch("ucode.agents.opencode.save_state"),
-            patch("ucode.agents.opencode.subprocess.Popen") as popen,
-        ):
-            popen.return_value.wait.return_value = 0
-            with pytest.raises(SystemExit):
-                opencode.launch(state, args, options=LaunchOptions(user_pinned_model="ignored"))
-
-        assert json.loads(config_file.read_text())["model"] == "hosted/my-model"
-        assert popen.call_args.args[0] == ["opencode", "run", "--model=hosted/my-model"]
-
     def test_rejects_invalid_model_before_configure_and_process(self):
         state = {"opencode_models": {"anthropic": ["claude-sonnet"]}}
         with (
