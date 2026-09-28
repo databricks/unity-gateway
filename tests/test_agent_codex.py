@@ -2084,20 +2084,37 @@ class TestWriteUserMcpServers:
         path.write_text("this is = = not valid toml [[[")
         monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
         added: list[tuple[str, list]] = []
+        http_added: list[tuple[str, str, str]] = []
         removed: list[str] = []
         import ucode.mcp as mcp_mod
 
         monkeypatch.setattr(
             mcp_mod, "add_codex_mcp_server", lambda n, argv: added.append((n, argv))
         )
+        monkeypatch.setattr(
+            mcp_mod,
+            "add_codex_http_mcp_server",
+            lambda n, url, client_id: http_added.append((n, url, client_id)),
+        )
         monkeypatch.setattr(mcp_mod, "remove_codex_mcp_server", lambda n: removed.append(n) or True)
 
+        # An HTTP+OAuth entry (no `command`) alongside a stdio one: the fallback must dispatch on
+        # shape, not blindly read entry["command"] (which KeyError'd), and register HTTP as HTTP.
         codex.write_user_mcp_servers(
-            {"svc": {"command": "ug", "args": ["mcp-proxy", "u"]}}, {"old"}
+            {
+                "svc": {"command": "ug", "args": ["mcp-proxy", "u"]},
+                "gh": {
+                    "url": "https://ws/x",
+                    "oauth_resource": "https://ws/x",
+                    "oauth": {"client_id": "codex-cli"},
+                },
+            },
+            {"old"},
         )
 
         assert path.read_text() == "this is = = not valid toml [[["  # never overwritten
         assert added == [("svc", ["ug", "mcp-proxy", "u"])]
+        assert http_added == [("gh", "https://ws/x", "codex-cli")]
         assert removed == ["old"]
 
     @pytest.fixture(autouse=True)

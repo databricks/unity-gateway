@@ -667,14 +667,23 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
 
     If the file exists but can't be parsed, defer to the per-server ``codex`` CLI rather than
     overwrite it."""
-    from ucode.mcp import add_codex_mcp_server, remove_codex_mcp_server
+    from ucode.mcp import (
+        add_codex_http_mcp_server,
+        add_codex_mcp_server,
+        remove_codex_mcp_server,
+    )
 
     path = user_mcp_config_path()
     doc = _read_user_config_for_rewrite(path)
     if doc is None:
         removed = {name for name in remove if remove_codex_mcp_server(name)}
         for name, entry in add.items():
-            add_codex_mcp_server(name, [entry["command"], *entry.get("args", [])])
+            # Dispatch on entry shape: a native HTTP+OAuth entry has `url` (+ `oauth.client_id`)
+            # and no `command`, so it must go through the HTTP CLI path, not the stdio proxy one.
+            if "url" in entry:
+                add_codex_http_mcp_server(name, entry["url"], entry["oauth"]["client_id"])
+            else:
+                add_codex_mcp_server(name, [entry["command"], *entry.get("args", [])])
         return removed
 
     table = doc.get(MANAGED_MCP_CONFIG_KEY)
