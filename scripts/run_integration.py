@@ -26,7 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_PACKAGES = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}
-MANAGED_DEFAULTS_TARGETS = (
+MANAGED_WORKSPACE_TARGETS = (
     (
         "UG_MPS_DEFAULTS_BEARER",
         "https://eng-ml-inference-batch-inference-us-west-2.cloud.databricks.com",
@@ -38,6 +38,12 @@ MANAGED_DEFAULTS_TARGETS = (
         "https://eng-ml-inference-ap-northeast-2.cloud.databricks.com",
         "95e267dc-4393-4360-9d45-4b9b13b2d370",
         "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET",
+    ),
+    (
+        "UG_USAGE_BEARER",
+        "https://eng-ml-inference-team-eu-west-2.cloud.databricks.com",
+        "ea3bc561-7122-4c85-b6f5-c200c143710b",
+        "UG_USAGE_CLIENT_SECRET",
     ),
 )
 
@@ -301,6 +307,7 @@ def main() -> int:
         os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
         os.environ.get("UG_MPS_DEFAULTS_CLIENT_SECRET", ""),
         os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", ""),
+        os.environ.get("UG_USAGE_CLIENT_SECRET", ""),
     )
 
     def redact(value: str) -> str:
@@ -574,7 +581,7 @@ def main() -> int:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
         if not args.installation_only:
-            for bearer_env, target_workspace, client_id, secret_env in MANAGED_DEFAULTS_TARGETS:
+            for bearer_env, target_workspace, client_id, secret_env in MANAGED_WORKSPACE_TARGETS:
                 secret = os.environ.get(secret_env, "").strip()
                 if args.workspace.rstrip("/") == target_workspace:
                     target_bearers[bearer_env] = bearer
@@ -620,6 +627,7 @@ def main() -> int:
                 "UG_PARENT_SCHEMA_DEFAULTS_BEARER": target_bearers.get(
                     "UG_PARENT_SCHEMA_DEFAULTS_BEARER", ""
                 ),
+                "UG_USAGE_BEARER": target_bearers.get("UG_USAGE_BEARER", ""),
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
                 "DATABRICKS_SECOND_BEARER": second_bearer,
                 "UG_INTEGRATION_WAREHOUSE_ID": args.warehouse_id or "",
