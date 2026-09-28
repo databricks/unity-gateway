@@ -97,6 +97,13 @@ class CodexCatalogSource(Enum):
     PARENT_SCHEMA = (MODEL_SERVICE_PARENT_SCHEMA_HEADER, "Parent schema")
 
 
+def _empty_unity_catalog_model_error(tool: Literal["Claude Code", "Codex"], location: str) -> str:
+    return (
+        f"No compatible models were found for {tool} in Unity Catalog location "
+        f"'{location}'. Check the location and your access to its model services."
+    )
+
+
 def _debug_enabled() -> bool:
     return os.environ.get("UCODE_DEBUG") == "1"
 
@@ -2663,7 +2670,25 @@ def list_anthropic_model_catalog(
     """Return advertised Anthropic model ids and their optional display metadata."""
     payload, reason = _get_anthropic_models_json(workspace, token, parent_schema=parent_schema)
     if payload is None:
+        if parent_schema is not None:
+            reason = reason or "AI Gateway returned an invalid Anthropic model catalog."
+            reason = (
+                f"Could not discover Claude models for Unity Catalog location "
+                f"{parent_schema}: {reason}"
+            )
         return AnthropicModelCatalog(model_ids=[], model_id_to_display_name={}, error_msg=reason)
+
+    if parent_schema is not None and (
+        not isinstance(payload, dict) or not isinstance(payload.get("data"), list)
+    ):
+        return AnthropicModelCatalog(
+            model_ids=[],
+            model_id_to_display_name={},
+            error_msg=(
+                f"Could not discover Claude models for Unity Catalog location "
+                f"{parent_schema}: AI Gateway returned an invalid Anthropic model catalog."
+            ),
+        )
 
     data = cast(dict, payload) if isinstance(payload, dict) else {}
     model_ids: list[str] = []
@@ -2692,7 +2717,11 @@ def list_anthropic_model_catalog(
     return AnthropicModelCatalog(
         model_ids=[],
         model_id_to_display_name={},
-        error_msg="AI Gateway returned no Anthropic model ids",
+        error_msg=(
+            _empty_unity_catalog_model_error("Claude Code", parent_schema)
+            if parent_schema is not None
+            else "AI Gateway returned no Anthropic model ids"
+        ),
     )
 
 
@@ -3067,6 +3096,8 @@ def _fetch_codex_model_catalog(
     if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
         raise RuntimeError(f"{kind} {identifier} returned an invalid Codex model catalog.")
     if not payload["models"]:
+        if source is CodexCatalogSource.PARENT_SCHEMA:
+            raise RuntimeError(_empty_unity_catalog_model_error("Codex", identifier))
         raise RuntimeError(f"{kind} {identifier} returned no Codex models.")
     return payload
 

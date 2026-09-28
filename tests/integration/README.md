@@ -180,6 +180,23 @@ Scoped discovery additionally requires Model Services
 `--parent-schema`, `--claude-parent-model`, or `--codex-parent-model`. The tests
 consume but never create or modify them.
 
+For manual empty-location validation, use an existing UC schema whose scoped
+Anthropic and Codex discovery responses are successful but contain no models.
+Use an explicitly selected unmanaged workspace and credentials, and run the
+version under test in an isolated environment:
+
+```bash
+ug claude --workspace https://WORKSPACE --model-location CATALOG.EMPTY_SCHEMA
+ug codex --workspace https://WORKSPACE --model-location CATALOG.EMPTY_SCHEMA
+```
+
+Both commands must exit with status 1 and report `No compatible models were found
+for Claude Code` or `No compatible models were found for Codex`, followed by the
+same UC location and access guidance. Neither agent should start. A missing schema,
+HTTP failure, or timeout does not establish the empty-catalog case. This manual
+check is not part of the automated live coverage above; Cases 13–14 cover populated
+locations.
+
 These unmanaged journeys require a workspace that publishes no CodingAgentConfig.
 Before any of them configures or launches an agent, a session-scoped, read-only
 List request checks that prerequisite. A published config fails with its resource

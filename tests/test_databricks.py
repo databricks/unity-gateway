@@ -125,15 +125,18 @@ class TestFetchCodexParentModelCatalog:
             db_mod, "_http_get_json", lambda *args, **kwargs: ({"models": []}, None)
         )
 
-        with pytest.raises(
-            RuntimeError, match="Parent schema main.default returned no Codex models"
-        ):
+        with pytest.raises(RuntimeError) as exc_info:
             db_mod._fetch_codex_model_catalog(
                 WS,
                 "tok",
                 source=db_mod.CodexCatalogSource.PARENT_SCHEMA,
                 identifier="main.default",
             )
+
+        assert str(exc_info.value) == (
+            "No compatible models were found for Codex in Unity Catalog location "
+            "'main.default'. Check the location and your access to its model services."
+        )
 
     def test_reports_disabled_route_as_unavailable(self, monkeypatch):
         monkeypatch.setattr(
@@ -151,6 +154,38 @@ class TestFetchCodexParentModelCatalog:
                 "tok",
                 source=db_mod.CodexCatalogSource.PROVIDER,
                 identifier="main.default.openai",
+            )
+
+    def test_preserves_parent_schema_auth_error(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda *args, **kwargs: (None, "HTTP 403 Forbidden: Invalid Token"),
+        )
+
+        with pytest.raises(RuntimeError, match="HTTP 403 Forbidden: Invalid Token") as exc_info:
+            db_mod._fetch_codex_model_catalog(
+                WS,
+                "tok",
+                source=db_mod.CodexCatalogSource.PARENT_SCHEMA,
+                identifier="main.default",
+            )
+
+        assert not isinstance(exc_info.value, db_mod.CodexMpsModelCatalogUnavailable)
+
+    def test_rejects_invalid_parent_schema_catalog(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda *args, **kwargs: ({"models": None}, None)
+        )
+
+        with pytest.raises(
+            RuntimeError, match="Parent schema main.default returned an invalid Codex model catalog"
+        ):
+            db_mod._fetch_codex_model_catalog(
+                WS,
+                "tok",
+                source=db_mod.CodexCatalogSource.PARENT_SCHEMA,
+                identifier="main.default",
             )
 
     def test_keeps_other_discovery_errors_fatal(self, monkeypatch):
@@ -378,6 +413,48 @@ class TestDiscoverClaudeModels:
                 },
             )
         ]
+
+    def test_scoped_empty_catalog_uses_shared_actionable_error(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: ({"data": []}, None))
+
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token", parent_schema="main.default")
+
+        assert catalog.model_ids == []
+        assert catalog.error_msg == (
+            "No compatible models were found for Claude Code in Unity Catalog location "
+            "'main.default'. Check the location and your access to its model services."
+        )
+
+    def test_unscoped_empty_catalog_keeps_gateway_error(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: ({"data": []}, None))
+
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token")
+
+        assert catalog.model_ids == []
+        assert catalog.error_msg == "AI Gateway returned no Anthropic model ids"
+
+    @pytest.mark.parametrize("payload", [None, [], {}, {"data": {}}])
+    def test_invalid_anthropic_catalog_is_distinct_from_empty(self, monkeypatch, payload):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
+
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token", parent_schema="main.default")
+
+        assert catalog.model_ids == []
+        assert catalog.error_msg == (
+            "Could not discover Claude models for Unity Catalog location main.default: "
+            "AI Gateway returned an invalid Anthropic model catalog."
+        )
+
+    def test_scoped_catalog_transport_error_is_preserved(self, monkeypatch):
+        reason = "HTTP 403 Forbidden: Invalid Token"
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (None, reason))
+
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token", parent_schema="main.default")
+
+        assert catalog.model_ids == []
+        assert catalog.error_msg == (
+            "Could not discover Claude models for Unity Catalog location main.default: " + reason
+        )
 
     def test_selects_opus_4_8_when_advertised(self, monkeypatch):
         payload = {

@@ -2703,10 +2703,8 @@ def _launch_tool(
                 state["workspace"], token, parent_schema=parent_schema
             )
             if catalog.error_msg or not catalog.model_ids:
-                error = catalog.error_msg or "AI Gateway returned no Anthropic model ids"
                 raise RuntimeError(
-                    f"Could not discover Claude models for Unity Catalog location "
-                    f"{parent_schema}: {error}"
+                    catalog.error_msg or "AI Gateway returned no Anthropic model ids"
                 )
             if managed_claude_uc_without_defaults:
                 picker_catalog = catalog

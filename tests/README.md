@@ -23,6 +23,12 @@ keyboard selection: nothing is selected by default, selecting Codex installs onl
 Codex, and submitting an empty selection installs nothing. Rendering checks cover
 the selected and empty checkboxes. These are local component checks, not live gateway tests.
 
+Scoped empty-model diagnostics are covered in `test_databricks.py`: Claude and Codex
+report the same actionable message format with the requested UC location. These
+tests replace only the HTTP boundary and also cover populated catalogs, unscoped
+discovery, and service errors. They do not establish live empty-location launch
+behavior; see the manual check in `integration/README.md`.
+
 ## CUJ coverage matrix
 
 These are **implemented assertions**, not a claim that every version passes.
