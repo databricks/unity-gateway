@@ -7,7 +7,8 @@ assert what the agent presents, not the bundles on disk (that is unit tests' job
 tests/AGENTS.md rule 4. Claude reads ~/.claude/skills and Codex reads the shared ~/.agents/skills,
 both of which `ug configure` writes, so a managed skill reaches either agent. The reconcile
 lifecycle test additionally checks the on-disk bundles, since removal-on-reconcile is a disk change
-that has no steady-state `/skills` signal.
+that has no steady-state `/skills` signal. That configure-only lifecycle passes each config with
+``ug configure --file``; the /skills cases keep the stub because launch re-reads the managed config.
 """
 
 import pytest
@@ -16,6 +17,7 @@ from utils.managed import (
     build_codex_agent_config,
     build_coding_agent_config,
     set_managed_config_stub,
+    write_config_file,
 )
 from utils.terminal import AgentTerminal
 
@@ -103,7 +105,8 @@ def test_managed_fixture_codex_skills_lists_downloaded_skill(live_session, works
 @pytest.mark.managed_fixture
 @pytest.mark.claude
 def test_managed_skills_reconcile_lifecycle(live_session, workspace, tmp_path):
-    """Scenario: managed skills download, coexist with a developer's own skill, then reconcile away.
+    """Scenario: managed skills download, coexist with a developer's own skill, then reconcile away,
+    with managed config steps using --file.
 
     Expected: a `unity_catalog_location` config downloads the workspace's skills to disk; a
     developer's own hand-authored skill (no attribution record) sits alongside them; and a later
@@ -112,10 +115,20 @@ def test_managed_skills_reconcile_lifecycle(live_session, workspace, tmp_path):
     """
     session = live_session
     claude = build_claude_agent_config([CLAUDE_OPUS])
+    config_counter = [0]
 
     def configure(config: dict) -> None:
-        set_managed_config_stub(session, tmp_path, config)
-        result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
+        config_counter[0] += 1
+        config_path = write_config_file(tmp_path, config, f"skills-{config_counter[0]}.json")
+        result = session.run(
+            "configure",
+            "--workspace",
+            workspace,
+            "--file",
+            str(config_path),
+            "--skip-upgrade",
+            timeout=300,
+        )
         assert "Select coding agents to configure:" not in result.stdout, result.stdout
 
     configure(build_coding_agent_config("CODING_AGENT_CLAUDE_CODE", claude))
