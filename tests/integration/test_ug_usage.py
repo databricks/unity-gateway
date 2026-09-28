@@ -33,8 +33,8 @@ def test_ug_usage_managed_config(live_session):
     session = live_session
     target_bearer = os.environ.get("UG_USAGE_BEARER", "").strip()
     assert target_bearer, (
-        "The runner needs UG_USAGE_CLIENT_ID and UG_USAGE_CLIENT_SECRET for the dedicated "
-        f"usage workspace ({_MANAGED_USAGE_WORKSPACE})."
+        "The runner needs UG_USAGE_CLIENT_SECRET for the dedicated usage workspace "
+        f"({_MANAGED_USAGE_WORKSPACE}); its client ID is configured in the runner."
     )
     session.env["DATABRICKS_BEARER"] = target_bearer
     session.run("configure", "--workspace", _MANAGED_USAGE_WORKSPACE, "--skip-upgrade", timeout=240)

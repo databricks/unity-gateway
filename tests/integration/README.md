@@ -473,10 +473,11 @@ these same-repository secrets rather than storing a long-lived bearer:
   Its client ID (`1c359c0f-58bc-42ac-a74f-079ccb173676`) is in the runner code.
 - `UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET`: OAuth client secret for the northeast-2 Claude
   defaults workspace. Its client ID (`95e267dc-4393-4360-9d45-4b9b13b2d370`) is in the runner code.
-- `UG_USAGE_CLIENT_ID` / `UG_USAGE_CLIENT_SECRET`: OAuth client credentials for the dedicated
-  `eng-ml-inference-team-eu-west-2` budget workspace. The runner mints `UG_USAGE_BEARER` from
-  them and passes only that short-lived bearer to the usage test. CI passes these target credentials
-  only to the managed Claude lane.
+- `UG_USAGE_CLIENT_SECRET`: OAuth client secret for the dedicated
+  `eng-ml-inference-team-eu-west-2` budget workspace. Its client ID
+  (`ea3bc561-7122-4c85-b6f5-c200c143710b`) is in the runner code. The runner mints
+  `UG_USAGE_BEARER` from it and passes only that short-lived bearer to the usage test. CI passes
+  this target secret only to the managed Claude lane.
 
 Run it locally the same way, pointing at the managed workspace:
 
@@ -486,9 +487,9 @@ export DATABRICKS_CLIENT_ID=<sp-app-id> DATABRICKS_CLIENT_SECRET=<sp-oauth-secre
 python scripts/run_integration.py --claude-version <v> --codex-version <v> -- -m managed
 ```
 
-The managed usage case additionally requires `UG_USAGE_CLIENT_ID` and
-`UG_USAGE_CLIENT_SECRET` for the dedicated EU West budget workspace. The runner mints its
-short-lived `UG_USAGE_BEARER`; the credentials must be authorized for that workspace.
+The managed usage case additionally requires `UG_USAGE_CLIENT_SECRET` for the dedicated EU West
+budget workspace. Its client ID is configured in the runner, which mints the short-lived
+`UG_USAGE_BEARER`; the secret must be authorized for that workspace.
 
 To run only the two Claude defaults cases locally, set the base managed workspace and its
 `DATABRICKS_CLIENT_ID` / `DATABRICKS_CLIENT_SECRET` as above, set both target-specific client

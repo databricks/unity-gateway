@@ -26,7 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_PACKAGES = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}
-MANAGED_DEFAULTS_TARGETS = (
+MANAGED_WORKSPACE_TARGETS = (
     (
         "UG_MPS_DEFAULTS_BEARER",
         "https://eng-ml-inference-batch-inference-us-west-2.cloud.databricks.com",
@@ -39,8 +39,13 @@ MANAGED_DEFAULTS_TARGETS = (
         "95e267dc-4393-4360-9d45-4b9b13b2d370",
         "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET",
     ),
+    (
+        "UG_USAGE_BEARER",
+        "https://eng-ml-inference-team-eu-west-2.cloud.databricks.com",
+        "ea3bc561-7122-4c85-b6f5-c200c143710b",
+        "UG_USAGE_CLIENT_SECRET",
+    ),
 )
-MANAGED_USAGE_WORKSPACE = "https://eng-ml-inference-team-eu-west-2.cloud.databricks.com"
 
 
 def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
@@ -576,19 +581,12 @@ def main() -> int:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
         if not args.installation_only:
-            for bearer_env, target_workspace, client_id, secret_env in MANAGED_DEFAULTS_TARGETS:
+            for bearer_env, target_workspace, client_id, secret_env in MANAGED_WORKSPACE_TARGETS:
                 secret = os.environ.get(secret_env, "").strip()
                 if args.workspace.rstrip("/") == target_workspace:
                     target_bearers[bearer_env] = bearer
                 elif secret:
                     target_bearers[bearer_env] = mint_m2m_token(target_workspace, client_id, secret)
-
-            usage_client_id = os.environ.get("UG_USAGE_CLIENT_ID", "").strip()
-            usage_client_secret = os.environ.get("UG_USAGE_CLIENT_SECRET", "").strip()
-            if usage_client_id and usage_client_secret:
-                target_bearers["UG_USAGE_BEARER"] = mint_m2m_token(
-                    MANAGED_USAGE_WORKSPACE, usage_client_id, usage_client_secret
-                )
 
         run(
             [
