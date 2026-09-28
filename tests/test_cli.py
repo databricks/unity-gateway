@@ -2760,6 +2760,37 @@ class TestRevert:
         assert cleared == [True]
         assert "Claude Code MCP config: restored" in result.output
 
+    def test_reverts_the_vscode_extension_settings_before_clearing_state(self):
+        order: list[str] = []
+
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.restore_file", return_value=False),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch(
+                "ucode.cli.vscode.revert_claude_extension",
+                side_effect=lambda: order.append("vscode") or "restored",
+            ),
+            patch("ucode.cli.clear_state", side_effect=lambda: order.append("clear")),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        assert order == ["vscode", "clear"]
+        assert "VS Code Claude Code extension: restored" in _strip_ansi(result.output)
+
+
+class TestVSCodeExtensionHook:
+    @pytest.mark.parametrize(
+        ("configured", "expected_calls"),
+        [(["claude"], 1), (["codex", "claude"], 1), (["codex"], 0), ([], 0)],
+    )
+    def test_runs_only_when_claude_code_was_configured(self, configured, expected_calls):
+        with patch("ucode.cli.vscode.configure_claude_extension") as configure:
+            cli_mod._configure_vscode_claude_extension(configured)
+
+        assert configure.call_count == expected_calls
+
 
 class TestDoctorCommand:
     def test_invokes_doctor(self):
