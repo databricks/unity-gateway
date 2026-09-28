@@ -394,7 +394,8 @@ recorded in `versions.json`; the organization can update the image behind the
 runner label. The two POSIX version-floor journeys are outside this Windows subset.
 It installs only Claude as the runner prerequisite; the five selected checks
 exercise ug and its local helpers, not either agent's inference path.
-An advisory **Windows headless journey · Claude** job installs the shared CI Claude version
+An advisory **Windows headless journey · Claude** job installs the temporary Windows-pinned
+Claude version (currently 2.1.278)
 on a native Windows runner using the same authenticated package proxies,
 reuses the existing e2e workspace/bearer,
 and requires the unpredictable file value in the agent's structured final answer.
