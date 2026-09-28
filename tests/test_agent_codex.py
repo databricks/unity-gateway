@@ -979,7 +979,7 @@ class TestCodexLaunch:
         launches: list[list[str]] = []
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
-        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
+        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv, *, env: launches.append(argv))
         monkeypatch.setattr(
             codex,
             "get_databricks_token",
@@ -993,16 +993,19 @@ class TestCodexLaunch:
 
     def test_sets_oauth_token(self, tmp_path, monkeypatch):
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
-        launches = self._patch(tmp_path, monkeypatch)
+        self._patch(tmp_path, monkeypatch)
         monkeypatch.setattr(
             codex,
             "get_databricks_token",
             lambda workspace, profile=None, force_refresh=False: "fresh-token",
         )
+        process = Mock()
+        monkeypatch.setattr(codex, "exec_or_spawn", process)
         codex.launch({"workspace": WS}, ["--search"], options=LaunchOptions())
 
-        assert os.environ["OAUTH_TOKEN"] == "fresh-token"
-        assert launches[0][-1] == "--search"
+        assert process.call_args.kwargs["env"]["OAUTH_TOKEN"] == "fresh-token"
+        assert "OAUTH_TOKEN" not in os.environ
+        assert process.call_args.args[0][-1] == "--search"
 
     @pytest.mark.parametrize("custom_catalog", [None, "/user/isaac-app-model-catalog.json"])
     def test_native_update_detaches_catalog_without_discovery(
@@ -1029,7 +1032,7 @@ class TestCodexLaunch:
         )
         launches = []
 
-        def execute(argv):
+        def execute(argv, *, env):
             assert read_toml_safe(shared_path).get("model_catalog_json") == custom_catalog
             assert not any(arg.startswith("model_catalog_json=") for arg in argv)
             launches.append(argv)
@@ -1413,6 +1416,9 @@ class TestCodexLaunch:
 
     def test_provider_discovery_uses_custom_oauth_token(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
+        monkeypatch.delenv("OAUTH_TOKEN", raising=False)
+        process = Mock()
+        monkeypatch.setattr(codex, "exec_or_spawn", process)
         catalog_path = tmp_path / "models.json"
         seen = {}
         monkeypatch.setattr(codex, "_model_catalog_path", lambda workspace, provider: catalog_path)
@@ -1454,7 +1460,8 @@ class TestCodexLaunch:
             "provider": "main.default.openai",
             "profile": "ug-oauth-client",
         }
-        assert os.environ["OAUTH_TOKEN"] == "custom-token"
+        assert process.call_args.kwargs["env"]["OAUTH_TOKEN"] == "custom-token"
+        assert "OAUTH_TOKEN" not in os.environ
 
     def test_catalog_paths_are_provider_scoped(self, tmp_path, monkeypatch):
         monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "models.json")
@@ -1497,6 +1504,7 @@ class TestCodexLaunch:
 
     def test_injects_otel_config_when_tracing_enabled(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("LAUNCH_TEST_FLAG", "baseline")
         server = Mock(server_address=("127.0.0.1", 54321))
         cache = Mock()
         client = Mock()
@@ -1516,7 +1524,7 @@ class TestCodexLaunch:
             codex.launch(
                 {"workspace": WS, "codex_otel_tracing": True},
                 ["exec", "hi"],
-                options=LaunchOptions(),
+                options=LaunchOptions(custom_env={"LAUNCH_TEST_FLAG": "traced child"}),
             )
 
         assert exc.value.code == 0
@@ -1530,6 +1538,96 @@ class TestCodexLaunch:
         assert 'protocol = "binary"' in otel
         assert "Authorization" not in otel  # no credential in argv; the proxy injects it
         assert argv[-2:] == ["exec", "hi"]
+        assert popen.call_args.kwargs["env"]["LAUNCH_TEST_FLAG"] == "traced child"
+        parent_value = os.environ.get("LAUNCH_TEST_FLAG")
+        assert parent_value == "baseline"
+
+    @pytest.mark.parametrize("version", ["0.129.0", "0.154.0"])
+    @pytest.mark.parametrize(
+        "tool_args", [[], ["exec", "hello"], ["app-server"], ["app", "--help"], ["update"]]
+    )
+    def test_custom_env_reaches_each_launch_shape_without_persistence(
+        self, tmp_path, monkeypatch, version, tool_args
+    ):
+        self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: version)
+        monkeypatch.setenv("LAUNCH_TEST_FLAG", "inherited")
+        process = Mock()
+        monkeypatch.setattr(codex, "exec_or_spawn", process)
+        before = codex.CODEX_CONFIG_PATH.read_bytes()
+        state = {"workspace": WS}
+        for custom_env, expected in [
+            ({"LAUNCH_TEST_FLAG": "launch only\n", "EMPTY": ""}, "launch only\n"),
+            ({}, "inherited"),
+        ]:
+            codex.launch(state, tool_args, options=LaunchOptions(custom_env=custom_env))
+            child = process.call_args.kwargs["env"]
+            assert child["LAUNCH_TEST_FLAG"] == expected
+            assert child["OAUTH_TOKEN"] == "tok"
+            if custom_env:
+                assert child["EMPTY"] == ""
+            argv = process.call_args.args[0]
+            if tool_args:
+                assert argv[-len(tool_args) :] == tool_args
+            assert "launch only" not in str(argv)
+            assert codex.CODEX_CONFIG_PATH.read_bytes() == before
+            assert state == {"workspace": WS}
+            parent_value = os.environ.get("LAUNCH_TEST_FLAG")
+            assert parent_value == "inherited"
+
+    def test_windows_launch_passes_custom_environment_to_spawn(self, tmp_path, monkeypatch):
+        from ucode import launcher
+
+        self._patch(tmp_path, monkeypatch)
+        process = Mock()
+        process.wait.return_value = 0
+        monkeypatch.setenv("LAUNCH_TEST_FLAG", "inherited")
+
+        def spawn_windows(argv, *, env):
+            from unittest.mock import patch
+
+            with (
+                patch.object(launcher.os, "name", "nt"),
+                patch.object(launcher.subprocess, "Popen", return_value=process) as popen,
+            ):
+                with pytest.raises(SystemExit) as exc:
+                    launcher.exec_or_spawn(argv, env=env)
+                assert exc.value.code == 0
+                assert popen.call_args.kwargs["env"]["LAUNCH_TEST_FLAG"] == "windows child"
+                assert popen.call_args.args[0][-1] == "app-server"
+
+        monkeypatch.setattr(codex, "exec_or_spawn", spawn_windows)
+        codex.launch(
+            {"workspace": WS},
+            ["app-server"],
+            options=LaunchOptions(custom_env={"LAUNCH_TEST_FLAG": "windows child"}),
+        )
+        parent_value = os.environ.get("LAUNCH_TEST_FLAG")
+        assert parent_value == "inherited"
+
+    @pytest.mark.parametrize(
+        "custom_env",
+        [
+            {"OTEL_TRACES_EXPORTER": "none"},
+            {"OTEL_EXPORTER_OTLP_ENDPOINT": "private"},
+            {"otel_exporter_otlp_headers": "private"},
+            {"OTEL_SDK_DISABLED": "true"},
+        ],
+    )
+    def test_tracing_conflict_precedes_profile_cleanup(self, tmp_path, monkeypatch, custom_env):
+        self._patch(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            codex,
+            "clear_model_preferences",
+            lambda _: pytest.fail("tracing conflicts must fail before writes"),
+        )
+        with pytest.raises(RuntimeError, match="conflicts with UG Codex tracing") as error:
+            codex.launch(
+                {"workspace": WS, "codex_otel_tracing": True},
+                [],
+                options=LaunchOptions(custom_env=custom_env),
+            )
+        assert "private" not in str(error.value)
 
     def test_no_otel_config_when_tracing_disabled(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
@@ -1583,7 +1681,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "tok")
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         launches: list[list[str]] = []
-        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
+        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv, *, env: launches.append(argv))
         if stale_profile:
             profile_path.write_text('model_provider = "stale-provider"\n', encoding="utf-8")
 
@@ -1607,7 +1705,7 @@ class TestCodexLaunch:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", tmp_path / "missing.config.toml")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
         launches = []
-        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
+        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv, *, env: launches.append(argv))
         monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "tok")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
 

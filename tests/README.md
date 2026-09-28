@@ -34,6 +34,12 @@ Local file input is covered by strict-parser cases in `test_managed_source.py`
 and isolated launch cases in `test_file_launch.py`. They check validation before
 writes, first use, immediate updates, API-cache separation, argument forwarding,
 and ordinary model selection when overrides are omitted.
+Launch-scoped custom environments are covered by those same parser/launch tests
+and the agent, launcher, and smart-routing suites. They assert exact child values,
+unchanged parent environments, add/change/remove/no-file behavior, pre-write
+validation, and retained native telemetry settings. Real harmless subprocess/PTY
+checks cover environment delivery without launching ambient agents; native agent
+precedence and full inference journeys are separate checks.
 
 ## CUJ coverage matrix
 

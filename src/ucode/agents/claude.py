@@ -44,9 +44,10 @@ from ucode.databricks import (
     get_databricks_token,
     ug_binary,
 )
-from ucode.launcher import exec_or_spawn
+from ucode.launcher import build_child_env, exec_or_spawn
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
+    CLAUDE_MANAGED_PICKER_KEYS,
     OS,
     ManagedFileSnapshots,
     ManagedFileWriteUnavailable,
@@ -174,6 +175,40 @@ def _otel_trace_env(workspace: str) -> dict[str, str]:
     }
 
 
+def _retire_otel_settings(
+    settings: dict, snapshots: ManagedFileSnapshots, previous_keys: list[list[str]]
+) -> None:
+    """Restore unchanged UG tracing leaves, retaining external helpers and later edits."""
+    last_applied = snapshots.last_applied_by_ug
+    if (
+        ["otelHeadersHelper"] not in previous_keys
+        or not last_applied
+        or "otelHeadersHelper" not in last_applied
+        or settings.get("otelHeadersHelper") != last_applied["otelHeadersHelper"]
+    ):
+        return
+    baseline = snapshots.original_before_ug or {}
+    env = settings.get("env")
+    last_env = last_applied.get("env") or {}
+    baseline_env = baseline.get("env") or {}
+    if isinstance(env, dict):
+        for key in CLAUDE_OTEL_TRACE_ENV_KEYS:
+            if (
+                ["env", key] in previous_keys
+                and key in env
+                and key in last_env
+                and env[key] == last_env[key]
+            ):
+                if key in baseline_env:
+                    env[key] = baseline_env[key]
+                else:
+                    env.pop(key)
+    if "otelHeadersHelper" in baseline:
+        settings["otelHeadersHelper"] = baseline["otelHeadersHelper"]
+    else:
+        settings.pop("otelHeadersHelper", None)
+
+
 # Model-selection env keys ucode manages. Existing family defaults in the enterprise-managed file
 # are preserved unless Coding Agent Config explicitly supplies that family.
 CLAUDE_MANAGED_MODEL_ENV_KEYS = (
@@ -199,7 +234,6 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 # Env keys ucode used to write but no longer does; stripped from the managed
 # settings file on every launch so stale values never linger.
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
-CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
 ANTHROPIC_CUSTOM_HEADERS_ENV_KEY = "ANTHROPIC_CUSTOM_HEADERS"
 CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
     {
@@ -257,6 +291,97 @@ def _parse_managed_settings(text: str) -> dict:
 
 def _dump_managed_settings(settings: dict) -> str:
     return json.dumps(settings, indent=2, sort_keys=True) + "\n"
+
+
+def validate_custom_env(custom_env: dict[str, str]) -> None:
+    """Reject launch values that native managed settings would override, without writing policy."""
+    if not custom_env:
+        return
+    platform = current_os()
+    if platform not in (OS.LINUX, OS.MACOS):
+        raise RuntimeError(
+            "Claude custom_env currently supports Linux and macOS only, where ug can check "
+            "managed settings. Remove custom_env or use a supported platform."
+        )
+    path = _managed_settings_path()
+    if path is None:
+        raise RuntimeError("Cannot check Claude managed settings for custom_env on this platform.")
+    try:
+        if platform is OS.MACOS:
+            mdm_path = Path("/Library/Managed Preferences/com.anthropic.claudecode.plist")
+            try:
+                mdm_path.stat()
+            except FileNotFoundError:
+                pass
+            else:
+                raise RuntimeError(
+                    "Claude custom_env cannot be checked against macOS managed preferences. "
+                    "Remove custom_env or ask your administrator to configure these values."
+                )
+        fragments = path.parent / "managed-settings.d"
+        try:
+            fragment_paths = sorted(
+                item
+                for item in fragments.iterdir()
+                if not item.name.startswith(".") and item.suffix == ".json"
+            )
+        except FileNotFoundError:
+            fragment_paths = []
+        managed_env: dict = {}
+        for settings_path in [path, *fragment_paths]:
+            text = read_managed_file(settings_path)
+            if text is None:
+                continue
+            settings = _parse_managed_settings(text)
+            if settings.get("policyHelper"):
+                raise RuntimeError(
+                    "Claude custom_env cannot be checked against a managed policyHelper. "
+                    "Remove custom_env or ask your administrator to configure these values."
+                )
+            env = settings.get("env", {})
+            if not isinstance(env, dict):
+                raise RuntimeError(
+                    f"Claude managed settings at {settings_path} need an env object."
+                )
+            managed_env.update(env)
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(
+            f"Cannot read Claude managed settings for custom_env at {path}. "
+            "Repair the settings or contact your administrator."
+        ) from exc
+    conflicts = sorted(
+        name
+        for name, value in custom_env.items()
+        if name in managed_env and managed_env[name] != value
+    )
+    if conflicts:
+        raise RuntimeError(
+            f"Claude custom_env conflicts with managed settings at {path}: "
+            f"{', '.join(conflicts)}. Use matching values or contact your administrator."
+        )
+
+
+def validate_tracing_custom_env(custom_env: dict[str, str], workspace: str) -> None:
+    """Keep an enabled UG trace exporter and its refreshed authentication effective."""
+    trace_env = _otel_trace_env(workspace)
+    conflicts = {
+        name for name, value in custom_env.items() if name in trace_env and value != trace_env[name]
+    }
+    conflicts.update(
+        name
+        for name in ("OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+        if custom_env.get(name)
+    )
+    conflicts.update(
+        name
+        for name in ("OTEL_SDK_DISABLED", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
+        if custom_env.get(name, "").lower() in {"1", "true"}
+    )
+    if conflicts:
+        raise RuntimeError(
+            "Claude custom_env conflicts with enabled UG tracing: "
+            f"{', '.join(sorted(conflicts))}. Remove these overrides or disable UG tracing."
+        )
 
 
 def managed_settings_are_current(state: dict) -> bool:
@@ -883,6 +1008,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             f"Refusing to use Claude Code managed settings through symlink {path}. Replace it "
             "with a regular file or contact your administrator."
         )
+    compose_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
     current_text = read_managed_file(path)
     try:
         existing = _parse_managed_settings(current_text) if current_text is not None else {}
@@ -907,6 +1033,8 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             display="Claude Code",
             owned_paths=[[MANAGED_MCP_SETTINGS_KEY]],
             parser=_parse_managed_settings,
+            claude_compose_snapshots=compose_snapshots,
+            claude_compose_current_text=current_text,
         )
     except ManagedFileWriteUnavailable:
         return False
@@ -1022,10 +1150,8 @@ def write_tool_config(
     # revert would restore that snapshot instead of deleting the file.
     if not is_tool_managed(state, "claude"):
         backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
-    # A managed config makes ug authoritative over the whole custom-header value, so it is
-    # overwritten wholesale; without one, preserve the developer's own pre-existing headers. Reuses
-    # this launch's warm managed-config cache (no extra round trip); a failed fetch degrades to None
-    # (treated as unmanaged), never blocking the write.
+    # API policy owns the whole header value; file input owns only its declared header names.
+    # Reuse the warm API cache when no file source was selected.
     managed_config_present = (
         selected_source is not None or refresh_managed_config(state).manifest is not None
     )
@@ -1055,6 +1181,13 @@ def write_tool_config(
         managed_http_headers=state.get("claude_http_headers"),
     )
     source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
+    managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
+    legacy_picker_owned_keys = [key for key in CLAUDE_MANAGED_PICKER_KEYS if [key] in previous_keys]
+    previous_managed_picker_keys = (
+        legacy_picker_owned_keys
+        if managed_snapshots.claude_picker_owned_keys is None
+        else managed_snapshots.claude_picker_owned_keys
+    )
     # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
     # written by this launch, and remove only previously owned picker keys that no longer apply.
     stale_picker_keys = [
@@ -1064,7 +1197,7 @@ def write_tool_config(
     ]
     managed_file_keys = list(managed_keys)
     for path in (
-        [[key] for key in stale_picker_keys]
+        [[key] for key in previous_managed_picker_keys if key not in overlay]
         + [["env", key] for key in CLAUDE_MANAGED_MODEL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_CONDITIONAL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_REMOVED_ENV_KEYS]
@@ -1075,6 +1208,27 @@ def write_tool_config(
         if path not in managed_file_keys:
             managed_file_keys.append(path)
 
+    private_settings = read_json_safe(CLAUDE_SETTINGS_PATH)
+    private_otel_snapshots = ManagedFileSnapshots(None, None)
+    if not state.get("claude_otel_tracing") and ["otelHeadersHelper"] in previous_keys:
+        previous_otel_settings = managed_snapshots.last_applied_by_ug
+        if (
+            not previous_otel_settings
+            or "otelHeadersHelper" not in previous_otel_settings
+            or private_settings.get("otelHeadersHelper")
+            != previous_otel_settings["otelHeadersHelper"]
+        ):
+            previous_otel_settings = {
+                "env": _otel_trace_env(state["workspace"]),
+                "otelHeadersHelper": build_otel_headers_shell_command(
+                    state["workspace"], state.get("profile"), use_pat=bool(state.get("use_pat"))
+                ),
+            }
+        private_otel_snapshots = ManagedFileSnapshots(
+            read_json_safe(CLAUDE_BACKUP_PATH),
+            previous_otel_settings,
+        )
+
     # V2 installs routing hooks in a transient per-launch settings file. Persistent settings must
     # contain no ucode routing hooks; surgically strip legacy ones while preserving user hooks.
     def _compose(
@@ -1083,6 +1237,19 @@ def write_tool_config(
         enforce_model_default_hierarchy: bool,
         managed_settings_snapshots: ManagedFileSnapshots | None,
     ) -> dict:
+        base = copy.deepcopy(base)
+        managed_picker_unchanged = (
+            managed_settings_snapshots is not None
+            and managed_settings_snapshots.last_applied_by_ug is not None
+            and all(
+                base.get(key) == managed_settings_snapshots.last_applied_by_ug.get(key)
+                for key in CLAUDE_MANAGED_PICKER_KEYS
+            )
+        )
+        if "otelHeadersHelper" not in overlay:
+            _retire_otel_settings(
+                base, managed_settings_snapshots or private_otel_snapshots, previous_keys
+            )
         base_env = base.get("env")
         existing_custom_headers = (
             base_env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(base_env, dict) else None
@@ -1136,10 +1303,23 @@ def write_tool_config(
                 else:
                     target_env[key] = selected_default_model
         merged = deep_merge_dict(base, overlay_for_merge)
-        for key in stale_picker_keys:
+        picker_keys_to_remove = stale_picker_keys
+        if managed_settings_snapshots is not None:
+            picker_keys_to_remove = [
+                key
+                for key in previous_managed_picker_keys
+                if managed_picker_unchanged
+                and key not in overlay_for_merge
+                and (provider or parent_schema)
+            ]
+        for key in picker_keys_to_remove:
             merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
-        if managed_config_present:
+        if selected_source is not None:
+            merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
+                existing_custom_headers, overlay_custom_headers, replace_emitted_names=True
+            )
+        elif managed_config_present:
             # ug owns the whole value under a managed config: overwrite wholesale so a header ug no
             # longer emits is dropped and no stale or foreign header lingers.
             merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = overlay_custom_headers
@@ -1164,9 +1344,6 @@ def write_tool_config(
             for key in CLAUDE_CONDITIONAL_ENV_KEYS:
                 if key not in overlay_env:
                     merged_env.pop(key, None)
-            for key in CLAUDE_OTEL_TRACE_ENV_KEYS:
-                if key not in overlay_env:
-                    merged_env.pop(key, None)
             # deep_merge_dict keeps keys already in the file, so drop the ones ucode no
             # longer writes.
             for key in CLAUDE_REMOVED_ENV_KEYS:
@@ -1175,27 +1352,29 @@ def write_tool_config(
             if managed_settings_snapshots is None:
                 for key in CLAUDE_MANAGED_PICKER_KEYS:
                     merged.pop(key, None)
-            elif managed_settings_snapshots.last_applied_by_ug is not None:
+            elif (
+                managed_settings_snapshots.last_applied_by_ug is not None
+                and previous_managed_picker_keys
+            ):
+                # The full-file snapshot includes preserved external pickers, so matching it alone
+                # does not establish that UG owns the picker.
                 last_applied = managed_settings_snapshots.last_applied_by_ug
                 live_picker = [merged.get(key) for key in CLAUDE_MANAGED_PICKER_KEYS]
                 ucode_picker = [last_applied.get(key) for key in CLAUDE_MANAGED_PICKER_KEYS]
                 if live_picker == ucode_picker:
                     baseline = managed_settings_snapshots.original_before_ug or {}
-                    for key in CLAUDE_MANAGED_PICKER_KEYS:
+                    for key in previous_managed_picker_keys:
                         if key in baseline:
                             merged[key] = baseline[key]
                         else:
                             merged.pop(key, None)
-        if "otelHeadersHelper" not in overlay_for_merge:
-            merged.pop("otelHeadersHelper", None)
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
-    managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
     write_json_file(
         CLAUDE_SETTINGS_PATH,
         _compose(
-            read_json_safe(CLAUDE_SETTINGS_PATH),
+            private_settings,
             enforce_model_default_hierarchy=source_scoped_defaults,
             managed_settings_snapshots=None,
         ),
@@ -1212,6 +1391,9 @@ def write_tool_config(
         ),
         managed_file_keys,
         relayed,
+        emitted_picker_keys=[key for key in CLAUDE_MANAGED_PICKER_KEYS if key in overlay],
+        legacy_picker_owned_keys=legacy_picker_owned_keys,
+        compose_snapshots=managed_snapshots,
     )
 
     if web_search_model:
@@ -1240,7 +1422,9 @@ def write_tool_config(
     return state
 
 
-def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str:
+def _merge_anthropic_custom_headers(
+    existing: object, ucode_headers: str, *, replace_emitted_names: bool = False
+) -> str:
     """Preserve user headers while replacing the header names managed by ucode.
 
     Claude's ``ANTHROPIC_CUSTOM_HEADERS`` value is a newline-delimited string. To merge it, we:
@@ -1273,7 +1457,10 @@ def _merge_anthropic_custom_headers(existing: object, ucode_headers: str) -> str
     for line in existing.splitlines():
         name, separator, _value = line.partition(":")
         normalized_name = name.strip().casefold()
-        if separator and normalized_name in CLAUDE_MANAGED_CUSTOM_HEADER_NAMES:
+        if separator and (
+            normalized_name in CLAUDE_MANAGED_CUSTOM_HEADER_NAMES
+            or (replace_emitted_names and normalized_name in ucode_lines_by_name)
+        ):
             replacement = ucode_lines_by_name.get(normalized_name)
             if replacement is not None and normalized_name not in replaced_names:
                 merged.append(replacement)
@@ -1293,6 +1480,10 @@ def _reconcile_managed_settings(
     compose: Callable[[dict], dict],
     owned_paths: list[list[str]],
     relayed: bool,
+    *,
+    emitted_picker_keys: list[str] | None = None,
+    legacy_picker_owned_keys: list[str] | None = None,
+    compose_snapshots: ManagedFileSnapshots | None = None,
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -1361,6 +1552,10 @@ def _reconcile_managed_settings(
             display="Claude Code",
             owned_paths=owned_paths,
             parser=_parse_managed_settings,
+            claude_picker_owned_keys=emitted_picker_keys or [],
+            claude_legacy_picker_owned_keys=legacy_picker_owned_keys,
+            claude_compose_snapshots=compose_snapshots,
+            claude_compose_current_text=current_text,
         )
     except ManagedFileWriteUnavailable:
         conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
@@ -1498,13 +1693,18 @@ def _merge_claude_settings(base: dict, overlay: dict) -> dict:
     return merged
 
 
-def _compose_v2_settings(tool_args: list[str]) -> tuple[dict, list[str]]:
+def _compose_v2_settings(
+    tool_args: list[str], *, custom_env: dict[str, str] | None = None
+) -> tuple[dict, list[str]]:
     """Compose caller settings with ucode's Claude settings for a v2 launch."""
     caller_values, remaining = _extract_caller_settings(tool_args)
     settings: dict = {}
     for value in caller_values:
         settings = _merge_claude_settings(settings, _load_caller_settings(value))
-    return _merge_claude_settings(settings, read_json_safe(CLAUDE_SETTINGS_PATH)), remaining
+    settings = _merge_claude_settings(settings, read_json_safe(CLAUDE_SETTINGS_PATH))
+    if custom_env:
+        settings = _merge_claude_settings(settings, {"env": dict(custom_env)})
+    return settings, remaining
 
 
 def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[str]:
@@ -1626,7 +1826,13 @@ def _rewrite_relayed_port(state: dict, port: int) -> None:
         write_json_file(CLAUDE_SETTINGS_PATH, settings)
 
 
-def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
+def _launch_relayed(
+    state: dict,
+    binary: str,
+    tool_args: list[str],
+    *,
+    custom_env: dict[str, str] | None = None,
+) -> None:
     """Relayed launch: sign into the Claude subscription, start the loopback
     refresh proxy, then run Claude Code alongside it (the proxy must outlive the
     exec, so we spawn-and-wait rather than replacing the process)."""
@@ -1652,7 +1858,13 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess.Popen(_build_claude_argv(binary, tool_args, relayed=True))
+    argv = _build_claude_argv(
+        binary,
+        tool_args,
+        relayed=True,
+        settings_override={"env": dict(custom_env)} if custom_env else None,
+    )
+    proc = subprocess.Popen(argv, env=build_child_env(custom_env) if custom_env else None)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
@@ -1671,6 +1883,10 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
+    custom_env = options.custom_env
+    validate_custom_env(custom_env)
+    if custom_env and state.get("claude_otel_tracing") and state.get("workspace"):
+        validate_tracing_custom_env(custom_env, state["workspace"])
     binary = SPEC["binary"]
     workspace = state.get("workspace")
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
@@ -1678,7 +1894,7 @@ def launch(
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     if state.get("claude_relayed"):
-        _launch_relayed(state, binary, tool_args)
+        _launch_relayed(state, binary, tool_args, custom_env=custom_env)
         return
     launch_default_model = state.get("_claude_launch_default_model")
     if isinstance(launch_default_model, str) and launch_default_model:
@@ -1697,9 +1913,10 @@ def launch(
             user_settings_path=CLAUDE_USER_SETTINGS_PATH,
             # With no user pin, let Claude resolve its starting model from its own settings.
             launch_model=options.user_pinned_model,
-            compose_settings=_compose_v2_settings,
+            compose_settings=lambda args: _compose_v2_settings(args, custom_env=custom_env),
             launch_model_args=_launch_model_args,
             model_name=_maybe_add_1m_suffix,
+            custom_env=custom_env,
         )
         return
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
@@ -1730,7 +1947,12 @@ def launch(
                 # overwriting the user's saved selection. This also prevents Claude from appending
                 # that stale built-in selection to an otherwise replaced picker.
                 settings_override = {"model": picker_models[0]}
-    exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
+    if custom_env:
+        settings_override = _merge_claude_settings(
+            settings_override or {}, {"env": dict(custom_env)}
+        )
+    argv = _build_claude_argv(binary, launch_args, settings_override=settings_override)
+    exec_or_spawn(argv, env=build_child_env(custom_env) if custom_env else None)
 
 
 def validate_cmd(binary: str) -> list[str]:

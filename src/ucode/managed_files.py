@@ -17,12 +17,13 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
 from importlib import resources
 from pathlib import Path
+from threading import local
 from typing import Any, cast
 
 from ucode.config_io import APP_DIR, is_dry_run
@@ -33,11 +34,13 @@ _SUDO = "/usr/bin/sudo"
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
+CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
 _MISSING = object()
 _managed_write_batch: tuple[str, ...] = ()
 _managed_write_notice_shown = False
 _managed_write_session_depth = 0
 _managed_write_worker: _SudoReplaceWorker | None = None
+_managed_manifest_lock_state = local()
 
 ManagedParser = Callable[[str], dict]
 ManagedDumper = Callable[[dict], str]
@@ -249,6 +252,9 @@ class ManagedFileSnapshots:
 
     original_before_ug: dict | None
     last_applied_by_ug: dict | None
+    # None denotes a legacy entry, not proof that a preserved picker belongs to UG.
+    claude_picker_owned_keys: list[str] | None = None
+    claude_manifest_entry: dict | None = None
 
 
 def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnapshots:
@@ -270,16 +276,22 @@ def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnaps
         except Exception:  # noqa: BLE001 - an unparseable snapshot just means "unknown".
             return None
 
+    claude_manifest_entry = None
     try:
         entry = _manifest_files(_load_manifest()).get(tool)
         if not isinstance(entry, dict):
             return ManagedFileSnapshots(None, None)
+        claude_manifest_entry = deepcopy(entry) if tool == "claude" else None
         return ManagedFileSnapshots(
             _parse(_snapshot_text(entry, "backup_file")),
             _parse(_snapshot_text(entry, "last_applied_file")),
+            _claude_picker_ownership(entry) if tool == "claude" else None,
+            claude_manifest_entry,
         )
     except RuntimeError:
-        return ManagedFileSnapshots(None, None)
+        return ManagedFileSnapshots(
+            None, None, [] if tool == "claude" else None, claude_manifest_entry
+        )
 
 
 def managed_file_conflicts(
@@ -381,12 +393,64 @@ def reconcile_managed_file(
     display: str,
     owned_paths: list[list[str]],
     parser: ManagedParser,
+    claude_picker_owned_keys: list[str] | None = None,
+    claude_legacy_picker_owned_keys: list[str] | None = None,
+    claude_compose_snapshots: ManagedFileSnapshots | None = None,
+    claude_compose_current_text: str | None = None,
 ) -> str:
     """Back up, atomically write, and verify one OS-managed settings file.
 
     The first pre-ucode contents are retained until ``ucode revert``. Subsequent writes update only
     the last-applied snapshot used for drift-safe three-way restoration.
     """
+    needs_lock = managed_files_supported() and managed_writes_allowed() and not is_dry_run()
+    if (
+        needs_lock
+        and not path.is_symlink()
+        and not MANAGED_BACKUP_DIR.is_symlink()
+        and not MANAGED_BACKUP_MANIFEST_PATH.is_symlink()
+        and not MANAGED_BACKUP_MANIFEST_PATH.exists()
+    ):
+        # Without a manifest there is no ownership metadata to update. A read-only no-op need not
+        # create the backup directory, and cannot overwrite a concurrent writer's configuration.
+        current_text = read_managed_file(path)
+        if current_text == desired_text:
+            return "unchanged"
+        if current_text is not None:
+            try:
+                if is_semantically_equal(parser(current_text), parser(desired_text)):
+                    return "unchanged"
+            except RuntimeError:
+                pass
+    lock = _managed_manifest_lock() if needs_lock else nullcontext()
+    with lock:
+        return _reconcile_managed_file(
+            path,
+            desired_text,
+            tool=tool,
+            display=display,
+            owned_paths=owned_paths,
+            parser=parser,
+            claude_picker_owned_keys=claude_picker_owned_keys,
+            claude_legacy_picker_owned_keys=claude_legacy_picker_owned_keys,
+            claude_compose_snapshots=claude_compose_snapshots,
+            claude_compose_current_text=claude_compose_current_text,
+        )
+
+
+def _reconcile_managed_file(
+    path: Path,
+    desired_text: str,
+    *,
+    tool: str,
+    display: str,
+    owned_paths: list[list[str]],
+    parser: ManagedParser,
+    claude_picker_owned_keys: list[str] | None,
+    claude_legacy_picker_owned_keys: list[str] | None,
+    claude_compose_snapshots: ManagedFileSnapshots | None,
+    claude_compose_current_text: str | None,
+) -> str:
     if not managed_files_supported():
         print_warning(
             f"{display}: OS-managed settings aren't supported on this platform; skipped {path}."
@@ -403,20 +467,68 @@ def reconcile_managed_file(
             "Replace it with a regular file or contact your administrator."
         )
     current_text = read_managed_file(path)
-    if current_text == desired_text:
-        return "unchanged"
-    if current_text is not None:
+    compose_generation_matches = claude_compose_snapshots is None or (
+        _manifest_files(_load_manifest()).get("claude")
+        == claude_compose_snapshots.claude_manifest_entry
+        and current_text == claude_compose_current_text
+    )
+    retained_picker_keys: list[str] = []
+    picker_snapshot = None
+    picker_manifest_entry = None
+    migrate_legacy_picker = False
+    preserve_legacy_picker = False
+    if tool == "claude" and current_text is not None:
+        # MCP-only writes advance the full snapshot without adopting a changed external picker.
+        snapshots = managed_file_snapshots(tool, parser)
+        picker_snapshot = snapshots.last_applied_by_ug
+        picker_manifest_entry = snapshots.claude_manifest_entry
+        prior_picker_keys = snapshots.claude_picker_owned_keys
+        if prior_picker_keys is None and claude_picker_owned_keys is not None:
+            prior_picker_keys = claude_legacy_picker_owned_keys
+            migrate_legacy_picker = bool(prior_picker_keys)
+        if snapshots.last_applied_by_ug is not None:
+            current = parser(current_text)
+            desired = parser(desired_text)
+            if all(
+                current.get(key) == desired.get(key) == snapshots.last_applied_by_ug.get(key)
+                for key in CLAUDE_MANAGED_PICKER_KEYS
+            ):
+                retained_picker_keys = prior_picker_keys or []
+                preserve_legacy_picker = (
+                    snapshots.claude_picker_owned_keys is None and claude_picker_owned_keys is None
+                )
+    semantically_unchanged = current_text == desired_text
+    if not semantically_unchanged and current_text is not None:
         try:
             semantically_unchanged = is_semantically_equal(
                 parser(current_text), parser(desired_text)
             )
         except RuntimeError:
             semantically_unchanged = False
-        if semantically_unchanged:
-            return "unchanged"
+    if semantically_unchanged:
+        if tool == "claude" and not preserve_legacy_picker and compose_generation_matches:
+            if claude_picker_owned_keys is not None:
+                retained_picker_keys = [
+                    key for key in retained_picker_keys if key in claude_picker_owned_keys
+                ]
+            _update_claude_picker_ownership_after_noop(
+                path,
+                retained_picker_keys,
+                picker_snapshot,
+                parser,
+                migrate_legacy=migrate_legacy_picker,
+                expected_entry=picker_manifest_entry,
+                expected_current_text=current_text,
+            )
+        return "unchanged"
     if is_dry_run():
         console.print(f"\n[bold]\\[dry run] {path} (via sudo)[/bold]\n{desired_text}")
         return "written"
+    if not compose_generation_matches:
+        raise RuntimeError(
+            f"{display} managed settings changed while ucode was preparing the update. "
+            "ucode preserved the newer configuration; run the command again."
+        )
 
     created = current_text is None
     _ensure_backup(tool, path, current_text)
@@ -455,7 +567,19 @@ def reconcile_managed_file(
             f"{display} managed settings changed concurrently at {path}. ucode will not overwrite "
             "the newer policy; run the command again or contact your administrator."
         )
-    _record_last_applied(tool, path, desired_text, owned_paths)
+    _record_last_applied(
+        tool,
+        path,
+        desired_text,
+        owned_paths,
+        claude_picker_owned_keys=(
+            None
+            if preserve_legacy_picker
+            else retained_picker_keys
+            if claude_picker_owned_keys is None
+            else claude_picker_owned_keys
+        ),
+    )
     if not _managed_write_batch:
         print_success(f"Settings configured for {display}")
     return "created" if created else "written"
@@ -527,7 +651,7 @@ def revert_managed_file(
                 f"retained under {MANAGED_BACKUP_DIR}."
             )
 
-    _delete_backup(tool, manifest, entry)
+    _delete_backup(tool, entry)
     if original_text is None and desired_text is None:
         return "removed"
     if current_text != last_text:
@@ -590,6 +714,27 @@ def _write_manifest(manifest: dict) -> None:
     _write_private_file(MANAGED_BACKUP_MANIFEST_PATH, json.dumps(manifest, indent=2) + "\n")
 
 
+@contextmanager
+def _managed_manifest_lock() -> Iterator[None]:
+    """Keep the lock inode in place so concurrent snapshot and ownership updates serialize."""
+    import fcntl
+
+    if getattr(_managed_manifest_lock_state, "owner_pid", None) == os.getpid():
+        yield
+        return
+    if MANAGED_BACKUP_DIR.is_symlink():
+        raise RuntimeError(f"Refusing to use symlinked backup directory {MANAGED_BACKUP_DIR}.")
+    MANAGED_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    with (MANAGED_BACKUP_DIR / "manifest.lock").open("a+b") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        _managed_manifest_lock_state.owner_pid = os.getpid()
+        try:
+            yield
+        finally:
+            _managed_manifest_lock_state.owner_pid = None
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
 def _backup_filename(tool: str, path: Path) -> str:
     suffix = path.suffix or ".txt"
     return f"{tool}-managed-settings.backup{suffix}"
@@ -601,51 +746,123 @@ def _last_applied_filename(tool: str, path: Path) -> str:
 
 
 def _ensure_backup(tool: str, path: Path, current_text: str | None) -> bool:
-    manifest = _load_manifest()
-    files = _manifest_files(manifest)
-    existing = files.get(tool)
-    if isinstance(existing, dict):
-        if existing.get("path") != str(path):
-            raise RuntimeError(
-                f"The saved {tool} managed-settings backup targets {existing.get('path')}, not "
-                f"{path}. Run `ucode revert` before configuring this path."
-            )
-        if existing.get("original_existed"):
-            _original_text(existing)
-        return False
+    with _managed_manifest_lock():
+        manifest = _load_manifest()
+        files = _manifest_files(manifest)
+        existing = files.get(tool)
+        if isinstance(existing, dict):
+            if existing.get("path") != str(path):
+                raise RuntimeError(
+                    f"The saved {tool} managed-settings backup targets {existing.get('path')}, not "
+                    f"{path}. Run `ucode revert` before configuring this path."
+                )
+            if existing.get("original_existed"):
+                _original_text(existing)
+            return False
 
-    entry: dict[str, Any] = {
-        "path": str(path),
-        "original_existed": current_text is not None,
-        "owned_paths": [],
-    }
-    if current_text is not None:
-        backup_file = _backup_filename(tool, path)
-        _write_private_file(MANAGED_BACKUP_DIR / backup_file, current_text)
-        entry["backup_file"] = backup_file
-        entry["original_sha256"] = _sha256(current_text)
-    files[tool] = entry
-    _write_manifest(manifest)
-    return True
+        entry: dict[str, Any] = {
+            "path": str(path),
+            "original_existed": current_text is not None,
+            "owned_paths": [],
+        }
+        if current_text is not None:
+            backup_file = _backup_filename(tool, path)
+            _write_private_file(MANAGED_BACKUP_DIR / backup_file, current_text)
+            entry["backup_file"] = backup_file
+            entry["original_sha256"] = _sha256(current_text)
+        files[tool] = entry
+        _write_manifest(manifest)
+        return True
 
 
 def _record_last_applied(
-    tool: str, path: Path, desired_text: str, owned_paths: list[list[str]]
+    tool: str,
+    path: Path,
+    desired_text: str,
+    owned_paths: list[list[str]],
+    *,
+    claude_picker_owned_keys: list[str] | None = None,
 ) -> None:
-    manifest = _load_manifest()
-    entry = _manifest_files(manifest).get(tool)
-    if not isinstance(entry, dict):
-        raise RuntimeError(f"Missing managed-settings backup metadata for {tool}.")
-    last_file = _last_applied_filename(tool, path)
-    _write_private_file(MANAGED_BACKUP_DIR / last_file, desired_text)
-    entry["last_applied_file"] = last_file
-    entry["last_applied_sha256"] = _sha256(desired_text)
-    known_paths = entry.get("owned_paths") if isinstance(entry.get("owned_paths"), list) else []
-    for owned_path in owned_paths:
-        if owned_path not in known_paths:
-            known_paths.append(list(owned_path))
-    entry["owned_paths"] = known_paths
-    _write_manifest(manifest)
+    with _managed_manifest_lock():
+        manifest = _load_manifest()
+        entry = _manifest_files(manifest).get(tool)
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"Missing managed-settings backup metadata for {tool}.")
+        last_file = _last_applied_filename(tool, path)
+        _write_private_file(MANAGED_BACKUP_DIR / last_file, desired_text)
+        entry["last_applied_file"] = last_file
+        entry["last_applied_sha256"] = _sha256(desired_text)
+        if tool == "claude" and claude_picker_owned_keys is not None:
+            entry["claude_picker_ownership"] = {
+                "keys": list(claude_picker_owned_keys),
+                "last_applied_sha256": entry["last_applied_sha256"],
+            }
+        known_paths = entry.get("owned_paths") if isinstance(entry.get("owned_paths"), list) else []
+        for owned_path in owned_paths:
+            if owned_path not in known_paths:
+                known_paths.append(list(owned_path))
+        entry["owned_paths"] = known_paths
+        _write_manifest(manifest)
+
+
+def _claude_picker_ownership(entry: dict) -> list[str] | None:
+    if "claude_picker_ownership" not in entry:
+        return None
+    marker = entry["claude_picker_ownership"]
+    if (
+        isinstance(marker, dict)
+        and isinstance(marker.get("keys"), list)
+        and all(key in CLAUDE_MANAGED_PICKER_KEYS for key in marker["keys"])
+        and isinstance(entry.get("last_applied_sha256"), str)
+        and marker.get("last_applied_sha256") == entry["last_applied_sha256"]
+    ):
+        return list(marker["keys"])
+    return []
+
+
+def _update_claude_picker_ownership_after_noop(
+    path: Path,
+    owned_keys: list[str],
+    expected_snapshot: dict | None,
+    parser: ManagedParser,
+    *,
+    migrate_legacy: bool,
+    expected_entry: dict | None,
+    expected_current_text: str | None,
+) -> None:
+    if is_dry_run() or expected_entry is None:
+        return
+    with _managed_manifest_lock():
+        try:
+            manifest = _load_manifest()
+            entry = _manifest_files(manifest).get("claude")
+            if (
+                not isinstance(entry, dict)
+                or entry != expected_entry
+                or entry.get("path") != str(path)
+            ):
+                return
+            last_text = _snapshot_text(entry, "last_applied_file")
+            last_snapshot = parser(last_text) if last_text is not None else None
+            if (
+                last_snapshot != expected_snapshot
+                or read_managed_file(path) != expected_current_text
+            ):
+                return
+        except RuntimeError:
+            return
+        if owned_keys:
+            prior_keys = _claude_picker_ownership(entry)
+            if prior_keys is None:
+                if not migrate_legacy:
+                    return
+            elif any(key not in prior_keys for key in owned_keys):
+                return
+        # A no-op may migrate proven legacy ownership, but cannot adopt an equal external picker.
+        marker = {"keys": list(owned_keys), "last_applied_sha256": entry.get("last_applied_sha256")}
+        if entry.get("claude_picker_ownership") != marker:
+            entry["claude_picker_ownership"] = marker
+            _write_manifest(manifest)
 
 
 def _snapshot_text(entry: dict, key: str) -> str | None:
@@ -678,16 +895,23 @@ def _backup_label(tool: str) -> str:
     return "available" if isinstance(entry, dict) else "none"
 
 
-def _delete_backup(tool: str, manifest: dict, entry: dict) -> None:
-    for key in ("backup_file", "last_applied_file"):
-        filename = entry.get(key)
-        if isinstance(filename, str):
-            try:
-                _snapshot_path(filename).unlink(missing_ok=True)
-            except OSError as exc:
-                raise RuntimeError(f"Could not remove managed-settings backup: {exc}") from exc
-    _manifest_files(manifest).pop(tool, None)
-    _write_manifest(manifest)
+def _delete_backup(tool: str, entry: dict) -> None:
+    with _managed_manifest_lock():
+        manifest = _load_manifest()
+        if _manifest_files(manifest).get(tool) != entry:
+            raise RuntimeError(
+                f"The {tool} managed-settings backup changed while ucode was restoring settings. "
+                "The newer backup was retained; run `ucode revert` again."
+            )
+        for key in ("backup_file", "last_applied_file"):
+            filename = entry.get(key)
+            if isinstance(filename, str):
+                try:
+                    _snapshot_path(filename).unlink(missing_ok=True)
+                except OSError as exc:
+                    raise RuntimeError(f"Could not remove managed-settings backup: {exc}") from exc
+        _manifest_files(manifest).pop(tool, None)
+        _write_manifest(manifest)
 
 
 def _snapshot_path(filename: str) -> Path:

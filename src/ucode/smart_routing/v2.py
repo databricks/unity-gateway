@@ -29,7 +29,7 @@ from ucode.databricks import (
     list_anthropic_model_catalog,
     list_anthropic_models,
 )
-from ucode.launcher import exec_or_spawn
+from ucode.launcher import build_child_env, exec_or_spawn
 from ucode.smart_routing import claude_routing, codex_interposer, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -437,6 +437,7 @@ def launch_claude(
     compose_settings: Callable[[list[str]], tuple[dict, list[str]]],
     launch_model_args: Callable[[list[str], str | None], list[str]],
     model_name: Callable[[str], str],
+    custom_env: dict[str, str] | None = None,
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
@@ -448,12 +449,13 @@ def launch_claude(
             "Smart routing needs a configured workspace; run `ucode configure claude` first."
         )
     token = _launch_token(state, workspace)
-    os.environ[OAUTH_TOKEN_ENV_VAR] = token
+    child_env = build_child_env(custom_env)
+    child_env[OAUTH_TOKEN_ENV_VAR] = token
     # if modelPicker is defined, then skip model discovery.
     picker_catalog = _model_picker_catalog()
     if picker_catalog is None:
-        os.environ[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
-        os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+        child_env[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
+        child_env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
         catalog = list_anthropic_model_catalog(workspace, token)
     else:
         catalog = picker_catalog
@@ -492,15 +494,19 @@ def launch_claude(
     sync_smart_routing_hooks(settings, routing_state, enabled=True)
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)
-    write_json_file(settings_path, settings)
+    if custom_env:
+        settings_arg = json.dumps(settings)
+    else:
+        write_json_file(settings_path, settings)
+        settings_arg = str(settings_path)
     model_args = launch_model_args(remaining, launch_model)
     routed_agent_args = _with_routed_claude_agents(remaining, model_ids)
-    argv = [binary, "--settings", str(settings_path), *model_args, *routed_agent_args]
+    argv = [binary, "--settings", settings_arg, *model_args, *routed_agent_args]
 
     if not route_first_prompt:
         # Subagent-only routing needs no PTY: the PreToolUse hooks ride in the
         # per-launch settings, so spawn Claude directly and clean up after it.
-        proc = subprocess.Popen(argv)
+        proc = subprocess.Popen(argv, env=child_env)
         try:
             returncode = proc.wait()
         except KeyboardInterrupt:
@@ -529,6 +535,7 @@ def launch_claude(
             model_switch_persisted=model_setting.is_routed,
             restore_model_setting=model_setting.restore,
             log_path=CLAUDE_PTY_LOG,
+            env=child_env,
         )
     finally:
         model_setting.restore()
@@ -568,6 +575,7 @@ def launch_codex(
     binary: str,
     start_model: str | None,
     render_overlay: Callable[..., dict],
+    custom_env: dict[str, str] | None = None,
 ) -> NoReturn:
     workspace = state.get("workspace")
     if not workspace:
@@ -579,7 +587,8 @@ def launch_codex(
             "Smart routing could not determine a starting Codex model for this workspace."
         )
 
-    os.environ[OAUTH_TOKEN_ENV_VAR] = _launch_token(state, workspace)
+    child_env = build_child_env(custom_env)
+    child_env[OAUTH_TOKEN_ENV_VAR] = _launch_token(state, workspace)
     catalog_models = custom_catalog_models()
     available_models = catalog_models or _cached_routing_models(state)
     if not available_models:
@@ -606,7 +615,7 @@ def launch_codex(
     if not first_prompt_routing_enabled():
         # Subagent-only routing needs neither the app-server nor the interposer:
         # the hooks ride in the CLI config, so launch the TUI directly.
-        exec_or_spawn([binary, *config_args, *tool_args])
+        exec_or_spawn([binary, *config_args, *tool_args], env=child_env)
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
 
@@ -614,7 +623,7 @@ def launch_codex(
     # preferences) and layer only ucode's gateway settings at CLI precedence.
     app_server = subprocess.Popen(
         [binary, "app-server", *config_args, "--listen", app_server_url],
-        env=os.environ.copy(),
+        env=child_env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -635,7 +644,9 @@ def launch_codex(
             log_path=CODEX_INTERPOSER_LOG,
         )
         tui_url = _loopback_websocket_url(tui_port)
-        tui = subprocess.Popen([binary, "--remote", tui_url, "--model", start_model, *tool_args])
+        tui = subprocess.Popen(
+            [binary, "--remote", tui_url, "--model", start_model, *tool_args], env=child_env
+        )
         try:
             returncode = tui.wait()
         except KeyboardInterrupt:

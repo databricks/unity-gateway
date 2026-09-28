@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -11,6 +11,7 @@ class LaunchOptions:
 
     launch_smart_routing: bool = False
     user_pinned_model: str | None = None
+    custom_env: dict[str, str] = field(default_factory=dict, repr=False)
 
 
 def explicit_model_arg_value(tool_args: list[str]) -> str | None:

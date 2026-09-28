@@ -123,7 +123,13 @@ def write_model_empty_policy(path, agent, config=None):
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 @pytest.mark.parametrize(
-    "config", [{}, {"http_headers": {"X-Policy": "local"}}, {"tracing": {"enabled": True}}]
+    "config",
+    [
+        {},
+        {"http_headers": {"X-Policy": "local"}},
+        {"tracing": {"enabled": True}},
+        {"custom_env": {"LAUNCH_TEST_FLAG": "only this launch"}},
+    ],
 )
 def test_model_empty_first_use_keeps_discovery_and_native_selection(launch_home, agent, config):
     h = launch_home
@@ -158,6 +164,163 @@ def test_model_empty_first_use_keeps_discovery_and_native_selection(launch_home,
         assert "model_catalog_json" not in doc
         if config.get("http_headers"):
             assert doc["model_providers"]["Databricks"]["http_headers"]["X-Policy"] == "local"
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_custom_env_add_change_remove_and_no_file_never_persist(launch_home, monkeypatch, agent):
+    h = launch_home
+    monkeypatch.setenv("LAUNCH_TEST_FLAG", "inherited baseline")
+    policy = h.root / "env.json"
+    managed_config.MANAGED_CONFIG_PATH.write_bytes(b"original API cache")
+    for custom_env in [
+        {"LAUNCH_TEST_FLAG": "private-first\nline", "LAUNCH_TEST_EMPTY": ""},
+        {"LAUNCH_TEST_FLAG": "private-second"},
+        {},
+        None,
+    ]:
+        if custom_env is not None:
+            write_model_empty_policy(policy, agent, {"custom_env": custom_env})
+        result = runner.invoke(
+            cli.app, [agent, *(["-f", str(policy)] if custom_env is not None else [])]
+        )
+        assert result.exit_code == 0, result.output
+        options = h.launch.call_args.kwargs["options"]
+        assert options.custom_env == (custom_env or {})
+        assert "private" not in repr(options)
+        assert "private" not in result.output
+        effective = h.launch.call_args.args[1]
+        assert '"custom_env":' not in json.dumps(effective)
+        assert not effective.get(f"{agent}_default_model")
+        assert not effective.get(f"{agent}_static_models")
+        parent_value = os.environ.get("LAUNCH_TEST_FLAG")
+        assert parent_value == "inherited baseline"
+        for path in h.root.rglob("*"):
+            if path.is_file() and path != policy:
+                assert b"private-first" not in path.read_bytes(), str(path)
+                assert b"private-second" not in path.read_bytes(), str(path)
+        if custom_env is not None:
+            assert managed_config.MANAGED_CONFIG_PATH.read_bytes() == b"original API cache"
+    assert state.load_full_state()["workspaces"][WS]["available_tools"] == [agent]
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_only_requested_agents_custom_env_reaches_launch(launch_home, agent):
+    h = launch_home
+    policy = h.root / "agents.json"
+    policy.write_text(
+        json.dumps(
+            {
+                "spec_version": 1,
+                "enabled_agents": [
+                    {
+                        "agent": "claude_code",
+                        "config": {"custom_env": {"CLAUDE_EXTRA": "claude only"}},
+                    },
+                    {"agent": "codex", "config": {"custom_env": {"CLIENT_EXTRA": "codex only"}}},
+                ],
+            }
+        )
+    )
+    result = runner.invoke(cli.app, [agent, "-f", str(policy)])
+    assert result.exit_code == 0, result.output
+    expected = (
+        {"CLAUDE_EXTRA": "claude only"} if agent == "claude" else {"CLIENT_EXTRA": "codex only"}
+    )
+    assert h.launch.call_args.kwargs["options"].custom_env == expected
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize(
+    "custom_env",
+    [
+        None,
+        {"PATH": "private-value"},
+        {"FLAG": "private\0value"},
+        {"FLAG": 1},
+        {"FLAG": "private", "flag": "other"},
+    ],
+)
+def test_invalid_custom_env_precedes_every_write(launch_home, agent, custom_env):
+    h = launch_home
+    policy = h.root / "invalid-env.json"
+    write_model_empty_policy(policy, agent, {"custom_env": custom_env})
+    before = {p: p.read_bytes() for p in h.root.rglob("*") if p.is_file()}
+    result = runner.invoke(cli.app, [agent, "-f", str(policy), "--workspace", OTHER_WS])
+    assert result.exit_code == 1
+    assert "custom_env" in result.output
+    assert "private" not in result.output
+    assert {p: p.read_bytes() for p in h.root.rglob("*") if p.is_file()} == before
+    h.bootstrap.assert_not_called()
+    h.auth.assert_not_called()
+    h.api.assert_not_called()
+    h.launch.assert_not_called()
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize("tracing_source", ["file", "saved", "target_workspace"])
+def test_tracing_conflict_is_rejected_before_bootstrap_or_writes(
+    launch_home, agent, tracing_source
+):
+    h = launch_home
+    target = OTHER_WS if tracing_source == "target_workspace" else WS
+    if tracing_source != "file":
+        state.save_state(
+            {"workspace": target, "available_tools": [agent], f"{agent}_otel_tracing": True}
+        )
+    if tracing_source == "target_workspace":
+        state.save_state({"workspace": WS, "available_tools": [agent]})
+    policy = h.root / "tracing-env.json"
+    config = {"custom_env": {"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "private-endpoint"}}
+    if tracing_source == "file":
+        config["tracing"] = {"enabled": True}
+    write_model_empty_policy(policy, agent, config)
+    before = {p: p.read_bytes() for p in h.root.rglob("*") if p.is_file()}
+    result = runner.invoke(cli.app, [agent, "-f", str(policy), "--workspace", target])
+    assert result.exit_code == 1
+    assert "tracing" in result.output
+    assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" in result.output
+    assert "private-endpoint" not in result.output
+    assert {p: p.read_bytes() for p in h.root.rglob("*") if p.is_file()} == before
+    h.bootstrap.assert_not_called()
+    h.auth.assert_not_called()
+    h.launch.assert_not_called()
+
+
+def test_claude_managed_env_conflict_is_rejected_before_state_loading(launch_home, monkeypatch):
+    h = launch_home
+    managed = h.paths["claude_managed"]
+    managed.parent.mkdir(parents=True)
+    managed.write_text(json.dumps({"env": {"LAUNCH_TEST_FLAG": "managed"}}))
+    policy = h.root / "env.json"
+    write_model_empty_policy(
+        policy, "claude", {"custom_env": {"LAUNCH_TEST_FLAG": "private-value"}}
+    )
+    monkeypatch.setattr(cli, "load_state", lambda: pytest.fail("conflict must precede state load"))
+    before = {p: p.read_bytes() for p in h.root.rglob("*") if p.is_file()}
+    result = runner.invoke(cli.app, ["claude", "-f", str(policy)])
+    assert result.exit_code == 1
+    assert "LAUNCH_TEST_FLAG" in result.output
+    assert "private-value" not in result.output
+    assert {p: p.read_bytes() for p in h.root.rglob("*") if p.is_file()} == before
+    h.bootstrap.assert_not_called()
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_saved_tracing_allows_resource_attributes_and_export_timing(launch_home, agent):
+    h = launch_home
+    state.save_state({"workspace": WS, "available_tools": [agent], f"{agent}_otel_tracing": True})
+    policy = h.root / "env.json"
+    custom_env = {
+        "OTEL_RESOURCE_ATTRIBUTES": "team=testing,empty=",
+        "OTEL_BSP_SCHEDULE_DELAY": "1234",
+    }
+    write_model_empty_policy(policy, agent, {"custom_env": custom_env})
+    result = runner.invoke(cli.app, [agent, "-f", str(policy)])
+    assert result.exit_code == 0, result.output
+    assert h.launch.call_args.kwargs["options"].custom_env == custom_env
+    assert h.launch.call_args.args[1][f"{agent}_otel_tracing"] is True
+    assert "team=testing" not in state.STATE_PATH.read_text()
+    assert "team=testing" not in h.paths[agent].read_text()
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
