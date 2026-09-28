@@ -18,6 +18,16 @@ from ucode.agents import LaunchOptions, claude
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
 
+
+def windows_os_view() -> SimpleNamespace:
+    """An ``os`` stand-in reporting ``name == "nt"``, to patch into the module under test.
+
+    Patching the real ``os.name`` would make this test's own pathlib/tempfile work behave like
+    Windows on Linux/macOS.
+    """
+    return SimpleNamespace(**{**vars(os), "name": "nt"})
+
+
 WS = "https://example.databricks.com"
 # A connection MCP proxy argv, used by the Claude MCP-registration helper tests.
 # The leading element is the resolved `ug` binary path, so tests assert the tail.
@@ -2123,19 +2133,76 @@ class TestClaudeLaunch:
         )
         assert calls[-3:] == [("stop",), ("shutdown",), ("close",)]
 
-    def test_smart_routing_on_windows_is_not_supported(self, monkeypatch):
+    def test_smart_routing_on_windows_still_launches(self, monkeypatch):
+        # A workspace can enable smart routing without the user asking; on Windows the
+        # launch must go ahead (v2 falls back to subagent-only routing), not refuse.
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(claude.os, "name", "nt")
+        launch_v2 = Mock()
+        monkeypatch.setattr(v2, "launch_claude", launch_v2)
 
-        with pytest.raises(
-            RuntimeError,
-            match="Smart routing in Claude Code is currently not supported on Windows",
-        ):
-            claude.launch(
-                {"workspace": WS, "profile": "test"},
-                ["--debug"],
-                options=LaunchOptions(launch_smart_routing=True),
+        claude.launch(
+            {"workspace": WS, "profile": "test"},
+            ["--debug"],
+            options=LaunchOptions(launch_smart_routing=True),
+        )
+
+        launch_v2.assert_called_once()
+
+    def test_windows_smart_routing_routes_subagents_without_the_pty(self, tmp_path, monkeypatch):
+        from ucode.databricks import AnthropicModelCatalog
+
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "")
+        monkeypatch.setenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "")
+        monkeypatch.setattr(v2, "os", windows_os_view())
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
+        monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+        monkeypatch.setattr(
+            v2,
+            "list_anthropic_model_catalog",
+            lambda *_args: AnthropicModelCatalog(
+                model_ids=["system.ai.claude-opus-4-8"], model_id_to_display_name={}
+            ),
+        )
+        warnings: list[str] = []
+        monkeypatch.setattr(v2, "print_warning", warnings.append)
+        captured: dict = {}
+
+        class FakeProcess:
+            def __init__(self, argv, **_kwargs):
+                settings_path = Path(argv[argv.index("--settings") + 1])
+                captured["settings"] = json.loads(settings_path.read_text(encoding="utf-8"))
+
+            def wait(self):
+                return 0
+
+        monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
+
+        # Reaching the PTY path would import the Unix-only claude_pty module, which
+        # fails on Windows, so a clean exit here also proves the PTY was never touched.
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_claude(
+                {"workspace": WS},
+                [],
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=None,
+                compose_settings=lambda _args: ({}, []),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
             )
+
+        assert exc.value.code == 0
+        env = captured["settings"]["env"]
+        assert env[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+        assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in env
+        assert "UserPromptSubmit" not in captured["settings"]["hooks"]
+        assert "route-subagent" in str(captured["settings"]["hooks"]["PreToolUse"])
+        assert len(warnings) == 1 and "subagents only" in warnings[0]
 
     def test_default_launch_keeps_existing_auth_path(self, monkeypatch):
         calls: list[list[str]] = []

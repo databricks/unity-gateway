@@ -24,6 +24,7 @@ from ucode.databricks import (
     get_databricks_token,
     model_token_limits,
 )
+from ucode.launcher import resolve_command
 from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
@@ -439,7 +440,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
             *tool_args[separator:],
         ]
 
-    proc = subprocess.Popen([SPEC["binary"], *tool_args], env=env)
+    proc = subprocess.Popen(resolve_command([SPEC["binary"], *tool_args]), env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

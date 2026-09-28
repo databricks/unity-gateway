@@ -56,7 +56,7 @@ from ucode.databricks import (
     build_tool_base_url,
     get_databricks_token,
 )
-from ucode.launcher import exec_or_spawn
+from ucode.launcher import exec_or_spawn, resolve_command
 from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     managed_file_conflicts,
@@ -1033,7 +1033,7 @@ def _launch_codex_with_otel_proxy(
     server_thread.start()
     endpoint = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1/traces"
     otel_args = codex_config_args(_otel_proxy_overlay(endpoint))
-    proc = subprocess.Popen([*base_argv, *otel_args, *tool_args])
+    proc = subprocess.Popen(resolve_command([*base_argv, *otel_args, *tool_args]))
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

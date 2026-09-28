@@ -6,10 +6,12 @@ import os
 import platform
 import shlex
 import subprocess
+import sys
+import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import NotRequired, TypedDict
+from typing import BinaryIO, NotRequired, TypedDict
 from urllib.parse import urlparse
 
 from databricks.sdk import oauth
@@ -32,6 +34,7 @@ DEFAULT_CLI_SCOPES = ("offline_access", "all-apis")
 CUSTOM_OAUTH_TIMEOUT_MS = 180_000
 CUSTOM_OAUTH_CLI_MIN_VERSION = (1, 17, 0)
 CUSTOM_OAUTH_CLI_ENV_VAR = "ENABLE_CUSTOM_OAUTH_FROM_CLI"
+_LOCK_POLL_SECONDS = 0.05
 
 
 class CustomOAuthConfig(TypedDict):
@@ -116,23 +119,49 @@ def build_custom_auth_shell_command(workspace: str, config: CustomOAuthConfig) -
     return shlex.join(argv)
 
 
+if sys.platform == "win32":
+    import msvcrt
+
+    def _lock_exclusive(lock_file: BinaryIO) -> None:
+        # msvcrt has no blocking lock (LK_LOCK gives up after ~10s), so poll the
+        # non-blocking one: a waiting helper may sit behind a human's browser consent.
+        lock_file.seek(0)
+        while True:
+            try:
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                time.sleep(_LOCK_POLL_SECONDS)
+
+    def _unlock(lock_file: BinaryIO) -> None:
+        lock_file.seek(0)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+
+else:
+    import fcntl
+
+    def _lock_exclusive(lock_file: BinaryIO) -> None:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+
+    def _unlock(lock_file: BinaryIO) -> None:
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
 @contextmanager
 def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
-    """Serialize helpers sharing a callback port with a POSIX file lock.
+    """Serialize helpers sharing a callback port with an OS file lock.
 
     Keep the lock file in place: unlinking it could let waiters lock different
     inodes. The OS releases the lock even if the helper is killed on timeout.
     """
-    import fcntl
-
     cache_dir.mkdir(parents=True, exist_ok=True)
     port = urlparse(redirect_url).port
     with (cache_dir / f"ug-oauth-{port}.lock").open("a+b") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        _lock_exclusive(lock_file)
         try:
             yield
         finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            _unlock(lock_file)
 
 
 def _custom_cli_profile(workspace: str, client_id: str) -> str:

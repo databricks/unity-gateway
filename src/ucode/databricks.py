@@ -201,6 +201,8 @@ def _log_auth_diagnostics() -> None:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
         version = (version_result.stdout or version_result.stderr or "").strip()
@@ -214,6 +216,8 @@ def _log_auth_diagnostics() -> None:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
         _debug(
@@ -653,11 +657,15 @@ def run(
     env: dict[str, str] | None = None,
     timeout: int | None = None,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+    # CLIs emit UTF-8; without an explicit encoding, text mode decodes with the
+    # Windows code page (cp1252) and a non-ASCII byte kills the reader thread.
     return subprocess.run(
         args,
         check=check,
         capture_output=capture_output,
         text=text,
+        encoding="utf-8" if text else None,
+        errors="replace" if text else None,
         env=env,
         timeout=timeout,
     )

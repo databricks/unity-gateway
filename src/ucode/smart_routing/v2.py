@@ -29,7 +29,7 @@ from ucode.databricks import (
     list_anthropic_model_catalog,
     list_anthropic_models,
 )
-from ucode.launcher import exec_or_spawn
+from ucode.launcher import exec_or_spawn, resolve_command
 from ucode.smart_routing import claude_routing, codex_interposer, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -438,9 +438,12 @@ def launch_claude(
     launch_model_args: Callable[[list[str], str | None], list[str]],
     model_name: Callable[[str], str],
 ) -> NoReturn:
-    """Launch Claude in the first-prompt routing PTY wrapper."""
+    """Launch Claude in the first-prompt routing PTY wrapper.
+
+    On Windows (no PTY) this routes subagents only: their PreToolUse hooks work
+    without a terminal wrapper, so a workspace that enables smart routing still gets it.
+    """
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
-    from ucode.smart_routing import claude_pty
 
     workspace = state.get("workspace")
     if not workspace:
@@ -464,6 +467,12 @@ def launch_claude(
     model_ids = catalog.model_ids
 
     route_first_prompt = first_prompt_routing_enabled()
+    if route_first_prompt and os.name == "nt":
+        print_warning(
+            "Claude Code's first prompt can't be smart-routed on Windows (it needs a Unix "
+            "terminal); routing subagents only."
+        )
+        route_first_prompt = False
     run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
     socket_path = APP_DIR / f"claude-v2-{run_id}.sock"
     settings_path = APP_DIR / f"claude-v2-{run_id}.json"
@@ -500,7 +509,7 @@ def launch_claude(
     if not route_first_prompt:
         # Subagent-only routing needs no PTY: the PreToolUse hooks ride in the
         # per-launch settings, so spawn Claude directly and clean up after it.
-        proc = subprocess.Popen(argv)
+        proc = subprocess.Popen(resolve_command(argv))
         try:
             returncode = proc.wait()
         except KeyboardInterrupt:
@@ -509,6 +518,9 @@ def launch_claude(
         finally:
             settings_path.unlink(missing_ok=True)
         sys.exit(returncode)
+
+    # Unix-only (pty/termios/fcntl): imported only once the PTY path is certain.
+    from ucode.smart_routing import claude_pty
 
     model_setting = _ClaudeModelSettingGuard(user_settings_path)
 
@@ -613,7 +625,7 @@ def launch_codex(
     # Preserve the user's normal CODEX_HOME (including MCP servers, skills, and
     # preferences) and layer only ucode's gateway settings at CLI precedence.
     app_server = subprocess.Popen(
-        [binary, "app-server", *config_args, "--listen", app_server_url],
+        resolve_command([binary, "app-server", *config_args, "--listen", app_server_url]),
         env=os.environ.copy(),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -635,7 +647,18 @@ def launch_codex(
             log_path=CODEX_INTERPOSER_LOG,
         )
         tui_url = _loopback_websocket_url(tui_port)
-        tui = subprocess.Popen([binary, "--remote", tui_url, "--model", start_model, *tool_args])
+        # The remote TUI decides whether to show OpenAI's sign-in screen from its own
+        # config: without ucode's provider it falls back to `openai`, which requires a
+        # ChatGPT/API-key login the user may never have done. The app-server keeps the
+        # rest of the overlay (hooks, catalog); the TUI only needs the provider.
+        provider_args = codex_config_args(
+            {key: overlay[key] for key in ("model_provider", "model_providers") if key in overlay}
+        )
+        tui = subprocess.Popen(
+            resolve_command(
+                [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
+            )
+        )
         try:
             returncode = tui.wait()
         except KeyboardInterrupt:

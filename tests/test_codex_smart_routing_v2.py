@@ -260,14 +260,19 @@ class TestLaunchCodex:
         ]
         assert processes[0].kwargs["env"][v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
         assert processes[0].kwargs["env"]["CODEX_HOME"] == "/user/codex-home"
-        assert processes[1].argv == [
-            "codex",
+        # The TUI gets the provider (so a machine with no ChatGPT login isn't sent to OpenAI's
+        # sign-in screen) but none of the app-server-side overlay such as the routing hooks.
+        tui_argv = processes[1].argv
+        assert tui_argv[:4] == ["codex", "--config", 'model_provider="Databricks"', "--config"]
+        assert tui_argv[4] == processes[0].argv[7]  # same model_providers.Databricks entry
+        assert tui_argv[5:] == [
             "--remote",
             "ws://127.0.0.1:41002",
             "--model",
             "gpt-start",
             "--search",
         ]
+        assert not any(arg.startswith("hooks.") for arg in tui_argv)
         assert interposer_args["args"] == (v2.LOOPBACK_HOST, "ws://127.0.0.1:41001")
         assert interposer_args["kwargs"]["available_models"] == [
             "system.ai.gpt-5-6-sol",
