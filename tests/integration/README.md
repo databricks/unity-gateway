@@ -149,6 +149,7 @@ test_ug_configure_managed_models.py     # injected model sources, smart-routing 
 test_ug_configure_managed_mcp.py        # injected managed MCP list
 test_ug_configure_managed_skills.py     # injected managed skills: download, coexist, reconcile away
 test_ug_configure_managed_lifecycle.py  # none -> A -> B -> MPS -> none: reconcile, clear on MPS/no-config
+test_suppress_managed_config.py        # hidden --suppress-managed-config launch flag applies/clears the injected config
 test_installation.py                   # fresh installed package
 utils/                                # process/terminal/evidence helpers and Docker files
 ```
@@ -269,12 +270,14 @@ checks** with both agents. A separate **6 managed-workspace cases** (one per age
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
-A further **25 `managed_fixture`
+A further **27 `managed_fixture`
 cases** use `UCODE_MANAGED_CONFIG_STUB`. Twelve explicit configured/fresh Claude and Codex
 discovery and source-override journeys fetch the published config once per agent, replace that
-agent's static source with its dedicated MPS, and reuse the result. Thirteen other collected cases
-cover focused model, MCP, skills, and lifecycle shapes, including per-agent model reconciliation
-and managed skill cleanup. The two Claude default-model cases read published MPS and Unity
+agent's static source with its dedicated MPS, and reuse the result. Fifteen other collected cases
+cover focused model, MCP, skills, and lifecycle shapes, including per-agent model reconciliation,
+managed skill cleanup, and one case per agent proving the hidden `--suppress-managed-config` launch
+flag drops the injected config's static model list/catalog for that launch while auth and startup
+still succeed. The two Claude default-model cases read published MPS and Unity
 Catalog sources directly from `eng-ml-inference-batch-inference-us-west-2` and
 `eng-ml-inference-ap-northeast-2`, respectively, then verify both generated settings files retain
 all admin-authored family defaults. Their replacement pickers contain those mapped defaults plus
@@ -289,7 +292,7 @@ constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-
 mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
 `ug configure` and Claude. The client secrets do not enter the pytest process.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 100 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 102 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash

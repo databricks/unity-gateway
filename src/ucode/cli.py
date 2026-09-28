@@ -87,8 +87,10 @@ from ucode.managed_config import (
     get_managed_config,
     get_model_recommendation,
     load_managed_state,
+    managed_config_reads_suppressed,
     normalize_managed_config,
     refresh_managed_config,
+    set_managed_config_reads_suppressed,
 )
 from ucode.managed_files import managed_write_session
 from ucode.managed_resolve import (
@@ -2558,7 +2560,13 @@ def _launch_tool(
     model: str | None = None,
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    suppress_managed_config: bool = False,
 ) -> None:
+    # Suppress before auto-configure and the writers run, so no managed-config read this launch
+    # makes applies a config; restored in `finally` to the prior value (safe for nested launches).
+    previously_suppressed = managed_config_reads_suppressed()
+    if suppress_managed_config:
+        set_managed_config_reads_suppressed(True)
     try:
         tool = normalize_tool(tool_name)
         if not custom_oauth_cli_enabled(custom_oauth):
@@ -2569,7 +2577,7 @@ def _launch_tool(
             redirect_output_to_stderr()
         explicit_prompt = _has_explicit_prompt(ctx)
         smart_routing_enabled = smart_routing_v2.smart_routing_enabled()
-        # Launchers such as isaac put their harness arguments after `--`, so the harness's own
+        # Launchers put their harness arguments after `--`, so the harness's own
         # `--model` lands in ctx.args instead of a ucode option. It still determines the effective
         # launch model and should therefore win in the launch summary.
         forwarded_model = (
@@ -2614,7 +2622,10 @@ def _launch_tool(
         # Bare `ucode` already fetched one to choose the agent; refetching would double the
         # control-plane round trip and any fallback warning it printed.
         coding_agent_config_feature_disabled = False
-        if managed is None:
+        if suppress_managed_config:
+            # Reads are already suppressed above; skip the fetch and its warning.
+            managed = None
+        elif managed is None:
             managed, coding_agent_config_feature_disabled = _fetch_managed_config(state)
         _reject_managed_launch_source_options(
             managed,
@@ -2683,6 +2694,8 @@ def _launch_tool(
                     f"Your workspace's managed config lists no {TOOL_SPECS[tool]['display']}-servable "
                     f"models ({', '.join(unservable)}); using your discovered models instead."
                 )
+        elif suppress_managed_config:
+            print_note("Skipping the workspace's managed config; using your own settings")
         elif not coding_agent_config_feature_disabled:
             print_note("No managed coding agent config found; using your own settings")
         if provider and parent_schema is not None:
@@ -2916,6 +2929,9 @@ def _launch_tool(
     except KeyboardInterrupt:
         print_err("Interrupted.")
         raise typer.Exit(130) from None
+    finally:
+        if suppress_managed_config:
+            set_managed_config_reads_suppressed(previously_suppressed)
 
 
 # Launch-only escape hatch for managed/headless launchers (e.g. omnigent) that
@@ -2937,6 +2953,17 @@ REFRESH_HELP = (
     "Refresh Databricks auth, gateway, models, managed config, and agent configuration before "
     "launching."
 )
+
+# Hidden opt-out: skip the workspace's API managed config for this launch and run on the
+# developer's own settings. An ordinary launch (no flag) still fetches and applies managed config.
+SuppressManagedConfigOption = Annotated[
+    bool,
+    typer.Option(
+        "--suppress-managed-config",
+        hidden=True,
+        help="Skip the workspace's managed config for this launch and use your own settings.",
+    ),
+]
 
 # Target this launch at a specific workspace, auto-configuring (and logging in)
 # if it hasn't been set up yet — so a launch needs no prior `ug configure`.
@@ -3132,6 +3159,7 @@ def codex_cmd(
             help="Enable AI Gateway model routing for Codex sessions and subagents.",
         ),
     ] = False,
+    suppress_managed_config: SuppressManagedConfigOption = False,
 ) -> None:
     """Launch Codex via Databricks."""
     try:
@@ -3150,6 +3178,7 @@ def codex_cmd(
                 workspace_url=workspace,
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
+                suppress_managed_config=suppress_managed_config,
             )
 
 
@@ -3218,6 +3247,7 @@ def claude_cmd(
             help="Enable AI Gateway model routing for Claude Code sessions and subagents.",
         ),
     ] = False,
+    suppress_managed_config: SuppressManagedConfigOption = False,
 ) -> None:
     """Launch Claude Code via Databricks."""
     try:
@@ -3237,6 +3267,7 @@ def claude_cmd(
                 workspace_url=workspace,
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
+                suppress_managed_config=suppress_managed_config,
             )
 
 
