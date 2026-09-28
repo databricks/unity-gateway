@@ -35,6 +35,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.managed_files as managed_files_mod
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
+    import ucode.vscode as vscode_mod
     from ucode.agents import codex as codex_mod
 
     state_dir = tmp_path / ".ucode"
@@ -76,6 +77,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     )
     # A developer's ambient managed-config stub would otherwise short-circuit every fetch in the suite.
     monkeypatch.delenv("UCODE_MANAGED_CONFIG_STUB", raising=False)
+    # `ug configure` points an installed Claude Code VS Code extension at ug; never let a
+    # test find, or edit, the developer's real VS Code settings.
+    monkeypatch.setattr(vscode_mod, "vscode_installs", lambda: [])
     # The model-services listing is memoized for the life of the process, so without this a cached
     # result would leak into the next test and make a stubbed listing look like it was never called.
     databricks_mod.clear_model_services_cache()
