@@ -63,6 +63,7 @@ from ucode.managed_files import (
     reconcile_managed_file,
     revert_managed_file,
 )
+from ucode.managed_source import SelectedManagedSource
 from ucode.mcp_oauth import (
     CLAUDE_CODE_OAUTH_CLIENT_ID,
     MCP_OAUTH_CALLBACK_PORT,
@@ -1012,7 +1013,10 @@ def write_tool_config(
     coding_agent_config_defaults: dict[str, str] | None = None,
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
+    selected_source: SelectedManagedSource | None = None,
 ) -> dict:
+    if selected_source is not None:
+        selected_source.check_target(state["workspace"], "claude")
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
     # revert would restore that snapshot instead of deleting the file.
@@ -1022,7 +1026,9 @@ def write_tool_config(
     # overwritten wholesale; without one, preserve the developer's own pre-existing headers. Reuses
     # this launch's warm managed-config cache (no extra round trip); a failed fetch degrades to None
     # (treated as unmanaged), never blocking the write.
-    managed_config_present = refresh_managed_config(state).manifest is not None
+    managed_config_present = (
+        selected_source is not None or refresh_managed_config(state).manifest is not None
+    )
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
     # Relayed inference points at a local refresh proxy; its loopback base URL is

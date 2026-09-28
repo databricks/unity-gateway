@@ -30,6 +30,11 @@ keyboard selection: nothing is selected by default, selecting Codex installs onl
 Codex, and submitting an empty selection installs nothing. Rendering checks cover
 the selected and empty checkboxes. These are local component checks, not live gateway tests.
 
+Local file input is covered by strict-parser cases in `test_managed_source.py`
+and isolated launch cases in `test_file_launch.py`. They check validation before
+writes, first use, immediate updates, API-cache separation, argument forwarding,
+and ordinary model selection when overrides are omitted.
+
 ## CUJ coverage matrix
 
 These are **implemented assertions**, not a claim that every version passes.

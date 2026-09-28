@@ -56,6 +56,40 @@ model for one launch. OpenCode's `provider/model` form is also accepted.
 Unknown Databricks models produce an error; this option does not add models
 to discovery or change ug's saved default.
 
+Claude and Codex accept a local `CodingAgentConfig` JSON file on each launch,
+including first use without a separate `ug configure`:
+
+```bash
+ug claude --workspace https://your-workspace.databricks.com -f './agent config.json' -- --settings ./claude-settings.json
+ucode codex --workspace https://your-workspace.databricks.com -f ./agent-config.json app-server --listen stdio://
+```
+
+Use `-f` / `--config-file` before `--`. Arguments after that separator belong to
+the agent. A minimal file enabling both agents without model overrides is:
+
+```json
+{
+  "spec_version": 1,
+  "enabled_agents": [
+    {"agent": "CODING_AGENT_CLAUDE_CODE", "config": {}},
+    {"agent": "CODING_AGENT_CODEX", "config": {}}
+  ]
+}
+```
+
+Omitted model overrides use ordinary model discovery and selection. The requested
+agent must be enabled. Every launch rereads and validates the complete file before
+bootstrap or settings writes. Missing or invalid input stops the launch without
+falling back to workspace policy. File launches do not populate the five-minute
+API cache at `~/.ucode/managed-config.json`; launches without `-f` use the existing
+workspace API behavior.
+
+This phase rejects `handoff`, `custom_env`, `native_settings`, and
+`native_requirements`, as well as nonempty MCP, skill, and budget selectors.
+It does not transfer ownership of Isaac's existing managed settings. Same-workspace
+UC resources are retained; workspace transitions requiring UC resource cleanup
+fail with migration guidance.
+
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
