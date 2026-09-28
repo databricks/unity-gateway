@@ -16,7 +16,7 @@ from pathlib import Path
 import tomlkit
 from tomlkit.exceptions import ParseError
 
-from ucode import gateway_proxy
+from ucode import config_io, gateway_proxy, vscode
 from ucode.codex_config import (
     catalog_slugs,
     codex_config_args,
@@ -80,7 +80,7 @@ from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.smart_routing.routing import configured_router_name
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
-from ucode.ui import print_warning_err
+from ucode.ui import print_note, print_success, print_warning, print_warning_err
 
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
@@ -512,6 +512,7 @@ def write_tool_config(
     )
     write_toml_file(CODEX_CONFIG_PATH, doc)
     _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
+    configure_vscode_extension(compose({}, include_catalog=False))
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     return state
@@ -876,8 +877,8 @@ def _is_ucode_catalog_reference(value: object) -> bool:
     return isinstance(value, str) and Path(value).expanduser() == CODEX_MODEL_CATALOG_PATH
 
 
-def _read_app_config() -> tomlkit.TOMLDocument:
-    path = _legacy_config_path()
+def _read_app_config(path: Path | None = None) -> tomlkit.TOMLDocument:
+    path = path or _legacy_config_path()
     try:
         return tomlkit.parse(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -951,6 +952,171 @@ def sync_app_model_catalog(catalog: dict) -> None:
         write_toml_file(_legacy_config_path(), doc)
     if reference_changed or (catalog_path is not None and catalog_changed):
         _print_app_catalog_restart_notice()
+
+
+# The Codex VS Code extension runs its own bundled Codex, which reads only Codex's config files and
+# never the ucode.config.toml layer that `ug codex` passes on the command line. On Linux and macOS the
+# machine-wide managed_config.toml carries ug's provider to it; where that file can't (Windows, or
+# when the privileged write was skipped), ug copies the same keys into the user's config.toml.
+_VSCODE_RECORD_NAME = "vscode-codex-extension.json"
+# The extension's Codex runs `ug auth-token` while it is itself starting; on Windows that took
+# 8-9 s, past the usual 5 s wait, so every request failed. The copy for it waits longer.
+_VSCODE_AUTH_TIMEOUT_MS = 30_000
+
+
+def _vscode_record_path() -> Path:
+    return config_io.APP_DIR / _VSCODE_RECORD_NAME
+
+
+def _read_vscode_record() -> dict:
+    data = read_json_safe(_vscode_record_path())
+    return data if isinstance(data, dict) else {}
+
+
+def _plain(value: object) -> object:
+    unwrap = getattr(value, "unwrap", None)
+    return unwrap() if callable(unwrap) else value
+
+
+def _gateway_provider(doc: dict) -> dict | None:
+    providers = _plain(doc.get("model_providers"))
+    provider = providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, dict) else None
+    return provider if isinstance(provider, dict) else None
+
+
+def _machine_config_has_gateway(provider: dict) -> bool:
+    """Whether the machine-wide Codex config already points every Codex at this gateway."""
+    path = codex_managed_config_path()
+    if path is None:
+        return False
+    try:
+        text = read_managed_file(path)
+        doc = _parse_managed_config(text) if text else {}
+    except RuntimeError:
+        return False
+    current = _gateway_provider(doc)
+    return (
+        doc.get("model_provider") == CODEX_MODEL_PROVIDER_NAME
+        and current is not None
+        and current.get("base_url") == provider.get("base_url")
+    )
+
+
+def configure_vscode_extension(gateway: dict) -> None:
+    """Point the Codex VS Code extension at Unity Gateway.
+
+    ``gateway`` holds the keys ug also writes to the machine-wide file: ``model_provider``, the
+    admin's default ``model`` if any, and ``[model_providers.Databricks]``. Silent when no VS Code
+    profile has the extension or when the machine-wide config already carries those keys.
+    """
+    if not vscode.has_codex_extension():
+        return
+    provider = _gateway_provider(gateway)
+    if gateway.get("model_provider") != CODEX_MODEL_PROVIDER_NAME or provider is None:
+        return
+    if _machine_config_has_gateway(provider):
+        return
+    auth = provider.get("auth")
+    if isinstance(auth, dict) and auth.get("timeout_ms", 0) < _VSCODE_AUTH_TIMEOUT_MS:
+        provider = {**provider, "auth": {**auth, "timeout_ms": _VSCODE_AUTH_TIMEOUT_MS}}
+    path = _legacy_config_path()
+    try:
+        doc = _read_app_config(path)
+    except RuntimeError as exc:
+        print_warning(
+            f"{exc}. Fix it and re-run `ug configure` to use the Codex VS Code extension."
+        )
+        return
+    current_provider = doc.get("model_provider")
+    if current_provider not in (None, CODEX_MODEL_PROVIDER_NAME):
+        print_warning(
+            f"{path} already uses the model provider {current_provider}; ug left it alone, so the "
+            "Codex VS Code extension won't use Unity Gateway. To use it, remove model_provider "
+            "from that file and re-run `ug configure`."
+        )
+        return
+
+    record = _read_vscode_record()
+    ours = record.get("path") == str(path) and isinstance(record.get("set"), dict)
+    already_set: dict = record["set"] if ours else {}
+    previous: dict = dict(record.get("previous") or {}) if ours else {}
+    changed = False
+    if current_provider != CODEX_MODEL_PROVIDER_NAME:
+        doc["model_provider"] = CODEX_MODEL_PROVIDER_NAME
+        changed = True
+    new_set: dict = {"model_provider": CODEX_MODEL_PROVIDER_NAME}
+    # Without a pinned model Codex boots on its catalog's first entry, which the gateway may
+    # reject; ug pins the admin's default exactly as it does for `ug codex`.
+    model = _plain(gateway.get("model"))
+    if isinstance(model, str) and model:
+        if doc.get("model") != model:
+            # A model the user had before ug took over comes back on `ug revert`.
+            if current_provider is None and not ours and "model" in doc:
+                previous["model"] = _plain(doc["model"])
+            doc["model"] = model
+            changed = True
+        new_set["model"] = model
+    elif "model" in already_set and doc.get("model") == already_set["model"]:
+        if "model" in previous:
+            doc["model"] = previous.pop("model")
+        else:
+            doc.pop("model", None)
+        changed = True
+    if _gateway_provider(doc) != provider:
+        providers = doc.get("model_providers")
+        if not isinstance(providers, dict):
+            providers = tomlkit.table(is_super_table=True)
+            doc["model_providers"] = providers
+        providers[CODEX_MODEL_PROVIDER_NAME] = provider
+        changed = True
+
+    if changed:
+        write_toml_file(path, doc)
+    if is_dry_run():
+        return
+    new_record = {"path": str(path), "set": new_set, "previous": previous}
+    if new_record != record:
+        write_json_file(_vscode_record_path(), new_record)
+    if changed:
+        print_success(
+            f"VS Code: Codex extension set to use Unity Gateway ({path}; plain `codex` uses it "
+            "too). Reload VS Code to apply."
+        )
+    else:
+        print_note("VS Code: the Codex extension already uses Unity Gateway.")
+
+
+def revert_vscode_extension() -> str:
+    """Remove the gateway keys ug added for the Codex VS Code extension. Returns a summary."""
+    record = _read_vscode_record()
+    if not record:
+        return "unchanged"
+    path = Path(record.get("path") or _legacy_config_path())
+    try:
+        doc = _read_app_config(path)
+    except RuntimeError as exc:
+        print_warning_err(str(exc))
+        return "unchanged"
+    changed = False
+    # Leave the file alone if the user has since pointed Codex at another provider.
+    if doc.get("model_provider") == CODEX_MODEL_PROVIDER_NAME:
+        doc.pop("model_provider", None)
+        providers = doc.get("model_providers")
+        if isinstance(providers, dict):
+            providers.pop(CODEX_MODEL_PROVIDER_NAME, None)
+            if not providers:
+                doc.pop("model_providers", None)
+        previous = record.get("previous") or {}
+        if "model" in previous:
+            doc["model"] = previous["model"]
+        elif "model" in (record.get("set") or {}):
+            # ug's model, or one picked later in the extension: gateway ids mean nothing to Codex
+            # once the gateway provider is gone.
+            doc.pop("model", None)
+        write_toml_file(path, doc)
+        changed = True
+    _vscode_record_path().unlink(missing_ok=True)
+    return "restored" if changed else "unchanged"
 
 
 def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:

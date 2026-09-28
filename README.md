@@ -94,6 +94,59 @@ Cursor models still run through your Cursor account.
 `UG_WORKSPACE` can provide the default workspace. An explicit `--workspace` or
 `--profile` takes precedence.
 
+## Claude Code in VS Code
+
+The Claude Code VS Code extension doesn't start Claude through `ug claude`, so on its
+own it signs in to Anthropic. Whenever `ug configure` sets up Claude Code, it also looks
+for the extension and points every VS Code profile that has it at Unity Gateway:
+
+- `ug` installs a small launcher, `ug-claude-vscode`, next to `ug`. The extension starts
+  Claude through it, and it adds `ug`'s gateway settings (`~/.claude/ucode-settings.json`).
+- In the `settings.json` of each profile with the extension, `ug` sets:
+
+  ```json
+  "claudeCode.claudeProcessWrapper": "<path to ug-claude-vscode>",
+  "claudeCode.disableLoginPrompt": true,
+  "claudeCode.initialPermissionMode": "default"
+  ```
+
+  `initialPermissionMode` is added only when it isn't already set.
+- Covered on Windows, macOS and Linux: VS Code and VS Code Insiders (the default
+  profile and named profiles), plus the VS Code Server's Machine settings when VS Code
+  connects to this machine over Remote-SSH, WSL or a dev container.
+
+Reload VS Code afterwards. `ug` leaves a `settings.json` alone when it contains comments
+(it prints the lines to add instead) or when the extension already uses a different
+wrapper. `ug revert` removes only the settings `ug` added.
+
+In the extension you get the gateway, automatic token refresh, the admin's model list and
+`ug`'s MCP servers. Smart routing needs `ug claude`. Run `ug configure` again after your
+admin changes models. To see how the extension launches Claude, set
+`UG_CLAUDE_VSCODE_LOG=<file>` through the `claudeCode.environmentVariables` setting.
+
+## Codex in VS Code
+
+The Codex VS Code extension (`openai.chatgpt`) runs its own copy of Codex, which reads
+Codex's own config files but not `~/.codex/ucode.config.toml`, so on its own it asks for
+a ChatGPT sign-in. There's no VS Code setting to change for it:
+
+- On Linux and macOS, the machine-wide `/etc/codex/managed_config.toml` that
+  `ug configure` writes already points every Codex at the gateway, the extension included.
+- Where that file isn't written (Windows, or a Linux/macOS run without `sudo` or from a
+  script), `ug configure`
+  sets up Codex and, if any VS Code profile (or the VS Code Server) has the extension, adds
+  the same keys to `~/.codex/config.toml`: `model_provider = "Databricks"`, the admin's
+  default `model`, and `[model_providers.Databricks]`. Plain `codex` uses them too.
+
+Reload VS Code afterwards. `ug` leaves `config.toml` alone when it already uses another
+`model_provider`. `ug revert` removes only the keys `ug` added and restores a `model` you
+had before.
+
+In the extension you get the gateway, automatic token refresh, the admin's model list and
+`ug`'s MCP servers. Smart routing needs `ug codex`. On Windows the extension asks to set up
+its Agent sandbox the first time; choose "Continue without administrator access" if you
+can't approve the admin prompt. It also needs an open folder.
+
 ## MCP Servers
 
 Register Databricks MCP servers for configured MCP-capable agents. Cursor Agent
@@ -190,6 +243,8 @@ with `ug configure` to control installation.
 |------|---------------|
 | Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS) |
 | Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS) |
+| Claude Code VS Code extension | the three `claudeCode.*` keys above in each profile's VS Code `settings.json`, and `~/.ucode/vscode-claude-extension.json` (what `ug` changed, for `ug revert`) |
+| Codex VS Code extension | `model_provider`, `model` and `[model_providers.Databricks]` in `~/.codex/config.toml` when no machine-wide file carries them, and `~/.ucode/vscode-codex-extension.json` (what `ug` changed, for `ug revert`) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |
 | GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/ucode-mcp-config.json` |
