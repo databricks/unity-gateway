@@ -26,6 +26,7 @@ from ucode.databricks import (
     build_tool_base_url,
     get_databricks_token,
 )
+from ucode.launcher import resolve_command
 from ucode.state import (
     get_provider_service,
     mark_tool_managed,
@@ -258,7 +259,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     )
     refresher.start()
 
-    proc = subprocess.Popen([SPEC["binary"], *tool_args], env=env)
+    proc = subprocess.Popen(resolve_command([SPEC["binary"], *tool_args]), env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

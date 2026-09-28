@@ -3,6 +3,7 @@
 import copy
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -327,6 +328,16 @@ def test_subprocess_failure_never_falls_back(monkeypatch, bundled, fail_validati
     with pytest.raises(RuntimeError, match="Upgrade the active Codex"):
         catalog.prepare_codex_catalog("codex", ["kimi-k3"])
     assert len(calls) == (2 if fail_validation else 1)
+
+
+class TestRunCatalogCommand:
+    def test_decodes_utf8_output_instead_of_the_locale_code_page(self, tmp_path):
+        # Codex prints UTF-8 JSON; model descriptions carry curly quotes. Without an
+        # explicit encoding Windows decodes as cp1252, and the 0x9d byte of U+201D
+        # crashes the reader thread so the catalog build fails.
+        script = r"import sys; sys.stdout.buffer.write('“fast” — ok'.encode('utf-8'))"
+        result = catalog._run_catalog_command(sys.executable, ["-c", script], str(tmp_path))
+        assert result.stdout == "“fast” — ok"
 
 
 class TestConfiguredPaths:

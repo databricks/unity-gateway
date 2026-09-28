@@ -7,6 +7,8 @@ import re
 import shutil
 import subprocess
 
+from ucode.launcher import resolve_command
+
 _BASE_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 _STABLE_VERSION_RE = re.compile(r"v?\d+\.\d+\.\d+$")
 
@@ -33,9 +35,11 @@ def published_versions(package: str) -> list[str]:
         return []
     try:
         result = subprocess.run(
-            ["npm", "view", package, "versions", "--json"],
+            resolve_command(["npm", "view", package, "versions", "--json"]),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
             check=False,
         )
