@@ -34,6 +34,7 @@ from ucode.launcher import exec_or_spawn
 from ucode.smart_routing import claude_routing, codex_interposer, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
+    ROUTING_HOOK_COMMAND_MARKER,
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
 )
@@ -337,12 +338,15 @@ def _route_claude_prompt(
 
 
 def check_routed_agents_registered(
-    payload: dict, available_models: list[str], claude_command: str | None = None
+    payload: dict,
+    available_models: list[str],
+    claude_command: str | None = None,
+    claude_launcher: str | None = None,
 ) -> str | None:
     """Warn and log when the running Claude process is missing routed agents."""
     expected = sorted(_routed_claude_agent_definitions(available_models))
     if claude_command is None:
-        claude_command = _claude_process_command()
+        claude_command, claude_launcher = _claude_process_commands()
     registered = _agents_arg_names(claude_command) if claude_command else set()
     missing = [name for name in expected if name not in registered]
     if not missing:
@@ -355,8 +359,12 @@ def check_routed_agents_registered(
             "session_id": payload.get("session_id"),
             "source": payload.get("source"),
             "ucode_version": ug_version(),
+            "hook_executable": sys.argv[0],
             "claude_process_found": claude_command is not None,
+            "claude_launched_by": claude_launcher.split(" -", 1)[0] if claude_launcher else None,
             "claude_settings": settings.group(1) if settings else None,
+            "claude_has_agents_flag": "--agents" in (claude_command or ""),
+            "persistent_router_hooks": _persistent_router_hook_files(),
             "expected": expected,
             "registered": sorted(
                 name for name in registered if name.startswith(CLAUDE_ROUTED_AGENT_PREFIX)
@@ -371,28 +379,55 @@ def check_routed_agents_registered(
     )
 
 
-def _claude_process_command() -> str | None:
-    """Command line of the nearest ancestor `claude` process (the hook's launcher)."""
+def _claude_process_commands() -> tuple[str | None, str | None]:
+    """Command lines of the nearest ancestor `claude` process and of its parent."""
     pid = os.getppid()
     for _ in range(10):
-        try:
-            result = subprocess.run(
-                ["ps", "-ww", "-o", "ppid=,args=", "-p", str(pid)],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None
-        fields = result.stdout.split(None, 1)
-        if len(fields) != 2 or not fields[0].isdigit():
-            return None
-        ppid, command = fields[0], fields[1].strip()
+        process = _process_command(pid)
+        if process is None:
+            return None, None
+        ppid, command = process
         if "--agents" in command or command.split(" ", 1)[0].endswith("claude"):
-            return command
-        pid = int(ppid)
-    return None
+            parent = _process_command(ppid)
+            return command, parent[1] if parent else None
+        pid = ppid
+    return None, None
+
+
+def _process_command(pid: int) -> tuple[int, str] | None:
+    try:
+        result = subprocess.run(
+            ["ps", "-ww", "-o", "ppid=,args=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    fields = result.stdout.split(None, 1)
+    if len(fields) != 2 or not fields[0].isdigit():
+        return None
+    return int(fields[0]), fields[1].strip()
+
+
+def _persistent_router_hook_files() -> list[str]:
+    """Persistent Claude settings that still carry ucode router hooks (left by older ucode)."""
+    from ucode.agents.claude import (
+        CLAUDE_SETTINGS_PATH,
+        CLAUDE_USER_SETTINGS_PATH,
+        _managed_settings_path,
+    )
+
+    candidates = [CLAUDE_USER_SETTINGS_PATH, CLAUDE_SETTINGS_PATH, _managed_settings_path()]
+    found = []
+    for path in candidates:
+        if path is None:
+            continue
+        hooks = read_json_safe(path).get("hooks")
+        if hooks and ROUTING_HOOK_COMMAND_MARKER in json.dumps(hooks):
+            found.append(str(path))
+    return found
 
 
 def _agents_arg_names(command: str) -> set[str]:

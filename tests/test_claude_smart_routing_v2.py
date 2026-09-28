@@ -812,15 +812,29 @@ class TestRoutedAgentsRegisteredCheck:
         log = tmp_path / "agents.jsonl"
         monkeypatch.setattr(v2.claude_routing, "AGENT_CHECK_LOG_PATH", log)
 
+        user_settings = tmp_path / "settings.json"
+        user_settings.write_text(
+            json.dumps(
+                {"hooks": {"PreToolUse": [{"hooks": [{"command": "ug claude-router-hook"}]}]}}
+            )
+        )
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_settings)
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "missing.json")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+
         warning = v2.check_routed_agents_registered(
             {"session_id": "s1", "source": "startup"},
             self.MODELS,
             self._command(["ucode-route-other-12345678", "Explore"]),
+            claude_launcher="-zsh",
         )
 
         assert warning is not None and "2/2 routed subagents" in warning
         record = json.loads(log.read_text())
         assert record["claude_settings"] == "/tmp/claude-v2-1-x.json"
+        assert record["claude_launched_by"] == "-zsh"
+        assert record["claude_has_agents_flag"] is True
+        assert record["persistent_router_hooks"] == [str(user_settings)]
         assert record["missing"] == record["expected"]
         assert "ucode-route-kimi-k3-ba377e31" in record["missing"]
         assert record["registered"] == ["ucode-route-other-12345678"]
