@@ -109,24 +109,32 @@ class _Harness:
         self.claude_managed = tmp_path / "claude-managed-settings.json"
         self.codex_config = tmp_path / "ucode.config.toml"
         self.codex_catalog = tmp_path / "codex-model-catalog.json"
+        self.claude_managed_configs: dict = {}
 
     def apply_claude(self, config: dict | None) -> None:
-        base = {"workspace": WS, "codex_models": [], "claude_models": dict(DISCOVERED_CLAUDE)}
+        base = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_models": dict(DISCOVERED_CLAUDE),
+            "managed_configs": self.claude_managed_configs,
+        }
         if config is None:
-            claude.write_tool_config(base, None, coding_agent_config_defaults={})
+            updated = claude.write_tool_config(base, None, coding_agent_config_defaults={})
+            self.claude_managed_configs = updated["managed_configs"]
             return
         managed = normalize_managed_config(config)
         state = resolve_state(managed, base, "claude")
         provider = managed_provider_service(managed, "claude")
         provider_models = managed_provider_family_models(managed) if provider else None
         defaults = managed_claude_family_models(managed) or {}
-        claude.write_tool_config(
+        updated = claude.write_tool_config(
             state,
             None,
             provider=provider,
             provider_models=provider_models,
             coding_agent_config_defaults=defaults,
         )
+        self.claude_managed_configs = updated["managed_configs"]
 
     def apply_codex(self, config: dict | None) -> None:
         base = {"workspace": WS, "codex_models": []}

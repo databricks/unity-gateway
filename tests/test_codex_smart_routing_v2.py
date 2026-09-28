@@ -12,6 +12,11 @@ from ucode.smart_routing import codex_interposer, codex_routing, v2
 WS = "https://example.databricks.com"
 
 
+@pytest.fixture(autouse=True)
+def isolate_native_codex_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+
+
 def test_smart_routing_switch_message_is_boxed():
     message = v2.format_routing_notice("model-x", "Because X.")
 
@@ -45,6 +50,10 @@ class TestLaunchCodex:
         [
             ([], LaunchOptions(launch_smart_routing=True)),
             (["fix the parser"], LaunchOptions(launch_smart_routing=True)),
+            (
+                [],
+                LaunchOptions(launch_smart_routing=True, custom_env={"LAUNCH_TEST_FLAG": "routed"}),
+            ),
         ],
     )
     def test_codex_smart_routing_launch_dispatches_to_v2(self, monkeypatch, tool_args, options):
@@ -72,6 +81,7 @@ class TestLaunchCodex:
                     "binary": "codex",
                     "start_model": "gpt-start",
                     "render_overlay": codex.render_overlay,
+                    "custom_env": options.custom_env,
                 },
             )
         ]
@@ -98,7 +108,7 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.144.0")
         monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kw: "token")
         monkeypatch.setattr(v2, "launch_codex", lambda *args, **kwargs: pytest.fail("launched"))
-        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
+        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv, *, env: launches.append(argv))
 
         codex.launch(
             {"workspace": WS},
@@ -181,6 +191,8 @@ class TestLaunchCodex:
         token_calls = []
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
+        monkeypatch.setenv("LAUNCH_TEST_FLAG", "inherited")
+        monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
 
@@ -232,6 +244,7 @@ class TestLaunchCodex:
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
+                custom_env={"LAUNCH_TEST_FLAG": "routed child\n", "EMPTY": ""},
             )
 
         assert exc.value.code == 7
@@ -260,6 +273,13 @@ class TestLaunchCodex:
         ]
         assert processes[0].kwargs["env"][v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
         assert processes[0].kwargs["env"]["CODEX_HOME"] == "/user/codex-home"
+        for process in processes:
+            assert process.kwargs["env"]["LAUNCH_TEST_FLAG"] == "routed child\n"
+            assert process.kwargs["env"]["EMPTY"] == ""
+            assert process.kwargs["env"]["OAUTH_TOKEN"] == "token-1"
+        parent_value = os.environ.get("LAUNCH_TEST_FLAG")
+        assert parent_value == "inherited"
+        assert "OAUTH_TOKEN" not in os.environ
         assert processes[1].argv == [
             "codex",
             "--remote",
@@ -340,6 +360,8 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
         monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setenv("LAUNCH_TEST_FLAG", "inherited")
+        monkeypatch.delenv("OAUTH_TOKEN", raising=False)
         monkeypatch.setattr(
             v2.subprocess,
             "Popen",
@@ -352,8 +374,8 @@ class TestLaunchCodex:
         )
         execd = []
 
-        def fake_exec(argv):
-            execd.append(argv)
+        def fake_exec(argv, *, env):
+            execd.append((argv, env))
             raise SystemExit(0)
 
         monkeypatch.setattr(v2, "exec_or_spawn", fake_exec)
@@ -365,10 +387,11 @@ class TestLaunchCodex:
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
+                custom_env={"LAUNCH_TEST_FLAG": "subagent child"},
             )
 
         assert exc.value.code == 0
-        (argv,) = execd
+        ((argv, env),) = execd
         assert argv[0] == "codex"
         assert argv[-1] == "--search"
         assert 'model="gpt-start"' in argv
@@ -376,8 +399,12 @@ class TestLaunchCodex:
         assert "codex-router-hook route-subagent" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override
         # The hook subprocesses inherit the launch environment and pass the routing gate.
-        assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
-        assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
+        assert env[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+        assert env[v2.OAUTH_TOKEN_ENV_VAR] == "token"
+        assert env["LAUNCH_TEST_FLAG"] == "subagent child"
+        parent_value = os.environ.get("LAUNCH_TEST_FLAG")
+        assert parent_value == "inherited"
+        assert "OAUTH_TOKEN" not in os.environ
 
     def test_v2_pre_tool_hook_preserves_user_hooks(self, tmp_path, monkeypatch):
         codex_home = tmp_path / ".codex"

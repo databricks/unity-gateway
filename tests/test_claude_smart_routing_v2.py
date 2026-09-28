@@ -11,9 +11,18 @@ from pathlib import Path
 
 import pytest
 
-from ucode.agents import claude
+from ucode.agents import LaunchOptions, claude
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import claude_hooks, claude_pty, routing, v2
+
+
+@pytest.fixture(autouse=True)
+def isolate_native_claude_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        claude, "_managed_settings_path", lambda: tmp_path / "managed-settings.json"
+    )
+    monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+    monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", tmp_path / "native-settings.json")
 
 
 class TestManagedModelPicker:
@@ -482,7 +491,13 @@ class TestV2ModelPickerDiscovery:
             )
 
         monkeypatch.setattr(v2, "list_anthropic_model_catalog", fake_discovery)
-        monkeypatch.setattr(claude_pty, "run_claude_pty", lambda _argv, **_kwargs: 0)
+        child_env = {}
+
+        def run_pty(_argv, **kwargs):
+            child_env.update(kwargs["env"])
+            return 0
+
+        monkeypatch.setattr(claude_pty, "run_claude_pty", run_pty)
 
         with pytest.raises(SystemExit) as exc:
             v2.launch_claude(
@@ -496,10 +511,10 @@ class TestV2ModelPickerDiscovery:
                 model_name=claude._maybe_add_1m_suffix,
             )
         assert exc.value.code == 0
-        return discovery_calls
+        return discovery_calls, child_env
 
     def test_model_picker_disables_model_discovery(self, tmp_path, monkeypatch):
-        discovery_calls = self._launch(
+        discovery_calls, child_env = self._launch(
             monkeypatch,
             tmp_path,
             picker_catalog=AnthropicModelCatalog(
@@ -510,16 +525,87 @@ class TestV2ModelPickerDiscovery:
         # The picker supplied the models, so discovery never ran and the launch left
         # gateway model discovery disabled instead of enabling it alongside the picker.
         assert discovery_calls == 0
+        assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in child_env
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in child_env
         assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in os.environ
         assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
     def test_no_model_picker_enables_model_discovery(self, tmp_path, monkeypatch):
-        discovery_calls = self._launch(monkeypatch, tmp_path, picker_catalog=None)
+        discovery_calls, child_env = self._launch(monkeypatch, tmp_path, picker_catalog=None)
         # Without a picker the router falls back to gateway discovery and enables Claude
         # Code's model-discovery feature for the launch.
         assert discovery_calls == 1
-        assert os.environ.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY") == "1"
-        assert os.environ.get("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY") == "1"
+        assert child_env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert child_env["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in os.environ
+        assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
+
+
+@pytest.mark.parametrize("subagent_only", [False, True])
+def test_custom_env_is_inline_and_reaches_claude_routing_child(
+    tmp_path, monkeypatch, subagent_only
+):
+    monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+    if subagent_only:
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+    else:
+        monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
+    monkeypatch.setenv("LAUNCH_TEST_FLAG", "inherited")
+    monkeypatch.delenv("OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+    monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "routing-token")
+    monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
+    monkeypatch.setattr(
+        v2,
+        "_model_picker_catalog",
+        lambda: AnthropicModelCatalog(["system.ai.claude-opus-4-8"], {}),
+    )
+    claude.CLAUDE_SETTINGS_PATH.write_text(
+        json.dumps({"env": {"LAUNCH_TEST_FLAG": "private baseline", "KEEP": "keep"}})
+    )
+    caller = tmp_path / "caller.json"
+    caller.write_text(
+        json.dumps({"env": {"LAUNCH_TEST_FLAG": "caller baseline"}, "hooks": {"SessionStart": []}})
+    )
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    captured = {}
+
+    def capture(argv, *, env, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = env
+        captured["settings"] = json.loads(argv[argv.index("--settings") + 1])
+        assert list(tmp_path.glob("claude-v2-*.json")) == []
+        return 0
+
+    class Process:
+        def __init__(self, argv, *, env):
+            capture(argv, env=env)
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(claude_pty, "run_claude_pty", capture)
+    monkeypatch.setattr(v2.subprocess, "Popen", Process)
+    with pytest.raises(SystemExit) as exc:
+        claude.launch(
+            {"workspace": "https://example.com"},
+            ["--settings", str(caller)],
+            options=LaunchOptions(
+                launch_smart_routing=True,
+                custom_env={"LAUNCH_TEST_FLAG": "routing override\n", "EMPTY": ""},
+            ),
+        )
+    assert exc.value.code == 0
+    assert captured["settings"]["env"]["LAUNCH_TEST_FLAG"] == "routing override\n"
+    assert captured["settings"]["env"]["EMPTY"] == ""
+    assert captured["settings"]["env"]["KEEP"] == "keep"
+    assert "route-subagent" in str(captured["settings"]["hooks"]["PreToolUse"])
+    assert captured["env"]["LAUNCH_TEST_FLAG"] == "routing override\n"
+    assert captured["env"]["OAUTH_TOKEN"] == "routing-token"
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    parent_value = os.environ.get("LAUNCH_TEST_FLAG")
+    assert parent_value == "inherited"
+    assert "OAUTH_TOKEN" not in os.environ
 
 
 class TestSubagentRouting:
@@ -730,7 +816,10 @@ class TestPtyFlow:
                 socket_path=tmp_path / "missing.sock",
             )
 
-    def test_direct_switch_restore_and_replay(self, tmp_path):
+    def test_direct_switch_restore_and_replay(self, tmp_path, monkeypatch):
+        from ucode.launcher import build_child_env
+
+        monkeypatch.setenv("LAUNCH_TEST_FLAG", "parent baseline")
         fake_claude = tmp_path / "fake_claude.py"
         capture = tmp_path / "capture.json"
         restored = tmp_path / "restored"
@@ -773,6 +862,7 @@ capture_path.write_text(json.dumps({
     "command": model_command.decode(),
     "replayed": replayed.decode(),
     "restored_before_replay": restored_path.exists(),
+    "custom_env": os.environ.get("LAUNCH_TEST_FLAG"),
 }))
 """.lstrip()
         )
@@ -791,6 +881,7 @@ capture_path.write_text(json.dumps({
             ),
             socket_path=socket_path,
             restore_model_setting=lambda: restored.write_text("restored"),
+            env=build_child_env({"LAUNCH_TEST_FLAG": "pty override\n"}),
         )
 
         assert result == 0
@@ -798,4 +889,7 @@ capture_path.write_text(json.dumps({
             "command": "/model system.ai.claude-sonnet-5\r",
             "replayed": "\x1b[200~fix\nthe parser\x1b[201~\r",
             "restored_before_replay": True,
+            "custom_env": "pty override\n",
         }
+        parent_value = os.environ.get("LAUNCH_TEST_FLAG")
+        assert parent_value == "parent baseline"

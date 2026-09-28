@@ -6,9 +6,22 @@ import os
 import signal
 import subprocess
 import sys
+from collections.abc import Mapping
 
 
-def exec_or_spawn(argv: list[str]) -> None:
+def build_child_env(custom_env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Copy the inherited environment, replacing Windows names case-insensitively."""
+    env = dict(os.environ)
+    for name, value in (custom_env or {}).items():
+        if os.name == "nt":
+            for inherited_name in list(env):
+                if inherited_name.upper() == name.upper():
+                    del env[inherited_name]
+        env[name] = value
+    return env
+
+
+def exec_or_spawn(argv: list[str], *, env: Mapping[str, str] | None = None) -> None:
     """Hand the terminal to ``argv``, then exit with its status.
 
     On POSIX we ``os.execvp`` — the agent process *replaces* ucode, inheriting
@@ -22,10 +35,13 @@ def exec_or_spawn(argv: list[str]) -> None:
     agents (gemini/opencode/copilot/pi) already use.
     """
     if os.name != "nt":
-        os.execvp(argv[0], argv)
+        if env is None:
+            os.execvp(argv[0], argv)
+        else:
+            os.execvpe(argv[0], argv, env)
         return  # unreachable on POSIX; keeps type-checkers happy
 
-    proc = subprocess.Popen(argv)
+    proc = subprocess.Popen(argv, env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

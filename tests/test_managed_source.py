@@ -99,7 +99,7 @@ def test_rejects_raw_types_and_semantics_before_normalization(field, value, erro
     assert "private" not in str(error.value)
 
 
-@pytest.mark.parametrize("field", ["custom_env", "native_settings", "native_requirements"])
+@pytest.mark.parametrize("field", ["native_settings", "native_requirements"])
 @pytest.mark.parametrize("value", [{}, None, {"secret": "private"}])
 def test_unimplemented_extensions_never_silently_disappear(field, value):
     config = wire()
@@ -120,7 +120,7 @@ def test_selector_and_budget_restrictions(field, value):
 def test_full_manifest_validation_includes_unrequested_agent():
     config = wire()
     config["enabled_agents"].extend(wire("claude")["enabled_agents"])
-    config["enabled_agents"][1]["config"]["custom_env"] = {}
+    config["enabled_agents"][1]["config"]["custom_env"] = {"FEATURE_FLAG": False}
     with pytest.raises(RuntimeError, match=r"enabled_agents\[1\].config.custom_env"):
         validate_file_config(config, "codex")
 
@@ -188,3 +188,108 @@ def test_both_agents_can_omit_all_model_policy(tmp_path, agent):
     selected = read_file_source(str(path), "https://example.databricks.com", agent)
     assert selected.manifest["enabled_agents"] == {"claude": {}, "codex": {}}
     assert not selected.has_models
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_custom_env_is_agent_scoped_exact_and_separate_from_api_normalization(tmp_path, agent):
+    from ucode.managed_config import normalize_managed_config
+
+    custom_env = {
+        "OTEL_RESOURCE_ATTRIBUTES": "label=a,b=c\nsecond=line",
+        "EMPTY": "",
+        "FLAG": " 1 ",
+    }
+    config = {
+        "spec_version": 1,
+        "enabled_agents": [
+            {"agent": "claude_code", "config": {"custom_env": custom_env}},
+            {"agent": "codex", "config": {"custom_env": {"FLAG": "codex only"}}},
+        ],
+    }
+    path = tmp_path / "env.json"
+    path.write_text(json.dumps(config))
+    source = read_file_source(str(path), "https://example.databricks.com", agent)
+    assert source.custom_env == (custom_env if agent == "claude" else {"FLAG": "codex only"})
+    assert not source.has_models
+    view = source.custom_env
+    view.clear()
+    assert source.custom_env
+    assert "codex only" not in repr(source)
+    assert normalize_managed_config(config)["enabled_agents"] == {"claude": {}, "codex": {}}
+
+
+@pytest.mark.parametrize(
+    "value", [None, [], True, "private", {"FLAG": False}, {"FLAG": 1}, {"FLAG": "private\0value"}]
+)
+def test_custom_env_rejects_invalid_maps_and_values(value):
+    config = wire()
+    config["enabled_agents"][0]["config"]["custom_env"] = value
+    with pytest.raises(RuntimeError, match="custom_env") as error:
+        validate_file_config(config, "codex")
+    assert "private" not in str(error.value)
+
+
+@pytest.mark.parametrize("name", ["", "1FLAG", "BAD-NAME", "A=B", "ENV\nNAME", "é", "NAME\0"])
+def test_custom_env_requires_portable_names(name):
+    config = wire()
+    config["enabled_agents"][0]["config"]["custom_env"] = {name: "private"}
+    with pytest.raises(RuntimeError, match="portable environment variable names") as error:
+        validate_file_config(config, "codex")
+    assert "private" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "PATH",
+        "Home",
+        "XDG_CONFIG_HOME",
+        "Databricks_HOST",
+        "ANTHROPIC_AUTH_TOKEN",
+        "OPENAI_BASE_URL",
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+        "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+        "CLAUDE_CODE_GATEWAY_TOKEN_FILE_DESCRIPTOR",
+        "CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR",
+        "CLAUDE_CODE_HOST_AUTH_ENV_VAR",
+        "CLAUDE_CODE_HOST_CREDS_FILE",
+        "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+        "CLAUDE_CODE_OAUTH_SCOPES",
+        "CLAUDE_CODE_OAUTH_CLIENT_ID",
+        "CLAUDE_CODE_CUSTOM_OAUTH_URL",
+        "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
+        "CLAUDE_SESSION_INGRESS_TOKEN_FILE",
+        "CLAUDE_BG_AUTH_SNAPSHOT_PATH",
+        "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+        "OAUTH_TOKEN",
+        "UG_OPTION",
+        "UCODE_DEBUG",
+        "ENABLE_SMART_ROUTING_V2",
+        "SMART_ROUTER_NAME",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "NODE_OPTIONS",
+    ],
+)
+def test_custom_env_reserves_auth_path_config_and_routing_names(name):
+    config = wire()
+    config["enabled_agents"][0]["config"]["custom_env"] = {name: "private"}
+    with pytest.raises(RuntimeError, match="reserved") as error:
+        validate_file_config(config, "codex")
+    assert "private" not in str(error.value)
+
+
+def test_custom_env_rejects_case_insensitive_duplicates():
+    config = wire()
+    config["enabled_agents"][0]["config"]["custom_env"] = {"FLAG": "first", "flag": "second"}
+    with pytest.raises(RuntimeError, match="duplicate environment name ignoring case"):
+        validate_file_config(config, "codex")
+
+
+@pytest.mark.parametrize("agent", ["gemini", "opencode", "copilot", "pi"])
+def test_custom_env_rejected_on_other_agents_even_when_not_requested(agent):
+    config = wire()
+    config["enabled_agents"].append({"agent": agent, "config": {"custom_env": {}}})
+    with pytest.raises(RuntimeError, match="only Claude and Codex"):
+        validate_file_config(config, "codex")

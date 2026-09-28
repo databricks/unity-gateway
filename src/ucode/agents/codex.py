@@ -56,7 +56,7 @@ from ucode.databricks import (
     build_tool_base_url,
     get_databricks_token,
 )
-from ucode.launcher import exec_or_spawn
+from ucode.launcher import build_child_env, exec_or_spawn
 from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     managed_file_conflicts,
@@ -1017,11 +1017,33 @@ def _otel_token_provider(state: dict, workspace: str) -> Callable[[bool], str]:
     return lambda force: _launch_token(state, workspace, force_refresh=force)
 
 
+def validate_tracing_custom_env(custom_env: dict[str, str]) -> None:
+    """Keep the UG tracing proxy authoritative when tracing is enabled."""
+    exporter_keys = {
+        "OTEL_TRACES_EXPORTER",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_PROTOCOL",
+        "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    }
+    for key, value in custom_env.items():
+        if key.upper() in exporter_keys or (
+            key.upper() == "OTEL_SDK_DISABLED" and value.lower() in {"true", "1"}
+        ):
+            raise RuntimeError(
+                f"custom_env.{key} conflicts with UG Codex tracing. Remove it or disable UG tracing."
+            )
+
+
 def _launch_codex_with_otel_proxy(
     state: dict,
     base_argv: list[str],
     tool_args: list[str],
     workspace: str,
+    *,
+    env: dict[str, str],
 ) -> None:
     """Run the loopback OTLP refresh proxy for the session, with Codex as a child.
 
@@ -1036,7 +1058,7 @@ def _launch_codex_with_otel_proxy(
     server_thread.start()
     endpoint = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1/traces"
     otel_args = codex_config_args(_otel_proxy_overlay(endpoint))
-    proc = subprocess.Popen([*base_argv, *otel_args, *tool_args])
+    proc = subprocess.Popen([*base_argv, *otel_args, *tool_args], env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
@@ -1056,15 +1078,16 @@ def _run_codex(
     *,
     otel_tracing: bool,
     workspace: str | None,
+    env: dict[str, str],
 ) -> None:
     """Launch Codex — via the loopback proxy when OTLP tracing is on, else exec-replace."""
     if tool_args[:1] == ["update"]:
         # exec replaces ug, so reattach only on a later validated refresh.
         detach_app_model_catalog()
     if otel_tracing and workspace:
-        _launch_codex_with_otel_proxy(state, base_argv, tool_args, workspace)
+        _launch_codex_with_otel_proxy(state, base_argv, tool_args, workspace, env=env)
     else:
-        exec_or_spawn([*base_argv, *tool_args])
+        exec_or_spawn([*base_argv, *tool_args], env=env)
 
 
 def launch(
@@ -1073,9 +1096,12 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
+    if state.get("codex_otel_tracing"):
+        validate_tracing_custom_env(options.custom_env)
     if options.launch_smart_routing:
-        _launch_smart_routing(state, tool_args)
+        _launch_smart_routing(state, tool_args, custom_env=options.custom_env)
         return
+    child_env = build_child_env(options.custom_env)
     clear_model_preferences(state)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
@@ -1102,7 +1128,7 @@ def launch(
     otel_tracing = bool(workspace and state.get("codex_otel_tracing"))
     if workspace:
         token = _launch_token(state, workspace)
-        os.environ["OAUTH_TOKEN"] = token
+        child_env["OAUTH_TOKEN"] = token
     if _use_legacy_layout():
         print_warning_err(
             f"Codex {agent_version(binary)} is outdated. Upgrade Codex to "
@@ -1115,6 +1141,7 @@ def launch(
             tool_args,
             otel_tracing=otel_tracing,
             workspace=workspace,
+            env=child_env,
         )
         return
     # Layer ucode's named profile as ordinary config overrides. Unlike
@@ -1177,10 +1204,13 @@ def launch(
         tool_args,
         otel_tracing=otel_tracing,
         workspace=workspace,
+        env=child_env,
     )
 
 
-def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
+def _launch_smart_routing(
+    state: dict, tool_args: list[str], *, custom_env: dict[str, str] | None = None
+) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
     binary = SPEC["binary"]
 
@@ -1198,6 +1228,7 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         binary=binary,
         start_model=start_model,
         render_overlay=render_overlay,
+        custom_env=custom_env,
     )
 
 

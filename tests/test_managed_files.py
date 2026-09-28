@@ -1001,6 +1001,110 @@ class TestSemanticEqual:
         assert managed_files.is_semantically_equal(doc, {"b": 1, "i": 1, "t": {"k": "v"}}) is False
 
 
+def test_stale_compose_cannot_clear_newer_picker_ownership(tmp_path, backup_dir, monkeypatch):
+    path = tmp_path / "managed.json"
+    path.write_text('{"env": {"value": "original"}}', encoding="utf-8")
+    monkeypatch.setattr(
+        managed_files,
+        "_sudo_replace",
+        lambda target, text: target.write_text(text, encoding="utf-8"),
+    )
+    original = '{"env": {"value": "ug"}}'
+    managed_files.reconcile_managed_file(
+        path,
+        original,
+        tool="claude",
+        display="Claude Code",
+        owned_paths=[["env", "value"]],
+        parser=json.loads,
+        claude_picker_owned_keys=[],
+    )
+
+    stale_snapshots = managed_files.managed_file_snapshots("claude", json.loads)
+    with_picker = '{"env": {"value": "ug"}, "modelPicker": {"options": []}}'
+    managed_files.reconcile_managed_file(
+        path,
+        with_picker,
+        tool="claude",
+        display="Claude Code",
+        owned_paths=[["modelPicker"]],
+        parser=json.loads,
+        claude_picker_owned_keys=["modelPicker"],
+    )
+
+    with pytest.raises(RuntimeError, match="changed while ucode was preparing"):
+        managed_files.reconcile_managed_file(
+            path,
+            original,
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["env", "value"]],
+            parser=json.loads,
+            claude_picker_owned_keys=[],
+            claude_compose_snapshots=stale_snapshots,
+            claude_compose_current_text=original,
+        )
+
+    snapshots = managed_files.managed_file_snapshots("claude", json.loads)
+    assert snapshots.claude_picker_owned_keys == ["modelPicker"]
+    assert json.loads(path.read_text(encoding="utf-8"))["modelPicker"] == {"options": []}
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_corrupt_last_applied_snapshot_can_be_repaired_without_adopting_picker(
+    tmp_path, backup_dir, monkeypatch, damage
+):
+    path = tmp_path / "managed.json"
+    original = '{"modelPicker": {"options": [{"model": "isaac"}]}, "env": {"X": "before"}}'
+    path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(
+        managed_files,
+        "_sudo_replace",
+        lambda target, text: target.write_text(text, encoding="utf-8"),
+    )
+    first = '{"modelPicker": {"options": [{"model": "isaac"}]}, "env": {"X": "one"}}'
+    managed_files.reconcile_managed_file(
+        path,
+        first,
+        tool="claude",
+        display="Claude Code",
+        owned_paths=[["env", "X"]],
+        parser=json.loads,
+        claude_picker_owned_keys=[],
+    )
+    entry = json.loads((backup_dir / "manifest.json").read_text())["files"]["claude"]
+    last_applied = backup_dir / entry["last_applied_file"]
+    if damage == "missing":
+        last_applied.unlink()
+    else:
+        last_applied.write_text("corrupt", encoding="utf-8")
+
+    snapshots = managed_files.managed_file_snapshots("claude", json.loads)
+    assert snapshots.last_applied_by_ug is None
+    assert snapshots.claude_picker_owned_keys == []
+    assert snapshots.claude_manifest_entry == entry
+    second = '{"modelPicker": {"options": [{"model": "isaac"}]}, "env": {"X": "two"}}'
+    assert (
+        managed_files.reconcile_managed_file(
+            path,
+            second,
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["env", "X"]],
+            parser=json.loads,
+            claude_picker_owned_keys=[],
+            claude_compose_snapshots=snapshots,
+            claude_compose_current_text=first,
+        )
+        == "written"
+    )
+    assert json.loads(path.read_text(encoding="utf-8"))["modelPicker"] == {
+        "options": [{"model": "isaac"}]
+    }
+    assert (backup_dir / entry["backup_file"]).read_text(encoding="utf-8") == original
+    assert managed_files.managed_file_snapshots("claude", json.loads).claude_picker_owned_keys == []
+
+
 def test_revert_semantic_noop_preserves_bytes_without_sudo(tmp_path, backup_dir, monkeypatch):
     # An admin who edited ug's owned value to their own leaves nothing for revert to remove; the
     # three-way merge is a semantic no-op and must not shell out to sudo just to reserialize.

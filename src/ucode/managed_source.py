@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NoReturn
@@ -26,6 +27,65 @@ _METADATA = {
     "updated_user_id",
     "retrieved_time",
 }
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_RESERVED_ENV_NAMES = {
+    "PATH",
+    "PATHEXT",
+    "HOME",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "SHELL",
+    "COMSPEC",
+    "ENV",
+    "BASH_ENV",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+    "NODE_OPTIONS",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "OAUTH_TOKEN",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_GATEWAY_TOKEN_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_HOST_AUTH_ENV_VAR",
+    "CLAUDE_CODE_HOST_CREDS_FILE",
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+    "CLAUDE_CODE_OAUTH_SCOPES",
+    "CLAUDE_CODE_OAUTH_CLIENT_ID",
+    "CLAUDE_CODE_CUSTOM_OAUTH_URL",
+    "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
+    "CLAUDE_SESSION_INGRESS_TOKEN_FILE",
+    "CLAUDE_BG_AUTH_SNAPSHOT_PATH",
+    "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+    "CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
+    "CLAUDE_CODE_USE_GATEWAY",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+    "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY",
+    "ENABLE_CUSTOM_OAUTH_FROM_CLI",
+    "ENABLE_SMART_ROUTING",
+    "ENABLE_SMART_ROUTING_V2",
+    "ENABLE_SMART_ROUTING_SUBAGENT_ONLY",
+    "SMART_ROUTER_NAME",
+}
+_RESERVED_ENV_PREFIXES = (
+    "DATABRICKS_",
+    "ANTHROPIC_",
+    "OPENAI_",
+    "CODEX_",
+    "UCODE_",
+    "UG_",
+    "XDG_",
+    "BUNDLE_",
+    "DYLD_",
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +103,10 @@ class SelectedManagedSource:
     @property
     def has_models(self) -> bool:
         return bool(self.manifest["enabled_agents"][self.agent].get("model_config"))
+
+    @property
+    def custom_env(self) -> dict[str, str]:
+        return self.manifest["enabled_agents"][self.agent].get("custom_env", {})
 
     def check_target(self, workspace: str, agent: str | None = None) -> None:
         if self.workspace != workspace or (agent is not None and self.agent != agent):
@@ -96,7 +160,32 @@ def _fqn(value: object, path: str, parts: int) -> str:
 
 def _validate_agent(value: object, path: str, tool: str) -> None:
     config = _object(value, path)
-    _fields(config, {"models", "default_models", "http_headers", "smart_routing", "tracing"}, path)
+    _fields(
+        config,
+        {"models", "default_models", "http_headers", "smart_routing", "tracing", "custom_env"},
+        path,
+    )
+    if "custom_env" in config:
+        if tool not in {"claude", "codex"}:
+            _invalid(
+                f"{path}.custom_env", "only Claude and Codex support launch environment overrides"
+            )
+        custom_env = _object(config["custom_env"], f"{path}.custom_env")
+        names: set[str] = set()
+        for key, item in custom_env.items():
+            if not isinstance(key, str) or not _ENV_NAME.fullmatch(key):
+                _invalid(f"{path}.custom_env", "expected portable environment variable names")
+            name = key.upper()
+            if name in names:
+                _invalid(f"{path}.custom_env.{key}", "duplicate environment name ignoring case")
+            names.add(name)
+            if name in _RESERVED_ENV_NAMES or name.startswith(_RESERVED_ENV_PREFIXES):
+                _invalid(
+                    f"{path}.custom_env.{key}",
+                    "reserved for UG authentication or runtime configuration",
+                )
+            if not isinstance(item, str) or "\0" in item:
+                _invalid(f"{path}.custom_env.{key}", "expected a string without NUL characters")
     defaults = _strings(config.get("default_models", {}), f"{path}.default_models")
     for key in defaults:
         if key != "default_model" and not (
@@ -200,9 +289,14 @@ def validate_file_config(raw: object, agent: str) -> dict:
             _invalid(
                 f"$.{key}", "nonempty selectors and budget policies are not supported in files"
             )
-    return normalize_managed_config(
+    normalized = normalize_managed_config(
         {key: value for key, value in config.items() if key not in _METADATA}
     )
+    for entry in entries:
+        if "custom_env" in entry["config"]:
+            tool = _agent(entry["agent"], "$.enabled_agents.agent")
+            normalized["enabled_agents"][tool]["custom_env"] = dict(entry["config"]["custom_env"])
+    return normalized
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict:

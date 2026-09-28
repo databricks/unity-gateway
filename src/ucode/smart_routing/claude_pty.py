@@ -294,6 +294,7 @@ def run_claude_pty(
     model_switch_persisted: Callable[[], bool] = lambda: True,
     restore_model_setting: Callable[[], None] = lambda: None,
     log_path: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> int:
     """Run Claude in a PTY, switch its model, and replay the first prompt."""
 
@@ -334,7 +335,10 @@ def run_claude_pty(
 
     pid, master_fd = pty.fork()
     if pid == 0:
-        os.execvp(argv[0], argv)
+        if env is None:
+            os.execvp(argv[0], argv)
+        else:
+            os.execvpe(argv[0], argv, env)
         os._exit(127)
 
     previous_winch = signal.getsignal(signal.SIGWINCH)

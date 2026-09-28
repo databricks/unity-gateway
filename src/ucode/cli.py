@@ -2517,8 +2517,10 @@ def _launch_options(
     explicit_prompt: bool,
     user_pinned_model: str | None,
     provider: str | None,
+    custom_env: dict[str, str] | None = None,
 ) -> LaunchOptions:
     return LaunchOptions(
+        custom_env=custom_env or {},
         # Pinned models for providers are resolved above through the provider-specific launch path.
         user_pinned_model=user_pinned_model if provider is None else None,
         launch_smart_routing=(
@@ -2599,6 +2601,9 @@ def _launch_tool(
         selected_source = (
             read_file_source(config_file, "", tool) if config_file is not None else None
         )
+        custom_env = selected_source.custom_env if selected_source is not None else {}
+        if tool == "claude" and custom_env:
+            claude_agent.validate_custom_env(custom_env)
         if selected_source is None:
             if workspace_url:
                 set_current_workspace(normalize_workspace_url(workspace_url))
@@ -2624,6 +2629,14 @@ def _launch_tool(
                 existing = {"workspace": workspace, "profile": profile}
             selected_source = replace(selected_source, workspace=workspace)
             managed = selected_source.manifest
+            tracing_enabled = managed["enabled_agents"][tool].get(
+                "otel_tracing_enabled"
+            ) or existing.get(f"{tool}_otel_tracing")
+            if custom_env and tracing_enabled:
+                if tool == "claude":
+                    claude_agent.validate_tracing_custom_env(custom_env, workspace)
+                elif tool == "codex":
+                    codex_agent.validate_tracing_custom_env(custom_env)
             preflight_managed_resources(selected_source, previous_state)
             _reject_managed_launch_source_options(
                 managed if selected_source.has_models else None,
@@ -2982,6 +2995,7 @@ def _launch_tool(
             # initial/fallback model and still participates in a routed session.
             user_pinned_model=model or forwarded_model,
             provider=provider,
+            custom_env=custom_env,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _managed_smart_routing_environment(managed, tool):

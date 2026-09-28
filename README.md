@@ -79,7 +79,44 @@ falling back to workspace policy. File launches do not populate the five-minute
 API cache at `~/.ucode/managed-config.json`; launches without `-f` use the existing
 workspace API behavior.
 
-This phase rejects `handoff`, `custom_env`, `native_settings`, and
+Each agent's `config.custom_env` can supply string-valued environment variables
+for that launch, alongside `http_headers`, without declaring any models:
+
+```json
+{
+  "spec_version": 1,
+  "enabled_agents": [{
+    "agent": "CODING_AGENT_CLAUDE_CODE",
+    "config": {
+      "http_headers": {
+        "Databricks-Ai-Gateway-Request-Tags": "{\"source\":\"isaac-cli\"}"
+      },
+      "custom_env": {"ARCA_ISAAC_SESSION_SOURCE": "isaac_cli"}
+    }
+  }]
+}
+```
+
+Custom values are not saved to UG state or persistent agent settings. Removing a
+key, or launching without `-f`, restores inherited/native behavior for that key;
+it does not suppress a value independently supplied by the parent or native policy.
+Claude receives a launch-only settings environment as well as a process overlay;
+Codex receives a process overlay, not just a shell-tool policy. Bare agents and
+independently started desktop apps do not receive the overlay.
+
+Authentication, routing, executable lookup and configuration-home controls are
+reserved. OTEL variables are allowed when they do not conflict with UG tracing.
+Conflicting Claude managed-policy environment values fail before settings writes:
+launch-only settings cannot override higher-priority managed policy. Existing
+native helpers, plugins and telemetry configuration remain the launcher's
+responsibility; `custom_env` is not a generic native-settings interface.
+Claude custom environments support Linux/macOS managed JSON files and drop-ins;
+Windows and detected dynamic/MDM policy sources are rejected when their precedence
+cannot be validated. This does not change launches without custom environments.
+Disabling UG tracing restores only unchanged values with prior-write evidence.
+Ambiguous older private tracing settings are preserved when that evidence is absent.
+
+This phase rejects `handoff`, `native_settings`, and
 `native_requirements`, as well as nonempty MCP, skill, and budget selectors.
 It does not transfer ownership of Isaac's existing managed settings. Same-workspace
 UC resources are retained; workspace transitions requiring UC resource cleanup
