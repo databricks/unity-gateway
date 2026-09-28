@@ -818,13 +818,11 @@ class TestRoutedAgentsRegisteredCheck:
                 {"hooks": {"PreToolUse": [{"hooks": [{"command": "ug claude-router-hook"}]}]}}
             )
         )
-        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_settings)
-        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "missing.json")
-        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
 
-        warning = v2.check_routed_agents_registered(
+        warning = v2.check_routed_agents_registered_or_warn(
             {"session_id": "s1", "source": "startup"},
             self.MODELS,
+            [user_settings, tmp_path / "missing.json", None],
             self._command(["ucode-route-other-12345678", "Explore"]),
             claude_launcher="-zsh",
         )
@@ -844,7 +842,9 @@ class TestRoutedAgentsRegisteredCheck:
         monkeypatch.setattr(v2.claude_routing, "AGENT_CHECK_LOG_PATH", log)
         names = sorted(v2._routed_claude_agent_definitions(self.MODELS))
 
-        warning = v2.check_routed_agents_registered({}, self.MODELS, self._command(names))
+        warning = v2.check_routed_agents_registered_or_warn(
+            {}, self.MODELS, [], self._command(names)
+        )
 
         assert warning is None
         assert not log.exists()

@@ -337,9 +337,10 @@ def _route_claude_prompt(
     return decision
 
 
-def check_routed_agents_registered(
+def check_routed_agents_registered_or_warn(
     payload: dict,
     available_models: list[str],
+    persistent_settings: list[Path | None],
     claude_command: str | None = None,
     claude_launcher: str | None = None,
 ) -> str | None:
@@ -364,7 +365,7 @@ def check_routed_agents_registered(
             "claude_launched_by": claude_launcher.split(" -", 1)[0] if claude_launcher else None,
             "claude_settings": settings.group(1) if settings else None,
             "claude_has_agents_flag": "--agents" in (claude_command or ""),
-            "persistent_router_hooks": _persistent_router_hook_files(),
+            "persistent_router_hooks": _persistent_router_hook_files(persistent_settings),
             "expected": expected,
             "registered": sorted(
                 name for name in registered if name.startswith(CLAUDE_ROUTED_AGENT_PREFIX)
@@ -411,17 +412,10 @@ def _process_command(pid: int) -> tuple[int, str] | None:
     return int(fields[0]), fields[1].strip()
 
 
-def _persistent_router_hook_files() -> list[str]:
+def _persistent_router_hook_files(paths: list[Path | None]) -> list[str]:
     """Persistent Claude settings that still carry ucode router hooks (left by older ucode)."""
-    from ucode.agents.claude import (
-        CLAUDE_SETTINGS_PATH,
-        CLAUDE_USER_SETTINGS_PATH,
-        _managed_settings_path,
-    )
-
-    candidates = [CLAUDE_USER_SETTINGS_PATH, CLAUDE_SETTINGS_PATH, _managed_settings_path()]
     found = []
-    for path in candidates:
+    for path in paths:
         if path is None:
             continue
         hooks = read_json_safe(path).get("hooks")
