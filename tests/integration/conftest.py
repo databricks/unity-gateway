@@ -15,7 +15,6 @@ from urllib.parse import urlparse
 import pytest
 from utils.harness import UserSession
 from utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
-from utils.terminal import TerminalProcess
 
 
 def pytest_collection_modifyitems(config, items):
@@ -93,15 +92,37 @@ def session(request, installed_binary):
     # under the runner's own directory, never in the developer's agent folders.
     root = Path(os.environ["UG_INTEGRATION_RUN_DIR"])
     case = re.sub(r"[^a-zA-Z0-9_.-]", "_", request.node.name)
+    project_parent = root if os.name == "nt" else None
     with (
         tempfile.TemporaryDirectory(prefix="case-", dir=root) as temporary,
-        tempfile.TemporaryDirectory(prefix="ug-integration-project-") as project,
+        tempfile.TemporaryDirectory(
+            prefix="ug-integration-project-", dir=project_parent
+        ) as project,
     ):
         # Agents walk parent directories for project settings. Keeping cwd out
         # of the checkout prevents its .claude/AGENTS.md from influencing a run.
         user = UserSession(
             Path(temporary), Path(project), installed_binary, root / "artifacts" / case
         )
+        if os.name == "nt":
+            app_data = user.home / "AppData/Roaming"
+            local_app_data = user.home / "AppData/Local"
+            case_temp = local_app_data / "Temp"
+            for path in (app_data, local_app_data, case_temp):
+                path.mkdir(parents=True, exist_ok=True)
+            user.env.update(
+                {
+                    "APPDATA": str(app_data),
+                    "LOCALAPPDATA": str(local_app_data),
+                    "TEMP": str(case_temp),
+                    "TMP": str(case_temp),
+                    "TMPDIR": str(case_temp),
+                }
+            )
+            for key in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"):
+                if value := os.environ.get(key):
+                    user.env[key] = value
+            user.env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
         try:
             yield user
         finally:
@@ -111,10 +132,19 @@ def session(request, installed_binary):
                 (user.home / ".ucode" / name).is_file()
                 for name in ("state.json", "managed-backups/manifest.json")
             ):
-                with TerminalProcess(
-                    user, "ug", [str(user.binary), "revert"], "cleanup-revert"
-                ) as terminal:
-                    terminal.finish()
+                if os.name == "posix":
+                    # Import PTY support only when a live-capable run actually
+                    # created state that teardown must revert.
+                    from utils.terminal import TerminalProcess
+
+                    with TerminalProcess(
+                        user, "ug", [str(user.binary), "revert"], "cleanup-revert"
+                    ) as terminal:
+                        terminal.finish()
+                else:
+                    # Installation checks are noninteractive; if a regression
+                    # creates state, still clean it through the installed CLI.
+                    user.run("revert", timeout=120)
 
 
 @pytest.fixture
