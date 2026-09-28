@@ -392,11 +392,9 @@ The Windows job authenticates to the Databricks JFrog package proxy using
 GitHub OIDC, following the organization's SDK CI setup. Its actual OS image is
 recorded in `versions.json`; the organization can update the image behind the
 runner label. The two POSIX version-floor journeys are outside this Windows subset.
-The Windows lane temporarily pins Claude 2.1.278, separately from the shared CI
-version, until JFrog exempts Claude Code from its package-age policy.
 It installs only Claude as the runner prerequisite; the five selected checks
 exercise ug and its local helpers, not either agent's inference path.
-An advisory **Windows headless journey · Claude** job installs pinned Claude
+An advisory **Windows headless journey · Claude** job installs the shared CI Claude version
 on a native Windows runner using the same authenticated package proxies,
 reuses the existing e2e workspace/bearer,
 and requires the unpredictable file value in the agent's structured final answer.
