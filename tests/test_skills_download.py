@@ -8,6 +8,7 @@ import threading
 import pytest
 
 import ucode.skills_download as sd
+from tests.platform_marks import requires_symlinks
 from ucode import skills_state
 from ucode.skills_download import (
     SkillRef,
@@ -126,6 +127,7 @@ class TestWriteSkill:
 
         assert (roots[0] / "triage/SKILL.md").read_bytes() == b"v1"
 
+    @requires_symlinks
     def test_replaces_symlinked_bundle_without_touching_its_target(self, tmp_path):
         roots = skill_dir_roots(str(tmp_path))
         target = tmp_path / "real-skill"

@@ -12,6 +12,7 @@ import pytest
 import ucode.config_io as config_io_mod
 import ucode.databricks as db_mod
 import ucode.managed_config as mc_mod
+from tests.platform_marks import posix_only
 from ucode.managed_config import (
     get_managed_config,
     load_managed_configuration,
@@ -348,6 +349,7 @@ class TestPersistence:
             RAW_MANIFEST
         )
 
+    @posix_only("Windows has no POSIX mode bits; chmod only toggles read-only")
     def test_saved_file_is_0600(self, _managed_path):
         save_managed_state("https://ws.example.com", {"default_agent": "claude"})
         mode = stat.S_IMODE(os.stat(_managed_path).st_mode)

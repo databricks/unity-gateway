@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from decimal import Decimal
@@ -13,6 +14,7 @@ from urllib.parse import parse_qs
 import pytest
 
 import ucode.databricks as db_mod
+from tests.platform_marks import posix_only
 from ucode.databricks import (
     CODING_AGENT_RECOMMEND_MODEL_PATH,
     _format_subprocess_result,
@@ -2041,6 +2043,9 @@ class TestScrubJson:
         }
 
 
+@posix_only(
+    "fakes the Databricks CLI with a shell script on PATH; Windows only spawns a bare `databricks` as a real .exe"
+)
 class TestGetDatabricksToken:
     def _fake_databricks(self, tmp_path, script: str) -> dict:
         fake = tmp_path / "databricks"
@@ -2719,6 +2724,9 @@ class TestParseDatabricksCliVersion:
         assert _parse_databricks_cli_version("not a version") is None
 
 
+@posix_only(
+    "fakes the Databricks CLI with a shell script on PATH; Windows only spawns a bare `databricks` as a real .exe"
+)
 class TestEnsureDatabricksCliVersion:
     def _fake_databricks(self, tmp_path, version_output: str) -> dict:
         fake = tmp_path / "databricks"
@@ -2909,6 +2917,7 @@ class TestRunDatabricksCliInstaller:
         local_bin.parent.mkdir(parents=True)
         local_bin.write_text("stale")
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))  # expanduser on Windows
         self._fail_installer(monkeypatch)
 
         with pytest.raises(RuntimeError) as exc:
@@ -3802,13 +3811,13 @@ class TestBearerCommand:
         return marker
 
     def _broker(self, tmp_path, body: str) -> str:
-        script = tmp_path / "broker.sh"
-        script.write_text(f"#!/bin/sh\n{body}\n")
-        script.chmod(0o755)
-        return str(script)
+        """A Python broker script and the command line that runs it, on any OS."""
+        script = tmp_path / "broker.py"
+        script.write_text(f"import sys\n{body}\n", encoding="utf-8")
+        return f'"{sys.executable}" "{script}"'
 
     def test_serves_the_command_output_without_touching_the_cli(self, tmp_path, monkeypatch):
-        broker = self._broker(tmp_path, 'echo "brokered-token"')
+        broker = self._broker(tmp_path, "print('brokered-token')")
         marker = self._env(tmp_path, monkeypatch, broker)
 
         assert get_databricks_token(WS) == "brokered-token"
@@ -3821,7 +3830,11 @@ class TestBearerCommand:
         counter.write_text("0")
         broker = self._broker(
             tmp_path,
-            f'n=$(cat {counter})\nn=$((n + 1))\necho $n > {counter}\necho "token-$n"',
+            f"from pathlib import Path\n"
+            f"counter = Path({str(counter)!r})\n"
+            f"n = int(counter.read_text()) + 1\n"
+            f"counter.write_text(str(n))\n"
+            f"print(f'token-{{n}}')",
         )
         self._env(tmp_path, monkeypatch, broker)
 
@@ -3831,8 +3844,14 @@ class TestBearerCommand:
     def test_passes_arguments_without_a_shell(self, tmp_path, monkeypatch):
         # Argv is shlex-split, not handed to `sh -c`, so this stays cross-platform.
         seen = tmp_path / "args"
-        broker = self._broker(tmp_path, f'printf "%s" "$1:$2" > {seen}\necho tok')
-        self._env(tmp_path, monkeypatch, f"{broker} --coords 'a path'")
+        broker = self._broker(
+            tmp_path,
+            f"from pathlib import Path\n"
+            f"Path({str(seen)!r}).write_text(sys.argv[1] + ':' + sys.argv[2])\n"
+            f"print('tok')",
+        )
+        # Double quotes group the same way under shlex (POSIX) and CreateProcess (Windows).
+        self._env(tmp_path, monkeypatch, f'{broker} --coords "a path"')
 
         assert get_databricks_token(WS) == "tok"
         assert seen.read_text() == "--coords:a path"
@@ -3858,7 +3877,7 @@ class TestBearerCommand:
         # Exit 0 with an empty stdout. Falling through to OAuth would report a
         # misleading stale-login error: a broker-backed profile carries no OAuth
         # cache to refresh. Stderr rides along so the error names a cause.
-        broker = self._broker(tmp_path, 'echo "nothing to vend" >&2')
+        broker = self._broker(tmp_path, "print('nothing to vend', file=sys.stderr)")
         marker = self._env(tmp_path, monkeypatch, broker)
 
         with pytest.raises(RuntimeError, match="printed no token") as excinfo:
@@ -3869,7 +3888,7 @@ class TestBearerCommand:
     def test_fails_closed_when_the_command_exits_non_zero(self, tmp_path, monkeypatch):
         # Stdout on a failing command is a diagnostic, not a bearer. Forwarding it
         # would only resurface as a 401 far from the real cause.
-        broker = self._broker(tmp_path, 'echo "broker unreachable"\nexit 7')
+        broker = self._broker(tmp_path, "print('broker unreachable')\nsys.exit(7)")
         marker = self._env(tmp_path, monkeypatch, broker)
 
         with pytest.raises(RuntimeError, match="exited 7"):
@@ -3883,7 +3902,7 @@ class TestBearerCommand:
             get_databricks_token(WS)
 
     def test_static_bearer_still_wins(self, tmp_path, monkeypatch):
-        broker = self._broker(tmp_path, 'echo "brokered-token"')
+        broker = self._broker(tmp_path, "print('brokered-token')")
         self._env(tmp_path, monkeypatch, broker)
         os.environ["DATABRICKS_BEARER"] = "ci-bearer"
 
@@ -3891,7 +3910,7 @@ class TestBearerCommand:
 
     def test_has_valid_auth_short_circuits(self, tmp_path, monkeypatch):
         # Otherwise `ensure_databricks_auth` probes the CLI and can open a browser.
-        marker = self._env(tmp_path, monkeypatch, self._broker(tmp_path, "echo tok"))
+        marker = self._env(tmp_path, monkeypatch, self._broker(tmp_path, "print('tok')"))
 
         assert db_mod.has_valid_databricks_auth(WS) is True
         assert not marker.exists()

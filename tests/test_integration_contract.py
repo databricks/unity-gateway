@@ -32,7 +32,7 @@ def test_integration_ci_pins_a_skills_capable_databricks_cli():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     setup_blocks = re.findall(
         r"(?m)^      - uses: databricks/setup-cli@[^\n]+\n((?:        [^\n]*\n)*)",
-        workflow.read_text(),
+        workflow.read_text(encoding="utf-8"),
     )
     assert setup_blocks, "Integration CI must install the Databricks CLI explicitly"
     for block in setup_blocks:
@@ -43,7 +43,9 @@ def test_integration_ci_pins_a_skills_capable_databricks_cli():
 
 def test_managed_integration_ci_is_blocking():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
-    managed, gate = workflow.read_text().split("\n  managed:\n", 1)[1].split("\n  cujs:\n", 1)
+    managed, gate = (
+        workflow.read_text(encoding="utf-8").split("\n  managed:\n", 1)[1].split("\n  cujs:\n", 1)
+    )
     assert "continue-on-error:" not in managed
     needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", gate)
     assert needs is not None
@@ -68,7 +70,7 @@ def test_windows_integration_ci_uses_temporary_claude_pin():
 @pytest.mark.parametrize("managed_result", ["success", "failure", "cancelled", "skipped"])
 def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_result):
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
-    gate = workflow.read_text().split("\n  cujs:\n", 1)[1]
+    gate = workflow.read_text(encoding="utf-8").split("\n  cujs:\n", 1)[1]
     script = re.search(r"          python3 - <<'PY'\n(.*?)          PY", gate, re.DOTALL)
     assert script is not None
     results = {
@@ -100,7 +102,7 @@ def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_resul
 def test_integration_suite_uses_only_public_process_boundaries():
     violations = []
     for path in (Path(__file__).parent / "integration").rglob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             modules = []
             if isinstance(node, ast.Import):
                 modules = [alias.name for alias in node.names]
@@ -134,7 +136,7 @@ def test_integration_suite_uses_only_public_process_boundaries():
 
 def test_live_integration_cases_belong_to_exactly_one_ci_agent():
     for path in (Path(__file__).parent / "integration").glob("test_*.py"):
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         module_marks = _markers(
             node
             for node in tree.body
@@ -155,7 +157,7 @@ def test_model_discovery_cases_match_current_launch_contract():
     root = Path(__file__).parent / "integration"
     seen = []
     for path in root.glob("test_ug_*_model_discovery.py"):
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         assert "UG_ENABLE_MODEL_DISCOVERY" not in source, path.name
         tree = ast.parse(source)
         # Model locations are launch-only on main, never configure options.
@@ -227,7 +229,7 @@ def test_unmanaged_discovery_rejects_malformed_config_listings(payload):
 def test_smoke_covers_hosted_custom_oauth_and_headless_for_both_agents():
     smoke = set()
     for path in (Path(__file__).parent / "integration").glob("test_*.py"):
-        for node in ast.parse(path.read_text()).body:
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
             if isinstance(node, ast.FunctionDef) and "smoke" in _markers(node.decorator_list):
                 smoke.add(node.name)
     assert smoke == {
@@ -244,7 +246,7 @@ def test_integration_tests_describe_the_scenario_and_expected_result():
     root = Path(__file__).parent / "integration"
     violations = []
     for path in root.rglob("test_*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if not isinstance(node, ast.FunctionDef) or not node.name.startswith("test_"):
                 continue
             description = ast.get_docstring(node) or ""

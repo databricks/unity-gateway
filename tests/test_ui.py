@@ -545,6 +545,13 @@ class TestFormatMeter:
 class TestChoiceViewportCap:
     """`_cap_choice_viewport` pins long picker lists to a fixed scrolling window."""
 
+    @pytest.fixture(autouse=True)
+    def _headless_session(self):
+        # Building a prompt resolves the terminal output; on Windows that needs a real
+        # console, which pytest's captured streams are not.
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+            yield
+
     @staticmethod
     def _choice_window_height(question):
         from prompt_toolkit.layout.containers import Window

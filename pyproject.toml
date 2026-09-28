@@ -83,3 +83,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011"]  # assert False in tests is fine
+
+[tool.ty.environment]
+# Check every platform branch instead of assuming the host OS, so results match on
+# Linux CI and Windows/macOS dev machines (e.g. Unix-only PTY code, msvcrt fallbacks).
+python-platform = "all"

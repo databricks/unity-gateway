@@ -16,6 +16,7 @@ import pytest
 import ucode.agents.claude as claude_agent
 import ucode.codex_config as codex_config
 import ucode.config_io as config_io
+from tests.platform_marks import requires_symlinks
 from ucode import managed_files
 
 _REAL_SUDO_REPLACE = managed_files._sudo_replace
@@ -681,6 +682,7 @@ class TestManagedFileLifecycle:
             )
         assert (backup_dir / "manifest.json").exists()
 
+    @requires_symlinks
     def test_reconcile_refuses_symlink_target(self, tmp_path, backup_dir, monkeypatch):
         target = tmp_path / "real.json"
         target.write_text("{}", encoding="utf-8")
