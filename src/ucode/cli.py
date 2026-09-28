@@ -2141,18 +2141,37 @@ def claude_router_hook_cmd(
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
     socket_path: Annotated[str | None, typer.Option("--socket")] = None,
+    launch_id: Annotated[str | None, typer.Option("--launch-id")] = None,
 ) -> None:
     """Run a Claude Code smart-routing lifecycle hook."""
     import json
     import sys
 
-    if not smart_routing_v2.smart_routing_enabled():
+    # `doctor` must stay runnable inside a broken (routing-disabled) session.
+    if event != "doctor" and not smart_routing_v2.smart_routing_enabled():
         return
 
+    from ucode.smart_routing import claude_diagnostics
     from ucode.smart_routing.claude_routing import (
         record_session_start,
         record_subagent_start,
     )
+
+    if event == "doctor":
+        print(
+            json.dumps(
+                {
+                    "debug_logs_dir": str(claude_diagnostics.DIAGNOSTICS_PATH.parent),
+                    "diagnosis": claude_diagnostics.diagnose(
+                        launch_id=launch_id or claude_diagnostics.latest_launch_id()
+                    ),
+                    "recent_launches": claude_diagnostics.recent_launches(),
+                    "recent_diagnostics": claude_diagnostics.recent_diagnostics(),
+                },
+                indent=2,
+            )
+        )
+        return
 
     try:
         payload = json.loads(sys.stdin.read() or "{}")
@@ -2183,6 +2202,20 @@ def claude_router_hook_cmd(
         return
     if event == "session-start":
         record_session_start(payload)
+        diagnosis = claude_diagnostics.diagnose(launch_id=launch_id, session_payload=payload)
+        claude_diagnostics.record_diagnostic(diagnosis)
+        if diagnosis["verdict"] != "ok":
+            sys.stdout.write(
+                json.dumps(
+                    {
+                        "systemMessage": (
+                            f"Smart Routing check: {diagnosis['verdict']} — "
+                            f"{diagnosis['message']} "
+                            f"(details: {claude_diagnostics.DIAGNOSTICS_PATH})"
+                        )
+                    }
+                )
+            )
         return
     if event == "record-subagent":
         record = record_subagent_start(payload)
@@ -2227,7 +2260,38 @@ def claude_router_hook_cmd(
         audit_decision=True,
     )
     if output is not None:
+        _annotate_route_diagnostic(output, payload, launch_id)
         sys.stdout.write(json.dumps(output))
+
+
+def _annotate_route_diagnostic(output: dict, payload: dict, launch_id: str | None) -> None:
+    """Flag a routed agent the launching claude process never registered.
+
+    The rewrite itself stays untouched; when the target agent is missing from
+    the claude argv's ``--agents`` payload (the "Agent type not found" error),
+    record the diagnosis and surface the verdict in the systemMessage.
+    """
+    from ucode.smart_routing import claude_diagnostics
+
+    hook_output = output.get("hookSpecificOutput")
+    updated_input = hook_output.get("updatedInput") if isinstance(hook_output, dict) else None
+    routed_agent = updated_input.get("subagent_type") if isinstance(updated_input, dict) else None
+    if not isinstance(routed_agent, str) or not routed_agent.startswith(
+        smart_routing_v2.CLAUDE_ROUTED_AGENT_PREFIX
+    ):
+        return
+    argv = claude_diagnostics.find_claude_argv()
+    parsed = claude_diagnostics.parse_claude_argv(argv) if argv else None
+    if parsed is not None and routed_agent in parsed["routed_agent_names"]:
+        return
+    diagnosis = claude_diagnostics.diagnose(
+        launch_id=launch_id,
+        session_payload=payload,
+        argv=argv,
+        routed_agent=routed_agent,
+    )
+    claude_diagnostics.record_diagnostic(diagnosis)
+    output["systemMessage"] = f"{output['systemMessage']} [diagnostic: {diagnosis['verdict']}]"
 
 
 def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = None) -> None:
@@ -2494,6 +2558,26 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     if not tool_args or explicit_prompt:
         return True
     return tool == "claude" and tool_args[0].startswith("-")
+
+
+def _record_not_routed_launch(*, tool_args: list[str], model: str | None) -> None:
+    """Log why a routing-enabled launch skipped the smart-routing path."""
+    from ucode.smart_routing import claude_diagnostics
+
+    reason = (
+        "explicit model"
+        if model is not None or has_explicit_model_arg(tool_args)
+        else "non-interactive"
+    )
+    claude_diagnostics.record_launch(
+        claude_diagnostics.new_launch_id(),
+        launch_path="not-routed",
+        reason=reason,
+        catalog_source=None,
+        model_ids=[],
+        agent_names=[],
+        settings_path=None,
+    )
 
 
 def _launch_options(
@@ -2907,6 +2991,16 @@ def _launch_tool(
             user_pinned_model=model or forwarded_model,
             provider=provider,
         )
+        # Relayed launches take their own short-circuit in the agent module, which
+        # records its own "not-routed" entry; record only the CLI-side decisions here.
+        if (
+            smart_routing_enabled
+            and tool == "claude"
+            and provider is None
+            and not relayed
+            and not launch_options.launch_smart_routing
+        ):
+            _record_not_routed_launch(tool_args=ctx.args, model=model or forwarded_model)
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _managed_smart_routing_environment(managed, tool):
             launch_agent(tool, state, ctx.args, options=launch_options)

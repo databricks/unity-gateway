@@ -30,7 +30,7 @@ from ucode.databricks import (
     list_anthropic_models,
 )
 from ucode.launcher import exec_or_spawn
-from ucode.smart_routing import claude_routing, codex_interposer, routing
+from ucode.smart_routing import claude_diagnostics, claude_routing, codex_interposer, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     sync_first_prompt_hook,
@@ -427,6 +427,42 @@ class _ClaudeModelSettingGuard:
                 self._lock = None
 
 
+def _sweep_stale_launch_files() -> None:
+    """Delete per-launch settings/sockets orphaned by a killed ucode.
+
+    ``launch_claude`` removes ``claude-v2-<pid>-*`` files in ``finally``, which
+    never runs when the process is killed, so leftovers accumulate. A file is
+    stale only when its embedded pid is no longer a live process; files of the
+    current launch (and unparsable names) are left alone.
+    """
+    prefix = "claude-v2-"
+    try:
+        candidates = list(APP_DIR.glob(f"{prefix}*"))
+    except OSError:
+        return
+    for path in candidates:
+        if path.suffix not in (".json", ".sock"):
+            continue
+        pid_text = path.name[len(prefix) :].split("-", 1)[0]
+        if not pid_text.isdigit():
+            continue
+        pid = int(pid_text)
+        if pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            pass  # Dead launcher: its per-launch files are stale.
+        except OSError:
+            continue
+        else:
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            continue
+
+
 def launch_claude(
     state: dict,
     tool_args: list[str],
@@ -464,6 +500,7 @@ def launch_claude(
     model_ids = catalog.model_ids
 
     route_first_prompt = first_prompt_routing_enabled()
+    _sweep_stale_launch_files()
     run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
     socket_path = APP_DIR / f"claude-v2-{run_id}.sock"
     settings_path = APP_DIR / f"claude-v2-{run_id}.json"
@@ -488,6 +525,8 @@ def launch_claude(
     routing_state = {
         **state,
         "claude_models": {str(index): model for index, model in enumerate(model_ids)},
+        # Hooks carry the id so a firing can be matched to its launch record.
+        "launch_id": claude_diagnostics.new_launch_id(),
     }
     sync_smart_routing_hooks(settings, routing_state, enabled=True)
     if route_first_prompt:
@@ -496,6 +535,15 @@ def launch_claude(
     model_args = launch_model_args(remaining, launch_model)
     routed_agent_args = _with_routed_claude_agents(remaining, model_ids)
     argv = [binary, "--settings", str(settings_path), *model_args, *routed_agent_args]
+    claude_diagnostics.record_launch(
+        routing_state["launch_id"],
+        launch_path="first-prompt" if route_first_prompt else "subagent-only",
+        reason="smart-routing launch",
+        catalog_source="model picker" if picker_catalog is not None else "discovery",
+        model_ids=model_ids,
+        agent_names=list(json.loads(routed_agent_args[routed_agent_args.index("--agents") + 1])),
+        settings_path=settings_path,
+    )
 
     if not route_first_prompt:
         # Subagent-only routing needs no PTY: the PreToolUse hooks ride in the

@@ -154,8 +154,26 @@ def record_subagent_start(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def clear_routing_artifacts() -> None:
-    """Remove ucode-owned routing canary and audit files."""
-    routing.clear_artifacts((CANARY_PATH, AUDIT_PATH, DECISIONS_PATH))
+    """Remove ucode-owned routing canary, audit, and debug-log files."""
+    from ucode.smart_routing import claude_diagnostics
+
+    routing.clear_artifacts(
+        (
+            CANARY_PATH,
+            AUDIT_PATH,
+            DECISIONS_PATH,
+            claude_diagnostics.LAUNCHES_PATH,
+            claude_diagnostics.DIAGNOSTICS_PATH,
+        )
+    )
+    debug_dir = routing.debug_log_dir("claude")
+    # Drop the debug-log directories only when nothing else (e.g. another
+    # harness's logs) is left in them.
+    for directory in (debug_dir, debug_dir.parent):
+        try:
+            directory.rmdir()
+        except OSError:
+            continue
 
 
 def _claude_model_id(model: str) -> str:

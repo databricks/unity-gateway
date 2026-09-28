@@ -34,11 +34,23 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.managed_files as managed_files_mod
     import ucode.state as state_mod
     from ucode.agents import codex as codex_mod
+    from ucode.smart_routing import claude_diagnostics as claude_diagnostics_mod
+    from ucode.smart_routing import routing as routing_mod
 
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
     monkeypatch.setattr(state_mod, "STATE_PATH", state_dir / "state.json")
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
+    # Smart-routing debug logs are bound from APP_DIR at import, so rebind them
+    # or launch tests append to the developer's real debug-logs directory.
+    monkeypatch.setattr(routing_mod, "APP_DIR", state_dir)
+    debug_dir = routing_mod.debug_log_dir("claude")
+    monkeypatch.setattr(
+        claude_diagnostics_mod, "LAUNCHES_PATH", debug_dir / "smart-routing-launches.jsonl"
+    )
+    monkeypatch.setattr(
+        claude_diagnostics_mod, "DIAGNOSTICS_PATH", debug_dir / "smart-routing-diagnostics.jsonl"
+    )
     # MANAGED_CONFIG_PATH is bound from APP_DIR at import, so patching APP_DIR alone doesn't move it;
     # rebind it or save_managed_state writes to the developer's real ~/.ucode/managed-config.json.
     monkeypatch.setattr(

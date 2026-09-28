@@ -82,6 +82,10 @@ def _routing_hook_argv(state: dict, event: str) -> list[str]:
         ROUTING_HOOK_COMMAND_MARKER,
         event,
     ]
+    # Ties a hook firing back to its launch record for smart-routing diagnostics.
+    launch_id = state.get("launch_id")
+    if isinstance(launch_id, str) and launch_id:
+        argv += ["--launch-id", launch_id]
     if event != "route-subagent":
         return argv
     argv += ["--host", workspace]

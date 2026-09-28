@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ucode.config_io import APP_DIR
+
 ROUTER_NAME = "task_v3"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
@@ -31,6 +33,9 @@ SUBAGENT_ROUTING_DISCLAIMER = (
     "Spawned subagents are routed independently based on their own complexity."
 )
 ROUTING_BOX_WIDTH = 73
+# Always-on jsonl logs (decisions/audit/launches/diagnostics) rotate at ~1 MB
+# so long-lived workspaces cannot grow them unbounded.
+MAX_JSONL_BYTES = 1_000_000
 _ANTHROPIC_AIGW_MODEL_RE = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{8}-(.+)$")
 _FERNET_TOKEN_RE = re.compile(r"^gAAAAA[A-Za-z0-9_-]+={0,2}$")
 
@@ -414,13 +419,23 @@ def write_decision_record(
     )
 
 
+def debug_log_dir(harness: str) -> Path:
+    """Per-harness directory for always-on smart-routing debug logs.
+
+    Created lazily by the append helpers, never at import time, so merely
+    importing the module never touches the filesystem.
+    """
+    return APP_DIR / "debug-logs" / harness
+
+
 def clear_artifacts(paths: Iterable[Path]) -> None:
-    """Remove ucode-owned routing canary/audit/decision files."""
+    """Remove ucode-owned routing canary/audit/decision files and their rotations."""
     for path in paths:
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            continue
+        for candidate in (path, Path(f"{path}.1")):
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                continue
 
 
 def _selected_model(payload: Any) -> str | None:
@@ -473,7 +488,10 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    """Append one JSON line, rotating the file to ``<name>.1`` past ~1 MB."""
     try:
+        if path.exists() and path.stat().st_size > MAX_JSONL_BYTES:
+            path.replace(Path(f"{path}.1"))
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload) + "\n")
