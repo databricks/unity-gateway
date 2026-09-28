@@ -54,6 +54,16 @@ def test_managed_integration_ci_is_blocking():
     ) in gate
 
 
+def test_windows_integration_ci_uses_temporary_claude_pin():
+    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+    contents = workflow.read_text()
+    windows = contents.split("\n  installation-windows:\n", 1)[1].split("\n  workspace:\n", 1)[0]
+
+    assert "      WINDOWS_CLAUDE_VERSION: 2.1.278\n" in windows
+    assert '"--claude-version", $env:WINDOWS_CLAUDE_VERSION,' in windows
+    assert "  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.280' }}" in contents
+
+
 @pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
 @pytest.mark.parametrize("managed_result", ["success", "failure", "cancelled", "skipped"])
 def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_result):

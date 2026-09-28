@@ -105,7 +105,7 @@ The Claude journey also opens `/model` after a plain `ug claude` launch, require
 its native gateway cache to contain `system.ai` models, and checks that a discovered
 model appears in the picker. No managed config, provider, model location, discovery
 flag, or inherited discovery environment variable enables this path. This runs with
-the pinned Claude version (currently 2.1.268 in CI).
+the pinned Claude version (currently 2.1.280 in CI).
 
 ## Test layout and format
 
@@ -378,6 +378,8 @@ The Windows job authenticates to the Databricks JFrog package proxy using
 GitHub OIDC, following the organization's SDK CI setup. Its actual OS image is
 recorded in `versions.json`; the organization can update the image behind the
 runner label. The two POSIX version-floor journeys are outside this Windows subset.
+The Windows lane temporarily pins Claude 2.1.278, separately from the shared CI
+version, until JFrog exempts Claude Code from its package-age policy.
 It installs only Claude as the runner prerequisite; the five selected checks
 exercise ug and its local helpers, not either agent's inference path.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
