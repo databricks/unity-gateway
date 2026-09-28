@@ -1691,12 +1691,7 @@ def launch(
     launch_default_model = state.get("_claude_launch_default_model")
     if isinstance(launch_default_model, str) and launch_default_model:
         os.environ["ANTHROPIC_DEFAULT_MODEL"] = launch_default_model
-    # Smart routing needs Unix PTY support, which Windows does not provide.
-    if options.launch_smart_routing and os.name == "nt":
-        raise RuntimeError(
-            "Smart routing in Claude Code is currently not supported on Windows. "
-            "Please use Codex or launch without --enable-smart-routing."
-        )
+    # On Windows, launch_claude routes subagents only (first-prompt routing needs a PTY).
     if options.launch_smart_routing:
         smart_routing_v2.launch_claude(
             state,

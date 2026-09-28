@@ -438,9 +438,12 @@ def launch_claude(
     launch_model_args: Callable[[list[str], str | None], list[str]],
     model_name: Callable[[str], str],
 ) -> NoReturn:
-    """Launch Claude in the first-prompt routing PTY wrapper."""
+    """Launch Claude in the first-prompt routing PTY wrapper.
+
+    On Windows (no PTY) this routes subagents only: their PreToolUse hooks work
+    without a terminal wrapper, so a workspace that enables smart routing still gets it.
+    """
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
-    from ucode.smart_routing import claude_pty
 
     workspace = state.get("workspace")
     if not workspace:
@@ -464,6 +467,12 @@ def launch_claude(
     model_ids = catalog.model_ids
 
     route_first_prompt = first_prompt_routing_enabled()
+    if route_first_prompt and os.name == "nt":
+        print_warning(
+            "Claude Code's first prompt can't be smart-routed on Windows (it needs a Unix "
+            "terminal); routing subagents only."
+        )
+        route_first_prompt = False
     run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
     socket_path = APP_DIR / f"claude-v2-{run_id}.sock"
     settings_path = APP_DIR / f"claude-v2-{run_id}.json"
@@ -509,6 +518,9 @@ def launch_claude(
         finally:
             settings_path.unlink(missing_ok=True)
         sys.exit(returncode)
+
+    # Unix-only (pty/termios/fcntl): imported only once the PTY path is certain.
+    from ucode.smart_routing import claude_pty
 
     model_setting = _ClaudeModelSettingGuard(user_settings_path)
 
