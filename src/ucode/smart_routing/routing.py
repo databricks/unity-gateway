@@ -386,7 +386,7 @@ def record_subagent_start(
                 "matches_router_decision": matches,
             }
         )
-    _append_jsonl(audit_path, record)
+    append_jsonl(audit_path, record)
     return record
 
 
@@ -398,7 +398,7 @@ def write_decision_record(
     requested_model: str,
 ) -> None:
     """Record a routing decision so a later SubagentStart can reconcile it."""
-    _append_jsonl(
+    append_jsonl(
         decisions_path,
         {
             "decision_id": uuid.uuid4().hex,
@@ -473,11 +473,6 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    """Append one JSON record, ignoring filesystem errors."""
-    _append_jsonl(path, payload)
-
-
-def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
