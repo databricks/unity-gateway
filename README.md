@@ -51,6 +51,11 @@ On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
 
+Use `ug opencode --model system.ai.glm-5-3` (or `-m`) to select a configured
+model for one launch. OpenCode's `provider/model` form is also accepted.
+Unknown Databricks models produce an error; this option does not add models
+to discovery or change ug's saved default.
+
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`

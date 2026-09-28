@@ -3277,10 +3277,19 @@ def gemini_cmd(
 )
 def opencode_cmd(
     ctx: typer.Context,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            "-m",
+            help="Configured model ID or OpenCode provider/model for this launch. "
+            "Pass before any `--` separator.",
+        ),
+    ] = None,
     skip_preflight: SkipPreflightOption = False,
 ) -> None:
     """Launch OpenCode via Databricks."""
-    _launch_tool("opencode", ctx, skip_preflight=skip_preflight)
+    _launch_tool("opencode", ctx, model=model, skip_preflight=skip_preflight)
 
 
 @app.command(
