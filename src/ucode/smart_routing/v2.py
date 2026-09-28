@@ -339,12 +339,14 @@ def _route_claude_prompt(
 def check_routed_agents_registered(
     payload: dict, available_models: list[str], claude_command: str | None = None
 ) -> str | None:
-    """Log whether the running Claude process got every routed agent; warn if not."""
+    """Warn and log when the running Claude process is missing routed agents."""
     expected = sorted(_routed_claude_agent_definitions(available_models))
     if claude_command is None:
         claude_command = _claude_process_command()
     registered = _agents_arg_names(claude_command) if claude_command else set()
     missing = [name for name in expected if name not in registered]
+    if not missing:
+        return None
     settings = re.search(r"--settings[= ](\S+)", claude_command or "")
     routing.append_jsonl(
         claude_routing.AGENT_CHECK_LOG_PATH,
@@ -356,11 +358,12 @@ def check_routed_agents_registered(
             "claude_process_found": claude_command is not None,
             "claude_settings": settings.group(1) if settings else None,
             "expected": expected,
+            "registered": sorted(
+                name for name in registered if name.startswith(CLAUDE_ROUTED_AGENT_PREFIX)
+            ),
             "missing": missing,
         },
     )
-    if not missing:
-        return None
     return (
         f"Smart Routing: {len(missing)}/{len(expected)} routed subagents are not registered "
         "in this Claude session, so routed subagent calls will fail. "

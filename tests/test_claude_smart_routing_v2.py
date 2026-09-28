@@ -813,7 +813,9 @@ class TestRoutedAgentsRegisteredCheck:
         monkeypatch.setattr(v2.claude_routing, "AGENT_CHECK_LOG_PATH", log)
 
         warning = v2.check_routed_agents_registered(
-            {"session_id": "s1", "source": "startup"}, self.MODELS, self._command([])
+            {"session_id": "s1", "source": "startup"},
+            self.MODELS,
+            self._command(["ucode-route-other-12345678", "Explore"]),
         )
 
         assert warning is not None and "2/2 routed subagents" in warning
@@ -821,6 +823,7 @@ class TestRoutedAgentsRegisteredCheck:
         assert record["claude_settings"] == "/tmp/claude-v2-1-x.json"
         assert record["missing"] == record["expected"]
         assert "ucode-route-kimi-k3-ba377e31" in record["missing"]
+        assert record["registered"] == ["ucode-route-other-12345678"]
 
     def test_silent_when_all_agents_registered(self, tmp_path, monkeypatch):
         log = tmp_path / "agents.jsonl"
@@ -830,4 +833,4 @@ class TestRoutedAgentsRegisteredCheck:
         warning = v2.check_routed_agents_registered({}, self.MODELS, self._command(names))
 
         assert warning is None
-        assert json.loads(log.read_text())["missing"] == []
+        assert not log.exists()
