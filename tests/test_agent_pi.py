@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from unittest.mock import patch
 
 from ucode.agents import pi
@@ -477,6 +478,16 @@ class TestBuildPiApiKey:
         api_key = pi.build_pi_api_key({"workspace": WS})
 
         assert api_key == f"!/tools/ug auth-token --host {WS}"
+
+    def test_windows_executable_path_survives_bash(self, monkeypatch):
+        # Pi runs `!command` through Git Bash on Windows, so the command must be
+        # POSIX-quoted: an unquoted `C:\...\ug.EXE` would lose its backslashes.
+        ug_exe = r"C:\Users\me\.local\bin\ug.EXE"
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: ug_exe)
+        api_key = pi.build_pi_api_key({"workspace": WS})
+
+        assert api_key.startswith("!")
+        assert shlex.split(api_key[1:]) == [ug_exe, "auth-token", "--host", WS]
 
     def test_omits_force_refresh(self):
         # Pi has no token cache on this path, so --force-refresh would round-trip
