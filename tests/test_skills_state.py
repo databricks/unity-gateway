@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from tests.platform_marks import requires_symlinks
 from ucode import config_io, skills_state
 from ucode.skills_state import SkillInstall
 
@@ -216,6 +217,7 @@ class TestRemoveDownloads:
         skills_state.remove_downloads([])
         assert skills_state.list_downloaded() == []
 
+    @requires_symlinks
     def test_symlinked_dir_is_unlinked_not_its_target(self, tmp_path):
         base = tmp_path / "proj"
         install = _install(base, "main.default.triage", "triage")

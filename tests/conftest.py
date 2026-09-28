@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 import pytest
+import rich.console
 
 from ucode.databricks import (
     build_shared_base_urls,
@@ -18,6 +19,10 @@ from ucode.ui import normalize_workspace_url
 # The integration suite has its own configuration and subprocess-only fixtures.
 # Run it through scripts/run_integration.py, outside this fixture hierarchy.
 collect_ignore = ["integration"]
+# Claude smart routing's PTY wrapper imports Unix-only modules (pty, termios, fcntl),
+# so its suite cannot even be imported on Windows.
+if os.name == "nt":
+    collect_ignore.append("test_claude_smart_routing_v2.py")
 
 
 @pytest.fixture(autouse=True)
@@ -28,12 +33,14 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     it can never touch the developer's real ~/.ucode/state.json or invoke the
     privileged writer for an OS-managed agent config.
     """
+    import ucode.codex_config as codex_config_mod
     import ucode.config_io as config_io_mod
     import ucode.databricks as databricks_mod
     import ucode.managed_config as managed_config_mod
     import ucode.managed_files as managed_files_mod
     import ucode.state as state_mod
     from ucode.agents import codex as codex_mod
+    from ucode.ui import console, err_console
 
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
@@ -54,6 +61,11 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         codex_mod, "CODEX_MODEL_CATALOG_PATH", state_dir / "codex-model-catalog.json"
     )
     monkeypatch.setattr(codex_mod, "CODEX_CONFIG_PATH", tmp_path / ".codex" / "ucode.config.toml")
+    # custom_catalog_path() resolves the profile layer from its own copy of that path; left
+    # alone it reads a developer's real ~/.codex/ucode.config.toml and its model catalog.
+    monkeypatch.setattr(
+        codex_config_mod, "DEFAULT_CODEX_CONFIG_PATH", tmp_path / ".codex" / "ucode.config.toml"
+    )
 
     def reject_privileged_write(path, _desired_text):
         pytest.fail(
@@ -62,6 +74,11 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(managed_files_mod, "_sudo_replace", reject_privileged_write)
+    # Without a real console (pytest capture), Rich on Windows assumes a legacy console and
+    # swaps rounded panel borders for square ones. Render as a VT terminal does on every OS.
+    monkeypatch.setattr(rich.console, "detect_legacy_windows", lambda: False)
+    for rich_console in (console, err_console):
+        monkeypatch.setattr(rich_console, "legacy_windows", False)
     monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
     # A developer's ambient managed-config stub would otherwise short-circuit every fetch in the suite.

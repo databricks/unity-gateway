@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 from contextlib import contextmanager
 from unittest.mock import MagicMock
@@ -594,7 +596,7 @@ class TestInstallToolBinary:
         shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
         shared_path.parent.mkdir(parents=True, exist_ok=True)
         reference = catalog_ref or str(codex.CODEX_MODEL_CATALOG_PATH)
-        shared_path.write_text(f'model_catalog_json = "{reference}"\n', encoding="utf-8")
+        shared_path.write_text(f"model_catalog_json = {json.dumps(reference)}\n", encoding="utf-8")
         return shared_path
 
     def test_non_strict_returns_false_when_npm_missing(self, monkeypatch):
@@ -684,7 +686,7 @@ class TestInstallToolBinary:
             if catalog_ref is None:
                 assert "model_catalog_json" not in contents
             else:
-                assert f'model_catalog_json = "{catalog_ref}"' in contents
+                assert f"model_catalog_json = {json.dumps(catalog_ref)}" in contents
             return subprocess.CompletedProcess(args, 0)
 
         monkeypatch.setattr("ucode.agents.subprocess.run", fake_run)
@@ -980,7 +982,7 @@ class TestConfiguredPaths:
         assert paths == [
             str(CLAUDE_SETTINGS_PATH).replace(str(CLAUDE_SETTINGS_PATH.home()), "~", 1)
         ]
-        assert paths[0].startswith("~/")
+        assert paths[0].startswith("~" + os.sep)
 
     def test_appends_os_managed_file_recorded_in_state(self):
         from ucode.agents import configured_paths

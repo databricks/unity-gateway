@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -764,7 +765,7 @@ class TestCodexRevertLegacySharedConfig:
         catalog_path = codex.CODEX_MODEL_CATALOG_PATH
         catalog_path.write_text("{}", encoding="utf-8")
         shared_path.write_text(
-            f'model_catalog_json = "{catalog_path}"\npersonality = "friendly"\n',
+            f'model_catalog_json = {json.dumps(str(catalog_path))}\npersonality = "friendly"\n',
             encoding="utf-8",
         )
         assert codex.revert_legacy_shared_config() is True
@@ -836,7 +837,7 @@ class TestCodexAppCatalog:
         shared_path.write_text(
             original
             + (
-                f'model_catalog_json = "{codex.CODEX_MODEL_CATALOG_PATH}"\n'
+                f"model_catalog_json = {json.dumps(str(codex.CODEX_MODEL_CATALOG_PATH))}\n"
                 if previous_catalog
                 else ""
             ),
@@ -1004,10 +1005,11 @@ class TestCodexLaunch:
         codex.sync_app_model_catalog({"models": [{"slug": "old-model"}]})
         shared_path = tmp_path / "config.toml"
         if custom_catalog:
-            shared_path.write_text(f'model_catalog_json = "{custom_catalog}"\n')
+            shared_path.write_text(f"model_catalog_json = {json.dumps(str(custom_catalog))}\n")
         profile_path = codex.CODEX_CONFIG_PATH
         profile_path.write_text(
-            f'model_catalog_json = "{codex.CODEX_MODEL_CATALOG_PATH}"\n' + profile_path.read_text()
+            f"model_catalog_json = {json.dumps(str(codex.CODEX_MODEL_CATALOG_PATH))}\n"
+            + profile_path.read_text()
         )
         monkeypatch.setattr(
             codex,
@@ -1070,7 +1072,7 @@ class TestCodexLaunch:
         assert read_toml_safe(tmp_path / "config.toml")["model_catalog_json"] == str(
             app_catalog_path
         )
-        assert f'model_catalog_json="{catalog_path}"' in launches[0]
+        assert f"model_catalog_json={json.dumps(str(catalog_path))}" in launches[0]
         assert fetch_kwargs == {
             "source": codex.CodexCatalogSource.PROVIDER,
             "identifier": "main.default.openai",
@@ -1092,7 +1094,7 @@ class TestCodexLaunch:
         original_catalog = codex.CODEX_MODEL_CATALOG_PATH.read_bytes()
         shared_path = tmp_path / "config.toml"
         if custom_catalog:
-            shared_path.write_text(f'model_catalog_json = "{custom_catalog}"\n')
+            shared_path.write_text(f"model_catalog_json = {json.dumps(str(custom_catalog))}\n")
         monkeypatch.setattr(
             codex, "_fetch_codex_model_catalog", lambda *a, **k: {"models": [{"slug": "new"}]}
         )
@@ -1228,7 +1230,7 @@ class TestCodexLaunch:
         )
 
         assert catalog_path.exists()
-        assert f'model_catalog_json="{catalog_path}"' in launches[0]
+        assert f"model_catalog_json={json.dumps(str(catalog_path))}" in launches[0]
         assert fetch_kwargs == {
             "source": codex.CodexCatalogSource.PARENT_SCHEMA,
             "identifier": "main.default",
@@ -1470,7 +1472,7 @@ class TestCodexLaunch:
         path = tmp_path / "models.json"
         monkeypatch.setattr(codex.os, "replace", lambda *args: (_ for _ in ()).throw(OSError()))
 
-        with pytest.raises(RuntimeError, match=str(path)):
+        with pytest.raises(RuntimeError, match=re.escape(str(path))):
             codex._write_model_catalog(path, {"models": [{"slug": "gpt-mps"}]})
 
         assert list(tmp_path.glob(".models.json.*.tmp")) == []
@@ -1484,7 +1486,7 @@ class TestCodexLaunch:
             lambda *args, **kwargs: (_ for _ in ()).throw(OSError()),
         )
 
-        with pytest.raises(RuntimeError, match=str(path)):
+        with pytest.raises(RuntimeError, match=re.escape(str(path))):
             codex._write_model_catalog(path, {"models": [{"slug": "gpt-mps"}]})
 
     def test_injects_otel_config_when_tracing_enabled(self, tmp_path, monkeypatch):

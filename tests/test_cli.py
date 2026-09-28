@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import tomllib
 from importlib import metadata
@@ -980,6 +981,7 @@ class TestSubcommandRouting:
         assert mock_configure.call_args.kwargs["route_root_model"] is None
         assert mock_launch.call_args.kwargs["options"].launch_smart_routing is True
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Claude smart routing needs a Unix PTY")
     def test_claude_v2_first_prompt_hook_is_disabled_without_flag(self, monkeypatch):
         monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
         with patch("ucode.smart_routing.claude_pty.request_first_prompt_route") as mock_request:

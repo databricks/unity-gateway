@@ -150,16 +150,35 @@ def _run_until_first_request(
     agents retry on 401 indefinitely. Swallow timeouts — the capture server
     has what we need by then. Returns the CompletedProcess (or None on
     timeout) so callers can surface stderr on failure."""
+    # npm installs agents as `.cmd` shims on Windows, which CreateProcess won't find by bare name.
+    cmd = [shutil.which(cmd[0]) or cmd[0], *cmd[1:]]
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
     try:
-        return subprocess.run(
-            cmd,
-            env=env,
-            capture_output=True,
-            timeout=timeout,
-            stdin=subprocess.DEVNULL,
-        )
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        _kill_process_tree(proc)
+        proc.communicate()
         return None
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    if os.name == "nt":
+        # Killing only the `.cmd` shim leaves its node child holding our pipes open,
+        # so communicate() would never return.
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    proc.kill()
 
 
 def _no_request_msg(server: _CaptureServer, result: subprocess.CompletedProcess | None) -> str:
