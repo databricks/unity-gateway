@@ -647,8 +647,17 @@ def launch_codex(
             log_path=CODEX_INTERPOSER_LOG,
         )
         tui_url = _loopback_websocket_url(tui_port)
+        # The remote TUI decides whether to show OpenAI's sign-in screen from its own
+        # config: without ucode's provider it falls back to `openai`, which requires a
+        # ChatGPT/API-key login the user may never have done. The app-server keeps the
+        # rest of the overlay (hooks, catalog); the TUI only needs the provider.
+        provider_args = codex_config_args(
+            {key: overlay[key] for key in ("model_provider", "model_providers") if key in overlay}
+        )
         tui = subprocess.Popen(
-            resolve_command([binary, "--remote", tui_url, "--model", start_model, *tool_args])
+            resolve_command(
+                [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
+            )
         )
         try:
             returncode = tui.wait()
