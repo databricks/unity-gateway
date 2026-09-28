@@ -8,6 +8,9 @@ every VS Code that has the extension at it, and ``ug revert`` removes only what 
 
 Only strict-JSON ``settings.json`` files are edited: rewriting one that has comments or
 trailing commas would drop them, so those get the settings printed for manual entry.
+
+The Codex extension needs no VS Code settings (it reads Codex's own config files); ug only asks
+:func:`has_codex_extension` whether to point those files at the gateway (see ``agents/codex.py``).
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from ucode import config_io
 from ucode.ui import print_note, print_success, print_warning
 
 CLAUDE_EXTENSION_ID = "anthropic.claude-code"
+CODEX_EXTENSION_ID = "openai.chatgpt"
 WRAPPER_COMMAND = "ug-claude-vscode"
 WRAPPER_SETTING = "claudeCode.claudeProcessWrapper"
 DISABLE_LOGIN_SETTING = "claudeCode.disableLoginPrompt"
@@ -51,7 +55,7 @@ class VSCodeInstall:
 
 @dataclass(frozen=True)
 class SettingsTarget:
-    """A settings.json whose VS Code profile has the Claude Code extension."""
+    """A settings.json whose VS Code profile has the extension being looked for."""
 
     name: str
     settings_path: Path
@@ -102,7 +106,11 @@ def vscode_installs() -> list[VSCodeInstall]:
 
 def has_claude_extension(install: VSCodeInstall) -> bool:
     """Whether a Claude Code extension folder exists in ``install`` (any version/platform)."""
-    prefix = f"{CLAUDE_EXTENSION_ID}-"
+    return _has_extension_folder(install, CLAUDE_EXTENSION_ID)
+
+
+def _has_extension_folder(install: VSCodeInstall, extension_id: str) -> bool:
+    prefix = f"{extension_id}-"
     try:
         return any(
             entry.is_dir() and entry.name.lower().startswith(prefix)
@@ -112,7 +120,7 @@ def has_claude_extension(install: VSCodeInstall) -> bool:
         return False
 
 
-def _lists_claude_extension(extensions_json: Path) -> bool | None:
+def _lists_extension(extensions_json: Path, extension_id: str) -> bool | None:
     """Whether a profile's ``extensions.json`` lists the extension; None when it can't be read."""
     try:
         entries = json.loads(extensions_json.read_text(encoding="utf-8-sig"))
@@ -123,7 +131,7 @@ def _lists_claude_extension(extensions_json: Path) -> bool | None:
     return any(
         isinstance(entry, dict)
         and isinstance(entry.get("identifier"), dict)
-        and str(entry["identifier"].get("id", "")).lower() == CLAUDE_EXTENSION_ID
+        and str(entry["identifier"].get("id", "")).lower() == extension_id
         for entry in entries
     )
 
@@ -141,14 +149,27 @@ def _profiles(user_dir: Path) -> list[dict]:
 
 
 def claude_settings_targets(install: VSCodeInstall) -> list[SettingsTarget]:
-    """The settings.json of every profile in ``install`` that has the Claude Code extension.
+    """The settings.json of every profile in ``install`` that has the Claude Code extension."""
+    return _extension_settings_targets(install, CLAUDE_EXTENSION_ID)
+
+
+def has_codex_extension(installs: Callable[[], list[VSCodeInstall]] | None = None) -> bool:
+    """Whether any VS Code profile on this machine (or the VS Code Server) has the Codex extension."""
+    return any(
+        _extension_settings_targets(install, CODEX_EXTENSION_ID)
+        for install in (installs or vscode_installs)()
+    )
+
+
+def _extension_settings_targets(install: VSCodeInstall, extension_id: str) -> list[SettingsTarget]:
+    """The settings.json of every profile in ``install`` that has the extension.
 
     The default profile's extensions are listed in ``<extensions dir>/extensions.json``; each
     other profile has its own ``extensions.json`` and ``settings.json`` under
     ``User/profiles/<id>/`` unless its ``useDefaultFlags`` shares the default profile's.
     """
-    listed = _lists_claude_extension(install.extensions_dir / "extensions.json")
-    default_has = has_claude_extension(install) if listed is None else listed
+    listed = _lists_extension(install.extensions_dir / "extensions.json", extension_id)
+    default_has = _has_extension_folder(install, extension_id) if listed is None else listed
     targets: list[SettingsTarget] = []
     if default_has:
         targets.append(SettingsTarget(install.name, install.settings_path))
@@ -163,7 +184,7 @@ def claude_settings_targets(install: VSCodeInstall) -> list[SettingsTarget]:
             has = (
                 default_has
                 if flags.get("extensions")
-                else _lists_claude_extension(profile_dir / "extensions.json") is True
+                else _lists_extension(profile_dir / "extensions.json", extension_id) is True
             )
             if not has:
                 continue

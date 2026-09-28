@@ -1282,6 +1282,7 @@ def revert() -> int:
     pi_settings_restored = restore_file(
         PI_SETTINGS_PATH, PI_SETTINGS_BACKUP_PATH, bool(managed_configs.get("pi"))
     )
+    codex_vscode_result = codex_agent.revert_vscode_extension()
     # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
     # place; restoring the per-profile file above does not undo that.
     legacy_codex_stripped = revert_legacy_shared_config()
@@ -1298,6 +1299,7 @@ def revert() -> int:
     print_kv("Codex OS-managed settings", codex_managed_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     print_kv("VS Code Claude Code extension", vscode_result)
+    print_kv("VS Code Codex extension", codex_vscode_result)
     for client, spec in MCP_CLIENTS.items():
         print_kv(
             f"{spec['display']} MCP config",
