@@ -224,9 +224,7 @@ def login_mcp_command(names: set[str] | None = None, agents: set[str] | None = N
     # so an unreachable status API doesn't masquerade as "already signed in" (and so the picker and
     # the non-interactive path still act on it), rather than being silently skipped.
     pending = [
-        full
-        for full in url_by_full
-        if status_by_full[full] in (STATUS_NEEDS_LOGIN, STATUS_UNKNOWN)
+        full for full in url_by_full if status_by_full[full] in (STATUS_NEEDS_LOGIN, STATUS_UNKNOWN)
     ]
 
     # Non-interactive (--names): sign in only to targeted services that still need it — never

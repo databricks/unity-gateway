@@ -279,14 +279,14 @@ class TestLoginCommand:
         monkeypatch.setattr(
             mcp_login,
             "mcp_service_login_status",
-            lambda ws, t, full, u: mcp_login.STATUS_NO_LOGIN
-            if full == "system.ai.pg"
-            else mcp_login.STATUS_NEEDS_LOGIN,
+            lambda ws, t, full, u: (
+                mcp_login.STATUS_NO_LOGIN
+                if full == "system.ai.pg"
+                else mcp_login.STATUS_NEEDS_LOGIN
+            ),
         )
         rows: list = []
-        monkeypatch.setattr(
-            mcp_login, "_prompt_login_selection", lambda r: rows.extend(r) or []
-        )
+        monkeypatch.setattr(mcp_login, "_prompt_login_selection", lambda r: rows.extend(r) or [])
         rc = mcp_login.login_mcp_command()
         assert rc == 0
         offered = {full for full, _status in rows}
