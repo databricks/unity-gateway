@@ -460,6 +460,7 @@ class TestSudoReplace:
         with pytest.raises(RuntimeError, match="Refusing unexpected managed-settings target"):
             _REAL_SUDO_REPLACE(tmp_path / "unexpected.json", "content")
 
+    @requires_symlinks
     def test_rejects_allowlisted_symlink_before_sudo(self, tmp_path, monkeypatch):
         target = tmp_path / "target.json"
         target.write_text("original", encoding="utf-8")
@@ -492,7 +493,8 @@ class TestSudoReplace:
         )[0]
         shell_entries = set(re.findall(r'"(linux|macos):([^"]+)"', body))
         python_entries = {
-            (os_enum.value, str(path))
+            # as_posix: the shell script names POSIX paths; str() uses backslashes on Windows.
+            (os_enum.value, path.as_posix())
             for os_enum, paths in managed_files._SUDO_REPLACE_TARGETS.items()
             for path in paths
         }
