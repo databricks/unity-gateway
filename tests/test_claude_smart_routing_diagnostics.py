@@ -10,7 +10,6 @@ import pytest
 from typer.testing import CliRunner
 
 import ucode.agents.claude as agents_claude
-from ucode.agents.args import LaunchOptions
 from ucode.cli import app
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import claude_diagnostics, claude_hooks, claude_routing, routing, v2
@@ -483,31 +482,6 @@ class TestNotRoutedLaunchRecords:
         ]
         assert all(record["launch_path"] == "not-routed" for record in records)
         assert all(record["agent_names"] == [] for record in records)
-
-    def test_relayed_launch_records_not_routed(self, monkeypatch):
-        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setattr(agents_claude, "_launch_relayed", lambda *_args: None)
-
-        agents_claude.launch(
-            {"workspace": "https://example.com", "claude_relayed": True},
-            [],
-            options=LaunchOptions(),
-        )
-
-        record = claude_diagnostics.recent_launches()[0]
-        assert record["launch_path"] == "not-routed"
-        assert record["reason"] == "relayed"
-
-    def test_relayed_launch_records_nothing_without_routing(self, monkeypatch):
-        monkeypatch.setattr(agents_claude, "_launch_relayed", lambda *_args: None)
-
-        agents_claude.launch(
-            {"workspace": "https://example.com", "claude_relayed": True},
-            [],
-            options=LaunchOptions(),
-        )
-
-        assert claude_diagnostics.recent_launches() == []
 
 
 class TestBoundedLogs:

@@ -1672,20 +1672,6 @@ def launch(
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     if state.get("claude_relayed"):
-        if smart_routing_v2.smart_routing_enabled():
-            # Routing stayed enabled but the relay path bypasses the routed
-            # launch — record why, since it leaves no routed agents behind.
-            from ucode.smart_routing import claude_diagnostics
-
-            claude_diagnostics.record_launch(
-                claude_diagnostics.new_launch_id(),
-                launch_path="not-routed",
-                reason="relayed",
-                catalog_source=None,
-                model_ids=[],
-                agent_names=[],
-                settings_path=None,
-            )
         _launch_relayed(state, binary, tool_args)
         return
     launch_default_model = state.get("_claude_launch_default_model")
