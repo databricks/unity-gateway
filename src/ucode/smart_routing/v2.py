@@ -9,7 +9,6 @@ import subprocess
 import sys
 import time
 import urllib.request
-import uuid
 from collections.abc import Callable, MutableMapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -468,10 +467,6 @@ def launch_claude(
     model_ids = catalog.model_ids
 
     route_first_prompt = first_prompt_routing_enabled()
-    run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
-    socket_path = APP_DIR / f"claude-v2-{run_id}.sock"
-    settings_path = APP_DIR / f"claude-v2-{run_id}.json"
-
     settings, remaining = compose_settings(tool_args)
     hook_executable = build_auth_token_argv(
         workspace, state.get("profile"), use_pat=bool(state.get("use_pat"))
@@ -482,7 +477,6 @@ def launch_claude(
     env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
     if route_first_prompt:
         env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
-        env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
     else:
         env[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
     model_overrides = settings.setdefault("modelOverrides", {})
@@ -507,11 +501,16 @@ def launch_claude(
         )
 
     try:
-        write_json_file(settings_path, settings)
-        with TemporaryDirectory(
-            prefix=f"claude-v2-{run_id}-", suffix="-plugin", dir=APP_DIR
-        ) as plugin_dir:
-            _write_routed_claude_plugin(Path(plugin_dir), model_ids)
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix="claude-v2-", dir=APP_DIR) as directory:
+            launch_dir = Path(directory)
+            settings_path = launch_dir / "settings.json"
+            socket_path = launch_dir / "first.sock"
+            plugin_dir = launch_dir / "plugin"
+            if route_first_prompt:
+                env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
+            write_json_file(settings_path, settings)
+            _write_routed_claude_plugin(plugin_dir, model_ids)
             model_args = launch_model_args(remaining, launch_model)
             argv = [
                 binary,
@@ -519,7 +518,7 @@ def launch_claude(
                 str(settings_path),
                 *model_args,
                 "--plugin-dir",
-                plugin_dir,
+                str(plugin_dir),
                 *remaining,
             ]
             if route_first_prompt:
@@ -540,11 +539,7 @@ def launch_claude(
                     proc.send_signal(signal.SIGINT)
                     returncode = proc.wait()
     finally:
-        try:
-            model_setting.restore()
-        finally:
-            settings_path.unlink(missing_ok=True)
-            socket_path.unlink(missing_ok=True)
+        model_setting.restore()
     sys.exit(returncode)
 
 

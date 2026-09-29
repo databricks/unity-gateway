@@ -185,10 +185,10 @@ with `ug configure` to control installation.
 ## Claude Routing Plugin
 
 Smart routing passes generated agents through a per-launch `--plugin-dir`,
-alongside `--settings`, without persistent plugin registration. The temporary
-plugin directory is removed when the launch finishes or fails. Existing hook
-configuration and disable/revert behavior are unchanged. Native daemon/background
-propagation of the plugin remains unverified.
+alongside `--settings`, without persistent plugin registration. One temporary
+directory holds the settings, socket, and plugin and is removed when the launch
+finishes or fails. Existing hook configuration and disable/revert behavior are
+unchanged. Native daemon/background propagation of the plugin remains unverified.
 
 ## Managed Files
 
