@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import shlex
 import shutil
 from importlib import resources
@@ -43,12 +42,7 @@ def _digest(content: str) -> str:
 
 
 def _load_manifest() -> dict[str, str]:
-    try:
-        data = json.loads(_manifest_path().read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
+    data = config_io.read_json_safe(_manifest_path())
     installs = data.get("installs")
     if data.get("version") != MANIFEST_VERSION or not isinstance(installs, dict):
         return {}
@@ -94,19 +88,14 @@ def install_bundled_skill(home: Path | None = None) -> list[Path]:
         skill_dir = base / relative_root / SKILL_NAME
         key = str(skill_dir)
         prior_digest = installs.get(key)
-        if skill_dir.exists() or skill_dir.is_symlink():
-            if skill_dir.is_symlink():
-                print_warning(
-                    f"Kept existing `{skill_dir}`; install the bundled Smart Router skill "
-                    "manually if you want to replace it."
-                )
-                continue
-            if prior_digest is None or not _installed_unchanged(skill_dir, prior_digest):
-                print_warning(
-                    f"Kept existing `{skill_dir}`; install the bundled Smart Router skill "
-                    "manually if you want to replace it."
-                )
-                continue
+        if (skill_dir.exists() or skill_dir.is_symlink()) and (
+            prior_digest is None or not _installed_unchanged(skill_dir, prior_digest)
+        ):
+            print_warning(
+                f"Kept existing `{skill_dir}`; install the bundled Smart Router skill "
+                "manually if you want to replace it."
+            )
+            continue
         try:
             skill_dir.mkdir(parents=True, exist_ok=True)
             (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")

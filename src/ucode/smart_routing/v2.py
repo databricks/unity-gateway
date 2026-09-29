@@ -452,9 +452,6 @@ def launch_claude(
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
     from ucode.smart_routing import claude_pty
 
-    install_bundled_skill()
-    start_session()
-
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -534,6 +531,8 @@ def launch_claude(
                 str(plugin_dir),
                 *remaining,
             ]
+            install_bundled_skill()
+            start_session()
             if route_first_prompt:
                 returncode = claude_pty.run_claude_pty(
                     argv,
@@ -588,8 +587,6 @@ def launch_codex(
     start_model: str | None,
     render_overlay: Callable[..., dict],
 ) -> NoReturn:
-    install_bundled_skill()
-    start_session()
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -624,6 +621,8 @@ def launch_codex(
         "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
     }
     config_args = codex_config_args(overlay)
+    install_bundled_skill()
+    start_session()
     if not first_prompt_routing_enabled():
         # Subagent-only routing needs neither the app-server nor the interposer:
         # the hooks ride in the CLI config, so launch the TUI directly.

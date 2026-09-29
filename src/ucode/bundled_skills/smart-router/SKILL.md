@@ -6,16 +6,13 @@ allowed-tools: Bash(__UG_EXECUTABLE__ __UG_LAUNCHER__ --enable-smart-routing), B
 
 # Smart Router
 
-Interpret the invocation's first argument as `on` or `off`, then run exactly one matching command:
+For `on` or `off`, run exactly one matching command:
 
 ```text
 __UG_EXECUTABLE__ __UG_LAUNCHER__ --enable-smart-routing
 __UG_EXECUTABLE__ __UG_LAUNCHER__ --disable-smart-routing
 ```
 
-With no argument, explain that the accepted arguments are `on` and `off`; do not run a command.
-Use this only for the current smart-routed __UG_LAUNCHER__ session. To start a routed session,
-run `__UG_EXECUTABLE__ __UG_LAUNCHER__ --enable-smart-routing` from outside the session.
-Return the command's result to the user. Do not edit the session-state file directly. This switch
-affects only subsequent subagent model selection; it does not change the current/root model or
-reroute the first prompt.
+With no argument, explain that only `on` and `off` are accepted. Do not edit the state file.
+This affects subsequent subagent model selection in the current session, not the root model or
+first prompt. Return the command's result.

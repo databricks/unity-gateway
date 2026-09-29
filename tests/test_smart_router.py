@@ -158,7 +158,7 @@ class TestRoutingHookGate:
         router.assert_not_called()
         token_provider.assert_not_called()
 
-        session_env.set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS), env)
+        session_env.set_session_environment({}, env)
         assert runner.invoke(cli.app, args, input=payload).exit_code == 0
         router.assert_called_once()
         token_provider.assert_called_once()

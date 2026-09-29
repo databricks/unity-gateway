@@ -2319,7 +2319,7 @@ def _toggle_current_smart_routing_session(enabled: bool | None) -> bool:
     except RuntimeError:
         return False
     try:
-        set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0" if not enabled else None))
+        set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not enabled else {})
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
@@ -2578,27 +2578,6 @@ def _launch_options(
     )
 
 
-@contextmanager
-def _managed_smart_routing_environment(
-    managed: dict | None,
-    tool: str,
-    *,
-    override: bool | None = None,
-) -> Iterator[None]:
-    """Expose an agent's managed smart-routing switch only to its launched session."""
-    # An explicit launcher flag is authoritative, including --disable: managed
-    # policy must not turn a requested ordinary launch back into a routed one.
-    if override is not None or not _managed_smart_routing_enabled(managed, tool):
-        yield
-        return
-
-    previous = smart_routing_v2.enable_smart_routing()
-    try:
-        yield
-    finally:
-        smart_routing_v2.restore_smart_routing_env(previous)
-
-
 def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
     """Whether the workspace enabled smart routing for this specific agent."""
     agent_config = ((managed or {}).get("enabled_agents") or {}).get(tool) or {}
@@ -2712,9 +2691,10 @@ def _launch_tool(
             os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         # The environment switch remains a developer override; managed config is the workspace
         # policy equivalent and must take effect before launch options are computed.
-        managed_smart_routing_enabled = _managed_smart_routing_enabled(managed, tool)
-        if smart_routing_override is None:
-            smart_routing_enabled = smart_routing_enabled or managed_smart_routing_enabled
+        managed_smart_routing_enabled = (
+            smart_routing_override is None and _managed_smart_routing_enabled(managed, tool)
+        )
+        smart_routing_enabled = smart_routing_enabled or managed_smart_routing_enabled
         # Discovery exists to find models and isn't needed for managed config that already names them.
         managed_models_known = managed_supplies_models(managed, tool)
         # Re-fetch model lists on every launch so newly-added Databricks
@@ -2973,11 +2953,7 @@ def _launch_tool(
             provider=provider,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
-        with _managed_smart_routing_environment(
-            managed,
-            tool,
-            override=smart_routing_override,
-        ):
+        with _smart_routing_v2_flag(True if managed_smart_routing_enabled else None):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
         print_err(str(exc))
