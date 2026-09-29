@@ -35,6 +35,7 @@ from ucode.databricks import (
     build_copilot_base_url,
     get_databricks_token,
 )
+from ucode.launcher import resolve_command
 from ucode.state import mark_tool_managed, save_state
 
 from .args import LaunchOptions
@@ -201,7 +202,9 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     )
     refresher.start()
 
-    proc = subprocess.Popen([SPEC["binary"], *mcp_config_args(), *tool_args], env=env)
+    proc = subprocess.Popen(
+        resolve_command([SPEC["binary"], *mcp_config_args(), *tool_args]), env=env
+    )
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

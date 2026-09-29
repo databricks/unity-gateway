@@ -35,6 +35,7 @@ from ucode.databricks import (
     raise_for_invalid_access_token,
     workspace_hostname,
 )
+from ucode.launcher import resolve_command
 from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
     CLAUDE_CODE_OAUTH_CLIENT_ID,
@@ -157,7 +158,7 @@ def add_codex_mcp_server(name: str, argv: list[str]) -> None:
     # it as a stdio server (codex spawns the command and speaks MCP over it).
     try:
         subprocess.run(
-            ["codex", "mcp", "add", name, "--", *argv],
+            resolve_command(["codex", "mcp", "add", name, "--", *argv]),
             check=True,
             capture_output=True,
             text=True,
@@ -177,18 +178,20 @@ def add_codex_http_mcp_server(name: str, url: str, client_id: str) -> None:
     that unregistered path via the `enableCodexLoopbackRedirectExemption` flag (loopback host only)."""
     try:
         subprocess.run(
-            [
-                "codex",
-                "mcp",
-                "add",
-                name,
-                "--url",
-                url,
-                "--oauth-client-id",
-                client_id,
-                "--oauth-resource",
-                url,
-            ],
+            resolve_command(
+                [
+                    "codex",
+                    "mcp",
+                    "add",
+                    name,
+                    "--url",
+                    url,
+                    "--oauth-client-id",
+                    client_id,
+                    "--oauth-resource",
+                    url,
+                ]
+            ),
             check=True,
             capture_output=True,
             text=True,
@@ -201,7 +204,7 @@ def add_codex_http_mcp_server(name: str, url: str, client_id: str) -> None:
 def remove_codex_mcp_server(name: str) -> bool:
     try:
         result = subprocess.run(
-            ["codex", "mcp", "remove", name],
+            resolve_command(["codex", "mcp", "remove", name]),
             check=False,
             capture_output=True,
             text=True,
@@ -230,17 +233,19 @@ def add_gemini_mcp_server(name: str, argv: list[str]) -> None:
     # --type stdio`. The scope/type flags trail the captured command + args.
     try:
         subprocess.run(
-            [
-                "gemini",
-                "mcp",
-                "add",
-                name,
-                *argv,
-                "--type",
-                "stdio",
-                "--scope",
-                MCP_USER_SCOPE,
-            ],
+            resolve_command(
+                [
+                    "gemini",
+                    "mcp",
+                    "add",
+                    name,
+                    *argv,
+                    "--type",
+                    "stdio",
+                    "--scope",
+                    MCP_USER_SCOPE,
+                ]
+            ),
             check=True,
             capture_output=True,
             text=True,
@@ -254,7 +259,7 @@ def add_gemini_mcp_server(name: str, argv: list[str]) -> None:
 def remove_gemini_mcp_server(name: str) -> bool:
     try:
         result = subprocess.run(
-            ["gemini", "mcp", "remove", name, "--scope", MCP_USER_SCOPE],
+            resolve_command(["gemini", "mcp", "remove", name, "--scope", MCP_USER_SCOPE]),
             check=False,
             capture_output=True,
             text=True,
@@ -2360,7 +2365,12 @@ def _run_mcp_list(client: str) -> str | None:
     env = _gemini_cli_env() if client == "gemini" else None
     try:
         result = subprocess.run(
-            argv, check=False, capture_output=True, text=True, timeout=90, env=env
+            resolve_command(argv),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            env=env,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None

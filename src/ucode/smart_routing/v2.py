@@ -35,7 +35,7 @@ from ucode.databricks import (
     list_anthropic_model_catalog,
     list_anthropic_models,
 )
-from ucode.launcher import exec_or_spawn
+from ucode.launcher import exec_or_spawn, resolve_command
 from ucode.smart_routing import claude_routing, codex_interposer, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -626,7 +626,7 @@ def launch_codex(
     # Preserve the user's normal CODEX_HOME (including MCP servers, skills, and
     # preferences) and layer only ucode's gateway settings at CLI precedence.
     app_server = subprocess.Popen(
-        [binary, "app-server", *config_args, "--listen", app_server_url],
+        resolve_command([binary, "app-server", *config_args, "--listen", app_server_url]),
         env=os.environ.copy(),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -648,7 +648,9 @@ def launch_codex(
             log_path=CODEX_INTERPOSER_LOG,
         )
         tui_url = _loopback_websocket_url(tui_port)
-        tui = subprocess.Popen([binary, "--remote", tui_url, "--model", start_model, *tool_args])
+        tui = subprocess.Popen(
+            resolve_command([binary, "--remote", tui_url, "--model", start_model, *tool_args])
+        )
         try:
             returncode = tui.wait()
         except KeyboardInterrupt:
