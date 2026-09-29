@@ -3,8 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
-import shutil
 import signal
 import socket
 import subprocess
@@ -12,9 +10,9 @@ import sys
 import time
 import urllib.request
 import uuid
-from collections.abc import Callable, Iterator, MutableMapping
-from contextlib import ExitStack, contextmanager
+from collections.abc import Callable, MutableMapping
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
 from ucode.codex_config import (
@@ -24,7 +22,6 @@ from ucode.codex_config import (
 )
 from ucode.config_io import (
     APP_DIR,
-    is_dry_run,
     read_json_safe,
     read_toml_safe,
     write_json_file,
@@ -43,7 +40,6 @@ from ucode.launcher import exec_or_spawn
 from ucode.smart_routing import claude_routing, codex_interposer, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
-    remove_smart_routing_hooks,
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
 )
@@ -268,7 +264,7 @@ def _routed_claude_agent_definitions(model_ids: list[str]) -> dict[str, dict[str
 
 
 def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
-    """Register exact-model agents through Claude's plugin agent registry."""
+    """Write exact-model agents for launch-scoped loading through --plugin-dir."""
     write_json_file(
         plugin_dir / ".claude-plugin" / "plugin.json",
         {
@@ -295,127 +291,6 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
                 ]
             ),
         )
-
-
-def cleanup_claude_smart_routing(
-    *,
-    settings: dict | None = None,
-    settings_paths: tuple[Path, ...] = (),
-    environment: MutableMapping[str, str] | None = None,
-    prune_launches: bool = False,
-    launch_id: str | None = None,
-) -> bool:
-    """Clean all UG-owned Claude routing state through one entry point.
-
-    The command marker covers first-prompt, subagent-routing, SessionStart and
-    SubagentStart logging hooks. Never remove other hooks or historical logs.
-    Settings documents may be cleaned in memory, or in UG's persistent files.
-    Launch artifacts are collected only when their owner and inherited lease
-    are gone. Explicit teardown skips the owner check, but still honors leases.
-    No plugin is installed or registered in persistent Claude configuration.
-    """
-    changed = False
-    if environment is not None:
-        for key in _SMART_ROUTING_ENV_VARS:
-            environment[key] = "0"
-        environment.pop(FIRST_PROMPT_SOCKET_ENV, None)
-    if settings is not None:
-        changed = remove_smart_routing_hooks(settings)
-        env = settings.get("env")
-        if isinstance(env, dict):
-            for key in (*_SMART_ROUTING_ENV_VARS, FIRST_PROMPT_SOCKET_ENV):
-                if key in env:
-                    del env[key]
-                    changed = True
-    for path in dict.fromkeys(settings_paths):
-        doc = read_json_safe(path)
-        if cleanup_claude_smart_routing(settings=doc):
-            write_json_file(path, doc)
-            changed = True
-    if not prune_launches and launch_id is None:
-        return changed
-    if os.name == "nt" or is_dry_run():
-        return changed
-
-    run_pattern = r"[1-9][0-9]*-[0-9a-f]{8}"
-    if launch_id is not None:
-        if re.fullmatch(run_pattern, launch_id) is None:
-            raise ValueError("Invalid Claude routing launch id")
-        run_ids = {launch_id}
-    else:
-        run_ids = {
-            match[1]
-            for path in APP_DIR.glob("claude-v2-*")
-            if (
-                match := re.fullmatch(
-                    rf"claude-v2-({run_pattern})(?:-plugin|\.json|\.sock)", path.name
-                )
-            )
-        }
-    for run_id in run_ids:
-        if launch_id is None:
-            try:
-                os.kill(int(run_id.partition("-")[0]), 0)
-            except ProcessLookupError:
-                pass
-            except (OSError, OverflowError):
-                continue
-            else:
-                continue
-        changed = _cleanup_claude_launch(run_id) or changed
-    return changed
-
-
-def _cleanup_claude_launch(run_id: str) -> bool:
-    """Remove one generated bundle only after its last inherited lease closes."""
-    import fcntl
-
-    plugin_dir = APP_DIR / f"claude-v2-{run_id}-plugin"
-    settings_path = APP_DIR / f"claude-v2-{run_id}.json"
-    socket_path = APP_DIR / f"claude-v2-{run_id}.sock"
-    if plugin_dir.is_symlink() or (plugin_dir.exists() and not plugin_dir.is_dir()):
-        return False
-    manifest = read_json_safe(plugin_dir / ".claude-plugin" / "plugin.json")
-    if manifest and manifest.get("name") != CLAUDE_ROUTING_PLUGIN_NAME:
-        return False
-    lease_path = plugin_dir / ".lease"
-    if lease_path.is_symlink():
-        return False
-    changed = False
-    try:
-        with ExitStack() as stack:
-            if lease_path.exists():
-                lease = stack.enter_context(lease_path.open("r+"))
-                try:
-                    fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    return False
-            for path in (settings_path, socket_path):
-                if path.is_symlink():
-                    continue
-                if path.exists():
-                    path.unlink()
-                    changed = True
-            if plugin_dir.exists():
-                shutil.rmtree(plugin_dir)
-                changed = True
-    except FileNotFoundError:
-        # Another cleanup may have already removed this abandoned bundle.
-        pass
-    except OSError as exc:
-        print_warning(f"Could not clean Claude routing launch {run_id}: {exc}")
-    return changed
-
-
-@contextmanager
-def _routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> Iterator[int]:
-    import fcntl
-
-    plugin_dir.mkdir(parents=True)
-    with (plugin_dir / ".lease").open("w") as lease:
-        fcntl.flock(lease, fcntl.LOCK_EX)
-        _write_routed_claude_plugin(plugin_dir, model_ids)
-        yield lease.fileno()
 
 
 def _request_claude_routing_decision(
@@ -596,10 +471,8 @@ def launch_claude(
     run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
     socket_path = APP_DIR / f"claude-v2-{run_id}.sock"
     settings_path = APP_DIR / f"claude-v2-{run_id}.json"
-    plugin_dir = APP_DIR / f"claude-v2-{run_id}-plugin"
 
     settings, remaining = compose_settings(tool_args)
-    cleanup_claude_smart_routing(settings=settings)
     hook_executable = build_auth_token_argv(
         workspace, state.get("profile"), use_pat=bool(state.get("use_pat"))
     )[0]
@@ -635,7 +508,10 @@ def launch_claude(
 
     try:
         write_json_file(settings_path, settings)
-        with _routed_claude_plugin(plugin_dir, model_ids) as lease_fd:
+        with TemporaryDirectory(
+            prefix=f"claude-v2-{run_id}-", suffix="-plugin", dir=APP_DIR
+        ) as plugin_dir:
+            _write_routed_claude_plugin(Path(plugin_dir), model_ids)
             model_args = launch_model_args(remaining, launch_model)
             argv = [
                 binary,
@@ -643,7 +519,7 @@ def launch_claude(
                 str(settings_path),
                 *model_args,
                 "--plugin-dir",
-                str(plugin_dir),
+                plugin_dir,
                 *remaining,
             ]
             if route_first_prompt:
@@ -655,10 +531,9 @@ def launch_claude(
                     model_switch_persisted=model_setting.is_routed,
                     restore_model_setting=model_setting.restore,
                     log_path=CLAUDE_PTY_LOG,
-                    pass_fds=(lease_fd,),
                 )
             else:
-                proc = subprocess.Popen(argv, pass_fds=(lease_fd,))
+                proc = subprocess.Popen(argv)
                 try:
                     returncode = proc.wait()
                 except KeyboardInterrupt:
@@ -668,7 +543,8 @@ def launch_claude(
         try:
             model_setting.restore()
         finally:
-            cleanup_claude_smart_routing(launch_id=run_id)
+            settings_path.unlink(missing_ok=True)
+            socket_path.unlink(missing_ok=True)
     sys.exit(returncode)
 
 

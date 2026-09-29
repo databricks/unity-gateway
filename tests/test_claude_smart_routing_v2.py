@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import select
-import subprocess
 import sys
 import threading
 import time
@@ -13,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from ucode.agents import LaunchOptions, claude
+from ucode.agents import claude
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import claude_hooks, claude_pty, routing, v2
 
@@ -249,6 +247,7 @@ class TestV2Launch:
             captured["argv"] = argv
             plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
             captured["plugin_models"] = _plugin_agent_models(plugin_dir)
+            assert "--agents" not in argv
             captured["routed_model"] = kwargs["route_prompt"]("fix the parser")
             generated = Path(argv[argv.index("--settings") + 1])
             captured["settings"] = json.loads(generated.read_text())
@@ -398,10 +397,7 @@ class TestV2Launch:
             "theme": "dark",
         }
 
-    @pytest.mark.parametrize("stale_settings", [False, True])
-    def test_subagent_only_launch_skips_first_prompt_routing(
-        self, tmp_path, monkeypatch, stale_settings
-    ):
+    def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
@@ -425,7 +421,6 @@ class TestV2Launch:
             lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not use the PTY"),
         )
         captured: dict = {}
-        composed = TestRoutingPluginCleanup.routing_settings() if stale_settings else {}
 
         class FakeProcess:
             def __init__(self, argv, **_kwargs):
@@ -436,6 +431,7 @@ class TestV2Launch:
                 plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
                 captured["plugin_dir"] = plugin_dir
                 captured["plugin_models"] = _plugin_agent_models(plugin_dir)
+                assert "--agents" not in argv
 
             def wait(self):
                 return 4
@@ -452,7 +448,7 @@ class TestV2Launch:
                 binary="claude",
                 user_settings_path=user_settings,
                 launch_model="opus",
-                compose_settings=lambda _args: (composed, []),
+                compose_settings=lambda _args: ({}, []),
                 launch_model_args=claude._launch_model_args,
                 model_name=claude._maybe_add_1m_suffix,
             )
@@ -464,13 +460,7 @@ class TestV2Launch:
         assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in env
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in env
         # Subagent routing is fully wired; only the first-prompt machinery is absent.
-        assert "route-first-prompt" not in json.dumps(settings["hooks"])
-        if stale_settings:
-            assert settings["hooks"]["UserPromptSubmit"][0]["hooks"] == [
-                {"type": "command", "command": "user-policy"}
-            ]
-        else:
-            assert "UserPromptSubmit" not in settings["hooks"]
+        assert "UserPromptSubmit" not in settings["hooks"]
         assert "route-subagent" in str(settings["hooks"]["PreToolUse"])
         assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
         assert captured["plugin_models"] == {"system.ai.claude-opus-4-8"}
@@ -481,229 +471,10 @@ class TestV2Launch:
         assert json.loads(user_settings.read_text()) == {"model": "opus"}
 
 
-class TestRoutingPluginCleanup:
-    @staticmethod
-    def owner_exited(_pid, _signal):
-        raise ProcessLookupError
-
-    @staticmethod
-    def routing_settings():
-        doc = {
-            "env": {
-                v2.ENABLE_SMART_ROUTING_ENV_VAR: "1",
-                v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
-                claude_hooks.FIRST_PROMPT_SOCKET_ENV: "/stale/socket",
-                "USER_VALUE": "keep",
-            },
-            "enabledPlugins": {"user-plugin@marketplace": True},
-            "permissions": {"allow": ["Read"]},
-        }
-        claude_hooks.sync_smart_routing_hooks(doc, {}, enabled=True)
-        claude_hooks.sync_first_prompt_hook(doc, "ug")
-        for groups in doc["hooks"].values():
-            groups[0]["hooks"].append({"type": "command", "command": "user-policy"})
-        return doc
-
-    def test_one_cleanup_removes_all_routing_hooks_but_preserves_user_settings(self):
-        doc = self.routing_settings()
-
-        assert v2.cleanup_claude_smart_routing(settings=doc)
-
-        assert doc["env"] == {"USER_VALUE": "keep"}
-        assert set(doc["hooks"]) == {
-            "UserPromptSubmit",
-            "PreToolUse",
-            "SessionStart",
-            "SubagentStart",
-        }
-        for groups in doc["hooks"].values():
-            assert groups[0]["hooks"] == [{"type": "command", "command": "user-policy"}]
-        assert doc["enabledPlugins"] == {"user-plugin@marketplace": True}
-        assert doc["permissions"] == {"allow": ["Read"]}
-        assert not v2.cleanup_claude_smart_routing(settings=doc)
-
-    @pytest.mark.parametrize(
-        ("mode", "flag_value"),
-        [
-            ("disabled", None),
-            ("disabled", "0"),
-            ("disabled", "1"),
-            ("pinned", "1"),
-            ("headless", "1"),
-            ("relayed", "1"),
-        ],
-    )
-    def test_non_routed_launch_cleans_every_hook_source_and_abandoned_bundle(
-        self, tmp_path, monkeypatch, mode, flag_value
-    ):
-        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
-        monkeypatch.setattr(v2.os, "kill", self.owner_exited)
-        for flag in (v2.ENABLE_SMART_ROUTING_ENV_VAR, v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR):
-            if flag_value is None:
-                monkeypatch.delenv(flag, raising=False)
-            else:
-                monkeypatch.setenv(flag, flag_value)
-        monkeypatch.setenv(claude_hooks.FIRST_PROMPT_SOCKET_ENV, "/stale/socket")
-        caller = tmp_path / "caller.json"
-        original = json.dumps(self.routing_settings())
-        for path in (claude.CLAUDE_SETTINGS_PATH, claude.CLAUDE_USER_SETTINGS_PATH, caller):
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(original)
-        stale = tmp_path / "claude-v2-123-deadbeef-plugin"
-        v2._write_routed_claude_plugin(stale, ["system.ai.glm-5-3"])
-        stale_settings = tmp_path / "claude-v2-123-deadbeef.json"
-        stale_settings.write_text(original)
-        historical_log = tmp_path / "claude-smart-routing-decisions.jsonl"
-        historical_log.write_text("keep diagnostic evidence\n")
-        captured = []
-        monkeypatch.setattr(claude, "exec_or_spawn", captured.append)
-        monkeypatch.setattr(
-            claude,
-            "_launch_relayed",
-            lambda _state, binary, args: captured.append(
-                claude._build_claude_argv(binary, args, relayed=True)
-            ),
-        )
-        state = {"claude_relayed": True} if mode == "relayed" else {}
-        options = LaunchOptions(
-            user_pinned_model="system.ai.claude-sonnet-5" if mode == "pinned" else None,
-            launch_smart_routing=mode == "relayed",  # relayed overrides the routing option
-        )
-        args = ["--settings", str(caller), "--plugin-dir", "/user/plugin"]
-        if mode == "headless":
-            args += ["-p", "hello"]
-
-        claude.launch(state, args, options=options)
-
-        assert len(captured) == 1
-        argv = captured[0]
-        merged = json.loads(argv[argv.index("--settings") + 1])
-        for doc in (
-            merged,
-            json.loads(claude.CLAUDE_SETTINGS_PATH.read_text()),
-            json.loads(claude.CLAUDE_USER_SETTINGS_PATH.read_text()),
-        ):
-            assert "claude-router-hook" not in json.dumps(doc)
-            assert "UCODE_CLAUDE_V2_SOCKET" not in doc["env"]
-            assert "ENABLE_SMART_ROUTING_V2" not in doc["env"]
-            assert "ENABLE_SMART_ROUTING_SUBAGENT_ONLY" not in doc["env"]
-            assert "user-policy" in json.dumps(doc["hooks"])
-            assert doc["enabledPlugins"] == {"user-plugin@marketplace": True}
-        assert argv[argv.index("--plugin-dir") + 1] == "/user/plugin"
-        assert argv.count("--plugin-dir") == 1
-        assert caller.read_text() == original
-        assert not v2.smart_routing_enabled()
-        assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in os.environ
-        assert not stale.exists()
-        assert not stale_settings.exists()
-        assert not list(tmp_path.glob("claude-v2-*-plugin"))
-        assert historical_log.read_text() == "keep diagnostic evidence\n"
-
-    def test_rejects_invalid_explicit_cleanup_target(self):
-        with pytest.raises(ValueError, match="launch id"):
-            v2.cleanup_claude_smart_routing(launch_id="not-a-launch")
-
-    def test_cleanup_honors_custom_claude_config_directory(self, tmp_path, monkeypatch):
-        custom = tmp_path / "custom-claude/settings.json"
-        custom.parent.mkdir()
-        original = json.dumps(self.routing_settings())
-        custom.write_text(original)
-        default = claude.CLAUDE_USER_SETTINGS_PATH
-        default.parent.mkdir(parents=True)
-        default.write_text(original)
-        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(custom.parent))
-
-        assert claude.cleanup_smart_routing()
-
-        assert "claude-router-hook" not in custom.read_text()
-        assert "user-policy" in custom.read_text()
-        assert default.read_text() == original
-
-    def test_dry_run_keeps_launch_artifacts(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
-        plugin = tmp_path / "claude-v2-123-deadbeef-plugin"
-        v2._write_routed_claude_plugin(plugin, ["system.ai.glm-5-3"])
-        settings = tmp_path / "claude-v2-123-deadbeef.json"
-        settings.write_text("{}")
-        monkeypatch.setattr(v2, "is_dry_run", lambda: True)
-
-        assert not v2.cleanup_claude_smart_routing(launch_id="123-deadbeef")
-
-        assert plugin.is_dir()
-        assert settings.exists()
-
-    def test_live_owner_and_unrelated_plugins_are_preserved(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
-        live = tmp_path / f"claude-v2-{os.getpid()}-deadbeef-plugin"
-        v2._write_routed_claude_plugin(live, ["system.ai.glm-5-3"])
-        unrelated = tmp_path / "claude-v2-123-12345678-plugin"
-        manifest = unrelated / ".claude-plugin/plugin.json"
-        manifest.parent.mkdir(parents=True)
-        manifest.write_text(json.dumps({"name": "user-plugin"}))
-        custom = tmp_path / "custom-plugin"
-        custom.mkdir()
-        link = tmp_path / "claude-v2-123-aaaaaaaa-plugin"
-        link.symlink_to(custom, target_is_directory=True)
-
-        v2.cleanup_claude_smart_routing(prune_launches=True)
-
-        assert live.exists()
-        assert unrelated.exists()
-        assert custom.exists()
-        assert link.is_symlink()
-
-    @pytest.mark.parametrize("explicit_teardown", [False, True])
-    def test_inherited_lease_protects_orphaned_claude(
-        self, tmp_path, monkeypatch, explicit_teardown
-    ):
-        import fcntl
-
-        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
-        plugin = tmp_path / "claude-v2-123-deadbeef-plugin"
-        v2._write_routed_claude_plugin(plugin, ["system.ai.glm-5-3"])
-        settings = tmp_path / "claude-v2-123-deadbeef.json"
-        settings.write_text("{}")
-        socket = tmp_path / "claude-v2-123-deadbeef.sock"
-        socket.touch()
-        cleanup_args = (
-            {"launch_id": "123-deadbeef"} if explicit_teardown else {"prune_launches": True}
-        )
-        with (plugin / ".lease").open("w") as lease:
-            fcntl.flock(lease, fcntl.LOCK_EX)
-            child = subprocess.Popen(
-                [sys.executable, "-c", "import sys; print('ready', flush=True); sys.stdin.read()"],
-                pass_fds=(lease.fileno(),),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                text=True,
-            )
-        try:
-            assert select.select([child.stdout], [], [], 5)[0], "child failed to start"
-            assert child.stdout.readline().strip() == "ready"
-            with monkeypatch.context() as scope:
-                scope.setattr(v2.os, "kill", self.owner_exited)
-                v2.cleanup_claude_smart_routing(**cleanup_args)
-            assert plugin.is_dir()
-            assert settings.exists()
-            assert socket.exists()
-        finally:
-            try:
-                child.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                child.kill()
-                child.communicate(timeout=5)
-        with monkeypatch.context() as scope:
-            scope.setattr(v2.os, "kill", self.owner_exited)
-            v2.cleanup_claude_smart_routing(**cleanup_args)
-        assert not plugin.exists()
-        assert not settings.exists()
-        assert not socket.exists()
-
+class TestRoutingPluginLaunch:
     @pytest.mark.parametrize("mode", ["full", "subagent"])
     @pytest.mark.parametrize("failure", [None, "plugin-write", "launch"])
-    def test_plugin_lifetime_covers_setup_and_process_errors(
-        self, tmp_path, monkeypatch, mode, failure
-    ):
+    def test_plugin_lifetime_and_caller_arguments(self, tmp_path, monkeypatch, mode, failure):
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1" if mode == "full" else "0")
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1" if mode == "subagent" else "0")
@@ -716,6 +487,14 @@ class TestRoutingPluginCleanup:
                 model_ids=["system.ai.glm-5-3"], model_id_to_display_name={}
             ),
         )
+        caller_args = [
+            "--agents",
+            json.dumps({"reviewer": {"description": "Review code", "prompt": "Review it."}}),
+            "--plugin-dir",
+            "/user/plugin with spaces",
+            "--",
+            "prompt",
+        ]
         original_write = v2._write_routed_claude_plugin
 
         def write_plugin(path, models):
@@ -723,18 +502,19 @@ class TestRoutingPluginCleanup:
             if failure == "plugin-write":
                 raise RuntimeError("plugin write failed")
 
-        def launch_process(argv, **kwargs):
+        def launch_process(argv, **_kwargs):
             plugin = Path(argv[argv.index("--plugin-dir") + 1])
-            assert plugin.is_dir()
-            assert len(kwargs["pass_fds"]) == 1
-            os.fstat(kwargs["pass_fds"][0])
+            assert _plugin_agent_models(plugin) == {"system.ai.glm-5-3"}
+            assert argv.count("--agents") == 1
+            assert argv.count("--plugin-dir") == 2
+            assert argv[-len(caller_args) :] == caller_args
             if failure == "launch":
                 raise RuntimeError("process launch failed")
             return 0
 
         class Process:
-            def __init__(self, argv, **kwargs):
-                launch_process(argv, **kwargs)
+            def __init__(self, argv):
+                launch_process(argv)
 
             def wait(self):
                 return 0
@@ -742,10 +522,10 @@ class TestRoutingPluginCleanup:
         monkeypatch.setattr(v2, "_write_routed_claude_plugin", write_plugin)
         monkeypatch.setattr(v2.subprocess, "Popen", Process)
         monkeypatch.setattr(claude_pty, "run_claude_pty", launch_process)
-        with pytest.raises(RuntimeError if failure else SystemExit):
+        with pytest.raises(RuntimeError if failure else SystemExit) as exc:
             v2.launch_claude(
                 {"workspace": "https://example.com"},
-                [],
+                caller_args,
                 binary="claude",
                 user_settings_path=tmp_path / "user-settings.json",
                 launch_model=None,
@@ -753,6 +533,8 @@ class TestRoutingPluginCleanup:
                 launch_model_args=claude._launch_model_args,
                 model_name=claude._maybe_add_1m_suffix,
             )
+        if not failure:
+            assert exc.value.code == 0
         assert not list(tmp_path.glob("claude-v2-*"))
 
 
@@ -936,15 +718,26 @@ class TestSubagentRouting:
 
     def test_writes_routed_agents_as_launch_scoped_plugin(self, tmp_path):
         plugin_dir = tmp_path / "routing-plugin"
+        models = ["databricks-claude-opus-4-8", "system.ai.glm-5-3"]
 
-        v2._write_routed_claude_plugin(plugin_dir, ["databricks-claude-opus-4-8"])
+        v2._write_routed_claude_plugin(plugin_dir, models)
 
         manifest = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text())
         assert manifest["name"] == v2.CLAUDE_ROUTING_PLUGIN_NAME
-        assert _plugin_agent_models(plugin_dir) == {"system.ai.claude-opus-4-8"}
-        agent = next((plugin_dir / "agents").glob("*.md")).read_text()
-        expected_name = json.dumps(v2._routed_claude_agent_slug("system.ai.claude-opus-4-8"))
-        assert f"name: {expected_name}" in agent
+        assert _plugin_agent_models(plugin_dir) == {
+            "system.ai.claude-opus-4-8",
+            "system.ai.glm-5-3",
+        }
+        for model in models:
+            slug = v2._routed_claude_agent_slug(model)
+            agent = (plugin_dir / "agents" / f"{slug}.md").read_text()
+            assert f"name: {json.dumps(slug)}" in agent
+            assert v2.CLAUDE_ROUTED_AGENT_PROMPT in agent
+
+    def test_routed_agent_uses_plugin_qualified_name(self):
+        assert v2._routed_claude_agent_name("system.ai.glm-5-3") == (
+            "ucode-smart-routing:ucode-route-glm-5-3-982d9f93"
+        )
 
     def test_leaves_non_claude_custom_agent_model_unchanged(self):
         definitions = v2._routed_claude_agent_definitions(["catalog.schema.gpt-5"])
@@ -962,11 +755,6 @@ class TestSubagentRouting:
             "claude-opus-4-8": "system.ai.claude-opus-4-8",
             "claude-sonnet-5": "system.ai.claude-sonnet-5",
         }
-
-    def test_routed_agent_uses_plugin_qualified_name(self):
-        assert v2._routed_claude_agent_name("system.ai.glm-5-3") == (
-            "ucode-smart-routing:ucode-route-glm-5-3-982d9f93"
-        )
 
     def test_model_switch_lock_serializes_routed_sessions(self, tmp_path, monkeypatch):
         user_settings = tmp_path / "settings.json"
@@ -995,25 +783,6 @@ class TestSubagentRouting:
 
 
 class TestPtyFlow:
-    def test_passed_lease_descriptor_survives_exec(self, tmp_path):
-        capture = tmp_path / "descriptor.txt"
-        with (tmp_path / "lease").open("w") as lease:
-            result = claude_pty.run_claude_pty(
-                [
-                    sys.executable,
-                    "-c",
-                    "import os, sys; from pathlib import Path; "
-                    "Path(sys.argv[2]).write_text(str(os.fstat(int(sys.argv[1])).st_ino))",
-                    str(lease.fileno()),
-                    str(capture),
-                ],
-                route_prompt=lambda _prompt: pytest.fail("no prompt expected"),
-                socket_path=tmp_path / "first.sock",
-                pass_fds=(lease.fileno(),),
-            )
-            assert result == 0
-            assert int(capture.read_text()) == os.fstat(lease.fileno()).st_ino
-
     def test_does_not_launch_when_socket_startup_fails(self, tmp_path, monkeypatch):
         class StoppedThread:
             @staticmethod

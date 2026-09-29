@@ -294,7 +294,6 @@ def run_claude_pty(
     model_switch_persisted: Callable[[], bool] = lambda: True,
     restore_model_setting: Callable[[], None] = lambda: None,
     log_path: Path | None = None,
-    pass_fds: tuple[int, ...] = (),
 ) -> int:
     """Run Claude in a PTY, switch its model, and replay the first prompt."""
 
@@ -335,8 +334,6 @@ def run_claude_pty(
 
     pid, master_fd = pty.fork()
     if pid == 0:
-        for descriptor in pass_fds:
-            os.set_inheritable(descriptor, True)
         os.execvp(argv[0], argv)
         os._exit(127)
 

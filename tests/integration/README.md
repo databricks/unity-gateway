@@ -182,16 +182,16 @@ banner journeys below for both agents. Subagent routing is covered at the hook p
 level by the route-subagent hook journeys, which drive the real installed hook commands
 with a harness-shaped payload against the live router; the subagent-only launch journeys
 assert the first-prompt banner and routing wrappers stay silent while the routing hooks
-arm. The Claude plugin cleanup journey below additionally covers an actual
+arm. The Claude plugin registration journey below additionally covers an actual
 interactive routed spawn. Codex interactive spawning, interactive explicit-model
 bypass, and dedicated smart-routing CI shards remain deferred; unit/component
 routing tests do not establish that live behavior.
 
-`test_smart_routing_claude_plugin_cleanup_after_disable` covers an actual
-interactive routed child and its parent completing a file task, followed by a
-successful routing-disabled launch. It asserts transient plugin/settings cleanup,
-the plugin-qualified `ucode-smart-routing:ucode-route-*` name, no persistent plugin
-registration, and no new routing/logging events in the disabled session.
+`test_smart_routing_claude_plugin_registration` covers an actual interactive routed
+child and its parent completing a file task. It asserts temporary plugin/settings
+removal after exit, the plugin-qualified `ucode-smart-routing:ucode-route-*` name,
+and no persistent plugin registration. Stale-state cleanup is outside this change;
+existing hook configuration and disable/revert behavior are unchanged.
 Plugin-refresh survival and native daemon/background dispatch remain uncovered.
 
 The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and

@@ -1274,8 +1274,6 @@ def revert() -> int:
     # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
     # place; restoring the per-profile file above does not undo that.
     legacy_codex_stripped = revert_legacy_shared_config()
-    # Backups from older versions can themselves contain stale routing hooks.
-    claude_agent.cleanup_smart_routing()
     clear_state()
 
     print_heading("Revert")

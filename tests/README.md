@@ -30,15 +30,10 @@ keyboard selection: nothing is selected by default, selecting Codex installs onl
 Codex, and submitting an empty selection installs nothing. Rendering checks cover
 the selected and empty checkboxes. These are local component checks, not live gateway tests.
 
-`TestRoutingPluginCleanup` in `test_claude_smart_routing_v2.py` checks centralized
-removal of all four routing/logging hook types, copied caller settings, disabled,
-explicit-model, headless and relayed launches, both enabled routing modes, and
-setup/launch failures, custom config directories, and dry-run artifact preservation.
-`TestRevert` in `test_cli.py` also checks cleanup after restoring an old hook-bearing
-backup. User hooks/plugins and historical logs are preserved during launch cleanup.
-Real subprocess/PTY checks verify inherited-lease protection during both explicit
-teardown and stale-bundle collection. These component checks do not establish
-native daemon descriptor inheritance or invoke model inference.
+`test_claude_smart_routing_v2.py` checks plugin-qualified names, exact model
+definitions, and temporary plugin loading in both routing modes. `TestRoutingPluginLaunch`
+checks caller argument preservation and directory removal after success or setup/launch
+failure. These are component checks, not native plugin-refresh or daemon coverage.
 
 ## CUJ coverage matrix
 
@@ -74,7 +69,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_codex_app_server_client_initializes` | Connect a stdio client, direct/`--` separator, routing off/on | Actual JSON-RPC initialize response; no non-JSON stdout; no routing |
 | `test_smart_routing_claude_route_subagent_hook`, `test_smart_routing_codex_route_subagent_hook` | Pipe a real PreToolUse spawn payload to the installed route-subagent hook with subagent-only routing enabled | Allow decision against the live router; requested model replaced by a routed agent definition (Claude) or bundled catalog slug (Codex) from the offered models; one audited decision matching the session and task |
 | `test_smart_routing_claude_subagent_only_launch_shows_no_first_prompt_banner`, `test_smart_routing_codex_subagent_only_launch_shows_no_first_prompt_banner` | Configure, then launch the real TUI with both the full and subagent-only routing flags set and submit one file prompt | Subagent-only takes precedence: the prompt completes with no smart-routing banner and no first-prompt routing wrapper (PTY/interposer); Claude's SessionStart canary proves the routing hooks armed; normal exit |
-| `test_smart_routing_claude_plugin_cleanup_after_disable` | Configure, delegate a file task through a routed plugin, then launch with routing off | Child and parent return the unknown file value; plugin-qualified audit entry; transient files removed without persistent plugin registration; disabled launch completes a new task without new routing events |
+| `test_smart_routing_claude_plugin_registration` | Configure and delegate a file task through a launch-scoped plugin | Child and parent return the unknown file value; plugin-qualified audit entry; transient files removed without persistent plugin registration |
 | `test_ug_configure_claude_repeat_and_revert`, `test_ug_configure_codex_repeat_and_revert` | Configure twice over user settings; complete a task; revert twice | Settings preserved; no bearer in ug state; generated config removed; status unconfigured |
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
@@ -197,7 +192,7 @@ These are unit/component checks; they do not establish live sudo password-prompt
 | Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
-| Claude/Codex interactive smart routing | First-prompt routing covered by the `managed_fixture` smart-routing banner journeys; subagent routing covered at the hook protocol level by the route-subagent hook journeys. The Claude plugin cleanup journey also asserts an actual interactive routed child completing a task. Native daemon/background dispatch, Codex interactive spawning, interactive explicit-model bypass, and dedicated routing CI shards remain deferred. Unit/component routing tests do not establish live routing behavior. |
+| Claude/Codex interactive smart routing | First-prompt routing covered by the `managed_fixture` smart-routing banner journeys; subagent routing covered at the hook protocol level by the route-subagent hook journeys. The Claude plugin registration journey also asserts an actual interactive routed child completing a task. Native daemon/background dispatch, Codex interactive spawning, interactive explicit-model bypass, and dedicated routing CI shards remain deferred. Unit/component routing tests do not establish live routing behavior. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
 | Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, local helpers, and the Claude headless gateway journey are advisory; Codex Windows CI is blocked on npm proxy access. Live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |

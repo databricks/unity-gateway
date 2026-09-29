@@ -2734,49 +2734,6 @@ class TestStatusSkillsSection:
 
 
 class TestRevert:
-    def test_cleans_routing_hooks_after_restoring_old_backup(self):
-        settings_path = cli_mod.claude_agent.CLAUDE_SETTINGS_PATH
-
-        def restore_old_backup(path, _backup, _managed):
-            if path == cli_mod.TOOL_SPECS["claude"]["config_path"]:
-                settings_path.parent.mkdir(parents=True, exist_ok=True)
-                settings_path.write_text(
-                    json.dumps(
-                        {
-                            "hooks": {
-                                "UserPromptSubmit": [
-                                    {
-                                        "hooks": [
-                                            {
-                                                "type": "command",
-                                                "command": "ug claude-router-hook route-first-prompt",
-                                            },
-                                            {"type": "command", "command": "user-hook"},
-                                        ]
-                                    }
-                                ]
-                            }
-                        }
-                    )
-                )
-                return True
-            return False
-
-        with (
-            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
-            patch("ucode.cli.restore_file", side_effect=restore_old_backup),
-            patch("ucode.cli.revert_mcp_configs", return_value={}),
-            patch("ucode.cli.claude_agent.revert_managed_settings"),
-            patch("ucode.cli.codex_agent.revert_managed_config"),
-            patch("ucode.cli.revert_legacy_shared_config", return_value=False),
-            patch("ucode.cli.clear_state"),
-        ):
-            result = runner.invoke(app, ["revert"])
-
-        assert result.exit_code == 0, result.output
-        hooks = json.loads(settings_path.read_text())["hooks"]["UserPromptSubmit"]
-        assert hooks == [{"hooks": [{"type": "command", "command": "user-hook"}]}]
-
     def test_reverts_mcp_configs_before_clearing_state(self):
         state = {
             **MINIMAL_STATE,

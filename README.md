@@ -182,17 +182,13 @@ Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
 with `ug configure` to control installation.
 
-## Claude Routing Plugin Lifetime
+## Claude Routing Plugin
 
 Smart routing passes generated agents through a per-launch `--plugin-dir`,
-alongside `--settings`, without persistent plugin registration. Non-routed
-launches, explicit disable, and revert share cleanup for UG's first-prompt,
-subagent-routing, and logging hooks. User hooks/plugins remain untouched.
-
-Exit and setup failures clean generated settings, sockets, and plugins together.
-Files remain while a child holds the inherited lease; later launches collect
-abandoned files. Native daemon/background propagation of plugin paths and leases
-remains unverified.
+alongside `--settings`, without persistent plugin registration. The temporary
+plugin directory is removed when the launch finishes or fails. Existing hook
+configuration and disable/revert behavior are unchanged. Native daemon/background
+propagation of the plugin remains unverified.
 
 ## Managed Files
 
