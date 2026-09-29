@@ -62,6 +62,11 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
 
+`test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
+gateway provider on Windows while Unix launch arguments stay unchanged and routing
+hooks stay with the app-server. This is component coverage, not a live Windows
+sign-in or TUI test.
+
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
 `TestBuildClaudeArgv` also checks that caller permission denies survive ug's technical

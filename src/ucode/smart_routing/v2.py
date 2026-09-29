@@ -702,8 +702,18 @@ def launch_codex(
             log_path=CODEX_INTERPOSER_LOG,
         )
         tui_url = _loopback_websocket_url(tui_port)
+        provider_args = []
+        if os.name == "nt":
+            # Windows has no machine-wide Codex config for the remote TUI to inherit.
+            provider_args = codex_config_args(
+                {
+                    key: overlay[key]
+                    for key in ("model_provider", "model_providers")
+                    if key in overlay
+                }
+            )
         tui = subprocess_cross_os.popen(
-            [binary, "--remote", tui_url, "--model", start_model, *tool_args]
+            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
         )
         try:
             returncode = tui.wait()
