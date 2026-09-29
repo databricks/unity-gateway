@@ -25,7 +25,8 @@ from ucode.ui import print_warning
 
 SKILL_FILES_API_PREFIX = "Skills"
 
-_MAX_CONCURRENT_FILE_DOWNLOADS = 32
+_FILES_API_MAX_RETRIES = 2
+_MAX_CONCURRENT_FILE_DOWNLOADS = 16
 _file_download_slots = threading.BoundedSemaphore(_MAX_CONCURRENT_FILE_DOWNLOADS)
 
 # Wall-clock budget for the workspace-wide skill walk; a slow workspace degrades
@@ -236,7 +237,9 @@ def list_skill_files(
             url = f"{dirs_base}/{directory}"
             if page_token:
                 url = f"{url}?{urlencode({'page_token': page_token})}"
-            payload, reason = _http_get_json(url, token, timeout=30)
+            payload, reason = _http_get_json(
+                url, token, timeout=30, max_retries=_FILES_API_MAX_RETRIES
+            )
             if payload is None:
                 return [], reason
             data = payload if isinstance(payload, dict) else {}
@@ -263,7 +266,7 @@ def fetch_skill_file(
         f"https://{hostname}/api/2.0/fs/files/"
         f"{SKILL_FILES_API_PREFIX}/{catalog}/{schema}/{securable}/{relative_path}"
     )
-    return _http_get_bytes(url, token, timeout=30)
+    return _http_get_bytes(url, token, timeout=30, max_retries=_FILES_API_MAX_RETRIES)
 
 
 def fetch_skill_bundle(
@@ -279,8 +282,12 @@ def fetch_skill_bundle(
     if reason:
         return None, reason
 
+    abandoned = threading.Event()
+
     def fetch(path: str) -> tuple[str, tuple[bytes | None, str | None]]:
         with _file_download_slots:
+            if abandoned.is_set():
+                return path, (None, None)
             return path, fetch_skill_file(workspace, token, catalog, schema, securable, path)
 
     bundle: dict[str, bytes] = {}
@@ -295,4 +302,5 @@ def fetch_skill_bundle(
             bundle[path] = content
         return bundle, None
     finally:
+        abandoned.set()
         pool.shutdown(wait=False, cancel_futures=True)
