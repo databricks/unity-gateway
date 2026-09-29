@@ -340,9 +340,9 @@ class TestSudoReplace:
             return process
 
         monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
-        monkeypatch.setattr(managed_files.subprocess, "Popen", popen)
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "popen", popen)
         monkeypatch.setattr(
-            managed_files.subprocess,
+            managed_files.subprocess_cross_os,
             "run",
             lambda *args, **kwargs: pytest.fail("session must not start another sudo process"),
         )
@@ -416,10 +416,10 @@ class TestSudoReplace:
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
         monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
-        monkeypatch.setattr(managed_files.subprocess, "run", run)
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
         monkeypatch.setattr(
-            managed_files.subprocess,
-            "Popen",
+            managed_files.subprocess_cross_os,
+            "popen",
             lambda *args, **kwargs: pytest.fail("one-shot replacement must not start a session"),
         )
         parent = tmp_path / "managed settings; $(not-a-command)"
