@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from importlib.metadata import distribution
 from pathlib import Path
+from typing import BinaryIO
 
 _SKILL_ROOTS = (".claude/skills", ".agents/skills")
 _SKILL_NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -37,6 +41,55 @@ def _remove_skill_path(destination: Path) -> bool:
     return False
 
 
+def _path_exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _lock_file(lock_file: BinaryIO) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        lock_file.seek(0)
+        if not lock_file.read(1):
+            lock_file.write(b"\0")
+            lock_file.flush()
+        lock_file.seek(0)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+
+
+def _unlock_file(lock_file: BinaryIO) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        lock_file.seek(0)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+@contextmanager
+def _installation_lock(base: Path) -> Iterator[None]:
+    """Serialize packaged-skill changes across concurrent agent launches.
+
+    Keep the lock file in place so every process locks the same file. The OS
+    releases the lock automatically if a launcher exits or is killed.
+    """
+    lock_dir = base / ".ucode"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    with (lock_dir / "packaged-skills.lock").open("a+b") as lock_file:
+        _lock_file(lock_file)
+        try:
+            yield
+        finally:
+            _unlock_file(lock_file)
+
+
 def _bundle_digest(skill_dir: Path) -> str | None:
     """Digest a skill's paths and contents, or return None for an invalid bundle."""
     if skill_dir.is_symlink() or not skill_dir.is_dir():
@@ -62,33 +115,39 @@ def _bundle_digest(skill_dir: Path) -> str | None:
     return digest.hexdigest()
 
 
+def _swap_skill(staged: Path, destination: Path, backup: Path) -> None:
+    """Move a staged skill into place, restoring the prior skill on failure."""
+    had_destination = _path_exists(destination)
+    if had_destination:
+        destination.replace(backup)
+    try:
+        staged.replace(destination)
+    except BaseException:
+        if had_destination:
+            try:
+                backup.replace(destination)
+            except OSError as rollback_error:
+                raise RuntimeError(
+                    f"Could not install `{destination}` or restore its previous contents; "
+                    f"the backup is at `{backup}`."
+                ) from rollback_error
+        raise
+
+
 def _replace_skill(source: Path, destination: Path) -> None:
-    """Stage a complete bundle, then swap it in while retaining a rollback copy."""
+    """Copy a complete bundle to staging before swapping it into place."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_root = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
     staged = temporary_root / "staged"
     backup = temporary_root / "previous"
-    preserve_temporary_root = False
+    completed = False
     try:
         shutil.copytree(source, staged)
-        had_destination = destination.exists() or destination.is_symlink()
-        if had_destination:
-            destination.replace(backup)
-        try:
-            staged.replace(destination)
-        except BaseException:
-            if had_destination:
-                try:
-                    backup.replace(destination)
-                except OSError as rollback_error:
-                    preserve_temporary_root = True
-                    raise RuntimeError(
-                        f"Could not install `{destination}` or restore its previous contents; "
-                        f"the backup is at `{backup}`."
-                    ) from rollback_error
-            raise
+        _swap_skill(staged, destination, backup)
+        completed = True
     finally:
-        if not preserve_temporary_root:
+        # Preserve the backup for manual recovery only when rollback itself failed.
+        if completed or not _path_exists(backup):
             shutil.rmtree(temporary_root, ignore_errors=True)
 
 
@@ -104,11 +163,12 @@ def install_packaged_skills(skill_name: str, home: Path | None = None) -> list[P
 
     base = Path.home() if home is None else home
     installed: list[Path] = []
-    for root in _SKILL_ROOTS:
-        destination = base / root / skill_name
-        if _bundle_digest(destination) != source_digest:
-            _replace_skill(source, destination)
-        installed.append(destination)
+    with _installation_lock(base):
+        for root in _SKILL_ROOTS:
+            destination = base / root / skill_name
+            if _bundle_digest(destination) != source_digest:
+                _replace_skill(source, destination)
+            installed.append(destination)
     return installed
 
 
@@ -118,8 +178,9 @@ def uninstall_packaged_skill(skill_name: str, home: Path | None = None) -> list[
 
     base = Path.home() if home is None else home
     removed: list[Path] = []
-    for root in _SKILL_ROOTS:
-        destination = base / root / skill_name
-        if _remove_skill_path(destination):
-            removed.append(destination)
+    with _installation_lock(base):
+        for root in _SKILL_ROOTS:
+            destination = base / root / skill_name
+            if _remove_skill_path(destination):
+                removed.append(destination)
     return removed

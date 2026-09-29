@@ -1,5 +1,6 @@
 """Tests for skills packaged with Unity Gateway."""
 
+import multiprocessing
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,18 @@ def _write_skill(root: Path, name: str, content: str = "version one") -> Path:
     return skill
 
 
+def _hold_installation_lock(base, entered, release):
+    with packaged_skills._installation_lock(Path(base)):
+        entered.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("timed out waiting to release the installation lock")
+
+
+def _enter_installation_lock(base, entered):
+    with packaged_skills._installation_lock(Path(base)):
+        entered.set()
+
+
 def test_smart_router_skill_uses_launcher_specific_flags():
     content = (Path(__file__).resolve().parents[1] / "skills/smart-router/SKILL.md").read_text()
 
@@ -24,6 +37,41 @@ def test_smart_router_skill_uses_launcher_specific_flags():
         assert f"ug {launcher} --enable-smart-routing" in content
         assert f"ug {launcher} --disable-smart-routing" in content
     assert "ug smart-router" not in content
+
+
+def test_installation_lock_serializes_concurrent_installers(tmp_path):
+    context = multiprocessing.get_context("spawn")
+    first_entered = context.Event()
+    release_first = context.Event()
+    second_entered = context.Event()
+    first = context.Process(
+        target=_hold_installation_lock,
+        args=(str(tmp_path), first_entered, release_first),
+    )
+    second = context.Process(
+        target=_enter_installation_lock,
+        args=(str(tmp_path), second_entered),
+    )
+    first.start()
+    try:
+        assert first_entered.wait(timeout=5)
+        second.start()
+        assert not second_entered.wait(timeout=0.1)
+        release_first.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+    finally:
+        release_first.set()
+        for process in (first, second):
+            if process.pid is None:
+                continue
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=5)
+
+    assert second_entered.is_set()
+    assert first.exitcode == 0
+    assert second.exitcode == 0
 
 
 def test_copies_named_skill_to_both_harness_directories(tmp_path, monkeypatch):
