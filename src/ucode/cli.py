@@ -169,10 +169,10 @@ from ucode.usage import usage as usage_report
 CustomOAuthConfig = custom_oauth.CustomOAuthConfig
 
 _DISCOVERY_CONSUMERS: dict[str, tuple[str, ...]] = {
-    "claude": ("claude", "opencode", "copilot", "pi"),
+    "claude": ("claude", "opencode", "kilo", "copilot", "pi"),
     "codex": ("codex", "copilot", "pi"),
-    "gemini": ("gemini", "opencode", "pi"),
-    "oss": ("opencode",),
+    "gemini": ("gemini", "opencode", "kilo", "pi"),
+    "oss": ("opencode", "kilo"),
 }
 
 
@@ -596,13 +596,20 @@ def configure_shared_state(
         print_warning(f"Model service: {model_service_probe.detail}")
 
     want_claude = (
-        fetch_all or "claude" in tools or "opencode" in tools or "copilot" in tools or "pi" in tools
+        fetch_all
+        or "claude" in tools
+        or "opencode" in tools
+        or "kilo" in tools
+        or "copilot" in tools
+        or "pi" in tools
     )
-    want_gemini = fetch_all or "gemini" in tools or "opencode" in tools or "pi" in tools
+    want_gemini = (
+        fetch_all or "gemini" in tools or "opencode" in tools or "kilo" in tools or "pi" in tools
+    )
     want_codex = fetch_all or "codex" in tools or "copilot" in tools or "pi" in tools
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
     # configure must persist that discovered family too.
-    want_oss = fetch_all or "opencode" in tools or "codex" in tools
+    want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
 
     claude_reason: str | None = None
     gemini_reason: str | None = None
@@ -670,7 +677,8 @@ def configure_shared_state(
             state["codex_models"] = codex_models
         if want_oss:
             state["oss_models"] = oss_models
-        if fetch_all or "opencode" in tools:
+        if fetch_all or "opencode" in tools or "kilo" in tools:
+            # Kilo is an OpenCode fork and consumes the same discovered view.
             state["opencode_models"] = opencode_models
     save_state(state)
     # Scrub MCP entries that ucode wrote for the previous workspace so the new
@@ -3291,6 +3299,28 @@ def opencode_cmd(
 ) -> None:
     """Launch OpenCode via Databricks."""
     _launch_tool("opencode", ctx, model=model, skip_preflight=skip_preflight)
+
+
+@app.command(
+    "kilo",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel="Launch",
+)
+def kilo_cmd(
+    ctx: typer.Context,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            "-m",
+            help="Configured model ID or Kilo provider/model for this launch. "
+            "Pass before any `--` separator.",
+        ),
+    ] = None,
+    skip_preflight: SkipPreflightOption = False,
+) -> None:
+    """Launch Kilo via Databricks."""
+    _launch_tool("kilo", ctx, model=model, skip_preflight=skip_preflight)
 
 
 @app.command(

@@ -1,0 +1,596 @@
+"""Tests for agents/kilo.py."""
+
+from __future__ import annotations
+
+import json
+from copy import deepcopy
+from unittest.mock import patch
+
+import pytest
+
+from ucode.agents import kilo
+from ucode.agents.args import LaunchOptions
+
+WS = "https://example.databricks.com"
+
+
+def _base_urls() -> dict[str, str]:
+    return {
+        "anthropic": f"{WS}/ai-gateway/anthropic/v1",
+        "gemini": f"{WS}/ai-gateway/gemini/v1beta",
+        "oss": f"{WS}/ai-gateway/mlflow/v1",
+    }
+
+
+class TestKiloSpec:
+    def test_binary(self):
+        assert kilo.SPEC["binary"] == "kilo"
+
+    def test_package(self):
+        assert kilo.SPEC["package"] == "@kilocode/cli@7"
+
+    def test_display(self):
+        assert kilo.SPEC["display"] == "Kilo"
+
+    def test_config_path(self):
+        assert kilo.SPEC["config_path"] == kilo.KILO_CONFIG_PATH
+
+    def test_requires_version_with_custom_provider_fetch(self, monkeypatch):
+        monkeypatch.setattr(kilo, "agent_version", lambda _binary: "7.3.0")
+
+        message = kilo.minimum_version_error()
+
+        assert message is not None
+        assert "requires Kilo 7.3.1 or newer" in message
+        assert "npm install -g @kilocode/cli@7" in message
+
+    def test_supported_version_needs_no_required_update(self, monkeypatch):
+        monkeypatch.setattr(kilo, "agent_version", lambda _binary: "7.3.1")
+
+        assert kilo.minimum_version_error() is None
+
+
+class TestAuthPlugin:
+    def test_calls_cross_platform_auth_token_helper_only_when_refreshing(self, monkeypatch):
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/opt/{command}")
+
+        plugin = kilo.render_auth_plugin({"workspace": WS, "profile": "my profile"})
+
+        assert (
+            'const AUTH_COMMAND = ["/opt/ug", "auth-token", "--host", '
+            f'"{WS}", "--profile", "my profile", "--force-refresh"]'
+        ) in plugin
+        assert "run(AUTH_COMMAND[0], AUTH_COMMAND.slice(1)" in plugin
+        assert '"chat.headers"' not in plugin
+
+    def test_installs_cached_refreshing_fetch_on_databricks_providers(self):
+        plugin = kilo.render_auth_plugin({"workspace": WS})
+
+        assert "config: async (config)" in plugin
+        assert "options.fetch = databricksFetch" in plugin
+        assert "expiresAt <= Date.now() + REFRESH_SKEW_MS" in plugin
+        assert 'headers.set("Authorization", "Bearer " + token)' in plugin
+        assert "if (response.status !== 401) return response" in plugin
+        assert "return fetch(input, requestWithToken(input, init, accessToken))" in plugin
+
+    def test_refresh_is_single_flighted(self):
+        plugin = kilo.render_auth_plugin({"workspace": WS})
+
+        assert "if (!refreshPromise)" in plugin
+        assert "mintToken().finally(() => { refreshPromise = undefined })" in plugin
+
+
+class TestRenderOverlay:
+    def test_sets_model(self):
+        overlay, _ = kilo.render_overlay("claude-sonnet", "tok", _base_urls(), {})
+        assert overlay["model"] == "claude-sonnet"
+
+    def test_anthropic_provider_added_when_models_present(self):
+        models = {"anthropic": ["claude-sonnet"], "gemini": []}
+        overlay, _ = kilo.render_overlay("claude-sonnet", "tok", _base_urls(), models)
+        assert "databricks-anthropic" in overlay["provider"]
+
+    def test_gemini_provider_added_when_models_present(self):
+        models = {"anthropic": [], "gemini": ["gemini-2"]}
+        overlay, _ = kilo.render_overlay("gemini-2", "tok", _base_urls(), models)
+        assert "databricks-google" in overlay["provider"]
+
+    def test_oss_provider_added_when_models_present(self):
+        models = {"oss": ["system.ai.kimi-k2-7-code"]}
+        overlay, _ = kilo.render_overlay("system.ai.kimi-k2-7-code", "tok", _base_urls(), models)
+        assert "databricks-oss" in overlay["provider"]
+
+    def test_oss_provider_uses_ai_sdk_openai_package(self):
+        models = {"oss": ["system.ai.kimi-k2-7-code"]}
+        overlay, _ = kilo.render_overlay("system.ai.kimi-k2-7-code", "tok", _base_urls(), models)
+        assert overlay["provider"]["databricks-oss"]["npm"] == "@ai-sdk/openai"
+
+    def test_deepseek_uses_oss_provider(self):
+        model = "system.ai.deepseek-v4-pro"
+
+        overlay, _ = kilo.render_overlay(model, "tok", _base_urls(), {"oss": [model]})
+
+        assert overlay["model"] == f"databricks-oss/{model}"
+        assert model in overlay["provider"]["databricks-oss"]["models"]
+
+    def test_both_providers_when_both_present(self):
+        models = {"anthropic": ["claude-sonnet"], "gemini": ["gemini-2"]}
+        overlay, _ = kilo.render_overlay("claude-sonnet", "tok", _base_urls(), models)
+        assert "databricks-anthropic" in overlay["provider"]
+        assert "databricks-google" in overlay["provider"]
+
+    def test_no_provider_key_when_no_models(self):
+        overlay, _ = kilo.render_overlay("model", "tok", _base_urls(), {})
+        assert "provider" not in overlay
+
+    def test_anthropic_base_url(self):
+        models = {"anthropic": ["claude-sonnet"]}
+        overlay, _ = kilo.render_overlay("claude-sonnet", "tok", _base_urls(), models)
+        options = overlay["provider"]["databricks-anthropic"]["options"]
+        assert options["baseURL"] == f"{WS}/ai-gateway/anthropic/v1"
+
+    def test_gemini_base_url(self):
+        models = {"gemini": ["gemini-2"]}
+        overlay, _ = kilo.render_overlay("gemini-2", "tok", _base_urls(), models)
+        options = overlay["provider"]["databricks-google"]["options"]
+        assert options["baseURL"] == f"{WS}/ai-gateway/gemini/v1beta"
+
+    def test_oss_base_url(self):
+        models = {"oss": ["system.ai.kimi-k2-7-code"]}
+        overlay, _ = kilo.render_overlay("system.ai.kimi-k2-7-code", "tok", _base_urls(), models)
+        options = overlay["provider"]["databricks-oss"]["options"]
+        assert options["baseURL"] == f"{WS}/ai-gateway/mlflow/v1"
+
+    def test_glm_gets_token_limits(self):
+        models = {"oss": ["system.ai.glm-5-2"]}
+        overlay, _ = kilo.render_overlay("system.ai.glm-5-2", "tok", _base_urls(), models)
+        glm = overlay["provider"]["databricks-oss"]["models"]["system.ai.glm-5-2"]
+        # Kilo's schema requires both context and output on `limit`.
+        assert glm["limit"] == {"context": 200000, "output": 25000}
+
+    def test_non_glm_oss_model_has_no_output_cap(self):
+        models = {"oss": ["system.ai.kimi-k2-7-code"]}
+        overlay, _ = kilo.render_overlay("system.ai.kimi-k2-7-code", "tok", _base_urls(), models)
+        kimi = overlay["provider"]["databricks-oss"]["models"]["system.ai.kimi-k2-7-code"]
+        assert "limit" not in kimi
+
+    def test_token_in_api_key(self):
+        models = {"anthropic": ["claude-sonnet"]}
+        overlay, _ = kilo.render_overlay("claude-sonnet", "mytoken", _base_urls(), models)
+        assert overlay["provider"]["databricks-anthropic"]["options"]["apiKey"] == "mytoken"
+
+    def test_authorization_header(self):
+        models = {"anthropic": ["claude-sonnet"]}
+        overlay, _ = kilo.render_overlay("claude-sonnet", "tok", _base_urls(), models)
+        headers = overlay["provider"]["databricks-anthropic"]["options"]["headers"]
+        assert headers["Authorization"] == "Bearer tok"
+
+    def test_anthropic_tool_streaming_disabled(self):
+        # @ai-sdk/anthropic injects `eager_input_streaming: true` on tool defs,
+        # which the Databricks gateway rejects. kilo's auto-disable skips
+        # Claude models, so we opt out per-model. The setting must live in
+        # `models.<m>.options` — per-call providerOptions — not provider options.
+        models = {"anthropic": ["claude-sonnet"]}
+        overlay, _ = kilo.render_overlay("claude-sonnet", "tok", _base_urls(), models)
+        model_entry = overlay["provider"]["databricks-anthropic"]["models"]["claude-sonnet"]
+        assert model_entry["options"]["toolStreaming"] is False
+
+    def test_user_agent_header_anthropic(self, monkeypatch):
+        # UA must live at the per-model level — Kilo clobbers
+        # provider-level `headers["User-Agent"]` in session/llm.ts.
+        monkeypatch.setattr(kilo, "ug_version", lambda: "0.1.0")
+        monkeypatch.setattr(kilo, "agent_version", lambda binary: "0.74.0")
+        models = {"anthropic": ["claude-sonnet"]}
+        overlay, _ = kilo.render_overlay("claude-sonnet", "tok", _base_urls(), models)
+        model_headers = overlay["provider"]["databricks-anthropic"]["models"]["claude-sonnet"][
+            "headers"
+        ]
+        assert model_headers["User-Agent"] == "ucode/0.1.0 kilo/0.74.0"
+
+    def test_user_agent_header_gemini(self, monkeypatch):
+        monkeypatch.setattr(kilo, "ug_version", lambda: "0.1.0")
+        monkeypatch.setattr(kilo, "agent_version", lambda binary: "0.74.0")
+        models = {"gemini": ["gemini-2"]}
+        overlay, _ = kilo.render_overlay("gemini-2", "tok", _base_urls(), models)
+        model_headers = overlay["provider"]["databricks-google"]["models"]["gemini-2"]["headers"]
+        assert model_headers["User-Agent"] == "ucode/0.1.0 kilo/0.74.0"
+
+    def test_provider_level_headers_only_authorization(self, monkeypatch):
+        # Sanity: provider-level headers should NOT include User-Agent (since
+        # it's clobbered there) — only Authorization.
+        models = {"anthropic": ["claude-sonnet"]}
+        overlay, _ = kilo.render_overlay("claude-sonnet", "tok", _base_urls(), models)
+        provider_headers = overlay["provider"]["databricks-anthropic"]["options"]["headers"]
+        assert "User-Agent" not in provider_headers
+        assert provider_headers["Authorization"] == "Bearer tok"
+
+    def test_managed_keys_include_model(self):
+        _, keys = kilo.render_overlay("model", "tok", _base_urls(), {})
+        assert ["model"] in keys
+
+    def test_managed_keys_include_anthropic_provider(self):
+        models = {"anthropic": ["claude-sonnet"]}
+        _, keys = kilo.render_overlay("claude-sonnet", "tok", _base_urls(), models)
+        assert ["provider", "databricks-anthropic"] in keys
+
+    def test_managed_keys_include_gemini_provider(self):
+        models = {"gemini": ["gemini-2"]}
+        _, keys = kilo.render_overlay("gemini-2", "tok", _base_urls(), models)
+        assert ["provider", "databricks-google"] in keys
+
+    def test_managed_keys_include_oss_provider(self):
+        models = {"oss": ["system.ai.kimi-k2-7-code"]}
+        _, keys = kilo.render_overlay("system.ai.kimi-k2-7-code", "tok", _base_urls(), models)
+        assert ["provider", "databricks-oss"] in keys
+
+    def test_anthropic_models_listed(self):
+        models = {"anthropic": ["claude-sonnet", "claude-haiku"]}
+        overlay, _ = kilo.render_overlay("claude-sonnet", "tok", _base_urls(), models)
+        provider_models = overlay["provider"]["databricks-anthropic"]["models"]
+        assert "claude-sonnet" in provider_models
+        assert "claude-haiku" in provider_models
+
+    def test_prefixes_anthropic_model_with_provider_id(self):
+        models = {"anthropic": ["claude-sonnet"], "gemini": []}
+        overlay, _ = kilo.render_overlay("claude-sonnet", "tok", _base_urls(), models)
+        assert overlay["model"] == "databricks-anthropic/claude-sonnet"
+
+    def test_prefixes_gemini_model_with_provider_id(self):
+        models = {"anthropic": [], "gemini": ["gemini-2"]}
+        overlay, _ = kilo.render_overlay("gemini-2", "tok", _base_urls(), models)
+        assert overlay["model"] == "databricks-google/gemini-2"
+
+    def test_prefixes_oss_model_with_provider_id(self):
+        models = {"oss": ["system.ai.kimi-k2-7-code"]}
+        overlay, _ = kilo.render_overlay("system.ai.kimi-k2-7-code", "tok", _base_urls(), models)
+        assert overlay["model"] == "databricks-oss/system.ai.kimi-k2-7-code"
+
+
+class TestMcpServerConfig:
+    # ucode registers the `ucode mcp-proxy ...` bridge as a `local` (stdio) MCP
+    # server; the proxy handles token refresh, so no URL/bearer header here.
+    PROXY_ARGV = ["ucode", "mcp-proxy", "--url", f"{WS}/api/2.0/mcp/functions/system/ai"]
+
+    def test_builds_local_server_entry_from_proxy_argv(self):
+        entry = kilo.build_mcp_server_entry(self.PROXY_ARGV)
+
+        assert entry == {
+            "type": "local",
+            "command": self.PROXY_ARGV,
+            "enabled": True,
+        }
+
+    def test_writes_mcp_server_without_clobbering_existing_config(self, tmp_path, monkeypatch):
+        import ucode.agents.kilo as oc_mod
+        import ucode.config_io as config_io_mod
+
+        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
+        config_file = tmp_path / "kilo.json"
+        backup_file = tmp_path / "kilo-backup.json"
+        monkeypatch.setattr(oc_mod, "KILO_CONFIG_PATH", config_file)
+        monkeypatch.setattr(oc_mod, "KILO_BACKUP_PATH", backup_file)
+
+        config_file.write_text(
+            json.dumps(
+                {
+                    "model": "existing-model",
+                    "mcp": {"old-server": {"type": "local", "command": ["old"]}},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        removed = oc_mod.write_mcp_server_config("github", self.PROXY_ARGV)
+
+        written = json.loads(config_file.read_text())
+        assert removed is False
+        assert written["model"] == "existing-model"
+        assert written["mcp"]["old-server"] == {"type": "local", "command": ["old"]}
+        assert written["mcp"]["github"] == {
+            "type": "local",
+            "command": self.PROXY_ARGV,
+            "enabled": True,
+        }
+
+    def test_reports_replaced_mcp_server(self, tmp_path, monkeypatch):
+        import ucode.agents.kilo as oc_mod
+        import ucode.config_io as config_io_mod
+
+        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
+        config_file = tmp_path / "kilo.json"
+        backup_file = tmp_path / "kilo-backup.json"
+        monkeypatch.setattr(oc_mod, "KILO_CONFIG_PATH", config_file)
+        monkeypatch.setattr(oc_mod, "KILO_BACKUP_PATH", backup_file)
+
+        config_file.write_text(json.dumps({"mcp": {"github": {"old": True}}}), encoding="utf-8")
+
+        removed = oc_mod.write_mcp_server_config("github", self.PROXY_ARGV)
+
+        assert removed is True
+        written = json.loads(config_file.read_text())
+        assert written["mcp"]["github"]["command"] == self.PROXY_ARGV
+
+    def test_removes_mcp_server_without_clobbering_others(self, tmp_path, monkeypatch):
+        import ucode.agents.kilo as oc_mod
+
+        config_file = tmp_path / "kilo.json"
+        monkeypatch.setattr(oc_mod, "KILO_CONFIG_PATH", config_file)
+        config_file.write_text(
+            json.dumps(
+                {
+                    "model": "existing-model",
+                    "mcp": {
+                        "github": {"url": "old"},
+                        "jira": {"url": "keep"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        removed = oc_mod.remove_mcp_server_config("github")
+
+        written = json.loads(config_file.read_text())
+        assert removed is True
+        assert "github" not in written["mcp"]
+        assert written["mcp"]["jira"] == {"url": "keep"}
+        assert written["model"] == "existing-model"
+
+
+class TestBuildRuntimeEnv:
+    def test_sets_oauth_token_for_mcp(self):
+        env = kilo.build_runtime_env("tok")
+
+        assert env["OAUTH_TOKEN"] == "tok"
+
+    def test_sets_kilo_config_isolation_vars(self):
+        # Kilo isolates via a single-file KILO_CONFIG (so a co-installed OpenCode
+        # config is never merged in) plus KILO_CONFIG_DIR for the plugin dir.
+        env = kilo.build_runtime_env("tok")
+
+        assert env["KILO_CONFIG"] == str(kilo.KILO_CONFIG_PATH)
+        assert env["KILO_CONFIG_DIR"] == str(kilo.KILO_CONFIG_INNER_DIR)
+
+
+class TestKiloDefaultModel:
+    def test_prefers_anthropic(self):
+        state = {"opencode_models": {"anthropic": ["claude-sonnet"], "gemini": ["gemini-2"]}}
+        assert kilo.default_model(state) == "claude-sonnet"
+
+    def test_falls_back_to_gemini(self):
+        state = {"opencode_models": {"anthropic": [], "gemini": ["gemini-2"]}}
+        assert kilo.default_model(state) == "gemini-2"
+
+    def test_falls_back_to_oss(self):
+        state = {
+            "opencode_models": {
+                "anthropic": [],
+                "gemini": [],
+                "oss": ["system.ai.kimi-k2-7-code"],
+            }
+        }
+        assert kilo.default_model(state) == "system.ai.kimi-k2-7-code"
+
+    def test_returns_none_when_empty(self):
+        assert kilo.default_model({}) is None
+        assert kilo.default_model({"opencode_models": {}}) is None
+
+    def test_kilo_default_model_wins_over_bucketed_models(self):
+        state = {
+            "opencode_default_model": "admin-chosen-default",
+            "opencode_models": {"anthropic": ["claude-sonnet"]},
+        }
+        assert kilo.default_model(state) == "admin-chosen-default"
+
+
+class TestKiloValidateCmd:
+    def test_starts_with_binary(self):
+        cmd = kilo.validate_cmd("kilo")
+        assert cmd[0] == "kilo"
+
+    def test_uses_run_subcommand(self):
+        cmd = kilo.validate_cmd("kilo")
+        assert "run" in cmd
+
+    def test_has_prompt(self):
+        cmd = kilo.validate_cmd("kilo")
+        assert len(cmd) > 2
+
+
+class TestKiloLaunchModel:
+    def test_resolves_configured_bare_and_native_selectors(self):
+        state = {
+            "opencode_models": {
+                "anthropic": ["claude-sonnet"],
+                "gemini": ["gemini-2"],
+                "oss": ["system.ai.kimi-k2-7-code"],
+            }
+        }
+
+        assert kilo.resolve_explicit_model("gemini-2", state) == "databricks-google/gemini-2"
+        assert (
+            kilo.resolve_explicit_model("openrouter/anthropic/claude-sonnet", state)
+            == "openrouter/anthropic/claude-sonnet"
+        )
+
+    def test_rejects_unknown_and_mismatched_managed_selectors(self):
+        state = {"opencode_models": {"anthropic": ["claude-sonnet"]}}
+
+        with pytest.raises(RuntimeError, match="not configured"):
+            kilo.resolve_explicit_model("missing-model", state)
+        with pytest.raises(RuntimeError, match="managed provider"):
+            kilo.resolve_explicit_model("databricks-google/claude-sonnet", state)
+
+    @pytest.mark.parametrize(
+        ("model", "tool_args", "selector", "expected_args"),
+        [
+            (
+                None,
+                ["run", "prompt"],
+                "databricks-anthropic/claude-sonnet",
+                ["run", "prompt"],
+            ),
+            (
+                "databricks-google/gemini-2",
+                ["run", "--", "--model", "literal"],
+                "databricks-google/gemini-2",
+                ["run", "--model", "databricks-google/gemini-2", "--", "--model", "literal"],
+            ),
+            (
+                "gemini-2",
+                ["run", "prompt"],
+                "databricks-google/gemini-2",
+                ["run", "prompt", "--model", "databricks-google/gemini-2"],
+            ),
+            (
+                "claude-sonnet",
+                ["run", "--model", "databricks-google/gemini-2"],
+                "databricks-google/gemini-2",
+                ["run", "--model", "databricks-google/gemini-2"],
+            ),
+            (
+                "openrouter/anthropic/claude-sonnet",
+                ["run", "--model", "openrouter/anthropic/claude-sonnet"],
+                "openrouter/anthropic/claude-sonnet",
+                ["run", "--model", "openrouter/anthropic/claude-sonnet"],
+            ),
+        ],
+    )
+    def test_launch_preserves_selection_and_saved_defaults(
+        self, tmp_path, monkeypatch, model, tool_args, selector, expected_args
+    ):
+        config_file = tmp_path / "kilo.json"
+        monkeypatch.setattr(kilo, "KILO_CONFIG_PATH", config_file)
+        monkeypatch.setattr(kilo, "KILO_BACKUP_PATH", tmp_path / "kilo-backup.json")
+        state = {
+            "workspace": WS,
+            "base_urls": {"kilo": _base_urls()},
+            "opencode_models": {"anthropic": ["claude-sonnet"], "gemini": ["gemini-2"]},
+            "opencode_default_model": "claude-sonnet",
+            "managed_configs": {},
+        }
+        original_state = deepcopy(state)
+        original_args = list(tool_args)
+        with (
+            patch("ucode.agents.kilo.get_databricks_token", return_value="tok"),
+            patch("ucode.agents.kilo.agent_version", return_value="1.0.220"),
+            patch("ucode.agents.kilo.save_state"),
+            patch("ucode.agents.kilo.subprocess_cross_os.popen") as popen,
+        ):
+            popen.return_value.wait.return_value = 7
+            with pytest.raises(SystemExit) as exc_info:
+                kilo.launch(state, tool_args, options=LaunchOptions(user_pinned_model=model))
+
+        assert exc_info.value.code == 7
+        assert json.loads(config_file.read_text())["model"] == selector
+        assert popen.call_args.args[0] == ["kilo", *expected_args]
+        assert tool_args == original_args
+        assert state["opencode_models"] == original_state["opencode_models"]
+        assert state["opencode_default_model"] == original_state["opencode_default_model"]
+
+    def test_rejects_invalid_model_before_configure_and_process(self):
+        state = {"opencode_models": {"anthropic": ["claude-sonnet"]}}
+        with (
+            patch("ucode.agents.kilo._configure_launch") as configure,
+            patch("ucode.agents.kilo.subprocess_cross_os.popen") as popen,
+            pytest.raises(RuntimeError, match="not configured"),
+        ):
+            kilo.launch(
+                state,
+                ["run", "--model", "missing-model"],
+                options=LaunchOptions(),
+            )
+
+        configure.assert_not_called()
+        popen.assert_not_called()
+
+
+class TestWriteToolConfigStaleProviderCleanup:
+    def test_stale_providers_removed_before_merge(self, tmp_path, monkeypatch):
+        import ucode.agents.kilo as oc_mod
+        import ucode.config_io as config_io_mod
+
+        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
+        config_file = tmp_path / "kilo.json"
+        backup_file = tmp_path / "kilo-backup.json"
+        monkeypatch.setattr(oc_mod, "KILO_CONFIG_PATH", config_file)
+        monkeypatch.setattr(oc_mod, "KILO_BACKUP_PATH", backup_file)
+
+        stale = {
+            "provider": {
+                "databricks-anthropic": {"old": True},
+                "databricks-google": {"old": True},
+                "other-provider": {"keep": True},
+            }
+        }
+        config_file.write_text(json.dumps(stale), encoding="utf-8")
+
+        state = {
+            "workspace": WS,
+            "base_urls": {"kilo": _base_urls()},
+            "opencode_models": {"anthropic": ["claude-sonnet"]},
+            "managed_configs": {},
+        }
+
+        with (
+            patch("ucode.agents.kilo.get_databricks_token", return_value="tok"),
+            patch("ucode.agents.kilo.save_state"),
+        ):
+            oc_mod.write_tool_config(state, "claude-sonnet", token="tok")
+
+        written = json.loads(config_file.read_text())
+        providers = written.get("provider", {})
+        # stale entry is replaced with new data, not kept as-is
+        assert providers.get("databricks-anthropic") != {"old": True}
+        # unmanaged provider entry survives
+        assert providers.get("other-provider") == {"keep": True}
+        # Kilo 1.0.0 discovers `plugin/`; plural `plugins/` came later.
+        plugin = config_file.parent / "plugin" / kilo.KILO_AUTH_PLUGIN_PATH.name
+        assert plugin.exists()
+        assert "options.fetch = databricksFetch" in plugin.read_text()
+
+    def test_config_written_with_correct_model(self, tmp_path, monkeypatch):
+        import ucode.agents.kilo as oc_mod
+        import ucode.config_io as config_io_mod
+
+        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
+        config_file = tmp_path / "kilo.json"
+        backup_file = tmp_path / "kilo-backup.json"
+        monkeypatch.setattr(oc_mod, "KILO_CONFIG_PATH", config_file)
+        monkeypatch.setattr(oc_mod, "KILO_BACKUP_PATH", backup_file)
+
+        state = {
+            "workspace": WS,
+            "base_urls": {"kilo": _base_urls()},
+            "opencode_models": {"anthropic": ["claude-sonnet"]},
+            "managed_configs": {},
+        }
+
+        with (
+            patch("ucode.agents.kilo.get_databricks_token", return_value="tok"),
+            patch("ucode.agents.kilo.save_state"),
+        ):
+            oc_mod.write_tool_config(state, "claude-sonnet", token="tok")
+
+        written = json.loads(config_file.read_text())
+        assert written["model"] == "databricks-anthropic/claude-sonnet"
+
+
+class TestWriteUserMcpServers:
+    def test_batched_add_remove_preserves_other_keys(self, tmp_path, monkeypatch):
+        path = tmp_path / "kilo.json"
+        path.write_text(
+            json.dumps({"provider": {"p": 1}, "mcp": {"mine": {"type": "local"}, "gone": {}}})
+        )
+        monkeypatch.setattr(kilo, "KILO_CONFIG_PATH", path)
+        monkeypatch.setattr(kilo, "KILO_BACKUP_PATH", tmp_path / "backup.json")
+
+        kilo.write_user_mcp_servers(
+            {"svc": kilo.build_mcp_server_entry(["ug", "mcp-proxy", "u"])}, {"gone"}
+        )
+
+        doc = json.loads(path.read_text())
+        assert doc["provider"] == {"p": 1}
+        assert "gone" not in doc["mcp"]
+        assert doc["mcp"]["mine"] == {"type": "local"}
+        assert doc["mcp"]["svc"]["command"] == ["ug", "mcp-proxy", "u"]
