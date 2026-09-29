@@ -1686,7 +1686,7 @@ def launch(
             "Smart routing in Claude Code is currently not supported on Windows. "
             "Please use Codex or launch without --enable-smart-routing."
         )
-    fallback_env = {}
+    routing_setup_failed = False
     if options.launch_smart_routing:
         try:
             smart_routing_v2.launch_claude(
@@ -1702,13 +1702,7 @@ def launch(
             )
         except smart_routing_v2.ClaudeRoutingSetupError:
             _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
-            # Override inherited and saved routing flags for this launch only. Older
-            # saved hooks must not route to agents whose plugin could not be written.
-            fallback_env = {
-                smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR: "0",
-                smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-                FIRST_PROMPT_SOCKET_ENV: "",
-            }
+            routing_setup_failed = True
         else:
             return
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
@@ -1739,7 +1733,14 @@ def launch(
                 # overwriting the user's saved selection. This also prevents Claude from appending
                 # that stale built-in selection to an otherwise replaced picker.
                 settings_override = {"model": picker_models[0]}
-    if fallback_env:
+    if routing_setup_failed:
+        # Override inherited and saved routing flags for this launch only. Older
+        # saved hooks must not route to agents whose plugin could not be written.
+        fallback_env = {
+            smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR: "0",
+            smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+            FIRST_PROMPT_SOCKET_ENV: "",
+        }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
     exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
