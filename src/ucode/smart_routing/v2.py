@@ -64,7 +64,7 @@ HEALTH_REQUEST_TIMEOUT_SECONDS = 1
 HEALTH_POLL_INTERVAL_SECONDS = 0.25
 CLAUDE_ROUTE_SELECTION_TIMEOUT_S = 20.0
 CLAUDE_ROUTED_AGENT_PREFIX = "ucode-route-"
-CLAUDE_ROUTING_PLUGIN_NAME = "ucode-smart-routing"
+CLAUDE_ROUTING_PLUGIN_NAME = "ug-smart-router"
 CLAUDE_ROUTED_AGENT_PROMPT = (
     "Complete the delegated task exactly as requested. Follow the parent agent's instructions and "
     "return a concise report of your findings or changes."

@@ -189,7 +189,7 @@ routing tests do not establish that live behavior.
 
 `test_smart_routing_claude_plugin_registration` covers an actual interactive routed
 child and its parent completing a file task. It asserts temporary plugin/settings
-removal after exit, the plugin-qualified `ucode-smart-routing:ucode-route-*` name,
+removal after exit, the plugin-qualified `ug-smart-router:ucode-route-*` name,
 and no persistent plugin registration. Stale-state cleanup is outside this change;
 existing hook configuration and disable/revert behavior are unchanged.
 Plugin-refresh survival and native daemon/background dispatch remain uncovered.

@@ -736,7 +736,7 @@ class TestSubagentRouting:
 
     def test_routed_agent_uses_plugin_qualified_name(self):
         assert v2._routed_claude_agent_name("system.ai.glm-5-3") == (
-            "ucode-smart-routing:ucode-route-glm-5-3-982d9f93"
+            "ug-smart-router:ucode-route-glm-5-3-982d9f93"
         )
 
     def test_leaves_non_claude_custom_agent_model_unchanged(self):

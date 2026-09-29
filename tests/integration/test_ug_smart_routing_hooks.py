@@ -87,7 +87,7 @@ def test_smart_routing_claude_route_subagent_hook(live_session, workspace):
     assert SMART_ROUTING_SUBAGENT_NOTICE in output["systemMessage"], output
     updated = hook["updatedInput"]
     assert "model" not in updated, updated
-    assert updated["subagent_type"].startswith("ucode-smart-routing:ucode-route-"), updated
+    assert updated["subagent_type"].startswith("ug-smart-router:ucode-route-"), updated
     assert updated["prompt"] == payload["tool_input"]["prompt"], updated
     assert updated["description"] == payload["tool_input"]["description"], updated
 
@@ -276,13 +276,13 @@ def test_smart_routing_claude_plugin_registration(live_session, workspace):
     audit_path = app_dir / "claude-smart-routing-audit.jsonl"
     audit = read_jsonl(audit_path)
     assert any(
-        row.get("agent_type", "").startswith("ucode-smart-routing:ucode-route-") for row in audit
+        row.get("agent_type", "").startswith("ug-smart-router:ucode-route-") for row in audit
     ), audit
     assert not list(app_dir.glob("claude-v2-*-plugin"))
     assert not list(app_dir.glob("claude-v2-*.json"))
     assert not list(app_dir.glob("claude-v2-*.sock"))
-    assert not (session.home / ".claude/skills/ucode-smart-routing").exists()
+    assert not (session.home / ".claude/skills/ug-smart-router").exists()
     installed = session.home / ".claude/plugins/installed_plugins.json"
     if installed.exists():
         plugins = json.loads(installed.read_text()).get("plugins", {})
-        assert not any(name.startswith("ucode-smart-routing@") for name in plugins), plugins
+        assert not any(name.startswith("ug-smart-router@") for name in plugins), plugins
