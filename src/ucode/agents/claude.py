@@ -10,6 +10,7 @@ import signal
 import socket
 import subprocess
 import threading
+import traceback
 from collections.abc import Callable
 from pathlib import Path
 
@@ -37,6 +38,7 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     AnthropicModelCatalog,
+    _debug,
     build_auth_shell_command,
     build_otel_headers_shell_command,
     build_otel_traces_endpoint,
@@ -70,6 +72,7 @@ from ucode.mcp_oauth import (
 )
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
+    FIRST_PROMPT_SOCKET_ENV,
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
@@ -1683,19 +1686,31 @@ def launch(
             "Smart routing in Claude Code is currently not supported on Windows. "
             "Please use Codex or launch without --enable-smart-routing."
         )
+    fallback_env = {}
     if options.launch_smart_routing:
-        smart_routing_v2.launch_claude(
-            state,
-            tool_args,
-            binary=binary,
-            user_settings_path=CLAUDE_USER_SETTINGS_PATH,
-            # With no user pin, let Claude resolve its starting model from its own settings.
-            launch_model=options.user_pinned_model,
-            compose_settings=_compose_v2_settings,
-            launch_model_args=_launch_model_args,
-            model_name=_maybe_add_1m_suffix,
-        )
-        return
+        try:
+            smart_routing_v2.launch_claude(
+                state,
+                tool_args,
+                binary=binary,
+                user_settings_path=CLAUDE_USER_SETTINGS_PATH,
+                # With no user pin, let Claude resolve its starting model from its own settings.
+                launch_model=options.user_pinned_model,
+                compose_settings=_compose_v2_settings,
+                launch_model_args=_launch_model_args,
+                model_name=_maybe_add_1m_suffix,
+            )
+        except smart_routing_v2.ClaudeRoutingSetupError:
+            _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
+            # Override inherited and saved routing flags for this launch only. Older
+            # saved hooks must not route to agents whose plugin could not be written.
+            fallback_env = {
+                smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR: "0",
+                smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+                FIRST_PROMPT_SOCKET_ENV: "",
+            }
+        else:
+            return
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
@@ -1724,6 +1739,9 @@ def launch(
                 # overwriting the user's saved selection. This also prevents Claude from appending
                 # that stale built-in selection to an otherwise replaced picker.
                 settings_override = {"model": picker_models[0]}
+    if fallback_env:
+        settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
+        os.environ.update(fallback_env)
     exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 

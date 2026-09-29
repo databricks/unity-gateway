@@ -70,6 +70,10 @@ CLAUDE_ROUTED_AGENT_PROMPT = (
 )
 
 
+class ClaudeRoutingSetupError(RuntimeError):
+    """Routing files could not be written; the caller can launch Claude normally."""
+
+
 def _launch_token(state: dict, workspace: str) -> str:
     custom_oauth = state.get("custom_oauth")
     if custom_oauth_cli_enabled(custom_oauth) and isinstance(custom_oauth, dict):
@@ -509,8 +513,11 @@ def launch_claude(
             plugin_dir = launch_dir / "plugin"
             if route_first_prompt:
                 env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
-            write_json_file(settings_path, settings)
-            _write_routed_claude_plugin(plugin_dir, model_ids)
+            try:
+                write_json_file(settings_path, settings)
+                _write_routed_claude_plugin(plugin_dir, model_ids)
+            except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
+                raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
             model_args = launch_model_args(remaining, launch_model)
             argv = [
                 binary,
