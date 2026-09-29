@@ -37,6 +37,25 @@ def test_copies_named_skill_to_both_harness_directories(tmp_path, monkeypatch):
     assert not home.joinpath(".agents/skills/second-skill").exists()
 
 
+def test_reinstall_replaces_existing_skill_contents(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source_skill = _write_skill(source, packaged_skills.SMART_ROUTER_SKILL)
+    monkeypatch.setattr(packaged_skills, "_skills_source", lambda: source)
+    home = tmp_path / "home"
+    packaged_skills.install_packaged_skills(packaged_skills.SMART_ROUTER_SKILL, home)
+
+    for root in (".claude/skills", ".agents/skills"):
+        installed = home / root / packaged_skills.SMART_ROUTER_SKILL
+        installed.joinpath("stale.txt").write_text("remove me")
+    source_skill.joinpath("SKILL.md").write_text("version two")
+
+    installed = packaged_skills.install_packaged_skills(packaged_skills.SMART_ROUTER_SKILL, home)
+
+    for destination in installed:
+        assert destination.joinpath("SKILL.md").read_text() == "version two"
+        assert not destination.joinpath("stale.txt").exists()
+
+
 def test_uninstalls_one_skill_from_both_harnesses(tmp_path, monkeypatch):
     source = tmp_path / "source"
     _write_skill(source, packaged_skills.SMART_ROUTER_SKILL)

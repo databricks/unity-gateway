@@ -24,8 +24,19 @@ def _validate_skill_name(skill_name: str) -> None:
         raise ValueError(f"Invalid skill name: {skill_name!r}")
 
 
+def _remove_skill_path(destination: Path) -> bool:
+    """Remove an existing skill path so an install is an exact replacement."""
+    if destination.is_symlink() or destination.is_file():
+        destination.unlink()
+        return True
+    if destination.is_dir():
+        shutil.rmtree(destination)
+        return True
+    return False
+
+
 def install_packaged_skills(skill_name: str, home: Path | None = None) -> list[Path]:
-    """Copy one packaged skill into each harness's global skill directory."""
+    """Replace one packaged skill in each harness's global skill directory."""
     _validate_skill_name(skill_name)
     source = _skills_source() / skill_name
     if not (source / "SKILL.md").is_file():
@@ -35,7 +46,8 @@ def install_packaged_skills(skill_name: str, home: Path | None = None) -> list[P
     installed: list[Path] = []
     for root in _SKILL_ROOTS:
         destination = base / root / skill_name
-        shutil.copytree(source, destination, dirs_exist_ok=True)
+        _remove_skill_path(destination)
+        shutil.copytree(source, destination)
         installed.append(destination)
     return installed
 
@@ -48,10 +60,6 @@ def uninstall_packaged_skill(skill_name: str, home: Path | None = None) -> list[
     removed: list[Path] = []
     for root in _SKILL_ROOTS:
         destination = base / root / skill_name
-        if destination.is_symlink() or destination.is_file():
-            destination.unlink()
-            removed.append(destination)
-        elif destination.is_dir():
-            shutil.rmtree(destination)
+        if _remove_skill_path(destination):
             removed.append(destination)
     return removed
