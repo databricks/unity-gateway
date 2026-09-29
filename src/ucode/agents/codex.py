@@ -37,10 +37,12 @@ from ucode.config_io import (
     write_toml_file,
 )
 from ucode.constants import (
+    AI_GATEWAY_REQUEST_TAGS_HEADER,
     LOOPBACK_HOST,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
+    request_tags_header_value,
 )
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_TIMEOUT_MS,
@@ -208,6 +210,9 @@ def _provider_block(
         http_headers[MODEL_SERVICE_PARENT_SCHEMA_HEADER] = parent_schema
     if smart_routing_v2.smart_routing_enabled():
         http_headers[SMART_ROUTER_RECIPE_HEADER] = configured_router_name()
+    request_tags = request_tags_header_value()
+    if request_tags:
+        http_headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
     _apply_managed_headers(http_headers, managed_http_headers)
     return {
         "name": "Databricks AI Gateway",
