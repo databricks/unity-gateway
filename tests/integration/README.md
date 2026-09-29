@@ -235,18 +235,20 @@ prerequisite; the live check must pass on each run.
 
 Current main enables discovery automatically; it has no `UG_ENABLE_MODEL_DISCOVERY`
 switch or configure-time `--model-location`. Cases 7/9 cover configured/fresh
-Claude default discovery, including its real gateway cache and picker. Claude's
+Claude default discovery with both an omitted source and the equivalent
+`--model-location system.ai` spelling, including the real gateway cache and picker. Claude's
 recognized `anthropic-aigw-<8-hex-digits>-` aliases are unwrapped for `system.ai`
 membership and discovered-family checks; malformed aliases, non-system models,
-and duplicate raw IDs still fail. Cases 8/10 require ug's discovered `system.ai`
-models while leaving Codex's model and reasoning preferences unset, and expose
-Codex's native catalog without a scoped file.
+and duplicate raw IDs still fail. Cases 8/10 exercise the same two default-source
+spellings, require ug's discovered `system.ai` models while leaving Codex's model and
+reasoning preferences unset, and expose Codex's native catalog without a scoped file.
 Cases 11–14 retain the exact provider/parent catalog assertions for supported launch
 overrides. Cases 11/13 also require explicit Claude provider/model-location launches to replace
 built-in picker rows when no managed config exists. They also check that the remaining
 Default row names the model in the scoped fixture catalog, selected through the launch-only
 `ANTHROPIC_DEFAULT_MODEL` environment variable. Unit tests cover the existing Opus, Sonnet,
-then Haiku preference for catalogs with multiple families. Plain Claude launches retain native defaults.
+then Haiku preference for catalogs with multiple families. Plain Claude launches and
+explicit `--model-location system.ai` launches retain the same native defaults.
 Obsolete disable-flag scenarios and duplicate managed variants are
 removed, not skipped; managed discovery and rejection remain covered by Cases
 1–6. Repository scenario numbers run consecutively from 01 to 14, with
@@ -268,7 +270,7 @@ startup banners and footer text cannot satisfy discovery assertions. Cases 7–1
 they only configure, list models, and open/close the picker. Other live CUJs perform
 real model tasks.
 
-There are **61 live cases** (including 12 marked TUI journeys) and **7 installation
+There are **65 live cases** (including 14 marked TUI journeys) and **7 installation
 checks** with both agents. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
@@ -292,15 +294,17 @@ constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-
 `UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET` for northeast-2. As with the base workspace, the runner
 mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
 `ug configure` and Claude. The client secrets do not enter the pytest process.
-The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 100 executions. See the named coverage and gaps matrix in
+The 14 retained numbered scenarios comprise 24 configured/fresh journey definitions and
+collect 28 executions: 12 managed and 16 unmanaged, with Cases 7–10 each exercising both
+spellings of the default `system.ai` source. The complete integration suite collects 104
+executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
 # Append one of these selections to the runner command:
 -- -m live         # default: all live user journeys
 -- -m smoke        # six Hosted, custom OAuth CLI TUI, and headless journeys
--- -m 'live and tui'  # twelve interactive live configuration/model-discovery journeys
+-- -m 'live and tui'  # fourteen interactive live configuration/model-discovery journeys
 -- -m 'live and claude' -k trace  # installed Claude -> gateway -> configured trace table
 -- -m 'live and codex' -k trace  # installed Codex -> gateway -> configured trace table
 -- -k test_ug_codex_app_server_client_initializes  # one named journey and its variants
@@ -426,13 +430,13 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 61 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 65 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 27 |
-| Codex | `live and codex` | 34 |
+| Claude | `live and claude` | 29 |
+| Codex | `live and codex` | 36 |
 
 Each lane installs only its agent CLI, once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
@@ -735,7 +739,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 61 live cases. For the seven installation checks, run the same
+This runs all 65 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

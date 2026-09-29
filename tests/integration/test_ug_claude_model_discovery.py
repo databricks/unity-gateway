@@ -70,6 +70,11 @@ def _assert_system_models_in_picker(session, screen):
     assert any(
         claude_model_in_picker(screen, model["id"], model.get("display_name")) for model in models
     ), screen
+    settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
+    assert "modelPicker" not in settings, settings
+    assert (
+        "Databricks-Model-Service-Parent-Schema" not in settings["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+    ), settings
 
 
 def _assert_replacement_picker(session, expected_ids):
@@ -82,11 +87,20 @@ def _assert_replacement_picker(session, expected_ids):
 
 @pytest.mark.live
 @pytest.mark.tui
-def test_case_07_configured_claude_discovers_system_models(live_session, workspace):
-    """Scenario: configure Claude, then launch without source overrides or discovery flags.
+@pytest.mark.parametrize(
+    "model_location_args",
+    [
+        pytest.param([], id="implicit-system-ai"),
+        pytest.param(["--model-location", "system.ai"], id="explicit-system-ai"),
+    ],
+)
+def test_case_07_configured_claude_discovers_system_models(
+    live_session, workspace, model_location_args
+):
+    """Scenario: configure Claude, then launch with implicit or explicit system.ai discovery.
 
-    Expected: native discovery caches system.ai models as raw IDs or recognized Claude
-    gateway aliases and shows a discovered picker entry.
+    Expected: both forms use native default discovery, which caches system.ai models as raw
+    IDs or recognized Claude gateway aliases and shows a discovered picker entry.
     """
     session = live_session
     session.run(
@@ -100,7 +114,7 @@ def test_case_07_configured_claude_discovers_system_models(live_session, workspa
         timeout=240,
     )
 
-    command = [str(session.binary), "claude"]
+    command = [str(session.binary), "claude", *model_location_args]
     with AgentTerminal(session, "claude", command, "case-07-system-models") as tui:
         tui.boot()
         screen = tui.open_model_picker(model_visible=_system_models_visible(session))
@@ -111,14 +125,27 @@ def test_case_07_configured_claude_discovers_system_models(live_session, workspa
 
 @pytest.mark.live
 @pytest.mark.tui
-def test_case_09_fresh_claude_discovers_system_models(live_session, workspace):
-    """Scenario: launch fresh Claude with --workspace and no discovery flags.
+@pytest.mark.parametrize(
+    "model_location_args",
+    [
+        pytest.param([], id="implicit-system-ai"),
+        pytest.param(["--model-location", "system.ai"], id="explicit-system-ai"),
+    ],
+)
+def test_case_09_fresh_claude_discovers_system_models(live_session, workspace, model_location_args):
+    """Scenario: launch fresh Claude with --workspace and implicit or explicit system.ai.
 
-    Expected: native discovery caches system.ai models as raw IDs or recognized Claude
-    gateway aliases and shows a discovered picker entry.
+    Expected: both forms use native default discovery, which caches system.ai models as raw
+    IDs or recognized Claude gateway aliases and shows a discovered picker entry.
     """
     session = live_session
-    command = [str(session.binary), "claude", "--workspace", workspace]
+    command = [
+        str(session.binary),
+        "claude",
+        "--workspace",
+        workspace,
+        *model_location_args,
+    ]
     with AgentTerminal(session, "claude", command, "case-09-system-models") as tui:
         tui.boot()
         screen = tui.open_model_picker(model_visible=_system_models_visible(session))

@@ -58,8 +58,8 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_configure_codex_databricks` | Configure Databricks Hosted; execute the generated auth helper; open Codex TUI and read a file | Generated helper invokes `ug` with clean token stdout; completed assistant answer contains the file value; normal exit and reopen |
 | `test_ug_configure_codex_openai_mps` | Select OpenAI MPS in the real configure picker; launch Codex | Saved provider in status; completed TUI file task; normal exit |
 | `test_ug_claude_custom_oauth_cli_boots`, `test_ug_codex_custom_oauth_cli_boots` | Launch with `ENABLE_CUSTOM_OAUTH_FROM_CLI=1`, `--workspace`, and `--client-id databricks-cli` | Real TUI reaches a usable prompt, accepts keyboard input, exits normally, and saves `client_id = databricks-cli` in its generated CLI profile; Claude also reads the OS-managed settings and requires a profile-only `apiKeyHelper` |
-| `test_case_07_configured_claude_discovers_system_models`, `test_case_09_fresh_claude_discovers_system_models` | Launch configured/fresh Claude with no discovery flag or source override | Claude caches `system.ai` models (including recognized Anthropic gateway aliases), includes ug's discovered family defaults, and shows a discovered picker entry |
-| `test_case_08_configured_codex_uses_default_models`, `test_case_10_fresh_codex_uses_default_models` | Launch configured/fresh Codex with no source override | ug discovers `system.ai` models but leaves model/reasoning preferences unset; app-server exposes native GPT entries without a generated scoped catalog |
+| `test_case_07_configured_claude_discovers_system_models`, `test_case_09_fresh_claude_discovers_system_models` | Launch configured/fresh Claude with the implicit default or `--model-location system.ai` | Both forms use native default discovery: Claude caches `system.ai` models (including recognized Anthropic gateway aliases), includes ug's discovered family defaults, and shows a discovered picker entry without a scoped replacement catalog |
+| `test_case_08_configured_codex_uses_default_models`, `test_case_10_fresh_codex_uses_default_models` | Launch configured/fresh Codex with the implicit default or `--model-location system.ai` | Both forms discover `system.ai` models while leaving model/reasoning preferences unset; app-server exposes native GPT entries without a generated scoped catalog |
 | `test_case_11_*` | Launch configured and fresh Claude with an explicit provider and no managed config | The provider catalog replaces built-in picker rows; the cache contains exactly the provider model, and the picker shows both its row and Default resolving to it |
 | `test_case_12_*` | Launch configured and fresh Codex with a provider | The provider supplies exactly its model catalog |
 | `test_case_13_*` | Launch configured and fresh Claude with a model location and no managed config | The explicit parent's catalog replaces built-in picker rows and appears in the real picker; Default resolves to the model in the scoped fixture catalog |
@@ -95,13 +95,14 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_and_ucode_auth_helpers_emit_only_the_supplied_bearer` | Run both auth helper commands with the public bearer override, with and without forced refresh | Exact token-only stdout, no warnings or ANSI escapes; no workspace authentication or saved state |
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
-With both agents selected there are **61 live cases** (12 marked TUI cases),
+With both agents selected there are **65 live cases** (14 marked TUI cases),
 **6 managed-workspace cases** (marker `managed`, run against workspaces that
 publish a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
 **25 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected), and **7 installation checks**. The 14 retained numbered scenarios
-comprise **24 explicit journeys**: 12 managed configured/fresh executions and 12 unmanaged
-executions. Thirteen additional managed-fixture cases cover focused model, MCP, skills,
+comprise 24 configured/fresh journey definitions and collect **28 executions**: 12 managed
+executions and 16 unmanaged executions because Cases 7–10 each exercise both spellings of
+the default `system.ai` source. Thirteen additional managed-fixture cases cover focused model, MCP, skills,
 and lifecycle shapes; two published-config cases cover Claude defaults. Parametrization varies
 argument spelling or routing mode, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
@@ -112,7 +113,8 @@ They require a real workspace with no CodingAgentConfig; a read-only prerequisit
 check reports any published config rather than bypassing it. `UG_ENABLE_MODEL_DISCOVERY`
 is not supported on current main. Its duplicate managed variants and obsolete
 unmanaged disable scenarios are removed; Cases 1–6 cover managed discovery and
-override rejection. Cases 7–10 cover automatic/default launches.
+override rejection. Cases 7–10 cover automatic/default launches, both with the source omitted
+and with the equivalent `--model-location system.ai` spelling.
 Configure-time model locations are also unsupported; Cases 13–14 cover the supported
 launch-time `--model-location`. Repository scenario numbers run consecutively from
 01 to 14; configured/fresh variants share a number. External design-document
@@ -143,7 +145,7 @@ dependency graph to reproduce a user's combination. Every relevant same-reposito
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
 journeys for both agents, in two parallel jobs. After smoke finishes, the full
-suite runs all 61 live cases across two parallel agent jobs: one Claude VM and one
+suite runs all 65 live cases across two parallel agent jobs: one Claude VM and one
 Codex VM, each running its configure, headless, and commands/lifecycle cases
 serially. Each agent is installed once for the full suite, and no two full jobs
 for the same agent overlap within a run.

@@ -57,9 +57,10 @@ Unknown Databricks models produce an error; this option does not add models
 to discovery or change ug's saved default.
 
 Without a managed workspace config, `ug claude` automatically discovers gateway
-models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
-no provider or model location is selected. Use `--provider` or `--model-location`
-to select another model source; managed workspace configs control their own sources.
+models for Claude Code's `/model` picker. Discovery defaults to `system.ai`; explicitly
+passing `--model-location system.ai` is equivalent to omitting the option. Use
+`--provider` or another `--model-location` to select a different model source; managed
+workspace configs control their own sources.
 
 `ug codex` validates discovered models with the installed Codex binary and publishes
 them to `~/.ucode/codex-model-catalog.json`, referenced by shared `~/.codex/config.toml`

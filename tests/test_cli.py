@@ -758,6 +758,26 @@ class TestSubcommandRouting:
             calls["resolve_model"].assert_called_once()
         calls["launch"].assert_called_once()
 
+    @pytest.mark.parametrize("persisted_provider", [None, "main.default.anthropic"])
+    def test_claude_system_ai_model_location_uses_unscoped_defaults(self, persisted_provider):
+        with _launch_policy_patches(None, persisted_provider=persisted_provider) as calls:
+            result = runner.invoke(app, ["claude", "--model-location", "system.ai"])
+
+        assert result.exit_code == 0, result.output
+        calls["list_catalog"].assert_not_called()
+        assert calls["configure"].call_args.kwargs["parent_schema"] is None
+        assert calls["configure"].call_args.kwargs["provider"] == persisted_provider
+        assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
+        assert "_claude_launch_default_model" not in calls["launch"].call_args.args[1]
+        if persisted_provider:
+            calls["resolve_model"].assert_not_called()
+            calls["resolve_provider"].assert_called_once_with(
+                "claude", calls["state"], persisted_provider
+            )
+        else:
+            calls["resolve_model"].assert_called_once()
+        calls["launch"].assert_called_once()
+
     def test_claude_model_location_replaces_builtin_models(self):
         with _launch_policy_patches(None) as calls:
             result = runner.invoke(app, ["claude", "--model-location", "main.default"])
@@ -879,7 +899,26 @@ class TestSubcommandRouting:
         assert mock_launch.call_args.kwargs["parent_schema"] == "main.default"
         assert mock_launch.call_args.args[1].args == []
 
-    def test_codex_provider_and_model_location_are_mutually_exclusive(self):
+    @pytest.mark.parametrize("persisted_provider", [None, "main.default.openai"])
+    def test_codex_system_ai_model_location_uses_unscoped_defaults(self, persisted_provider):
+        with _launch_policy_patches(None, persisted_provider=persisted_provider) as calls:
+            result = runner.invoke(app, ["codex", "--model-location", "system.ai"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["parent_schema"] is None
+        assert calls["configure"].call_args.kwargs["provider"] == persisted_provider
+        assert "_codex_launch_parent_schema" not in calls["launch"].call_args.args[1]
+        if persisted_provider:
+            calls["resolve_model"].assert_not_called()
+            calls["resolve_provider"].assert_called_once_with(
+                "codex", calls["state"], persisted_provider
+            )
+        else:
+            calls["resolve_model"].assert_called_once()
+        calls["launch"].assert_called_once()
+
+    @pytest.mark.parametrize("model_location", ["main.default", "system.ai"])
+    def test_codex_provider_and_model_location_are_mutually_exclusive(self, model_location):
         with _launch_policy_patches(None):
             result = runner.invoke(
                 app,
@@ -888,14 +927,15 @@ class TestSubcommandRouting:
                     "--provider",
                     "main.default.provider",
                     "--model-location",
-                    "main.default",
+                    model_location,
                 ],
             )
 
         assert result.exit_code == 1
         assert "--provider and --model-location cannot be used together" in result.output
 
-    def test_claude_provider_and_model_location_are_mutually_exclusive(self):
+    @pytest.mark.parametrize("model_location", ["main.default", "system.ai"])
+    def test_claude_provider_and_model_location_are_mutually_exclusive(self, model_location):
         with _launch_policy_patches(None):
             result = runner.invoke(
                 app,
@@ -904,7 +944,7 @@ class TestSubcommandRouting:
                     "--provider",
                     "main.default.provider",
                     "--model-location",
-                    "main.default",
+                    model_location,
                 ],
             )
 
@@ -1116,6 +1156,15 @@ class TestManagedConfigLaunchSourceGuard:
         assert result.exit_code == 1
         assert "`--provider` or `--model-location` is not allowed" in _strip_ansi(result.output)
         calls["launch"].assert_not_called()
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_managed_config_allows_system_ai_as_unscoped_model_location(self, tool):
+        with _launch_policy_patches({}) as calls:
+            result = runner.invoke(app, [tool, "--model-location", "system.ai"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.kwargs["parent_schema"] is None
+        calls["launch"].assert_called_once()
 
     def test_persisted_provider_is_not_mistaken_for_an_explicit_option(self):
         with _launch_policy_patches({}, persisted_provider="main.default.provider") as calls:

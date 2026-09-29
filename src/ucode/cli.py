@@ -2606,6 +2606,8 @@ def _launch_tool(
         # Remembered before the fallback below collapses the two cases: a managed config may not
         # silently override a provider the user typed on the command line (it errors instead).
         explicit_provider = provider
+        raw_parent_schema = parent_schema
+        effective_parent_schema = None if parent_schema == "system.ai" else parent_schema
         # An explicit --provider overrides the persisted choice; otherwise fall
         # back to whatever `ug configure` saved for this tool.
         provider = provider or get_provider_service(state, tool)
@@ -2620,12 +2622,13 @@ def _launch_tool(
         _reject_managed_launch_source_options(
             managed,
             provider=explicit_provider,
-            parent_schema=parent_schema,
+            parent_schema=effective_parent_schema,
         )
-        if explicit_provider is not None and parent_schema is not None:
+        if explicit_provider is not None and raw_parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
-        if parent_schema is not None and not is_valid_catalog_schema(parent_schema):
+        if raw_parent_schema is not None and not is_valid_catalog_schema(raw_parent_schema):
             raise RuntimeError("--model-location must be `<catalog>.<schema>`.")
+        parent_schema = effective_parent_schema
         # Checked before discovery, which can take tens of seconds, so a blocked launch fails fast.
         _reject_disabled_agent(managed, tool)
         managed_provider = managed_provider_service(managed or {}, tool)
