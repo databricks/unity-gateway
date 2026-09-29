@@ -5,7 +5,9 @@ Claude Code on Databricks doesn't have working web search (the built-in
 `WebSearch` tool talks to Anthropic's hosted infra, not the gateway). This
 server bridges the gap: it advertises a single MCP tool, and on call it
 forwards the query to the workspace's Responses API with
-`tools: [{"type": "web_search"}]`, returning the model's text output.
+`tools: [{"type": "web_search"}]`, returning the model's text output. On
+HIPAA/BAA workspaces, which only allow cache-only search, it retries with
+`external_web_access: false`.
 
 Speaks MCP JSON-RPC 2.0 over stdio (newline-delimited JSON). Implemented by
 hand to avoid pulling in the `mcp` SDK — keeps `ucode`'s dep footprint lean.
@@ -83,6 +85,56 @@ def _extract_response_text(payload: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+# Set once the gateway reports that this workspace (HIPAA/BAA compliance)
+# only allows cache-only web search, so later calls skip the rejected request.
+_cache_only_web_search = False
+
+
+class _CacheOnlyRequired(RuntimeError):
+    """The gateway rejected live web search and asked for
+    `external_web_access: false` on the web_search tool."""
+
+
+def _post_responses(url: str, token: str, model: str, query: str, cache_only: bool) -> str:
+    tool: dict[str, Any] = {"type": "web_search"}
+    if cache_only:
+        tool["external_web_access"] = False
+    body = json.dumps(
+        {
+            "model": model,
+            "input": [{"role": "user", "content": query}],
+            "tools": [tool],
+            "store": False,
+        }
+    ).encode("utf-8")
+
+    request = urllib_request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib_request.urlopen(request, timeout=180) as response:
+            return response.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8")[:500]
+        except Exception:
+            pass
+        message = f"Responses API returned HTTP {exc.code}: {detail}"
+        if exc.code == 400 and "external_web_access" in detail and not cache_only:
+            raise _CacheOnlyRequired(message) from exc
+        raise RuntimeError(message) from exc
+    except urllib_error.URLError as exc:
+        raise RuntimeError(f"Responses API request failed: {exc.reason}") from exc
+
+
 def _call_responses_api(query: str) -> dict[str, Any]:
     """POST to the Databricks Codex (Responses API) gateway and return the
     parsed JSON payload. Raises RuntimeError on any failure with a message
@@ -100,37 +152,15 @@ def _call_responses_api(query: str) -> dict[str, Any]:
     except RuntimeError as exc:
         raise RuntimeError(f"Failed to acquire Databricks token: {exc}") from exc
 
-    body = json.dumps(
-        {
-            "model": model,
-            "input": [{"role": "user", "content": query}],
-            "tools": [{"type": "web_search"}],
-            "store": False,
-        }
-    ).encode("utf-8")
-
-    request = urllib_request.Request(
-        f"{workspace.rstrip('/')}/ai-gateway/codex/v1/responses",
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
+    url = f"{workspace.rstrip('/')}/ai-gateway/codex/v1/responses"
+    global _cache_only_web_search
     try:
-        with urllib_request.urlopen(request, timeout=180) as response:
-            raw = response.read().decode("utf-8")
-    except urllib_error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8")[:500]
-        except Exception:
-            pass
-        raise RuntimeError(f"Responses API returned HTTP {exc.code}: {detail}") from exc
-    except urllib_error.URLError as exc:
-        raise RuntimeError(f"Responses API request failed: {exc.reason}") from exc
+        raw = _post_responses(url, token, model, query, _cache_only_web_search)
+    except _CacheOnlyRequired:
+        # HIPAA/BAA workspaces reject live web search and ask for cache-only
+        # search instead. Retry once and keep using it for this server process.
+        _cache_only_web_search = True
+        raw = _post_responses(url, token, model, query, True)
 
     try:
         return json.loads(raw)

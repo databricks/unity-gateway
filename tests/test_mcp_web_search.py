@@ -240,3 +240,92 @@ class TestCallResponsesApi:
             v for k, v in captured["headers"].items() if k.lower() == "authorization"
         )
         assert auth_header == "Bearer tok"
+
+
+class TestCacheOnlyRetry:
+    """HIPAA/BAA workspaces reject live web search with a 400 that asks for
+    `external_web_access: false`; the server retries once in cache-only mode
+    and keeps using it (#805)."""
+
+    HIPAA_DETAIL = (
+        '{"error_code":"INVALID_PARAMETER_VALUE","message":"Web search with live internet '
+        "access is not available for workspaces with HIPAA/BAA compliance enabled. Set "
+        'external_web_access to false on the web_search tool for cache-only web search."}'
+    )
+
+    @pytest.fixture(autouse=True)
+    def _env(self, monkeypatch):
+        monkeypatch.setenv("DATABRICKS_HOST", WS)
+        monkeypatch.setenv("UCODE_WEB_SEARCH_MODEL", "system.ai.gpt-5")
+        monkeypatch.setattr(mcp_web_search, "get_databricks_token", lambda ws, profile=None: "tok")
+        monkeypatch.setattr(mcp_web_search, "_cache_only_web_search", False)
+
+    @staticmethod
+    def _install(monkeypatch, responder):
+        from urllib import error as urllib_error
+
+        bodies: list[dict[str, Any]] = []
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps({"output": []}).encode("utf-8")
+
+        def fake_urlopen(req, timeout):
+            body = json.loads(req.data.decode("utf-8"))
+            bodies.append(body)
+            status, detail = responder(body)
+            if status == 200:
+                return FakeResponse()
+            raise urllib_error.HTTPError(
+                req.full_url, status, "error", {}, io.BytesIO(detail.encode("utf-8"))
+            )
+
+        monkeypatch.setattr(mcp_web_search.urllib_request, "urlopen", fake_urlopen)
+        return bodies
+
+    def _hipaa_gateway(self, body):
+        if body["tools"][0].get("external_web_access") is False:
+            return 200, ""
+        return 400, self.HIPAA_DETAIL
+
+    def test_retries_with_external_web_access_false(self, monkeypatch):
+        bodies = self._install(monkeypatch, self._hipaa_gateway)
+
+        assert mcp_web_search._call_responses_api("hello") == {"output": []}
+
+        assert [b["tools"] for b in bodies] == [
+            [{"type": "web_search"}],
+            [{"type": "web_search", "external_web_access": False}],
+        ]
+
+    def test_later_calls_go_straight_to_cache_only(self, monkeypatch):
+        bodies = self._install(monkeypatch, self._hipaa_gateway)
+
+        mcp_web_search._call_responses_api("first")
+        mcp_web_search._call_responses_api("second")
+
+        assert len(bodies) == 3
+        assert bodies[2]["tools"] == [{"type": "web_search", "external_web_access": False}]
+
+    def test_other_400s_are_not_retried(self, monkeypatch):
+        bodies = self._install(monkeypatch, lambda body: (400, '{"message":"bad input"}'))
+
+        with pytest.raises(RuntimeError, match="HTTP 400"):
+            mcp_web_search._call_responses_api("hello")
+
+        assert len(bodies) == 1
+        assert mcp_web_search._cache_only_web_search is False
+
+    def test_cache_only_failure_surfaces_error(self, monkeypatch):
+        bodies = self._install(monkeypatch, lambda body: (400, self.HIPAA_DETAIL))
+
+        with pytest.raises(RuntimeError, match="external_web_access"):
+            mcp_web_search._call_responses_api("hello")
+
+        assert len(bodies) == 2
