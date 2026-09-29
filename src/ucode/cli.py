@@ -46,6 +46,7 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
+from ucode.constants import SMART_ROUTING_ENV_KEYS
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
     custom_oauth_cli_enabled,
@@ -135,6 +136,7 @@ from ucode.skills_list import configured_skill_counts_by_agent, list_configured_
 from ucode.skills_state import records_for_scope
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
+from ucode.smart_routing.session_env import effective_environment, set_session_environment
 from ucode.state import (
     clear_state,
     get_provider_service,
@@ -2055,6 +2057,21 @@ def _oauth_token_is_fresh(token: str, buffer_seconds: float = 120) -> bool:
     return time.time() < expires_at - buffer_seconds
 
 
+@app.command("smart-router", hidden=True)
+def smart_router_cmd(action: str) -> None:
+    """Enable or disable Smart Router hooks for the current agent session."""
+    if action not in {"on", "off"}:
+        print_err("Smart Router accepts only `on` or `off`.")
+        raise typer.Exit(2)
+    overrides = {} if action == "on" else dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+    try:
+        set_session_environment(overrides)
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    print_success(f"Smart Router is {action} for this session")
+
+
 @app.command("codex-router-hook", hidden=True)
 def codex_router_hook_cmd(
     event: str,
@@ -2067,7 +2084,7 @@ def codex_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.smart_routing_enabled():
+    if not smart_routing_v2.smart_routing_enabled(effective_environment()):
         return
 
     from ucode.smart_routing.codex_routing import (
@@ -2146,7 +2163,7 @@ def claude_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.smart_routing_enabled():
+    if not smart_routing_v2.smart_routing_enabled(effective_environment()):
         return
 
     from ucode.smart_routing.claude_routing import (
