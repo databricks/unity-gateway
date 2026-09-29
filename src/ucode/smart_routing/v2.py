@@ -37,12 +37,14 @@ from ucode.databricks import (
 )
 from ucode.launcher import exec_or_spawn
 from ucode.smart_routing import claude_routing, codex_interposer, routing
+from ucode.smart_routing.bundled_skill import install_bundled_skill
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
+from ucode.smart_routing.session import start_session
 from ucode.ui import print_warning
 
 ENABLE_SMART_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_V2"
@@ -449,6 +451,9 @@ def launch_claude(
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
     from ucode.smart_routing import claude_pty
 
+    install_bundled_skill()
+    start_session()
+
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -582,6 +587,8 @@ def launch_codex(
     start_model: str | None,
     render_overlay: Callable[..., dict],
 ) -> NoReturn:
+    install_bundled_skill()
+    start_session()
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(

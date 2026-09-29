@@ -134,7 +134,9 @@ from ucode.skills_download import (
 from ucode.skills_list import configured_skill_counts_by_agent, list_configured_skills_command
 from ucode.skills_state import records_for_scope
 from ucode.smart_routing import v2 as smart_routing_v2
+from ucode.smart_routing.bundled_skill import revert_bundled_skill
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
+from ucode.smart_routing.session import routing_enabled, session_state_path, set_routing_enabled
 from ucode.state import (
     clear_state,
     get_provider_service,
@@ -1274,6 +1276,7 @@ def revert() -> int:
     # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
     # place; restoring the per-profile file above does not undo that.
     legacy_codex_stripped = revert_legacy_shared_config()
+    bundled_skill_results = revert_bundled_skill()
     clear_state()
 
     print_heading("Revert")
@@ -1290,6 +1293,14 @@ def revert() -> int:
             f"{spec['display']} MCP config",
             "restored" if mcp_results.get(client) else "unchanged",
         )
+    if bundled_skill_results:
+        removed = sum(bundled_skill_results.values())
+        preserved = len(bundled_skill_results) - removed
+        result = f"{removed} removed"
+        if preserved:
+            noun = "copy" if preserved == 1 else "copies"
+            result += f"; {preserved} modified {noun} preserved"
+        print_kv("Smart Router skill", result)
     print_success("ug state cleared")
     return 0
 
@@ -2112,6 +2123,8 @@ def codex_router_hook_cmd(
         return
     if event != "route-subagent" or not host:
         return
+    if not routing_enabled():
+        return
     if use_pat and not ensure_pat_bearer(profile):
         return
     token = os.environ.get("DATABRICKS_BEARER", "").strip()
@@ -2210,6 +2223,8 @@ def claude_router_hook_cmd(
         # the PreToolUse hook already injected the routed model, so emit nothing.
         return
     if event != "route-subagent" or not host:
+        return
+    if not routing_enabled():
         return
     token = os.environ.get("OAUTH_TOKEN") or os.environ.get("DATABRICKS_BEARER")
     if not token:
@@ -3706,6 +3721,31 @@ def status_cmd() -> None:
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
+
+
+@app.command("smart-router", hidden=True)
+def smart_router_cmd(
+    action: Annotated[
+        str | None,
+        typer.Argument(help="Session routing control: on or off."),
+    ] = None,
+) -> None:
+    """Control subagent model routing in the current smart-routed session."""
+    if action is None:
+        console.print(Text("• Usage: ug smart-router [on|off]"))
+        return
+    normalized = action.lower()
+    if normalized not in {"on", "off"}:
+        print_err("Expected `on` or `off`.")
+        raise typer.Exit(2)
+    try:
+        session_state_path()
+        enabled = normalized == "on"
+        set_routing_enabled(enabled)
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    print_kv("Smart Router", "on" if enabled else "off")
 
 
 @app.command("revert", rich_help_panel="Manage")
