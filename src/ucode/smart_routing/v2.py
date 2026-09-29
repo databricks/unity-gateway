@@ -14,7 +14,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
-from ucode import subprocess_compat
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
@@ -37,6 +36,7 @@ from ucode.databricks import (
     list_anthropic_models,
 )
 from ucode.launcher import exec_or_spawn
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import claude_routing, codex_interposer, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -540,7 +540,7 @@ def launch_claude(
                     log_path=CLAUDE_PTY_LOG,
                 )
             else:
-                proc = subprocess_compat.popen(argv)
+                proc = subprocess_cross_os.popen(argv)
                 try:
                     returncode = proc.wait()
                 except KeyboardInterrupt:
@@ -626,7 +626,7 @@ def launch_codex(
 
     # Preserve the user's normal CODEX_HOME (including MCP servers, skills, and
     # preferences) and layer only ucode's gateway settings at CLI precedence.
-    app_server = subprocess_compat.popen(
+    app_server = subprocess_cross_os.popen(
         [binary, "app-server", *config_args, "--listen", app_server_url],
         env=os.environ.copy(),
         stdin=subprocess.DEVNULL,
@@ -649,7 +649,7 @@ def launch_codex(
             log_path=CODEX_INTERPOSER_LOG,
         )
         tui_url = _loopback_websocket_url(tui_port)
-        tui = subprocess_compat.popen(
+        tui = subprocess_cross_os.popen(
             [binary, "--remote", tui_url, "--model", start_model, *tool_args]
         )
         try:

@@ -15,7 +15,7 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-from ucode import gateway_proxy, subprocess_compat
+from ucode import gateway_proxy
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -71,6 +71,7 @@ from ucode.mcp_oauth import (
     MCP_OAUTH_CALLBACK_PORT,
     oauth_client_available,
 )
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -687,7 +688,7 @@ def add_claude_mcp_server(
     else:
         cmd = ["claude", "mcp", "add", name, "-s", scope, "--", *server]
     try:
-        subprocess_compat.run(
+        subprocess_cross_os.run(
             cmd,
             check=True,
             capture_output=True,
@@ -733,7 +734,7 @@ def add_claude_http_mcp_server(
         url,
     ]
     try:
-        subprocess_compat.run(
+        subprocess_cross_os.run(
             cmd,
             check=True,
             capture_output=True,
@@ -751,7 +752,7 @@ def remove_claude_mcp_server(name: str, scope: str) -> bool:
     from ucode.mcp import _is_missing_mcp_server_output
 
     try:
-        subprocess_compat.run(
+        subprocess_cross_os.run(
             ["claude", "mcp", "remove", name, "-s", scope],
             check=True,
             capture_output=True,
@@ -1624,7 +1625,7 @@ def _has_subscription_login() -> bool:
     """True when Claude Code already holds a subscription login (`claude auth
     status` exits 0). Never inspects or captures the credential itself."""
     try:
-        result = subprocess_compat.run(
+        result = subprocess_cross_os.run(
             [SPEC["binary"], "auth", "status"],
             check=False,
             capture_output=True,
@@ -1649,7 +1650,7 @@ def _ensure_subscription_login() -> None:
         return
     print_note("Opening browser to sign in with your Claude subscription...")
     try:
-        subprocess_compat.run([SPEC["binary"], "auth", "login"], check=True, timeout=300)
+        subprocess_cross_os.run([SPEC["binary"], "auth", "login"], check=True, timeout=300)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError("`claude auth login` failed.") from exc
     except subprocess.TimeoutExpired as exc:
@@ -1696,7 +1697,7 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess_compat.popen(_build_claude_argv(binary, tool_args, relayed=True))
+    proc = subprocess_cross_os.popen(_build_claude_argv(binary, tool_args, relayed=True))
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

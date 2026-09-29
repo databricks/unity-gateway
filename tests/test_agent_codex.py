@@ -1502,7 +1502,7 @@ class TestCodexLaunch:
             return server, cache, client
 
         monkeypatch.setattr(codex.gateway_proxy, "start_otel_proxy", start_otel_proxy)
-        monkeypatch.setattr(codex.subprocess_compat, "popen", popen)
+        monkeypatch.setattr(codex.subprocess_cross_os, "popen", popen)
 
         with pytest.raises(SystemExit) as exc:
             codex.launch(

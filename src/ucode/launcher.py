@@ -6,7 +6,7 @@ import os
 import signal
 import sys
 
-from ucode import subprocess_compat
+from ucode.os_compatibility import subprocess_cross_os
 
 
 def exec_or_spawn(argv: list[str]) -> None:
@@ -26,7 +26,7 @@ def exec_or_spawn(argv: list[str]) -> None:
         os.execvp(argv[0], argv)
         return  # unreachable on POSIX; keeps type-checkers happy
 
-    proc = subprocess_compat.popen(argv)
+    proc = subprocess_cross_os.popen(argv)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

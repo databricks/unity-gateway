@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ucode import subprocess_compat
+from ucode.os_compatibility import subprocess_cross_os
 
 
 def windows_os_view() -> SimpleNamespace:
@@ -24,11 +24,11 @@ class TestProcessWrappers:
         resolved = [r"C:\\node\\codex.exe", "--model", "m"]
         completed = MagicMock()
         with (
-            patch.object(subprocess_compat.os, "name", "nt"),
-            patch.object(subprocess_compat, "resolve_command", return_value=resolved) as resolve,
-            patch.object(subprocess_compat.subprocess, "run", return_value=completed) as run,
+            patch.object(subprocess_cross_os.os, "name", "nt"),
+            patch.object(subprocess_cross_os, "resolve_command", return_value=resolved) as resolve,
+            patch.object(subprocess_cross_os.subprocess, "run", return_value=completed) as run,
         ):
-            result = subprocess_compat.run(argv, check=False, capture_output=True, text=True)
+            result = subprocess_cross_os.run(argv, check=False, capture_output=True, text=True)
 
         assert result is completed
         resolve.assert_called_once_with(argv)
@@ -39,11 +39,11 @@ class TestProcessWrappers:
         resolved = [r"C:\\tools\\claude.exe", "--settings", "settings.json"]
         process = MagicMock()
         with (
-            patch.object(subprocess_compat.os, "name", "nt"),
-            patch.object(subprocess_compat, "resolve_command", return_value=resolved) as resolve,
-            patch.object(subprocess_compat.subprocess, "Popen", return_value=process) as popen,
+            patch.object(subprocess_cross_os.os, "name", "nt"),
+            patch.object(subprocess_cross_os, "resolve_command", return_value=resolved) as resolve,
+            patch.object(subprocess_cross_os.subprocess, "Popen", return_value=process) as popen,
         ):
-            result = subprocess_compat.popen(
+            result = subprocess_cross_os.popen(
                 argv,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -71,11 +71,11 @@ class TestProcessWrappers:
     )
     def test_run_preserves_strings_and_shell_or_executable_overrides(self, args, kwargs):
         with (
-            patch.object(subprocess_compat.os, "name", "nt"),
-            patch.object(subprocess_compat, "resolve_command") as resolve,
-            patch.object(subprocess_compat.subprocess, "run", return_value=MagicMock()) as run,
+            patch.object(subprocess_cross_os.os, "name", "nt"),
+            patch.object(subprocess_cross_os, "resolve_command") as resolve,
+            patch.object(subprocess_cross_os.subprocess, "run", return_value=MagicMock()) as run,
         ):
-            subprocess_compat.run(args, **kwargs)
+            subprocess_cross_os.run(args, **kwargs)
 
         resolve.assert_not_called()
         run.assert_called_once_with(args, **kwargs)
@@ -83,11 +83,13 @@ class TestProcessWrappers:
     def test_popen_preserves_executable_override(self):
         argv = ["codex", "--help"]
         with (
-            patch.object(subprocess_compat.os, "name", "nt"),
-            patch.object(subprocess_compat, "resolve_command") as resolve,
-            patch.object(subprocess_compat.subprocess, "Popen", return_value=MagicMock()) as popen,
+            patch.object(subprocess_cross_os.os, "name", "nt"),
+            patch.object(subprocess_cross_os, "resolve_command") as resolve,
+            patch.object(
+                subprocess_cross_os.subprocess, "Popen", return_value=MagicMock()
+            ) as popen,
         ):
-            subprocess_compat.popen(argv, executable="/bin/sh")
+            subprocess_cross_os.popen(argv, executable="/bin/sh")
 
         resolve.assert_not_called()
         popen.assert_called_once_with(argv, executable="/bin/sh")
@@ -95,11 +97,11 @@ class TestProcessWrappers:
     def test_posix_passes_argv_to_run_unchanged(self):
         argv = ["codex", "--help"]
         with (
-            patch.object(subprocess_compat.os, "name", "posix"),
-            patch.object(subprocess_compat, "resolve_command", return_value=argv) as resolve,
-            patch.object(subprocess_compat.subprocess, "run", return_value=MagicMock()) as run,
+            patch.object(subprocess_cross_os.os, "name", "posix"),
+            patch.object(subprocess_cross_os, "resolve_command", return_value=argv) as resolve,
+            patch.object(subprocess_cross_os.subprocess, "run", return_value=MagicMock()) as run,
         ):
-            subprocess_compat.run(argv)
+            subprocess_cross_os.run(argv)
 
         resolve.assert_called_once_with(argv)
         run.assert_called_once_with(argv)
@@ -108,26 +110,26 @@ class TestProcessWrappers:
         process = MagicMock()
         shim = r"C:\Users\me\AppData\Roaming\npm\codex.CMD"
         with (
-            patch.object(subprocess_compat.os, "name", "nt"),
-            patch.object(subprocess_compat.shutil, "which", return_value=shim),
-            patch.object(subprocess_compat.subprocess, "Popen", return_value=process) as popen,
+            patch.object(subprocess_cross_os.os, "name", "nt"),
+            patch.object(subprocess_cross_os.shutil, "which", return_value=shim),
+            patch.object(subprocess_cross_os.subprocess, "Popen", return_value=process) as popen,
         ):
-            result = subprocess_compat.popen(["codex", "--model", "m"])
+            result = subprocess_cross_os.popen(["codex", "--model", "m"])
 
         assert result is process
         popen.assert_called_once_with([shim, "--model", "m"])
 
     def test_missing_command_keeps_subprocess_error(self):
         with pytest.raises(FileNotFoundError):
-            subprocess_compat.run(["ucode-launcher-command-that-does-not-exist-872"])
+            subprocess_cross_os.run(["ucode-launcher-command-that-does-not-exist-872"])
 
     def test_real_run_preserves_text_and_bytes_results(self):
         command = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'launcher-ok\\n')"]
 
-        text_result = subprocess_compat.run(
+        text_result = subprocess_cross_os.run(
             command, check=True, capture_output=True, text=True, timeout=5
         )
-        bytes_result = subprocess_compat.run(command, check=True, capture_output=True, timeout=5)
+        bytes_result = subprocess_cross_os.run(command, check=True, capture_output=True, timeout=5)
 
         assert text_result.returncode == 0
         assert text_result.stdout == "launcher-ok\n"
@@ -135,7 +137,7 @@ class TestProcessWrappers:
         assert bytes_result.stdout == b"launcher-ok\n"
 
     def test_real_popen_preserves_context_manager_and_exit_status(self):
-        with subprocess_compat.popen(
+        with subprocess_cross_os.popen(
             [
                 sys.executable,
                 "-c",
@@ -155,31 +157,31 @@ class TestResolveCommand:
     def test_windows_resolves_bare_name_to_full_path(self):
         shim = r"C:\Program Files\nodejs\npm.CMD"
         with (
-            patch.object(subprocess_compat.os, "name", "nt"),
-            patch.object(subprocess_compat.shutil, "which", return_value=shim) as which,
+            patch.object(subprocess_cross_os.os, "name", "nt"),
+            patch.object(subprocess_cross_os.shutil, "which", return_value=shim) as which,
         ):
-            argv = subprocess_compat.resolve_command(["npm", "install", "-g", "pkg"])
+            argv = subprocess_cross_os.resolve_command(["npm", "install", "-g", "pkg"])
         assert argv == [shim, "install", "-g", "pkg"]
         which.assert_called_once_with("npm")
 
     def test_windows_leaves_argv_when_not_found(self):
         with (
-            patch.object(subprocess_compat.os, "name", "nt"),
-            patch.object(subprocess_compat.shutil, "which", return_value=None),
+            patch.object(subprocess_cross_os.os, "name", "nt"),
+            patch.object(subprocess_cross_os.shutil, "which", return_value=None),
         ):
-            assert subprocess_compat.resolve_command(["missing", "--x"]) == ["missing", "--x"]
+            assert subprocess_cross_os.resolve_command(["missing", "--x"]) == ["missing", "--x"]
 
     def test_posix_is_unchanged(self):
         with (
-            patch.object(subprocess_compat.os, "name", "posix"),
-            patch.object(subprocess_compat.shutil, "which") as which,
+            patch.object(subprocess_cross_os.os, "name", "posix"),
+            patch.object(subprocess_cross_os.shutil, "which") as which,
         ):
-            assert subprocess_compat.resolve_command(["npm", "view"]) == ["npm", "view"]
+            assert subprocess_cross_os.resolve_command(["npm", "view"]) == ["npm", "view"]
         which.assert_not_called()
 
     def test_empty_argv(self):
-        with patch.object(subprocess_compat.os, "name", "nt"):
-            assert subprocess_compat.resolve_command([]) == []
+        with patch.object(subprocess_cross_os.os, "name", "nt"):
+            assert subprocess_cross_os.resolve_command([]) == []
 
     def test_windows_runs_an_npm_shims_program_directly(self, tmp_path):
         # Through cmd.exe, Codex's `hooks.PreToolUse=[{matcher = "Agent|..."}]` config
@@ -191,10 +193,12 @@ class TestResolveCommand:
             return {"codex": str(shim), "node": r"C:\node\node.exe"}.get(name)
 
         with (
-            patch.object(subprocess_compat, "os", windows_os_view()),
-            patch.object(subprocess_compat.shutil, "which", which),
+            patch.object(subprocess_cross_os, "os", windows_os_view()),
+            patch.object(subprocess_cross_os.shutil, "which", which),
         ):
-            argv = subprocess_compat.resolve_command(["codex", "app-server", "--config", hook_arg])
+            argv = subprocess_cross_os.resolve_command(
+                ["codex", "app-server", "--config", hook_arg]
+            )
         assert argv == [r"C:\node\node.exe", str(script), "app-server", "--config", hook_arg]
 
 
@@ -251,26 +255,26 @@ def _write_shim(tmp_path, name, template, target, *, create_target=True):
 class TestUnwrapNpmShim:
     def test_node_script_shim_runs_node_on_the_script(self, tmp_path):
         shim, script = _write_shim(tmp_path, "codex.cmd", NODE_SCRIPT_SHIM, "codex.js")
-        with patch.object(subprocess_compat.shutil, "which", return_value="/opt/node") as which:
-            assert subprocess_compat._unwrap_npm_shim(str(shim)) == ["/opt/node", str(script)]
+        with patch.object(subprocess_cross_os.shutil, "which", return_value="/opt/node") as which:
+            assert subprocess_cross_os._unwrap_npm_shim(str(shim)) == ["/opt/node", str(script)]
         which.assert_called_once_with("node")
 
     def test_prefers_the_node_next_to_the_shim(self, tmp_path):
         shim, script = _write_shim(tmp_path, "codex.cmd", NODE_SCRIPT_SHIM, "codex.js")
         (tmp_path / "node.exe").write_text("", encoding="utf-8")
-        with patch.object(subprocess_compat.shutil, "which") as which:
-            argv = subprocess_compat._unwrap_npm_shim(str(shim))
+        with patch.object(subprocess_cross_os.shutil, "which") as which:
+            argv = subprocess_cross_os._unwrap_npm_shim(str(shim))
         assert argv == [str(tmp_path / "node.exe"), str(script)]
         which.assert_not_called()
 
     def test_native_exe_shim_runs_the_exe(self, tmp_path):
         shim, exe = _write_shim(tmp_path, "opencode.cmd", NATIVE_EXE_SHIM, "opencode.exe")
-        assert subprocess_compat._unwrap_npm_shim(str(shim)) == [str(exe)]
+        assert subprocess_cross_os._unwrap_npm_shim(str(shim)) == [str(exe)]
 
     def test_legacy_shim_layout(self, tmp_path):
         shim, script = _write_shim(tmp_path, "gemini.cmd", LEGACY_NODE_SCRIPT_SHIM, "cli.js")
-        with patch.object(subprocess_compat.shutil, "which", return_value="/opt/node"):
-            assert subprocess_compat._unwrap_npm_shim(str(shim)) == ["/opt/node", str(script)]
+        with patch.object(subprocess_cross_os.shutil, "which", return_value="/opt/node"):
+            assert subprocess_cross_os._unwrap_npm_shim(str(shim)) == ["/opt/node", str(script)]
 
     @pytest.mark.parametrize(
         "launch_line",
@@ -284,20 +288,20 @@ class TestUnwrapNpmShim:
     def test_unrecognised_shims_run_through_cmd_as_before(self, tmp_path, launch_line):
         shim = tmp_path / "tool.cmd"
         shim.write_text(f"@ECHO off\n{launch_line}\n", encoding="utf-8")
-        with patch.object(subprocess_compat.shutil, "which", return_value="/opt/node"):
-            assert subprocess_compat._unwrap_npm_shim(str(shim)) is None
+        with patch.object(subprocess_cross_os.shutil, "which", return_value="/opt/node"):
+            assert subprocess_cross_os._unwrap_npm_shim(str(shim)) is None
 
     def test_missing_target_runs_through_cmd_as_before(self, tmp_path):
         shim, _ = _write_shim(
             tmp_path, "codex.cmd", NODE_SCRIPT_SHIM, "codex.js", create_target=False
         )
-        with patch.object(subprocess_compat.shutil, "which", return_value="/opt/node"):
-            assert subprocess_compat._unwrap_npm_shim(str(shim)) is None
+        with patch.object(subprocess_cross_os.shutil, "which", return_value="/opt/node"):
+            assert subprocess_cross_os._unwrap_npm_shim(str(shim)) is None
 
     def test_no_node_runs_through_cmd_as_before(self, tmp_path):
         shim, _ = _write_shim(tmp_path, "codex.cmd", NODE_SCRIPT_SHIM, "codex.js")
-        with patch.object(subprocess_compat.shutil, "which", return_value=None):
-            assert subprocess_compat._unwrap_npm_shim(str(shim)) is None
+        with patch.object(subprocess_cross_os.shutil, "which", return_value=None):
+            assert subprocess_cross_os._unwrap_npm_shim(str(shim)) is None
 
     def test_unreadable_shim(self, tmp_path):
-        assert subprocess_compat._unwrap_npm_shim(str(tmp_path / "missing.cmd")) is None
+        assert subprocess_cross_os._unwrap_npm_shim(str(tmp_path / "missing.cmd")) is None

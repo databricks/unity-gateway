@@ -15,7 +15,6 @@ from urllib.parse import urlparse
 import questionary
 from rich.table import Table
 
-from ucode import subprocess_compat
 from ucode.agents import claude, codex, copilot, cursor, gemini, opencode
 from ucode.config_io import restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
@@ -43,6 +42,7 @@ from ucode.mcp_oauth import (
     CURSOR_OAUTH_CLIENT_ID,
     oauth_client_available,
 )
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_api import (
     _SKILLS_WALK_DEADLINE_SECONDS,
     _SKILLS_WALK_TIMEOUT_REASON,
@@ -157,7 +157,7 @@ def add_codex_mcp_server(name: str, argv: list[str]) -> None:
     # `--` fences the proxy argv off from codex's own flag parser, registering
     # it as a stdio server (codex spawns the command and speaks MCP over it).
     try:
-        subprocess_compat.run(
+        subprocess_cross_os.run(
             ["codex", "mcp", "add", name, "--", *argv],
             check=True,
             capture_output=True,
@@ -177,7 +177,7 @@ def add_codex_http_mcp_server(name: str, url: str, client_id: str) -> None:
     derives its own per-server loopback `/callback/<hash>` redirect at login time; `/oidc` accepts
     that unregistered path via the `enableCodexLoopbackRedirectExemption` flag (loopback host only)."""
     try:
-        subprocess_compat.run(
+        subprocess_cross_os.run(
             [
                 "codex",
                 "mcp",
@@ -201,7 +201,7 @@ def add_codex_http_mcp_server(name: str, url: str, client_id: str) -> None:
 
 def remove_codex_mcp_server(name: str) -> bool:
     try:
-        result = subprocess_compat.run(
+        result = subprocess_cross_os.run(
             ["codex", "mcp", "remove", name],
             check=False,
             capture_output=True,
@@ -230,7 +230,7 @@ def add_gemini_mcp_server(name: str, argv: list[str]) -> None:
     # Register the proxy as a stdio server: `gemini mcp add <name> <cmd> <args…>
     # --type stdio`. The scope/type flags trail the captured command + args.
     try:
-        subprocess_compat.run(
+        subprocess_cross_os.run(
             [
                 "gemini",
                 "mcp",
@@ -254,7 +254,7 @@ def add_gemini_mcp_server(name: str, argv: list[str]) -> None:
 
 def remove_gemini_mcp_server(name: str) -> bool:
     try:
-        result = subprocess_compat.run(
+        result = subprocess_cross_os.run(
             ["gemini", "mcp", "remove", name, "--scope", MCP_USER_SCOPE],
             check=False,
             capture_output=True,
@@ -2360,7 +2360,7 @@ def _run_mcp_list(client: str) -> str | None:
     # Gemini reads its config from a pinned home dir, matching how ucode registers servers there.
     env = _gemini_cli_env() if client == "gemini" else None
     try:
-        result = subprocess_compat.run(
+        result = subprocess_cross_os.run(
             argv,
             check=False,
             capture_output=True,

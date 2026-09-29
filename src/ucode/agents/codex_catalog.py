@@ -10,8 +10,8 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-from ucode import subprocess_compat
 from ucode.codex_config import ModelVisibility
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.ui import print_warning
 
@@ -128,7 +128,7 @@ def build_codex_catalog(
 def _run_catalog_command(
     binary: str, args: list[str], home: str
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess_compat.run(
+    return subprocess_cross_os.run(
         [binary, *args],
         env={**os.environ, "CODEX_HOME": home},
         cwd=home,
