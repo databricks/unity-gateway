@@ -205,34 +205,66 @@ unchanged. Native daemon/background propagation of the plugin remains unverified
 | Cursor Agent | `~/.cursor/mcp.json` |
 | Unity Gateway | `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
 
-### Field ownership on local launches
+### Field ownership on local launches (proposed)
 
-Every `ug claude` and `ug codex` launch rewrites the fields below, even when the
-workspace has no managed config (the coding agent config admins publish through
-the API). Other tools, such as MDM or launch wrappers, may write the same files
-first. For Claude, these fields live in `~/.claude/ucode-settings.json` and
-the OS managed-settings file, which takes precedence. Relayed launches skip the
-managed file. For Codex, they live in `~/.codex/ucode.config.toml` and
-`/etc/codex/managed_config.toml`.
+This is a proposed allow list, under review and not implemented. Every
+`ug claude` and `ug codex` launch writes settings, even when the workspace has
+no managed config (the coding agent config admins publish through the API).
+Other tools, such as MDM or launch wrappers, may write the same files first.
+Under this proposal, `ug` touches only the fields below and ignores every other
+field.
 
-The "Proposed" column is under review and not implemented. Today's behavior is
-in the "No managed config" and "Managed config" columns. The proposal lets `ug`
-update only the listed fields when there is no managed config and leaves all
-other fields as they are.
+<details>
+<summary>Claude Code: <code>~/.claude/ucode-settings.json</code> and the OS managed-settings file, which takes precedence</summary>
 
-| Fields | No managed config (today) | Managed config (today, where different) | Proposed, no managed config | Open question |
-|--------|---------------------------|------------------------------------------|-----------------------------|---------------|
-| Claude `env.ANTHROPIC_BASE_URL`, `apiKeyHelper`, `env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS`, `env.CLAUDE_CODE_USE_GATEWAY`, `env.ENABLE_PROMPT_CACHING_1H`, `env.ENABLE_TOOL_SEARCH` | Overwritten. Relayed subscription launches remove `apiKeyHelper` | Same | `ug` owns them, so the launch still reaches the gateway with working auth | None |
-| Claude `env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`, `env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | Removed from both files on every write, including values `ug` never wrote | Same | Remove only values `ug` wrote | How to tell whether `ug` wrote a value. The managed file already has a last-applied snapshot, used today only for family defaults and picker keys |
-| Claude `env.ANTHROPIC_CUSTOM_HEADERS` | Replaces lines named `x-databricks-use-coding-agent-mode`, `User-Agent`, `Databricks-Model-Provider-Service`, `Databricks-Model-Service-Parent-Schema`, and `Databricks-Smart-Router-Recipe`. Keeps other lines | Replaces the whole value with `ug` headers plus admin headers, so other headers are dropped | Keep today's merge by header name | Admin headers from workspace A stay after switching to B with no managed config |
-| Claude `env.ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL` | Private file: discovered defaults only. Managed file: keeps a value that differs from `ug`'s last write, otherwise discovered defaults. `--provider` launches skip this check. `_NAME` companions are always removed | A family default from the config wins. With a provider or UC schema source, families the config omits are removed | Keep external family defaults | Whether to stop removing the `_NAME` companions |
-| Claude `env.ANTHROPIC_MODEL` | Removed from both files unless a Model Provider Service launch pins it. `--model` applies to that launch only. No budget recommendation is fetched | Written with the launch model: the budget recommendation for this agent, or else the config's `default_model`. Also pinned for Model Provider Service and UC schema sources | Remove only a value `ug` wrote | Whether a recommendation or `default_model` should override family defaults. Likely a bug, to be fixed separately |
-| Claude `availableModels`, `enforceAvailableModels`, `modelPicker` | Normally not written. The managed file keeps them unless they match `ug`'s last write | Written for a static model list or config family defaults | No change | None |
-| Claude `env.CLAUDE_CODE_ENABLE_TELEMETRY`, `env.CLAUDE_CODE_ENHANCED_TELEMETRY_BETA`, `env.OTEL_TRACES_EXPORTER`, `env.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`, `env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `env.CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS`, `env.CLAUDE_CODE_PROPAGATE_TRACEPARENT`, `otelHeadersHelper` | Removed from both files, including values another tool wrote | Written for managed tracing: workspace trace endpoint and a `ug otel-headers` helper | Keep values another tool wrote | Open decision: how to clear workspace A's trace endpoint and auth helper in B without also removing values `ug` did not write |
-| Other Claude settings, including other `OTEL_*` env (logs, metrics, generic OTLP endpoint and headers), hooks, permissions, plugins, and `statusLine` | Left alone. Exceptions: `ug` removes its own marked smart-routing hooks, and adds `WebSearch` to `permissions.deny` when it replaces web search. Existing deny rules are kept only in the managed file | Same | No change | None |
-| Codex `model_provider`, `[model_providers.Databricks]` including `http_headers` | Overwritten. `ug` rewrites the whole `http_headers` table with `User-Agent` and routing headers | Admin headers are added to `http_headers` | `ug` owns them | Whether Codex merges `http_headers` that another tool wrote in `~/.codex/config.toml` is not verified |
-| Codex `model`, `model_reasoning_effort` | `model` is not written. Both are removed from `ug`'s files unless smart routing is enabled | The managed `default_model` sets `model` | No change | None |
-| Codex `[otel]` and other keys in `~/.codex/config.toml` | Not written. `ug` only adds or removes its own `model_catalog_json` reference | Managed tracing adds a trace exporter for the launch only (`--config`), pointed at a local proxy | No change | None |
+| Field | `ug` without managed config | `ug` with managed config |
+|-------|-----------------------------|--------------------------|
+| `env.ANTHROPIC_BASE_URL`, `apiKeyHelper`, `env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS`, `env.CLAUDE_CODE_USE_GATEWAY`, `env.ENABLE_PROMPT_CACHING_1H`, `env.ENABLE_TOOL_SEARCH` | Update | Update |
+| `env.ANTHROPIC_CUSTOM_HEADERS` | Merge: replace only `x-databricks-use-coding-agent-mode`, `User-Agent`, `Databricks-Model-Provider-Service`, `Databricks-Model-Service-Parent-Schema`, and `Databricks-Smart-Router-Recipe` | Update the whole value, adding admin headers |
+| `env.ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL` | Keep an existing value. Write a discovered default only if the value is unset or `ug` wrote it | The config's family default wins. Otherwise, same as without |
+| `env.ANTHROPIC_MODEL` | Ignore. `--model` applies to that launch only | Update with the launch model |
+| `availableModels`, `enforceAvailableModels`, `modelPicker` | Ignore | Update for a static model list or config family defaults |
+| `env.CLAUDE_CODE_ENABLE_TELEMETRY`, `env.CLAUDE_CODE_ENHANCED_TELEMETRY_BETA`, `env.OTEL_TRACES_EXPORTER`, `env.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`, `env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `env.CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS`, `env.CLAUDE_CODE_PROPAGATE_TRACEPARENT`, `otelHeadersHelper` | Remove only values `ug` wrote | Update when the config enables tracing. Otherwise, remove only values `ug` wrote |
+
+</details>
+
+<details>
+<summary>Codex: <code>~/.codex/ucode.config.toml</code> and <code>/etc/codex/managed_config.toml</code></summary>
+
+| Field | `ug` without managed config | `ug` with managed config |
+|-------|-----------------------------|--------------------------|
+| `model_provider`, `[model_providers.Databricks]` including `http_headers` | Update | Update, adding admin headers |
+| `model`, `model_reasoning_effort` | Ignore | Update `model` with the config's `default_model` |
+
+</details>
+
+Current behavior differs from this proposal in these ways:
+
+- With no managed config, `ug` removes `env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`,
+  `env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`, `env.ANTHROPIC_MODEL`, the
+  `env.ANTHROPIC_DEFAULT_*_MODEL_NAME` companions, the trace keys above, and
+  `otelHeadersHelper` from both Claude files, even when another tool wrote them.
+  It removes the trace keys and `otelHeadersHelper` the same way with a managed
+  config that does not enable tracing.
+- `ug` overwrites family defaults in `~/.claude/ucode-settings.json`. The managed
+  file already keeps a family default that differs from `ug`'s last write.
+- Outside the listed fields, `ug` also removes its own marked smart-routing
+  hooks, adds `WebSearch` to `permissions.deny` when it replaces web search, and
+  adds or removes its own `model_catalog_json` reference in `~/.codex/config.toml`.
+  It never writes Codex `[otel]` to a file. Managed tracing only passes a trace
+  exporter for that launch with `--config`.
+
+Open questions:
+
+- Switching from workspace A (managed tracing) to workspace B (no managed
+  config) must not keep sending traces to A's endpoint with A's auth helper.
+  The rule for recognizing values `ug` wrote is not decided. The managed file
+  already has a last-applied snapshot. On launch, `ug` uses it today only for
+  family defaults and picker keys.
+- Today, admin headers that A's managed config adds to `ANTHROPIC_CUSTOM_HEADERS`
+  stay in place after a switch to B with no managed config.
+- A budget recommendation or `default_model` written as `ANTHROPIC_MODEL`
+  overrides family defaults. This is likely a bug, to be fixed separately.
 
 ## Development
 
