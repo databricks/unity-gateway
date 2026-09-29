@@ -10,6 +10,7 @@ import signal
 import socket
 import subprocess
 import threading
+import traceback
 from collections.abc import Callable
 from pathlib import Path
 
@@ -37,6 +38,7 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     AnthropicModelCatalog,
+    _debug,
     build_auth_shell_command,
     build_otel_headers_shell_command,
     build_otel_traces_endpoint,
@@ -70,6 +72,7 @@ from ucode.mcp_oauth import (
 )
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
+    FIRST_PROMPT_SOCKET_ENV,
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
@@ -574,6 +577,54 @@ def _maybe_add_1m_suffix(model: str) -> str:
         family == "sonnet" and (major, minor) >= (4, 6)
     )
     return f"{model}[1m]" if should_suffix else model
+
+
+def default_model_picker_catalog(
+    defaults: dict[str, str],
+    *,
+    provider: str | None = None,
+    launch_model: str | None = None,
+    discovered_catalog: AnthropicModelCatalog | None = None,
+) -> AnthropicModelCatalog:
+    """Build a replacement picker catalog from managed defaults and discovered models."""
+
+    model_ids: list[str] = []
+    display_names: dict[str, str] = {}
+    descriptions: dict[str, str] = {}
+    for family, raw_model in defaults.items():
+        model = raw_model
+        label = _picker_label(model.removesuffix("[1m]"))
+        if provider is not None:
+            # Family shortcuts stay distinct from catalog rows for the same target.
+            model = family
+            label = f"Default {family.title()}"
+            descriptions[model] = raw_model
+        elif family in ("opus", "sonnet"):
+            # Match the current model's exact id so Claude does not append a duplicate row.
+            if launch_model and model.removesuffix("[1m]") == launch_model.removesuffix("[1m]"):
+                model = launch_model
+            else:
+                model = _maybe_add_1m_suffix(model)
+        if model in model_ids:
+            continue
+        model_ids.append(model)
+        display_names[model] = label
+
+    if discovered_catalog is not None:
+        for model in discovered_catalog.model_ids:
+            if model not in model_ids:
+                model_ids.append(model)
+            if label := discovered_catalog.model_id_to_display_name.get(model):
+                display_names[model] = label
+            if description := discovered_catalog.model_id_to_description.get(model):
+                descriptions[model] = description
+
+    return AnthropicModelCatalog(
+        model_ids=model_ids,
+        model_id_to_display_name=display_names,
+        model_id_to_description=descriptions,
+        error_msg=discovered_catalog.error_msg if discovered_catalog is not None else None,
+    )
 
 
 def _enforce_model_default_hierarchy(
@@ -1459,6 +1510,17 @@ def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[s
     return ["--model", launch_model]
 
 
+def _resolve_picker_model_id(model: str, settings_env: dict) -> str:
+    """Resolve configured aliases and context suffixes for comparisons only."""
+    model = re.sub(r"\[(?:1m|200k)\]$", "", model)
+    family_env_key = CLAUDE_DEFAULT_MODEL_ENV_KEYS.get(model)
+    if family_env_key:
+        family_model = settings_env.get(family_env_key)
+        if isinstance(family_model, str) and family_model:
+            model = family_model
+    return re.sub(r"\[(?:1m|200k)\]$", "", model)
+
+
 def _build_claude_argv(
     binary: str,
     tool_args: list[str],
@@ -1615,25 +1677,34 @@ def launch(
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return
+    launch_default_model = state.get("_claude_launch_default_model")
+    if isinstance(launch_default_model, str) and launch_default_model:
+        os.environ["ANTHROPIC_DEFAULT_MODEL"] = launch_default_model
     # Smart routing needs Unix PTY support, which Windows does not provide.
     if options.launch_smart_routing and os.name == "nt":
         raise RuntimeError(
             "Smart routing in Claude Code is currently not supported on Windows. "
             "Please use Codex or launch without --enable-smart-routing."
         )
+    routing_setup_failed = False
     if options.launch_smart_routing:
-        smart_routing_v2.launch_claude(
-            state,
-            tool_args,
-            binary=binary,
-            user_settings_path=CLAUDE_USER_SETTINGS_PATH,
-            # With no user pin, let Claude resolve its starting model from its own settings.
-            launch_model=options.user_pinned_model,
-            compose_settings=_compose_v2_settings,
-            launch_model_args=_launch_model_args,
-            model_name=_maybe_add_1m_suffix,
-        )
-        return
+        try:
+            smart_routing_v2.launch_claude(
+                state,
+                tool_args,
+                binary=binary,
+                user_settings_path=CLAUDE_USER_SETTINGS_PATH,
+                # With no user pin, let Claude resolve its starting model from its own settings.
+                launch_model=options.user_pinned_model,
+                compose_settings=_compose_v2_settings,
+                launch_model_args=_launch_model_args,
+                model_name=_maybe_add_1m_suffix,
+            )
+        except smart_routing_v2.ClaudeRoutingSetupError:
+            _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
+            routing_setup_failed = True
+        else:
+            return
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
@@ -1649,11 +1720,29 @@ def launch(
         picker_models = state.get("_claude_launch_picker_models")
         if isinstance(picker_models, list) and picker_models:
             saved_model = read_json_safe(CLAUDE_USER_SETTINGS_PATH).get("model")
-            if saved_model not in picker_models:
+            settings_env = read_json_safe(CLAUDE_SETTINGS_PATH).get("env")
+            settings_env = settings_env if isinstance(settings_env, dict) else {}
+            available_models = {
+                _resolve_picker_model_id(model, settings_env) for model in picker_models
+            }
+            if (
+                not isinstance(saved_model, str)
+                or _resolve_picker_model_id(saved_model, settings_env) not in available_models
+            ):
                 # Launch on a valid discovered model without turning it into a managed default or
                 # overwriting the user's saved selection. This also prevents Claude from appending
                 # that stale built-in selection to an otherwise replaced picker.
                 settings_override = {"model": picker_models[0]}
+    if routing_setup_failed:
+        # Override inherited and saved routing flags for this launch only. Older
+        # saved hooks must not route to agents whose plugin could not be written.
+        fallback_env = {
+            smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR: "0",
+            smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+            FIRST_PROMPT_SOCKET_ENV: "",
+        }
+        settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
+        os.environ.update(fallback_env)
     exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 
