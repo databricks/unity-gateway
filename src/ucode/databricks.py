@@ -2665,7 +2665,11 @@ def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | 
 
 
 def list_anthropic_model_catalog(
-    workspace: str, token: str, *, parent_schema: str | None = None
+    workspace: str,
+    token: str,
+    *,
+    parent_schema: str | None = None,
+    tool: Literal["Claude Code", "Codex"] = "Claude Code",
 ) -> AnthropicModelCatalog:
     """Return advertised Anthropic model ids and their optional display metadata."""
     payload, reason = _get_anthropic_models_json(workspace, token, parent_schema=parent_schema)
@@ -2705,9 +2709,9 @@ def list_anthropic_model_catalog(
         model_ids=[],
         model_id_to_display_name={},
         error_msg=(
-            _empty_unity_catalog_model_error("Claude Code", parent_schema)
+            _empty_unity_catalog_model_error(tool, parent_schema)
             if parent_schema is not None
-            else "AI Gateway returned no Anthropic model ids"
+            else None
         ),
     )
 

@@ -410,14 +410,6 @@ class TestDiscoverClaudeModels:
             "'main.default'. Check the location and your access to its model services."
         )
 
-    def test_unscoped_empty_catalog_keeps_gateway_error(self, monkeypatch):
-        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: ({"data": []}, None))
-
-        catalog = db_mod.list_anthropic_model_catalog(WS, "token")
-
-        assert catalog.model_ids == []
-        assert catalog.error_msg == "AI Gateway returned no Anthropic model ids"
-
     def test_scoped_catalog_transport_error_is_preserved(self, monkeypatch):
         reason = "HTTP 403 Forbidden: Invalid Token"
         monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (None, reason))

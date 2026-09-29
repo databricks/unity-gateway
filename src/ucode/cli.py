@@ -2700,12 +2700,13 @@ def _launch_tool(
         elif tool == "claude" and parent_schema:
             token = get_databricks_token(state["workspace"], state.get("profile"))
             catalog = list_anthropic_model_catalog(
-                state["workspace"], token, parent_schema=parent_schema
+                state["workspace"],
+                token,
+                parent_schema=parent_schema,
+                tool=TOOL_SPECS[tool]["display"],
             )
-            if catalog.error_msg or not catalog.model_ids:
-                raise RuntimeError(
-                    catalog.error_msg or "AI Gateway returned no Anthropic model ids"
-                )
+            if catalog.error_msg:
+                raise RuntimeError(catalog.error_msg)
             if managed_claude_uc_without_defaults:
                 picker_catalog = catalog
         # The router's per-launch pick for the root session. Codex pins it as the
