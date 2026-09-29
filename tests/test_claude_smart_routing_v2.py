@@ -609,6 +609,7 @@ class TestSavingsStatusline:
         assert f"--state-dir {tmp_path / claude_statusline.STATE_DIRNAME}" in command
         price_cache = pricing.price_cache_path(tmp_path, "https://example.com")
         assert f"--price-cache {price_cache}" in command
+        assert "--routing-enabled" in command
         # The baseline follows the main model the user chose.
         assert "--baseline-session-start" not in command
 
@@ -617,6 +618,7 @@ class TestSavingsStatusline:
             "statusLine"
         ]
 
+        assert "--routing-enabled" in status_line["command"]
         assert "--baseline-session-start" in status_line["command"]
 
     def test_caches_endpoint_rates_for_the_launch_models(self, monkeypatch, tmp_path):

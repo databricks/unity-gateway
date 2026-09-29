@@ -157,13 +157,19 @@ def savings_statusline_enabled(env: MutableMapping[str, str] | None = None) -> b
     return source.get(ENABLE_SAVINGS_STATUSLINE_ENV_VAR, "1") != "0"
 
 
-def _install_savings_statusline(
-    settings: dict, user_settings_path: Path, *, price_cache: Path, baseline_session_start: bool
+def install_savings_statusline(
+    settings: dict,
+    user_settings_path: Path,
+    *,
+    price_cache: Path,
+    routing_enabled: bool,
+    baseline_session_start: bool,
 ) -> None:
     """Point the per-launch ``statusLine`` at the smart-routing row, wrapping the user's own one.
 
-    The row reads per-token prices from ``price_cache``, since a statusline refresh can't wait on
-    the network; ``_start_savings_price_refresh`` fills it.
+    ``routing_enabled`` is False on a plain (non-routed) launch so the row reads "off". The row
+    reads per-token prices from ``price_cache``, since a statusline refresh can't wait on the
+    network; ``_start_savings_price_refresh`` fills it on routed launches.
     """
     state_dir = APP_DIR / claude_statusline.STATE_DIRNAME
     claude_statusline.prune_state(state_dir)
@@ -175,6 +181,7 @@ def _install_savings_statusline(
         python=sys.executable,
         state_dir=state_dir,
         price_cache=price_cache,
+        routing_enabled=routing_enabled,
         baseline_session_start=baseline_session_start,
     )
 
@@ -591,10 +598,11 @@ def launch_claude(
         sync_first_prompt_hook(settings, hook_executable)
     if savings_statusline_enabled():
         price_cache = pricing.price_cache_path(APP_DIR, workspace)
-        _install_savings_statusline(
+        install_savings_statusline(
             settings,
             user_settings_path,
             price_cache=price_cache,
+            routing_enabled=True,
             baseline_session_start=route_first_prompt,
         )
         _start_savings_price_refresh(

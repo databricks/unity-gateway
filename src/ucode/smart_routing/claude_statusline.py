@@ -52,9 +52,8 @@ _CENT = Decimal("0.01")
 # The Claude Code plugin whose skill drives smart routing's subagent delegation; the row shows its
 # installed version. ug doesn't install it, so the row reads whatever Claude Code recorded on disk.
 _ORCHESTRATOR_PLUGIN_NAME = "model-orchestrator"
-# A trailing 1M-context marker in a model's display name (e.g. "Opus 5.5 (1M context)") is a context
-# window, not a price, so the row drops it to stay concise.
-_CONTEXT_LABEL_RE = re.compile(r"\s*(?:\(1m context\)|\[1m\])\s*$", re.IGNORECASE)
+# Pointer to the skill that breaks the estimate down, appended after a savings estimate.
+_SAVINGS_SKILL_HINT = "/smart-router savings for details"
 
 
 def effective_status_line(
@@ -90,11 +89,14 @@ def savings_status_line(
     python: str,
     state_dir: Path,
     price_cache: Path,
+    routing_enabled: bool,
     baseline_session_start: bool,
 ) -> dict:
     """The ``statusLine`` setting that prints ``original``'s row(s), then the smart-routing row."""
     argv = [python, "-P", "-m", MODULE, "--state-dir", str(state_dir)]
     argv += ["--price-cache", str(price_cache)]
+    if routing_enabled:
+        argv.append("--routing-enabled")
     if baseline_session_start:
         argv.append("--baseline-session-start")
     savings = shlex.join(argv)
@@ -345,31 +347,24 @@ def orchestrator_plugin_version(config_dir: Path | None = None) -> str | None:
     return None
 
 
-def _short_label(display_name: str) -> str:
-    """Drop a trailing 1M-context marker from a model label; keep the name otherwise."""
-    return _CONTEXT_LABEL_RE.sub("", display_name).strip() or display_name
-
-
-def _savings_segment(saved: Decimal, baseline: Decimal, baseline_label: str) -> str:
-    """The savings state segment; a negative ``saved`` (pricier routing) says so in words."""
+def _savings_text(saved: Decimal, baseline: Decimal) -> str:
+    """The savings clause: a money-bag estimate when positive, an honest cost increase when not."""
     percent = Decimal(0)
     if baseline > 0:
         percent = (abs(saved) / baseline * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP)
     magnitude = abs(saved)
     amount = (
-        "<$0.01"
-        if magnitude < _CENT
-        else f"~${magnitude.quantize(_CENT, rounding=ROUND_HALF_UP):,}"
+        "<$0.01" if magnitude < _CENT else f"${magnitude.quantize(_CENT, rounding=ROUND_HALF_UP):,}"
     )
     if saved >= 0:
-        return f"saved {amount} ({percent}%) vs {baseline_label}"
-    return f"cost {amount} more ({percent}%) than {baseline_label}"
+        return f"💰 Est. saved with smart routing: {amount} ({percent}%)"
+    return f"Smart routing cost {amount} more ({percent}%)"
 
 
 def _compute_savings(
     raw: str, *, state_dir: Path, price_cache: Path, baseline_session_start: bool
-) -> str | None:
-    """The savings segment for one statusline payload, or None when there is nothing to claim.
+) -> tuple[Decimal, Decimal] | None:
+    """The ``(saved, baseline)`` dollars for one statusline payload, or None with nothing to claim.
 
     None until some response ran on a model other than the baseline, and whenever any response
     can't be priced: an undercounted figure would be worse than none. The caller then shows "on".
@@ -427,26 +422,36 @@ def _compute_savings(
 
     if unpriced or rerouted <= 0 or baseline_total <= 0:
         return None
-    return _savings_segment(
-        baseline_total - actual_total, baseline_total, _short_label(baseline["display_name"])
-    )
+    return baseline_total - actual_total, baseline_total
 
 
-def render(raw: str, *, state_dir: Path, price_cache: Path, baseline_session_start: bool) -> str:
-    """The one-line smart-routing row: the plugin version, then any savings.
+def render(
+    raw: str,
+    *,
+    routing_enabled: bool,
+    state_dir: Path,
+    price_cache: Path,
+    baseline_session_start: bool,
+) -> str:
+    """The one-line smart-routing status row.
 
-    Always returns a line. The version is omitted when it can't be read; the state is the savings
-    estimate once one can be computed, or "on" until then.
+    ``off`` when routing is disabled, ``on`` once it is on but no estimate exists yet, otherwise the
+    estimate. The orchestrator plugin version is appended when it can be read, and a pointer to the
+    ``/smart-router savings`` breakdown follows an estimate.
     """
     version = orchestrator_plugin_version()
-    prefix = "Smart routing" + (f" v{version}" if version else "")
-    segment = _compute_savings(
+    plugin = f" · smart router plugin v{version}" if version else ""
+    if not routing_enabled:
+        return f"Smart routing off{plugin}"
+    computed = _compute_savings(
         raw,
         state_dir=state_dir,
         price_cache=price_cache,
         baseline_session_start=baseline_session_start,
     )
-    return f"{prefix} · {segment if segment is not None else 'on'}"
+    if computed is None:
+        return f"Smart routing on{plugin}"
+    return f"{_savings_text(*computed)}{plugin} · {_SAVINGS_SKILL_HINT}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -455,11 +460,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--price-cache", type=Path, required=True)
+    parser.add_argument("--routing-enabled", action="store_true")
     parser.add_argument("--baseline-session-start", action="store_true")
     args = parser.parse_args(argv)
     try:
         line = render(
             sys.stdin.read(),
+            routing_enabled=args.routing_enabled,
             state_dir=args.state_dir,
             price_cache=args.price_cache,
             baseline_session_start=args.baseline_session_start,
