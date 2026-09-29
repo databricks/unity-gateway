@@ -136,14 +136,7 @@ from ucode.skills_state import records_for_scope
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.bundled_skill import revert_bundled_skill
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
-from ucode.smart_routing.session import (
-    SESSION_STATE_ENV_VAR,
-    is_active_session,
-    routing_enabled,
-    session_state_path,
-    session_state_valid,
-    set_routing_enabled,
-)
+from ucode.smart_routing.session import routing_enabled, session_state_path, set_routing_enabled
 from ucode.state import (
     clear_state,
     get_provider_service,
@@ -2295,18 +2288,10 @@ def _smart_routing_v2_flag(enabled: bool | None) -> Iterator[None]:
         if enabled
         else smart_routing_v2.disable_smart_routing()
     )
-    previous_session_state = None
-    if not enabled:
-        # A disabled launch must not hand a parent routed session's state file
-        # to a nested ordinary agent (or let a stale pointer make old hooks
-        # look active).
-        previous_session_state = os.environ.pop(SESSION_STATE_ENV_VAR, None)
     try:
         yield
     finally:
         smart_routing_v2.restore_smart_routing_env(previous)
-        if not enabled and previous_session_state is not None:
-            os.environ[SESSION_STATE_ENV_VAR] = previous_session_state
 
 
 def _smart_routing_override(
@@ -2324,28 +2309,13 @@ def _smart_routing_override(
     return None
 
 
-def _toggle_current_smart_routing_session(
-    tool: str,
-    ctx: typer.Context,
-    *,
-    enabled: bool | None,
-    has_launch_options: bool,
-) -> bool:
-    """Toggle the current routed session when this is a bare matching launcher call.
-
-    A flag paired with agent arguments or another launch option remains an ordinary
-    launch request.  The owning launcher is stored in the session state, so a
-    Claude session cannot accidentally be changed by a Codex invocation (or vice
-    versa).
-    """
-    if enabled is None or has_launch_options or ctx.args or _has_explicit_prompt(ctx):
+def _toggle_current_smart_routing_session(enabled: bool | None) -> bool:
+    """Toggle the pointed session for an explicit launcher override."""
+    if enabled is None:
         return False
     try:
         session_state_path()
     except RuntimeError:
-        return False
-    if not is_active_session(tool) and session_state_valid():
-        # A valid state owned by another harness is not this launcher's session.
         return False
     try:
         set_routing_enabled(enabled)
@@ -3243,23 +3213,7 @@ def codex_cmd(
         enable_smart_routing_flag,
         disable_smart_routing_flag,
     )
-    if _toggle_current_smart_routing_session(
-        "codex",
-        ctx,
-        enabled=smart_routing_override,
-        has_launch_options=any(
-            (
-                provider is not None,
-                model_location is not None,
-                refresh,
-                skip_preflight,
-                workspace is not None,
-                client_id is not None,
-                redirect_url is not None,
-                scopes is not None,
-            )
-        ),
-    ):
+    if _toggle_current_smart_routing_session(smart_routing_override):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
@@ -3359,24 +3313,7 @@ def claude_cmd(
         enable_smart_routing_flag,
         disable_smart_routing_flag,
     )
-    if _toggle_current_smart_routing_session(
-        "claude",
-        ctx,
-        enabled=smart_routing_override,
-        has_launch_options=any(
-            (
-                provider is not None,
-                model_location is not None,
-                model is not None,
-                refresh,
-                skip_preflight,
-                workspace is not None,
-                client_id is not None,
-                redirect_url is not None,
-                scopes is not None,
-            )
-        ),
-    ):
+    if _toggle_current_smart_routing_session(smart_routing_override):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)

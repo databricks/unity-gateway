@@ -15,16 +15,12 @@ from ucode.smart_routing import bundled_skill, session, v2
 runner = CliRunner()
 
 
-def _session_env(
-    tmp_path: Path,
-    enabled: bool = True,
-    agent: str | None = None,
-) -> dict[str, str]:
+def _session_env(tmp_path: Path, enabled: bool = True) -> dict[str, str]:
     path = tmp_path / "state.json"
-    data: dict[str, object] = {"version": 1, "enabled": enabled}
-    if agent is not None:
-        data["agent"] = agent
-    path.write_text(json.dumps(data), encoding="utf-8")
+    path.write_text(
+        json.dumps({"version": 1, "enabled": enabled}),
+        encoding="utf-8",
+    )
     return {session.SESSION_STATE_ENV_VAR: str(path)}
 
 
@@ -56,12 +52,15 @@ class TestSmartRouterLauncherFlags:
 
     @pytest.mark.parametrize(
         ("tool", "flag", "expected"),
-        [("claude", "--disable-smart-routing", False), ("codex", "--enable-smart-routing", True)],
+        [
+            ("claude", "--disable-smart-routing", False),
+            ("codex", "--enable-smart-routing", True),
+        ],
     )
-    def test_bare_matching_launcher_toggles_current_session(
+    def test_explicit_override_toggles_current_session(
         self, tmp_path, monkeypatch, tool, flag, expected
     ):
-        env = _session_env(tmp_path, agent=tool)
+        env = _session_env(tmp_path)
         monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, env[session.SESSION_STATE_ENV_VAR])
         monkeypatch.setattr(cli, "_launch_tool", Mock(side_effect=AssertionError("launched")))
 
@@ -74,7 +73,7 @@ class TestSmartRouterLauncherFlags:
 
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     def test_toggle_is_idempotent(self, tmp_path, monkeypatch, tool):
-        env = _session_env(tmp_path, enabled=False, agent=tool)
+        env = _session_env(tmp_path, enabled=False)
         monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, env[session.SESSION_STATE_ENV_VAR])
         monkeypatch.setattr(cli, "_launch_tool", Mock(side_effect=AssertionError("launched")))
 
@@ -89,31 +88,16 @@ class TestSmartRouterLauncherFlags:
                 is expected
             )
 
-    def test_mismatched_launcher_does_not_toggle_or_nest(self, tmp_path, monkeypatch):
-        env = _session_env(tmp_path, agent="claude")
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_override_toggles_without_inspecting_launch_request(self, tmp_path, monkeypatch, tool):
+        env = _session_env(tmp_path)
         monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, env[session.SESSION_STATE_ENV_VAR])
-        launch = Mock()
-        monkeypatch.setattr(cli, "_launch_tool", launch)
+        monkeypatch.setattr(cli, "_launch_tool", Mock(side_effect=AssertionError("launched")))
 
-        result = runner.invoke(cli.app, ["codex", "--disable-smart-routing"])
+        result = runner.invoke(cli.app, [tool, "--disable-smart-routing", "--", "prompt"])
 
         assert result.exit_code == 0
-        launch.assert_called_once()
-        assert launch.call_args.kwargs["smart_routing_override"] is False
-        assert json.loads(Path(env[session.SESSION_STATE_ENV_VAR]).read_text())["enabled"] is True
-
-    def test_conflicting_launch_request_does_not_toggle(self, tmp_path, monkeypatch):
-        env = _session_env(tmp_path, agent="claude")
-        monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, env[session.SESSION_STATE_ENV_VAR])
-        launch = Mock()
-        monkeypatch.setattr(cli, "_launch_tool", launch)
-
-        result = runner.invoke(cli.app, ["claude", "--disable-smart-routing", "--", "prompt"])
-
-        assert result.exit_code == 0
-        launch.assert_called_once()
-        assert launch.call_args.kwargs["smart_routing_override"] is False
-        assert json.loads(Path(env[session.SESSION_STATE_ENV_VAR]).read_text())["enabled"] is True
+        assert json.loads(Path(env[session.SESSION_STATE_ENV_VAR]).read_text())["enabled"] is False
 
     def test_disable_outside_session_is_an_ordinary_launch(self, monkeypatch):
         monkeypatch.delenv(session.SESSION_STATE_ENV_VAR, raising=False)
@@ -170,7 +154,7 @@ class TestSessionState:
         monkeypatch.setattr(
             v2,
             "start_session",
-            lambda *, agent: session.start_session(agent=agent),
+            lambda: session.start_session(),
         )
         monkeypatch.setattr(session.tempfile, "mkdtemp", lambda prefix: str(next(calls)))
 
@@ -201,8 +185,6 @@ class TestSessionState:
         assert claude_path != codex_path
         assert session.routing_enabled() is True
         assert json.loads(claude_path.read_text())["enabled"] is False
-        assert json.loads(claude_path.read_text())["agent"] == "claude"
-        assert json.loads(codex_path.read_text())["agent"] == "codex"
 
 
 class TestRoutingHookGate:
