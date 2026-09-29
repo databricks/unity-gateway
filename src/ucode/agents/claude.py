@@ -15,7 +15,7 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-from ucode import gateway_proxy, launcher
+from ucode import gateway_proxy, subprocess_compat
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -687,7 +687,7 @@ def add_claude_mcp_server(
     else:
         cmd = ["claude", "mcp", "add", name, "-s", scope, "--", *server]
     try:
-        launcher.run(
+        subprocess_compat.run(
             cmd,
             check=True,
             capture_output=True,
@@ -733,7 +733,7 @@ def add_claude_http_mcp_server(
         url,
     ]
     try:
-        launcher.run(
+        subprocess_compat.run(
             cmd,
             check=True,
             capture_output=True,
@@ -751,7 +751,7 @@ def remove_claude_mcp_server(name: str, scope: str) -> bool:
     from ucode.mcp import _is_missing_mcp_server_output
 
     try:
-        launcher.run(
+        subprocess_compat.run(
             ["claude", "mcp", "remove", name, "-s", scope],
             check=True,
             capture_output=True,
@@ -1624,7 +1624,7 @@ def _has_subscription_login() -> bool:
     """True when Claude Code already holds a subscription login (`claude auth
     status` exits 0). Never inspects or captures the credential itself."""
     try:
-        result = launcher.run(
+        result = subprocess_compat.run(
             [SPEC["binary"], "auth", "status"],
             check=False,
             capture_output=True,
@@ -1649,7 +1649,7 @@ def _ensure_subscription_login() -> None:
         return
     print_note("Opening browser to sign in with your Claude subscription...")
     try:
-        launcher.run([SPEC["binary"], "auth", "login"], check=True, timeout=300)
+        subprocess_compat.run([SPEC["binary"], "auth", "login"], check=True, timeout=300)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError("`claude auth login` failed.") from exc
     except subprocess.TimeoutExpired as exc:
@@ -1696,7 +1696,7 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = launcher.popen(_build_claude_argv(binary, tool_args, relayed=True))
+    proc = subprocess_compat.popen(_build_claude_argv(binary, tool_args, relayed=True))
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

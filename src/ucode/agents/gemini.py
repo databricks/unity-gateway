@@ -8,7 +8,7 @@ import signal
 import threading
 from pathlib import Path
 
-from ucode import launcher
+from ucode import subprocess_compat
 from ucode.agent_updates import latest_version_below
 from ucode.config_io import (
     APP_DIR,
@@ -258,7 +258,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     )
     refresher.start()
 
-    proc = launcher.popen([SPEC["binary"], *tool_args], env=env)
+    proc = subprocess_compat.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

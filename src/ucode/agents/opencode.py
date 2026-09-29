@@ -7,7 +7,7 @@ import os
 import re
 import signal
 
-from ucode import launcher
+from ucode import subprocess_compat
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -439,7 +439,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
             *tool_args[separator:],
         ]
 
-    proc = launcher.popen([SPEC["binary"], *tool_args], env=env)
+    proc = subprocess_compat.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

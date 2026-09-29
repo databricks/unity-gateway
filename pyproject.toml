@@ -84,11 +84,11 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011", "TID251"]  # tests may exercise subprocess directly
-"src/ucode/launcher.py" = ["TID251"]
+"src/ucode/subprocess_compat.py" = ["TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"subprocess.run".msg = "Use ucode.launcher.run to resolve Windows commands automatically."
-"subprocess.Popen".msg = "Use ucode.launcher.popen to resolve Windows commands automatically."
-"subprocess.call".msg = "Use ucode.launcher.run to resolve Windows commands automatically."
-"subprocess.check_call".msg = "Use ucode.launcher.run with check=True."
-"subprocess.check_output".msg = "Use ucode.launcher.run with check=True and stdout=subprocess.PIPE."
+"subprocess.run".msg = "Use ucode.subprocess_compat.run to resolve Windows commands automatically."
+"subprocess.Popen".msg = "Use ucode.subprocess_compat.popen to resolve Windows commands automatically."
+"subprocess.call".msg = "Use ucode.subprocess_compat.run to resolve Windows commands automatically."
+"subprocess.check_call".msg = "Use ucode.subprocess_compat.run with check=True."
+"subprocess.check_output".msg = "Use ucode.subprocess_compat.run with check=True and stdout=subprocess.PIPE."

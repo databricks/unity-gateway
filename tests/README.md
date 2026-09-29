@@ -15,9 +15,10 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 and checks their version output against the `unity-gateway` distribution metadata.
 `TestUpgrade` in `test_cli.py` covers both command names before, during, and after
 the distribution rename with mocked installer calls, including failure recovery guidance.
-`test_launcher.py` covers Windows npm shim resolution, native and Node targets,
-literal argument preservation, and the shared `launcher.run` / `launcher.popen`
-entry points. Ruff rejects direct subprocess launches outside the launcher and tests.
+`test_subprocess_compat.py` covers Windows npm shim resolution, native and Node targets,
+literal argument preservation, and the shared `subprocess_compat.run` / `subprocess_compat.popen`
+entry points. `test_launcher.py` covers terminal handoff and exit status.
+Ruff rejects direct subprocess launches outside `subprocess_compat.py` and tests.
 Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
 These are component checks, not live Windows coverage for every agent.

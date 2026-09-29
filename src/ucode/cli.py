@@ -19,7 +19,7 @@ from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
-from ucode import custom_oauth, launcher
+from ucode import custom_oauth, subprocess_compat
 from ucode.agents import (
     TOOL_SPECS,
     LaunchOptions,
@@ -3756,7 +3756,7 @@ def upgrade_cmd() -> None:
     print_kv("Source", git_url)
     print_kv("Installed distribution", installed_distribution)
     try:
-        result = launcher.run(
+        result = subprocess_compat.run(
             ["uv", "tool", "install", "--reinstall", upgrade_requirement],
             check=False,
             capture_output=True,
@@ -3767,12 +3767,12 @@ def upgrade_cmd() -> None:
                 print_note(
                     "The package is now distributed as `unity-gateway`; migrating this installation."
                 )
-                launcher.run(
+                subprocess_compat.run(
                     ["uv", "tool", "uninstall", legacy_distribution],
                     check=True,
                 )
                 legacy_removed = True
-                launcher.run(
+                subprocess_compat.run(
                     ["uv", "tool", "install", "--force", git_url],
                     check=True,
                 )
@@ -3854,7 +3854,7 @@ def _verify_upgraded_commands() -> None:
                 f"Upgrade completed, but `{command}` is not available on PATH. "
                 "Reinstall Unity Gateway and ensure the uv tool bin directory is on PATH."
             )
-        result = launcher.run(
+        result = subprocess_compat.run(
             [executable, "--version"],
             check=False,
             capture_output=True,

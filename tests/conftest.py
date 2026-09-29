@@ -31,10 +31,10 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     """
     import ucode.config_io as config_io_mod
     import ucode.databricks as databricks_mod
-    import ucode.launcher as launcher_mod
     import ucode.managed_config as managed_config_mod
     import ucode.managed_files as managed_files_mod
     import ucode.state as state_mod
+    import ucode.subprocess_compat as subprocess_compat_mod
     from ucode.agents import codex as codex_mod
 
     state_dir = tmp_path / ".ucode"
@@ -67,9 +67,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
     # On Windows, resolve_command swaps a bare program name for whatever `shutil.which`
-    # finds on the developer's PATH (e.g. a real `codex.CMD`). Rebind only the launcher's
-    # `shutil` so argv stays host-independent; launcher tests patch `which` explicitly.
-    monkeypatch.setattr(launcher_mod, "shutil", SimpleNamespace(which=lambda _name: None))
+    # finds on the developer's PATH (e.g. a real `codex.CMD`). Rebind only the compatibility
+    # helper's `shutil` so argv stays host-independent; helper tests patch `which` explicitly.
+    monkeypatch.setattr(subprocess_compat_mod, "shutil", SimpleNamespace(which=lambda _name: None))
     # A developer's ambient managed-config stub would otherwise short-circuit every fetch in the suite.
     monkeypatch.delenv("UCODE_MANAGED_CONFIG_STUB", raising=False)
     # The model-services listing is memoized for the life of the process, so without this a cached

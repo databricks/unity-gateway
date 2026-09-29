@@ -484,7 +484,7 @@ class TestOpencodeLaunchModel:
             patch("ucode.agents.opencode.get_databricks_token", return_value="tok"),
             patch("ucode.agents.opencode.agent_version", return_value="1.0.220"),
             patch("ucode.agents.opencode.save_state"),
-            patch("ucode.agents.opencode.launcher.popen") as popen,
+            patch("ucode.agents.opencode.subprocess_compat.popen") as popen,
         ):
             popen.return_value.wait.return_value = 7
             with pytest.raises(SystemExit) as exc_info:
@@ -501,7 +501,7 @@ class TestOpencodeLaunchModel:
         state = {"opencode_models": {"anthropic": ["claude-sonnet"]}}
         with (
             patch("ucode.agents.opencode._configure_launch") as configure,
-            patch("ucode.agents.opencode.launcher.popen") as popen,
+            patch("ucode.agents.opencode.subprocess_compat.popen") as popen,
             pytest.raises(RuntimeError, match="not configured"),
         ):
             opencode.launch(

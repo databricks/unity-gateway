@@ -25,7 +25,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, cast
 
-from ucode import launcher
+from ucode import subprocess_compat
 from ucode.config_io import APP_DIR, is_dry_run
 from ucode.ui import console, print_note, print_success, print_warning
 
@@ -801,7 +801,7 @@ class _SudoReplaceWorker:
 
     def __init__(self) -> None:
         self.command = _sudo_replace_command("session")
-        self.process = launcher.popen(
+        self.process = subprocess_compat.popen(
             self.command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -923,7 +923,7 @@ def _session_worker() -> _SudoReplaceWorker:
 def _sudo_remove(path: Path) -> None:
     original_flags = _clear_immutable(path)
     try:
-        launcher.run(
+        subprocess_compat.run(
             _sudo_command("rm", "-f", str(path)), capture_output=True, text=True, check=True
         )
     finally:
@@ -945,7 +945,7 @@ def _sudo_replace(path: Path, desired_text: str) -> None:
         if _managed_write_session_depth:
             _session_worker().replace(path, tmp_path)
         else:
-            launcher.run(
+            subprocess_compat.run(
                 _sudo_replace_command(
                     "once",
                     tmp_path,
@@ -967,7 +967,7 @@ def _clear_immutable(path: Path) -> tuple[str, ...]:
     except OSError:
         return ()
     if current_os() is OS.MACOS:
-        result = launcher.run(
+        result = subprocess_compat.run(
             ["/usr/bin/stat", "-f", "%Sf", str(path)], capture_output=True, text=True, check=False
         )
         if result.returncode != 0:
@@ -975,14 +975,14 @@ def _clear_immutable(path: Path) -> tuple[str, ...]:
         supported = {"schg", "uchg", "sappnd", "uappnd"}
         flags = tuple(flag for flag in result.stdout.strip().split(",") if flag in supported)
         if flags:
-            launcher.run(
+            subprocess_compat.run(
                 _sudo_command("chflags", ",".join(f"no{flag}" for flag in flags), str(path)),
                 capture_output=True,
                 text=True,
                 check=True,
             )
         return flags
-    result = launcher.run(
+    result = subprocess_compat.run(
         _sudo_command("lsattr", "-d", str(path)), capture_output=True, text=True, check=False
     )
     if result.returncode != 0 or not result.stdout.strip():
@@ -990,7 +990,7 @@ def _clear_immutable(path: Path) -> tuple[str, ...]:
     attributes = result.stdout.split()[0]
     flags = tuple(flag for flag in ("i", "a") if flag in attributes)
     if flags:
-        launcher.run(
+        subprocess_compat.run(
             _sudo_command("chattr", f"-{''.join(flags)}", str(path)),
             capture_output=True,
             text=True,
@@ -1007,7 +1007,7 @@ def _restore_immutable(path: Path, flags: tuple[str, ...]) -> None:
         command = _sudo_command("chflags", ",".join(flags), str(path))
     else:
         command = _sudo_command("chattr", f"+{''.join(flags)}", str(path))
-    result = launcher.run(command, capture_output=True, text=True, check=False)
+    result = subprocess_compat.run(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         print_warning(f"Could not restore the immutable flag on {path}.")
 

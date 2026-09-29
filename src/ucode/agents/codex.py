@@ -15,7 +15,7 @@ from pathlib import Path
 import tomlkit
 from tomlkit.exceptions import ParseError
 
-from ucode import gateway_proxy, launcher
+from ucode import gateway_proxy, subprocess_compat
 from ucode.codex_config import (
     catalog_slugs,
     codex_config_args,
@@ -1050,7 +1050,7 @@ def _launch_codex_with_otel_proxy(
     server_thread.start()
     endpoint = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1/traces"
     otel_args = codex_config_args(_otel_proxy_overlay(endpoint))
-    proc = launcher.popen([*base_argv, *otel_args, *tool_args])
+    proc = subprocess_compat.popen([*base_argv, *otel_args, *tool_args])
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
