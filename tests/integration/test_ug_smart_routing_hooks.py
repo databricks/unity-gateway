@@ -4,14 +4,15 @@ The agent harness invokes ``ug claude-router-hook route-subagent`` /
 ``ug codex-router-hook route-subagent`` on its PreToolUse event with a JSON payload on
 stdin. These journeys drive the real installed hook commands through that stdin contract,
 so the routing decision, response shape, and audit trail are asserted without relying on
-an agent choosing to spawn a subagent. The interactive spawn decision itself remains
-uncovered; see the gaps matrix in tests/README.md.
+an agent choosing to spawn a subagent. The Claude plugin lifecycle journey additionally
+requires an actual interactive routed child to complete a task. Daemon/background
+dispatch remains uncovered; see the gaps matrix in tests/README.md.
 """
 
 import json
 
 import pytest
-from utils.evidence import FileTask
+from utils.evidence import FileTask, assert_subagent_routed, read_jsonl
 from utils.terminal import AgentTerminal
 
 # The same model lists as the managed_fixture smart-routing banner journeys, which are
@@ -235,3 +236,84 @@ def test_smart_routing_codex_subagent_only_launch_shows_no_first_prompt_banner(
     assert SMART_ROUTING_BANNER not in transcript, transcript
     session.assert_not_routed()
     task.assert_completed(session, "codex")
+
+
+@pytest.mark.live
+@pytest.mark.claude
+def test_smart_routing_claude_plugin_cleanup_after_disable(live_session, workspace):
+    """Scenario: launch routed Claude, delegate a file task, then launch with routing off.
+
+    Expected: a plugin-qualified child and its parent complete the real file task;
+    launch-scoped plugin/settings files are cleaned without permanent registration.
+    The disabled session completes a new file task without adding routing events.
+    This tests native interactive spawning, not daemon/background dispatch.
+    """
+    session = live_session
+    session.run(
+        "configure",
+        "--agents",
+        "claude",
+        "--workspace",
+        workspace,
+        "--disable-databricks-ai-tools",
+    )
+    session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
+    session.env["ENABLE_SMART_ROUTING_V2"] = "0"
+    task = FileTask(session)
+    app_dir = session.home / ".ucode"
+    with AgentTerminal(
+        session, "claude", [str(session.binary), "claude"], "routing-plugin-child"
+    ) as tui:
+        tui.boot()
+        tui.submit(task.delegate_prompt)
+        tui.wait_for_task(task)
+        task.assert_completed(session, "claude", child=True)
+        bundles = list(app_dir.glob("claude-v2-*-plugin"))
+        assert len(bundles) == 1, bundles
+        assert list((bundles[0] / "agents").glob("ucode-route-*.md"))
+        tui.exit_normally()
+    task.assert_completed(session, "claude")
+    assert_subagent_routed(session, "claude", task)
+    audit_path = app_dir / "claude-smart-routing-audit.jsonl"
+    audit = read_jsonl(audit_path)
+    assert any(
+        row.get("agent_type", "").startswith("ucode-smart-routing:ucode-route-") for row in audit
+    ), audit
+    assert not list(app_dir.glob("claude-v2-*-plugin"))
+    assert not list(app_dir.glob("claude-v2-*.json"))
+    assert not list(app_dir.glob("claude-v2-*.sock"))
+    assert not (session.home / ".claude/skills/ucode-smart-routing").exists()
+    installed = session.home / ".claude/plugins/installed_plugins.json"
+    if installed.exists():
+        plugins = json.loads(installed.read_text()).get("plugins", {})
+        assert not any(name.startswith("ucode-smart-routing@") for name in plugins), plugins
+
+    decisions_path = app_dir / "claude-smart-routing-decisions.jsonl"
+    decisions_before = decisions_path.read_text()
+    canary_path = app_dir / "claude-smart-routing-canary.json"
+    canary_before = canary_path.read_text()
+    session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "0"
+    plain_task = FileTask(session)
+    result = session.run(
+        "claude",
+        "--",
+        "-p",
+        plain_task.prompt,
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Read",
+        timeout=180,
+    )
+    plain_task.assert_headless_answer("claude", result)
+    assert decisions_path.read_text() == decisions_before
+    assert read_jsonl(audit_path) == audit
+    assert canary_path.read_text() == canary_before
+    assert not list(app_dir.glob("claude-v2-*-plugin"))
+    assert not list(app_dir.glob("claude-v2-*.json"))
+    for path in (
+        session.home / ".claude/ucode-settings.json",
+        session.home / ".claude/settings.json",
+    ):
+        if path.exists():
+            assert "claude-router-hook" not in path.read_text()

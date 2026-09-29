@@ -163,11 +163,21 @@ passes no generated plugin to Claude. Either `ENABLE_SMART_ROUTING_V2=1` or
 `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1` enables routing (workspace-managed routing
 configuration can also enable it).
 
-The generated plugin is removed on exit, including setup and process-launch
-failures. Every subsequent Claude launch also removes abandoned plugin directories
-left by terminated UG processes. A lock inherited by Claude protects plugins
-still used by active sessions, even if their UG parent has exited. Cleanup leaves
-user plugins and unrelated directories alone.
+UG passes the plugin using `--plugin-dir`, alongside the per-launch `--settings`.
+It never installs it in Claude's plugin registry or user skills/agents directories.
+
+One cleanup entry point removes UG's first-prompt, subagent-routing, SessionStart,
+and SubagentStart logging hooks and stale routing environment values. It runs for
+non-routed launches (including explicit-model and relayed bypasses), explicit
+disable, and revert. Caller settings are sanitized in memory, not overwritten.
+User hooks/plugins and historical routing logs are preserved during launch cleanup.
+
+Normal exit and setup/launch failures clean the generated settings, socket, and
+plugin together. Cleanup defers deletion while a child holds the inherited lease;
+later Claude launches collect abandoned bundles once both owner and lease are
+gone. This protects children that inherit the descriptor, not a daemon worker
+that receives only paths over IPC. Native background-dispatch propagation and
+descriptor retention still require validation against the affected Claude version.
 
 ## Claude Debug Logs
 

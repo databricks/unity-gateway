@@ -69,10 +69,6 @@ from ucode.mcp_oauth import (
     oauth_client_available,
 )
 from ucode.smart_routing import v2 as smart_routing_v2
-from ucode.smart_routing.claude_hooks import (
-    remove_smart_routing_hooks,
-    sync_smart_routing_hooks,
-)
 from ucode.smart_routing.routing import configured_router_name
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
@@ -844,17 +840,25 @@ def _unregister_web_search_mcp() -> None:
             pass
 
 
+def cleanup_smart_routing(*, deactivate: bool = False) -> bool:
+    """Clean UG's persisted hooks and abandoned launch artifacts together."""
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    user_settings = (
+        Path(config_dir).expanduser() / "settings.json" if config_dir else CLAUDE_USER_SETTINGS_PATH
+    )
+    return smart_routing_v2.cleanup_claude_smart_routing(
+        settings_paths=(CLAUDE_SETTINGS_PATH, user_settings),
+        environment=os.environ if deactivate else None,
+        prune_launches=True,
+    )
+
+
 def disable_smart_routing(state: dict) -> bool:
-    """Disable routing and remove only ucode's Claude Code routing hooks."""
+    """Disable routing and clean UG's hooks and abandoned launch artifacts."""
     state.pop(SMART_ROUTING_STATE_KEY, None)
     if state.get("workspace"):
         save_state(state)
-    changed = False
-    if CLAUDE_SETTINGS_PATH.exists():
-        doc = read_json_safe(CLAUDE_SETTINGS_PATH)
-        if remove_smart_routing_hooks(doc):
-            write_json_file(CLAUDE_SETTINGS_PATH, doc)
-            changed = True
+    changed = cleanup_smart_routing()
     from ucode.smart_routing.claude_routing import clear_routing_artifacts
 
     clear_routing_artifacts()
@@ -1029,7 +1033,7 @@ def write_tool_config(
                             merged.pop(key, None)
         if "otelHeadersHelper" not in overlay_for_merge:
             merged.pop("otelHeadersHelper", None)
-        sync_smart_routing_hooks(merged, state, enabled=False)
+        smart_routing_v2.cleanup_claude_smart_routing(settings=merged)
         return merged
 
     managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
@@ -1381,7 +1385,9 @@ def _build_claude_argv(
     """
     source_args = ["--setting-sources", _RELAYED_SETTING_SOURCES] if relayed else []
     caller_values, remaining = _extract_caller_settings(tool_args)
-    if not caller_values and settings_override is None:
+    ug_settings = read_json_safe(CLAUDE_SETTINGS_PATH)
+    cleaned = smart_routing_v2.cleanup_claude_smart_routing(settings=ug_settings)
+    if not caller_values and settings_override is None and not cleaned:
         # No caller --settings: hand Claude ucode's settings file directly (the
         # common path; behavior unchanged).
         return [binary, *source_args, "--settings", str(CLAUDE_SETTINGS_PATH), *tool_args]
@@ -1390,9 +1396,12 @@ def _build_claude_argv(
         caller_settings = _merge_claude_settings(caller_settings, _load_caller_settings(value))
     # ucode wins over the caller for conflicting keys (protects gateway auth);
     # hooks from both sides survive.
-    merged = _merge_claude_settings(caller_settings, read_json_safe(CLAUDE_SETTINGS_PATH))
+    merged = _merge_claude_settings(caller_settings, ug_settings)
     if settings_override is not None:
         merged = _merge_claude_settings(merged, settings_override)
+    # Non-routed launches must not revive UG hooks copied into caller settings.
+    # The caller's original document and all unrelated hooks remain untouched.
+    smart_routing_v2.cleanup_claude_smart_routing(settings=merged)
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
         merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
@@ -1525,7 +1534,8 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
-    smart_routing_v2.cleanup_stale_claude_routing_plugins()
+    routing_launch = options.launch_smart_routing and not state.get("claude_relayed")
+    cleanup_smart_routing(deactivate=not routing_launch)
     tool_args = _with_debug_log(tool_args)
     binary = SPEC["binary"]
     workspace = state.get("workspace")

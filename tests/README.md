@@ -29,19 +29,28 @@ precedence, stderr-only notices, actionable filesystem errors, and forwarding
 through normal, smart-routed, and relayed launches. These are component checks;
 they do not claim remote log retrieval or a live Claude session.
 
-`TestRoutingPluginCleanup` in `test_claude_smart_routing_v2.py` checks disabled
-launch cleanup, both enabled routing modes, setup/launch failures, and preservation
-of active and unrelated plugins. Real subprocess/PTY checks verify that the plugin
-lease survives exec and protects a Claude child after its parent closes the lease.
-These component checks do not invoke model inference.
+`TestRoutingPluginCleanup` in `test_claude_smart_routing_v2.py` checks centralized
+removal of all four routing/logging hook types, copied caller settings, disabled,
+explicit-model, headless and relayed launches, both enabled routing modes, and
+setup/launch failures, custom config directories, and dry-run artifact preservation.
+`TestRevert` in `test_cli.py` also checks cleanup after restoring an old hook-bearing
+backup. User hooks/plugins and historical logs are preserved during launch cleanup.
+Real subprocess/PTY checks verify inherited-lease protection during both explicit
+teardown and stale-bundle collection. These component checks do not establish
+native daemon descriptor inheritance or invoke model inference.
+
+`test_diagnose_claude_routing.py` covers the standalone routing snapshot script:
+launch/hook comparisons, session-specific evidence, bounded and malformed logs,
+process disappearance, macOS argument parsing fixtures, and exclusion of secrets
+and prompt text. These are local collector checks, not live Isaac coverage; see
+`scripts/diagnose_claude_routing.md` for user instructions.
 
 ## CUJ coverage matrix
 
-`test_repro_stale_claude_subagent.py` checks the diagnostic script's evidence
-classification using synthetic event fixtures. These are parser tests, not a
-reproduction of Claude's missing route-agent incident. The script's
-`--interactive` mode exercises Claude's plugin refresh in a real TUI; its
-headless mode does not. Neither mode exercises Isaac's launcher.
+The one-off plugin-refresh repro and its synthetic classifier tests have been
+retired. Production registration/cleanup coverage remains in
+`test_claude_smart_routing_v2.py` and the plugin lifecycle journey below.
+Plugin-refresh survival and native daemon dispatch remain coverage gaps.
 
 These are **implemented assertions**, not a claim that every version passes.
 Consult the run's JUnit report and artifacts for results. Each function states
@@ -68,6 +77,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_codex_app_server_client_initializes` | Connect a stdio client, direct/`--` separator, routing off/on | Actual JSON-RPC initialize response; no non-JSON stdout; no routing |
 | `test_smart_routing_claude_route_subagent_hook`, `test_smart_routing_codex_route_subagent_hook` | Pipe a real PreToolUse spawn payload to the installed route-subagent hook with subagent-only routing enabled | Allow decision against the live router; requested model replaced by a routed agent definition (Claude) or bundled catalog slug (Codex) from the offered models; one audited decision matching the session and task |
 | `test_smart_routing_claude_subagent_only_launch_shows_no_first_prompt_banner`, `test_smart_routing_codex_subagent_only_launch_shows_no_first_prompt_banner` | Configure, then launch the real TUI with both the full and subagent-only routing flags set and submit one file prompt | Subagent-only takes precedence: the prompt completes with no smart-routing banner and no first-prompt routing wrapper (PTY/interposer); Claude's SessionStart canary proves the routing hooks armed; normal exit |
+| `test_smart_routing_claude_plugin_cleanup_after_disable` | Configure, delegate a file task through a routed plugin, then launch with routing off | Child and parent return the unknown file value; plugin-qualified audit entry; transient files removed without persistent plugin registration; disabled launch completes a new task without new routing events |
 | `test_ug_configure_claude_repeat_and_revert`, `test_ug_configure_codex_repeat_and_revert` | Configure twice over user settings; complete a task; revert twice | Settings preserved; no bearer in ug state; generated config removed; status unconfigured |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure against a workspace that publishes a managed CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch |
@@ -86,7 +96,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_and_ucode_auth_helpers_emit_only_the_supplied_bearer` | Run both auth helper commands with the public bearer override, with and without forced refresh | Exact token-only stdout, no warnings or ANSI escapes; no workspace authentication or saved state |
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
-With both agents selected there are **46 live cases** (6 interactive TUI cases),
+With both agents selected there are **47 live cases** (6 marked TUI cases),
 **4 managed-workspace cases** (marker `managed`, run against a separate workspace that
 publishes a CodingAgentConfig), **36 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected), and **5 installation checks**. The 24 numbered scenarios
@@ -115,7 +125,7 @@ dependency graph to reproduce a user's combination. Every relevant same-reposito
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
 journeys for both agents, in two parallel jobs. After smoke finishes, the full
-suite runs all 41 cases across two parallel agent jobs: one Claude VM and one
+suite runs all 47 live cases across two parallel agent jobs: one Claude VM and one
 Codex VM, each running its configure, headless, and commands/lifecycle cases
 serially. Each agent is installed once for the full suite, and no two full jobs
 for the same agent overlap within a run.
@@ -150,7 +160,7 @@ pending. The descriptive jobs provide the actual coverage and diagnostics.
 | Provider switching, relayed/subscription MPS | Not covered by the four provider journeys |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
-| Claude/Codex interactive smart routing | First-prompt routing covered by the `managed_fixture` smart-routing banner journeys; subagent routing covered at the hook protocol level by the route-subagent hook journeys, which drive the real installed hook commands with a harness-shaped payload against the live router; the subagent-only launch journeys assert the first-prompt banner and routing wrappers stay silent while the routing hooks arm. The agent's interactive spawn decision, interactive explicit-model bypass, and dedicated routing CI shards remain deferred. Unit/component routing tests do not establish live routing behavior. |
+| Claude/Codex interactive smart routing | First-prompt routing covered by the `managed_fixture` smart-routing banner journeys; subagent routing covered at the hook protocol level by the route-subagent hook journeys. The Claude plugin cleanup journey also asserts an actual interactive routed child completing a task. Native daemon/background dispatch, Codex interactive spawning, interactive explicit-model bypass, and dedicated routing CI shards remain deferred. Unit/component routing tests do not establish live routing behavior. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
 | Native macOS/Windows managed settings, resize/signals | Separate platform coverage needed |

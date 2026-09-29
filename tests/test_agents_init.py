@@ -881,10 +881,14 @@ class TestConfigureSelectedTools:
 
 
 class TestConfiguredPaths:
-    def test_claude_reports_its_settings_file_home_abbreviated(self):
+    def test_claude_reports_its_settings_file_home_abbreviated(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
         from ucode.agents import configured_paths
         from ucode.agents.claude import CLAUDE_SETTINGS_PATH
 
+        # The global safety fixture places Claude settings under this isolated home.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         paths = configured_paths("claude", {})
         assert paths == [
             str(CLAUDE_SETTINGS_PATH).replace(str(CLAUDE_SETTINGS_PATH.home()), "~", 1)

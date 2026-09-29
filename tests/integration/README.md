@@ -139,15 +139,23 @@ banner journeys below for both agents. Subagent routing is covered at the hook p
 level by the route-subagent hook journeys, which drive the real installed hook commands
 with a harness-shaped payload against the live router; the subagent-only launch journeys
 assert the first-prompt banner and routing wrappers stay silent while the routing hooks
-arm. The agent's interactive spawn decision, interactive explicit-model bypass, and
-dedicated smart-routing CI shards remain deferred; unit/component routing tests do not
-establish that live behavior.
+arm. The Claude plugin cleanup journey below additionally covers an actual
+interactive routed spawn. Codex interactive spawning, interactive explicit-model
+bypass, and dedicated smart-routing CI shards remain deferred; unit/component
+routing tests do not establish that live behavior.
 
 The Claude hook contract now expects the plugin-qualified
-`ucode-smart-routing:ucode-route-*` agent name. Plugin-refresh survival is tested
-separately by the manual interactive diagnostic
-`scripts/repro_stale_claude_subagent.py --interactive`; it is not claimed as
-automated integration coverage here.
+`ucode-smart-routing:ucode-route-*` agent name. The one-off plugin-refresh repro
+and its parser-only tests have been retired; plugin-refresh survival is not
+covered by this suite. Registration and cleanup are asserted by the production
+launcher unit tests and the lifecycle journey below.
+
+`test_smart_routing_claude_plugin_cleanup_after_disable` covers an actual
+interactive routed child and its parent completing a file task, followed by a
+successful routing-disabled launch. It asserts transient plugin/settings cleanup,
+no persistent routing-plugin registration, and no new routing/logging events in
+the disabled session. This is not coverage of daemon/background dispatch or of
+its propagation of the plugin path and lease descriptor.
 
 The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
 completes a file task on two models: a bare Anthropic id the subscription serves
@@ -170,7 +178,7 @@ service allows a different model. Those choices are recorded in `versions.json`.
 No service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
 
-There are **46 live cases** (including 6 TUI journeys) and **5 installation
+There are **47 live cases** (including 6 marked TUI journeys) and **5 installation
 checks** with both agents. A separate **4 managed-workspace cases** (one per agent, an idempotent
 re-configure, and a cache-TTL journey; marker `managed`) run against a workspace that publishes a
 CodingAgentConfig; see "Managed-workspace journeys" below. A further **36 `managed_fixture`
@@ -258,12 +266,12 @@ record a discovered `system.ai` model as a test argument.
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 46 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 47 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 19 |
+| Claude | `live and claude` | 20 |
 | Codex | `live and codex` | 27 |
 
 Each lane installs only its agent CLI, once, and runs all its configure, headless,
@@ -516,7 +524,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 46 live cases. For the five installation checks, run the same
+This runs all 47 live cases. For the five installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.
