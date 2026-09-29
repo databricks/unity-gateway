@@ -1,5 +1,8 @@
 """Claude model-discovery CUJs for repository scenarios 7, 9, 11, and 13."""
 
+import json
+import re
+
 import pytest
 from utils.model_discovery import claude_model_in_picker, claude_system_model_ids
 from utils.terminal import AgentTerminal
@@ -14,6 +17,15 @@ def _assert_scoped_models_in_picker(session, screen, expected_ids):
     assert all(isinstance(name, str) and name for name in display_names), models
     for model, display_name in zip(models, display_names, strict=True):
         assert claude_model_in_picker(screen, model["id"], display_name), screen
+    default_row = re.search(
+        r"(?ms)^\s*(?:[❯›>]\s*)?1\.\s+Default \(recommended\)(.*?)"
+        r"(?=^\s*(?:[❯›>]\s*)?2\.)",
+        screen,
+    )
+    assert default_row, screen
+    description = " ".join(default_row.group(1).split())
+    assert f"currently {display_names[0]}" in description, screen
+    assert "Set by ANTHROPIC_DEFAULT_MODEL" in description, screen
 
 
 def _assert_system_models_in_picker(session, screen):
@@ -33,6 +45,14 @@ def _assert_system_models_in_picker(session, screen):
     assert any(
         claude_model_in_picker(screen, model["id"], model.get("display_name")) for model in models
     ), screen
+
+
+def _assert_replacement_picker(session, expected_ids):
+    settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
+    assert not {"availableModels", "enforceAvailableModels"} & settings.keys(), settings
+    picker = settings["modelPicker"]
+    assert picker["replaceBuiltInOptions"] is True, picker
+    assert [option["model"] for option in picker["options"]] == expected_ids, picker
 
 
 @pytest.mark.live
@@ -89,8 +109,8 @@ def test_case_11_configured_claude_provider_discovers_models_by_default(
 ):
     """Scenario: configure Claude, then launch with --provider and no opt-in flag.
 
-    Expected: the cache contains exactly the provider model and the picker shows
-    its row (the native Haiku 4.5 row for the default provider fixture).
+    Expected: the cache contains exactly the provider model and the replacement
+    picker contains that catalog row plus Default resolving to the same model.
     """
     session = live_session
     session.run(
@@ -111,6 +131,7 @@ def test_case_11_configured_claude_provider_discovers_models_by_default(
         tui.exit_normally()
 
     _assert_scoped_models_in_picker(session, screen, [claude_provider_model])
+    _assert_replacement_picker(session, [claude_provider_model])
 
 
 @pytest.mark.live
@@ -120,8 +141,8 @@ def test_case_11_fresh_claude_provider_discovers_models_by_default(
 ):
     """Scenario: launch fresh Claude with --provider and no opt-in flag.
 
-    Expected: the cache contains exactly the provider model and the picker shows
-    its row (the native Haiku 4.5 row for the default provider fixture).
+    Expected: the cache contains exactly the provider model and the replacement
+    picker contains that catalog row plus Default resolving to the same model.
     """
     session = live_session
     command = [
@@ -138,6 +159,7 @@ def test_case_11_fresh_claude_provider_discovers_models_by_default(
         tui.exit_normally()
 
     _assert_scoped_models_in_picker(session, screen, [claude_provider_model])
+    _assert_replacement_picker(session, [claude_provider_model])
 
 
 @pytest.mark.live
@@ -147,7 +169,8 @@ def test_case_13_configured_claude_model_location_overrides_saved_setup(
 ):
     """Scenario: configure Claude, then launch with --model-location.
 
-    Expected: the explicit parent overrides saved setup with its exact picker catalog.
+    Expected: the parent's catalog replaces built-in picker rows, and Default resolves
+    to the model in the scoped fixture catalog in /model.
     """
     session = live_session
     session.run(
@@ -168,6 +191,7 @@ def test_case_13_configured_claude_model_location_overrides_saved_setup(
         tui.exit_normally()
 
     _assert_scoped_models_in_picker(session, screen, [claude_parent_model])
+    _assert_replacement_picker(session, [claude_parent_model])
 
 
 @pytest.mark.live
@@ -177,7 +201,8 @@ def test_case_13_fresh_claude_model_location_discovers_parent_models(
 ):
     """Scenario: launch fresh Claude with --model-location.
 
-    Expected: the explicit parent supplies its exact picker catalog.
+    Expected: the parent's catalog replaces built-in picker rows, and Default resolves
+    to the model in the scoped fixture catalog in /model.
     """
     session = live_session
     command = [
@@ -194,3 +219,4 @@ def test_case_13_fresh_claude_model_location_discovers_parent_models(
         tui.exit_normally()
 
     _assert_scoped_models_in_picker(session, screen, [claude_parent_model])
+    _assert_replacement_picker(session, [claude_parent_model])

@@ -143,9 +143,9 @@ def remove_mcp_server_config(name: str) -> bool:
     return True
 
 
-def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
-    """Apply ``add``/``remove`` to Copilot's `mcpServers` in a single read-modify-write."""
-    apply_json_mcp_diff(
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
+    """Apply ``add``/``remove`` to Copilot's `mcpServers` in a single read-modify-write. Returns the names actually removed."""
+    return apply_json_mcp_diff(
         COPILOT_MCP_CONFIG_PATH, "mcpServers", add, remove, backup_path=COPILOT_MCP_BACKUP_PATH
     )
 

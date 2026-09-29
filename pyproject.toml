@@ -55,8 +55,10 @@ fallback-version = "0.0.0"
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
-    "ruff>=0.15.12",
-    "ty",
+    # Pinned so local and CI lint with the identical formatter/type-checker;
+    # ruff/ty output shifts between releases, so bump these deliberately.
+    "ruff==0.16.5",
+    "ty==0.0.75",
 ]
 
 [tool.pytest.ini_options]

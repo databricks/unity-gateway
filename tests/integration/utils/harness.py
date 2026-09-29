@@ -7,15 +7,24 @@ import json
 import os
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import threading
 import time
 from pathlib import Path
 
-from .constants import CODEX_TEST_MODEL
+from .constants import CLAUDE_TEST_MODEL, CODEX_TEST_MODEL
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def process_group_options() -> dict:
+    if os.name == "posix":
+        return {"start_new_session": True}
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {}
 
 
 def clean_environment(home: Path) -> dict[str, str]:
@@ -70,8 +79,19 @@ def stop_process(proc: subprocess.Popen) -> None:
         # The leader may have exited while a grandchild kept running.
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
-    elif proc.poll() is None:
-        proc.kill()
+    elif os.name == "nt" and proc.poll() is None:
+        try:
+            subprocess.run(
+                [shutil.which("taskkill") or "taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        if proc.poll() is None:
+            proc.kill()
     proc.wait(timeout=5)
 
 
@@ -113,7 +133,7 @@ class UserSession:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            start_new_session=os.name == "posix",
+            **process_group_options(),
         )
         timed_out = False
         try:
@@ -179,7 +199,10 @@ class UserSession:
             usable = [
                 value for value in values if value.startswith(prefix) and "astra" not in value
             ]
-            model = CODEX_TEST_MODEL if CODEX_TEST_MODEL in usable else next(iter(usable), "")
+            # Prefer the pinned test model: discovery can list a new model before the gateway serves
+            # it (e.g. a fresh Claude release returning 404), which would fail unrelated PRs.
+            preferred = CLAUDE_TEST_MODEL if agent == "claude" else CODEX_TEST_MODEL
+            model = preferred if preferred in usable else next(iter(usable), "")
             source = "ug configure discovery"
         assert model, (
             f"ug configure found no system.ai model for {agent}; use --{agent}-model to reproduce a specific model."
@@ -236,7 +259,7 @@ class UserSession:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            start_new_session=os.name == "posix",
+            **process_group_options(),
         )
 
         def read_output():

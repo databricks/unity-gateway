@@ -128,10 +128,10 @@ def build_mcp_server_entry(argv: list[str]) -> dict:
     return {"command": argv[0], "args": list(argv[1:])}
 
 
-def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     """Apply ``add``/``remove`` to Gemini's `mcpServers` (in ug's Gemini home settings) in a single
-    read-modify-write."""
-    apply_json_mcp_diff(GEMINI_SETTINGS_PATH, "mcpServers", add, remove)
+    read-modify-write. Returns the names actually removed."""
+    return apply_json_mcp_diff(GEMINI_SETTINGS_PATH, "mcpServers", add, remove)
 
 
 def render_env_overlay(

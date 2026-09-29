@@ -6,10 +6,12 @@ import copy
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
 import threading
+import traceback
 from collections.abc import Callable
 from pathlib import Path
 
@@ -37,6 +39,7 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     AnthropicModelCatalog,
+    _debug,
     build_auth_shell_command,
     build_otel_headers_shell_command,
     build_otel_traces_endpoint,
@@ -70,6 +73,7 @@ from ucode.mcp_oauth import (
 )
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
+    FIRST_PROMPT_SOCKET_ENV,
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
@@ -255,7 +259,7 @@ def _parse_managed_settings(text: str) -> dict:
 
 
 def _dump_managed_settings(settings: dict) -> str:
-    return json.dumps(settings, indent=2) + "\n"
+    return json.dumps(settings, indent=2, sort_keys=True) + "\n"
 
 
 def managed_settings_are_current(state: dict) -> bool:
@@ -576,6 +580,54 @@ def _maybe_add_1m_suffix(model: str) -> str:
     return f"{model}[1m]" if should_suffix else model
 
 
+def default_model_picker_catalog(
+    defaults: dict[str, str],
+    *,
+    provider: str | None = None,
+    launch_model: str | None = None,
+    discovered_catalog: AnthropicModelCatalog | None = None,
+) -> AnthropicModelCatalog:
+    """Build a replacement picker catalog from managed defaults and discovered models."""
+
+    model_ids: list[str] = []
+    display_names: dict[str, str] = {}
+    descriptions: dict[str, str] = {}
+    for family, raw_model in defaults.items():
+        model = raw_model
+        label = _picker_label(model.removesuffix("[1m]"))
+        if provider is not None:
+            # Family shortcuts stay distinct from catalog rows for the same target.
+            model = family
+            label = f"Default {family.title()}"
+            descriptions[model] = raw_model
+        elif family in ("opus", "sonnet"):
+            # Match the current model's exact id so Claude does not append a duplicate row.
+            if launch_model and model.removesuffix("[1m]") == launch_model.removesuffix("[1m]"):
+                model = launch_model
+            else:
+                model = _maybe_add_1m_suffix(model)
+        if model in model_ids:
+            continue
+        model_ids.append(model)
+        display_names[model] = label
+
+    if discovered_catalog is not None:
+        for model in discovered_catalog.model_ids:
+            if model not in model_ids:
+                model_ids.append(model)
+            if label := discovered_catalog.model_id_to_display_name.get(model):
+                display_names[model] = label
+            if description := discovered_catalog.model_id_to_description.get(model):
+                descriptions[model] = description
+
+    return AnthropicModelCatalog(
+        model_ids=model_ids,
+        model_id_to_display_name=display_names,
+        model_id_to_description=descriptions,
+        error_msg=discovered_catalog.error_msg if discovered_catalog is not None else None,
+    )
+
+
 def _enforce_model_default_hierarchy(
     family: str,
     *,
@@ -744,20 +796,23 @@ def _read_claude_config_for_rewrite(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     """Apply ``add``/``remove`` to Claude's user-scope ``mcpServers`` (``~/.claude.json``, or under
     ``$CLAUDE_CONFIG_DIR``) in a single read-modify-write, instead of one ``claude mcp`` subprocess
     per server (each ~0.3-0.8s; a large managed set is otherwise dozens of them run serially). The
-    developer's own servers and every other key in the file are preserved.
+    developer's own servers and every other key in the file are preserved. Returns the subset of
+    ``remove`` names that were actually present (so callers can report only real removals).
 
     If the file exists but can't be parsed as a JSON object, we must not clobber it, so we defer to
     the per-server ``claude`` CLI (which edits the file in place) for exactly the changed entries."""
     path = claude_mcp_config_path()
     config = _read_claude_config_for_rewrite(path)
     if config is None:
+        removed: set[str] = set()
         for name in remove:
-            for scope in MCP_CLEANUP_SCOPES:
-                remove_claude_mcp_server(name, scope)
+            # Clean every scope (not short-circuited), recording the name if any scope had it.
+            if [scope for scope in MCP_CLEANUP_SCOPES if remove_claude_mcp_server(name, scope)]:
+                removed.add(name)
         for name, entry in add.items():
             if entry.get("type") == "http":
                 oauth = entry.get("oauth") or {}
@@ -769,16 +824,18 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> None:
                 )
             else:
                 add_claude_mcp_server(name, entry, MCP_USER_SCOPE)
-        return
+        return removed
 
     servers = config.get("mcpServers")
     if not isinstance(servers, dict):
         servers = {}
+    removed = {name for name in remove if name in servers}
     for name in remove:
         servers.pop(name, None)
     servers.update(add)
     config["mcpServers"] = servers
     write_json_file(path, config)
+    return removed
 
 
 def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
@@ -852,6 +909,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             tool="claude",
             display="Claude Code",
             owned_paths=[[MANAGED_MCP_SETTINGS_KEY]],
+            parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
         return False
@@ -1300,6 +1358,7 @@ def _reconcile_managed_settings(
             tool="claude",
             display="Claude Code",
             owned_paths=owned_paths,
+            parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
         conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
@@ -1450,6 +1509,57 @@ def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[s
     if not launch_model or has_explicit_model_arg(tool_args):
         return []
     return ["--model", launch_model]
+
+
+def _resolve_picker_model_id(model: str, settings_env: dict) -> str:
+    """Resolve configured aliases and context suffixes for comparisons only."""
+    model = re.sub(r"\[(?:1m|200k)\]$", "", model)
+    family_env_key = CLAUDE_DEFAULT_MODEL_ENV_KEYS.get(model)
+    if family_env_key:
+        family_model = settings_env.get(family_env_key)
+        if isinstance(family_model, str) and family_model:
+            model = family_model
+    return re.sub(r"\[(?:1m|200k)\]$", "", model)
+
+
+def _resolve_launch_binary(binary: str) -> str:
+    """Resolve Claude's native executable without sending arguments through a batch shim."""
+    if os.name != "nt":
+        return binary
+
+    resolved = shutil.which(binary)
+    if resolved is None:
+        raise RuntimeError(
+            "Claude Code was not found on PATH. Install Claude Code and ensure its executable "
+            "is available, then retry."
+        )
+    if os.path.splitext(resolved)[1].casefold() not in {".bat", ".cmd"}:
+        return resolved
+
+    shim_dir = os.path.dirname(resolved)
+    node_modules_dirs: list[str] = []
+    if (
+        os.path.basename(shim_dir).casefold() == ".bin"
+        and os.path.basename(os.path.dirname(shim_dir)).casefold() == "node_modules"
+    ):
+        node_modules_dirs.append(os.path.dirname(shim_dir))
+    node_modules_dirs.append(os.path.join(shim_dir, "node_modules"))
+
+    for node_modules in node_modules_dirs:
+        native_binary = os.path.join(
+            node_modules,
+            "@anthropic-ai",
+            "claude-code",
+            "bin",
+            "claude.exe",
+        )
+        if os.path.isfile(native_binary):
+            return native_binary
+
+    raise RuntimeError(
+        f"Found the Claude Code Windows command shim at {resolved}, but its native "
+        "bin/claude.exe was missing. Upgrade or reinstall @anthropic-ai/claude-code and retry."
+    )
 
 
 def _build_claude_argv(
@@ -1608,25 +1718,35 @@ def launch(
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return
+    launch_default_model = state.get("_claude_launch_default_model")
+    if isinstance(launch_default_model, str) and launch_default_model:
+        os.environ["ANTHROPIC_DEFAULT_MODEL"] = launch_default_model
     # Smart routing needs Unix PTY support, which Windows does not provide.
     if options.launch_smart_routing and os.name == "nt":
         raise RuntimeError(
             "Smart routing in Claude Code is currently not supported on Windows. "
             "Please use Codex or launch without --enable-smart-routing."
         )
+    routing_setup_failed = False
     if options.launch_smart_routing:
-        smart_routing_v2.launch_claude(
-            state,
-            tool_args,
-            binary=binary,
-            user_settings_path=CLAUDE_USER_SETTINGS_PATH,
-            # With no user pin, let Claude resolve its starting model from its own settings.
-            launch_model=options.user_pinned_model,
-            compose_settings=_compose_v2_settings,
-            launch_model_args=_launch_model_args,
-            model_name=_maybe_add_1m_suffix,
-        )
-        return
+        try:
+            smart_routing_v2.launch_claude(
+                state,
+                tool_args,
+                binary=binary,
+                user_settings_path=CLAUDE_USER_SETTINGS_PATH,
+                # With no user pin, let Claude resolve its starting model from its own settings.
+                launch_model=options.user_pinned_model,
+                compose_settings=_compose_v2_settings,
+                launch_model_args=_launch_model_args,
+                model_name=_maybe_add_1m_suffix,
+            )
+        except smart_routing_v2.ClaudeRoutingSetupError:
+            _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
+            routing_setup_failed = True
+        else:
+            return
+    binary = _resolve_launch_binary(binary)
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
@@ -1642,11 +1762,29 @@ def launch(
         picker_models = state.get("_claude_launch_picker_models")
         if isinstance(picker_models, list) and picker_models:
             saved_model = read_json_safe(CLAUDE_USER_SETTINGS_PATH).get("model")
-            if saved_model not in picker_models:
+            settings_env = read_json_safe(CLAUDE_SETTINGS_PATH).get("env")
+            settings_env = settings_env if isinstance(settings_env, dict) else {}
+            available_models = {
+                _resolve_picker_model_id(model, settings_env) for model in picker_models
+            }
+            if (
+                not isinstance(saved_model, str)
+                or _resolve_picker_model_id(saved_model, settings_env) not in available_models
+            ):
                 # Launch on a valid discovered model without turning it into a managed default or
                 # overwriting the user's saved selection. This also prevents Claude from appending
                 # that stale built-in selection to an otherwise replaced picker.
                 settings_override = {"model": picker_models[0]}
+    if routing_setup_failed:
+        # Override inherited and saved routing flags for this launch only. Older
+        # saved hooks must not route to agents whose plugin could not be written.
+        fallback_env = {
+            smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR: "0",
+            smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+            FIRST_PROMPT_SOCKET_ENV: "",
+        }
+        settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
+        os.environ.update(fallback_env)
     exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 
