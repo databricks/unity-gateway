@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import signal
 import socket
 import subprocess
@@ -14,6 +15,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
+from ucode.bundled_skills import install_bundled_skills
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
@@ -26,7 +28,12 @@ from ucode.config_io import (
     write_json_file,
     write_text_file,
 )
-from ucode.constants import LOOPBACK_HOST
+from ucode.constants import (
+    ENABLE_SMART_ROUTING_ENV_VAR,
+    ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+    LOOPBACK_HOST,
+    SMART_ROUTING_ENV_KEYS,
+)
 from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
 from ucode.databricks import (
     AnthropicModelCatalog,
@@ -34,6 +41,7 @@ from ucode.databricks import (
     get_databricks_token,
     list_anthropic_model_catalog,
     list_anthropic_models,
+    ug_binary,
 )
 from ucode.launcher import exec_or_spawn
 from ucode.smart_routing import claude_routing, codex_interposer, routing
@@ -43,13 +51,10 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
+from ucode.smart_routing.session_env import start_session
 from ucode.ui import print_warning
 
-ENABLE_SMART_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_V2"
-ENABLE_SUBAGENT_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"
 LEGACY_STATE_KEY = "smart_routing_enabled"
-
-_SMART_ROUTING_ENV_VARS = (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
 
 CODEX_INTERPOSER_LOG = APP_DIR / "codex-v2-interposer.log"
 
@@ -64,6 +69,7 @@ HEALTH_POLL_INTERVAL_SECONDS = 0.25
 CLAUDE_ROUTE_SELECTION_TIMEOUT_S = 20.0
 CLAUDE_ROUTED_AGENT_PREFIX = "ucode-route-"
 CLAUDE_ROUTING_PLUGIN_NAME = "ug-smart-router"
+SMART_ROUTER_SKILL_NAME = "smart-router"
 CLAUDE_ROUTED_AGENT_PROMPT = (
     "Complete the delegated task exactly as requested. Follow the parent agent's instructions and "
     "return a concise report of your findings or changes."
@@ -72,6 +78,14 @@ CLAUDE_ROUTED_AGENT_PROMPT = (
 
 class ClaudeRoutingSetupError(RuntimeError):
     """Routing files could not be written; the caller can launch Claude normally."""
+
+
+def _render_bundled_skill(name: str, launcher: str, content: bytes) -> bytes:
+    if name != SMART_ROUTER_SKILL_NAME:
+        return content
+    return content.replace(b"__UG_EXECUTABLE__", shlex.quote(ug_binary()).encode()).replace(
+        b"__UG_LAUNCHER__", launcher.encode()
+    )
 
 
 def _launch_token(state: dict, workspace: str) -> str:
@@ -130,7 +144,7 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
 
 def smart_routing_enabled(env: MutableMapping[str, str] | None = None) -> bool:
     source = os.environ if env is None else env
-    return any(source.get(var) == "1" for var in _SMART_ROUTING_ENV_VARS)
+    return any(source.get(var) == "1" for var in SMART_ROUTING_ENV_KEYS)
 
 
 def first_prompt_routing_enabled(env: MutableMapping[str, str] | None = None) -> bool:
@@ -147,7 +161,7 @@ def enable_smart_routing(
 ) -> dict[str, str | None]:
     """Set the full smart-routing env var and return the prior value of every routing var."""
     target = os.environ if env is None else env
-    previous = {var: target.get(var) for var in _SMART_ROUTING_ENV_VARS}
+    previous = {var: target.get(var) for var in SMART_ROUTING_ENV_KEYS}
     target[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
     return previous
 
@@ -169,7 +183,7 @@ def disable_smart_routing(
 ) -> dict[str, str | None]:
     """Temporarily remove the smart-routing env vars and return their prior values."""
     target = os.environ if env is None else env
-    return {var: target.pop(var, None) for var in _SMART_ROUTING_ENV_VARS}
+    return {var: target.pop(var, None) for var in SMART_ROUTING_ENV_KEYS}
 
 
 def _loopback_websocket_url(port: int) -> str:
@@ -528,6 +542,8 @@ def launch_claude(
                 str(plugin_dir),
                 *remaining,
             ]
+            install_bundled_skills(renderer=_render_bundled_skill)
+            start_session()
             if route_first_prompt:
                 returncode = claude_pty.run_claude_pty(
                     argv,
@@ -616,6 +632,8 @@ def launch_codex(
         "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
     }
     config_args = codex_config_args(overlay)
+    install_bundled_skills(renderer=_render_bundled_skill)
+    start_session()
     if not first_prompt_routing_enabled():
         # Subagent-only routing needs neither the app-server nor the interposer:
         # the hooks ride in the CLI config, so launch the TUI directly.
