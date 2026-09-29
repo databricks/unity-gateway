@@ -103,19 +103,16 @@ def default_model(state: dict) -> str | None:
 
 def render_env_overlay(
     workspace: str,
-    model: str,
+    selected_model: str,
     token: str,
     *,
-    wire_model: str | None = None,
+    wire_api: str,
 ) -> dict[str, str]:
-    wire_target = wire_model or model
     return {
         "COPILOT_PROVIDER_TYPE": "openai",
         "COPILOT_PROVIDER_BASE_URL": build_copilot_base_url(workspace),
-        "COPILOT_PROVIDER_WIRE_API": "responses"
-        if model_uses_responses_api(wire_target)
-        else "completions",
-        "COPILOT_MODEL": model,
+        "COPILOT_PROVIDER_WIRE_API": wire_api,
+        "COPILOT_MODEL": selected_model,
         "COPILOT_PROVIDER_BEARER_TOKEN": token,
         "COPILOT_OFFLINE": "true",
         "OAUTH_TOKEN": token,
@@ -124,14 +121,11 @@ def render_env_overlay(
 
 def build_runtime_env(workspace: str, model: str, token: str) -> dict[str, str]:
     env = os.environ.copy()
-    env.update(
-        render_env_overlay(
-            workspace,
-            model,
-            token,
-            wire_model=env.get("COPILOT_PROVIDER_WIRE_MODEL"),
-        )
-    )
+    selected_model = model
+    override_model = env.get("COPILOT_PROVIDER_WIRE_MODEL")
+    request_model = override_model or selected_model
+    wire_api = "responses" if model_uses_responses_api(request_model) else "completions"
+    env.update(render_env_overlay(workspace, selected_model, token, wire_api=wire_api))
     return env
 
 
@@ -193,12 +187,11 @@ def write_tool_config(
         )
     existing = parse_dotenv(COPILOT_ENV_PATH)
     # Keep the inspectable file self-consistent without treating it as launch input.
-    overlay = render_env_overlay(
-        state["workspace"],
-        model,
-        token,
-        wire_model=existing.get("COPILOT_PROVIDER_WIRE_MODEL"),
-    )
+    selected_model = model
+    override_model = existing.get("COPILOT_PROVIDER_WIRE_MODEL")
+    request_model = override_model or selected_model
+    wire_api = "responses" if model_uses_responses_api(request_model) else "completions"
+    overlay = render_env_overlay(state["workspace"], selected_model, token, wire_api=wire_api)
     for key in LEGACY_ENV_KEYS:
         existing.pop(key, None)
     existing.update(overlay)
