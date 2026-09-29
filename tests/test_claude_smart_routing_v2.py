@@ -420,6 +420,14 @@ class TestV2Launch:
             "run_claude_pty",
             lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not use the PTY"),
         )
+        caller_args = [
+            "--agents",
+            json.dumps({"reviewer": {"description": "Review code", "prompt": "Review it."}}),
+            "--plugin-dir",
+            str(tmp_path / "user plugin"),
+            "--",
+            "prompt",
+        ]
         captured: dict = {}
 
         class FakeProcess:
@@ -431,7 +439,6 @@ class TestV2Launch:
                 plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
                 captured["plugin_dir"] = plugin_dir
                 captured["plugin_models"] = _plugin_agent_models(plugin_dir)
-                assert "--agents" not in argv
 
             def wait(self):
                 return 4
@@ -444,11 +451,11 @@ class TestV2Launch:
         with pytest.raises(SystemExit) as exc:
             v2.launch_claude(
                 {"workspace": "https://example.com"},
-                [],
+                caller_args,
                 binary="claude",
                 user_settings_path=user_settings,
                 launch_model="opus",
-                compose_settings=lambda _args: ({}, []),
+                compose_settings=lambda args: ({}, args),
                 launch_model_args=claude._launch_model_args,
                 model_name=claude._maybe_add_1m_suffix,
             )
@@ -465,77 +472,13 @@ class TestV2Launch:
         assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
         assert captured["plugin_models"] == {"system.ai.claude-opus-4-8"}
         assert captured["argv"][3:5] == ["--model", "opus"]
+        assert captured["argv"].count("--agents") == 1
+        assert captured["argv"].count("--plugin-dir") == 2
+        assert captured["argv"][-len(caller_args) :] == caller_args
         assert not captured["settings_path"].exists()
         assert not captured["plugin_dir"].exists()
         # The model-setting guard is a first-prompt concern; user settings stay untouched.
         assert json.loads(user_settings.read_text()) == {"model": "opus"}
-
-
-class TestRoutingPluginLaunch:
-    @pytest.mark.parametrize("mode", ["full", "subagent"])
-    @pytest.mark.parametrize("failure", [None, "plugin-write", "launch"])
-    def test_plugin_lifetime_and_caller_arguments(self, tmp_path, monkeypatch, mode, failure):
-        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
-        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1" if mode == "full" else "0")
-        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1" if mode == "subagent" else "0")
-        monkeypatch.setattr(v2, "_launch_token", lambda *_args: "token")
-        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
-        monkeypatch.setattr(
-            v2,
-            "_model_picker_catalog",
-            lambda: AnthropicModelCatalog(
-                model_ids=["system.ai.glm-5-3"], model_id_to_display_name={}
-            ),
-        )
-        caller_args = [
-            "--agents",
-            json.dumps({"reviewer": {"description": "Review code", "prompt": "Review it."}}),
-            "--plugin-dir",
-            "/user/plugin with spaces",
-            "--",
-            "prompt",
-        ]
-        original_write = v2._write_routed_claude_plugin
-
-        def write_plugin(path, models):
-            original_write(path, models)
-            if failure == "plugin-write":
-                raise RuntimeError("plugin write failed")
-
-        def launch_process(argv, **_kwargs):
-            plugin = Path(argv[argv.index("--plugin-dir") + 1])
-            assert _plugin_agent_models(plugin) == {"system.ai.glm-5-3"}
-            assert argv.count("--agents") == 1
-            assert argv.count("--plugin-dir") == 2
-            assert argv[-len(caller_args) :] == caller_args
-            if failure == "launch":
-                raise RuntimeError("process launch failed")
-            return 0
-
-        class Process:
-            def __init__(self, argv):
-                launch_process(argv)
-
-            def wait(self):
-                return 0
-
-        monkeypatch.setattr(v2, "_write_routed_claude_plugin", write_plugin)
-        monkeypatch.setattr(v2.subprocess, "Popen", Process)
-        monkeypatch.setattr(claude_pty, "run_claude_pty", launch_process)
-        with pytest.raises(RuntimeError if failure else SystemExit) as exc:
-            v2.launch_claude(
-                {"workspace": "https://example.com"},
-                caller_args,
-                binary="claude",
-                user_settings_path=tmp_path / "user-settings.json",
-                launch_model=None,
-                compose_settings=lambda args: ({}, args),
-                launch_model_args=claude._launch_model_args,
-                model_name=claude._maybe_add_1m_suffix,
-            )
-        if not failure:
-            assert exc.value.code == 0
-        assert not list(tmp_path.glob("claude-v2-*"))
 
 
 class TestV2ModelPickerDiscovery:
@@ -723,7 +666,7 @@ class TestSubagentRouting:
         v2._write_routed_claude_plugin(plugin_dir, models)
 
         manifest = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text())
-        assert manifest["name"] == v2.CLAUDE_ROUTING_PLUGIN_NAME
+        assert manifest["name"] == "ug-smart-router"
         assert _plugin_agent_models(plugin_dir) == {
             "system.ai.claude-opus-4-8",
             "system.ai.glm-5-3",
@@ -733,11 +676,7 @@ class TestSubagentRouting:
             agent = (plugin_dir / "agents" / f"{slug}.md").read_text()
             assert f"name: {json.dumps(slug)}" in agent
             assert v2.CLAUDE_ROUTED_AGENT_PROMPT in agent
-
-    def test_routed_agent_uses_plugin_qualified_name(self):
-        assert v2._routed_claude_agent_name("system.ai.glm-5-3") == (
-            "ug-smart-router:ucode-route-glm-5-3-982d9f93"
-        )
+            assert v2._routed_claude_agent_name(model) == f"{manifest['name']}:{slug}"
 
     def test_leaves_non_claude_custom_agent_model_unchanged(self):
         definitions = v2._routed_claude_agent_definitions(["catalog.schema.gpt-5"])

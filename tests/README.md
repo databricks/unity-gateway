@@ -31,9 +31,9 @@ Codex, and submitting an empty selection installs nothing. Rendering checks cove
 the selected and empty checkboxes. These are local component checks, not live gateway tests.
 
 `test_claude_smart_routing_v2.py` checks plugin-qualified names, exact model
-definitions, and temporary plugin loading in both routing modes. `TestRoutingPluginLaunch`
-checks caller argument preservation and directory removal after success or setup/launch
-failure. These are component checks, not native plugin-refresh or daemon coverage.
+definitions, and temporary plugin loading in both routing modes. Existing launch
+tests cover caller argument preservation and file removal after exit. These checks
+do not cover plugin-write/process-start failures, native plugin refresh, or daemon behavior.
 
 ## CUJ coverage matrix
 
