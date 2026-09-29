@@ -29,6 +29,7 @@ class TestExecOrSpawn:
         with (
             patch.object(launcher.os, "name", "nt"),
             patch.object(launcher.os, "execvp") as execvp,
+            patch.object(launcher.shutil, "which", return_value=None),
             patch.object(launcher.subprocess, "Popen", return_value=proc) as popen,
         ):
             with pytest.raises(SystemExit) as exc:
@@ -38,11 +39,27 @@ class TestExecOrSpawn:
         proc.wait.assert_called_once()
         assert exc.value.code == 0
 
+    def test_windows_resolves_npm_command_shim(self):
+        proc = MagicMock()
+        proc.wait.return_value = 0
+        resolved = r"C:\npm\claude.CMD"
+        with (
+            patch.object(launcher.os, "name", "nt"),
+            patch.object(launcher.shutil, "which", return_value=resolved) as which,
+            patch.object(launcher.subprocess, "Popen", return_value=proc) as popen,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                launcher.exec_or_spawn(["claude", "--settings", "x"])
+        which.assert_called_once_with("claude")
+        popen.assert_called_once_with([resolved, "--settings", "x"])
+        assert exc.value.code == 0
+
     def test_windows_propagates_child_exit_code(self):
         proc = MagicMock()
         proc.wait.return_value = 42
         with (
             patch.object(launcher.os, "name", "nt"),
+            patch.object(launcher.shutil, "which", return_value=None),
             patch.object(launcher.subprocess, "Popen", return_value=proc),
         ):
             with pytest.raises(SystemExit) as exc:
@@ -55,6 +72,7 @@ class TestExecOrSpawn:
         proc.wait.side_effect = [KeyboardInterrupt(), 130]
         with (
             patch.object(launcher.os, "name", "nt"),
+            patch.object(launcher.shutil, "which", return_value=None),
             patch.object(launcher.subprocess, "Popen", return_value=proc),
         ):
             with pytest.raises(SystemExit) as exc:

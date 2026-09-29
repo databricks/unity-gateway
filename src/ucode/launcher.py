@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -25,7 +26,9 @@ def exec_or_spawn(argv: list[str]) -> None:
         os.execvp(argv[0], argv)
         return  # unreachable on POSIX; keeps type-checkers happy
 
-    proc = subprocess.Popen(argv)
+    # Resolve npm .cmd shims because CreateProcess does not honor PATHEXT.
+    executable = shutil.which(argv[0]) or argv[0]
+    proc = subprocess.Popen([executable, *argv[1:]])
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
