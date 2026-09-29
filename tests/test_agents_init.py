@@ -602,19 +602,32 @@ class TestInstallToolBinary:
 
         assert install_tool_binary("opencode", strict=False) is False
 
-    def test_non_strict_returns_false_when_install_fails(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "install_error",
+        [
+            subprocess.CalledProcessError(1, ["npm"]),
+            subprocess.TimeoutExpired(["npm"], 300),
+            FileNotFoundError("npm"),
+        ],
+    )
+    @pytest.mark.parametrize("strict", [False, True])
+    def test_install_failure_is_reported(self, monkeypatch, install_error, strict):
         def fake_which(binary: str) -> str | None:
             if binary == "npm":
                 return "/usr/bin/npm"
             return None
 
         def fake_run(*args, **kwargs):
-            raise subprocess.CalledProcessError(1, args[0])
+            raise install_error
 
         monkeypatch.setattr("ucode.agents.shutil.which", fake_which)
         monkeypatch.setattr("ucode.agents.subprocess.run", fake_run)
 
-        assert install_tool_binary("opencode", strict=False) is False
+        if strict:
+            with pytest.raises(RuntimeError, match="Failed to install"):
+                install_tool_binary("opencode", strict=True)
+        else:
+            assert install_tool_binary("opencode", strict=False) is False
 
     def test_existing_binary_does_not_prompt_for_optional_update(self, monkeypatch, capsys):
         calls: list[list[str]] = []

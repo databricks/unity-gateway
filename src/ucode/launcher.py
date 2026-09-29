@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import signal
-import subprocess
 import sys
+
+from ucode.os_compatibility import subprocess_cross_os
 
 
 def exec_or_spawn(argv: list[str]) -> None:
@@ -25,7 +26,7 @@ def exec_or_spawn(argv: list[str]) -> None:
         os.execvp(argv[0], argv)
         return  # unreachable on POSIX; keeps type-checkers happy
 
-    proc = subprocess.Popen(argv)
+    proc = subprocess_cross_os.popen(argv)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
