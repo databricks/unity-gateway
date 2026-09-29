@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from ucode import cli
+from ucode.constants import ENABLE_SMART_ROUTING_ENV_VAR, SMART_ROUTING_ENV_KEYS
 from ucode.smart_routing import bundled_skill, session_env, v2
 
 runner = CliRunner()
@@ -72,9 +73,7 @@ class TestSmartRouterLauncherFlags:
 
         assert result.exit_code == 0
         state = json.loads(Path(env[session_env.SESSION_ENV_VAR]).read_text())
-        assert state == (
-            dict.fromkeys(session_env.SMART_ROUTING_ENV_KEYS, "0") if not expected else {}
-        )
+        assert state == (dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not expected else {})
 
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     def test_toggle_is_idempotent(self, tmp_path, monkeypatch, tool):
@@ -89,15 +88,13 @@ class TestSmartRouterLauncherFlags:
             result = runner.invoke(cli.app, [tool, flag])
             assert result.exit_code == 0
             state = json.loads(Path(env[session_env.SESSION_ENV_VAR]).read_text())
-            assert state == (
-                dict.fromkeys(session_env.SMART_ROUTING_ENV_KEYS, "0") if not expected else {}
-            )
+            assert state == (dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not expected else {})
 
     def test_enable_restores_the_inherited_routing_mode(self, tmp_path, monkeypatch):
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         env = _session_env(
             tmp_path,
-            overrides=dict.fromkeys(session_env.SMART_ROUTING_ENV_KEYS, "0"),
+            overrides=dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"),
         )
         monkeypatch.setenv(session_env.SESSION_ENV_VAR, env[session_env.SESSION_ENV_VAR])
         monkeypatch.setattr(cli, "_launch_tool", Mock(side_effect=AssertionError("launched")))
@@ -118,7 +115,7 @@ class TestSmartRouterLauncherFlags:
 
         assert result.exit_code == 0
         state = json.loads(Path(env[session_env.SESSION_ENV_VAR]).read_text())
-        assert state == dict.fromkeys(session_env.SMART_ROUTING_ENV_KEYS, "0")
+        assert state == dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
 
     def test_disable_outside_session_is_an_ordinary_launch(self, monkeypatch):
         monkeypatch.delenv(session_env.SESSION_ENV_VAR, raising=False)
@@ -152,11 +149,11 @@ class TestSessionEnvironment:
         path = Path(env[session_env.SESSION_ENV_VAR])
         prior_inode = path.stat().st_ino
 
-        session_env.set_session_environment({session_env.ENABLE_SMART_ROUTING_ENV_VAR: "0"}, env)
+        session_env.set_session_environment({ENABLE_SMART_ROUTING_ENV_VAR: "0"}, env)
 
         assert path.stat().st_ino != prior_inode
         state = json.loads(path.read_text())
-        assert state == {session_env.ENABLE_SMART_ROUTING_ENV_VAR: "0"}
+        assert state == {ENABLE_SMART_ROUTING_ENV_VAR: "0"}
         assert list(tmp_path.glob(".*.tmp")) == []
 
     def test_overlay_rejects_non_allowlisted_environment_keys(self, tmp_path, capsys):
@@ -203,7 +200,7 @@ class TestSessionEnvironment:
                 model_name=lambda model: model,
             )
         claude_path = Path(session_env.session_env_path())
-        session_env.set_session_environment(dict.fromkeys(session_env.SMART_ROUTING_ENV_KEYS, "0"))
+        session_env.set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
 
         with pytest.raises(RuntimeError, match="configured workspace"):
             v2.launch_codex(
@@ -217,9 +214,7 @@ class TestSessionEnvironment:
 
         assert claude_path != codex_path
         assert session_env.effective_environment()[v2.ENABLE_SMART_ROUTING_ENV_VAR] == "1"
-        assert json.loads(claude_path.read_text()) == dict.fromkeys(
-            session_env.SMART_ROUTING_ENV_KEYS, "0"
-        )
+        assert json.loads(claude_path.read_text()) == dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
 
 
 class TestRoutingHookGate:
@@ -235,7 +230,7 @@ class TestRoutingHookGate:
     ):
         env = _session_env(
             tmp_path,
-            overrides=dict.fromkeys(session_env.SMART_ROUTING_ENV_KEYS, "0"),
+            overrides=dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"),
         )
         monkeypatch.setenv(session_env.SESSION_ENV_VAR, env[session_env.SESSION_ENV_VAR])
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
@@ -253,7 +248,7 @@ class TestRoutingHookGate:
         router.assert_not_called()
         token_provider.assert_not_called()
 
-        session_env.set_session_environment(dict.fromkeys(session_env.SMART_ROUTING_ENV_KEYS))
+        session_env.set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS))
         on = runner.invoke(cli.app, args, input=payload)
         assert on.exit_code == 0
         router.assert_called_once()

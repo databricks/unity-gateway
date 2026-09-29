@@ -10,14 +10,9 @@ from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
 from ucode.config_io import atomic_write_json
+from ucode.constants import SMART_ROUTING_ENV_KEYS
 
 SESSION_ENV_VAR = "UCODE_SESSION_ENV_FILE"
-ENABLE_SMART_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_V2"
-ENABLE_SUBAGENT_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"
-SMART_ROUTING_ENV_KEYS = (
-    ENABLE_SMART_ROUTING_ENV_VAR,
-    ENABLE_SUBAGENT_ROUTING_ENV_VAR,
-)
 _ALLOWED_KEYS = frozenset(SMART_ROUTING_ENV_KEYS)
 
 
