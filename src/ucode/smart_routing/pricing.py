@@ -3,9 +3,10 @@
 The launcher fetches rates from the AI Gateway's endpoint-rates API (``prices_from_endpoint_rates``)
 and caches them per workspace (``price_cache_path``) for the savings statusline to read; this module
 defines that cache and the arithmetic. A token class with no rate makes a response unpriceable, and
-the statusline hides the estimate rather than undercount it. The API returns input and output rates
-today, so sessions that use prompt caching stay hidden until it also returns cache rates: fixed
-multipliers don't hold across models (Opus 5.5 cache reads bill at 0.05x input, Opus 4.8's at 0.1x).
+the statusline hides the estimate rather than undercount it. The API returns per-million-token
+dollar rates for input, output, and cache tokens (5-minute and 1-hour writes, and reads), which the
+estimate needs because fixed multipliers don't hold across models (Opus 5.5 cache reads bill at
+0.05x input, Opus 4.8's at 0.1x). A model whose org has no DBU-to-dollar conversion stays unpriced.
 
 Stdlib-only on purpose: the savings statusline imports this on every Claude Code refresh, and the
 CLI's usual imports (Rich, Typer, the Databricks SDK, even ``urllib.request``) cost enough startup
@@ -172,10 +173,24 @@ def _load_price(raw: object) -> ModelPrice | None:
     return ModelPrice(**rates, long_context_threshold=threshold, long_context=long_context)
 
 
+# The endpoint-rates API groups each model's costs by unit; the statusline prices in dollars.
+_DOLLARS_UNIT = "USD"
+# `TokenType` enum names → the ``ModelPrice`` field each bills. CACHE_CREATION is the API's default
+# 5-minute cache write; CACHE_CREATION_1H is the 1-hour write ug enables.
+_TOKEN_TYPE_FIELDS = {
+    "TOKEN_TYPE_INPUT": "input",
+    "TOKEN_TYPE_OUTPUT": "output",
+    "TOKEN_TYPE_CACHE_CREATION": "cache_write_5m",
+    "TOKEN_TYPE_CACHE_CREATION_1H": "cache_write_1h",
+    "TOKEN_TYPE_CACHE_READ": "cache_read",
+}
+
+
 def prices_from_endpoint_rates(rates: Iterable[object]) -> dict[str, ModelPrice]:
     """Map endpoint-rates ``EndpointRate`` entries to prices keyed by their model service.
 
-    Uses ``cost_by_dollars``, which the API omits when the org has no DBU-to-dollar conversion
+    Reads the ``USD`` group of each entry's ``costs`` (a per-million-token ``cost`` per
+    ``token_type``). The API omits the dollar group when the org has no DBU-to-dollar conversion
     configured; those models are left unpriced rather than shown in DBUs.
     """
     prices: dict[str, ModelPrice] = {}
@@ -183,17 +198,29 @@ def prices_from_endpoint_rates(rates: Iterable[object]) -> dict[str, ModelPrice]
         if not isinstance(rate, Mapping):
             continue
         service = rate.get("model_service")
-        dollars = rate.get("cost_by_dollars")
-        if not isinstance(service, str) or not service or not isinstance(dollars, Mapping):
+        costs = rate.get("costs")
+        if not isinstance(service, str) or not service or not isinstance(costs, list):
             continue
-        # `TokenCostPerMillion` fields. The cache ones follow the gateway's existing
-        # `ExternalModelPricing` names and are read once the endpoint-rates API returns them.
+        dollars = next(
+            (c for c in costs if isinstance(c, Mapping) and c.get("unit") == _DOLLARS_UNIT), None
+        )
+        token_costs = dollars.get("token_costs") if isinstance(dollars, Mapping) else None
+        if not isinstance(token_costs, list):
+            continue
+        rate_fields: dict[str, Decimal] = {}
+        for entry in token_costs:
+            if not isinstance(entry, Mapping):
+                continue
+            field = _TOKEN_TYPE_FIELDS.get(entry.get("token_type"))
+            value = _rate(entry.get("cost"))
+            if field is not None and value is not None:
+                rate_fields[field] = value
         price = ModelPrice(
-            input=_rate(dollars.get("input_per_million_tokens")),
-            output=_rate(dollars.get("output_per_million_tokens")),
-            cache_read=_rate(dollars.get("cache_read_per_million_tokens")),
-            cache_write_5m=_rate(dollars.get("cache_write_per_million_tokens")),
-            cache_write_1h=_rate(dollars.get("cache_write_1hr_per_million_tokens")),
+            input=rate_fields.get("input"),
+            output=rate_fields.get("output"),
+            cache_read=rate_fields.get("cache_read"),
+            cache_write_5m=rate_fields.get("cache_write_5m"),
+            cache_write_1h=rate_fields.get("cache_write_1h"),
         )
         if price.input is not None or price.output is not None:
             prices[service] = price

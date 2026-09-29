@@ -168,24 +168,34 @@ class TestPriceCache:
 
 
 class TestEndpointRates:
+    @staticmethod
+    def _rate(service: str, *, usd: dict | None = None, dbu: dict | None = None) -> dict:
+        """An ``EndpointRate`` entry: costs grouped by unit, each a token_type->cost (per 1M)."""
+        costs = []
+        for unit, table in (("DBU", dbu), ("USD", usd)):
+            if table is not None:
+                costs.append(
+                    {
+                        "unit": unit,
+                        "token_costs": [
+                            {"token_type": token_type, "cost": cost}
+                            for token_type, cost in table.items()
+                        ],
+                    }
+                )
+        return {"model_service": service, "costs": costs}
+
     def test_reads_dollar_rates_keyed_by_model_service(self):
-        # Shape of the gateway's endpoint-rates response.
         rates = [
-            {
-                "model_service": "system.ai.claude-fable-5",
-                "cost_by_dbu": {"input_per_million_tokens": 142.858},
-                "cost_by_dollars": {
-                    "input_per_million_tokens": 10.00006,
-                    "output_per_million_tokens": 50.00002,
-                },
-            },
-            {
-                "model_service": "system.ai.glm-5-3",
-                "cost_by_dollars": {
-                    "input_per_million_tokens": 1.4,
-                    "output_per_million_tokens": 4.3999998,
-                },
-            },
+            self._rate(
+                "system.ai.claude-fable-5",
+                dbu={"TOKEN_TYPE_INPUT": 142.858},  # priced in USD; the DBU group is ignored
+                usd={"TOKEN_TYPE_INPUT": 10.00006, "TOKEN_TYPE_OUTPUT": 50.00002},
+            ),
+            self._rate(
+                "system.ai.glm-5-3",
+                usd={"TOKEN_TYPE_INPUT": 1.4, "TOKEN_TYPE_OUTPUT": 4.3999998},
+            ),
         ]
 
         assert pricing.prices_from_endpoint_rates(rates) == {
@@ -195,28 +205,41 @@ class TestEndpointRates:
             "system.ai.glm-5-3": ModelPrice(input=Decimal("1.4"), output=Decimal("4.3999998")),
         }
 
-    def test_reads_cache_rates_when_the_api_returns_them(self):
+    def test_reads_all_token_classes_including_cache(self):
         rates = [
-            {
-                "model_service": "system.ai.claude-opus-4-8",
-                "cost_by_dollars": {
-                    "input_per_million_tokens": 5,
-                    "output_per_million_tokens": 25,
-                    "cache_read_per_million_tokens": 0.5,
-                    "cache_write_per_million_tokens": 6.25,
-                    "cache_write_1hr_per_million_tokens": 10,
+            self._rate(
+                "system.ai.claude-opus-4-8",
+                usd={
+                    "TOKEN_TYPE_INPUT": 5,
+                    "TOKEN_TYPE_OUTPUT": 25,
+                    "TOKEN_TYPE_CACHE_READ": 0.5,
+                    "TOKEN_TYPE_CACHE_CREATION": 6.25,
+                    "TOKEN_TYPE_CACHE_CREATION_1H": 10,
                 },
-            }
+            )
         ]
 
-        assert pricing.prices_from_endpoint_rates(rates) == {"system.ai.claude-opus-4-8": OPUS}
+        assert pricing.prices_from_endpoint_rates(rates) == {
+            "system.ai.claude-opus-4-8": ModelPrice(
+                input=Decimal("5"),
+                output=Decimal("25"),
+                cache_read=Decimal("0.5"),
+                cache_write_5m=Decimal("6.25"),
+                cache_write_1h=Decimal("10"),
+            )
+        }
 
-    def test_skips_models_without_dollar_rates(self):
+    def test_skips_models_without_a_dollar_group(self):
         rates = [
-            # The API omits dollars when the org has no DBU-to-dollar conversion configured.
-            {"model_service": "system.ai.glm-5-3", "cost_by_dbu": {"input_per_million_tokens": 20}},
-            {"model_service": "system.ai.kimi-k3", "cost_by_dollars": {}},
-            {"cost_by_dollars": {"input_per_million_tokens": 1}},
+            # No USD group: the org has no DBU-to-dollar conversion, so we can't price it.
+            self._rate("system.ai.glm-5-3", dbu={"TOKEN_TYPE_INPUT": 20}),
+            self._rate("system.ai.kimi-k3", usd={}),  # dollar group present but empty
+            {"model_service": "system.ai.no-costs"},  # no costs field
+            {
+                "costs": [
+                    {"unit": "USD", "token_costs": [{"token_type": "TOKEN_TYPE_INPUT", "cost": 1}]}
+                ]
+            },
             "not-a-rate",
         ]
 
@@ -226,13 +249,10 @@ class TestEndpointRates:
         path = tmp_path / "model-prices.json"
         prices = pricing.prices_from_endpoint_rates(
             [
-                {
-                    "model_service": "system.ai.claude-haiku-4-5",
-                    "cost_by_dollars": {
-                        "input_per_million_tokens": 1,
-                        "output_per_million_tokens": 5,
-                    },
-                }
+                self._rate(
+                    "system.ai.claude-haiku-4-5",
+                    usd={"TOKEN_TYPE_INPUT": 1, "TOKEN_TYPE_OUTPUT": 5},
+                )
             ]
         )
         pricing.write_price_cache(path, prices)

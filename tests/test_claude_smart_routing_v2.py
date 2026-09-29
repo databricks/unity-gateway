@@ -557,10 +557,15 @@ class TestSavingsStatusline:
             return [
                 {
                     "model_service": "system.ai.claude-opus-4-8",
-                    "cost_by_dollars": {
-                        "input_per_million_tokens": 5,
-                        "output_per_million_tokens": 25,
-                    },
+                    "costs": [
+                        {
+                            "unit": "USD",
+                            "token_costs": [
+                                {"token_type": "TOKEN_TYPE_INPUT", "cost": 5},
+                                {"token_type": "TOKEN_TYPE_OUTPUT", "cost": 25},
+                            ],
+                        }
+                    ],
                 }
             ], None
 

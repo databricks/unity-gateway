@@ -4030,50 +4030,39 @@ class TestMcpServiceNeedsConnectionLogin:
 
 
 class TestFetchEndpointRates:
-    def test_requests_system_ai_services_as_get_body(self, monkeypatch):
+    def test_requests_system_ai_services_as_query_params(self, monkeypatch):
         seen = {}
+        glm_rate = {
+            "model_service": "system.ai.glm-5-3",
+            "costs": [
+                {"unit": "USD", "token_costs": [{"token_type": "TOKEN_TYPE_INPUT", "cost": 1.4}]}
+            ],
+        }
 
-        def fake_send(method, url, token, payload, **kwargs):
-            seen.update(method=method, url=url, token=token, payload=payload)
-            return {
-                "model_service_rates": [
-                    {
-                        "model_service": "system.ai.glm-5-3",
-                        "cost_by_dollars": {"input_per_million_tokens": 1.4},
-                    },
-                    "not-a-rate",
-                ]
-            }, None
+        def fake_get(url, token, **kwargs):
+            seen.update(url=url, token=token)
+            return {"model_service_rates": [glm_rate, "not-a-rate"]}, None
 
-        monkeypatch.setattr(db_mod, "_http_send_json", fake_send)
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
 
         rates, reason = db_mod.fetch_endpoint_rates(
             WS, "tok", ["system.ai.glm-5-3", "claude-opus-4-8", "system.ai.claude-sonnet-5"]
         )
 
         assert reason is None
-        assert rates == [
-            {
-                "model_service": "system.ai.glm-5-3",
-                "cost_by_dollars": {"input_per_million_tokens": 1.4},
-            }
-        ]
-        # The API rejects names outside system.ai, so they never reach the request.
-        assert seen == {
-            "method": "GET",
-            "url": f"{WS}/api/ai-gateway/v2/endpoint-rates:batchGet",
-            "token": "tok",
-            "payload": {
-                "databricks_hosted_model_services": [
-                    "system.ai.claude-sonnet-5",
-                    "system.ai.glm-5-3",
-                ]
-            },
-        }
+        assert rates == [glm_rate]
+        # Names outside system.ai are dropped (the API rejects them); the rest travel as repeated,
+        # sorted `databricks_hosted_model_services` query parameters.
+        assert seen["token"] == "tok"
+        assert seen["url"] == (
+            f"{WS}/api/ai-gateway/v2/endpoint-rates:batchGet"
+            "?databricks_hosted_model_services=system.ai.claude-sonnet-5"
+            "&databricks_hosted_model_services=system.ai.glm-5-3"
+        )
 
     def test_skips_the_request_without_system_ai_services(self, monkeypatch):
         monkeypatch.setattr(
-            db_mod, "_http_send_json", lambda *args, **kwargs: pytest.fail("no request expected")
+            db_mod, "_http_get_json", lambda *args, **kwargs: pytest.fail("no request expected")
         )
 
         assert db_mod.fetch_endpoint_rates(WS, "tok", ["claude-opus-4-8"]) == (
@@ -4090,6 +4079,6 @@ class TestFetchEndpointRates:
         ],
     )
     def test_reports_failures_without_raising(self, monkeypatch, response, expected):
-        monkeypatch.setattr(db_mod, "_http_send_json", lambda *args, **kwargs: response)
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: response)
 
         assert db_mod.fetch_endpoint_rates(WS, "tok", ["system.ai.glm-5-3"]) == expected
