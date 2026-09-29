@@ -24,6 +24,7 @@ from urllib import request as urllib_request
 import httpx
 import pytest
 
+from tests.retry_utils import is_transient_status, retry_transient
 from ucode.agents import resolve_provider_models
 from ucode.databricks import (
     build_shared_base_urls,
@@ -42,6 +43,9 @@ from ucode.databricks import (
     workspace_hostname,
 )
 from ucode.ui import normalize_workspace_url
+
+_LAUNCH_ATTEMPTS = 2
+_LAUNCH_RETRY_BACKOFF_SECONDS = 10.0
 
 # ---------------------------------------------------------------------------
 # CI provider-launch pinning
@@ -78,15 +82,26 @@ def _skip_if_no_workspace():
 
 
 def _run_agent(
-    cmd: list[str], env: dict | None = None, timeout: int = 60
+    cmd: list[str],
+    env: dict | None = None,
+    timeout: int = 60,
+    attempts: int = _LAUNCH_ATTEMPTS,
 ) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=env,
-        stdin=subprocess.DEVNULL,
+    def _once():
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            stdin=subprocess.DEVNULL,
+        )
+
+    return retry_transient(
+        _once,
+        attempts=attempts,
+        backoff_seconds=_LAUNCH_RETRY_BACKOFF_SECONDS,
+        retry_exceptions=(subprocess.TimeoutExpired,),
     )
 
 
@@ -124,7 +139,7 @@ def _run_gemini_gateway_smoke(workspace: str, model: str, token: str) -> str:
         method="POST",
     )
     try:
-        with urllib_request.urlopen(req, timeout=30) as response:
+        with retry_transient(lambda: urllib_request.urlopen(req, timeout=30)) as response:
             body = response.read().decode("utf-8")
     except urllib_error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
@@ -808,15 +823,18 @@ class TestAnthropicNonRelayMps:
             "stream": False,
             "messages": [{"role": "user", "content": "say hi in 5 words or less"}],
         }
-        return httpx.post(
-            f"{build_tool_base_url('claude', workspace)}/v1/messages",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Databricks-Model-Provider-Service": CI_ANTHROPIC_MPS,
-                "x-databricks-use-coding-agent-mode": "true",
-            },
-            json=body,
-            timeout=60,
+        return retry_transient(
+            lambda: httpx.post(
+                f"{build_tool_base_url('claude', workspace)}/v1/messages",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Databricks-Model-Provider-Service": CI_ANTHROPIC_MPS,
+                    "x-databricks-use-coding-agent-mode": "true",
+                },
+                json=body,
+                timeout=60,
+            ),
+            retry_on_result=lambda resp: is_transient_status(resp.status_code),
         )
 
     @staticmethod
