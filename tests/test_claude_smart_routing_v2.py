@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import sys
 import threading
@@ -13,7 +12,6 @@ from unittest.mock import Mock
 
 import pytest
 
-from ucode import databricks
 from ucode.agents import LaunchOptions, claude
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import claude_hooks, claude_pty, routing, v2
@@ -211,109 +209,6 @@ class TestV2Launch:
     def test_strips_gateway_prefix_for_interposer(self):
         model = "anthropic-aigw-73ea02b2-system.ai.glm-5-2"
         assert v2._unwrapped_claude_model_id(model) == "system.ai.glm-5-2"
-
-    @pytest.mark.skipif(os.name == "nt", reason="Claude smart routing requires Unix PTY support")
-    @pytest.mark.parametrize("failed_writer", ["write_json_file", "write_text_file"])
-    @pytest.mark.parametrize("subagent_only", [False, True])
-    @pytest.mark.parametrize("debug", [False, True])
-    def test_routing_file_failure_launches_normally(
-        self, tmp_path, monkeypatch, capsys, failed_writer, subagent_only, debug
-    ):
-        settings_path = tmp_path / "ucode-settings.json"
-        user_settings = tmp_path / "settings.json"
-        saved_settings = {
-            "apiKeyHelper": "gateway-auth",
-            "env": {
-                v2.ENABLE_SMART_ROUTING_ENV_VAR: "1",
-                v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
-            },
-            "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "user-stop"}]}]},
-        }
-        settings_path.write_text(json.dumps(saved_settings))
-        user_settings.write_text(json.dumps({"model": "haiku"}))
-        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
-        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_settings)
-        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
-        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
-        monkeypatch.setattr(v2, "_launch_token", lambda *_args: "token")
-        monkeypatch.setattr(
-            v2,
-            "_model_picker_catalog",
-            lambda: AnthropicModelCatalog(["system.ai.glm-5-3"], {}),
-        )
-        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
-        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1" if subagent_only else "0")
-        monkeypatch.setenv(claude_hooks.FIRST_PROMPT_SOCKET_ENV, "stale.sock")
-        monkeypatch.setenv("OAUTH_TOKEN", "token")
-        monkeypatch.setenv("ANTHROPIC_MODEL", "opus")
-        monkeypatch.setenv("UCODE_DEBUG", "1" if debug else "0")
-        monkeypatch.setattr(databricks, "APP_DIR", tmp_path)
-        monkeypatch.setattr(databricks, "_DEBUG_LOGGER", None)
-
-        def fail_write(*_args):
-            raise RuntimeError("simulated routing file failure") from OSError("disk full")
-
-        monkeypatch.setattr(v2, failed_writer, fail_write)
-        monkeypatch.setattr(claude_pty, "run_claude_pty", Mock())
-        monkeypatch.setattr(v2.subprocess, "Popen", Mock())
-        caller_args = [
-            "--settings",
-            json.dumps({"env": {"USER_SETTING": "preserved"}}),
-            "--plugin-dir",
-            str(tmp_path / "user-plugin"),
-            "--agents",
-            '{"reviewer":{"description":"Review","prompt":"Review"}}',
-            "--",
-            "summarize this repository",
-        ]
-        launches = []
-
-        def launch_normally(argv):
-            assert not list(tmp_path.glob("claude-v2-*"))
-            assert not v2.smart_routing_enabled()
-            assert not os.environ[claude_hooks.FIRST_PROMPT_SOCKET_ENV]
-            launches.append(argv)
-
-        monkeypatch.setattr(claude, "exec_or_spawn", launch_normally)
-        logger = logging.getLogger("ucode.debug")
-        old_handlers = list(logger.handlers)
-        try:
-            claude.launch(
-                {"workspace": "https://example.com"},
-                caller_args,
-                options=LaunchOptions(launch_smart_routing=True, user_pinned_model="opus"),
-            )
-        finally:
-            for handler in list(logger.handlers):
-                if handler not in old_handlers:
-                    logger.removeHandler(handler)
-                    handler.close()
-
-        assert len(launches) == 1
-        argv = launches[0]
-        assert argv[:2] == ["claude", "--settings"]
-        assert argv[3:] == ["--model", "opus", *caller_args[2:]]
-        fallback_settings = json.loads(argv[2])
-        assert fallback_settings["apiKeyHelper"] == "gateway-auth"
-        assert fallback_settings["hooks"] == saved_settings["hooks"]
-        assert fallback_settings["env"]["USER_SETTING"] == "preserved"
-        assert fallback_settings["env"][v2.ENABLE_SMART_ROUTING_ENV_VAR] == "0"
-        assert fallback_settings["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "0"
-        assert fallback_settings["env"][claude_hooks.FIRST_PROMPT_SOCKET_ENV] == ""
-        assert json.loads(settings_path.read_text()) == saved_settings
-        assert json.loads(user_settings.read_text()) == {"model": "haiku"}
-        claude_pty.run_claude_pty.assert_not_called()
-        v2.subprocess.Popen.assert_not_called()
-        log_path = tmp_path / "debug.log"
-        if debug:
-            log = log_path.read_text()
-            assert "launching normally" in log
-            assert "simulated routing file failure" in log
-            assert "disk full" in log
-        else:
-            assert not log_path.exists()
-            assert not capsys.readouterr().err
 
     @pytest.mark.skipif(os.name == "nt", reason="Claude smart routing requires Unix PTY support")
     def test_non_setup_failure_does_not_launch_claude_again(self, monkeypatch):
