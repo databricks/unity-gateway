@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import signal
 import socket
 import subprocess
@@ -14,6 +15,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
+from ucode.bundled_skills import install_bundled_skills
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
@@ -39,10 +41,10 @@ from ucode.databricks import (
     get_databricks_token,
     list_anthropic_model_catalog,
     list_anthropic_models,
+    ug_binary,
 )
 from ucode.launcher import exec_or_spawn
 from ucode.smart_routing import claude_routing, codex_interposer, routing
-from ucode.smart_routing.bundled_skill import install_bundled_skill
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     sync_first_prompt_hook,
@@ -67,6 +69,7 @@ HEALTH_POLL_INTERVAL_SECONDS = 0.25
 CLAUDE_ROUTE_SELECTION_TIMEOUT_S = 20.0
 CLAUDE_ROUTED_AGENT_PREFIX = "ucode-route-"
 CLAUDE_ROUTING_PLUGIN_NAME = "ug-smart-router"
+SMART_ROUTER_SKILL_NAME = "smart-router"
 CLAUDE_ROUTED_AGENT_PROMPT = (
     "Complete the delegated task exactly as requested. Follow the parent agent's instructions and "
     "return a concise report of your findings or changes."
@@ -75,6 +78,14 @@ CLAUDE_ROUTED_AGENT_PROMPT = (
 
 class ClaudeRoutingSetupError(RuntimeError):
     """Routing files could not be written; the caller can launch Claude normally."""
+
+
+def _render_bundled_skill(name: str, launcher: str, content: bytes) -> bytes:
+    if name != SMART_ROUTER_SKILL_NAME:
+        return content
+    return content.replace(b"__UG_EXECUTABLE__", shlex.quote(ug_binary()).encode()).replace(
+        b"__UG_LAUNCHER__", launcher.encode()
+    )
 
 
 def _launch_token(state: dict, workspace: str) -> str:
@@ -531,7 +542,7 @@ def launch_claude(
                 str(plugin_dir),
                 *remaining,
             ]
-            install_bundled_skill()
+            install_bundled_skills(renderer=_render_bundled_skill)
             start_session()
             if route_first_prompt:
                 returncode = claude_pty.run_claude_pty(
@@ -621,7 +632,7 @@ def launch_codex(
         "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
     }
     config_args = codex_config_args(overlay)
-    install_bundled_skill()
+    install_bundled_skills(renderer=_render_bundled_skill)
     start_session()
     if not first_prompt_routing_enabled():
         # Subagent-only routing needs neither the app-server nor the interposer:

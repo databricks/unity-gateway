@@ -22,6 +22,16 @@ def _session_env(tmp_path: Path, overrides: dict[str, str] | None = None) -> dic
     return {session_env.SESSION_ENV_VAR: str(path)}
 
 
+def test_smart_router_skill_renderer(monkeypatch):
+    monkeypatch.setattr(v2, "ug_binary", lambda: "/checkout with spaces/ug")
+    template = b"__UG_EXECUTABLE__ __UG_LAUNCHER__ --enable-smart-routing"
+
+    assert v2._render_bundled_skill("smart-router", "codex", template) == (
+        b"'/checkout with spaces/ug' codex --enable-smart-routing"
+    )
+    assert v2._render_bundled_skill("other-skill", "codex", template) == template
+
+
 class TestLauncherFlags:
     def test_standalone_command_is_not_advertised(self):
         result = runner.invoke(cli.app, ["--help"])

@@ -45,6 +45,7 @@ from ucode.agents import (
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
+from ucode.bundled_skills import revert_bundled_skills
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import SMART_ROUTING_ENV_KEYS
 from ucode.custom_oauth import (
@@ -135,7 +136,6 @@ from ucode.skills_download import (
 from ucode.skills_list import configured_skill_counts_by_agent, list_configured_skills_command
 from ucode.skills_state import records_for_scope
 from ucode.smart_routing import v2 as smart_routing_v2
-from ucode.smart_routing.bundled_skill import revert_bundled_skill
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
 from ucode.smart_routing.session_env import (
     effective_environment,
@@ -1281,7 +1281,7 @@ def revert() -> int:
     # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
     # place; restoring the per-profile file above does not undo that.
     legacy_codex_stripped = revert_legacy_shared_config()
-    bundled_skill_results = revert_bundled_skill()
+    bundled_skill_results = revert_bundled_skills()
     clear_state()
 
     print_heading("Revert")
@@ -1305,7 +1305,7 @@ def revert() -> int:
         if preserved:
             noun = "copy" if preserved == 1 else "copies"
             result += f"; {preserved} modified {noun} preserved"
-        print_kv("Smart Router skill", result)
+        print_kv("Bundled skills", result)
     print_success("ug state cleared")
     return 0
 
