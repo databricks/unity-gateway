@@ -1583,11 +1583,23 @@ def mcp_list(
 
 
 @mcp_app.command("web-search")
-def mcp_web_search_cmd() -> None:
+def mcp_web_search_cmd(
+    managed_by_ucode: Annotated[
+        bool, typer.Option("--managed-by-ucode", help="Identify a ug-generated registration.")
+    ] = False,
+    show_capabilities: Annotated[
+        bool, typer.Option("--capabilities", help="Print the launcher contract as JSON and exit.")
+    ] = False,
+) -> None:
     """Run the web_search MCP server over stdio. Invoked as a subprocess by Claude Code."""
-    from ucode.mcp_web_search import serve
+    import json
 
-    serve()
+    from ucode.mcp_web_search import capabilities, serve
+
+    if show_capabilities:
+        print(json.dumps(capabilities()))
+        return
+    serve(managed_by_ucode=managed_by_ucode)
 
 
 def _stdin_is_interactive() -> bool:

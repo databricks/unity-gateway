@@ -19,6 +19,11 @@ handling without sudo.
 This integration suite does not yet assert password-prompt counts with sudo credential caching
 disabled; that requires a disposable workstation/VM with an explicit sudo policy.
 
+Caller permission-deny preservation is covered by `TestBuildClaudeArgv` in
+`../test_agent_claude.py`, including direct, relayed, and routing configuration output.
+Native parent/child enforcement and the distinction between technical search exclusion
+and a semantic search deny are not yet covered by this integration suite.
+
 OpenCode `--model` / `-m` selection is covered by unit/component tests in
 `test_cli.py` and `test_agent_opencode.py`: the shared CLI passes raw model values,
 and the OpenCode launcher validates and converts them before starting the native
@@ -313,6 +318,12 @@ configuration TUI journeys. Real failures, including generated
 config left after revert and banners on app-server stdout, remain assertions.
 Live MCP/skills functionality, the broad configure-option matrix, and other
 agents are outside this focused revision.
+Custom OAuth search dispatch and refresh are covered by component tests in
+`../test_mcp_web_search.py`; no live search request, delegated search, or classifier
+permission decision is asserted by those tests or this integration suite.
+External-provider ownership has local configuration/subprocess coverage in
+`../test_claude_search_provider.py`. Live Isaac provider discovery and search,
+including both parent and child catalogs, remain separate acceptance work.
 
 The workspace-switch CUJ is an exception to that deferred multi-workspace scope:
 it configures the first workspace and registers its skills MCP through `ug skills`,

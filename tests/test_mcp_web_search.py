@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
+from databricks.sdk import oauth
 
-from ucode import mcp_web_search
+from ucode import databricks, mcp_web_search
+from ucode.agents import claude
 
 WS = "https://example.databricks.com"
 
@@ -240,3 +246,246 @@ class TestCallResponsesApi:
             v for k, v in captured["headers"].items() if k.lower() == "authorization"
         )
         assert auth_header == "Bearer tok"
+
+
+class TestConfiguredSearchAuthentication:
+    @pytest.fixture(autouse=True)
+    def isolated_auth(self, monkeypatch, tmp_path):
+        # Only auth/network boundaries are replaced; registration, MCP dispatch, and token
+        # selection execute normally against an SDK cache isolated from developer credentials.
+        for name in (
+            "DATABRICKS_BEARER",
+            "DATABRICKS_BEARER_COMMAND",
+            "DATABRICKS_CONFIG_PROFILE",
+            "ENABLE_CUSTOM_OAUTH_FROM_CLI",
+            "UCODE_WEB_SEARCH_CLIENT_ID",
+            "UCODE_WEB_SEARCH_REDIRECT_URL",
+            "UCODE_WEB_SEARCH_SCOPES",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(tmp_path / "empty-databrickscfg"))
+        monkeypatch.setattr(oauth.TokenCache, "BASE_PATH", str(tmp_path / "oauth"))
+        self.endpoints = oauth.OidcEndpoints(
+            authorization_endpoint=f"{WS}/oidc/v1/authorize",
+            token_endpoint=f"{WS}/oidc/v1/token",
+        )
+        monkeypatch.setattr(oauth, "get_workspace_endpoints", lambda host: self.endpoints)
+        self.browser = Mock(side_effect=AssertionError("Search cannot start browser consent"))
+        monkeypatch.setattr(oauth.Consent, "launch_external_browser", self.browser)
+        monkeypatch.setattr(
+            databricks, "run", Mock(side_effect=AssertionError("Unexpected CLI auth"))
+        )
+        self.auth_headers = []
+
+        def search_response(request, timeout):
+            self.auth_headers.append(request.get_header("Authorization"))
+            return io.BytesIO(
+                json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "content": [{"type": "output_text", "text": "Search result"}],
+                            }
+                        ]
+                    }
+                ).encode()
+            )
+
+        monkeypatch.setattr(mcp_web_search.urllib_request, "urlopen", search_response)
+
+    def configure(self, monkeypatch, custom_oauth=None):
+        entry = claude._web_search_mcp_entry(
+            WS, "search-model", "workspace-profile", custom_oauth=custom_oauth
+        )
+        for name, value in entry["env"].items():
+            monkeypatch.setenv(name, value)
+
+    def search(self):
+        return _drive(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "web_search", "arguments": {"query": "query"}},
+                }
+            ]
+        )[0]["result"]
+
+    @pytest.mark.parametrize("expired", [False, True])
+    def test_search_uses_custom_sdk_cache_and_refresh(self, monkeypatch, expired):
+        config = {
+            "client_id": "custom-client",
+            "redirect_url": "http://localhost:8020/callback",
+            "scopes": ["offline_access", "all-apis"],
+        }
+        cache = oauth.TokenCache(host=WS, oidc_endpoints=self.endpoints, **config)
+        cache.save(
+            oauth.SessionCredentials(
+                token=oauth.Token(
+                    access_token="cached-token",
+                    token_type="Bearer",
+                    refresh_token="refresh-token",
+                    expiry=datetime.now(UTC) + timedelta(hours=1),
+                ),
+                token_endpoint=self.endpoints.token_endpoint,
+                client_id=config["client_id"],
+                redirect_url=config["redirect_url"],
+            )
+        )
+        if expired:
+            cache_path = Path(cache.filename)
+            payload = json.loads(cache_path.read_text())
+            payload["token"]["expiry"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+            cache_path.write_text(json.dumps(payload))
+        refresh = Mock(
+            return_value=oauth.Token(
+                access_token="refreshed-token",
+                token_type="Bearer",
+                refresh_token="rotated-refresh",
+                expiry=datetime.now(UTC) + timedelta(hours=1),
+            )
+        )
+        monkeypatch.setattr(oauth, "retrieve_token", refresh)
+        # The harness custom SDK helper also prefers its own cache over an unrelated bearer.
+        monkeypatch.setenv("DATABRICKS_BEARER", "unrelated-bearer")
+        self.configure(monkeypatch, config)
+
+        assert self.search() == {"content": [{"type": "text", "text": "Search result"}]}
+        assert self.search() == {"content": [{"type": "text", "text": "Search result"}]}
+        expected = "refreshed-token" if expired else "cached-token"
+        assert self.auth_headers == [f"Bearer {expected}"] * 2
+        assert refresh.call_count == int(expired)
+        self.browser.assert_not_called()
+
+    @pytest.mark.parametrize("custom_profile", [False, True])
+    def test_search_refreshes_through_selected_cli_profile(self, monkeypatch, custom_profile):
+        config = (
+            {
+                "client_id": "custom-client",
+                "redirect_url": "http://localhost:8020/callback",
+                "scopes": ["offline_access", "all-apis"],
+                "profile": "custom-profile",
+            }
+            if custom_profile
+            else None
+        )
+        self.configure(monkeypatch, config)
+        calls = []
+
+        def cli_token(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(
+                command, 0, json.dumps({"access_token": f"token-{len(calls)}"}), ""
+            )
+
+        monkeypatch.setattr(databricks, "run", cli_token)
+        assert self.search() == {"content": [{"type": "text", "text": "Search result"}]}
+        assert self.search() == {"content": [{"type": "text", "text": "Search result"}]}
+        assert self.auth_headers == ["Bearer token-1", "Bearer token-2"]
+        expected_profile = "custom-profile" if custom_profile else "workspace-profile"
+        assert [command[command.index("--profile") + 1] for command in calls] == [
+            expected_profile,
+            expected_profile,
+        ]
+
+    def test_missing_custom_credentials_returns_error_without_default_auth(self, monkeypatch):
+        self.configure(
+            monkeypatch,
+            {
+                "client_id": "custom-client",
+                "redirect_url": "http://localhost:8020/callback",
+                "scopes": ["offline_access", "all-apis"],
+            },
+        )
+        result = self.search()
+        assert result["isError"] is True
+        assert "run `ug claude`" in result["content"][0]["text"]
+        assert self.auth_headers == []
+        self.browser.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "missing_name",
+        ["UCODE_WEB_SEARCH_CLIENT_ID", "UCODE_WEB_SEARCH_REDIRECT_URL", "UCODE_WEB_SEARCH_SCOPES"],
+    )
+    def test_incomplete_custom_config_fails_closed(self, monkeypatch, missing_name):
+        self.configure(
+            monkeypatch,
+            {
+                "client_id": "custom-client",
+                "redirect_url": "http://localhost:8020/callback",
+                "scopes": ["offline_access", "all-apis"],
+            },
+        )
+        monkeypatch.delenv(missing_name)
+        result = self.search()
+        assert result["isError"] is True
+        assert "Failed to acquire Databricks token" in result["content"][0]["text"]
+        assert self.auth_headers == []
+
+    @pytest.mark.parametrize(
+        "name,value",
+        [
+            ("UCODE_WEB_SEARCH_REDIRECT_URL", "https://example.invalid/callback"),
+            ("UCODE_WEB_SEARCH_SCOPES", "offline_access"),
+        ],
+    )
+    def test_invalid_custom_config_returns_tool_error(self, monkeypatch, name, value):
+        self.configure(
+            monkeypatch,
+            {
+                "client_id": "custom-client",
+                "redirect_url": "http://localhost:8020/callback",
+                "scopes": ["offline_access", "all-apis"],
+            },
+        )
+        monkeypatch.setenv(name, value)
+        result = self.search()
+        assert result["isError"] is True
+        assert "Failed to acquire Databricks token" in result["content"][0]["text"]
+        assert self.auth_headers == []
+
+    def test_cli_auth_timeout_returns_tool_error_without_browser(self, monkeypatch):
+        self.configure(
+            monkeypatch,
+            {
+                "client_id": "custom-client",
+                "redirect_url": "http://localhost:8020/callback",
+                "scopes": ["offline_access", "all-apis"],
+                "profile": "custom-profile",
+            },
+        )
+        calls = []
+
+        def timed_out(command, **kwargs):
+            calls.append((command, kwargs["timeout"]))
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+        monkeypatch.setattr(databricks, "run", timed_out)
+        result = self.search()
+        assert result["isError"] is True
+        assert "Failed to acquire Databricks token" in result["content"][0]["text"]
+        assert self.auth_headers == []
+        assert [timeout for _, timeout in calls] == [15, 30, 15]
+        assert "--no-browser" in calls[1][0]
+        assert all(
+            command[command.index("--profile") + 1] == "custom-profile" for command, _ in calls
+        )
+
+    @pytest.mark.parametrize("custom_profile", [False, True])
+    def test_profile_auth_preserves_explicit_bearer_override(self, monkeypatch, custom_profile):
+        self.configure(
+            monkeypatch,
+            {
+                "client_id": "custom-client",
+                "redirect_url": "http://localhost:8020/callback",
+                "scopes": ["offline_access", "all-apis"],
+                "profile": "custom-profile",
+            }
+            if custom_profile
+            else None,
+        )
+        monkeypatch.setenv("DATABRICKS_BEARER", "explicit-bearer")
+        assert self.search() == {"content": [{"type": "text", "text": "Search result"}]}
+        assert self.auth_headers == ["Bearer explicit-bearer"]

@@ -26,8 +26,25 @@ These are component checks, not live Windows coverage for every agent.
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
+`test_mcp_web_search.py` and `test_agent_claude.py` cover custom OAuth search
+registration, stale registration repair, SDK cache reuse/refresh, CLI profile
+selection, and errors without browser consent through the MCP handler. These
+component checks replace external auth/network boundaries; they do not establish
+live search, parent/child discovery, or classifier permission behavior.
+
+`test_claude_search_provider.py` covers external-provider setup and launch using
+real temporary config files and local helper JSON-RPC subprocesses. It checks
+legacy ownership, custom/disabled entry preservation, config conflicts, caller
+arguments, routing/direct/relayed paths, and concurrent standalone/custom helper
+catalogs. These are component checks, not a live Isaac or gateway journey.
+
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
+`TestBuildClaudeArgv` also checks that caller permission denies survive ug's technical
+native-search deny in direct, relayed, and routing settings composition. Inline/file
+inputs, repeated settings, and empty launch overrides retain restrictions and leave
+source files unchanged. These are actual argv/configuration assertions, not native
+classifier or parent/child acceptance coverage.
 `test_databricks.py` checks bounded Anthropic catalog requests with `limit=1000`, including
 scoped routing headers and model display metadata.
 The managed-default and discovery integration journeys below check the generated settings
@@ -196,7 +213,7 @@ These are unit/component checks; they do not establish live sudo password-prompt
 
 | Scenario | Status / requirement |
 | --- | --- |
-| Live MCP and skills functionality | Deferred; installation tests cover the local web-search MCP handshake and tool listing, not upstream proxying or a real search request |
+| Live MCP and skills functionality | Deferred; installation tests cover the local web-search MCP handshake and tool listing, not upstream proxying or a real search request. Custom OAuth search dispatch/refresh has component coverage; live parent/child search and permission decisions remain unverified |
 | Broad configure flags, multiple workspaces, and PAT flows | Deferred while focusing on basic CUJs |
 | Workspace-switch MCP cleanup | The `workspace_switch` CUJ covers real registration, cleanup, repeat configure, and a completed Claude task. Unit/component tests cover duplicate attempts and injected removal failures; the CUJ does not force an agent timeout. It runs in the required managed CI lane for full/live runs. |
 | Relayed/subscription MPS discovery | Not covered by the scoped discovery journeys |
