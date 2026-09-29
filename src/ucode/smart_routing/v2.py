@@ -44,11 +44,13 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
-from ucode.smart_routing.session import start_session
+from ucode.smart_routing.session_env import (
+    ENABLE_SMART_ROUTING_ENV_VAR,
+    ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+    start_session,
+)
 from ucode.ui import print_warning
 
-ENABLE_SMART_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_V2"
-ENABLE_SUBAGENT_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"
 LEGACY_STATE_KEY = "smart_routing_enabled"
 
 _SMART_ROUTING_ENV_VARS = (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)

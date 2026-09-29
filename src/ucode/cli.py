@@ -136,7 +136,12 @@ from ucode.skills_state import records_for_scope
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.bundled_skill import revert_bundled_skill
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
-from ucode.smart_routing.session import routing_enabled, session_state_path, set_routing_enabled
+from ucode.smart_routing.session_env import (
+    SMART_ROUTING_ENV_KEYS,
+    effective_environment,
+    session_env_path,
+    set_session_environment,
+)
 from ucode.state import (
     clear_state,
     get_provider_service,
@@ -2078,7 +2083,7 @@ def codex_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.smart_routing_enabled():
+    if not smart_routing_v2.smart_routing_enabled(effective_environment()):
         return
 
     from ucode.smart_routing.codex_routing import (
@@ -2123,8 +2128,6 @@ def codex_router_hook_cmd(
         return
     if event != "route-subagent" or not host:
         return
-    if not routing_enabled():
-        return
     if use_pat and not ensure_pat_bearer(profile):
         return
     token = os.environ.get("DATABRICKS_BEARER", "").strip()
@@ -2159,7 +2162,7 @@ def claude_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.smart_routing_enabled():
+    if not smart_routing_v2.smart_routing_enabled(effective_environment()):
         return
 
     from ucode.smart_routing.claude_routing import (
@@ -2223,8 +2226,6 @@ def claude_router_hook_cmd(
         # the PreToolUse hook already injected the routed model, so emit nothing.
         return
     if event != "route-subagent" or not host:
-        return
-    if not routing_enabled():
         return
     token = os.environ.get("OAUTH_TOKEN") or os.environ.get("DATABRICKS_BEARER")
     if not token:
@@ -2314,11 +2315,11 @@ def _toggle_current_smart_routing_session(enabled: bool | None) -> bool:
     if enabled is None:
         return False
     try:
-        session_state_path()
+        session_env_path()
     except RuntimeError:
         return False
     try:
-        set_routing_enabled(enabled)
+        set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0" if not enabled else None))
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None

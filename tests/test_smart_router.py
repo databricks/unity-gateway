@@ -10,18 +10,22 @@ import pytest
 from typer.testing import CliRunner
 
 from ucode import cli
-from ucode.smart_routing import bundled_skill, session, v2
+from ucode.smart_routing import bundled_skill, session_env, v2
 
 runner = CliRunner()
 
 
-def _session_env(tmp_path: Path, enabled: bool = True) -> dict[str, str]:
+def _session_env(
+    tmp_path: Path,
+    *,
+    overrides: dict[str, str | None] | None = None,
+) -> dict[str, str]:
     path = tmp_path / "state.json"
     path.write_text(
-        json.dumps({"version": 1, "enabled": enabled}),
+        json.dumps(overrides or {}),
         encoding="utf-8",
     )
-    return {session.SESSION_STATE_ENV_VAR: str(path)}
+    return {session_env.SESSION_ENV_VAR: str(path)}
 
 
 class TestSmartRouterLauncherFlags:
@@ -61,20 +65,21 @@ class TestSmartRouterLauncherFlags:
         self, tmp_path, monkeypatch, tool, flag, expected
     ):
         env = _session_env(tmp_path)
-        monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, env[session.SESSION_STATE_ENV_VAR])
+        monkeypatch.setenv(session_env.SESSION_ENV_VAR, env[session_env.SESSION_ENV_VAR])
         monkeypatch.setattr(cli, "_launch_tool", Mock(side_effect=AssertionError("launched")))
 
         result = runner.invoke(cli.app, [tool, flag])
 
         assert result.exit_code == 0
-        assert (
-            json.loads(Path(env[session.SESSION_STATE_ENV_VAR]).read_text())["enabled"] is expected
+        state = json.loads(Path(env[session_env.SESSION_ENV_VAR]).read_text())
+        assert state == (
+            dict.fromkeys(session_env.SMART_ROUTING_ENV_KEYS, "0") if not expected else {}
         )
 
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     def test_toggle_is_idempotent(self, tmp_path, monkeypatch, tool):
-        env = _session_env(tmp_path, enabled=False)
-        monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, env[session.SESSION_STATE_ENV_VAR])
+        env = _session_env(tmp_path)
+        monkeypatch.setenv(session_env.SESSION_ENV_VAR, env[session_env.SESSION_ENV_VAR])
         monkeypatch.setattr(cli, "_launch_tool", Mock(side_effect=AssertionError("launched")))
 
         for flag, expected in (
@@ -83,24 +88,40 @@ class TestSmartRouterLauncherFlags:
         ):
             result = runner.invoke(cli.app, [tool, flag])
             assert result.exit_code == 0
-            assert (
-                json.loads(Path(env[session.SESSION_STATE_ENV_VAR]).read_text())["enabled"]
-                is expected
+            state = json.loads(Path(env[session_env.SESSION_ENV_VAR]).read_text())
+            assert state == (
+                dict.fromkeys(session_env.SMART_ROUTING_ENV_KEYS, "0") if not expected else {}
             )
+
+    def test_enable_restores_the_inherited_routing_mode(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        env = _session_env(
+            tmp_path,
+            overrides=dict.fromkeys(session_env.SMART_ROUTING_ENV_KEYS, "0"),
+        )
+        monkeypatch.setenv(session_env.SESSION_ENV_VAR, env[session_env.SESSION_ENV_VAR])
+        monkeypatch.setattr(cli, "_launch_tool", Mock(side_effect=AssertionError("launched")))
+
+        result = runner.invoke(cli.app, ["codex", "--enable-smart-routing"])
+
+        assert result.exit_code == 0
+        assert json.loads(Path(env[session_env.SESSION_ENV_VAR]).read_text()) == {}
+        assert session_env.effective_environment()[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
 
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     def test_override_toggles_without_inspecting_launch_request(self, tmp_path, monkeypatch, tool):
         env = _session_env(tmp_path)
-        monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, env[session.SESSION_STATE_ENV_VAR])
+        monkeypatch.setenv(session_env.SESSION_ENV_VAR, env[session_env.SESSION_ENV_VAR])
         monkeypatch.setattr(cli, "_launch_tool", Mock(side_effect=AssertionError("launched")))
 
         result = runner.invoke(cli.app, [tool, "--disable-smart-routing", "--", "prompt"])
 
         assert result.exit_code == 0
-        assert json.loads(Path(env[session.SESSION_STATE_ENV_VAR]).read_text())["enabled"] is False
+        state = json.loads(Path(env[session_env.SESSION_ENV_VAR]).read_text())
+        assert state == dict.fromkeys(session_env.SMART_ROUTING_ENV_KEYS, "0")
 
     def test_disable_outside_session_is_an_ordinary_launch(self, monkeypatch):
-        monkeypatch.delenv(session.SESSION_STATE_ENV_VAR, raising=False)
+        monkeypatch.delenv(session_env.SESSION_ENV_VAR, raising=False)
         launch = Mock()
         monkeypatch.setattr(cli, "_launch_tool", launch)
 
@@ -114,49 +135,61 @@ class TestSmartRouterLauncherFlags:
         self, tmp_path, monkeypatch
     ):
         state_path = tmp_path / "missing-state.json"
-        monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, str(state_path))
+        monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(state_path))
         launch = Mock(side_effect=AssertionError("launched"))
         monkeypatch.setattr(cli, "_launch_tool", launch)
 
         result = runner.invoke(cli.app, ["claude", "--disable-smart-routing"])
 
         assert result.exit_code == 1
-        assert "session state" in result.output
+        assert "session environment" in result.output
         launch.assert_not_called()
 
 
-class TestSessionState:
+class TestSessionEnvironment:
     def test_update_atomically_replaces_state(self, tmp_path):
         env = _session_env(tmp_path)
-        path = Path(env[session.SESSION_STATE_ENV_VAR])
+        path = Path(env[session_env.SESSION_ENV_VAR])
         prior_inode = path.stat().st_ino
 
-        session.set_routing_enabled(False, env)
+        session_env.set_session_environment({session_env.ENABLE_SMART_ROUTING_ENV_VAR: "0"}, env)
 
         assert path.stat().st_ino != prior_inode
-        assert json.loads(path.read_text()) == {"version": 1, "enabled": False}
+        state = json.loads(path.read_text())
+        assert state == {session_env.ENABLE_SMART_ROUTING_ENV_VAR: "0"}
         assert list(tmp_path.glob(".*.tmp")) == []
 
-    @pytest.mark.parametrize("contents", [None, "not json", '{"version": 9}'])
+    def test_overlay_rejects_non_allowlisted_environment_keys(self, tmp_path, capsys):
+        path = tmp_path / "state.json"
+        path.write_text(
+            json.dumps({"OAUTH_TOKEN": "not-a-token"}),
+            encoding="utf-8",
+        )
+        inherited = {
+            session_env.SESSION_ENV_VAR: str(path),
+            "OAUTH_TOKEN": "inherited-token",
+        }
+
+        assert session_env.effective_environment(inherited) == inherited
+        assert "using the inherited environment" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("contents", [None, "not json", "[]"])
     def test_missing_or_unreadable_state_defaults_enabled(self, tmp_path, capsys, contents):
         path = tmp_path / "state.json"
         if contents is not None:
             path.write_text(contents, encoding="utf-8")
-        env = {session.SESSION_STATE_ENV_VAR: str(path)}
+        env = {session_env.SESSION_ENV_VAR: str(path)}
 
-        assert session.routing_enabled(env) is True
-        assert "routing remains enabled" in capsys.readouterr().err
+        assert session_env.effective_environment(env) == env
+        assert "using the inherited environment" in capsys.readouterr().err
 
     def test_each_launch_starts_a_fresh_enabled_session(self, tmp_path, monkeypatch):
         monkeypatch.setattr(v2, "install_bundled_skill", lambda: None)
         # Supply unique directories while keeping the test deterministic.
         calls = iter((tmp_path / "claude", tmp_path / "codex"))
-        monkeypatch.setattr(
-            v2,
-            "start_session",
-            lambda: session.start_session(),
-        )
-        monkeypatch.setattr(session.tempfile, "mkdtemp", lambda prefix: str(next(calls)))
+        monkeypatch.setattr(v2, "start_session", lambda: session_env.start_session())
+        monkeypatch.setattr(session_env.tempfile, "mkdtemp", lambda prefix: str(next(calls)))
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
 
         with pytest.raises(RuntimeError, match="configured workspace"):
             v2.launch_claude(
@@ -169,8 +202,8 @@ class TestSessionState:
                 launch_model_args=lambda args, _model: args,
                 model_name=lambda model: model,
             )
-        claude_path = Path(session.session_state_path())
-        session.set_routing_enabled(False)
+        claude_path = Path(session_env.session_env_path())
+        session_env.set_session_environment(dict.fromkeys(session_env.SMART_ROUTING_ENV_KEYS, "0"))
 
         with pytest.raises(RuntimeError, match="configured workspace"):
             v2.launch_codex(
@@ -180,11 +213,13 @@ class TestSessionState:
                 start_model="gpt",
                 render_overlay=lambda *_args, **_kwargs: {},
             )
-        codex_path = Path(session.session_state_path())
+        codex_path = Path(session_env.session_env_path())
 
         assert claude_path != codex_path
-        assert session.routing_enabled() is True
-        assert json.loads(claude_path.read_text())["enabled"] is False
+        assert session_env.effective_environment()[v2.ENABLE_SMART_ROUTING_ENV_VAR] == "1"
+        assert json.loads(claude_path.read_text()) == dict.fromkeys(
+            session_env.SMART_ROUTING_ENV_KEYS, "0"
+        )
 
 
 class TestRoutingHookGate:
@@ -198,8 +233,11 @@ class TestRoutingHookGate:
     def test_routing_skips_while_off_and_resumes_after_on(
         self, tmp_path, monkeypatch, command, router_target
     ):
-        env = _session_env(tmp_path, enabled=False)
-        monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, env[session.SESSION_STATE_ENV_VAR])
+        env = _session_env(
+            tmp_path,
+            overrides=dict.fromkeys(session_env.SMART_ROUTING_ENV_KEYS, "0"),
+        )
+        monkeypatch.setenv(session_env.SESSION_ENV_VAR, env[session_env.SESSION_ENV_VAR])
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
         monkeypatch.delenv("OAUTH_TOKEN", raising=False)
@@ -215,7 +253,7 @@ class TestRoutingHookGate:
         router.assert_not_called()
         token_provider.assert_not_called()
 
-        session.set_routing_enabled(True)
+        session_env.set_session_environment(dict.fromkeys(session_env.SMART_ROUTING_ENV_KEYS))
         on = runner.invoke(cli.app, args, input=payload)
         assert on.exit_code == 0
         router.assert_called_once()
