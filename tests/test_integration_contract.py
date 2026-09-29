@@ -54,13 +54,12 @@ def test_managed_integration_ci_is_blocking():
     ) in gate
 
 
-def test_windows_integration_ci_uses_temporary_claude_pin():
+def test_windows_integration_ci_uses_shared_claude_version():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     contents = workflow.read_text()
 
-    assert "  WINDOWS_CLAUDE_VERSION: 2.1.278\n" in contents
-    assert contents.count('"--claude-version", $env:WINDOWS_CLAUDE_VERSION,') == 2
     assert "  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.280' }}" in contents
+    assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
 
 
 @pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
