@@ -15,6 +15,14 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 and checks their version output against the `unity-gateway` distribution metadata.
 `TestUpgrade` in `test_cli.py` covers both command names before, during, and after
 the distribution rename with mocked installer calls, including failure recovery guidance.
+`test_subprocess_cross_os.py` covers Windows npm shim resolution, native and Node targets,
+literal argument preservation, and the shared `subprocess_cross_os.run` / `subprocess_cross_os.popen`
+entry points. `test_launcher.py` covers terminal handoff and exit status.
+Ruff rejects direct subprocess launches outside `os_compatibility/subprocess_cross_os.py` and tests.
+Claude's native resolver tests remain in
+`test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
+These are component checks, not live Windows coverage for every agent.
+
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
@@ -160,6 +168,11 @@ The existing e2e workflow runs seven parallel shards: gateway checks plus one fo
 each of Claude, Codex, Gemini, OpenCode, Copilot, and Pi. Each agent shard installs
 its own CLI. Configure-subset checks run in the Claude shard because configuration
 invokes the Claude CLI. The `All agent tests` check requires every shard to pass.
+Copilot's per-model greeting smoke uses Responses for GPT-6+ and Chat Completions
+for other models. GPT-6 Astra/Luna/Sol and GPT-6.1 Sol are eligible; existing GPT-5,
+Codex-specific, and Grok exclusions remain. `test_agent_copilot.py` covers API
+selection, model-override precedence, persisted configuration, and token refresh
+locally; it does not establish live inference or in-session model switching.
 Check names describe the coverage: `Unit tests`, `Gateway API tests`,
 `Agent launch tests · Claude`, `Smoke journeys · Claude`, and
 `Full journeys · Claude` (with the other agents named likewise).

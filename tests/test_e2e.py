@@ -428,9 +428,8 @@ E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     "gpt-5-6-luna": frozenset({"copilot", "pi"}),
     "gpt-5-6-sol": frozenset({"copilot", "pi"}),
     "gpt-5-6-terra": frozenset({"copilot"}),
-    "gpt-6-astra": frozenset({"copilot"}),
-    "gpt-6-luna": frozenset({"copilot", "pi"}),
-    "gpt-6-sol": frozenset({"copilot", "pi"}),
+    "gpt-6-luna": frozenset({"pi"}),
+    "gpt-6-sol": frozenset({"pi"}),
 }
 
 
@@ -1021,7 +1020,7 @@ class TestOpencodeLaunch:
 
 
 class TestCopilotLaunch:
-    """Run copilot against every Claude/codex model via the MLflow chat-completions gateway.
+    """Run Copilot through MLflow using Responses for GPT-6+ and Chat Completions otherwise.
 
     Gemini is excluded by design — Databricks' Gemini translator rejects the
     `stream_options` field Copilot CLI sends. Other incompatible models are
@@ -1049,11 +1048,16 @@ class TestCopilotLaunch:
                 "databricks-gpt-6-astra",
                 "databricks-gpt-6-luna",
                 "databricks-gpt-6-sol",
+                "databricks-gpt-6-1-sol",
                 "databricks-gpt-5-4",
                 "databricks-gpt-5-6",
             ]
         }
         assert self._all_models(state) == [
+            ("codex", "databricks-gpt-6-astra"),
+            ("codex", "databricks-gpt-6-luna"),
+            ("codex", "databricks-gpt-6-sol"),
+            ("codex", "databricks-gpt-6-1-sol"),
             ("codex", "databricks-gpt-5-4"),
             ("codex", "databricks-gpt-5-6"),
         ]

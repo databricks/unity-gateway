@@ -2818,7 +2818,7 @@ class TestOpenCodeModelFlag:
 
         with (
             _launch_policy_patches(None) as calls,
-            patch("ucode.agents.opencode.subprocess.Popen") as popen,
+            patch("ucode.agents.opencode.subprocess_cross_os.popen") as popen,
         ):
             calls["launch"].side_effect = launch
             result = runner.invoke(app, ["opencode", "--model", "missing-model"])

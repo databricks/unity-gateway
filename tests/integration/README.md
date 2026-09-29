@@ -9,6 +9,10 @@ The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
 
+Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
+enforced by Ruff. These component checks do not establish native Windows coverage
+for every agent; the Windows journeys below validate their explicitly selected paths.
+
 The sudo-session regression checks live in `../test_managed_files.py` and `../test_cli.py`.
 They cover shared-worker invocation counts, shutdown/cancellation, and temporary-file failure
 handling without sudo.

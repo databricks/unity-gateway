@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,6 +33,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.databricks as databricks_mod
     import ucode.managed_config as managed_config_mod
     import ucode.managed_files as managed_files_mod
+    import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
     from ucode.agents import codex as codex_mod
 
@@ -64,6 +66,12 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(managed_files_mod, "_sudo_replace", reject_privileged_write)
     monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
+    # On Windows, resolve_command swaps a bare program name for whatever `shutil.which`
+    # finds on the developer's PATH (e.g. a real `codex.CMD`). Rebind only the compatibility
+    # helper's `shutil` so argv stays host-independent; helper tests patch `which` explicitly.
+    monkeypatch.setattr(
+        subprocess_cross_os_mod, "shutil", SimpleNamespace(which=lambda _name: None)
+    )
     # A developer's ambient managed-config stub would otherwise short-circuit every fetch in the suite.
     monkeypatch.delenv("UCODE_MANAGED_CONFIG_STUB", raising=False)
     # The model-services listing is memoized for the life of the process, so without this a cached

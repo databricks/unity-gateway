@@ -7,7 +7,6 @@ import hashlib
 import os
 import re
 import signal
-import subprocess
 import tempfile
 import threading
 from collections.abc import Callable
@@ -70,6 +69,7 @@ from ucode.managed_files import (
     reconcile_managed_file,
     revert_managed_file,
 )
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.codex_hooks import (
     remove_smart_routing_hooks,
@@ -1051,7 +1051,7 @@ def _launch_codex_with_otel_proxy(
     server_thread.start()
     endpoint = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1/traces"
     otel_args = codex_config_args(_otel_proxy_overlay(endpoint))
-    proc = subprocess.Popen([*base_argv, *otel_args, *tool_args])
+    proc = subprocess_cross_os.popen([*base_argv, *otel_args, *tool_args])
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
