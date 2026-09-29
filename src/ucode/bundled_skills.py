@@ -7,8 +7,7 @@ import re
 import shutil
 import tempfile
 from collections.abc import Callable, Mapping
-from importlib import resources
-from importlib.resources.abc import Traversable
+from importlib.metadata import distribution
 from pathlib import Path, PurePosixPath
 
 from ucode import config_io
@@ -28,22 +27,19 @@ def _manifest_path() -> Path:
     return config_io.APP_DIR / "bundled-skills.json"
 
 
-def _skills_root() -> Traversable:
-    packaged = resources.files("ucode").joinpath("_bundled_skills")
-    if packaged.is_dir():
-        return packaged
-    return Path(__file__).resolve().parents[2] / "skills"
+def _skills_root() -> Path:
+    return Path(str(distribution("unity-gateway").locate_file("skills")))
 
 
-def _skill_sources() -> list[Traversable]:
+def _skill_sources() -> list[Path]:
     root = _skills_root()
     if not root.is_dir():
         raise RuntimeError("Unity Gateway's bundled skill resources are missing.")
-    skills: list[Traversable] = []
+    skills: list[Path] = []
     for entry in sorted(root.iterdir(), key=lambda item: item.name):
         if not entry.is_dir():
             continue
-        if isinstance(entry, Path) and entry.is_symlink():
+        if entry.is_symlink():
             print_warning(f"Skipping symlinked bundled skill `{entry.name}`.")
         elif len(entry.name) > 64 or _SKILL_NAME_PATTERN.fullmatch(entry.name) is None:
             print_warning(f"Skipping invalid bundled skill name `{entry.name}`.")
@@ -54,22 +50,19 @@ def _skill_sources() -> list[Traversable]:
     return skills
 
 
-def _source_files(directory: Traversable, prefix: PurePosixPath | None = None) -> Bundle:
-    prefix = prefix or PurePosixPath()
+def _source_files(directory: Path) -> Bundle:
     files: Bundle = {}
-    for entry in sorted(directory.iterdir(), key=lambda item: item.name):
-        relative = prefix / entry.name
-        if isinstance(entry, Path) and entry.is_symlink():
+    for entry in sorted(directory.rglob("*")):
+        relative = entry.relative_to(directory)
+        if entry.is_symlink():
             raise RuntimeError(f"Bundled skill contains a symlink: {relative}")
-        if entry.is_dir():
-            files.update(_source_files(entry, relative))
-        elif entry.is_file():
+        if entry.is_file():
             files[relative.as_posix()] = entry.read_bytes()
     return files
 
 
 def _rendered_bundle(
-    source: Traversable,
+    source: Path,
     launcher: str,
     renderer: SkillRenderer | None,
 ) -> Bundle:
