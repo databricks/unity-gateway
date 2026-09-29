@@ -17,6 +17,15 @@ def _write_skill(root: Path, name: str, content: str = "version one") -> Path:
     return skill
 
 
+def test_smart_router_skill_uses_launcher_specific_flags():
+    content = (Path(__file__).resolve().parents[1] / "skills/smart-router/SKILL.md").read_text()
+
+    for launcher in ("claude", "codex"):
+        assert f"ug {launcher} --enable-smart-routing" in content
+        assert f"ug {launcher} --disable-smart-routing" in content
+    assert "ug smart-router" not in content
+
+
 def test_copies_named_skill_to_both_harness_directories(tmp_path, monkeypatch):
     source = tmp_path / "source"
     _write_skill(source, packaged_skills.SMART_ROUTER_SKILL)
@@ -54,6 +63,68 @@ def test_reinstall_replaces_existing_skill_contents(tmp_path, monkeypatch):
     for destination in installed:
         assert destination.joinpath("SKILL.md").read_text() == "version two"
         assert not destination.joinpath("stale.txt").exists()
+
+
+def test_reinstall_skips_unchanged_skill(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    _write_skill(source, packaged_skills.SMART_ROUTER_SKILL)
+    monkeypatch.setattr(packaged_skills, "_skills_source", lambda: source)
+    home = tmp_path / "home"
+    installed = packaged_skills.install_packaged_skills(packaged_skills.SMART_ROUTER_SKILL, home)
+
+    def fail_replace(*_args, **_kwargs):
+        pytest.fail("unchanged skills should not be replaced")
+
+    monkeypatch.setattr(packaged_skills, "_replace_skill", fail_replace)
+
+    installed_again = packaged_skills.install_packaged_skills(
+        packaged_skills.SMART_ROUTER_SKILL, home
+    )
+
+    assert installed_again == installed
+
+
+def test_copy_failure_preserves_existing_skill(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source_skill = _write_skill(source, packaged_skills.SMART_ROUTER_SKILL)
+    monkeypatch.setattr(packaged_skills, "_skills_source", lambda: source)
+    home = tmp_path / "home"
+    installed = packaged_skills.install_packaged_skills(packaged_skills.SMART_ROUTER_SKILL, home)
+    source_skill.joinpath("SKILL.md").write_text("version two")
+
+    def fail_copy(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(packaged_skills.shutil, "copytree", fail_copy)
+
+    with pytest.raises(OSError, match="disk full"):
+        packaged_skills.install_packaged_skills(packaged_skills.SMART_ROUTER_SKILL, home)
+
+    for destination in installed:
+        assert destination.joinpath("SKILL.md").read_text() == "version one"
+
+
+def test_swap_failure_restores_existing_skill(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source_skill = _write_skill(source, packaged_skills.SMART_ROUTER_SKILL)
+    monkeypatch.setattr(packaged_skills, "_skills_source", lambda: source)
+    home = tmp_path / "home"
+    installed = packaged_skills.install_packaged_skills(packaged_skills.SMART_ROUTER_SKILL, home)
+    source_skill.joinpath("SKILL.md").write_text("version two")
+    original_replace = Path.replace
+
+    def fail_staged_swap(path, target):
+        if path.name == "staged":
+            raise OSError("swap failed")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_staged_swap)
+
+    with pytest.raises(OSError, match="swap failed"):
+        packaged_skills.install_packaged_skills(packaged_skills.SMART_ROUTER_SKILL, home)
+
+    for destination in installed:
+        assert destination.joinpath("SKILL.md").read_text() == "version one"
 
 
 def test_uninstalls_one_skill_from_both_harnesses(tmp_path, monkeypatch):

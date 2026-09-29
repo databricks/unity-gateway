@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
+import tempfile
 from importlib.metadata import distribution
 from pathlib import Path
 
@@ -35,19 +37,77 @@ def _remove_skill_path(destination: Path) -> bool:
     return False
 
 
+def _bundle_digest(skill_dir: Path) -> str | None:
+    """Digest a skill's paths and contents, or return None for an invalid bundle."""
+    if skill_dir.is_symlink() or not skill_dir.is_dir():
+        return None
+
+    digest = hashlib.sha256()
+    try:
+        for path in sorted(
+            skill_dir.rglob("*"), key=lambda item: item.relative_to(skill_dir).as_posix()
+        ):
+            if path.is_symlink():
+                return None
+            relative = path.relative_to(skill_dir).as_posix().encode()
+            if path.is_dir():
+                digest.update(b"d\0" + relative + b"\0")
+            elif path.is_file():
+                content_digest = hashlib.sha256(path.read_bytes()).digest()
+                digest.update(b"f\0" + relative + b"\0" + content_digest)
+            else:
+                return None
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _replace_skill(source: Path, destination: Path) -> None:
+    """Stage a complete bundle, then swap it in while retaining a rollback copy."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_root = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
+    staged = temporary_root / "staged"
+    backup = temporary_root / "previous"
+    preserve_temporary_root = False
+    try:
+        shutil.copytree(source, staged)
+        had_destination = destination.exists() or destination.is_symlink()
+        if had_destination:
+            destination.replace(backup)
+        try:
+            staged.replace(destination)
+        except BaseException:
+            if had_destination:
+                try:
+                    backup.replace(destination)
+                except OSError as rollback_error:
+                    preserve_temporary_root = True
+                    raise RuntimeError(
+                        f"Could not install `{destination}` or restore its previous contents; "
+                        f"the backup is at `{backup}`."
+                    ) from rollback_error
+            raise
+    finally:
+        if not preserve_temporary_root:
+            shutil.rmtree(temporary_root, ignore_errors=True)
+
+
 def install_packaged_skills(skill_name: str, home: Path | None = None) -> list[Path]:
-    """Replace one packaged skill in each harness's global skill directory."""
+    """Install one packaged skill into each harness, replacing only changed bundles."""
     _validate_skill_name(skill_name)
     source = _skills_source() / skill_name
     if not (source / "SKILL.md").is_file():
         raise RuntimeError(f"Unity Gateway's packaged `{skill_name}` skill resource is missing.")
+    source_digest = _bundle_digest(source)
+    if source_digest is None:
+        raise RuntimeError(f"Unity Gateway's packaged `{skill_name}` skill resource is invalid.")
 
     base = Path.home() if home is None else home
     installed: list[Path] = []
     for root in _SKILL_ROOTS:
         destination = base / root / skill_name
-        _remove_skill_path(destination)
-        shutil.copytree(source, destination)
+        if _bundle_digest(destination) != source_digest:
+            _replace_skill(source, destination)
         installed.append(destination)
     return installed
 
