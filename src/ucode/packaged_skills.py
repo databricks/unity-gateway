@@ -9,6 +9,7 @@ from pathlib import Path
 
 _SKILL_ROOTS = (".claude/skills", ".agents/skills")
 _SKILL_NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+SMART_ROUTER_SKILL = "smart-router"
 
 
 def _skills_source() -> Path:
@@ -18,27 +19,30 @@ def _skills_source() -> Path:
     return Path(__file__).resolve().parents[2] / "skills"
 
 
-def install_packaged_skills(home: Path | None = None) -> list[Path]:
-    """Copy every packaged skill into each harness's global skill directory."""
-    source = _skills_source()
-    if not source.is_dir():
-        raise RuntimeError("Unity Gateway's packaged skill resources are missing.")
+def _validate_skill_name(skill_name: str) -> None:
+    if _SKILL_NAME_PATTERN.fullmatch(skill_name) is None:
+        raise ValueError(f"Invalid skill name: {skill_name!r}")
 
-    skills = sorted(path for path in source.iterdir() if (path / "SKILL.md").is_file())
+
+def install_packaged_skills(skill_name: str, home: Path | None = None) -> list[Path]:
+    """Copy one packaged skill into each harness's global skill directory."""
+    _validate_skill_name(skill_name)
+    source = _skills_source() / skill_name
+    if not (source / "SKILL.md").is_file():
+        raise RuntimeError(f"Unity Gateway's packaged `{skill_name}` skill resource is missing.")
+
     base = Path.home() if home is None else home
     installed: list[Path] = []
-    for skill in skills:
-        for root in _SKILL_ROOTS:
-            destination = base / root / skill.name
-            shutil.copytree(skill, destination, dirs_exist_ok=True)
-            installed.append(destination)
+    for root in _SKILL_ROOTS:
+        destination = base / root / skill_name
+        shutil.copytree(source, destination, dirs_exist_ok=True)
+        installed.append(destination)
     return installed
 
 
 def uninstall_packaged_skill(skill_name: str, home: Path | None = None) -> list[Path]:
     """Remove one packaged skill from each harness's global skill directory."""
-    if _SKILL_NAME_PATTERN.fullmatch(skill_name) is None:
-        raise ValueError(f"Invalid skill name: {skill_name!r}")
+    _validate_skill_name(skill_name)
 
     base = Path.home() if home is None else home
     removed: list[Path] = []
