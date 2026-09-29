@@ -89,6 +89,10 @@ that Claude settings and Codex's shell policy carry the interpreter and session 
 These are component checks; they do not establish native skill permission matching or
 PowerShell execution.
 
+The portable Windows routing test checks native executable forwarding, generated
+hooks/plugins, caller arguments, and cleanup without Unix imports. It does not
+establish live Windows hook execution or interactive routing.
+
 ## CUJ coverage matrix
 
 These are **implemented assertions**, not a claim that every version passes.

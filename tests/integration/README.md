@@ -226,6 +226,10 @@ PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `ug` first in PATH. The live journeys above do not inject a second installation or
 establish PowerShell command execution.
 
+The portable `../test_claude_windows_smart_routing.py` checks the Windows
+subagent-only fallback without Unix imports. Native Windows TUI and hook execution
+remain outside this integration suite.
+
 The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
 completes a file task on two models: a bare Anthropic id the subscription serves
 directly (`route=relay`) and a Databricks-hosted `system.ai` id the loopback proxy
