@@ -2371,7 +2371,7 @@ def _fetch_budget_recommendation(state: dict, managed: dict | None) -> dict | No
     """
     spend_tiers = (managed or {}).get("spend_tiers")
     tiers = spend_tiers.get("tiers") if isinstance(spend_tiers, dict) else None
-    if not isinstance(tiers, list) or not tiers or is_dry_run():
+    if not tiers or is_dry_run():
         return None
     reason: str | None = None
     recommendation = None
