@@ -30,12 +30,6 @@ keyboard selection: nothing is selected by default, selecting Codex installs onl
 Codex, and submitting an empty selection installs nothing. Rendering checks cover
 the selected and empty checkboxes. These are local component checks, not live gateway tests.
 
-`TestClaudeDebugLogs` in `test_agent_claude.py` covers opt-in native debug-log
-capture through `UG_CLAUDE_DEBUG_LOG_DIR`: unique private files, caller flag
-precedence, stderr-only notices, actionable filesystem errors, and forwarding
-through normal, smart-routed, and relayed launches. These are component checks;
-they do not claim remote log retrieval or a live Claude session.
-
 `TestRoutingPluginCleanup` in `test_claude_smart_routing_v2.py` checks centralized
 removal of all four routing/logging hook types, copied caller settings, disabled,
 explicit-model, headless and relayed launches, both enabled routing modes, and
@@ -46,17 +40,7 @@ Real subprocess/PTY checks verify inherited-lease protection during both explici
 teardown and stale-bundle collection. These component checks do not establish
 native daemon descriptor inheritance or invoke model inference.
 
-`test_diagnose_claude_routing.py` covers the standalone routing snapshot script:
-launch/hook comparisons, session-specific evidence, bounded and malformed logs,
-process disappearance, macOS argument parsing fixtures, and exclusion of secrets
-and prompt text. These are local collector checks, not live Isaac coverage.
-
 ## CUJ coverage matrix
-
-The one-off plugin-refresh repro and its synthetic classifier tests have been
-retired. Production registration/cleanup coverage remains in
-`test_claude_smart_routing_v2.py` and the plugin lifecycle journey below.
-Plugin-refresh survival and native daemon dispatch remain coverage gaps.
 
 These are **implemented assertions**, not a claim that every version passes.
 Consult the run's JUnit report and artifacts for results. Each function states

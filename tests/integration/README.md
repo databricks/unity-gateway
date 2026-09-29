@@ -187,18 +187,12 @@ interactive routed spawn. Codex interactive spawning, interactive explicit-model
 bypass, and dedicated smart-routing CI shards remain deferred; unit/component
 routing tests do not establish that live behavior.
 
-The Claude hook contract now expects the plugin-qualified
-`ucode-smart-routing:ucode-route-*` agent name. The one-off plugin-refresh repro
-and its parser-only tests have been retired; plugin-refresh survival is not
-covered by this suite. Registration and cleanup are asserted by the production
-launcher unit tests and the lifecycle journey below.
-
 `test_smart_routing_claude_plugin_cleanup_after_disable` covers an actual
 interactive routed child and its parent completing a file task, followed by a
 successful routing-disabled launch. It asserts transient plugin/settings cleanup,
-no persistent routing-plugin registration, and no new routing/logging events in
-the disabled session. This is not coverage of daemon/background dispatch or of
-its propagation of the plugin path and lease descriptor.
+the plugin-qualified `ucode-smart-routing:ucode-route-*` name, no persistent plugin
+registration, and no new routing/logging events in the disabled session.
+Plugin-refresh survival and native daemon/background dispatch remain uncovered.
 
 The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
 completes a file task on two models: a bare Anthropic id the subscription serves

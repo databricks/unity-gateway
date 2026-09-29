@@ -184,55 +184,15 @@ with `ug configure` to control installation.
 
 ## Claude Routing Plugin Lifetime
 
-Smart routing's generated agent definitions are a temporary, per-launch plugin,
-not a globally installed Claude plugin. A launch with smart routing disabled
-passes no generated plugin to Claude. Either `ENABLE_SMART_ROUTING_V2=1` or
-`ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1` enables routing (workspace-managed routing
-configuration can also enable it).
+Smart routing passes generated agents through a per-launch `--plugin-dir`,
+alongside `--settings`, without persistent plugin registration. Non-routed
+launches, explicit disable, and revert share cleanup for UG's first-prompt,
+subagent-routing, and logging hooks. User hooks/plugins remain untouched.
 
-UG passes the plugin using `--plugin-dir`, alongside the per-launch `--settings`.
-It never installs it in Claude's plugin registry or user skills/agents directories.
-
-One cleanup entry point removes UG's first-prompt, subagent-routing, SessionStart,
-and SubagentStart logging hooks and stale routing environment values. It runs for
-non-routed launches (including explicit-model and relayed bypasses), explicit
-disable, and revert. Caller settings are sanitized in memory, not overwritten.
-User hooks/plugins and historical routing logs are preserved during launch cleanup.
-
-Normal exit and setup/launch failures clean the generated settings, socket, and
-plugin together. Cleanup defers deletion while a child holds the inherited lease;
-later Claude launches collect abandoned bundles once both owner and lease are
-gone. This protects children that inherit the descriptor, not a daemon worker
-that receives only paths over IPC. Native background-dispatch propagation and
-descriptor retention still require validation against the affected Claude version.
-
-## Claude Debug Logs
-
-To capture Claude's native debug logs, including plugin refresh and agent-routing
-events, set a directory for the next launch:
-
-```bash
-UG_CLAUDE_DEBUG_LOG_DIR="$HOME/ug-debug" isaac
-# Or launch directly:
-UG_CLAUDE_DEBUG_LOG_DIR="$HOME/ug-debug" ug claude
-```
-
-This requires a UG version containing this option. Each launch creates a unique
-`claude-*.log` file, prints its absolute path to stderr, and retains the file after
-exit. Files are created with owner-only permissions. The option applies to normal,
-smart-routed, and relayed Claude launches. An explicit `--debug-file` takes
-precedence. Unset the variable to stop creating logs; remove retained files when
-finished investigating.
-
-To locate evidence of the missing-agent failure:
-
-```bash
-rg -n 'Auto-refreshing plugins|refreshActivePlugins|Agent type .*not found' "$HOME/ug-debug"/claude-*.log
-```
-
-This is local capture, not automatic upload or recovery of previous sessions.
-Review logs before sharing: Claude debug output can contain prompts, paths, and
-other sensitive session details.
+Exit and setup failures clean generated settings, sockets, and plugins together.
+Files remain while a child holds the inherited lease; later launches collect
+abandoned files. Native daemon/background propagation of plugin paths and leases
+remains unverified.
 
 ## Managed Files
 

@@ -113,7 +113,6 @@ class TestLaunchCodex:
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: None)
-        monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
 
         def launch_v2(state, tool_args, **kwargs):
             calls.append(kwargs)
@@ -155,8 +154,6 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
         monkeypatch.setattr(codex, "agent_version", lambda _: "0.145.0")
-        # This case exercises model preference precedence without a custom catalog.
-        monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         if custom_home:
             monkeypatch.setenv("CODEX_HOME", str(config_home))
             monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", tmp_path / "unused.config.toml")
