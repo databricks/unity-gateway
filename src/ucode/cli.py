@@ -2703,7 +2703,6 @@ def _launch_tool(
                 state["workspace"],
                 token,
                 parent_schema=parent_schema,
-                tool=TOOL_SPECS[tool]["display"],
             )
             if managed_claude_uc_without_defaults:
                 picker_catalog = catalog

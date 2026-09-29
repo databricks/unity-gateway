@@ -1133,7 +1133,6 @@ class TestManagedClaudeModelDiscovery:
                 calls["state"]["workspace"],
                 "token",
                 parent_schema=expected_parent,
-                tool="Claude Code",
             )
             assert calls["configure"].call_args.kwargs["picker_catalog"] is calls["picker_catalog"]
             assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == [

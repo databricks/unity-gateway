@@ -2669,7 +2669,6 @@ def list_anthropic_model_catalog(
     token: str,
     *,
     parent_schema: str | None = None,
-    tool: Literal["Claude Code", "Codex"] = "Claude Code",
 ) -> AnthropicModelCatalog:
     """Return advertised Anthropic model ids and their optional display metadata."""
     payload, reason = _get_anthropic_models_json(workspace, token, parent_schema=parent_schema)
@@ -2711,7 +2710,7 @@ def list_anthropic_model_catalog(
             model_id_to_description=descriptions,
         )
     if parent_schema is not None:
-        raise RuntimeError(_empty_unity_catalog_model_error(tool, parent_schema))
+        raise RuntimeError(_empty_unity_catalog_model_error("Claude Code", parent_schema))
     return AnthropicModelCatalog(
         model_ids=[],
         model_id_to_display_name={},
