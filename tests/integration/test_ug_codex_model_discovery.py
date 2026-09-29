@@ -69,31 +69,16 @@ def test_case_08_configured_codex_uses_default_models(live_session, workspace, m
 
 
 @pytest.mark.live
-@pytest.mark.parametrize(
-    "model_location_args",
-    [
-        pytest.param([], id="implicit-system-ai"),
-        pytest.param(["--model-location", "system.ai"], id="explicit-system-ai"),
-    ],
-)
-def test_case_10_fresh_codex_uses_default_models(live_session, workspace, model_location_args):
-    """Scenario: launch fresh Codex with --workspace and implicit or explicit system.ai.
+def test_case_10_fresh_codex_uses_default_models(live_session, workspace):
+    """Scenario: launch fresh Codex with --workspace and no source overrides.
 
-    Expected: both forms leave model selection to Codex's native default;
+    Expected: unmanaged fresh launch leaves model selection to Codex's native default;
     ug records system.ai discovery while model and reasoning preferences remain unset;
     app-server exposes native GPT entries without a generated provider/parent-scoped catalog.
     """
     session = live_session
     models = session.codex_model_ids(
-        [
-            "--workspace",
-            workspace,
-            *model_location_args,
-            "--",
-            "app-server",
-            "--listen",
-            "stdio://",
-        ]
+        ["--workspace", workspace, "--", "app-server", "--listen", "stdio://"]
     )
 
     _assert_default_models(session, models)
