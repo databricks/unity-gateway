@@ -118,7 +118,7 @@ class TestHelp:
             "Manage": output[panels["Manage"] : panels["Usage"]],
             "Usage": output[panels["Usage"] : global_options],
         }
-        for command in ("claude", "codex", "copilot", "cursor", "gemini", "opencode", "pi"):
+        for command in ("claude", "codex", "copilot", "cursor", "gemini", "opencode", "kilo", "pi"):
             assert command in sections["Launch"]
         assert "configure" in sections["Setup"]
         for command in ("mcp", "skills"):
@@ -3384,7 +3384,9 @@ class TestConfigureAgentFlag:
             result = runner.invoke(app, ["configure", "--agents", "claude,bogus"])
         assert result.exit_code != 0
         assert "Unsupported tool 'bogus'" in result.output
-        assert "codex, claude, gemini, opencode, copilot, pi" in " ".join(result.output.split())
+        assert "codex, claude, gemini, opencode, kilo, copilot, pi" in " ".join(
+            result.output.split()
+        )
         mock_cfg.assert_not_called()
 
     def test_agents_flag_rejects_empty_list(self):
