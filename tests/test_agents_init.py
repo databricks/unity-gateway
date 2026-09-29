@@ -588,6 +588,15 @@ class TestResolveGeminiProviderModel:
 
 
 class TestInstallToolBinary:
+    @staticmethod
+    def _seed_codex_catalog_reference(catalog_ref: str | None = None):
+        codex = agents_mod.codex
+        shared_path = codex.CODEX_CONFIG_PATH.parent / "config.toml"
+        shared_path.parent.mkdir(parents=True, exist_ok=True)
+        reference = catalog_ref or str(codex.CODEX_MODEL_CATALOG_PATH)
+        shared_path.write_text(f'model_catalog_json = "{reference}"\n', encoding="utf-8")
+        return shared_path
+
     def test_non_strict_returns_false_when_npm_missing(self, monkeypatch):
         monkeypatch.setattr("ucode.agents.shutil.which", lambda _: None)
 
@@ -655,6 +664,88 @@ class TestInstallToolBinary:
         assert install_tool_binary(tool) is True
         assert calls == [command]
         assert prompts == [(f"Upgrade {TOOL_SPECS[tool]['display']} if available?", True)]
+
+    @pytest.mark.parametrize(
+        "catalog_ref",
+        [None, "/user/isaac-app-model-catalog.json"],
+        ids=["ug-catalog", "custom-catalog"],
+    )
+    def test_codex_update_detaches_only_ug_catalog_before_mutation(self, monkeypatch, catalog_ref):
+        shared_path = self._seed_codex_catalog_reference(catalog_ref)
+        calls = []
+
+        monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
+        monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: None)
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            contents = shared_path.read_text(encoding="utf-8")
+            if catalog_ref is None:
+                assert "model_catalog_json" not in contents
+            else:
+                assert f'model_catalog_json = "{catalog_ref}"' in contents
+            return subprocess.CompletedProcess(args, 0)
+
+        monkeypatch.setattr("ucode.agents.subprocess.run", fake_run)
+
+        assert agents_mod._update_installed_tool_binary("codex") is True
+        assert calls == [["codex", "update"]]
+
+    @pytest.mark.parametrize("installed", [False, True], ids=["install", "update"])
+    def test_codex_install_or_update_failure_leaves_catalog_detached(self, monkeypatch, installed):
+        shared_path = self._seed_codex_catalog_reference()
+
+        monkeypatch.setattr(
+            "ucode.agents.shutil.which",
+            lambda binary: f"/usr/bin/{binary}" if installed or binary == "npm" else None,
+        )
+        monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: "must upgrade")
+        monkeypatch.setattr("ucode.agents._too_new_downgrade", lambda _: None)
+
+        def fail_run(args, **kwargs):
+            assert "model_catalog_json" not in shared_path.read_text(encoding="utf-8")
+            raise subprocess.CalledProcessError(1, args)
+
+        monkeypatch.setattr("ucode.agents.subprocess.run", fail_run)
+
+        if installed:
+            assert agents_mod._update_installed_tool_binary("codex") is False
+        else:
+            assert install_tool_binary("codex", strict=False) is False
+        assert "model_catalog_json" not in shared_path.read_text(encoding="utf-8")
+
+    def test_catalog_detach_failure_blocks_codex_binary_mutation(self, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr(
+            agents_mod.codex,
+            "detach_app_model_catalog",
+            lambda: (_ for _ in ()).throw(RuntimeError("cannot detach catalog")),
+        )
+        monkeypatch.setattr(
+            "ucode.agents.subprocess.run", lambda args, **kwargs: calls.append(args)
+        )
+
+        with pytest.raises(RuntimeError, match="cannot detach catalog"):
+            agents_mod._update_installed_tool_binary("codex")
+        assert calls == []
+
+    def test_claude_update_does_not_detach_codex_catalog(self, monkeypatch):
+        shared_path = self._seed_codex_catalog_reference()
+        calls = []
+
+        monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
+        monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: None)
+        monkeypatch.setattr(
+            "ucode.agents.subprocess.run",
+            lambda args, **kwargs: calls.append(args) or subprocess.CompletedProcess(args, 0),
+        )
+
+        assert agents_mod._update_installed_tool_binary("claude") is True
+        assert calls == [["claude", "upgrade"]]
+        assert "model_catalog_json" in shared_path.read_text(encoding="utf-8")
 
     @pytest.mark.parametrize("tool", ["claude", "codex"])
     def test_required_update_declined_blocks_launch(self, monkeypatch, tool):

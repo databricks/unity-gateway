@@ -1,7 +1,7 @@
 """CUJs: configure against a managed workspace, where an admin publishes the setup.
 
 These run against the managed e2e workspace (`E2E_ADMIN_WORKSPACE`), which publishes a
-CodingAgentConfig. They are the only journeys that exercise the managed config fetch end to end:
+CodingAgentConfig. They exercise the managed config fetch end to end:
 `ug configure` applies the admin config to every enabled agent without the personal agent
 selector, and each agent's generated config exposes exactly the admin's static
 `model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog). The
@@ -9,6 +9,7 @@ expected model ids mirror the published config; update them here if the admin li
 """
 
 import json
+import tomllib
 
 import pytest
 from utils.terminal import AgentTerminal
@@ -54,12 +55,15 @@ def test_ug_configure_managed_codex(live_session, workspace):
 
     Expected: ug applies the admin config to every enabled agent without showing the
     personal agent selector, Codex's generated model catalog lists exactly the admin's static
-    model_services, and launching Codex reaches a real gateway prompt rather than the
-    account-login flow.
+    model_services, the shared Codex App config points at that stable catalog, and configure
+    reports the daemon restart step on stderr. A fresh bare
+    Codex app-server returns the expected visible model, while the existing TUI assertion reaches
+    a prompt, accepts input, and exits normally. GUI rendering and inference are not covered.
     """
     session = live_session
     result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
+    assert "codex app-server daemon restart" in " ".join(result.stderr.split()), result.stderr
 
     catalog = json.loads((session.home / ".ucode" / "codex-model-catalog.json").read_text())
     listed = [
@@ -68,6 +72,17 @@ def test_ug_configure_managed_codex(live_session, workspace):
         if model.get("visibility") == "list"
     ]
     assert listed == [MANAGED_CODEX_MODEL], catalog
+
+    shared_config = tomllib.loads((session.home / ".codex" / "config.toml").read_text())
+    assert shared_config.get("model_catalog_json") == str(
+        session.home / ".ucode" / "codex-model-catalog.json"
+    ), shared_config
+    bare_models = session.codex_model_ids(
+        ["app-server", "--listen", "stdio://"],
+        name="bare-managed-codex-models",
+        binary="codex",
+    )
+    assert bare_models == [MANAGED_CODEX_MODEL], bare_models
 
     with AgentTerminal(session, "codex", [str(session.binary), "codex"], "managed-codex") as tui:
         tui.boot()

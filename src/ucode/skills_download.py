@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -115,13 +117,23 @@ def should_download_skill(roots: list[Path], ref: SkillRef) -> bool:
 
 
 def write_skill(roots: list[Path], ref: SkillRef, files: dict[str, bytes]) -> None:
-    """Write ``ref``'s bundle (``{relpath: bytes}``) into every root.
+    """Write ``ref``'s bundle (``{relpath: bytes}``) into every root, replacing any existing copy.
 
-    The directory is named for the bundle, so it matches the ``name:`` an agent
-    reads from the written SKILL.md.
+    The directory is named for the bundle, so it matches the ``name:`` an agent reads from the
+    written SKILL.md. Each root is cleared before it is rewritten, so a file removed upstream does
+    not linger. A write interrupted partway leaves only that one directory incomplete, never a
+    stray copy elsewhere; the next write clears and rebuilds it, so a retry always converges on
+    the current bundle.
     """
+    if not files:
+        return
     for root in roots:
-        _write_bundle(root / ref.bundle_name, ref.bundle_name, files)
+        skill_dir = root / ref.bundle_name
+        if skill_dir.is_symlink():
+            skill_dir.unlink()
+        elif skill_dir.is_dir():
+            shutil.rmtree(skill_dir)
+        _write_bundle(skill_dir, ref.bundle_name, files)
 
 
 def _skill_installs(
@@ -214,6 +226,29 @@ def _reject_bundle_name_collisions(refs: list[SkillRef]) -> list[SkillRef]:
     return kept
 
 
+def _fetch_bundles_and_write(
+    workspace: str, token: str, refs: list[SkillRef], roots: list[Path], *, label: str
+) -> list[SkillRef]:
+    """Fetch each ref's bundle concurrently, write it into ``roots``, and return those that
+    reached disk. A per-skill fetch failure or disk error warns and skips only that skill."""
+    if not refs:
+        return []
+    bundles = _fetch_bundles(workspace, token, refs, label=label)
+    written: list[SkillRef] = []
+    for ref in refs:
+        files, reason = bundles[ref.fqn]
+        if reason or files is None:
+            print_warning(f"Skipping `{ref.fqn}`: {reason}.")
+            continue
+        try:
+            write_skill(roots, ref, files)
+        except OSError as exc:
+            print_warning(f"Skipping `{ref.fqn}`: {exc}.")
+            continue
+        written.append(ref)
+    return written
+
+
 def _download_refs(
     workspace: str, token: str, refs: list[SkillRef], roots: list[Path], *, label: str
 ) -> tuple[list[SkillRef], int]:
@@ -222,22 +257,13 @@ def _download_refs(
     The shared download core: drop siblings claiming one directory
     (``_reject_bundle_name_collisions``), prompt before overwriting a skill already
     on disk (``should_download_skill``, so a declined skill is never fetched), then
-    fetch the survivors' bundles concurrently and write them. ``written`` are the
-    refs that reached disk, so a caller can record their attribution; ``total`` is
-    the count that could reach disk (dropped siblings excluded), so a caller's
-    summary denominator is right. A per-skill fetch failure warns and skips it.
+    fetch and write the survivors. ``written`` are the refs that reached disk, so a
+    caller can record their attribution; ``total`` is the count that could reach disk
+    (dropped siblings excluded), so a caller's summary denominator is right.
     """
     refs = _reject_bundle_name_collisions(refs)
     to_download = [ref for ref in refs if should_download_skill(roots, ref)]
-    bundles = _fetch_bundles(workspace, token, to_download, label=label)
-    written: list[SkillRef] = []
-    for ref in to_download:
-        files, reason = bundles[ref.fqn]
-        if reason or files is None:
-            print_warning(f"Skipping `{ref.fqn}`: {reason}.")
-            continue
-        write_skill(roots, ref, files)
-        written.append(ref)
+    written = _fetch_bundles_and_write(workspace, token, to_download, roots, label=label)
     console.print()
     return written, len(refs)
 
@@ -391,25 +417,11 @@ def reconcile_managed_skills(managed: dict) -> tuple[list[str], list[str]]:
             removed = [str(r["bundle_name"]) for r in stale if r.get("bundle_name")]
 
     missing = [ref for ref in refs if not existing_skill_on_disk(roots, ref.bundle_name)]
-    written: list[str] = []
-    if missing:
-        bundles = _fetch_bundles(workspace, token, missing, label="Fetching workspace skills")
-        installed: list[SkillRef] = []
-        for ref in missing:
-            files, reason = bundles[ref.fqn]
-            if reason or files is None:
-                print_warning(f"Skipping `{ref.fqn}`: {reason}.")
-                continue
-            try:
-                write_skill(roots, ref, files)
-            except OSError as exc:
-                # Best-effort per skill: a disk failure on one must not strand the rest.
-                print_warning(f"Skipping `{ref.fqn}`: {exc}.")
-                continue
-            installed.append(ref)
-            written.append(ref.bundle_name)
-        record_downloads(_skill_installs(installed, roots, None, workspace, scope="managed"))
-    return written, removed
+    installed = _fetch_bundles_and_write(
+        workspace, token, missing, roots, label="Fetching workspace skills"
+    )
+    record_downloads(_skill_installs(installed, roots, None, workspace, scope="managed"))
+    return [ref.bundle_name for ref in installed], removed
 
 
 def configure_location_skills_download_command(locations: list[str], *, path: str | None) -> int:
@@ -463,14 +475,18 @@ def _skill_download_choice(ref: SkillRef, roots: list[Path]) -> questionary.Choi
 
 def _skills_download_background_loader(
     workspace: str, token: str, roots: list[Path]
-) -> Callable[[Callable[[list[questionary.Choice]], None]], str | None]:
+) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], str | None]:
     """A picker ``background_loader`` that streams the workspace-wide skill walk in as choices."""
 
-    def loader(append: Callable[[list[questionary.Choice]], None]) -> str | None:
+    def loader(
+        append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
+    ) -> str | None:
         def on_skills(refs: list[SkillRef]) -> None:
             append([_skill_download_choice(ref, roots) for ref in refs])
 
-        found, reason = list_all_skills(workspace, token, on_skills=on_skills)
+        found, reason = list_all_skills(
+            workspace, token, on_skills=on_skills, cancel_event=cancel_event
+        )
         if reason == _SKILLS_WALK_TIMEOUT_REASON:
             return f"⚠ Timed out after {int(_SKILLS_WALK_DEADLINE_SECONDS)}s, found {len(found)} skills"
         return None
@@ -480,7 +496,9 @@ def _skills_download_background_loader(
 
 def prompt_for_skill_download_choices(
     roots: list[Path],
-    background_loader: Callable[[Callable[[list[questionary.Choice]], None]], str | None],
+    background_loader: Callable[
+        [Callable[[list[questionary.Choice]], None], threading.Event], str | None
+    ],
 ) -> list[str] | None:
     """Show the skill-download picker, returning the selected FQNs or None on Ctrl-C."""
     selection = scrolling_checkbox(

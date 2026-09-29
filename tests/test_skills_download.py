@@ -3,6 +3,8 @@ and download orchestration."""
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 import ucode.skills_download as sd
@@ -106,12 +108,96 @@ class TestWriteSkill:
         assert (roots[0] / "triage/SKILL.md").read_bytes() == b"ok"
         assert not (tmp_path / "escape.md").exists()
 
+    def test_replace_drops_files_removed_upstream(self, tmp_path):
+        roots = skill_dir_roots(str(tmp_path))
+        write_skill(roots, ref("triage"), {"SKILL.md": b"v1", "notes.md": b"old"})
+
+        write_skill(roots, ref("triage"), {"SKILL.md": b"v2"})
+
+        for root in roots:
+            assert (root / "triage/SKILL.md").read_bytes() == b"v2"
+            assert not (root / "triage/notes.md").exists()
+
+    def test_empty_bundle_keeps_existing_copy(self, tmp_path):
+        roots = skill_dir_roots(str(tmp_path))
+        write_skill(roots, ref("triage"), {"SKILL.md": b"v1"})
+
+        write_skill(roots, ref("triage"), {})
+
+        assert (roots[0] / "triage/SKILL.md").read_bytes() == b"v1"
+
+    def test_replaces_symlinked_bundle_without_touching_its_target(self, tmp_path):
+        roots = skill_dir_roots(str(tmp_path))
+        target = tmp_path / "real-skill"
+        target.mkdir()
+        (target / "keep.md").write_bytes(b"authored")
+        roots[0].mkdir(parents=True)
+        (roots[0] / "triage").symlink_to(target)
+
+        write_skill(roots, ref("triage"), {"SKILL.md": b"fresh"})
+
+        assert not (roots[0] / "triage").is_symlink()
+        assert (roots[0] / "triage/SKILL.md").read_bytes() == b"fresh"
+        assert (target / "keep.md").exists()
+
+    def test_leaves_only_the_bundle_dir(self, tmp_path):
+        roots = skill_dir_roots(str(tmp_path))
+
+        write_skill(roots, ref("triage"), {"SKILL.md": b"v1"})
+        write_skill(roots, ref("triage"), {"SKILL.md": b"v2"})
+
+        for root in roots:
+            assert [p.name for p in root.iterdir()] == ["triage"]
+
+    def test_recovers_from_interrupted_previous_write(self, tmp_path):
+        roots = skill_dir_roots(str(tmp_path))
+        for root in roots:
+            partial = root / "triage"
+            (partial / "scripts").mkdir(parents=True)
+            (partial / "stale.py").write_bytes(b"garbage")
+            (partial / "scripts/old.py").write_bytes(b"garbage")
+
+        write_skill(roots, ref("triage"), {"SKILL.md": b"good", "scripts/run.py": b"print(1)"})
+
+        for root in roots:
+            assert (root / "triage/SKILL.md").read_bytes() == b"good"
+            assert (root / "triage/scripts/run.py").read_bytes() == b"print(1)"
+            assert not (root / "triage/stale.py").exists()
+            assert not (root / "triage/scripts/old.py").exists()
+
 
 class TestFetchBundles:
     def test_empty_leaves_returns_empty_without_pool(self):
         # min(workers, 0) would raise ValueError in ThreadPoolExecutor; the
         # early return keeps _fetch_bundles safe regardless of caller.
         assert sd._fetch_bundles(WS, "token", [], label="main.default") == {}
+
+
+class TestFetchBundlesAndWrite:
+    def test_writes_survivors_and_skips_fetch_failures(self, tmp_path, monkeypatch):
+        roots = skill_dir_roots(str(tmp_path))
+        monkeypatch.setattr(
+            sd,
+            "_fetch_bundles",
+            lambda ws, tok, refs, label: {
+                "main.default.triage": ({"SKILL.md": b"ok"}, None),
+                "main.default.pii": (None, "HTTP 500"),
+            },
+        )
+        warnings: list[str] = []
+        monkeypatch.setattr(sd, "print_warning", warnings.append)
+
+        written = sd._fetch_bundles_and_write(
+            WS, "token", [ref("triage"), ref("pii")], roots, label="x"
+        )
+
+        assert [r.fqn for r in written] == ["main.default.triage"]
+        assert (roots[0] / "triage/SKILL.md").read_bytes() == b"ok"
+        assert any("pii" in w for w in warnings)
+
+    def test_empty_refs_makes_no_fetch(self, monkeypatch):
+        monkeypatch.setattr(sd, "_fetch_bundles", lambda *a, **k: pytest.fail("should not fetch"))
+        assert sd._fetch_bundles_and_write(WS, "token", [], [], label="x") == []
 
 
 class TestDownloadSkillsFromSchemaLocations:
@@ -855,7 +941,9 @@ class TestSkillDownloadPicker:
         monkeypatch.setattr(sd, "list_all_skills", fake_list_all)
         appended = []
 
-        message = sd._skills_download_background_loader(WS, "token", roots)(appended.extend)
+        message = sd._skills_download_background_loader(WS, "token", roots)(
+            appended.extend, threading.Event()
+        )
 
         assert message is None
         assert captured["token"] == "token"
@@ -870,7 +958,9 @@ class TestSkillDownloadPicker:
 
         monkeypatch.setattr(sd, "list_all_skills", fake_list_all)
 
-        message = sd._skills_download_background_loader(WS, "token", roots)(lambda choices: None)
+        message = sd._skills_download_background_loader(WS, "token", roots)(
+            lambda choices: None, threading.Event()
+        )
 
         assert message == "⚠ Timed out after 30s, found 2 skills"
 

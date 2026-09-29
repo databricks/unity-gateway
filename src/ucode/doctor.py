@@ -233,10 +233,10 @@ def _check_anthropic_env_collision() -> Check | None:
     )
 
 
-def _check_ucode() -> Check:
+def _check_ug() -> Check:
     """Report the installed build. Explicit updates are available via `ug upgrade`."""
     version = ug_version()
-    return Check("ucode", "info", f"v{version} (installed from GitHub)")
+    return Check("ug", "info", f"v{version} (installed from GitHub)")
 
 
 # ── orchestration ──────────────────────────────────────────────────────────
@@ -249,13 +249,13 @@ def _gather_checks() -> list[Check]:
     optional = [_check_databricks_auth(), _check_anthropic_env_collision()]
     checks.extend(c for c in optional if c is not None)
     checks.extend(_check_agent_clis())
-    checks.append(_check_ucode())
+    checks.append(_check_ug())
     return checks
 
 
 def doctor() -> int:
     """Run every check, print its status, and prompt to apply any offered fix."""
-    console.print(heading("ucode doctor"))
+    console.print(heading("ug doctor"))
     console.print()
 
     checks = _gather_checks()

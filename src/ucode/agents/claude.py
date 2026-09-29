@@ -46,6 +46,7 @@ from ucode.databricks import (
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
+from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
     OS,
     ManagedFileSnapshots,
@@ -211,6 +212,19 @@ CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
 _RELAYED_SETTING_SOURCES = "project,local"
 
 
+def _apply_managed_header_lines(
+    ucode_lines: list[str], managed_http_headers: dict[str, str] | None
+) -> list[str]:
+    """Overlay admin ``managed_http_headers`` onto ucode's header lines; admin wins by name."""
+    lines_by_name: dict[str, str] = {}
+    for line in ucode_lines:
+        name, _separator, _value = line.partition(":")
+        lines_by_name[name.strip().casefold()] = line
+    for name, value in (managed_http_headers or {}).items():
+        lines_by_name[name.strip().casefold()] = f"{name}: {value}"
+    return list(lines_by_name.values())
+
+
 def configured_paths(state: dict) -> list[str]:
     """The Claude config file ug writes; the OS-managed file is added by the dispatcher."""
     return [str(CLAUDE_SETTINGS_PATH)]
@@ -239,7 +253,7 @@ def _parse_managed_settings(text: str) -> dict:
 
 
 def _dump_managed_settings(settings: dict) -> str:
-    return json.dumps(settings, indent=2) + "\n"
+    return json.dumps(settings, indent=2, sort_keys=True) + "\n"
 
 
 def managed_settings_are_current(state: dict) -> bool:
@@ -351,6 +365,7 @@ def render_overlay(
     static_models: list[str] | None = None,
     otel_tracing: bool = False,
     picker_catalog: AnthropicModelCatalog | None = None,
+    managed_http_headers: dict[str, str] | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
 
@@ -394,7 +409,7 @@ def render_overlay(
         header_lines.append(f"{SMART_ROUTER_RECIPE_HEADER}: {configured_router_name()}")
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
-    custom_headers = "\n".join(header_lines)
+    custom_headers = "\n".join(_apply_managed_header_lines(header_lines, managed_http_headers))
     env: dict[str, str] = {
         "ANTHROPIC_BASE_URL": base_url,
         "ANTHROPIC_CUSTOM_HEADERS": custom_headers,
@@ -559,6 +574,54 @@ def _maybe_add_1m_suffix(model: str) -> str:
     return f"{model}[1m]" if should_suffix else model
 
 
+def default_model_picker_catalog(
+    defaults: dict[str, str],
+    *,
+    provider: str | None = None,
+    launch_model: str | None = None,
+    discovered_catalog: AnthropicModelCatalog | None = None,
+) -> AnthropicModelCatalog:
+    """Build a replacement picker catalog from managed defaults and discovered models."""
+
+    model_ids: list[str] = []
+    display_names: dict[str, str] = {}
+    descriptions: dict[str, str] = {}
+    for family, raw_model in defaults.items():
+        model = raw_model
+        label = _picker_label(model.removesuffix("[1m]"))
+        if provider is not None:
+            # Family shortcuts stay distinct from catalog rows for the same target.
+            model = family
+            label = f"Default {family.title()}"
+            descriptions[model] = raw_model
+        elif family in ("opus", "sonnet"):
+            # Match the current model's exact id so Claude does not append a duplicate row.
+            if launch_model and model.removesuffix("[1m]") == launch_model.removesuffix("[1m]"):
+                model = launch_model
+            else:
+                model = _maybe_add_1m_suffix(model)
+        if model in model_ids:
+            continue
+        model_ids.append(model)
+        display_names[model] = label
+
+    if discovered_catalog is not None:
+        for model in discovered_catalog.model_ids:
+            if model not in model_ids:
+                model_ids.append(model)
+            if label := discovered_catalog.model_id_to_display_name.get(model):
+                display_names[model] = label
+            if description := discovered_catalog.model_id_to_description.get(model):
+                descriptions[model] = description
+
+    return AnthropicModelCatalog(
+        model_ids=model_ids,
+        model_id_to_display_name=display_names,
+        model_id_to_description=descriptions,
+        error_msg=discovered_catalog.error_msg if discovered_catalog is not None else None,
+    )
+
+
 def _enforce_model_default_hierarchy(
     family: str,
     *,
@@ -691,6 +754,84 @@ def remove_claude_mcp_server(name: str, scope: str) -> bool:
         raise RuntimeError(f"Failed to remove MCP server '{name}' via claude CLI.") from exc
 
 
+def user_stdio_mcp_entry(argv: list[str], *, always_load: bool = False) -> dict:
+    """The user-scope ``mcpServers`` entry that ``claude mcp add ... -- <argv>`` writes.
+
+    Mirrors the CLI's on-disk shape so a batched direct write is what the CLI would have produced:
+    a plain stdio server carries an empty ``env`` map, while the skills registry's ``alwaysLoad``
+    entry carries that flag instead (as ``add-json`` writes it)."""
+    entry: dict = {"type": "stdio", "command": argv[0], "args": list(argv[1:])}
+    if always_load:
+        entry["alwaysLoad"] = True
+    else:
+        entry["env"] = {}
+    return entry
+
+
+def claude_mcp_config_path() -> Path:
+    """The file Claude Code reads user-scope ``mcpServers`` from: ``$CLAUDE_CONFIG_DIR/.claude.json``
+    when that env var is set (the ``claude`` CLI honors it), else the default ``~/.claude.json``. ug
+    elsewhere shells out to the CLI, which resolves this itself; a direct write must resolve the same
+    path or it silently writes to a file Claude never reads."""
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(config_dir) / ".claude.json" if config_dir else CLAUDE_MCP_CONFIG_PATH
+
+
+def _read_claude_config_for_rewrite(path: Path) -> dict | None:
+    """Read ``path`` for a full rewrite: ``{}`` when absent, the parsed object when present and
+    valid, and ``None`` when present but not a parseable JSON object — so a caller never overwrites
+    (and destroys) a config it could not read."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
+    """Apply ``add``/``remove`` to Claude's user-scope ``mcpServers`` (``~/.claude.json``, or under
+    ``$CLAUDE_CONFIG_DIR``) in a single read-modify-write, instead of one ``claude mcp`` subprocess
+    per server (each ~0.3-0.8s; a large managed set is otherwise dozens of them run serially). The
+    developer's own servers and every other key in the file are preserved. Returns the subset of
+    ``remove`` names that were actually present (so callers can report only real removals).
+
+    If the file exists but can't be parsed as a JSON object, we must not clobber it, so we defer to
+    the per-server ``claude`` CLI (which edits the file in place) for exactly the changed entries."""
+    path = claude_mcp_config_path()
+    config = _read_claude_config_for_rewrite(path)
+    if config is None:
+        removed: set[str] = set()
+        for name in remove:
+            # Clean every scope (not short-circuited), recording the name if any scope had it.
+            if [scope for scope in MCP_CLEANUP_SCOPES if remove_claude_mcp_server(name, scope)]:
+                removed.add(name)
+        for name, entry in add.items():
+            if entry.get("type") == "http":
+                oauth = entry.get("oauth") or {}
+                add_claude_http_mcp_server(
+                    name,
+                    entry["url"],
+                    client_id=oauth.get("clientId", CLAUDE_CODE_OAUTH_CLIENT_ID),
+                    callback_port=oauth.get("callbackPort", MCP_OAUTH_CALLBACK_PORT),
+                )
+            else:
+                add_claude_mcp_server(name, entry, MCP_USER_SCOPE)
+        return removed
+
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+    removed = {name for name in remove if name in servers}
+    for name in remove:
+        servers.pop(name, None)
+    servers.update(add)
+    config["mcpServers"] = servers
+    write_json_file(path, config)
+    return removed
+
+
 def managed_mcp_uses_managed_file(workspace: str, *, use_pat: bool) -> bool:
     """Whether Claude's managed MCP servers belong in the OS-managed file rather than user scope.
 
@@ -762,6 +903,7 @@ def reconcile_managed_mcp(state: dict, servers: dict[str, dict]) -> bool:
             tool="claude",
             display="Claude Code",
             owned_paths=[[MANAGED_MCP_SETTINGS_KEY]],
+            parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
         return False
@@ -826,7 +968,7 @@ def _web_search_mcp_is_current(state: dict, entry: dict) -> bool:
     """
     if state.get(WEB_SEARCH_MCP_STATE_KEY) != entry:
         return False
-    config = read_json_safe(CLAUDE_MCP_CONFIG_PATH)
+    config = read_json_safe(claude_mcp_config_path())
     servers = config.get("mcpServers")
     return isinstance(servers, dict) and servers.get(WEB_SEARCH_MCP_NAME) == entry
 
@@ -882,6 +1024,11 @@ def write_tool_config(
     # revert would restore that snapshot instead of deleting the file.
     if not is_tool_managed(state, "claude"):
         backup_existing_file(CLAUDE_SETTINGS_PATH, CLAUDE_BACKUP_PATH)
+    # A managed config makes ug authoritative over the whole custom-header value, so it is
+    # overwritten wholesale; without one, preserve the developer's own pre-existing headers. Reuses
+    # this launch's warm managed-config cache (no extra round trip); a failed fetch degrades to None
+    # (treated as unmanaged), never blocking the write.
+    managed_config_present = refresh_managed_config(state).manifest is not None
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
     # Relayed inference points at a local refresh proxy; its loopback base URL is
@@ -905,6 +1052,7 @@ def write_tool_config(
         static_models=state.get("claude_static_models"),
         otel_tracing=bool(state.get("claude_otel_tracing")),
         picker_catalog=picker_catalog,
+        managed_http_headers=state.get("claude_http_headers"),
     )
     source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
     # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
@@ -991,9 +1139,16 @@ def write_tool_config(
         for key in stale_picker_keys:
             merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
-        merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
-            existing_custom_headers, overlay_custom_headers
-        )
+        if managed_config_present:
+            # ug owns the whole value under a managed config: overwrite wholesale so a header ug no
+            # longer emits is dropped and no stale or foreign header lingers.
+            merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = overlay_custom_headers
+        else:
+            # No managed config: preserve the developer's own pre-existing headers, replacing only
+            # the header names ug manages.
+            merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
+                existing_custom_headers, overlay_custom_headers
+            )
         # Drop any apiKeyHelper a prior non-relayed launch left in the file; relayed
         # must not carry one (it would outrank the subscription OAuth).
         if relayed:
@@ -1205,6 +1360,7 @@ def _reconcile_managed_settings(
             tool="claude",
             display="Claude Code",
             owned_paths=owned_paths,
+            parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
         conflicts = managed_file_conflicts(managed_before, desired_settings, owned_paths)
@@ -1355,6 +1511,17 @@ def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[s
     if not launch_model or has_explicit_model_arg(tool_args):
         return []
     return ["--model", launch_model]
+
+
+def _resolve_picker_model_id(model: str, settings_env: dict) -> str:
+    """Resolve configured aliases and context suffixes for comparisons only."""
+    model = re.sub(r"\[(?:1m|200k)\]$", "", model)
+    family_env_key = CLAUDE_DEFAULT_MODEL_ENV_KEYS.get(model)
+    if family_env_key:
+        family_model = settings_env.get(family_env_key)
+        if isinstance(family_model, str) and family_model:
+            model = family_model
+    return re.sub(r"\[(?:1m|200k)\]$", "", model)
 
 
 def _build_claude_argv(
@@ -1546,11 +1713,14 @@ def launch(
     if state.get("claude_relayed"):
         _launch_relayed(state, binary, tool_args)
         return
+    launch_default_model = state.get("_claude_launch_default_model")
+    if isinstance(launch_default_model, str) and launch_default_model:
+        os.environ["ANTHROPIC_DEFAULT_MODEL"] = launch_default_model
     # Smart routing needs Unix PTY support, which Windows does not provide.
     if options.launch_smart_routing and os.name == "nt":
         raise RuntimeError(
             "Smart routing in Claude Code is currently not supported on Windows. "
-            "Please use Codex or disable smart routing."
+            "Please use Codex or launch without --enable-smart-routing."
         )
     if options.launch_smart_routing:
         smart_routing_v2.launch_claude(
@@ -1580,7 +1750,15 @@ def launch(
         picker_models = state.get("_claude_launch_picker_models")
         if isinstance(picker_models, list) and picker_models:
             saved_model = read_json_safe(CLAUDE_USER_SETTINGS_PATH).get("model")
-            if saved_model not in picker_models:
+            settings_env = read_json_safe(CLAUDE_SETTINGS_PATH).get("env")
+            settings_env = settings_env if isinstance(settings_env, dict) else {}
+            available_models = {
+                _resolve_picker_model_id(model, settings_env) for model in picker_models
+            }
+            if (
+                not isinstance(saved_model, str)
+                or _resolve_picker_model_id(saved_model, settings_env) not in available_models
+            ):
                 # Launch on a valid discovered model without turning it into a managed default or
                 # overwriting the user's saved selection. This also prevents Claude from appending
                 # that stale built-in selection to an otherwise replaced picker.

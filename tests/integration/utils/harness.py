@@ -7,15 +7,24 @@ import json
 import os
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import threading
 import time
 from pathlib import Path
 
-from .constants import CODEX_TEST_MODEL
+from .constants import CLAUDE_TEST_MODEL, CODEX_TEST_MODEL
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def process_group_options() -> dict:
+    if os.name == "posix":
+        return {"start_new_session": True}
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {}
 
 
 def clean_environment(home: Path) -> dict[str, str]:
@@ -70,8 +79,19 @@ def stop_process(proc: subprocess.Popen) -> None:
         # The leader may have exited while a grandchild kept running.
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
-    elif proc.poll() is None:
-        proc.kill()
+    elif os.name == "nt" and proc.poll() is None:
+        try:
+            subprocess.run(
+                [shutil.which("taskkill") or "taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        if proc.poll() is None:
+            proc.kill()
     proc.wait(timeout=5)
 
 
@@ -89,7 +109,7 @@ class UserSession:
 
     def redact(self, text: str, *, strip_ansi: bool = True) -> str:
         # Also scrub the relayed launch's subscription OAuth token, not just the bearer.
-        for name in ("DATABRICKS_BEARER", "CLAUDE_CODE_OAUTH_TOKEN"):
+        for name in ("DATABRICKS_BEARER", "DATABRICKS_SECOND_BEARER", "CLAUDE_CODE_OAUTH_TOKEN"):
             for token in (os.environ.get(name), self.env.get(name)):
                 if token:
                     text = text.replace(token, "<redacted>")
@@ -113,7 +133,7 @@ class UserSession:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            start_new_session=os.name == "posix",
+            **process_group_options(),
         )
         timed_out = False
         try:
@@ -179,7 +199,10 @@ class UserSession:
             usable = [
                 value for value in values if value.startswith(prefix) and "astra" not in value
             ]
-            model = CODEX_TEST_MODEL if CODEX_TEST_MODEL in usable else next(iter(usable), "")
+            # Prefer the pinned test model: discovery can list a new model before the gateway serves
+            # it (e.g. a fresh Claude release returning 404), which would fail unrelated PRs.
+            preferred = CLAUDE_TEST_MODEL if agent == "claude" else CODEX_TEST_MODEL
+            model = preferred if preferred in usable else next(iter(usable), "")
             source = "ug configure discovery"
         assert model, (
             f"ug configure found no system.ai model for {agent}; use --{agent}-model to reproduce a specific model."
@@ -192,15 +215,38 @@ class UserSession:
         for name in ("codex-v2-interposer.log", "claude-v2-pty.log"):
             assert not (self.home / ".ucode" / name).exists(), f"Unexpected routing: {name}"
 
+    def claude_gateway_models(self, name: str = "claude-gateway-models") -> list[dict]:
+        """Inspect Claude Code's own cache after its model picker launched and exited."""
+        path = Path(self.env["CLAUDE_CONFIG_DIR"]) / "cache/gateway-models.json"
+        assert path.is_file(), f"Claude Code did not create its gateway model cache: {path}"
+        payload = json.loads(path.read_text())
+        models = payload.get("models") if isinstance(payload, dict) else None
+        assert isinstance(models, list), f"Invalid Claude gateway model cache: {payload!r}"
+        assert all(isinstance(model, dict) for model in models), (
+            f"Invalid Claude gateway model entries: {models!r}"
+        )
+        self.record(f"{name}.json", payload)
+        return models
+
+    def claude_gateway_model_ids(self, name: str = "claude-gateway-models") -> list[str]:
+        """Read IDs from Claude Code's own post-launch gateway catalog cache."""
+        models = self.claude_gateway_models(name)
+        ids = [model.get("id") for model in models if isinstance(model, dict)]
+        assert len(ids) == len(models) and all(isinstance(model_id, str) for model_id in ids), (
+            f"Invalid Claude gateway model entries: {models!r}"
+        )
+        return ids
+
     def app_server_handshake(
         self,
         args: list[str],
         timeout: int = 120,
         request: tuple[str, dict] | None = None,
         name: str = "app-server",
+        binary: str | None = None,
     ) -> dict:
         """Speak the real Codex stdio protocol and require an initialize response."""
-        command = [str(self.binary), "codex", *args]
+        command = [binary, *args] if binary else [str(self.binary), "codex", *args]
         messages: queue.Queue = queue.Queue()
         transcript: list[str] = []
         diagnostics: list[str] = []
@@ -213,7 +259,7 @@ class UserSession:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            start_new_session=os.name == "posix",
+            **process_group_options(),
         )
 
         def read_output():
@@ -287,7 +333,9 @@ class UserSession:
                 f"{name}.json", {"argv": command, "stdout": transcript, "stderr": diagnostics}
             )
 
-    def codex_model_ids(self, args: list[str], name: str = "codex-models") -> list[str]:
+    def codex_model_ids(
+        self, args: list[str], name: str = "codex-models", *, binary: str | None = None
+    ) -> list[str]:
         """Ask the real Codex app-server for the catalog its model picker uses."""
         response = self.app_server_handshake(
             args,
@@ -296,6 +344,7 @@ class UserSession:
                 {"cursor": None, "limit": 1000, "includeHidden": False},
             ),
             name=f"{name}-app-server",
+            binary=binary,
         )
         result = response["result"]
         models = result.get("data")

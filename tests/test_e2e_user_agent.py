@@ -1,8 +1,9 @@
-"""End-to-end test that the User-Agent header ucode injects actually reaches the wire.
+"""End-to-end test that headers ucode injects reach the wire — the agent's own
+User-Agent, and admin-supplied managed ``http_headers``.
 
 We don't talk to a real Databricks workspace here — instead we stand up a
 tiny HTTP capture server on localhost, point each agent's *_BASE_URL at it,
-launch the agent, and assert on the User-Agent the server saw.
+launch the agent, and assert on the headers the server saw.
 
 The server returns a canned error so the agent itself fails; we don't care
 about the agent's exit code, only the headers that arrived before it bailed.
@@ -135,6 +136,13 @@ def _assert_ua(req: _CapturedRequest, expected: str) -> None:
     assert ua == expected, f"User-Agent mismatch.\n  got:      {ua!r}\n  expected: {expected!r}"
 
 
+def _header(req: _CapturedRequest, name: str) -> str | None:
+    for key, value in req.headers.items():
+        if key.casefold() == name.casefold():
+            return value
+    return None
+
+
 def _run_until_first_request(
     cmd: list[str], env: dict[str, str], timeout: int = 20
 ) -> subprocess.CompletedProcess | None:
@@ -203,6 +211,36 @@ class TestClaudeUserAgent:
         assert req is not None, _no_request_msg(capture_server, result)
         _assert_ua(req, _expected_ua("claude", "claude"))
 
+    def test_managed_http_header_arrives_at_gateway(self, tmp_path, monkeypatch, capture_server):
+        import ucode.config_io as config_io_mod
+        from ucode.agents import claude
+
+        _require_binary("claude")
+        config_dir = tmp_path / "claude_config"
+        config_dir.mkdir()
+        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", config_dir / "settings.json")
+        monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "claude.backup.json")
+
+        overlay, _ = claude.render_overlay(
+            capture_server.base_url,
+            "test-model",
+            managed_http_headers={"x-databricks-workspace": "eng-ml-inference"},
+        )
+        claude.CLAUDE_SETTINGS_PATH.write_text(json.dumps(overlay), encoding="utf-8")
+        env = {
+            **os.environ,
+            "CLAUDE_CONFIG_DIR": str(config_dir),
+            "ANTHROPIC_API_KEY": "test-key-not-real",
+            **overlay["env"],
+        }
+
+        result = _run_until_first_request(claude.validate_cmd("claude"), env)
+
+        req = capture_server.first_request_with_path_prefix("/ai-gateway/anthropic")
+        assert req is not None, _no_request_msg(capture_server, result)
+        assert _header(req, "x-databricks-workspace") == "eng-ml-inference"
+
 
 class TestCodexUserAgent:
     def test_user_agent_arrives_at_gateway(self, tmp_path, monkeypatch, capture_server):
@@ -234,6 +272,39 @@ class TestCodexUserAgent:
         req = capture_server.first_request_with_path_prefix("/ai-gateway/codex")
         assert req is not None, _no_request_msg(capture_server, result)
         _assert_ua(req, _expected_ua("codex", "codex"))
+
+    def test_managed_http_header_arrives_at_gateway(self, tmp_path, monkeypatch, capture_server):
+        import ucode.config_io as config_io_mod
+        from ucode.agents import codex
+
+        _require_binary("codex")
+        config_dir = tmp_path / "codex_home" / ".codex"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "ucode.config.toml"
+
+        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "codex.backup.toml")
+
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr("ucode.state.save_state", lambda s: None)
+            codex.write_tool_config(
+                {
+                    "workspace": capture_server.base_url,
+                    "codex_http_headers": {"x-databricks-workspace": "eng-ml-inference"},
+                }
+            )
+
+        env = {
+            **os.environ,
+            "CODEX_HOME": str(config_dir),
+            "OPENAI_API_KEY": "test-key-not-real",
+        }
+        result = _run_until_first_request(codex.validate_cmd("codex"), env)
+
+        req = capture_server.first_request_with_path_prefix("/ai-gateway/codex")
+        assert req is not None, _no_request_msg(capture_server, result)
+        assert _header(req, "x-databricks-workspace") == "eng-ml-inference"
 
 
 class TestOpencodeUserAgent:
