@@ -95,6 +95,26 @@ class TestUsageCommand:
             "Unity Gateway Budgets and add it to the workspace configuration."
         ]
 
+    @pytest.mark.parametrize(
+        "reason",
+        ["HTTP 401 Unauthorized", "HTTP 403 Forbidden: Invalid access token."],
+    )
+    def test_rejects_invalid_access_token(self, monkeypatch, reason):
+        self._stub_auth(monkeypatch, {"workspace": "https://workspace"})
+        monkeypatch.setattr(
+            usage_mod,
+            "resolve_current_budget_spend",
+            lambda workspace, token: (None, reason),
+        )
+        monkeypatch.setattr(
+            usage_mod,
+            "print_note",
+            lambda *_: pytest.fail("invalid credentials must not look like absent budget"),
+        )
+
+        with pytest.raises(RuntimeError, match="expired or invalid"):
+            usage()
+
     def test_requires_a_configured_workspace(self, monkeypatch):
         monkeypatch.setattr(usage_mod, "load_state", lambda: {})
 
