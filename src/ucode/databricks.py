@@ -35,6 +35,7 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
+from ucode.telemetry import ug_version
 from ucode.ui import (
     err_console,
     normalize_workspace_url,
@@ -1833,7 +1834,9 @@ def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list
     """List the workspace's managed CodingAgentConfig(s) via the AI Gateway."""
     hostname = workspace_hostname(workspace)
     url = f"https://{hostname}{_CODING_AGENT_CONFIGS_API_PATH}"
-    payload, reason = _http_get_json(url, token, timeout=30)
+    payload, reason = _http_get_json(
+        url, token, timeout=30, headers={"User-Agent": f"ucode/{ug_version()}"}
+    )
     if reason is not None:
         return [], reason
     if isinstance(payload, dict):
@@ -2762,14 +2765,20 @@ def list_all_mcp_services(
 
 
 def _get_anthropic_models_json(
-    workspace: str, token: str, *, parent_schema: str | None = None
+    workspace: str,
+    token: str,
+    *,
+    parent_schema: str | None = None,
+    provider: str | None = None,
 ) -> tuple[dict | list | None, str | None]:
     hostname = workspace_hostname(workspace)
-    headers = (
-        {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema} if parent_schema is not None else None
-    )
+    headers = None
+    if provider is not None:
+        headers = {MODEL_PROVIDER_SERVICE_HEADER: provider}
+    elif parent_schema is not None:
+        headers = {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema}
     return _http_get_json(
-        f"https://{hostname}{ANTHROPIC_MODELS_PATH}",
+        f"https://{hostname}{ANTHROPIC_MODELS_PATH}?limit=1000",
         token,
         max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
         **({"headers": headers} if headers is not None else {}),
@@ -2788,10 +2797,19 @@ def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | 
 
 
 def list_anthropic_model_catalog(
-    workspace: str, token: str, *, parent_schema: str | None = None
+    workspace: str,
+    token: str,
+    *,
+    parent_schema: str | None = None,
+    provider: str | None = None,
 ) -> AnthropicModelCatalog:
     """Return advertised Anthropic model ids and their optional display metadata."""
-    payload, reason = _get_anthropic_models_json(workspace, token, parent_schema=parent_schema)
+    payload, reason = _get_anthropic_models_json(
+        workspace,
+        token,
+        parent_schema=parent_schema,
+        provider=provider,
+    )
     if payload is None:
         return AnthropicModelCatalog(model_ids=[], model_id_to_display_name={}, error_msg=reason)
 

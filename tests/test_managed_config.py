@@ -426,7 +426,7 @@ class TestFetchClient:
         monkeypatch.setattr(
             db_mod,
             "_http_get_json",
-            lambda url, token, timeout=10: (payload, None),
+            lambda url, token, timeout=10, headers=None: (payload, None),
         )
         configs, reason = db_mod.fetch_managed_coding_agent_configs("https://ws", "tok")
         assert reason is None
@@ -437,7 +437,7 @@ class TestFetchClient:
         monkeypatch.setattr(
             db_mod,
             "_http_get_json",
-            lambda url, token, timeout=10: ({}, None),
+            lambda url, token, timeout=10, headers=None: ({}, None),
         )
         configs, reason = db_mod.fetch_managed_coding_agent_configs("https://ws", "tok")
         assert configs == []
@@ -447,11 +447,35 @@ class TestFetchClient:
         monkeypatch.setattr(
             db_mod,
             "_http_get_json",
-            lambda url, token, timeout=10: (None, "HTTP 403 Forbidden"),
+            lambda url, token, timeout=10, headers=None: (None, "HTTP 403 Forbidden"),
         )
         configs, reason = db_mod.fetch_managed_coding_agent_configs("https://ws", "tok")
         assert configs == []
         assert reason == "HTTP 403 Forbidden"
+
+    def test_sends_ucode_user_agent_header(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "ug_version", lambda: "9.9.9")
+        captured = {}
+
+        class _FakeResponse:
+            headers: dict[str, str] = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b'{"coding_agent_configs": []}'
+
+        def fake_urlopen(request, timeout=None):
+            captured["request"] = request
+            return _FakeResponse()
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        db_mod.fetch_managed_coding_agent_configs("https://ws", "tok")
+        assert captured["request"].get_header("User-agent") == "ucode/9.9.9"
 
 
 WORKSPACE = "https://ws.example.com"

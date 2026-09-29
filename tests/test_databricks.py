@@ -340,12 +340,28 @@ class TestDiscoverClaudeModels:
             "opaque-model-id",
         ]
         assert captured["request"] == (
-            f"{WS}/ai-gateway/anthropic/v1/models",
+            f"{WS}/ai-gateway/anthropic/v1/models?limit=1000",
             "token",
             {"max_retries": 2},
         )
 
-    def test_lists_anthropic_display_names_with_model_ids(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("scope_kwargs", "expected_headers"),
+        [
+            (
+                {"parent_schema": "main.default"},
+                {"Databricks-Model-Service-Parent-Schema": "main.default"},
+            ),
+            (
+                {"provider": "main.default.anthropic"},
+                {"Databricks-Model-Provider-Service": "main.default.anthropic"},
+            ),
+        ],
+        ids=["parent-schema", "provider-service"],
+    )
+    def test_lists_anthropic_display_names_with_model_ids(
+        self, monkeypatch, scope_kwargs, expected_headers
+    ):
         payload = {
             "data": [
                 {
@@ -364,7 +380,7 @@ class TestDiscoverClaudeModels:
 
         monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
 
-        catalog = db_mod.list_anthropic_model_catalog(WS, "token", parent_schema="main.default")
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token", **scope_kwargs)
 
         assert catalog.model_ids == ["system.ai.glm-5-3-flash", "opaque-model-id"]
         assert catalog.model_id_to_display_name == {"system.ai.glm-5-3-flash": "GLM 5.3 Flash"}
@@ -372,11 +388,11 @@ class TestDiscoverClaudeModels:
         assert catalog.error_msg is None
         assert requests == [
             (
-                f"{WS}/ai-gateway/anthropic/v1/models",
+                f"{WS}/ai-gateway/anthropic/v1/models?limit=1000",
                 "token",
                 {
                     "max_retries": 2,
-                    "headers": {"Databricks-Model-Service-Parent-Schema": "main.default"},
+                    "headers": expected_headers,
                 },
             )
         ]

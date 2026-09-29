@@ -51,6 +51,11 @@ On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
 
+Use `ug opencode --model system.ai.glm-5-3` (or `-m`) to select a configured
+model for one launch. OpenCode's `provider/model` form is also accepted.
+Unknown Databricks models produce an error; this option does not add models
+to discovery or change ug's saved default.
+
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
@@ -176,6 +181,14 @@ ug skills remove --location main.default --via mcp
 Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
 with `ug configure` to control installation.
+
+## Claude Routing Plugin
+
+Smart routing passes generated agents through a per-launch `--plugin-dir`,
+alongside `--settings`, without persistent plugin registration. One temporary
+directory holds the settings, socket, and plugin and is removed when the launch
+finishes or fails. Existing hook configuration and disable/revert behavior are
+unchanged. Native daemon/background propagation of the plugin remains unverified.
 
 ## Managed Files
 
