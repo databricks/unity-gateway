@@ -921,10 +921,16 @@ class TestSubcommandRouting:
 
     @pytest.mark.parametrize("tool", ["codex", "claude"])
     def test_disable_smart_routing_is_consumed_by_ug(self, tool):
+        routing_during_launch = []
         with (
             patch("ucode.cli.codex_agent.disable_smart_routing") as mock_disable,
             patch("ucode.cli.claude_agent.disable_smart_routing") as mock_disable_claude,
-            patch("ucode.cli._launch_tool") as mock_launch,
+            patch(
+                "ucode.cli._launch_tool",
+                side_effect=lambda *_args, **_kwargs: routing_during_launch.append(
+                    cli_mod.smart_routing_v2.smart_routing_enabled()
+                ),
+            ) as mock_launch,
         ):
             result = runner.invoke(app, [tool, "--disable-smart-routing"])
 
@@ -933,7 +939,7 @@ class TestSubcommandRouting:
         mock_disable_claude.assert_not_called()
         mock_launch.assert_called_once()
         assert mock_launch.call_args.args[1].args == []
-        assert mock_launch.call_args.kwargs["smart_routing_override"] is False
+        assert routing_during_launch == [False]
 
     def test_legacy_opt_in_migrates_both_agents(self):
         from ucode.cli import _migrate_legacy_smart_routing

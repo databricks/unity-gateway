@@ -2274,11 +2274,7 @@ def _smart_routing_v2_flag(enabled: bool | None) -> Iterator[None]:
     if enabled is None:
         yield
         return
-    previous = (
-        smart_routing_v2.enable_smart_routing()
-        if enabled
-        else smart_routing_v2.disable_smart_routing()
-    )
+    previous = smart_routing_v2.override_smart_routing(enabled)
     try:
         yield
     finally:
@@ -2552,22 +2548,6 @@ def _launch_options(
     )
 
 
-@contextmanager
-def _managed_smart_routing_environment(
-    managed: dict | None, tool: str, *, overridden: bool
-) -> Iterator[None]:
-    """Expose an agent's managed smart-routing switch only to its launched session."""
-    if overridden or not _managed_smart_routing_enabled(managed, tool):
-        yield
-        return
-
-    previous = smart_routing_v2.enable_smart_routing()
-    try:
-        yield
-    finally:
-        smart_routing_v2.restore_smart_routing_env(previous)
-
-
 def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
     """Whether the workspace enabled smart routing for this specific agent."""
     agent_config = ((managed or {}).get("enabled_agents") or {}).get(tool) or {}
@@ -2586,7 +2566,6 @@ def _launch_tool(
     model: str | None = None,
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
-    smart_routing_override: bool | None = None,
 ) -> None:
     try:
         tool = normalize_tool(tool_name)
@@ -2597,11 +2576,6 @@ def _launch_tool(
         if _child_owns_stdout(tool, ctx.args):
             redirect_output_to_stderr()
         explicit_prompt = _has_explicit_prompt(ctx)
-        smart_routing_enabled = (
-            smart_routing_override
-            if smart_routing_override is not None
-            else smart_routing_v2.smart_routing_enabled()
-        )
         # Launchers such as isaac put their harness arguments after `--`, so the harness's own
         # `--model` lands in ctx.args instead of a ucode option. It still determines the effective
         # launch model and should therefore win in the launch summary.
@@ -2681,10 +2655,10 @@ def _launch_tool(
             os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         # The environment switch remains a developer override; managed config is the workspace
         # policy equivalent and must take effect before launch options are computed.
-        managed_smart_routing_enabled = (
-            smart_routing_override is None and _managed_smart_routing_enabled(managed, tool)
+        managed_smart_routing_enabled = _managed_smart_routing_enabled(managed, tool)
+        smart_routing_enabled = smart_routing_v2.smart_routing_enabled(
+            default=managed_smart_routing_enabled
         )
-        smart_routing_enabled = smart_routing_enabled or managed_smart_routing_enabled
         # Discovery exists to find models and isn't needed for managed config that already names them.
         managed_models_known = managed_supplies_models(managed, tool)
         # Re-fetch model lists on every launch so newly-added Databricks
@@ -2943,10 +2917,8 @@ def _launch_tool(
             provider=provider,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
-        with _managed_smart_routing_environment(
-            managed,
-            tool,
-            overridden=smart_routing_override is not None,
+        with _smart_routing_v2_flag(
+            True if managed_smart_routing_enabled and smart_routing_enabled else None
         ):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
@@ -3191,7 +3163,6 @@ def codex_cmd(
                 workspace_url=workspace,
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
-                smart_routing_override=enable_smart_routing_flag,
             )
 
 
@@ -3281,7 +3252,6 @@ def claude_cmd(
                 workspace_url=workspace,
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
-                smart_routing_override=enable_smart_routing_flag,
             )
 
 

@@ -140,9 +140,16 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
     return None
 
 
-def smart_routing_enabled(env: MutableMapping[str, str] | None = None) -> bool:
+def smart_routing_enabled(
+    env: MutableMapping[str, str] | None = None, *, default: bool = False
+) -> bool:
     source = os.environ if env is None else env
-    return any(source.get(var) == "1" for var in SMART_ROUTING_ENV_KEYS)
+    values = [source.get(var) for var in SMART_ROUTING_ENV_KEYS]
+    if "1" in values:
+        return True
+    if "0" in values:
+        return False
+    return default
 
 
 def first_prompt_routing_enabled(env: MutableMapping[str, str] | None = None) -> bool:
@@ -161,6 +168,20 @@ def enable_smart_routing(
     target = os.environ if env is None else env
     previous = {var: target.get(var) for var in SMART_ROUTING_ENV_KEYS}
     target[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
+    return previous
+
+
+def override_smart_routing(
+    enabled: bool,
+    env: MutableMapping[str, str] | None = None,
+) -> dict[str, str | None]:
+    """Set an explicit launch-scoped routing choice and return the prior values."""
+    target = os.environ if env is None else env
+    previous = {var: target.get(var) for var in SMART_ROUTING_ENV_KEYS}
+    if enabled:
+        target[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
+    else:
+        target.update(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
     return previous
 
 
