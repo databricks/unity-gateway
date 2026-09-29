@@ -38,6 +38,9 @@ ucode = "ucode.cli:main"
 # Keep the Python module and existing ~/.ucode configuration paths compatible.
 packages = ["src/ucode"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"skills" = "ucode/_bundled_skills"
+
 [tool.hatch.version]
 source = "uv-dynamic-versioning"
 
