@@ -212,8 +212,8 @@ class TestListSkillFiles:
     def test_lists_under_the_skills_place(self, monkeypatch):
         captured = {}
 
-        def fake_get(url, token, timeout=30):
-            captured["url"] = url
+        def fake_get(url, token, **kwargs):
+            captured.update(url=url, **kwargs)
             return {"contents": []}, None
 
         monkeypatch.setattr(sa, "_http_get_json", fake_get)
@@ -221,6 +221,7 @@ class TestListSkillFiles:
         sa.list_skill_files(WS, "token", "main", "default", "triage")
 
         assert captured["url"] == f"{WS}/api/2.0/fs/directories/Skills/main/default/triage"
+        assert captured["max_retries"] == sa._FILES_API_MAX_RETRIES
 
     def test_walks_nested_directories_into_relative_paths(self, monkeypatch):
         # The Files API returns absolute paths.
@@ -237,7 +238,7 @@ class TestListSkillFiles:
             },
         }
 
-        def fake_get(url, token, timeout=30):
+        def fake_get(url, token, **kwargs):
             directory = url.split("/api/2.0/fs/directories/", 1)[1]
             return listings[directory], None
 
@@ -258,9 +259,7 @@ class TestListSkillFiles:
             {"contents": [{"path": f"{skill}/b.md", "is_directory": False}]},
         ]
 
-        monkeypatch.setattr(
-            sa, "_http_get_json", lambda url, token, timeout=30: (pages.pop(0), None)
-        )
+        monkeypatch.setattr(sa, "_http_get_json", lambda url, token, **kwargs: (pages.pop(0), None))
 
         paths, reason = sa.list_skill_files(WS, "token", "main", "default", "triage")
 
@@ -269,7 +268,7 @@ class TestListSkillFiles:
 
     def test_http_failure_propagates_reason(self, monkeypatch):
         monkeypatch.setattr(
-            sa, "_http_get_json", lambda url, token, timeout=30: (None, "HTTP 404 Not Found")
+            sa, "_http_get_json", lambda url, token, **kwargs: (None, "HTTP 404 Not Found")
         )
 
         paths, reason = sa.list_skill_files(WS, "token", "main", "default", "triage")
@@ -282,8 +281,8 @@ class TestFetchSkillFile:
     def test_returns_raw_bytes_from_files_api(self, monkeypatch):
         captured = {}
 
-        def fake_get_bytes(url, token, timeout=30):
-            captured["url"] = url
+        def fake_get_bytes(url, token, **kwargs):
+            captured.update(url=url, **kwargs)
             return b"# SKILL\n", None
 
         monkeypatch.setattr(sa, "_http_get_bytes", fake_get_bytes)
@@ -293,10 +292,11 @@ class TestFetchSkillFile:
         assert reason is None
         assert body == b"# SKILL\n"
         assert captured["url"] == f"{WS}/api/2.0/fs/files/Skills/main/default/triage/SKILL.md"
+        assert captured["max_retries"] == sa._FILES_API_MAX_RETRIES
 
     def test_http_failure_propagates_reason(self, monkeypatch):
         monkeypatch.setattr(
-            sa, "_http_get_bytes", lambda url, token, timeout=30: (None, "HTTP 404 Not Found")
+            sa, "_http_get_bytes", lambda url, token, **kwargs: (None, "HTTP 404 Not Found")
         )
 
         body, reason = sa.fetch_skill_file(WS, "token", "main", "default", "triage", "gone.md")
@@ -440,6 +440,38 @@ class TestFetchSkillBundle:
         finally:
             blocker.set()
             t.join()
+
+    def test_fetches_waiting_for_a_slot_skip_after_a_failure(self, monkeypatch):
+        paths = [f"file_{i}.md" for i in range(5)]
+        monkeypatch.setattr(sa, "list_skill_files", lambda *a, **k: (paths, None))
+        fetched = []
+        monkeypatch.setattr(
+            sa,
+            "fetch_skill_file",
+            lambda ws, tok, c, s, leaf, rel: fetched.append(rel) or (None, "HTTP 429"),
+        )
+
+        all_waiting = threading.Barrier(len(paths), timeout=2.0)
+        bundle_returned = threading.Event()
+        released = threading.Semaphore(0)
+
+        class OneSlotUntilBundleReturns:
+            def __enter__(self):
+                if all_waiting.wait():
+                    bundle_returned.wait()
+
+            def __exit__(self, *exc):
+                released.release()
+
+        monkeypatch.setattr(sa, "_file_download_slots", OneSlotUntilBundleReturns())
+
+        result = sa.fetch_skill_bundle(WS, "token", "main", "default", "triage")
+        bundle_returned.set()
+        for _ in paths:
+            assert released.acquire(timeout=2.0)
+
+        assert result == (None, "HTTP 429")
+        assert len(fetched) == 1
 
 
 class TestGetSkill:
