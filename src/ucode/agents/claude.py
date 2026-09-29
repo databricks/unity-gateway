@@ -15,7 +15,7 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-from ucode import gateway_proxy
+from ucode import gateway_proxy, launcher
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -47,7 +47,7 @@ from ucode.databricks import (
     get_databricks_token,
     ug_binary,
 )
-from ucode.launcher import exec_or_spawn, resolve_command
+from ucode.launcher import exec_or_spawn
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import (
     OS,
@@ -687,8 +687,8 @@ def add_claude_mcp_server(
     else:
         cmd = ["claude", "mcp", "add", name, "-s", scope, "--", *server]
     try:
-        subprocess.run(
-            resolve_command(cmd),
+        launcher.run(
+            cmd,
             check=True,
             capture_output=True,
             text=True,
@@ -733,8 +733,8 @@ def add_claude_http_mcp_server(
         url,
     ]
     try:
-        subprocess.run(
-            resolve_command(cmd),
+        launcher.run(
+            cmd,
             check=True,
             capture_output=True,
             text=True,
@@ -751,8 +751,8 @@ def remove_claude_mcp_server(name: str, scope: str) -> bool:
     from ucode.mcp import _is_missing_mcp_server_output
 
     try:
-        subprocess.run(
-            resolve_command(["claude", "mcp", "remove", name, "-s", scope]),
+        launcher.run(
+            ["claude", "mcp", "remove", name, "-s", scope],
             check=True,
             capture_output=True,
             text=True,
@@ -1624,8 +1624,8 @@ def _has_subscription_login() -> bool:
     """True when Claude Code already holds a subscription login (`claude auth
     status` exits 0). Never inspects or captures the credential itself."""
     try:
-        result = subprocess.run(
-            resolve_command([SPEC["binary"], "auth", "status"]),
+        result = launcher.run(
+            [SPEC["binary"], "auth", "status"],
             check=False,
             capture_output=True,
             text=True,
@@ -1649,7 +1649,7 @@ def _ensure_subscription_login() -> None:
         return
     print_note("Opening browser to sign in with your Claude subscription...")
     try:
-        subprocess.run(resolve_command([SPEC["binary"], "auth", "login"]), check=True, timeout=300)
+        launcher.run([SPEC["binary"], "auth", "login"], check=True, timeout=300)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError("`claude auth login` failed.") from exc
     except subprocess.TimeoutExpired as exc:
@@ -1696,7 +1696,7 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess.Popen(resolve_command(_build_claude_argv(binary, tool_args, relayed=True)))
+    proc = launcher.popen(_build_claude_argv(binary, tool_args, relayed=True))
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

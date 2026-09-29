@@ -16,7 +16,9 @@ and checks their version output against the `unity-gateway` distribution metadat
 `TestUpgrade` in `test_cli.py` covers both command names before, during, and after
 the distribution rename with mocked installer calls, including failure recovery guidance.
 `test_launcher.py` covers Windows npm shim resolution, native and Node targets,
-and literal argument preservation. Claude's native resolver tests remain in
+literal argument preservation, and the shared `launcher.run` / `launcher.popen`
+entry points. Ruff rejects direct subprocess launches outside the launcher and tests.
+Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
 These are component checks, not live Windows coverage for every agent.
 

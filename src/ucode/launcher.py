@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 # Launch lines of npm's cmd-shim (the last line containing `%*`). A JS entry point
 # run by node:   ... & "%_prog%"  "%dp0%\node_modules\@openai\codex\bin\codex.js" %*
@@ -77,6 +78,39 @@ def resolve_command(argv: list[str]) -> list[str]:
     return [resolved, *argv[1:]]
 
 
+def _resolved_args(
+    args: list[str] | str, *, shell: bool = False, executable: str | None = None
+) -> list[str] | str:
+    """Leave caller-controlled shell and executable interpretation unchanged."""
+    if isinstance(args, list) and not shell and executable is None:
+        return resolve_command(args)
+    return args
+
+
+def run(args: list[str] | str, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    """Like subprocess.run, with automatic Windows resolution for list commands."""
+    return subprocess.run(
+        _resolved_args(
+            args,
+            shell=kwargs.get("shell", False),
+            executable=kwargs.get("executable"),
+        ),
+        **kwargs,
+    )
+
+
+def popen(args: list[str] | str, **kwargs: Any) -> subprocess.Popen[Any]:
+    """Like subprocess.Popen, with automatic Windows resolution for list commands."""
+    return subprocess.Popen(
+        _resolved_args(
+            args,
+            shell=kwargs.get("shell", False),
+            executable=kwargs.get("executable"),
+        ),
+        **kwargs,
+    )
+
+
 def exec_or_spawn(argv: list[str]) -> None:
     """Hand the terminal to ``argv``, then exit with its status.
 
@@ -94,7 +128,7 @@ def exec_or_spawn(argv: list[str]) -> None:
         os.execvp(argv[0], argv)
         return  # unreachable on POSIX; keeps type-checkers happy
 
-    proc = subprocess.Popen(resolve_command(argv))
+    proc = popen(argv)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

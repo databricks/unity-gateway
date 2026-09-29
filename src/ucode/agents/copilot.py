@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import os
 import signal
-import subprocess
 import threading
 from pathlib import Path
 
+from ucode import launcher
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -35,7 +35,6 @@ from ucode.databricks import (
     build_copilot_base_url,
     get_databricks_token,
 )
-from ucode.launcher import resolve_command
 from ucode.state import mark_tool_managed, save_state
 
 from .args import LaunchOptions
@@ -202,9 +201,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     )
     refresher.start()
 
-    proc = subprocess.Popen(
-        resolve_command([SPEC["binary"], *mcp_config_args(), *tool_args]), env=env
-    )
+    proc = launcher.popen([SPEC["binary"], *mcp_config_args(), *tool_args], env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

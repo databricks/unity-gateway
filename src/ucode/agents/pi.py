@@ -32,8 +32,8 @@ from __future__ import annotations
 
 import os
 import signal
-import subprocess
 
+from ucode import launcher
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -49,7 +49,6 @@ from ucode.databricks import (
     classify_model_family,
     get_databricks_token,
 )
-from ucode.launcher import resolve_command
 from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
@@ -299,7 +298,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     token = _configure_launch(state)
     env = build_runtime_env(token)
 
-    proc = subprocess.Popen(resolve_command([SPEC["binary"], *tool_args]), env=env)
+    proc = launcher.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

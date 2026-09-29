@@ -10,8 +10,8 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from ucode import launcher
 from ucode.codex_config import ModelVisibility
-from ucode.launcher import resolve_command
 from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.ui import print_warning
 
@@ -128,8 +128,8 @@ def build_codex_catalog(
 def _run_catalog_command(
     binary: str, args: list[str], home: str
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        resolve_command([binary, *args]),
+    return launcher.run(
+        [binary, *args],
         env={**os.environ, "CODEX_HOME": home},
         cwd=home,
         stdin=subprocess.DEVNULL,

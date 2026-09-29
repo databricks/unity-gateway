@@ -14,7 +14,7 @@ import subprocess
 from functools import cache
 from importlib.metadata import PackageNotFoundError, version
 
-from ucode.launcher import resolve_command
+from ucode import launcher
 
 _SEMVER_RE = re.compile(r"\d+\.\d+\.\d+[-+0-9A-Za-z.]*")
 
@@ -36,8 +36,8 @@ def agent_version(binary: str) -> str:
     token from stdout (then stderr) so the same parser handles all of them.
     """
     try:
-        result = subprocess.run(
-            resolve_command([binary, "--version"]),
+        result = launcher.run(
+            [binary, "--version"],
             capture_output=True,
             text=True,
             timeout=2,

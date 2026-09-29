@@ -76,10 +76,19 @@ select = [
     "UP",  # pyupgrade
     "B",   # flake8-bugbear
     "C4",  # flake8-comprehensions
+    "TID251",  # route process creation through cross-platform launch helpers
 ]
 ignore = [
     "E501",  # line too long — formatter handles this
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["B011"]  # assert False in tests is fine
+"tests/**" = ["B011", "TID251"]  # tests may exercise subprocess directly
+"src/ucode/launcher.py" = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"subprocess.run".msg = "Use ucode.launcher.run to resolve Windows commands automatically."
+"subprocess.Popen".msg = "Use ucode.launcher.popen to resolve Windows commands automatically."
+"subprocess.call".msg = "Use ucode.launcher.run to resolve Windows commands automatically."
+"subprocess.check_call".msg = "Use ucode.launcher.run with check=True."
+"subprocess.check_output".msg = "Use ucode.launcher.run with check=True and stdout=subprocess.PIPE."

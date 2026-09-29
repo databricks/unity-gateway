@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +20,124 @@ def windows_os_view() -> SimpleNamespace:
     Windows on Linux/macOS.
     """
     return SimpleNamespace(**{**vars(os), "name": "nt"})
+
+
+class TestProcessWrappers:
+    def test_run_resolves_windows_argv_and_preserves_kwargs(self):
+        argv = ["codex", "--model", "m"]
+        resolved = [r"C:\\node\\codex.exe", "--model", "m"]
+        completed = MagicMock()
+        with (
+            patch.object(launcher.os, "name", "nt"),
+            patch.object(launcher, "resolve_command", return_value=resolved) as resolve,
+            patch.object(launcher.subprocess, "run", return_value=completed) as run,
+        ):
+            result = launcher.run(argv, check=False, capture_output=True, text=True)
+
+        assert result is completed
+        resolve.assert_called_once_with(argv)
+        run.assert_called_once_with(resolved, check=False, capture_output=True, text=True)
+
+    def test_popen_resolves_windows_argv_and_preserves_kwargs(self):
+        argv = ["claude", "--settings", "settings.json"]
+        resolved = [r"C:\\tools\\claude.exe", "--settings", "settings.json"]
+        process = MagicMock()
+        with (
+            patch.object(launcher.os, "name", "nt"),
+            patch.object(launcher, "resolve_command", return_value=resolved) as resolve,
+            patch.object(launcher.subprocess, "Popen", return_value=process) as popen,
+        ):
+            result = launcher.popen(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={"TEST": "1"},
+            )
+
+        assert result is process
+        resolve.assert_called_once_with(argv)
+        popen.assert_called_once_with(
+            resolved,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={"TEST": "1"},
+        )
+
+    @pytest.mark.parametrize(
+        "args, kwargs",
+        [
+            ("codex --help", {}),
+            (["codex", "--help"], {"shell": True}),
+            (["codex", "--help"], {"executable": "/bin/sh"}),
+        ],
+    )
+    def test_run_preserves_strings_and_shell_or_executable_overrides(self, args, kwargs):
+        with (
+            patch.object(launcher.os, "name", "nt"),
+            patch.object(launcher, "resolve_command") as resolve,
+            patch.object(launcher.subprocess, "run", return_value=MagicMock()) as run,
+        ):
+            launcher.run(args, **kwargs)
+
+        resolve.assert_not_called()
+        run.assert_called_once_with(args, **kwargs)
+
+    def test_popen_preserves_executable_override(self):
+        argv = ["codex", "--help"]
+        with (
+            patch.object(launcher.os, "name", "nt"),
+            patch.object(launcher, "resolve_command") as resolve,
+            patch.object(launcher.subprocess, "Popen", return_value=MagicMock()) as popen,
+        ):
+            launcher.popen(argv, executable="/bin/sh")
+
+        resolve.assert_not_called()
+        popen.assert_called_once_with(argv, executable="/bin/sh")
+
+    def test_posix_passes_argv_to_run_unchanged(self):
+        argv = ["codex", "--help"]
+        with (
+            patch.object(launcher.os, "name", "posix"),
+            patch.object(launcher, "resolve_command", return_value=argv) as resolve,
+            patch.object(launcher.subprocess, "run", return_value=MagicMock()) as run,
+        ):
+            launcher.run(argv)
+
+        resolve.assert_called_once_with(argv)
+        run.assert_called_once_with(argv)
+
+    def test_missing_command_keeps_subprocess_error(self):
+        with pytest.raises(FileNotFoundError):
+            launcher.run(["ucode-launcher-command-that-does-not-exist-872"])
+
+    def test_real_run_preserves_text_and_bytes_results(self):
+        command = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'launcher-ok\\n')"]
+
+        text_result = launcher.run(command, check=True, capture_output=True, text=True, timeout=5)
+        bytes_result = launcher.run(command, check=True, capture_output=True, timeout=5)
+
+        assert text_result.returncode == 0
+        assert text_result.stdout == "launcher-ok\n"
+        assert bytes_result.returncode == 0
+        assert bytes_result.stdout == b"launcher-ok\n"
+
+    def test_real_popen_preserves_context_manager_and_exit_status(self):
+        with launcher.popen(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'popen-ok\\n')",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ) as process:
+            stdout, stderr = process.communicate(timeout=5)
+
+        assert process.returncode == 0
+        assert stdout == b"popen-ok\n"
+        assert stderr == b""
 
 
 class TestExecOrSpawn:

@@ -30,6 +30,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
+from ucode import launcher
 from ucode.config_io import APP_DIR
 from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
@@ -197,7 +198,7 @@ def _log_auth_diagnostics() -> None:
         return
 
     try:
-        version_result = subprocess.run(
+        version_result = launcher.run(
             ["databricks", "--version"],
             check=False,
             capture_output=True,
@@ -210,7 +211,7 @@ def _log_auth_diagnostics() -> None:
         _debug("databricks --version", f"exception: {type(exc).__name__}: {exc}")
 
     try:
-        profiles_result = subprocess.run(
+        profiles_result = launcher.run(
             ["databricks", "auth", "profiles", "--output", "json"],
             check=False,
             capture_output=True,
@@ -654,7 +655,7 @@ def run(
     env: dict[str, str] | None = None,
     timeout: int | None = None,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
+    return launcher.run(
         args,
         check=check,
         capture_output=capture_output,

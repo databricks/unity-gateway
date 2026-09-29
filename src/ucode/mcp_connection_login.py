@@ -21,6 +21,7 @@ from __future__ import annotations
 import subprocess
 import sys
 
+from ucode import launcher
 from ucode.databricks import AIGW_MCP_SERVICES_SEGMENT
 
 # Login can pop a browser and wait for the user to complete the SaaS login, so
@@ -53,7 +54,7 @@ def _cli_supports_resource_flag(login_binary: str) -> bool:
     instead. Fail-open (assume supported) if ``--help`` can't be run — the real
     login attempt will surface any genuine failure."""
     try:
-        result = subprocess.run(
+        result = launcher.run(
             [login_binary, "auth", "login", "--help"],
             check=False,
             timeout=20,
@@ -114,7 +115,7 @@ def run_connection_login(
         # stdout -> stderr: the CLI's prompts and authorize URL reach the agent's
         # MCP log (fd 2) without corrupting this process's stdout (fd 1, the MCP
         # JSON-RPC stream). stdin is closed since the flow is browser-driven.
-        result = subprocess.run(
+        result = launcher.run(
             argv,
             check=False,
             timeout=_LOGIN_TIMEOUT_SECONDS,

@@ -15,6 +15,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from ucode import launcher
 from ucode.config_io import ToolSpec
 from ucode.databricks import (
     AnthropicModelCatalog,
@@ -24,7 +25,6 @@ from ucode.databricks import (
     map_claude_family_models,
     resolve_provider_service,
 )
-from ucode.launcher import resolve_command
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import managed_write_batch
 from ucode.state import get_provider_service, load_state, save_state
@@ -139,7 +139,7 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
         # Detach potentially incompatible metadata until the next validated refresh.
         codex.detach_app_model_catalog()
     try:
-        subprocess.run(resolve_command(command), check=True, timeout=300)
+        launcher.run(command, check=True, timeout=300)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         print_warning(f"Could not update {spec['display']}; continuing.")
         return False
@@ -231,7 +231,7 @@ def install_tool_binary(
     if tool == "codex":
         codex.detach_app_model_catalog()
     try:
-        subprocess.run(resolve_command(["npm", "install", "-g", package]), check=True, timeout=300)
+        launcher.run(["npm", "install", "-g", package], check=True, timeout=300)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         message = f"Failed to install {spec['display']} automatically."
         if strict:

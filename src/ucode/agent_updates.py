@@ -7,7 +7,7 @@ import re
 import shutil
 import subprocess
 
-from ucode.launcher import resolve_command
+from ucode import launcher
 
 _BASE_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 _STABLE_VERSION_RE = re.compile(r"v?\d+\.\d+\.\d+$")
@@ -34,8 +34,8 @@ def published_versions(package: str) -> list[str]:
     if not shutil.which("npm"):
         return []
     try:
-        result = subprocess.run(
-            resolve_command(["npm", "view", package, "versions", "--json"]),
+        result = launcher.run(
+            ["npm", "view", package, "versions", "--json"],
             capture_output=True,
             text=True,
             timeout=15,
