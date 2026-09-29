@@ -39,7 +39,7 @@ ucode = "ucode.cli:main"
 packages = ["src/ucode"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"skills" = "ucode/_bundled_skills"
+"skills" = "skills"
 
 [tool.hatch.version]
 source = "uv-dynamic-versioning"
