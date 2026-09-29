@@ -104,6 +104,10 @@ The portable Windows routing test checks native executable forwarding, generated
 hooks/plugins, caller arguments, and cleanup without Unix imports. It does not
 establish live Windows hook execution or interactive routing.
 
+Pi's token-command tests in `test_agent_pi.py` exercise Windows executable paths
+through POSIX parsing, including spaces, apostrophes, profile names, and PAT mode.
+They do not launch Pi or Git Bash on Windows.
+
 ## CUJ coverage matrix
 
 These are **implemented assertions**, not a claim that every version passes.
