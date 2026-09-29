@@ -49,8 +49,7 @@ native daemon descriptor inheritance or invoke model inference.
 `test_diagnose_claude_routing.py` covers the standalone routing snapshot script:
 launch/hook comparisons, session-specific evidence, bounded and malformed logs,
 process disappearance, macOS argument parsing fixtures, and exclusion of secrets
-and prompt text. These are local collector checks, not live Isaac coverage; see
-`scripts/diagnose_claude_routing.md` for user instructions.
+and prompt text. These are local collector checks, not live Isaac coverage.
 
 ## CUJ coverage matrix
 
