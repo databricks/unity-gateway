@@ -402,24 +402,49 @@ class TestDiscoverClaudeModels:
     def test_scoped_empty_catalog_uses_shared_actionable_error(self, monkeypatch):
         monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: ({"data": []}, None))
 
-        catalog = db_mod.list_anthropic_model_catalog(WS, "token", parent_schema="main.default")
+        with pytest.raises(RuntimeError) as exc_info:
+            db_mod.list_anthropic_model_catalog(WS, "token", parent_schema="main.default")
 
-        assert catalog.model_ids == []
-        assert catalog.error_msg == (
+        assert str(exc_info.value) == (
             "No compatible models were found for Claude Code in Unity Catalog location "
             "'main.default'. Check the location and your access to its model services."
+        )
+
+    @pytest.mark.parametrize(
+        "payload",
+        [None, [], {}, {"data": {}}],
+        ids=["json-null", "array", "missing-data", "non-list-data"],
+    )
+    def test_scoped_invalid_catalog_raises_actionable_error(self, monkeypatch, payload):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (payload, None))
+
+        with pytest.raises(RuntimeError) as exc_info:
+            db_mod.list_anthropic_model_catalog(WS, "token", parent_schema="main.default")
+
+        assert str(exc_info.value) == (
+            "Could not discover Claude models for Unity Catalog location main.default: "
+            "AI Gateway returned an invalid Anthropic model catalog."
         )
 
     def test_scoped_catalog_transport_error_is_preserved(self, monkeypatch):
         reason = "HTTP 403 Forbidden: Invalid Token"
         monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (None, reason))
 
-        catalog = db_mod.list_anthropic_model_catalog(WS, "token", parent_schema="main.default")
+        with pytest.raises(RuntimeError) as exc_info:
+            db_mod.list_anthropic_model_catalog(WS, "token", parent_schema="main.default")
 
-        assert catalog.model_ids == []
-        assert catalog.error_msg == (
+        assert str(exc_info.value) == (
             "Could not discover Claude models for Unity Catalog location main.default: " + reason
         )
+
+    def test_unscoped_transport_error_remains_in_result(self, monkeypatch):
+        reason = "HTTP 403 Forbidden: Invalid Token"
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args, **kwargs: (None, reason))
+
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token")
+
+        assert catalog.model_ids == []
+        assert catalog.error_msg == reason
 
     def test_selects_opus_4_8_when_advertised(self, monkeypatch):
         payload = {

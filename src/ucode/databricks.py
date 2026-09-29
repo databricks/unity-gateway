@@ -2673,12 +2673,17 @@ def list_anthropic_model_catalog(
 ) -> AnthropicModelCatalog:
     """Return advertised Anthropic model ids and their optional display metadata."""
     payload, reason = _get_anthropic_models_json(workspace, token, parent_schema=parent_schema)
-    if payload is None:
-        if parent_schema is not None and reason is not None:
-            reason = (
-                f"Could not discover Claude models for Unity Catalog location "
-                f"{parent_schema}: {reason}"
+    if parent_schema is not None:
+        error_prefix = (
+            f"Could not discover Claude models for Unity Catalog location {parent_schema}: "
+        )
+        if reason is not None:
+            raise RuntimeError(error_prefix + reason)
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise RuntimeError(
+                error_prefix + "AI Gateway returned an invalid Anthropic model catalog."
             )
+    if payload is None:
         return AnthropicModelCatalog(model_ids=[], model_id_to_display_name={}, error_msg=reason)
 
     data = cast(dict, payload) if isinstance(payload, dict) else {}
@@ -2705,14 +2710,11 @@ def list_anthropic_model_catalog(
             model_id_to_display_name=display_names,
             model_id_to_description=descriptions,
         )
+    if parent_schema is not None:
+        raise RuntimeError(_empty_unity_catalog_model_error(tool, parent_schema))
     return AnthropicModelCatalog(
         model_ids=[],
         model_id_to_display_name={},
-        error_msg=(
-            _empty_unity_catalog_model_error(tool, parent_schema)
-            if parent_schema is not None
-            else None
-        ),
     )
 
 

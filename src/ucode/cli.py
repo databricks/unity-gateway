@@ -2705,8 +2705,6 @@ def _launch_tool(
                 parent_schema=parent_schema,
                 tool=TOOL_SPECS[tool]["display"],
             )
-            if catalog.error_msg:
-                raise RuntimeError(catalog.error_msg)
             if managed_claude_uc_without_defaults:
                 picker_catalog = catalog
         # The router's per-launch pick for the root session. Codex pins it as the

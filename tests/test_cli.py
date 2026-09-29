@@ -1055,7 +1055,7 @@ class TestManagedClaudeModelDiscovery:
     }
 
     @staticmethod
-    def _invoke(monkeypatch, managed, catalog=None):
+    def _invoke(monkeypatch, managed, catalog_error=None):
         state = {
             **MINIMAL_STATE,
             "claude_models": {},
@@ -1073,14 +1073,17 @@ class TestManagedClaudeModelDiscovery:
         monkeypatch.setattr(cli_mod, "configure_shared_state", shared)
         resolve_provider = MagicMock(return_value=(None, None, False))
         monkeypatch.setattr(cli_mod, "resolve_provider_models", resolve_provider)
-        picker_catalog = catalog or db_mod.AnthropicModelCatalog(
+        picker_catalog = db_mod.AnthropicModelCatalog(
             model_ids=["main.default.claude-sonnet-5"],
             model_id_to_display_name={"main.default.claude-sonnet-5": "Claude Sonnet 5"},
             model_id_to_description={
                 "main.default.claude-sonnet-5": "Recommended for everyday use"
             },
         )
-        list_anthropic_model_catalog = MagicMock(return_value=picker_catalog)
+        list_anthropic_model_catalog = MagicMock(
+            return_value=picker_catalog,
+            side_effect=RuntimeError(catalog_error) if catalog_error else None,
+        )
         monkeypatch.setattr(cli_mod, "list_anthropic_model_catalog", list_anthropic_model_catalog)
         resolve_model = MagicMock(side_effect=AssertionError("must use native discovery"))
         monkeypatch.setattr(cli_mod, "resolve_launch_model", resolve_model)
@@ -1142,13 +1145,10 @@ class TestManagedClaudeModelDiscovery:
             assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
-    def test_empty_catalog_uses_its_error_message(self, monkeypatch):
+    def test_scoped_catalog_error_propagates(self, monkeypatch):
         error = "No compatible models were found for Claude Code in Unity Catalog location 'main.default'."
-        catalog = db_mod.AnthropicModelCatalog(
-            model_ids=[], model_id_to_display_name={}, error_msg=error
-        )
 
-        calls = self._invoke(monkeypatch, self.UC_CONFIG, catalog)
+        calls = self._invoke(monkeypatch, self.UC_CONFIG, catalog_error=error)
 
         assert calls["result"].exit_code == 1
         output = _strip_ansi(calls["result"].output)
