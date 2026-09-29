@@ -28,33 +28,41 @@ class TestCopilotSpec:
 
 class TestRenderEnvOverlay:
     def test_sets_provider_base_url(self):
-        env = copilot.render_env_overlay(WS, "claude-sonnet-4-6", "tok", wire_api="completions")
+        env = copilot.render_env_overlay(WS, "claude-sonnet-4-6", "tok")
         assert env["COPILOT_PROVIDER_BASE_URL"] == f"{WS}/ai-gateway/mlflow/v1"
 
     def test_sets_provider_type(self):
-        env = copilot.render_env_overlay(WS, "m", "t", wire_api="completions")
+        env = copilot.render_env_overlay(WS, "m", "t")
         assert env["COPILOT_PROVIDER_TYPE"] == "openai"
 
     def test_sets_model(self):
-        env = copilot.render_env_overlay(WS, "claude-sonnet-4-6", "tok", wire_api="completions")
+        env = copilot.render_env_overlay(WS, "claude-sonnet-4-6", "tok")
         assert env["COPILOT_MODEL"] == "claude-sonnet-4-6"
 
     def test_sets_bearer_token(self):
-        env = copilot.render_env_overlay(WS, "m", "tok123", wire_api="completions")
+        env = copilot.render_env_overlay(WS, "m", "tok123")
         assert env["COPILOT_PROVIDER_BEARER_TOKEN"] == "tok123"
 
     def test_sets_offline_true(self):
-        env = copilot.render_env_overlay(WS, "m", "t", wire_api="completions")
+        env = copilot.render_env_overlay(WS, "m", "t")
         assert env["COPILOT_OFFLINE"] == "true"
 
     @pytest.mark.parametrize(
-        ("selected_model", "wire_api"),
-        [("system.ai.gpt-5-6-sol", "responses"), ("system.ai.gpt-6-astra", "completions")],
+        ("selected_model", "override_model", "expected_api"),
+        [
+            ("gpt-6.1-sol", None, "responses"),
+            ("system.ai.gpt-6-astra", "gpt-5", "completions"),
+            ("system.ai.gpt-5-6-sol", "databricks-gpt-6-1-sol", "responses"),
+            ("system.ai.gpt-6-astra", "", "responses"),
+            ("gpt-5", "", "completions"),
+        ],
     )
-    def test_uses_explicit_wire_api_without_changing_selected_model(self, selected_model, wire_api):
-        env = copilot.render_env_overlay(WS, selected_model, "tok", wire_api=wire_api)
+    def test_selects_wire_api_from_override_and_keeps_selected_model(
+        self, selected_model, override_model, expected_api
+    ):
+        env = copilot.render_env_overlay(WS, selected_model, "tok", override_model=override_model)
 
-        assert env["COPILOT_PROVIDER_WIRE_API"] == wire_api
+        assert env["COPILOT_PROVIDER_WIRE_API"] == expected_api
         assert env["COPILOT_MODEL"] == selected_model
 
 

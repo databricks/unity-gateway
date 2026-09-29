@@ -106,8 +106,10 @@ def render_env_overlay(
     selected_model: str,
     token: str,
     *,
-    wire_api: str,
+    override_model: str | None = None,
 ) -> dict[str, str]:
+    request_model = override_model or selected_model
+    wire_api = "responses" if model_uses_responses_api(request_model) else "completions"
     return {
         "COPILOT_PROVIDER_TYPE": "openai",
         "COPILOT_PROVIDER_BASE_URL": build_copilot_base_url(workspace),
@@ -121,11 +123,8 @@ def render_env_overlay(
 
 def build_runtime_env(workspace: str, model: str, token: str) -> dict[str, str]:
     env = os.environ.copy()
-    selected_model = model
     override_model = env.get("COPILOT_PROVIDER_WIRE_MODEL")
-    request_model = override_model or selected_model
-    wire_api = "responses" if model_uses_responses_api(request_model) else "completions"
-    env.update(render_env_overlay(workspace, selected_model, token, wire_api=wire_api))
+    env.update(render_env_overlay(workspace, model, token, override_model=override_model))
     return env
 
 
@@ -187,11 +186,8 @@ def write_tool_config(
         )
     existing = parse_dotenv(COPILOT_ENV_PATH)
     # Keep the inspectable file self-consistent without treating it as launch input.
-    selected_model = model
     override_model = existing.get("COPILOT_PROVIDER_WIRE_MODEL")
-    request_model = override_model or selected_model
-    wire_api = "responses" if model_uses_responses_api(request_model) else "completions"
-    overlay = render_env_overlay(state["workspace"], selected_model, token, wire_api=wire_api)
+    overlay = render_env_overlay(state["workspace"], model, token, override_model=override_model)
     for key in LEGACY_ENV_KEYS:
         existing.pop(key, None)
     existing.update(overlay)
