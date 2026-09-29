@@ -7,6 +7,11 @@ import pytest
 pytestmark = pytest.mark.installation
 
 
+def sibling_entry_point(selected_binary, name):
+    """Locate the other console script, preserving Windows' .exe suffix."""
+    return selected_binary.with_name(name + selected_binary.suffix)
+
+
 def test_ug_installed_wheel_exposes_help_and_version(session):
     """Scenario: invoke the freshly installed ug console script.
 
@@ -47,7 +52,7 @@ def test_ug_and_ucode_auth_helpers_emit_only_the_supplied_bearer(session):
     # An explicit input to the public bearer-override API; never sent to a workspace.
     session.env["DATABRICKS_BEARER"] = "ug-integration-supplied-bearer"
     for name in ("ug", "ucode"):
-        binary = session.binary.with_name(name)
+        binary = sibling_entry_point(session.binary, name)
         assert binary.is_file()
         for refresh in ([], ["--force-refresh"]):
             result = session.run(
@@ -78,7 +83,7 @@ def test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio(session):
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
     ]
     for name in ("ug", "ucode"):
-        binary = session.binary.with_name(name)
+        binary = sibling_entry_point(session.binary, name)
         assert binary.is_file()
         result = session.run(
             "mcp",

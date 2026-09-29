@@ -6,10 +6,12 @@ import copy
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
 import threading
+import traceback
 from collections.abc import Callable
 from pathlib import Path
 
@@ -37,6 +39,7 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     AnthropicModelCatalog,
+    _debug,
     build_auth_shell_command,
     build_otel_headers_shell_command,
     build_otel_traces_endpoint,
@@ -70,6 +73,7 @@ from ucode.mcp_oauth import (
 )
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
+    FIRST_PROMPT_SOCKET_ENV,
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
@@ -1518,6 +1522,46 @@ def _resolve_picker_model_id(model: str, settings_env: dict) -> str:
     return re.sub(r"\[(?:1m|200k)\]$", "", model)
 
 
+def _resolve_launch_binary(binary: str) -> str:
+    """Resolve Claude's native executable without sending arguments through a batch shim."""
+    if os.name != "nt":
+        return binary
+
+    resolved = shutil.which(binary)
+    if resolved is None:
+        raise RuntimeError(
+            "Claude Code was not found on PATH. Install Claude Code and ensure its executable "
+            "is available, then retry."
+        )
+    if os.path.splitext(resolved)[1].casefold() not in {".bat", ".cmd"}:
+        return resolved
+
+    shim_dir = os.path.dirname(resolved)
+    node_modules_dirs: list[str] = []
+    if (
+        os.path.basename(shim_dir).casefold() == ".bin"
+        and os.path.basename(os.path.dirname(shim_dir)).casefold() == "node_modules"
+    ):
+        node_modules_dirs.append(os.path.dirname(shim_dir))
+    node_modules_dirs.append(os.path.join(shim_dir, "node_modules"))
+
+    for node_modules in node_modules_dirs:
+        native_binary = os.path.join(
+            node_modules,
+            "@anthropic-ai",
+            "claude-code",
+            "bin",
+            "claude.exe",
+        )
+        if os.path.isfile(native_binary):
+            return native_binary
+
+    raise RuntimeError(
+        f"Found the Claude Code Windows command shim at {resolved}, but its native "
+        "bin/claude.exe was missing. Upgrade or reinstall @anthropic-ai/claude-code and retry."
+    )
+
+
 def _build_claude_argv(
     binary: str,
     tool_args: list[str],
@@ -1683,19 +1727,26 @@ def launch(
             "Smart routing in Claude Code is currently not supported on Windows. "
             "Please use Codex or launch without --enable-smart-routing."
         )
+    routing_setup_failed = False
     if options.launch_smart_routing:
-        smart_routing_v2.launch_claude(
-            state,
-            tool_args,
-            binary=binary,
-            user_settings_path=CLAUDE_USER_SETTINGS_PATH,
-            # With no user pin, let Claude resolve its starting model from its own settings.
-            launch_model=options.user_pinned_model,
-            compose_settings=_compose_v2_settings,
-            launch_model_args=_launch_model_args,
-            model_name=_maybe_add_1m_suffix,
-        )
-        return
+        try:
+            smart_routing_v2.launch_claude(
+                state,
+                tool_args,
+                binary=binary,
+                user_settings_path=CLAUDE_USER_SETTINGS_PATH,
+                # With no user pin, let Claude resolve its starting model from its own settings.
+                launch_model=options.user_pinned_model,
+                compose_settings=_compose_v2_settings,
+                launch_model_args=_launch_model_args,
+                model_name=_maybe_add_1m_suffix,
+            )
+        except smart_routing_v2.ClaudeRoutingSetupError:
+            _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
+            routing_setup_failed = True
+        else:
+            return
+    binary = _resolve_launch_binary(binary)
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
@@ -1724,6 +1775,16 @@ def launch(
                 # overwriting the user's saved selection. This also prevents Claude from appending
                 # that stale built-in selection to an otherwise replaced picker.
                 settings_override = {"model": picker_models[0]}
+    if routing_setup_failed:
+        # Override inherited and saved routing flags for this launch only. Older
+        # saved hooks must not route to agents whose plugin could not be written.
+        fallback_env = {
+            smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR: "0",
+            smart_routing_v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+            FIRST_PROMPT_SOCKET_ENV: "",
+        }
+        settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
+        os.environ.update(fallback_env)
     exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 

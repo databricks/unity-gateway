@@ -267,8 +267,55 @@ class TestConfigureClientMcpServer:
         assert http_calls == []
         assert len(proxy_calls) == 1
 
+    def _capture_codex(self, monkeypatch, *, codex_client_available: bool):
+        http_calls: list[tuple[str, str, str]] = []
+        proxy_calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(
+            mcp, "oauth_client_available", lambda ws, client_id: codex_client_available
+        )
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        monkeypatch.setattr(mcp, "remove_codex_mcp_server", lambda name: False)
+        monkeypatch.setattr(
+            mcp,
+            "add_codex_http_mcp_server",
+            lambda name, url, client_id: http_calls.append((name, url, client_id)),
+        )
+        monkeypatch.setattr(
+            mcp, "add_codex_mcp_server", lambda name, argv: proxy_calls.append((name, argv))
+        )
+        return http_calls, proxy_calls
+
+    def test_codex_aigw_service_registers_http_when_client_available(self, monkeypatch):
+        http_calls, proxy_calls = self._capture_codex(monkeypatch, codex_client_available=True)
+        mcp.configure_client_mcp_server("codex", "github", AIGW_MCP_URL, WS, "p")
+        assert http_calls == [("github", AIGW_MCP_URL, mcp.CODEX_CLI_OAUTH_CLIENT_ID)]
+        assert proxy_calls == []
+
+    def test_codex_aigw_service_falls_back_to_proxy_without_client(self, monkeypatch):
+        http_calls, proxy_calls = self._capture_codex(monkeypatch, codex_client_available=False)
+        mcp.configure_client_mcp_server("codex", "github", AIGW_MCP_URL, WS, "p")
+        assert http_calls == []
+        assert len(proxy_calls) == 1  # workspaces without codex-cli keep the stdio proxy
+
+    def test_codex_aigw_service_with_pat_keeps_proxy(self, monkeypatch):
+        # PAT auth has no interactive OAuth, so it can't use the HTTP login path.
+        http_calls, proxy_calls = self._capture_codex(monkeypatch, codex_client_available=True)
+        mcp.configure_client_mcp_server("codex", "github", AIGW_MCP_URL, WS, "p", use_pat=True)
+        assert http_calls == []
+        assert len(proxy_calls) == 1
+
+    def test_codex_no_login_service_uses_proxy(self, monkeypatch):
+        # A no-login mcp-service (web_search) must NOT get the native HTTP+OAuth entry (AIGTWY-4856).
+        http_calls, proxy_calls = self._capture_codex(monkeypatch, codex_client_available=True)
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: False)
+        url = f"{WS}/ai-gateway/mcp-services/system.ai.web_search"
+        mcp.configure_client_mcp_server("codex", "web_search", url, WS, "p")
+        assert http_calls == []
+        assert len(proxy_calls) == 1
+
     def test_oauthless_client_keeps_proxy_and_skips_probe(self, monkeypatch):
-        # An agent with no mapped OAuth client (codex) always proxies, and must not
+        # An agent with no mapped OAuth client (gemini) always proxies, and must not
         # even probe /oidc — there's nothing it could pin.
         probed: list[str] = []
         proxy_calls: list[tuple[str, list[str]]] = []
@@ -276,12 +323,12 @@ class TestConfigureClientMcpServer:
             mcp, "oauth_client_available", lambda ws, client_id: probed.append(client_id) or True
         )
         monkeypatch.setattr(
-            mcp, "add_codex_mcp_server", lambda name, argv: proxy_calls.append((name, argv))
+            mcp, "add_gemini_mcp_server", lambda name, argv: proxy_calls.append((name, argv))
         )
-        monkeypatch.setattr(mcp, "remove_codex_mcp_server", lambda name: False)
-        mcp.configure_client_mcp_server("codex", "github", AIGW_MCP_URL, WS, "p")
+        monkeypatch.setattr(mcp, "remove_gemini_mcp_server", lambda name: False)
+        mcp.configure_client_mcp_server("gemini", "github", AIGW_MCP_URL, WS, "p")
         assert len(proxy_calls) == 1
-        assert probed == []  # AGENT_OAUTH_CLIENT has no entry for codex → no probe
+        assert probed == []  # AGENT_OAUTH_CLIENT has no entry for gemini → no probe
 
 
 class TestMcpPicker:
@@ -683,6 +730,20 @@ class TestManagedMcpEntry:
             http_client="cursor-oauth",
         )
         assert e == mcp.cursor.build_http_mcp_server_entry(self.MCP_URL, "cursor-oauth")
+
+    def test_codex_http_entry_uses_client_id(self, monkeypatch):
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        e = mcp._managed_mcp_entry(
+            "codex",
+            self.MCP_URL,
+            WS,
+            None,
+            use_pat=False,
+            always_load=False,
+            http_client="codex-cli",
+        )
+        assert e == mcp.codex.managed_mcp_http_entry(self.MCP_URL, "codex-cli")
 
     def test_other_agents_use_stdio_proxy_entry(self):
         argv = self._argv()

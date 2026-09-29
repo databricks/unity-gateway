@@ -35,6 +35,7 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
+from ucode.telemetry import ug_version
 from ucode.ui import (
     err_console,
     normalize_workspace_url,
@@ -1833,7 +1834,9 @@ def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list
     """List the workspace's managed CodingAgentConfig(s) via the AI Gateway."""
     hostname = workspace_hostname(workspace)
     url = f"https://{hostname}{_CODING_AGENT_CONFIGS_API_PATH}"
-    payload, reason = _http_get_json(url, token, timeout=30)
+    payload, reason = _http_get_json(
+        url, token, timeout=30, headers={"User-Agent": f"ucode/{ug_version()}"}
+    )
     if reason is not None:
         return [], reason
     if isinstance(payload, dict):
