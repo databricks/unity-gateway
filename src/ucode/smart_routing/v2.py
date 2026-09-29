@@ -452,7 +452,9 @@ def launch_claude(
     from ucode.smart_routing import claude_pty
 
     install_bundled_skill()
-    start_session()
+    # Keep the session pointer launch-scoped and identify the owning harness so
+    # its launcher flag cannot toggle a different agent's session.
+    start_session(agent="claude")
 
     workspace = state.get("workspace")
     if not workspace:
@@ -588,7 +590,7 @@ def launch_codex(
     render_overlay: Callable[..., dict],
 ) -> NoReturn:
     install_bundled_skill()
-    start_session()
+    start_session(agent="codex")
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(

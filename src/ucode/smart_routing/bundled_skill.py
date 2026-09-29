@@ -18,19 +18,24 @@ SKILL_NAME = "smart-router"
 MANIFEST_VERSION = 1
 _SKILL_RELATIVE_PATHS = (".claude/skills", ".agents/skills")
 _UG_EXECUTABLE_MARKER = "__UG_EXECUTABLE__"
+_UG_LAUNCHER_MARKER = "__UG_LAUNCHER__"
 
 
 def _manifest_path() -> Path:
     return config_io.APP_DIR / "bundled-skills.json"
 
 
-def _skill_content() -> str:
+def _skill_content(launcher: str = "claude") -> str:
+    if launcher not in {"claude", "codex"}:
+        raise ValueError(f"unsupported Smart Router skill launcher: {launcher}")
     template = (
         resources.files("ucode")
         .joinpath("bundled_skills", SKILL_NAME, "SKILL.md")
         .read_text(encoding="utf-8")
     )
-    return template.replace(_UG_EXECUTABLE_MARKER, shlex.quote(ug_binary()))
+    return template.replace(_UG_EXECUTABLE_MARKER, shlex.quote(ug_binary())).replace(
+        _UG_LAUNCHER_MARKER, launcher
+    )
 
 
 def _digest(content: str) -> str:
@@ -80,11 +85,12 @@ def _installed_unchanged(skill_dir: Path, expected_digest: str) -> bool:
 def install_bundled_skill(home: Path | None = None) -> list[Path]:
     """Install or upgrade unchanged ug-owned copies; preserve every collision."""
     base = config_io.APP_DIR.parent if home is None else home
-    content = _skill_content()
-    content_digest = _digest(content)
     installs = _load_manifest()
     installed: list[Path] = []
     for relative_root in _SKILL_RELATIVE_PATHS:
+        launcher = "claude" if relative_root == ".claude/skills" else "codex"
+        content = _skill_content(launcher)
+        content_digest = _digest(content)
         skill_dir = base / relative_root / SKILL_NAME
         key = str(skill_dir)
         prior_digest = installs.get(key)

@@ -15,56 +15,130 @@ from ucode.smart_routing import bundled_skill, session, v2
 runner = CliRunner()
 
 
-def _session_env(tmp_path: Path, enabled: bool = True) -> dict[str, str]:
+def _session_env(
+    tmp_path: Path,
+    enabled: bool = True,
+    agent: str | None = None,
+) -> dict[str, str]:
     path = tmp_path / "state.json"
-    path.write_text(json.dumps({"version": 1, "enabled": enabled}), encoding="utf-8")
+    data: dict[str, object] = {"version": 1, "enabled": enabled}
+    if agent is not None:
+        data["agent"] = agent
+    path.write_text(json.dumps(data), encoding="utf-8")
     return {session.SESSION_STATE_ENV_VAR: str(path)}
 
 
-class TestSmartRouterCommand:
-    def test_hidden_from_top_level_help(self):
+class TestSmartRouterLauncherFlags:
+    def test_standalone_command_is_removed(self):
         result = runner.invoke(cli.app, ["--help"])
 
         assert result.exit_code == 0
         assert "smart-router" not in result.output
 
-    def test_fails_outside_smart_routed_session(self, monkeypatch):
-        monkeypatch.delenv(session.SESSION_STATE_ENV_VAR, raising=False)
-
-        result = runner.invoke(cli.app, ["smart-router", "on"])
-
-        assert result.exit_code == 1
-        assert "only inside a smart-routed Claude or" in result.output
-        assert "Codex session" in result.output
-        assert "--enable-smart-routing" in result.output
-
-    def test_bare_command_reports_usage_without_session_state(self, monkeypatch):
-        monkeypatch.delenv(session.SESSION_STATE_ENV_VAR, raising=False)
-
-        result = runner.invoke(cli.app, ["smart-router"])
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_launcher_help_exposes_both_flags(self, tool):
+        result = runner.invoke(cli.app, [tool, "--help"])
 
         assert result.exit_code == 0
-        assert "Smart Router: on" not in result.output
-        assert "ug smart-router [on|off]" in result.output
+        assert "--enable-smart-routing" in result.output
+        assert "--disable-smart-routing" in result.output
 
-    def test_on_and_off_are_idempotent(self, tmp_path, monkeypatch):
-        env = _session_env(tmp_path)
-        state_path = Path(env[session.SESSION_STATE_ENV_VAR])
-        monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, str(state_path))
-
-        for action, expected in (("off", False), ("off", False), ("on", True), ("on", True)):
-            result = runner.invoke(cli.app, ["smart-router", action])
-            assert result.exit_code == 0
-            assert json.loads(state_path.read_text())["enabled"] is expected
-
-    def test_rejects_unknown_action(self, tmp_path, monkeypatch):
-        env = _session_env(tmp_path)
-        monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, env[session.SESSION_STATE_ENV_VAR])
-
-        result = runner.invoke(cli.app, ["smart-router", "status"])
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_flags_are_mutually_exclusive(self, tool):
+        result = runner.invoke(
+            cli.app,
+            [tool, "--enable-smart-routing", "--disable-smart-routing"],
+        )
 
         assert result.exit_code == 2
-        assert "Expected `on` or `off`" in result.output
+        assert "mutually" in result.output
+        assert "exclusive" in result.output
+
+    @pytest.mark.parametrize(
+        ("tool", "flag", "expected"),
+        [("claude", "--disable-smart-routing", False), ("codex", "--enable-smart-routing", True)],
+    )
+    def test_bare_matching_launcher_toggles_current_session(
+        self, tmp_path, monkeypatch, tool, flag, expected
+    ):
+        env = _session_env(tmp_path, agent=tool)
+        monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, env[session.SESSION_STATE_ENV_VAR])
+        monkeypatch.setattr(cli, "_launch_tool", Mock(side_effect=AssertionError("launched")))
+
+        result = runner.invoke(cli.app, [tool, flag])
+
+        assert result.exit_code == 0
+        assert (
+            json.loads(Path(env[session.SESSION_STATE_ENV_VAR]).read_text())["enabled"] is expected
+        )
+
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_toggle_is_idempotent(self, tmp_path, monkeypatch, tool):
+        env = _session_env(tmp_path, enabled=False, agent=tool)
+        monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, env[session.SESSION_STATE_ENV_VAR])
+        monkeypatch.setattr(cli, "_launch_tool", Mock(side_effect=AssertionError("launched")))
+
+        for flag, expected in (
+            ("--disable-smart-routing", False),
+            ("--enable-smart-routing", True),
+        ):
+            result = runner.invoke(cli.app, [tool, flag])
+            assert result.exit_code == 0
+            assert (
+                json.loads(Path(env[session.SESSION_STATE_ENV_VAR]).read_text())["enabled"]
+                is expected
+            )
+
+    def test_mismatched_launcher_does_not_toggle_or_nest(self, tmp_path, monkeypatch):
+        env = _session_env(tmp_path, agent="claude")
+        monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, env[session.SESSION_STATE_ENV_VAR])
+        launch = Mock()
+        monkeypatch.setattr(cli, "_launch_tool", launch)
+
+        result = runner.invoke(cli.app, ["codex", "--disable-smart-routing"])
+
+        assert result.exit_code == 0
+        launch.assert_called_once()
+        assert launch.call_args.kwargs["smart_routing_override"] is False
+        assert json.loads(Path(env[session.SESSION_STATE_ENV_VAR]).read_text())["enabled"] is True
+
+    def test_conflicting_launch_request_does_not_toggle(self, tmp_path, monkeypatch):
+        env = _session_env(tmp_path, agent="claude")
+        monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, env[session.SESSION_STATE_ENV_VAR])
+        launch = Mock()
+        monkeypatch.setattr(cli, "_launch_tool", launch)
+
+        result = runner.invoke(cli.app, ["claude", "--disable-smart-routing", "--", "prompt"])
+
+        assert result.exit_code == 0
+        launch.assert_called_once()
+        assert launch.call_args.kwargs["smart_routing_override"] is False
+        assert json.loads(Path(env[session.SESSION_STATE_ENV_VAR]).read_text())["enabled"] is True
+
+    def test_disable_outside_session_is_an_ordinary_launch(self, monkeypatch):
+        monkeypatch.delenv(session.SESSION_STATE_ENV_VAR, raising=False)
+        launch = Mock()
+        monkeypatch.setattr(cli, "_launch_tool", launch)
+
+        result = runner.invoke(cli.app, ["codex", "--disable-smart-routing"])
+
+        assert result.exit_code == 0
+        launch.assert_called_once()
+        assert launch.call_args.kwargs["smart_routing_override"] is False
+
+    def test_invalid_session_pointer_reports_error_without_nested_launch(
+        self, tmp_path, monkeypatch
+    ):
+        state_path = tmp_path / "missing-state.json"
+        monkeypatch.setenv(session.SESSION_STATE_ENV_VAR, str(state_path))
+        launch = Mock(side_effect=AssertionError("launched"))
+        monkeypatch.setattr(cli, "_launch_tool", launch)
+
+        result = runner.invoke(cli.app, ["claude", "--disable-smart-routing"])
+
+        assert result.exit_code == 1
+        assert "session state" in result.output
+        launch.assert_not_called()
 
 
 class TestSessionState:
@@ -93,7 +167,11 @@ class TestSessionState:
         monkeypatch.setattr(v2, "install_bundled_skill", lambda: None)
         # Supply unique directories while keeping the test deterministic.
         calls = iter((tmp_path / "claude", tmp_path / "codex"))
-        monkeypatch.setattr(v2, "start_session", lambda: session.start_session())
+        monkeypatch.setattr(
+            v2,
+            "start_session",
+            lambda *, agent: session.start_session(agent=agent),
+        )
         monkeypatch.setattr(session.tempfile, "mkdtemp", lambda prefix: str(next(calls)))
 
         with pytest.raises(RuntimeError, match="configured workspace"):
@@ -123,6 +201,8 @@ class TestSessionState:
         assert claude_path != codex_path
         assert session.routing_enabled() is True
         assert json.loads(claude_path.read_text())["enabled"] is False
+        assert json.loads(claude_path.read_text())["agent"] == "claude"
+        assert json.loads(codex_path.read_text())["agent"] == "codex"
 
 
 class TestRoutingHookGate:
@@ -161,14 +241,18 @@ class TestRoutingHookGate:
 
 
 class TestBundledSkill:
-    def test_skill_exposes_only_on_and_off_with_launching_ug(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "launcher",
+        ["claude", "codex"],
+    )
+    def test_skill_exposes_only_on_and_off_with_launching_ug(self, monkeypatch, launcher):
         monkeypatch.setattr(bundled_skill, "ug_binary", lambda: "/checkout/.venv/bin/ug")
 
-        content = bundled_skill._skill_content()
+        content = bundled_skill._skill_content(launcher)
 
-        assert "Bash(/checkout/.venv/bin/ug smart-router on)" in content
-        assert "Bash(/checkout/.venv/bin/ug smart-router off)" in content
-        assert "/checkout/.venv/bin/ug smart-router on" in content
+        assert f"Bash(/checkout/.venv/bin/ug {launcher} --enable-smart-routing)" in content
+        assert f"Bash(/checkout/.venv/bin/ug {launcher} --disable-smart-routing)" in content
+        assert f"/checkout/.venv/bin/ug {launcher} --enable-smart-routing" in content
         assert "\nug smart-router" not in content
         assert "status" not in content
 
@@ -177,12 +261,25 @@ class TestBundledSkill:
             bundled_skill, "ug_binary", lambda: "/checkout with spaces/.venv/bin/ug"
         )
 
-        content = bundled_skill._skill_content()
+        content = bundled_skill._skill_content("codex")
 
-        assert "'/checkout with spaces/.venv/bin/ug' smart-router off" in content
+        assert "'/checkout with spaces/.venv/bin/ug' codex --disable-smart-routing" in content
+
+    def test_installs_harness_specific_copies(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(bundled_skill, "ug_binary", lambda: "/bin/ug")
+
+        installed = bundled_skill.install_bundled_skill(tmp_path)
+
+        assert len(installed) == 2
+        claude_content = (tmp_path / ".claude/skills/smart-router/SKILL.md").read_text()
+        codex_content = (tmp_path / ".agents/skills/smart-router/SKILL.md").read_text()
+        assert "/bin/ug claude --enable-smart-routing" in claude_content
+        assert "/bin/ug codex --enable-smart-routing" in codex_content
+        assert " /bin/ug codex --enable-smart-routing" not in claude_content
+        assert " /bin/ug claude --enable-smart-routing" not in codex_content
 
     def test_installs_both_copies_and_upgrades_unchanged_ones(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(bundled_skill, "_skill_content", lambda: "version one\n")
+        monkeypatch.setattr(bundled_skill, "_skill_content", lambda _launcher: "version one\n")
 
         installed = bundled_skill.install_bundled_skill(tmp_path)
 
@@ -193,7 +290,7 @@ class TestBundledSkill:
         assert set(installed) == expected
         assert all((path / "SKILL.md").read_text() == "version one\n" for path in expected)
 
-        monkeypatch.setattr(bundled_skill, "_skill_content", lambda: "version two\n")
+        monkeypatch.setattr(bundled_skill, "_skill_content", lambda _launcher: "version two\n")
         bundled_skill.install_bundled_skill(tmp_path)
         assert all((path / "SKILL.md").read_text() == "version two\n" for path in expected)
 
