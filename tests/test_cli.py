@@ -5072,6 +5072,17 @@ class TestBareUcode:
         assert "paved" not in result.output  # no policy set in this config
         assert "Claude Code" in result.output
 
+    def test_bare_launch_skips_recommendation_without_smart_defaults(self, monkeypatch):
+        monkeypatch.setattr("ucode.cli.get_databricks_token", lambda *args: "token")
+        monkeypatch.setattr(
+            "ucode.cli.get_model_recommendation",
+            lambda *args: pytest.fail("recommendModel must not run without smart defaults"),
+        )
+        result, launched = self._run(monkeypatch, managed=self.MANAGED)
+        assert result.exit_code == 0, result.output
+        assert launched[0][0] == "claude"
+        assert launched[0][1]["recommendation"] is None
+
     def test_falls_back_to_the_first_enabled_agent(self, monkeypatch):
         managed = {"enabled_agents": {"opencode": {}}}
         result, launched = self._run(monkeypatch, managed=managed)
@@ -5202,6 +5213,19 @@ class TestBareUcode:
 class TestBudgetRecommendationAtLaunch:
     """The budget read informs the launch; it never blocks it."""
 
+    SMART_DEFAULTS = {
+        "spend_tiers": {
+            "budget_id": "c6563b45-df9a-4b19-afb2-d42dc2b52576",
+            "tiers": [
+                {
+                    "spending_percentage": 0.8,
+                    "recommended_agent": "claude",
+                    "recommended_model": "system.ai.claude-sonnet-4-6",
+                }
+            ],
+        }
+    }
+
     @staticmethod
     def _launch(monkeypatch, *, tool="claude", managed, recommendation=None, reason=None):
         state = dict(MINIMAL_STATE)
@@ -5231,11 +5255,38 @@ class TestBudgetRecommendationAtLaunch:
         assert result.exit_code == 0, result.output
         assert calls == []
 
+    @pytest.mark.parametrize(
+        "managed",
+        [
+            {"enabled_agents": {"claude": {}}},
+            {
+                "enabled_agents": {"claude": {}},
+                "spend_tiers": {"budget_id": "c6563b45-df9a-4b19-afb2-d42dc2b52576"},
+            },
+            {"enabled_agents": {"claude": {}}, "spend_tiers": {"tiers": []}},
+        ],
+    )
+    def test_not_checked_without_smart_defaults(self, monkeypatch, managed):
+        result, calls, _ = self._launch(monkeypatch, managed=managed)
+        assert result.exit_code == 0, result.output
+        assert calls == []
+
+    def test_checked_when_smart_defaults_exist(self, monkeypatch):
+        managed = {"enabled_agents": {"claude": {}}, **self.SMART_DEFAULTS}
+        result, calls, _ = self._launch(
+            monkeypatch,
+            managed=managed,
+            recommendation={"agent": "claude", "model": "system.ai.claude-sonnet-4-6"},
+        )
+        assert result.exit_code == 0, result.output
+        assert calls == [MINIMAL_STATE["workspace"]]
+
     def test_the_recommended_agent_gets_the_recommended_model(self, monkeypatch):
         managed = {
             "enabled_agents": {
                 "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}}
-            }
+            },
+            **self.SMART_DEFAULTS,
         }
         _result, _calls, cfg = self._launch(
             monkeypatch,
@@ -5271,7 +5322,8 @@ class TestBudgetRecommendationAtLaunch:
             "enabled_agents": {
                 "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}},
                 "opencode": {},
-            }
+            },
+            **self.SMART_DEFAULTS,
         }
         result, _calls, cfg = self._launch(
             monkeypatch,
@@ -5290,7 +5342,7 @@ class TestBudgetRecommendationAtLaunch:
     def test_a_failed_read_does_not_block_the_launch(self, monkeypatch):
         result, _calls, _cfg = self._launch(
             monkeypatch,
-            managed={"enabled_agents": {"claude": {}}},
+            managed={"enabled_agents": {"claude": {}}, **self.SMART_DEFAULTS},
             recommendation=None,
             reason="HTTP 500",
         )
@@ -5300,7 +5352,7 @@ class TestBudgetRecommendationAtLaunch:
     def test_a_404_is_silently_ignored(self, monkeypatch):
         result, _calls, _cfg = self._launch(
             monkeypatch,
-            managed={"enabled_agents": {"claude": {}}},
+            managed={"enabled_agents": {"claude": {}}, **self.SMART_DEFAULTS},
             recommendation=None,
             reason=(
                 'HTTP 404 Not Found: {"error_code":"FEATURE_DISABLED",'
@@ -5325,7 +5377,10 @@ class TestBudgetRecommendationAtLaunch:
             patch("ucode.cli.get_databricks_token", side_effect=RuntimeError("token expired")),
             patch(
                 "ucode.cli._fetch_managed_config",
-                return_value=({"enabled_agents": {"claude": {}}}, False),
+                return_value=(
+                    {"enabled_agents": {"claude": {}}, **self.SMART_DEFAULTS},
+                    False,
+                ),
             ),
             patch("ucode.cli.launch_agent"),
         ):
@@ -5336,7 +5391,7 @@ class TestBudgetRecommendationAtLaunch:
     def test_shows_the_budget_bar(self, monkeypatch):
         result, _calls, _cfg = self._launch(
             monkeypatch,
-            managed={"enabled_agents": {"claude": {}}},
+            managed={"enabled_agents": {"claude": {}}, **self.SMART_DEFAULTS},
             recommendation={
                 "agent": "claude",
                 "model": "m",
