@@ -136,7 +136,11 @@ from ucode.skills_list import configured_skill_counts_by_agent, list_configured_
 from ucode.skills_state import records_for_scope
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
-from ucode.smart_routing.session_env import effective_environment, set_session_environment
+from ucode.smart_routing.session_env import (
+    effective_environment,
+    session_env_path,
+    set_session_environment,
+)
 from ucode.state import (
     clear_state,
     get_provider_service,
@@ -2057,21 +2061,6 @@ def _oauth_token_is_fresh(token: str, buffer_seconds: float = 120) -> bool:
     return time.time() < expires_at - buffer_seconds
 
 
-@app.command("smart-router", hidden=True)
-def smart_router_cmd(action: str) -> None:
-    """Enable or disable Smart Router hooks for the current agent session."""
-    if action not in {"on", "off"}:
-        print_err("Smart Router accepts only `on` or `off`.")
-        raise typer.Exit(2)
-    overrides = {} if action == "on" else dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
-    try:
-        set_session_environment(overrides)
-    except RuntimeError as exc:
-        print_err(str(exc))
-        raise typer.Exit(1) from None
-    print_success(f"Smart Router is {action} for this session")
-
-
 @app.command("codex-router-hook", hidden=True)
 def codex_router_hook_cmd(
     event: str,
@@ -2280,16 +2269,36 @@ CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
 
 
 @contextmanager
-def _smart_routing_v2_flag(enabled: bool) -> Iterator[None]:
-    """Enable V2 for this launch without leaking into an embedding process."""
-    if not enabled:
+def _smart_routing_v2_flag(enabled: bool | None) -> Iterator[None]:
+    """Apply an explicit routing choice without leaking into an embedding process."""
+    if enabled is None:
         yield
         return
-    previous = smart_routing_v2.enable_smart_routing()
+    previous = (
+        smart_routing_v2.enable_smart_routing()
+        if enabled
+        else smart_routing_v2.disable_smart_routing()
+    )
     try:
         yield
     finally:
         smart_routing_v2.restore_smart_routing_env(previous)
+
+
+def _toggle_current_smart_routing_session(enabled: bool | None) -> bool:
+    if enabled is None:
+        return False
+    try:
+        session_env_path()
+    except RuntimeError:
+        return False
+    try:
+        set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not enabled else {})
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    print_success(f"Smart Router is {'on' if enabled else 'off'} for this session")
+    return True
 
 
 @contextmanager
@@ -2544,9 +2553,11 @@ def _launch_options(
 
 
 @contextmanager
-def _managed_smart_routing_environment(managed: dict | None, tool: str) -> Iterator[None]:
+def _managed_smart_routing_environment(
+    managed: dict | None, tool: str, *, overridden: bool
+) -> Iterator[None]:
     """Expose an agent's managed smart-routing switch only to its launched session."""
-    if not _managed_smart_routing_enabled(managed, tool):
+    if overridden or not _managed_smart_routing_enabled(managed, tool):
         yield
         return
 
@@ -2575,6 +2586,7 @@ def _launch_tool(
     model: str | None = None,
     parent_schema: str | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
+    smart_routing_override: bool | None = None,
 ) -> None:
     try:
         tool = normalize_tool(tool_name)
@@ -2585,7 +2597,11 @@ def _launch_tool(
         if _child_owns_stdout(tool, ctx.args):
             redirect_output_to_stderr()
         explicit_prompt = _has_explicit_prompt(ctx)
-        smart_routing_enabled = smart_routing_v2.smart_routing_enabled()
+        smart_routing_enabled = (
+            smart_routing_override
+            if smart_routing_override is not None
+            else smart_routing_v2.smart_routing_enabled()
+        )
         # Launchers such as isaac put their harness arguments after `--`, so the harness's own
         # `--model` lands in ctx.args instead of a ucode option. It still determines the effective
         # launch model and should therefore win in the launch summary.
@@ -2665,7 +2681,9 @@ def _launch_tool(
             os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         # The environment switch remains a developer override; managed config is the workspace
         # policy equivalent and must take effect before launch options are computed.
-        managed_smart_routing_enabled = _managed_smart_routing_enabled(managed, tool)
+        managed_smart_routing_enabled = (
+            smart_routing_override is None and _managed_smart_routing_enabled(managed, tool)
+        )
         smart_routing_enabled = smart_routing_enabled or managed_smart_routing_enabled
         # Discovery exists to find models and isn't needed for managed config that already names them.
         managed_models_known = managed_supplies_models(managed, tool)
@@ -2925,7 +2943,11 @@ def _launch_tool(
             provider=provider,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
-        with _managed_smart_routing_environment(managed, tool):
+        with _managed_smart_routing_environment(
+            managed,
+            tool,
+            overridden=smart_routing_override is not None,
+        ):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
         print_err(str(exc))
@@ -3143,14 +3165,16 @@ def codex_cmd(
         typer.Option("--scopes", hidden=True, help="Comma-separated custom OAuth scopes."),
     ] = None,
     enable_smart_routing_flag: Annotated[
-        bool,
+        bool | None,
         typer.Option(
-            "--enable-smart-routing",
-            help="Enable AI Gateway model routing for Codex sessions and subagents.",
+            "--enable-smart-routing/--disable-smart-routing",
+            help="Enable or disable AI Gateway model routing for this Codex launch or session.",
         ),
-    ] = False,
+    ] = None,
 ) -> None:
     """Launch Codex via Databricks."""
+    if _toggle_current_smart_routing_session(enable_smart_routing_flag):
+        return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
     except RuntimeError as exc:
@@ -3167,6 +3191,7 @@ def codex_cmd(
                 workspace_url=workspace,
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
+                smart_routing_override=enable_smart_routing_flag,
             )
 
 
@@ -3229,14 +3254,16 @@ def claude_cmd(
         typer.Option("--scopes", hidden=True, help="Comma-separated custom OAuth scopes."),
     ] = None,
     enable_smart_routing_flag: Annotated[
-        bool,
+        bool | None,
         typer.Option(
-            "--enable-smart-routing",
-            help="Enable AI Gateway model routing for Claude Code sessions and subagents.",
+            "--enable-smart-routing/--disable-smart-routing",
+            help="Enable or disable AI Gateway model routing for this Claude Code launch or session.",
         ),
-    ] = False,
+    ] = None,
 ) -> None:
     """Launch Claude Code via Databricks."""
+    if _toggle_current_smart_routing_session(enable_smart_routing_flag):
+        return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
     except RuntimeError as exc:
@@ -3254,6 +3281,7 @@ def claude_cmd(
                 workspace_url=workspace,
                 parent_schema=model_location,
                 custom_oauth=custom_oauth,
+                smart_routing_override=enable_smart_routing_flag,
             )
 
 

@@ -24,7 +24,7 @@ def test_smart_routed_session_installs_skill(tmp_path, monkeypatch):
     assert Path(os.environ[session_env.SESSION_ENV_VAR]).is_file()
 
 
-def test_skill_command_controls_routing_hook(tmp_path, monkeypatch):
+def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch):
     session_file = tmp_path / "env.json"
     session_file.write_text("{}")
     env = {
@@ -45,10 +45,10 @@ def test_skill_command_controls_routing_hook(tmp_path, monkeypatch):
     ]
     payload = '{"tool_name":"collaboration.spawn_agent","tool_input":{"message":"fix it"}}'
 
-    assert runner.invoke(cli.app, ["smart-router", "off"], env=env).exit_code == 0
+    assert runner.invoke(cli.app, ["codex", "--disable-smart-routing"], env=env).exit_code == 0
     assert runner.invoke(cli.app, hook_args, input=payload, env=env).exit_code == 0
     route.assert_not_called()
 
-    assert runner.invoke(cli.app, ["smart-router", "on"], env=env).exit_code == 0
+    assert runner.invoke(cli.app, ["codex", "--enable-smart-routing"], env=env).exit_code == 0
     assert runner.invoke(cli.app, hook_args, input=payload, env=env).exit_code == 0
     route.assert_called_once()

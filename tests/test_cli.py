@@ -920,7 +920,7 @@ class TestSubcommandRouting:
         assert "--model-location must be `<catalog>.<schema>`." in _strip_ansi(result.output)
 
     @pytest.mark.parametrize("tool", ["codex", "claude"])
-    def test_disable_smart_routing_is_not_consumed_by_ucode(self, tool):
+    def test_disable_smart_routing_is_consumed_by_ug(self, tool):
         with (
             patch("ucode.cli.codex_agent.disable_smart_routing") as mock_disable,
             patch("ucode.cli.claude_agent.disable_smart_routing") as mock_disable_claude,
@@ -932,14 +932,8 @@ class TestSubcommandRouting:
         mock_disable.assert_not_called()
         mock_disable_claude.assert_not_called()
         mock_launch.assert_called_once()
-        assert mock_launch.call_args.args[1].args == ["--disable-smart-routing"]
-
-    @pytest.mark.parametrize("tool", ["codex", "claude"])
-    def test_disable_smart_routing_is_not_in_help(self, tool):
-        result = runner.invoke(app, [tool, "--help"])
-
-        assert result.exit_code == 0, result.output
-        assert "--disable-smart-routing" not in result.output
+        assert mock_launch.call_args.args[1].args == []
+        assert mock_launch.call_args.kwargs["smart_routing_override"] is False
 
     def test_legacy_opt_in_migrates_both_agents(self):
         from ucode.cli import _migrate_legacy_smart_routing
