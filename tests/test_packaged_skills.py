@@ -74,6 +74,30 @@ def test_installation_lock_serializes_concurrent_installers(tmp_path):
     assert second.exitcode == 0
 
 
+def test_installation_lock_times_out_when_holder_hangs(tmp_path):
+    context = multiprocessing.get_context("spawn")
+    holder_entered = context.Event()
+    release_holder = context.Event()
+    holder = context.Process(
+        target=_hold_installation_lock,
+        args=(str(tmp_path), holder_entered, release_holder),
+    )
+    holder.start()
+    try:
+        assert holder_entered.wait(timeout=5)
+        with pytest.raises(RuntimeError, match="another Unity Gateway process"):
+            with packaged_skills._installation_lock(tmp_path, timeout_seconds=0.05):
+                pytest.fail("contended lock should not be acquired")
+    finally:
+        release_holder.set()
+        holder.join(timeout=5)
+        if holder.is_alive():
+            holder.terminate()
+            holder.join(timeout=5)
+
+    assert holder.exitcode == 0
+
+
 def test_copies_named_skill_to_both_harness_directories(tmp_path, monkeypatch):
     source = tmp_path / "source"
     _write_skill(source, packaged_skills.SMART_ROUTER_SKILL)

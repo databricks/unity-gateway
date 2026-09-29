@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from importlib.metadata import distribution
@@ -16,6 +17,8 @@ from typing import BinaryIO
 _SKILL_ROOTS = (".claude/skills", ".agents/skills")
 _SKILL_NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 SMART_ROUTER_SKILL = "smart-router"
+_LOCK_TIMEOUT_SECONDS = 10.0
+_LOCK_POLL_INTERVAL_SECONDS = 0.05
 
 
 def _skills_source() -> Path:
@@ -45,7 +48,7 @@ def _path_exists(path: Path) -> bool:
     return path.exists() or path.is_symlink()
 
 
-def _lock_file(lock_file: BinaryIO) -> None:
+def _lock_file(lock_file: BinaryIO, timeout_seconds: float) -> None:
     if os.name == "nt":
         import msvcrt
 
@@ -53,12 +56,33 @@ def _lock_file(lock_file: BinaryIO) -> None:
         if not lock_file.read(1):
             lock_file.write(b"\0")
             lock_file.flush()
-        lock_file.seek(0)
-        msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
-    else:
-        import fcntl
 
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            pass
+        except OSError:
+            if os.name != "nt":
+                raise
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(
+                "Timed out waiting for another Unity Gateway process to finish updating "
+                "packaged skills. Retry after the other agent launch completes."
+            )
+        time.sleep(min(_LOCK_POLL_INTERVAL_SECONDS, remaining))
 
 
 def _unlock_file(lock_file: BinaryIO) -> None:
@@ -74,7 +98,9 @@ def _unlock_file(lock_file: BinaryIO) -> None:
 
 
 @contextmanager
-def _installation_lock(base: Path) -> Iterator[None]:
+def _installation_lock(
+    base: Path, *, timeout_seconds: float = _LOCK_TIMEOUT_SECONDS
+) -> Iterator[None]:
     """Serialize packaged-skill changes across concurrent agent launches.
 
     Keep the lock file in place so every process locks the same file. The OS
@@ -83,7 +109,7 @@ def _installation_lock(base: Path) -> Iterator[None]:
     lock_dir = base / ".ucode"
     lock_dir.mkdir(parents=True, exist_ok=True)
     with (lock_dir / "packaged-skills.lock").open("a+b") as lock_file:
-        _lock_file(lock_file)
+        _lock_file(lock_file, timeout_seconds)
         try:
             yield
         finally:
