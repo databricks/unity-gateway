@@ -26,7 +26,7 @@ from ucode.ui import print_warning
 SKILL_FILES_API_PREFIX = "Skills"
 
 _FILES_API_MAX_RETRIES = 2
-_MAX_CONCURRENT_FILE_DOWNLOADS = 16
+_MAX_CONCURRENT_FILE_DOWNLOADS = 24
 _file_download_slots = threading.BoundedSemaphore(_MAX_CONCURRENT_FILE_DOWNLOADS)
 
 # Wall-clock budget for the workspace-wide skill walk; a slow workspace degrades
