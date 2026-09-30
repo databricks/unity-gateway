@@ -137,6 +137,7 @@ _AUTH_PLUGIN_V2_ENTRYPOINT = """
 export default {
   id: "ucode.databricks-auth",
   async setup(ctx) {
+    let rejectedAuthorization
     for (const providerID of DATABRICKS_PROVIDERS) {
       await ctx.session.hook("http.request", async (event) => {
         const configured = event.request.headers.get("Authorization")
@@ -145,10 +146,17 @@ export default {
         event.request.headers.set("Authorization", "Bearer " + accessToken)
       }, { providerID })
 
+      await ctx.session.hook("http.response", (event) => {
+        if (event.response.status === 401) {
+          rejectedAuthorization = event.request.headers.get("Authorization")
+        }
+      }, { providerID })
+
       // OpenCode does not retry a 401 by default; retry once with a new token.
       await ctx.session.hook("retry", async (event) => {
         if (event.error.status !== 401 || event.attempt > 2) return
-        await refreshToken()
+        // Another concurrent request may already have refreshed this token.
+        if (rejectedAuthorization === "Bearer " + accessToken) await refreshToken()
         event.decision = { retry: true, delay: 0 }
       }, { providerID })
     }

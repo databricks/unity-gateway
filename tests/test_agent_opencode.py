@@ -96,6 +96,16 @@ class TestAuthPlugin:
         assert "event.decision = { retry: true, delay: 0 }" in plugin
         assert "}, { providerID })" in plugin
 
+    def test_opencode_2_retry_refreshes_only_a_rejected_current_token(self):
+        plugin = opencode.render_auth_plugin({"workspace": WS}, v2=True)
+
+        assert 'ctx.session.hook("http.response"' in plugin
+        assert "if (event.response.status === 401)" in plugin
+        assert 'rejectedAuthorization = event.request.headers.get("Authorization")' in plugin
+        assert (
+            'if (rejectedAuthorization === "Bearer " + accessToken) await refreshToken()' in plugin
+        )
+
     @pytest.mark.parametrize(
         ("installed", "entrypoint"),
         [
