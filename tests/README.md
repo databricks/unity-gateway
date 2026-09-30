@@ -17,7 +17,8 @@ and checks their version output against the `unity-gateway` distribution metadat
 the distribution rename with mocked installer calls, including failure recovery guidance.
 `test_subprocess_cross_os.py` covers Windows npm shim resolution, native and Node targets,
 literal argument preservation, and the shared `subprocess_cross_os.run` / `subprocess_cross_os.popen`
-entry points. `test_launcher.py` covers terminal handoff and exit status.
+entry points, including UTF-8 text decoding, explicit encoding/error overrides, and unchanged
+binary output. `test_launcher.py` covers terminal handoff and exit status.
 Ruff rejects direct subprocess launches outside `os_compatibility/subprocess_cross_os.py` and tests.
 Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
@@ -29,7 +30,9 @@ quoted executable paths and replacement of legacy `ucode` routing/web-search hel
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
 `test_databricks.py` checks bounded Anthropic catalog requests with `limit=1000`, including
-scoped routing headers and model display metadata.
+scoped routing headers and model display metadata. Its subprocess regression checks force a
+cp1252 default at the dependency seam, then verify UTF-8 text decoding and unchanged binary
+output. `test_codex_catalog.py` covers the same forced-locale failure at Codex catalog validation.
 The managed-default and discovery integration journeys below check the generated settings
 and real picker.
 

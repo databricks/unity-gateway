@@ -1,4 +1,4 @@
-"""Subprocess helpers for platform-specific command resolution."""
+"""Subprocess helpers for cross-platform command resolution and text encoding."""
 
 from __future__ import annotations
 
@@ -69,8 +69,19 @@ def _resolved_args(
     return args
 
 
+def _with_text_defaults(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Avoid locale-dependent CLI text decoding unless the caller opts in."""
+    if not any(kwargs.get(name) for name in ("text", "universal_newlines", "encoding", "errors")):
+        return kwargs
+    kwargs = kwargs.copy()
+    kwargs.setdefault("encoding", "utf-8")
+    kwargs.setdefault("errors", "replace")
+    return kwargs
+
+
 def run(args: list[str] | str, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
-    """Like subprocess.run, with automatic Windows resolution for list commands."""
+    """Like subprocess.run, with Windows command resolution and UTF-8 text defaults."""
+    kwargs = _with_text_defaults(kwargs)
     return subprocess.run(
         _resolved_args(
             args,
@@ -82,7 +93,8 @@ def run(args: list[str] | str, **kwargs: Any) -> subprocess.CompletedProcess[Any
 
 
 def popen(args: list[str] | str, **kwargs: Any) -> subprocess.Popen[Any]:
-    """Like subprocess.Popen, with automatic Windows resolution for list commands."""
+    """Like subprocess.Popen, with Windows command resolution and UTF-8 text defaults."""
+    kwargs = _with_text_defaults(kwargs)
     return subprocess.Popen(
         _resolved_args(
             args,
