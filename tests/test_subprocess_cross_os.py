@@ -32,7 +32,14 @@ class TestProcessWrappers:
 
         assert result is completed
         resolve.assert_called_once_with(argv)
-        run.assert_called_once_with(resolved, check=False, capture_output=True, text=True)
+        run.assert_called_once_with(
+            resolved,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
 
     def test_popen_resolves_windows_argv_and_preserves_kwargs(self):
         argv = ["claude", "--settings", "settings.json"]
@@ -94,6 +101,62 @@ class TestProcessWrappers:
         resolve.assert_not_called()
         popen.assert_called_once_with(argv, executable="/bin/sh")
 
+    @pytest.mark.parametrize(
+        ("kwargs", "expected"),
+        [
+            (
+                {"universal_newlines": True},
+                {"universal_newlines": True, "encoding": "utf-8", "errors": "replace"},
+            ),
+            (
+                {"encoding": "cp1252"},
+                {"encoding": "cp1252", "errors": "replace"},
+            ),
+            (
+                {"errors": "ignore"},
+                {"encoding": "utf-8", "errors": "ignore"},
+            ),
+        ],
+    )
+    def test_run_uses_text_defaults_for_all_text_mode_switches(self, kwargs, expected):
+        argv = ["codex", "--help"]
+        with patch.object(subprocess_cross_os.subprocess, "run", return_value=MagicMock()) as run:
+            subprocess_cross_os.run(argv, **kwargs)
+
+        run.assert_called_once_with(argv, **expected)
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"text": True, "encoding": "cp1252", "errors": "strict"},
+            {"text": True, "encoding": None, "errors": None},
+        ],
+    )
+    def test_run_preserves_explicit_text_overrides(self, kwargs):
+        argv = ["codex", "--help"]
+        with patch.object(subprocess_cross_os.subprocess, "run", return_value=MagicMock()) as run:
+            subprocess_cross_os.run(argv, **kwargs)
+
+        run.assert_called_once_with(argv, **kwargs)
+
+    def test_run_leaves_binary_mode_unchanged(self):
+        argv = ["codex", "--help"]
+        with patch.object(subprocess_cross_os.subprocess, "run", return_value=MagicMock()) as run:
+            subprocess_cross_os.run(argv, capture_output=True, text=False)
+
+        run.assert_called_once_with(argv, capture_output=True, text=False)
+
+    def test_popen_uses_text_defaults(self):
+        argv = ["codex", "--help"]
+        with patch.object(
+            subprocess_cross_os.subprocess, "Popen", return_value=MagicMock()
+        ) as popen:
+            subprocess_cross_os.popen(argv, stdin=subprocess.PIPE, text=True)
+
+        popen.assert_called_once_with(
+            argv, stdin=subprocess.PIPE, text=True, encoding="utf-8", errors="replace"
+        )
+
     def test_posix_passes_argv_to_run_unchanged(self):
         argv = ["codex", "--help"]
         with (
@@ -124,7 +187,11 @@ class TestProcessWrappers:
             subprocess_cross_os.run(["ucode-launcher-command-that-does-not-exist-872"])
 
     def test_real_run_preserves_text_and_bytes_results(self):
-        command = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'launcher-ok\\n')"]
+        command = [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.buffer.write('“run”'.encode('utf-8') + b'\\xff')",
+        ]
 
         text_result = subprocess_cross_os.run(
             command, check=True, capture_output=True, text=True, timeout=5
@@ -132,16 +199,16 @@ class TestProcessWrappers:
         bytes_result = subprocess_cross_os.run(command, check=True, capture_output=True, timeout=5)
 
         assert text_result.returncode == 0
-        assert text_result.stdout == "launcher-ok\n"
+        assert text_result.stdout == "“run”�"
         assert bytes_result.returncode == 0
-        assert bytes_result.stdout == b"launcher-ok\n"
+        assert bytes_result.stdout == "“run”".encode() + b"\xff"
 
     def test_real_popen_preserves_context_manager_and_exit_status(self):
         with subprocess_cross_os.popen(
             [
                 sys.executable,
                 "-c",
-                "import sys; sys.stdout.buffer.write(b'popen-ok\\n')",
+                "import sys; sys.stdout.buffer.write('“popen”'.encode('utf-8') + b'\\xff')",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -149,8 +216,25 @@ class TestProcessWrappers:
             stdout, stderr = process.communicate(timeout=5)
 
         assert process.returncode == 0
-        assert stdout == b"popen-ok\n"
+        assert stdout == "“popen”".encode() + b"\xff"
         assert stderr == b""
+
+    def test_real_popen_decodes_utf8_and_replaces_invalid_bytes(self):
+        with subprocess_cross_os.popen(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write('“popen”'.encode('utf-8') + b'\\xff')",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ) as process:
+            stdout, stderr = process.communicate(timeout=5)
+
+        assert process.returncode == 0
+        assert stdout == "“popen”�"
+        assert stderr == ""
 
 
 class TestResolveCommand:

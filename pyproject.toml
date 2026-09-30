@@ -76,7 +76,7 @@ select = [
     "UP",  # pyupgrade
     "B",   # flake8-bugbear
     "C4",  # flake8-comprehensions
-    "TID251",  # route process creation through cross-platform launch helpers
+    "TID251",  # route process creation through cross-platform subprocess helpers
 ]
 ignore = [
     "E501",  # line too long — formatter handles this
@@ -87,8 +87,8 @@ ignore = [
 "src/ucode/os_compatibility/subprocess_cross_os.py" = ["TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"subprocess.run".msg = "Use ucode.os_compatibility.subprocess_cross_os.run to resolve Windows commands automatically."
-"subprocess.Popen".msg = "Use ucode.os_compatibility.subprocess_cross_os.popen to resolve Windows commands automatically."
+"subprocess.run".msg = "Use ucode.os_compatibility.subprocess_cross_os.run for cross-platform commands and text encoding."
+"subprocess.Popen".msg = "Use ucode.os_compatibility.subprocess_cross_os.popen for cross-platform commands and text encoding."
 "subprocess.call".msg = "Use ucode.os_compatibility.subprocess_cross_os.run to resolve Windows commands automatically."
 "subprocess.check_call".msg = "Use ucode.os_compatibility.subprocess_cross_os.run with check=True."
 "subprocess.check_output".msg = "Use ucode.os_compatibility.subprocess_cross_os.run with check=True and stdout=subprocess.PIPE."

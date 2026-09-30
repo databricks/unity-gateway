@@ -13,6 +13,11 @@ Shared subprocess command resolution is covered by `../test_subprocess_cross_os.
 enforced by Ruff. These component checks do not establish native Windows coverage
 for every agent; the Windows journeys below validate their explicitly selected paths.
 
+Shared UTF-8 text defaults, decoding-error handling, explicit overrides, and unchanged
+binary output are covered in `../test_subprocess_cross_os.py`. Consumer regressions in
+`../test_databricks.py` and `../test_codex_catalog.py` force a cp1252 default at the
+subprocess dependency. These are component checks, not a separate live integration journey.
+
 The provider component checks in `../test_claude_search_provider.py` verify that
 copied marked helpers remain available in user aliases, project config, and strict
 caller config. Only the verified launch override suppresses its catalog; these
