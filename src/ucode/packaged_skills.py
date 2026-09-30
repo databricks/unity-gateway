@@ -43,19 +43,19 @@ def _bundle_digest(skill_dir: Path) -> str | None:
 
     digest = hashlib.sha256()
     try:
-        for path in sorted(
-            skill_dir.rglob("*"), key=lambda item: item.relative_to(skill_dir).as_posix()
-        ):
+        for path in sorted(skill_dir.rglob("*")):
             if path.is_symlink():
                 return None
-            relative = path.relative_to(skill_dir).as_posix().encode()
-            if path.is_dir():
-                digest.update(b"d\0" + relative + b"\0")
-            elif path.is_file():
-                content_digest = hashlib.sha256(path.read_bytes()).digest()
-                digest.update(b"f\0" + relative + b"\0" + content_digest)
+            if path.is_file():
+                kind = b"f"
+                content = hashlib.sha256(path.read_bytes()).digest()
+            elif path.is_dir():
+                kind = b"d"
+                content = b""
             else:
                 return None
+            relative = path.relative_to(skill_dir).as_posix().encode()
+            digest.update(kind + b"\0" + relative + b"\0" + content)
     except OSError:
         return None
     return digest.hexdigest()

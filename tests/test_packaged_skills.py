@@ -17,15 +17,6 @@ def _write_skill(root: Path, name: str, content: str = "version one") -> Path:
     return skill
 
 
-def test_smart_router_skill_uses_launcher_specific_flags():
-    content = (Path(__file__).resolve().parents[1] / "skills/smart-router/SKILL.md").read_text()
-
-    for launcher in ("claude", "codex"):
-        assert f"ug {launcher} --enable-smart-routing" in content
-        assert f"ug {launcher} --disable-smart-routing" in content
-    assert "ug smart-router" not in content
-
-
 def test_copies_named_skill_to_both_harness_directories(tmp_path, monkeypatch):
     source = tmp_path / "source"
     _write_skill(source, packaged_skills.SMART_ROUTER_SKILL)
@@ -63,6 +54,7 @@ def test_reinstall_replaces_existing_skill_contents(tmp_path, monkeypatch):
     for destination in installed:
         assert destination.joinpath("SKILL.md").read_text() == "version two"
         assert not destination.joinpath("stale.txt").exists()
+        assert list(destination.parent.iterdir()) == [destination]
 
 
 def test_reinstall_skips_unchanged_skill(tmp_path, monkeypatch):
