@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from decimal import Decimal
+from pathlib import Path
 from urllib.parse import parse_qs
 
 import pytest
@@ -3179,9 +3180,11 @@ class TestUpgradeDatabricksCli:
 
 class TestRunDatabricksCliInstaller:
     @pytest.mark.parametrize("subcommand", ["install", "upgrade"])
-    def test_windows_uses_winget(self, monkeypatch, subcommand):
+    def test_windows_uses_winget(self, monkeypatch, tmp_path, subcommand):
         calls = []
         winget = r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\winget.exe"
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("PATH", "/windows/system32")
         monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
         monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: winget if cmd == "winget" else None)
         monkeypatch.setattr(db_mod, "run", lambda cmd, **kw: calls.append((cmd, kw)))
@@ -3204,6 +3207,18 @@ class TestRunDatabricksCliInstaller:
                 {"timeout": 240},
             )
         ]
+        assert os.environ["PATH"].split(os.pathsep)[0] == str(
+            Path(os.environ["LOCALAPPDATA"]) / "Microsoft" / "WinGet" / "Links"
+        )
+
+    def test_windows_does_not_duplicate_winget_links_on_path(self, monkeypatch, tmp_path):
+        links_dir = str(tmp_path / "Microsoft" / "WinGet" / "Links")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("PATH", os.pathsep.join([links_dir, "/windows/system32"]))
+
+        db_mod._add_winget_links_to_path()
+
+        assert os.environ["PATH"].split(os.pathsep).count(links_dir) == 1
 
     def test_windows_without_winget_is_actionable(self, monkeypatch):
         monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")

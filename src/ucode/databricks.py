@@ -819,6 +819,19 @@ def databricks_cli_installed() -> bool:
     return bool(_discover_databricks_clis())
 
 
+def _add_winget_links_to_path() -> None:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        return
+
+    links_dir = str(Path(local_app_data) / "Microsoft" / "WinGet" / "Links")
+    path = os.environ.get("PATH", "")
+    entries = path.split(os.pathsep) if path else []
+    if os.path.normcase(links_dir) in {os.path.normcase(entry) for entry in entries}:
+        return
+    os.environ["PATH"] = os.pathsep.join([links_dir, *entries])
+
+
 def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
     system = platform.system()
     try:
@@ -859,6 +872,7 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
             ],
             timeout=240,
         )
+        _add_winget_links_to_path()
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
         message = "Failed to install/upgrade Databricks CLI automatically."
         if system == "Windows" and isinstance(exc, RuntimeError):
