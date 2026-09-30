@@ -111,15 +111,15 @@ def install_skill(skill_name: str, home: Path | None = None) -> list[Path]:
 
 
 def uninstall_skill(skill_name: str, home: Path | None = None) -> list[Path]:
-    """Remove one skill from each harness's global skill directory."""
+    """Remove one skill from every supported global skill directory."""
     _validate_skill_name(skill_name)
 
     base = Path.home() if home is None else home
-    claude_skill = base / _CLAUDE_SKILL_ROOT / skill_name
-    codex_alias = base / _CODEX_SKILL_ROOT / skill_name
-    destinations = [claude_skill, base / _SHARED_SKILL_ROOT / skill_name]
-    if _is_codex_alias(codex_alias, claude_skill):
-        destinations.append(codex_alias)
+    destinations = [
+        base / _CLAUDE_SKILL_ROOT / skill_name,
+        base / _CODEX_SKILL_ROOT / skill_name,
+        base / _SHARED_SKILL_ROOT / skill_name,
+    ]
 
     removed: list[Path] = []
     for destination in destinations:

@@ -116,22 +116,61 @@ def test_uninstalls_one_skill_from_both_harnesses(tmp_path, monkeypatch):
     assert skills.uninstall_skill(skills.SMART_ROUTER_SKILL, home) == []
 
 
-def test_uninstall_removes_matching_codex_alias(tmp_path, monkeypatch):
+@pytest.mark.parametrize("codex_target", ["claude", "shared", "missing"])
+def test_uninstall_removes_codex_alias(tmp_path, monkeypatch, codex_target):
     source = tmp_path / "source"
     _write_skill(source, skills.SMART_ROUTER_SKILL)
     monkeypatch.setattr(skills, "_skills_source", lambda: source)
     home = tmp_path / "home"
     claude_skill = home / ".claude/skills/smart-router"
     codex_alias = home / ".codex/skills/smart-router"
+    shared_skill = home / ".agents/skills/smart-router"
     codex_alias.parent.mkdir(parents=True)
-    codex_alias.symlink_to(claude_skill)
+    targets = {
+        "claude": claude_skill,
+        "shared": shared_skill,
+        "missing": home / ".missing/skills/smart-router",
+    }
+    codex_alias.symlink_to(targets[codex_target])
     skills.install_skill(skills.SMART_ROUTER_SKILL, home)
+    if not shared_skill.exists():
+        _write_skill(shared_skill.parent, skills.SMART_ROUTER_SKILL, "stale duplicate")
 
     removed = skills.uninstall_skill(skills.SMART_ROUTER_SKILL, home)
 
-    assert removed == [claude_skill, codex_alias]
+    assert removed == [claude_skill, codex_alias, shared_skill]
     assert not claude_skill.exists()
     assert not codex_alias.is_symlink()
+    assert not shared_skill.exists()
+
+
+def test_uninstall_removes_independent_codex_copy(tmp_path):
+    home = tmp_path / "home"
+    codex_skill = _write_skill(home / ".codex/skills", skills.SMART_ROUTER_SKILL)
+
+    removed = skills.uninstall_skill(skills.SMART_ROUTER_SKILL, home)
+
+    assert removed == [codex_skill]
+    assert not codex_skill.exists()
+
+
+def test_uninstall_unlinks_all_global_aliases_without_removing_targets(tmp_path):
+    home = tmp_path / "home"
+    aliases = [
+        home / root / skills.SMART_ROUTER_SKILL
+        for root in (".claude/skills", ".codex/skills", ".agents/skills")
+    ]
+    targets = [tmp_path / "targets" / str(index) for index in range(len(aliases))]
+    for alias, target in zip(aliases, targets, strict=True):
+        target.mkdir(parents=True)
+        alias.parent.mkdir(parents=True)
+        alias.symlink_to(target)
+
+    removed = skills.uninstall_skill(skills.SMART_ROUTER_SKILL, home)
+
+    assert removed == aliases
+    assert all(not alias.is_symlink() for alias in aliases)
+    assert all(target.is_dir() for target in targets)
 
 
 def test_rejects_unsafe_skill_names(tmp_path):
