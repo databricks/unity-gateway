@@ -212,7 +212,7 @@ class TestUpgrade:
     def test_before_cutover_upgrades_ucode_normally_without_verification(self, prog_name):
         with (
             patch("ucode.cli._installed_cli_distribution", return_value="ucode"),
-            patch("subprocess.run", return_value=self._ok()) as run,
+            patch("ucode.cli.subprocess_cross_os.run", return_value=self._ok()) as run,
         ):
             result = runner.invoke(app, ["upgrade"], prog_name=prog_name)
 
@@ -240,7 +240,7 @@ class TestUpgrade:
             patch("ucode.cli._installed_cli_distribution", return_value="ucode"),
             patch("ucode.cli.shutil.which", side_effect=self._which),
             patch(
-                "subprocess.run",
+                "ucode.cli.subprocess_cross_os.run",
                 side_effect=[
                     rename_failure,
                     self._ok(),
@@ -281,7 +281,7 @@ class TestUpgrade:
     def test_after_cutover_upgrades_unity_gateway_normally_without_verification(self, prog_name):
         with (
             patch("ucode.cli._installed_cli_distribution", return_value="unity-gateway"),
-            patch("subprocess.run", return_value=self._ok()) as run,
+            patch("ucode.cli.subprocess_cross_os.run", return_value=self._ok()) as run,
         ):
             result = runner.invoke(app, ["upgrade"], prog_name=prog_name)
 
@@ -306,7 +306,7 @@ class TestUpgrade:
         )
         with (
             patch("ucode.cli._installed_cli_distribution", return_value="ucode"),
-            patch("subprocess.run", return_value=failure) as run,
+            patch("ucode.cli.subprocess_cross_os.run", return_value=failure) as run,
         ):
             result = runner.invoke(app, ["upgrade"])
 
@@ -329,7 +329,7 @@ class TestUpgrade:
         )
         with (
             patch("ucode.cli._installed_cli_distribution", return_value="ucode"),
-            patch("subprocess.run") as run,
+            patch("ucode.cli.subprocess_cross_os.run") as run,
         ):
             run.side_effect = [
                 rename_failure,
@@ -355,7 +355,7 @@ class TestUpgrade:
             patch("ucode.cli._installed_cli_distribution", return_value="ucode"),
             patch("ucode.cli.shutil.which", return_value=None),
             patch(
-                "subprocess.run",
+                "ucode.cli.subprocess_cross_os.run",
                 side_effect=[rename_failure, self._ok(), self._ok()],
             ),
         ):
@@ -367,7 +367,7 @@ class TestUpgrade:
     def test_missing_uv_is_actionable(self):
         with (
             patch("ucode.cli._installed_cli_distribution", return_value="ucode"),
-            patch("subprocess.run", side_effect=FileNotFoundError),
+            patch("ucode.cli.subprocess_cross_os.run", side_effect=FileNotFoundError),
         ):
             result = runner.invoke(app, ["upgrade"])
 

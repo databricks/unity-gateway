@@ -56,6 +56,13 @@ model for one launch. OpenCode's `provider/model` form is also accepted.
 Unknown Databricks models produce an error; this option does not add models
 to discovery or change ug's saved default.
 
+`ug copilot` uses the Responses API for GPT-6 and newer model IDs, and Chat
+Completions for other models. The model selected at launch (including `--model`)
+determines the API. An inherited `COPILOT_PROVIDER_WIRE_MODEL` takes precedence
+because it overrides the model sent to the gateway. Restart Copilot through `ug`
+to change the wire model or API; in-session model selection does not rebuild its
+provider configuration.
+
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`

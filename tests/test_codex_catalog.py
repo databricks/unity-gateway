@@ -3,6 +3,7 @@
 import copy
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -327,6 +328,22 @@ def test_subprocess_failure_never_falls_back(monkeypatch, bundled, fail_validati
     with pytest.raises(RuntimeError, match="Upgrade the active Codex"):
         catalog.prepare_codex_catalog("codex", ["kimi-k3"])
     assert len(calls) == (2 if fail_validation else 1)
+
+
+class TestRunCatalogCommand:
+    def test_decodes_utf8_output_even_when_locale_defaults_to_cp1252(self, tmp_path, monkeypatch):
+        # Force the dependency's omitted encoding to behave like Windows on every host.
+        real_run = catalog.subprocess.run
+
+        def run_with_cp1252_default(*args, **kwargs):
+            if kwargs.get("text") and "encoding" not in kwargs:
+                kwargs["encoding"] = "cp1252"
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(catalog.subprocess, "run", run_with_cp1252_default)
+        script = r"import sys; sys.stdout.buffer.write('“fast” — ok'.encode('utf-8'))"
+        result = catalog._run_catalog_command(sys.executable, ["-c", script], str(tmp_path))
+        assert result.stdout == "“fast” — ok"
 
 
 class TestConfiguredPaths:
