@@ -26,6 +26,10 @@ on:
         description: Exact Codex version
         default: 0.154.0
         required: true
+      opencode_version:
+        description: Exact OpenCode version (non-blocking lane)
+        default: 1.18.31
+        required: true
       dependency:
         description: Optional exact dependency for reproduction (e.g. tomlkit==0.14.0)
         default: ''
@@ -48,6 +52,7 @@ env:
   ENTRY_POINT: ${{ inputs.entry_point || 'ug' }}
   CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.280' }}
   CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
+  OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
 
 jobs:
@@ -210,6 +215,7 @@ jobs:
           case "$AGENT" in
             claude) args=(--claude-version "$CLAUDE_VERSION") ;;
             codex) args=(--codex-version "$CODEX_VERSION") ;;
+            opencode) args=(--opencode-version "$OPENCODE_VERSION") ;;
           esac
           if [[ -n "$DEPENDENCY" ]]; then
             args+=(--dependency "$DEPENDENCY")
@@ -338,6 +344,24 @@ jobs:
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: ${{ inputs.suite == 'tui' && 'live and tui' || 'live' }} and ${{ matrix.agent }}
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}
+    steps: *live-steps
+
+  # Non-blocking: continue-on-error and absent from the cujs `needs`, so a flaky OpenCode
+  # leg cannot block merges. Add it to cujs once the lane is stable.
+  opencode:
+    name: Full journeys · OpenCode (non-blocking)
+    if: ${{ !cancelled() && inputs.suite != 'smoke' && inputs.suite != 'tui' && needs.workspace.result == 'success' }}
+    needs: workspace
+    continue-on-error: true
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: opencode
+      TEST_MARKER: live and opencode
+      ARTIFACT_NAME: integration-full-opencode
     steps: *live-steps
 
   managed:

@@ -3475,6 +3475,8 @@ class TestCodingAgentConfigCrudClients:
         assert "default_options" not in db_mod.MANAGED_CONFIG_UPDATE_MASK_PATHS
         assert "tiers" not in db_mod.MANAGED_CONFIG_UPDATE_MASK_PATHS
         assert "spec_version" not in db_mod.MANAGED_CONFIG_UPDATE_MASK_PATHS
+        assert "spend_tiers" not in db_mod.MANAGED_CONFIG_UPDATE_MASK_PATHS
+        assert "smart_defaults" in db_mod.MANAGED_CONFIG_UPDATE_MASK_PATHS
 
     def test_update_mask_covers_every_field_the_manifest_can_set(self):
         # A path ucode omits is a field a re-run silently cannot clear, since the server merges per
@@ -3491,7 +3493,7 @@ class TestCodingAgentConfigCrudClients:
                     },
                     "mcp_servers": {"names": ["main.default.databricks_sql"]},
                     "skills": {"names": ["main.default.triage"]},
-                    "spend_tiers": {
+                    "smart_defaults": {
                         "budget_id": "11111111-1111-1111-1111-111111111111",
                         "tiers": [],
                     },

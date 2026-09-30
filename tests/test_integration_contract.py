@@ -146,7 +146,7 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed", "workspace_switch"}:
-                    assert len(marks & {"claude", "codex"}) == 1, node.name
+                    assert len(marks & {"claude", "codex", "opencode"}) == 1, node.name
 
 
 def test_model_discovery_cases_match_current_launch_contract():
