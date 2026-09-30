@@ -231,12 +231,12 @@ table.
 | `env.ENABLE_TOOL_SEARCH` | Sets/replaces | Sets/replaces |  |
 | `env.CLAUDE_CODE_USE_GATEWAY` | Sets/replaces | Sets/replaces |  |
 | `env.ANTHROPIC_MODEL` | Ignores | Sets/replaces | The launch model, from the config's `default_model` or the budget recommendation. Set at launch, not by `ug configure` |
-| `env.ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL` | Sets/replaces | Sets/replaces | Discovered default; the config's family default wins under managed config |
-| `availableModels`, `enforceAvailableModels`, `modelPicker` | Ignores | Sets/replaces | Only for a managed static model list |
+| `env.ANTHROPIC_DEFAULT_*_MODEL` | Sets/replaces | Sets/replaces | Per family (opus, sonnet, haiku, fable). Discovered default; the config's family default wins under managed config |
+| Model picker | Ignores | Sets/replaces | `availableModels`, `enforceAvailableModels`, `modelPicker`; only for a managed static model list |
 | `permissions.deny` | Sets/replaces | Sets/replaces | Only `ug`'s own `WebSearch` rule, added when it replaces web search; other rules left alone |
-| OTEL tracing env + `otelHeadersHelper` | Ignores | Sets/replaces | Only when the config enables tracing. Covers the seven `CLAUDE_CODE_*`/`OTEL_*` trace keys and `otelHeadersHelper` |
+| Tracing | Ignores | Sets/replaces | Only when the config enables tracing. The seven `CLAUDE_CODE_*`/`OTEL_*` trace keys and `otelHeadersHelper` |
 | `managedMcpServers` | Ignores | Sets/replaces | The config's MCP servers |
-| Smart-routing hooks (`PreToolUse`, `SessionStart`, `SubagentStart`) | Sets/replaces | Sets/replaces | Only `ug`'s own marked handlers; other hooks left alone |
+| Smart-routing hooks | Sets/replaces | Sets/replaces | `PreToolUse`, `SessionStart`, `SubagentStart`; only `ug`'s own marked handlers, other hooks left alone |
 
 </details>
 
@@ -248,14 +248,14 @@ table.
 | `model_provider` | Sets/replaces | Sets/replaces | `Databricks` |
 | `model` | Ignores | Sets/replaces | The config's default model |
 | `model_providers.Databricks` | Sets/replaces | Sets/replaces | Name, gateway base URL, wire API, and the `ug` auth command; other keys left alone |
-| `model_providers.Databricks.http_headers` | Sets/replaces | Sets/replaces | `ug`'s own routing headers; admin headers added under managed config |
-| `model_catalog_json` (`~/.codex/config.toml`) | Sets/replaces | Sets/replaces | Only `ug`'s own catalog reference, for a static model list |
-| `mcp_servers` (managed file) | Ignores | Sets/replaces | The config's MCP servers |
+| `http_headers` | Sets/replaces | Sets/replaces | In `[model_providers.Databricks]`; `ug`'s own routing headers, admin headers added under managed config |
+| `model_catalog_json` | Sets/replaces | Sets/replaces | In `~/.codex/config.toml`; only `ug`'s own catalog reference, for a static model list |
+| `mcp_servers` | Ignores | Sets/replaces | Managed file; the config's MCP servers |
 
 </details>
 
 `ug` also clears some fields today that this list leaves alone: the
-`ANTHROPIC_DEFAULT_*_MODEL_NAME` companions,
+`env.ANTHROPIC_DEFAULT_*_MODEL_NAME` companions,
 `env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`,
 `env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`, and Codex `model_reasoning_effort`.
 Those removals are gaps against this allow list and are tracked in Jira. Codex
