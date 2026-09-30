@@ -4240,7 +4240,10 @@ class TestConfigureProfilesFlag:
             use_pat=True,
         )
 
-    def test_use_pat_requires_profiles(self):
+    def test_use_pat_with_workspace_forwards_workspace_form(self):
+        # `--workspace <url> --use-pat` no longer needs an explicit --profile; the
+        # bare workspace form is forwarded and the profile is resolved from the
+        # host inside configure_shared_state.
         with (
             patch("ucode.cli.install_databricks_cli"),
             patch("ucode.cli.configure_workspace_command") as mock_cfg,
@@ -4249,8 +4252,21 @@ class TestConfigureProfilesFlag:
                 app,
                 ["configure", "--workspace", "https://first.databricks.com", "--use-pat"],
             )
+        assert result.exit_code == 0, result.output
+        mock_cfg.assert_called_once_with(
+            workspaces=[("https://first.databricks.com", None)],
+            use_pat=True,
+        )
+
+    def test_use_pat_without_profile_or_workspace_errors(self, monkeypatch):
+        monkeypatch.delenv("UG_WORKSPACE", raising=False)
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.configure_workspace_command") as mock_cfg,
+        ):
+            result = runner.invoke(app, ["configure", "--use-pat"])
         assert result.exit_code == 1
-        assert "--use-pat requires --profile" in _strip_ansi(result.output)
+        assert "requires a profile or workspace" in _strip_ansi(result.output)
         mock_cfg.assert_not_called()
 
     def test_skip_unavailable_accepted_without_agents(self):
@@ -4346,6 +4362,7 @@ class TestConfigureSharedStateUsePat:
         )
         monkeypatch.setattr(cli_mod, "resolve_pat_token", lambda p: pat_token)
         monkeypatch.setattr(cli_mod, "find_profile_name_for_host", lambda w: None)
+        monkeypatch.setattr(cli_mod, "find_pat_profile_name_for_host", lambda w: None)
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda w, p: "token")
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", lambda w, t: MODEL_SERVICE_PROBE
@@ -4472,8 +4489,25 @@ class TestConfigureSharedStateUsePat:
     def test_use_pat_without_profile_raises(self, monkeypatch):
         cli_mod, _, _, _ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
 
-        with pytest.raises(RuntimeError, match="requires a Databricks CLI profile"):
+        with pytest.raises(RuntimeError, match="no PAT-backed Databricks CLI profile"):
             cli_mod.configure_shared_state(self.WS, force_login=True, use_pat=True)
+
+    def test_use_pat_resolves_profile_from_workspace_host(self, monkeypatch):
+        # `--workspace <url> --use-pat` passes profile=None; the profile is
+        # resolved from the host, persisted, and its PAT exported.
+        import os as os_mod
+
+        cli_mod, logins, ensures, saved = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        monkeypatch.setattr(cli_mod, "find_pat_profile_name_for_host", lambda w: "host-profile")
+
+        state = cli_mod.configure_shared_state(self.WS, force_login=True, use_pat=True)
+
+        assert logins == []
+        assert ensures == [(self.WS, "host-profile")]
+        assert os_mod.environ["DATABRICKS_BEARER"] == "dapi-pat"
+        assert state["profile"] == "host-profile"
+        assert state["use_pat"] is True
+        assert saved and saved[-1]["profile"] == "host-profile"
 
     def test_launch_inherits_persisted_use_pat(self, monkeypatch):
         # A launch re-run passes use_pat=None; the persisted mode for the same

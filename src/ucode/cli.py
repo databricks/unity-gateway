@@ -62,6 +62,7 @@ from ucode.databricks import (
     ensure_databricks_auth,
     ensure_pat_bearer,
     external_bearer_configured,
+    find_pat_profile_name_for_host,
     find_profile_name_for_host,
     get_databricks_profiles,
     get_databricks_token,
@@ -475,10 +476,11 @@ def configure_shared_state(
 
     If tools is provided, only fetch models for those tools. Otherwise fetch all.
     If force_login is True, always run databricks auth login (used by explicit configure).
-    If use_pat is True (explicit `configure --profile <name> --use-pat`), the
-    profile's personal access token from ~/.databrickscfg is used instead of
-    OAuth and no interactive login ever runs. ``None`` means "inherit": a
-    launch re-run keeps the mode the workspace was configured with.
+    If use_pat is True (`configure --use-pat` with a `--profile <name>`, or a
+    `--workspace <url>` whose host matches a PAT-backed profile), that profile's
+    personal access token from ~/.databrickscfg is used instead of OAuth and no
+    interactive login ever runs. ``None`` means "inherit": a launch re-run keeps
+    the mode the workspace was configured with.
     ``profile`` is the Databricks CLI profile name to address — passed via
     ``--profile`` to every CLI invocation so ambiguous `~/.databrickscfg`
     entries (e.g. DEFAULT and a named profile both pointing at the same host)
@@ -558,10 +560,17 @@ def configure_shared_state(
     if cli_custom_oauth:
         pass  # The dedicated profile was authenticated above.
     elif use_pat:
+        # `--workspace <url> --use-pat` carries no profile; resolve the PAT-backed
+        # one from the host (find_profile_name_for_host would skip PAT profiles).
         if not profile:
-            raise RuntimeError(
-                "--use-pat requires a Databricks CLI profile. Pass one via `--profile <name>`."
-            )
+            profile = find_pat_profile_name_for_host(workspace)
+            if profile is None:
+                raise RuntimeError(
+                    f"--use-pat: no PAT-backed Databricks CLI profile in ~/.databrickscfg "
+                    f"matches {workspace}. Add a profile with `auth_type = pat` and a "
+                    f"`token = <PAT>` entry for that host, or pass `--profile <name>`."
+                )
+            state["profile"] = profile
         pat = resolve_pat_token(profile)
         if not pat:
             raise RuntimeError(
@@ -3418,7 +3427,8 @@ def configure(
             "--use-pat",
             help="Authenticate with the personal access token stored in "
             "~/.databrickscfg for the selected profile instead of OAuth. "
-            "Requires --profile; no interactive login is run. Intended for "
+            "Requires --profile, or --workspace <url> whose host matches a "
+            "PAT-backed profile; no interactive login is run. Intended for "
             "CI / headless environments.",
         ),
     ] = False,
@@ -3525,10 +3535,11 @@ def configure(
             workspace = os.environ.get("UG_WORKSPACE") or None
         if workspace is not None and profile is not None:
             raise RuntimeError("Use either --workspace or --profile, not both.")
-        if use_pat and profile is None:
+        if use_pat and profile is None and workspace is None:
             raise RuntimeError(
-                "--use-pat requires --profile. Pass the PAT-backed Databricks CLI "
-                "profile explicitly, e.g. `ug configure --profile DEFAULT --use-pat`."
+                "--use-pat requires a profile or workspace. Pass `--profile <name>`, "
+                "or `--workspace <url>` whose host matches a PAT-backed profile in "
+                "~/.databrickscfg."
             )
         workspace_entries = _parse_workspace_option(workspace) if workspace is not None else None
         if profile is not None:

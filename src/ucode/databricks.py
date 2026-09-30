@@ -999,6 +999,21 @@ def find_profile_name_for_host(workspace: str) -> str | None:
     return None
 
 
+def find_pat_profile_name_for_host(workspace: str) -> str | None:
+    """Find a PAT-backed CLI profile whose host matches a workspace URL.
+
+    `find_profile_name_for_host` feeds the OAuth picker, so it drops PAT profiles;
+    `--use-pat` needs the opposite. This scans the unfiltered profile list for a
+    host match with ``auth_type == "pat"`` so `ug configure --workspace <url>
+    --use-pat` can locate the profile whose static token to use."""
+    normalized = workspace.rstrip("/")
+    for p in list_profile_entries():
+        name = p.get("name")
+        if (p.get("host") or "").rstrip("/") == normalized and p.get("auth_type") == "pat" and name:
+            return str(name)
+    return None
+
+
 def profile_auth_type(profile: str) -> str | None:
     """Return the auth_type of a Databricks CLI profile (e.g. "pat"), or None."""
     for p in list_profile_entries():

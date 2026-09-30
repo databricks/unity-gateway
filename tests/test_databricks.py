@@ -2232,6 +2232,45 @@ class TestGetDatabricksProfiles:
         assert get_databricks_profiles() == []
 
 
+class TestFindPatProfileNameForHost:
+    def _patched_run(self, monkeypatch, payload: dict) -> None:
+        def fake_run(args, **kwargs):
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload))
+
+        monkeypatch.setattr(db_mod, "run", fake_run)
+
+    def test_returns_pat_profile_matching_host(self, monkeypatch):
+        # The PAT profile is chosen even when an OAuth profile shares the host and
+        # a PAT profile for a different host is listed first.
+        self._patched_run(
+            monkeypatch,
+            {
+                "profiles": [
+                    {"host": "https://other.databricks.com", "name": "other", "auth_type": "pat"},
+                    {"host": WS, "name": "oauth", "auth_type": "databricks-cli"},
+                    {"host": WS, "name": "tokenized", "auth_type": "pat"},
+                ]
+            },
+        )
+        assert db_mod.find_pat_profile_name_for_host(WS) == "tokenized"
+
+    def test_returns_none_when_only_oauth_matches_host(self, monkeypatch):
+        # Regression guard: get_databricks_profiles drops PAT profiles, so the
+        # OAuth-only helper must not be reused here.
+        self._patched_run(
+            monkeypatch,
+            {"profiles": [{"host": WS, "name": "oauth", "auth_type": "databricks-cli"}]},
+        )
+        assert db_mod.find_pat_profile_name_for_host(WS) is None
+
+    def test_normalizes_trailing_slash(self, monkeypatch):
+        self._patched_run(
+            monkeypatch,
+            {"profiles": [{"host": f"{WS}/", "name": "p", "auth_type": "pat"}]},
+        )
+        assert db_mod.find_pat_profile_name_for_host(WS) == "p"
+
+
 class TestListDatabricksApps:
     def test_lists_apps_with_workspace_env(self, monkeypatch):
         calls: list[dict] = []
