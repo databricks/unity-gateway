@@ -37,7 +37,7 @@ from ucode.databricks import (
     fetch_model_recommendation,
     get_databricks_token,
 )
-from ucode.string_utils import parse_update_time
+from ucode.time_utils import parse_update_time
 from ucode.ui import console, print_warning
 
 MANAGED_CONFIG_PATH = config_io.APP_DIR / "managed-config.json"

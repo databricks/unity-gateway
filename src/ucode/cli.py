@@ -2923,8 +2923,8 @@ def _launch_tool(
             )
         if recommendation is not None:
             _print_budget_panel(recommendation, tool, managed)
-        # The managed config's MCP servers and skills are applied at `ug configure`, not here.
-        # Downloaded skills get a rate-limited refresh above (refresh_downloaded_skills_on_launch).
+        # The managed config's MCP servers and skills are both applied at `ug configure`, not here,
+        # so the launch hot path makes no per-launch discovery calls for them.
         if tool == "claude":
             if provider:
                 state["_claude_launch_provider"] = provider

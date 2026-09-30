@@ -256,9 +256,6 @@ class TestRemoveDownloads:
 
 
 class TestUpdateCheck:
-    def test_interval_matches_isaac(self):
-        assert skills_state.SKILL_UPDATE_CHECK_INTERVAL == timedelta(hours=24)
-
     def test_missing_reads_none(self):
         assert skills_state.last_update_check() is None
 

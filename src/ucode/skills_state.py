@@ -13,17 +13,14 @@ import os
 import shutil
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ucode import config_io
-from ucode.string_utils import parse_update_time
+from ucode.time_utils import parse_update_time
 from ucode.ui import print_warning
 
 SKILLS_STATE_VERSION = 1
-
-# Matches Isaac's plugin marketplace staleness window (see plugin-marketplace/CLAUDE.md).
-SKILL_UPDATE_CHECK_INTERVAL = timedelta(hours=24)
 
 
 @dataclass(frozen=True)

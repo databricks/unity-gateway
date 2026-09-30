@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1228,8 +1228,16 @@ class TestEligibleLaunchRecords:
 
         assert {r["fqn"] for r in eligible} == {"a.b.home", "a.b.proj", "a.b.other"}
 
+    def test_skips_records_missing_fqn_or_base(self, tmp_path):
+        records = [
+            {"workspace": WS, "scope": "user", "base": str(tmp_path)},
+            {"fqn": "a.b.nobase", "workspace": WS, "scope": "user"},
+        ]
 
-class TestGetUpdatedRefs:
+        assert sd._eligible_launch_refresh_records(records, WS) == []
+
+
+class TestRefsNeedingRefresh:
     def test_flags_only_newer_or_unversioned(self, monkeypatch):
         records = [
             {"fqn": "main.default.newer", "uc_update_time": "2026-01-01T00:00:00Z"},
@@ -1253,7 +1261,7 @@ class TestGetUpdatedRefs:
         }
         monkeypatch.setattr(sd, "get_skill", lambda ws, tok, fqn: current[fqn])
 
-        pairs = sd._get_updated_refs(WS, "token", records, time.monotonic() + 30)
+        pairs = sd._refs_needing_refresh(WS, "token", records, time.monotonic() + 30)
 
         assert {r["fqn"] for r, _ in pairs} == {
             "main.default.newer",
@@ -1263,7 +1271,7 @@ class TestGetUpdatedRefs:
 
     def test_empty_records_makes_no_pool(self, monkeypatch):
         monkeypatch.setattr(sd, "get_skill", lambda *a: pytest.fail("should not fetch"))
-        assert sd._get_updated_refs(WS, "token", [], time.monotonic() + 30) == []
+        assert sd._refs_needing_refresh(WS, "token", [], time.monotonic() + 30) == []
 
     def test_expired_deadline_stops_waiting(self, monkeypatch):
         release = threading.Event()
@@ -1275,7 +1283,7 @@ class TestGetUpdatedRefs:
         monkeypatch.setattr(sd, "get_skill", blocking_get_skill)
         start = time.monotonic()
         try:
-            pairs = sd._get_updated_refs(
+            pairs = sd._refs_needing_refresh(
                 WS, "token", [{"fqn": "main.default.triage"}], time.monotonic() - 1
             )
         finally:
@@ -1416,6 +1424,9 @@ def _record_download(home, monkeypatch, *, uc_update_time="2026-01-01T00:00:00Z"
 
 
 class TestRefreshOnLaunch:
+    def test_interval_matches_isaac(self):
+        assert sd.SKILL_UPDATE_CHECK_INTERVAL == timedelta(hours=24)
+
     def test_rate_limited_skips_network(self, monkeypatch):
         skills_state.set_last_update_check(datetime.now(UTC))
         monkeypatch.setattr(sd, "list_downloaded", lambda: pytest.fail("should not read"))

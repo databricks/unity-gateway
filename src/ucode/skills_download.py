@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import questionary
@@ -26,7 +26,6 @@ from ucode.skills_api import (
     list_schema_skills,
 )
 from ucode.skills_state import (
-    SKILL_UPDATE_CHECK_INTERVAL,
     SkillInstall,
     forget,
     last_update_check,
@@ -39,7 +38,7 @@ from ucode.skills_state import (
     set_last_update_check,
 )
 from ucode.state import load_state
-from ucode.string_utils import parse_update_time
+from ucode.time_utils import parse_update_time
 from ucode.ui import (
     console,
     picker_style,
@@ -57,6 +56,9 @@ SKILL_BASE_DIR_NAMES = (".claude/skills", ".agents/skills")
 # Parallel skill fetches per schema; writes stay sequential (they prompt).
 _MAX_FETCH_WORKERS = 8
 
+# The launch-time refresh runs at most once per interval (Isaac's plugin marketplace staleness
+# window) and gives up after the budget, so a slow Unity Catalog can't hold up a launch for long.
+SKILL_UPDATE_CHECK_INTERVAL = timedelta(hours=24)
 SKILL_UPDATE_BUDGET_SECONDS = 60.0
 
 
@@ -453,17 +455,21 @@ def reconcile_managed_skills(managed: dict) -> tuple[list[str], list[str]]:
 def _eligible_launch_refresh_records(records: list[dict], workspace: str) -> list[dict]:
     """The current workspace's own (non-managed) downloads, which a launch may refresh.
 
-    Managed skills are left to ``ug configure``, and other workspaces' downloads are skipped
-    because the launch token authenticates only this workspace.
+    Managed skills are left to ``ug configure``, other workspaces' downloads are skipped
+    because the launch token authenticates only this workspace, and a record without an
+    ``fqn`` or ``base`` can't be refreshed.
     """
     return [
         record
         for record in records
-        if record.get("scope") != "managed" and record.get("workspace") == workspace
+        if record.get("scope") != "managed"
+        and record.get("workspace") == workspace
+        and record.get("fqn")
+        and record.get("base")
     ]
 
 
-def _get_updated_refs(
+def _refs_needing_refresh(
     workspace: str, token: str, records: list[dict], deadline: float
 ) -> list[tuple[dict, SkillRef]]:
     """Pair each record to re-download with its current skill: one whose UC source is newer than
@@ -583,7 +589,7 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
             print_note("Checking Unity Catalog for downloaded skill updates...")
             token = get_databricks_token(workspace, state.get("profile"))
             deadline = time.monotonic() + SKILL_UPDATE_BUDGET_SECONDS
-            pairs = _get_updated_refs(workspace, token, present, deadline)
+            pairs = _refs_needing_refresh(workspace, token, present, deadline)
             updated = _update_stale_skills(workspace, token, pairs, deadline)
             if updated:
                 print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
