@@ -42,20 +42,14 @@ CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE = (
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 CLAUDE_SMART_ROUTING_MODELS = [
-    "system.ai.claude-opus-5",
-    "system.ai.claude-sonnet-5",
     "system.ai.claude-haiku-4-5",
-    "system.ai.glm-5-3",
-    "system.ai.kimi-k3",
+    "system.ai.claude-opus-4-8",
+    "system.ai.glm-5-2",
 ]
 CODEX_SMART_ROUTING_MODELS = [
-    "system.ai.gpt-6-astra",
+    "system.ai.glm-5-2",
     "system.ai.gpt-5-6-sol",
-    "system.ai.gpt-5-6-terra",
     "system.ai.gpt-5-6-luna",
-    "system.ai.gpt-5-5",
-    "system.ai.glm-5-3",
-    "system.ai.kimi-k3",
 ]
 
 
