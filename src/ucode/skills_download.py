@@ -8,6 +8,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -185,30 +186,33 @@ def _skill_installs(
 
 
 def _fetch_bundles(
-    workspace: str, token: str, refs: list[SkillRef], *, label: str
+    workspace: str, token: str, refs: list[SkillRef], *, label: str, deadline: float | None = None
 ) -> dict[str, tuple[dict[str, bytes] | None, str | None]]:
     """Fetch every skill's bundle concurrently, keyed by FQN.
 
     Renders a ``k/n`` progress bar labeled ``label`` that advances as each fetch
     completes. Keying on the FQN keeps a cross-schema batch's securables apart,
-    since a securable name is unique only within its own schema.
+    since a securable name is unique only within its own schema. Stops waiting once
+    ``deadline`` (a ``time.monotonic()`` value) passes, leaving out skills still in flight.
     """
     if not refs:
         return {}
     results: dict[str, tuple[dict[str, bytes] | None, str | None]] = {}
-    with (
-        progress_bar(label, len(refs)) as advance,
-        ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(refs))) as pool,
-    ):
-        futures = {
-            pool.submit(
-                fetch_skill_bundle, workspace, token, ref.catalog, ref.schema, ref.securable_name
-            ): ref.fqn
-            for ref in refs
-        }
-        for future in as_completed(futures):
-            results[futures[future]] = future.result()
-            advance()
+    timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+    pool = ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(refs)))
+    futures = {
+        pool.submit(
+            fetch_skill_bundle, workspace, token, ref.catalog, ref.schema, ref.securable_name
+        ): ref.fqn
+        for ref in refs
+    }
+    try:
+        with progress_bar(label, len(refs)) as advance, suppress(TimeoutError):
+            for future in as_completed(futures, timeout=timeout):
+                results[futures[future]] = future.result()
+                advance()
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     return results
 
 
@@ -237,15 +241,24 @@ def _reject_bundle_name_collisions(refs: list[SkillRef]) -> list[SkillRef]:
 
 
 def _fetch_bundles_and_write(
-    workspace: str, token: str, refs: list[SkillRef], roots: list[Path], *, label: str
+    workspace: str,
+    token: str,
+    refs: list[SkillRef],
+    roots: list[Path],
+    *,
+    label: str,
+    deadline: float | None = None,
 ) -> list[SkillRef]:
     """Fetch each ref's bundle concurrently, write it into ``roots``, and return those that
-    reached disk. A per-skill fetch failure or disk error warns and skips only that skill."""
+    reached disk. A per-skill fetch failure or disk error warns and skips only that skill;
+    one still fetching at ``deadline`` is skipped silently."""
     if not refs:
         return []
-    bundles = _fetch_bundles(workspace, token, refs, label=label)
+    bundles = _fetch_bundles(workspace, token, refs, label=label, deadline=deadline)
     written: list[SkillRef] = []
     for ref in refs:
+        if ref.fqn not in bundles:
+            continue
         files, reason = bundles[ref.fqn]
         if reason or files is None:
             print_warning(f"Skipping `{ref.fqn}`: {reason}.")
@@ -496,8 +509,8 @@ def _update_stale_skills(
     Overwrites in place with no prompt, since the developer already chose to download these,
     and only manifest-attributed directories are touched, so a user-authored skill of the same
     name is never overwritten. Returns how many skills were rewritten.
-    Stops starting new work once ``deadline`` passes; a skill is only ever fully written or
-    left untouched, never interrupted mid-write.
+    Stops fetching once ``deadline`` passes; a skill is only ever fully written or left
+    untouched, never interrupted mid-write.
     """
     home = os.path.normpath(str(Path.home()))
     refs_by_base: dict[str, list[SkillRef]] = {}
@@ -510,7 +523,9 @@ def _update_stale_skills(
             break
         path = None if base == home else base
         roots = skill_dir_roots(path)
-        written = _fetch_bundles_and_write(workspace, token, refs, roots, label="Updating skills")
+        written = _fetch_bundles_and_write(
+            workspace, token, refs, roots, label="Updating skills", deadline=deadline
+        )
         record_downloads(_skill_installs(written, roots, path, workspace))
         updated += len(written)
     return updated

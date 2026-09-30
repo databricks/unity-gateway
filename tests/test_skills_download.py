@@ -186,6 +186,24 @@ class TestFetchBundles:
         # early return keeps _fetch_bundles safe regardless of caller.
         assert sd._fetch_bundles(WS, "token", [], label="main.default") == {}
 
+    def test_expired_deadline_stops_waiting(self, monkeypatch):
+        release = threading.Event()
+
+        def blocking_fetch(*_args):
+            release.wait(timeout=5)
+            return {"SKILL.md": b"late"}, None
+
+        monkeypatch.setattr(sd, "fetch_skill_bundle", blocking_fetch)
+        start = time.monotonic()
+        try:
+            bundles = sd._fetch_bundles(
+                WS, "token", [ref("triage")], label="x", deadline=time.monotonic() - 1
+            )
+        finally:
+            release.set()
+        assert bundles == {}
+        assert time.monotonic() - start < 1.0
+
 
 class TestFetchBundlesAndWrite:
     def test_writes_survivors_and_skips_fetch_failures(self, tmp_path, monkeypatch):
@@ -193,7 +211,7 @@ class TestFetchBundlesAndWrite:
         monkeypatch.setattr(
             sd,
             "_fetch_bundles",
-            lambda ws, tok, refs, label: {
+            lambda *a, **k: {
                 "main.default.triage": ({"SKILL.md": b"ok"}, None),
                 "main.default.pii": (None, "HTTP 500"),
             },
@@ -1273,7 +1291,7 @@ class TestUpdateStaleSkills:
         monkeypatch.setattr(
             sd,
             "_fetch_bundles",
-            lambda ws, tok, refs, label: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
+            lambda *a, **k: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
         )
 
         updated = sd._update_stale_skills(
@@ -1289,6 +1307,32 @@ class TestUpdateStaleSkills:
         stored = skills_state.list_downloaded()
         assert stored[0]["fqn"] == "main.default.triage"
         assert stored[0]["uc_update_time"] == "2026-09-01T00:00:00Z"
+
+    def test_deadline_mid_fetch_writes_only_bundles_that_arrived(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))
+        release = threading.Event()
+
+        def fetch(ws, tok, catalog, schema, securable):
+            if securable == "slow":
+                release.wait(timeout=5)
+            return {"SKILL.md": securable.encode()}, None
+
+        monkeypatch.setattr(sd, "fetch_skill_bundle", fetch)
+        pairs = [
+            ({"base": str(home)}, _skill(name, "2026-09-01T00:00:00Z")) for name in ("fast", "slow")
+        ]
+        start = time.monotonic()
+        try:
+            updated = sd._update_stale_skills(WS, "token", pairs, time.monotonic() + 0.5)
+        finally:
+            release.set()
+
+        assert time.monotonic() - start < 2.0
+        assert updated == 1
+        assert (home / ".claude/skills/fast/SKILL.md").read_bytes() == b"fast"
+        assert not (home / ".claude/skills/slow").exists()
+        assert [r["fqn"] for r in skills_state.list_downloaded()] == ["main.default.fast"]
 
     def test_expired_deadline_skips_downloads(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: tmp_path))
@@ -1382,7 +1426,7 @@ class TestRefreshOnLaunch:
         monkeypatch.setattr(
             sd,
             "_fetch_bundles",
-            lambda ws, tok, refs, label: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
+            lambda *a, **k: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
         )
 
         sd.refresh_downloaded_skills_on_launch({"workspace": WS})
@@ -1401,7 +1445,7 @@ class TestRefreshOnLaunch:
         monkeypatch.setattr(
             sd,
             "_fetch_bundles",
-            lambda ws, tok, refs, label: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
+            lambda *a, **k: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
         )
         messages: list[str] = []
         monkeypatch.setattr(sd, "print_success", messages.append)
