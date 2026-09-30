@@ -9,6 +9,10 @@ The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
 
+The `smart_defaults` wire schema, legacy `spend_tiers` cache reads, and recommendation
+request gating are covered by unit/component tests listed in `../README.md`. This suite
+does not yet assert live `recommendModel` request counts for configs with and without tiers.
+
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
 for every agent; the Windows journeys below validate their explicitly selected paths.
@@ -38,7 +42,8 @@ OpenCode `--model` / `-m` selection is covered by unit/component tests in
 `test_cli.py` and `test_agent_opencode.py`: the shared CLI passes raw model values,
 and the OpenCode launcher validates and converts them before starting the native
 process. The CLI still requires an available default model before launch, even
-when an explicit model is supplied. This suite has no dedicated live OpenCode
+when an explicit model is supplied. The only live OpenCode journey is the headless
+prompt case in `test_ug_opencode_headless.py`; there is no dedicated live OpenCode
 model-selection journey.
 
 ## Run a specific combination
@@ -85,13 +90,15 @@ Select one agent by providing only its version. Exact agent versions are
 required; floating `latest`, caret, and tilde versions are rejected. Hosted provider CUJs use the workspace's configuration and need no model input. Cases that
 exercise explicit model arguments use a real `system.ai` model already discovered
 by `ug configure`, recorded in that case's `model.json`. Optional `--claude-model`
-and `--codex-model` overrides reproduce a particular model-related failure.
+`--codex-model` and `--opencode-model` overrides reproduce a particular model-related failure.
+OpenCode is opt-in: pass `--opencode-version` (for example `1.18.31`) to install and select it.
 
 ```bash
 # Constrain the suspected dependency while keeping the real CLI and gateway.
 python3.12 scripts/run_integration.py \
   --ug-version checkout --claude-version 2.1.268 --codex-version 0.154.0 \
   --claude-model YOUR_CLAUDE_MODEL --codex-model YOUR_CODEX_MODEL \
+  --opencode-version 1.18.31 --opencode-model YOUR_OPENCODE_MODEL \
   --profile YOUR_PROFILE --dependency tomlkit==0.14.0 \
   -- -k 'app_server or app_help'
 ```
@@ -284,7 +291,7 @@ they only configure, list models, and open/close the picker. Other live CUJs per
 real model tasks.
 
 There are **61 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with both agents. A separate **6 managed-workspace cases** (one per agent, an idempotent
+checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
@@ -454,6 +461,9 @@ disjoint agent lanes:
 | --- | --- | --- |
 | Claude | `live and claude` | 27 |
 | Codex | `live and codex` | 34 |
+
+A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
+`continue-on-error` and is not part of the required `cujs` gate until it is stable.
 
 Each lane installs only its agent CLI, once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial

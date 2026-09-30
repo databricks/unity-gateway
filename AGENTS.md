@@ -34,3 +34,56 @@ Tests live in `tests/`.
 - Use warnings for recoverable setup problems and errors for launch/runtime blockers.
 - Preserve existing Rich UI conventions, including `print_warning`, `print_err`, `print_success`, `print_section`, and `spinner`.
 - Avoid broad refactors while fixing a narrow bug.
+
+## Fields `ug` manages
+
+This is the allow list of fields `ug` owns. Every field not listed is left
+alone. For each listed field, `ug` does one of:
+
+- **Create/replace**: `ug` owns the whole value and writes it.
+- **Merge**: `ug` writes only its own entries within a shared value and leaves the rest alone.
+- **Ignore**: `ug` does not touch the field.
+
+The two columns show what `ug` does without and with a [managed config](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-configure-govern), the coding agent config admins publish through the API.
+
+This is the intended behavior; we are still working to make the code match it in every case. In particular, `ug` today also clears some fields that this list leaves alone: the `env.ANTHROPIC_DEFAULT_*_MODEL_NAME` companions, `env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`, `env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`, and Codex `model_reasoning_effort`. Codex `[otel]` is never written to a file.
+
+<details>
+<summary>Claude Code</summary>
+
+Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file (`/etc/claude-code/managed-settings.json` on Linux, `/Library/Application Support/ClaudeCode/managed-settings.json` on macOS), which takes precedence.
+
+| Field | Without managed config | With managed config | Notes |
+|-------|------------------------|---------------------|-------|
+| `apiKeyHelper` | Create/replace | Create/replace | Gateway auth-token helper |
+| `env.ANTHROPIC_BASE_URL` | Create/replace | Create/replace | Gateway endpoint URL |
+| `env.ANTHROPIC_CUSTOM_HEADERS` | Merge | Merge | Merge `ug`'s routing and attribution headers by name; other header lines left alone. Admin headers added under managed config |
+| `env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS` | Create/replace | Create/replace | Auth-helper cache TTL |
+| `env.ENABLE_PROMPT_CACHING_1H` | Create/replace | Create/replace | Prompt-caching flag |
+| `env.ENABLE_TOOL_SEARCH` | Create/replace | Create/replace | Tool-search flag |
+| `env.CLAUDE_CODE_USE_GATEWAY` | Create/replace | Create/replace | Gateway-routing flag |
+| `env.ANTHROPIC_MODEL` | Ignore | Create/replace | Launch model, from the config's `default_model` or the budget recommendation when spend tiers are set; written at launch, not by `ug configure` |
+| `env.ANTHROPIC_DEFAULT_*_MODEL` | Create/replace | Create/replace | Per-family default (opus, sonnet, haiku, fable); the config's family default wins under managed config |
+| Model picker | Ignore | Create/replace | `availableModels`, `enforceAvailableModels`, `modelPicker`; only for a managed static model list |
+| `permissions.deny` | Merge | Merge | Add `ug`'s own `WebSearch` rule when it replaces web search; other rules left alone |
+| Tracing | Ignore | Create/replace | The seven `CLAUDE_CODE_*`/`OTEL_*` trace keys and `otelHeadersHelper`; only when the config enables tracing |
+| `managedMcpServers` | Ignore | Merge | Add/update the config's MCP server entries; other entries left alone |
+| Smart-routing hooks | Merge | Merge | `PreToolUse`, `SessionStart`, `SubagentStart`; only `ug`'s own marked handlers, other hooks left alone |
+
+</details>
+
+<details>
+<summary>Codex</summary>
+
+Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`.
+
+| Field | Without managed config | With managed config | Notes |
+|-------|------------------------|---------------------|-------|
+| `model_provider` | Create/replace | Create/replace | Gateway provider (`Databricks`) |
+| `model` | Ignore | Create/replace | The config's default model |
+| `model_providers.Databricks` | Merge | Merge | Provider block: name, gateway base URL, wire API, `ug` auth command; other keys left alone |
+| `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config |
+| `model_catalog_json` | Create/replace | Create/replace | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list |
+| `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone |
+
+</details>

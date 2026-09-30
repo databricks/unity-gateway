@@ -2383,12 +2383,14 @@ def _note_recommended_agent(recommendation: dict | None, tool: str) -> None:
 
 
 def _fetch_budget_recommendation(state: dict, managed: dict | None) -> dict | None:
-    """The agent and model the caller's budget tier allows, or None when there is no budget to read.
+    """The agent and model the caller's budget tier allows, or None when no tier is configured.
 
     Enforcement is server-side, so a failed read only costs the recommendation: the config's own
     ``default_model`` still applies and the launch proceeds.
     """
-    if managed is None or is_dry_run():
+    smart_defaults = (managed or {}).get("smart_defaults")
+    tiers = smart_defaults.get("tiers") if isinstance(smart_defaults, dict) else None
+    if not tiers or is_dry_run():
         return None
     reason: str | None = None
     recommendation = None

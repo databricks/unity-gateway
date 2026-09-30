@@ -1,7 +1,7 @@
 # Test suites and user journeys
 
 Integration runs a freshly installed ug wheel/release, exact real Claude/Codex
-versions, and the existing real e2e workspace. It has no application imports,
+(and optionally OpenCode) versions, and the existing real e2e workspace. It has no application imports,
 mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 
 | Category | Location | What it proves |
@@ -38,6 +38,12 @@ real temporary config files and local helper JSON-RPC subprocesses. It checks
 legacy ownership, copied marked helpers, custom/disabled entry preservation, config conflicts, caller
 arguments, routing/direct/relayed paths, and concurrent standalone/custom helper
 catalogs. These are component checks, not a live Isaac or gateway journey.
+
+Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
+`test_managed_setup.py`, `test_databricks.py`, and `test_managed_budget.py`: parsing the
+`smart_defaults` wire field, reading older `spend_tiers` caches, skipping recommendations
+without tier rules, applying recommendations when tiers exist, and serializing the current
+API field. These are unit/component checks; live request-count coverage is not included.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
@@ -86,6 +92,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_case_14_*` | Launch configured and fresh Codex with a model location | The app-server list exactly matches the independent API-compatible parent catalog, includes the dedicated Codex service, and contains no out-of-schema models |
 | `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
+| `test_ug_opencode_headless_prompt_argument` | Run OpenCode from a script (`run --format json --auto`) with an argument prompt | Completed Read tool call; final text answer contains the file value; exit zero (non-blocking CI lane) |
 | `test_ug_claude_exports_trace_to_configured_table`, `test_ug_codex_exports_trace_to_configured_table` | Configure tracing, complete a headless task carrying a unique trace marker, then wait for ingestion | The configured trace table contains an agent span with the same trace-safe marker and requested model |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` with routing enabled | Real file task completes; no routing wrapper |
 | `test_ug_codex_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` / `-m VALUE` with routing enabled | Real file task completes; no routing wrapper |
@@ -115,7 +122,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_and_ucode_auth_helpers_emit_only_the_supplied_bearer` | Run both auth helper commands with the public bearer override, with and without forced refresh | Exact token-only stdout, no warnings or ANSI escapes; no workspace authentication or saved state |
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
-With both agents selected there are **61 live cases** (12 marked TUI cases),
+With Claude and Codex selected there are **61 live cases** (12 marked TUI cases),
 **6 managed-workspace cases** (marker `managed`, run against workspaces that
 publish a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
 **25 managed-fixture cases** (marker `managed_fixture`, with only
@@ -228,7 +235,7 @@ These are unit/component checks; they do not establish live sudo password-prompt
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
 | Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, local helpers, and the Claude headless gateway journey are advisory; Codex Windows CI is blocked on npm proxy access. Live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |
-| Other agents | Current scope is Claude Code and Codex |
+| Other agents | Live scope is Claude Code and Codex, plus a non-blocking OpenCode headless case |
 | OpenCode `--model` / `-m` | Unit/component tests cover raw CLI forwarding, configured model selection, launch arguments, rejection of unknown models before starting the native process, and the existing failure when no default model is available; no dedicated live integration journey |
 
 See [integration/README.md](integration/README.md) for commands, CI, artifacts,

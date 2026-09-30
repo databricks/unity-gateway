@@ -1913,7 +1913,7 @@ MANAGED_CONFIG_UPDATE_MASK_PATHS: tuple[str, ...] = (
     "enabled_agents",
     "mcp_servers",
     "skills",
-    "spend_tiers",
+    "smart_defaults",
 )
 
 
