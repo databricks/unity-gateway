@@ -286,40 +286,35 @@ def clear_workspace_org_id_cache() -> None:
     _WORKSPACE_ORG_IDS.clear()
 
 
-def _http_get_json(
+def _http_get_bytes(
     url: str,
     token: str,
     *,
     timeout: int = 10,
     max_retries: int = 0,
     headers: dict[str, str] | None = None,
-) -> tuple[dict | list | None, str | None]:
-    """GET a JSON endpoint. Returns (payload, None) on success, (None, reason) on failure.
+) -> tuple[bytes | None, str | None]:
+    """GET raw bytes. Returns (body, None) on success, (None, reason) on failure.
 
     ``max_retries`` opts individual callers into bounded retries for rate limits
     and network failures. Other callers retain the original single-attempt
     behavior.
 
-    Honors UCODE_DEBUG=1 to append status + truncated body to ~/.ucode/debug.log.
+    Honors UCODE_DEBUG=1 to append status + truncated error body to ~/.ucode/debug.log.
     """
     if max_retries < 0:
         raise ValueError("max_retries must be non-negative")
 
-    request_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    request_headers = {"Authorization": f"Bearer {token}"}
     request_headers.update(headers or {})
     request = urllib_request.Request(url, headers=request_headers)
     for attempt in range(max_retries + 1):
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
-                body = response.read().decode("utf-8")
+                body = response.read()
                 _capture_org_id(url, getattr(response, "headers", None))
             _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
-            if _debug_enabled():
-                _debug("body", body[:4000])
-            try:
-                return json.loads(body), None
-            except json.JSONDecodeError as exc:
-                return None, f"response was not valid JSON ({exc.msg})"
+            return body, None
         except urllib_error.HTTPError as exc:
             body = ""
             try:
@@ -362,6 +357,36 @@ def _http_get_json(
         time.sleep(delay)
 
     raise AssertionError("unreachable")
+
+
+def _http_get_json(
+    url: str,
+    token: str,
+    *,
+    timeout: int = 10,
+    max_retries: int = 0,
+    headers: dict[str, str] | None = None,
+) -> tuple[dict | list | None, str | None]:
+    """GET a JSON endpoint via `_http_get_bytes`, sharing its retries and failure reasons.
+
+    Honors UCODE_DEBUG=1 to append status + truncated body to ~/.ucode/debug.log.
+    """
+    body, reason = _http_get_bytes(
+        url,
+        token,
+        timeout=timeout,
+        max_retries=max_retries,
+        headers={"Accept": "application/json", **(headers or {})},
+    )
+    if body is None:
+        return None, reason
+    text = body.decode("utf-8")
+    if _debug_enabled():
+        _debug("body", text[:4000])
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError as exc:
+        return None, f"response was not valid JSON ({exc.msg})"
 
 
 def _http_send_json(
@@ -449,36 +474,6 @@ def _http_delete(
     should test ``reason`` rather than the payload.
     """
     return _http_send_json("DELETE", url, token, None, timeout=timeout, allow_empty_body=True)
-
-
-def _http_get_bytes(url: str, token: str, *, timeout: int = 10) -> tuple[bytes | None, str | None]:
-    """GET raw bytes. Returns (body, None) on success, (None, reason) on failure.
-
-    Like `_http_get_json` but leaves the body undecoded, since skill bundles can
-    contain binary files.
-    """
-    request = urllib_request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    try:
-        with urllib_request.urlopen(request, timeout=timeout) as response:
-            body = response.read()
-            _capture_org_id(url, getattr(response, "headers", None))
-        _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
-        return body, None
-    except urllib_error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-        except Exception:
-            detail = ""
-        _debug(f"GET {url}", f"HTTP {exc.code} {exc.reason}")
-        reason = f"HTTP {exc.code} {exc.reason}"
-        excerpt = detail.strip()[:200]
-        if excerpt:
-            reason = f"{reason}: {excerpt}"
-        return None, reason
-    except urllib_error.URLError as exc:
-        _debug(f"GET {url}", f"URLError: {exc.reason}")
-        return None, f"network error: {exc.reason}"
 
 
 # Workspace group whose members are workspace admins. `ucode setup` / `ucode publish` are restricted
