@@ -1308,6 +1308,50 @@ class TestUpdateStaleSkills:
         assert stored[0]["fqn"] == "main.default.triage"
         assert stored[0]["uc_update_time"] == "2026-09-01T00:00:00Z"
 
+    def test_skips_rename_onto_skill_already_on_disk(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))
+        authored = home / ".claude/skills/bar"
+        authored.mkdir(parents=True)
+        (authored / "SKILL.md").write_bytes(b"mine")
+        monkeypatch.setattr(sd, "_fetch_bundles", lambda *a, **k: pytest.fail("should not fetch"))
+        warnings: list[str] = []
+        monkeypatch.setattr(sd, "print_warning", warnings.append)
+
+        updated = sd._update_stale_skills(
+            WS,
+            "token",
+            [({"base": str(home), "bundle_name": "foo"}, ref("foo", "bar"))],
+            time.monotonic() + 30,
+        )
+
+        assert updated == 0
+        assert (authored / "SKILL.md").read_bytes() == b"mine"
+        assert "renamed to `bar`" in warnings[0]
+
+    def test_skips_second_rename_onto_the_same_new_name(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setattr(
+            sd,
+            "_fetch_bundles",
+            lambda ws, tok, refs, **k: {r.fqn: ({"SKILL.md": r.fqn.encode()}, None) for r in refs},
+        )
+        monkeypatch.setattr(sd, "print_warning", lambda _message: None)
+
+        updated = sd._update_stale_skills(
+            WS,
+            "token",
+            [
+                ({"base": str(home), "bundle_name": "foo"}, ref("foo", "shared")),
+                ({"base": str(home), "bundle_name": "bar"}, ref("bar", "shared")),
+            ],
+            time.monotonic() + 30,
+        )
+
+        assert updated == 1
+        assert (home / ".claude/skills/shared/SKILL.md").read_bytes() == b"main.default.foo"
+
     def test_deadline_mid_fetch_writes_only_bundles_that_arrived(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
         monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))

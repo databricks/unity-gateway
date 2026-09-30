@@ -501,28 +501,53 @@ def _get_updated_refs(
     return pairs
 
 
+def _reject_renames_onto_existing_skills(
+    pairs: list[tuple[dict, SkillRef]], roots: list[Path]
+) -> list[SkillRef]:
+    """The refs in ``pairs``, minus any whose bundle name changed to one already on disk.
+
+    A renamed skill is written under its new name, which may already hold a skill the user wrote
+    or another download, so skip it with a warning instead of silently replacing that skill.
+    """
+    kept: list[SkillRef] = []
+    for record, ref in pairs:
+        if ref.bundle_name != record.get("bundle_name") and existing_skill_on_disk(
+            roots, ref.bundle_name
+        ):
+            print_warning(
+                f"Skipping update of `{ref.fqn}`: it was renamed to `{ref.bundle_name}`, which "
+                "another skill already uses. Re-add it with `ug skills add` to choose which to keep."
+            )
+            continue
+        kept.append(ref)
+    return kept
+
+
 def _update_stale_skills(
     workspace: str, token: str, pairs: list[tuple[dict, SkillRef]], deadline: float
 ) -> int:
     """Re-download each stale skill into its own base and refresh its manifest record.
 
     Overwrites in place with no prompt, since the developer already chose to download these,
-    and only manifest-attributed directories are touched, so a user-authored skill of the same
-    name is never overwritten. Returns how many skills were rewritten.
+    but never replaces a different skill: one renamed onto a name already on disk, or onto the
+    same new name as another update, is skipped. Returns how many skills were rewritten.
     Stops fetching once ``deadline`` passes; a skill is only ever fully written or left
     untouched, never interrupted mid-write.
     """
     home = os.path.normpath(str(Path.home()))
-    refs_by_base: dict[str, list[SkillRef]] = {}
+    pairs_by_base: dict[str, list[tuple[dict, SkillRef]]] = {}
     for record, ref in pairs:
-        refs_by_base.setdefault(os.path.normpath(record["base"]), []).append(ref)
+        pairs_by_base.setdefault(os.path.normpath(record["base"]), []).append((record, ref))
 
     updated = 0
-    for base, refs in refs_by_base.items():
+    for base, base_pairs in pairs_by_base.items():
         if time.monotonic() >= deadline:
             break
         path = None if base == home else base
         roots = skill_dir_roots(path)
+        refs = _reject_bundle_name_collisions(
+            _reject_renames_onto_existing_skills(base_pairs, roots)
+        )
         written = _fetch_bundles_and_write(
             workspace, token, refs, roots, label="Updating skills", deadline=deadline
         )
