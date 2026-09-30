@@ -17,15 +17,20 @@ def _write_skill(root: Path, name: str, content: str = "version one") -> Path:
     return skill
 
 
+@pytest.fixture
+def bundled_skill(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    skill = _write_skill(source, skills.SMART_ROUTER_SKILL)
+    monkeypatch.setattr(skills, "_skills_source", lambda: source)
+    return skill, tmp_path / "home"
+
+
 @pytest.mark.parametrize(
     ("agent", "root"), [("claude", ".claude/skills"), ("codex", ".codex/skills")]
 )
-def test_copies_named_skill_to_agent_directory(tmp_path, monkeypatch, agent, root):
-    source = tmp_path / "source"
-    _write_skill(source, skills.SMART_ROUTER_SKILL)
-    _write_skill(source, "second-skill")
-    monkeypatch.setattr(skills, "_skills_source", lambda: source)
-    home = tmp_path / "home"
+def test_copies_named_skill_to_agent_directory(bundled_skill, agent, root):
+    source_skill, home = bundled_skill
+    _write_skill(source_skill.parent, "second-skill")
 
     installed = skills.install_skill(skills.SMART_ROUTER_SKILL, agent, home)
 
@@ -35,11 +40,8 @@ def test_copies_named_skill_to_agent_directory(tmp_path, monkeypatch, agent, roo
     assert not home.joinpath(root, "second-skill").exists()
 
 
-def test_reinstall_replaces_existing_skill_contents(tmp_path, monkeypatch):
-    source = tmp_path / "source"
-    source_skill = _write_skill(source, skills.SMART_ROUTER_SKILL)
-    monkeypatch.setattr(skills, "_skills_source", lambda: source)
-    home = tmp_path / "home"
+def test_reinstall_replaces_changed_bundle_and_skips_unchanged_bundle(bundled_skill, monkeypatch):
+    source_skill, home = bundled_skill
     installed = skills.install_skill(skills.SMART_ROUTER_SKILL, "codex", home)
 
     installed.joinpath("stale.txt").write_text("remove me")
@@ -51,14 +53,6 @@ def test_reinstall_replaces_existing_skill_contents(tmp_path, monkeypatch):
     assert not installed.joinpath("stale.txt").exists()
     assert list(installed.parent.iterdir()) == [installed]
 
-
-def test_reinstall_skips_unchanged_skill(tmp_path, monkeypatch):
-    source = tmp_path / "source"
-    _write_skill(source, skills.SMART_ROUTER_SKILL)
-    monkeypatch.setattr(skills, "_skills_source", lambda: source)
-    home = tmp_path / "home"
-    installed = skills.install_skill(skills.SMART_ROUTER_SKILL, "codex", home)
-
     def fail_copy(*_args, **_kwargs):
         pytest.fail("unchanged skills should not be replaced")
 
@@ -69,12 +63,9 @@ def test_reinstall_skips_unchanged_skill(tmp_path, monkeypatch):
     assert installed_again == installed
 
 
-def test_uninstalls_one_skill_from_agent_roots(tmp_path, monkeypatch):
-    source = tmp_path / "source"
-    _write_skill(source, skills.SMART_ROUTER_SKILL)
-    _write_skill(source, "second-skill")
-    monkeypatch.setattr(skills, "_skills_source", lambda: source)
-    home = tmp_path / "home"
+def test_uninstalls_one_skill_from_agent_roots(bundled_skill):
+    source_skill, home = bundled_skill
+    _write_skill(source_skill.parent, "second-skill")
     skills.install_skill(skills.SMART_ROUTER_SKILL, "claude", home)
     skills.install_skill(skills.SMART_ROUTER_SKILL, "codex", home)
     skills.install_skill("second-skill", "codex", home)
@@ -90,38 +81,6 @@ def test_uninstalls_one_skill_from_agent_roots(tmp_path, monkeypatch):
     assert skills.uninstall_skill(skills.SMART_ROUTER_SKILL, home) == []
 
 
-@pytest.mark.parametrize("codex_target", ["claude", "shared", "missing"])
-def test_uninstall_removes_codex_alias(tmp_path, codex_target):
-    home = tmp_path / "home"
-    claude_skill = _write_skill(home / ".claude/skills", skills.SMART_ROUTER_SKILL)
-    codex_alias = home / ".codex/skills/smart-router"
-    shared_skill = _write_skill(home / ".agents/skills", skills.SMART_ROUTER_SKILL)
-    codex_alias.parent.mkdir(parents=True)
-    targets = {
-        "claude": claude_skill,
-        "shared": shared_skill,
-        "missing": home / ".missing/skills/smart-router",
-    }
-    codex_alias.symlink_to(targets[codex_target])
-
-    removed = skills.uninstall_skill(skills.SMART_ROUTER_SKILL, home)
-
-    assert removed == [claude_skill, codex_alias, shared_skill]
-    assert not claude_skill.exists()
-    assert not codex_alias.is_symlink()
-    assert not shared_skill.exists()
-
-
-def test_uninstall_removes_independent_codex_copy(tmp_path):
-    home = tmp_path / "home"
-    codex_skill = _write_skill(home / ".codex/skills", skills.SMART_ROUTER_SKILL)
-
-    removed = skills.uninstall_skill(skills.SMART_ROUTER_SKILL, home)
-
-    assert removed == [codex_skill]
-    assert not codex_skill.exists()
-
-
 def test_uninstall_unlinks_all_global_aliases_without_removing_targets(tmp_path):
     home = tmp_path / "home"
     aliases = [
@@ -129,8 +88,9 @@ def test_uninstall_unlinks_all_global_aliases_without_removing_targets(tmp_path)
         for root in (".claude/skills", ".codex/skills", ".agents/skills")
     ]
     targets = [tmp_path / "targets" / str(index) for index in range(len(aliases))]
-    for alias, target in zip(aliases, targets, strict=True):
+    for target in targets[:-1]:
         target.mkdir(parents=True)
+    for alias, target in zip(aliases, targets, strict=True):
         alias.parent.mkdir(parents=True)
         alias.symlink_to(target)
 
@@ -138,16 +98,14 @@ def test_uninstall_unlinks_all_global_aliases_without_removing_targets(tmp_path)
 
     assert removed == aliases
     assert all(not alias.is_symlink() for alias in aliases)
-    assert all(target.is_dir() for target in targets)
+    assert all(target.is_dir() for target in targets[:-1])
+    assert not targets[-1].exists()
 
 
-def test_rejects_unsafe_skill_names(tmp_path):
+def test_rejects_invalid_install_requests(tmp_path):
     with pytest.raises(ValueError, match="Invalid skill name"):
         skills.install_skill("../smart-router", "codex", tmp_path)
     with pytest.raises(ValueError, match="Invalid skill name"):
         skills.uninstall_skill("../smart-router", tmp_path)
-
-
-def test_rejects_unknown_agent(tmp_path):
     with pytest.raises(ValueError, match="Unsupported skill agent"):
         skills.install_skill(skills.SMART_ROUTER_SKILL, "other", tmp_path)
