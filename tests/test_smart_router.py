@@ -7,7 +7,7 @@ from unittest.mock import Mock
 from typer.testing import CliRunner
 
 from ucode import cli, config_io
-from ucode.packaged_skills import SMART_ROUTER_SKILL
+from ucode.skills import SMART_ROUTER_SKILL
 from ucode.smart_routing import session_env, v2
 
 runner = CliRunner()

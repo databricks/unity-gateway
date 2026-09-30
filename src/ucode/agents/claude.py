@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -70,6 +71,7 @@ from ucode.mcp_oauth import (
     MCP_OAUTH_CALLBACK_PORT,
     oauth_client_available,
 )
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -686,7 +688,7 @@ def add_claude_mcp_server(
     else:
         cmd = ["claude", "mcp", "add", name, "-s", scope, "--", *server]
     try:
-        subprocess.run(
+        subprocess_cross_os.run(
             cmd,
             check=True,
             capture_output=True,
@@ -732,7 +734,13 @@ def add_claude_http_mcp_server(
         url,
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=30)
+        subprocess_cross_os.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"Failed to add HTTP MCP server '{name}' via claude CLI.") from exc
 
@@ -744,7 +752,7 @@ def remove_claude_mcp_server(name: str, scope: str) -> bool:
     from ucode.mcp import _is_missing_mcp_server_output
 
     try:
-        subprocess.run(
+        subprocess_cross_os.run(
             ["claude", "mcp", "remove", name, "-s", scope],
             check=True,
             capture_output=True,
@@ -1521,6 +1529,46 @@ def _resolve_picker_model_id(model: str, settings_env: dict) -> str:
     return re.sub(r"\[(?:1m|200k)\]$", "", model)
 
 
+def _resolve_launch_binary(binary: str) -> str:
+    """Resolve Claude's native executable without sending arguments through a batch shim."""
+    if os.name != "nt":
+        return binary
+
+    resolved = shutil.which(binary)
+    if resolved is None:
+        raise RuntimeError(
+            "Claude Code was not found on PATH. Install Claude Code and ensure its executable "
+            "is available, then retry."
+        )
+    if os.path.splitext(resolved)[1].casefold() not in {".bat", ".cmd"}:
+        return resolved
+
+    shim_dir = os.path.dirname(resolved)
+    node_modules_dirs: list[str] = []
+    if (
+        os.path.basename(shim_dir).casefold() == ".bin"
+        and os.path.basename(os.path.dirname(shim_dir)).casefold() == "node_modules"
+    ):
+        node_modules_dirs.append(os.path.dirname(shim_dir))
+    node_modules_dirs.append(os.path.join(shim_dir, "node_modules"))
+
+    for node_modules in node_modules_dirs:
+        native_binary = os.path.join(
+            node_modules,
+            "@anthropic-ai",
+            "claude-code",
+            "bin",
+            "claude.exe",
+        )
+        if os.path.isfile(native_binary):
+            return native_binary
+
+    raise RuntimeError(
+        f"Found the Claude Code Windows command shim at {resolved}, but its native "
+        "bin/claude.exe was missing. Upgrade or reinstall @anthropic-ai/claude-code and retry."
+    )
+
+
 def _build_claude_argv(
     binary: str,
     tool_args: list[str],
@@ -1577,7 +1625,7 @@ def _has_subscription_login() -> bool:
     """True when Claude Code already holds a subscription login (`claude auth
     status` exits 0). Never inspects or captures the credential itself."""
     try:
-        result = subprocess.run(
+        result = subprocess_cross_os.run(
             [SPEC["binary"], "auth", "status"],
             check=False,
             capture_output=True,
@@ -1602,7 +1650,7 @@ def _ensure_subscription_login() -> None:
         return
     print_note("Opening browser to sign in with your Claude subscription...")
     try:
-        subprocess.run([SPEC["binary"], "auth", "login"], check=True, timeout=300)
+        subprocess_cross_os.run([SPEC["binary"], "auth", "login"], check=True, timeout=300)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError("`claude auth login` failed.") from exc
     except subprocess.TimeoutExpired as exc:
@@ -1649,7 +1697,7 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    proc = subprocess.Popen(_build_claude_argv(binary, tool_args, relayed=True))
+    proc = subprocess_cross_os.popen(_build_claude_argv(binary, tool_args, relayed=True))
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
@@ -1705,6 +1753,7 @@ def launch(
             routing_setup_failed = True
         else:
             return
+    binary = _resolve_launch_binary(binary)
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None

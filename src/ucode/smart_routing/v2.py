@@ -42,7 +42,8 @@ from ucode.databricks import (
     list_anthropic_models,
 )
 from ucode.launcher import exec_or_spawn
-from ucode.packaged_skills import SMART_ROUTER_SKILL, install_packaged_skills
+from ucode.os_compatibility import subprocess_cross_os
+from ucode.skills import SMART_ROUTER_SKILL, install_skill
 from ucode.smart_routing import claude_routing, codex_interposer, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -80,7 +81,7 @@ class ClaudeRoutingSetupError(RuntimeError):
 
 def _prepare_smart_router_session() -> None:
     try:
-        install_packaged_skills(SMART_ROUTER_SKILL, config_io.APP_DIR.parent)
+        install_skill(SMART_ROUTER_SKILL, config_io.APP_DIR.parent)
     except (OSError, RuntimeError) as exc:
         print_warning(f"Could not install the Smart Router skill: {exc}")
     start_session()
@@ -573,7 +574,7 @@ def launch_claude(
                     log_path=CLAUDE_PTY_LOG,
                 )
             else:
-                proc = subprocess.Popen(argv)
+                proc = subprocess_cross_os.popen(argv)
                 try:
                     returncode = proc.wait()
                 except KeyboardInterrupt:
@@ -660,7 +661,7 @@ def launch_codex(
 
     # Preserve the user's normal CODEX_HOME (including MCP servers, skills, and
     # preferences) and layer only ucode's gateway settings at CLI precedence.
-    app_server = subprocess.Popen(
+    app_server = subprocess_cross_os.popen(
         [binary, "app-server", *config_args, "--listen", app_server_url],
         env=os.environ.copy(),
         stdin=subprocess.DEVNULL,
@@ -683,7 +684,9 @@ def launch_codex(
             log_path=CODEX_INTERPOSER_LOG,
         )
         tui_url = _loopback_websocket_url(tui_port)
-        tui = subprocess.Popen([binary, "--remote", tui_url, "--model", start_model, *tool_args])
+        tui = subprocess_cross_os.popen(
+            [binary, "--remote", tui_url, "--model", start_model, *tool_args]
+        )
         try:
             returncode = tui.wait()
         except KeyboardInterrupt:
