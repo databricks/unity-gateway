@@ -3091,16 +3091,17 @@ class TestEnsureDatabricksCliVersion:
 
 class TestInstallDatabricksCli:
     def test_windows_finds_existing_winget_alias_before_reinstalling(self, monkeypatch, tmp_path):
-        links_dir = str(tmp_path / "Microsoft" / "WinGet" / "Links")
+        installed_dir = str(tmp_path / "Microsoft" / "WinGet" / "Packages" / "databricks")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         monkeypatch.setenv("PATH", "/windows/system32")
         monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: installed_dir)
         monkeypatch.setattr(
             db_mod.shutil,
             "which",
             lambda cmd: (
-                str(Path(links_dir) / "databricks.exe")
-                if cmd == "databricks" and links_dir in os.environ["PATH"].split(os.pathsep)
+                str(Path(installed_dir) / "databricks.exe")
+                if cmd == "databricks" and installed_dir in os.environ["PATH"].split(os.pathsep)
                 else None
             ),
         )
@@ -3214,6 +3215,7 @@ class TestRunDatabricksCliInstaller:
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         monkeypatch.setenv("PATH", "/windows/system32")
         monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: None)
         monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: winget if cmd == "winget" else None)
         monkeypatch.setattr(db_mod, "run", lambda cmd, **kw: calls.append((cmd, kw)))
 
@@ -3239,12 +3241,13 @@ class TestRunDatabricksCliInstaller:
             Path(os.environ["LOCALAPPDATA"]) / "Microsoft" / "WinGet" / "Links"
         )
 
-    def test_windows_does_not_duplicate_winget_links_on_path(self, monkeypatch, tmp_path):
+    def test_windows_does_not_duplicate_persisted_paths(self, monkeypatch, tmp_path):
         links_dir = str(tmp_path / "Microsoft" / "WinGet" / "Links")
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         monkeypatch.setenv("PATH", os.pathsep.join([links_dir, "/windows/system32"]))
+        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: links_dir)
 
-        db_mod._add_winget_links_to_path()
+        db_mod._refresh_windows_path()
 
         assert os.environ["PATH"].split(os.pathsep).count(links_dir) == 1
 

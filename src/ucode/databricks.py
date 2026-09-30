@@ -16,6 +16,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -819,17 +820,38 @@ def databricks_cli_installed() -> bool:
     return bool(_discover_databricks_clis())
 
 
-def _add_winget_links_to_path() -> None:
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if not local_app_data:
-        return
+def _windows_user_path() -> str | None:
+    if sys.platform != "win32":
+        return None
 
-    links_dir = str(Path(local_app_data) / "Microsoft" / "WinGet" / "Links")
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, "Path")
+    except OSError:
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _refresh_windows_path() -> None:
+    local_app_data = os.environ.get("LOCALAPPDATA")
     path = os.environ.get("PATH", "")
     entries = path.split(os.pathsep) if path else []
-    if os.path.normcase(links_dir) in {os.path.normcase(entry) for entry in entries}:
-        return
-    os.environ["PATH"] = os.pathsep.join([links_dir, *entries])
+    persisted_path = _windows_user_path()
+    candidates = persisted_path.split(os.pathsep) if persisted_path else []
+    if local_app_data:
+        candidates.insert(0, str(Path(local_app_data) / "Microsoft" / "WinGet" / "Links"))
+
+    known = {os.path.normcase(entry) for entry in entries}
+    new_entries = []
+    for entry in candidates:
+        expanded = os.path.expandvars(entry)
+        normalized = os.path.normcase(expanded)
+        if expanded and normalized not in known:
+            new_entries.append(expanded)
+            known.add(normalized)
+    os.environ["PATH"] = os.pathsep.join([*new_entries, *entries])
 
 
 def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
@@ -872,7 +894,7 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
             ],
             timeout=240,
         )
-        _add_winget_links_to_path()
+        _refresh_windows_path()
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
         message = "Failed to install/upgrade Databricks CLI automatically."
         if system == "Windows" and isinstance(exc, RuntimeError):
@@ -961,7 +983,7 @@ def install_databricks_cli(
     build (e.g. v0.299.2) as a false positive. A missing CLI is still installed —
     only the version *check* is bypassed."""
     if platform.system() == "Windows":
-        _add_winget_links_to_path()
+        _refresh_windows_path()
 
     if databricks_cli_installed():
         if not skip_version_check:
