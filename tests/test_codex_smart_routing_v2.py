@@ -254,7 +254,14 @@ class TestLaunchCodex:
         assert "--profile myprof" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override
         assert "--model system.ai.glm-5-2" in hook_override
-        assert processes[0].argv[10:] == [
+        assert processes[0].argv[10:12] == [
+            "--config",
+            (
+                "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
+                f'"{os.environ["UCODE_SESSION_ENV_FILE"]}"'
+            ),
+        ]
+        assert processes[0].argv[12:] == [
             "--listen",
             "ws://127.0.0.1:41001",
         ]
@@ -375,6 +382,10 @@ class TestLaunchCodex:
         hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
         assert "codex-router-hook route-subagent" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override
+        assert (
+            "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
+            f'"{os.environ["UCODE_SESSION_ENV_FILE"]}"'
+        ) in argv
         # The hook subprocesses inherit the launch environment and pass the routing gate.
         assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
