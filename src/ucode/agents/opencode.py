@@ -228,14 +228,14 @@ def resolve_explicit_model(model: str, state: dict) -> str:
     )
 
 
-def _oss_model_overlay(model: str, ua_header: dict[str, str]) -> dict:
-    """Per-model overlay for an OSS model entry.
+def _model_overlay(model: str, overlay: dict) -> dict:
+    """Add `limit` (context + output) to a per-model entry with known token limits.
 
-    All OSS models carry the User-Agent header; models with known token limits
-    also pin `limit` (context + output) so OpenCode clamps `max_tokens` to a
-    value the gateway accepts. OpenCode's schema requires both fields together,
-    so the limits table always supplies both."""
-    overlay: dict = {"headers": ua_header}
+    OpenCode has no catalog entry for gateway model ids, so an unpinned model
+    falls back to a 200K context and auto-compacts 1M-context models far too
+    early. The output cap also clamps `max_tokens` to a value the gateway
+    accepts. OpenCode's schema requires both fields together, so the limits
+    table always supplies both."""
     limits = model_token_limits(model)
     if limits is not None:
         overlay["limit"] = limits
@@ -270,10 +270,6 @@ def render_overlay(
         # auto-disable in transform.ts skips models whose id contains "claude",
         # so we opt out per-model. The setting lives in per-call providerOptions,
         # which opencode reads from `models.<m>.options`, not provider `options`.
-        anthropic_model_overlay = {
-            "headers": ua_header,
-            "options": {"toolStreaming": False},
-        }
         providers["databricks-anthropic"] = {
             "npm": "@ai-sdk/anthropic",
             "options": {
@@ -281,7 +277,10 @@ def render_overlay(
                 "apiKey": token,
                 "headers": auth_headers,
             },
-            "models": dict.fromkeys(anthropic_models, anthropic_model_overlay),
+            "models": {
+                m: _model_overlay(m, {"headers": ua_header, "options": {"toolStreaming": False}})
+                for m in anthropic_models
+            },
         }
         keys.append(["provider", "databricks-anthropic"])
     if gemini_models:
@@ -292,7 +291,7 @@ def render_overlay(
                 "apiKey": token,
                 "headers": auth_headers,
             },
-            "models": {m: {"headers": ua_header} for m in gemini_models},
+            "models": {m: _model_overlay(m, {"headers": ua_header}) for m in gemini_models},
         }
         keys.append(["provider", "databricks-google"])
     if oss_models:
@@ -303,7 +302,7 @@ def render_overlay(
                 "apiKey": token,
                 "headers": auth_headers,
             },
-            "models": {m: _oss_model_overlay(m, ua_header) for m in oss_models},
+            "models": {m: _model_overlay(m, {"headers": ua_header}) for m in oss_models},
         }
         keys.append(["provider", "databricks-oss"])
 

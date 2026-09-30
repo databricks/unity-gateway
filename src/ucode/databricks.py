@@ -1515,25 +1515,55 @@ def classify_model_family(model_id: str) -> str | None:
     return None
 
 
-# Per-family token limits (context window + max output tokens). These are a
-# property of the model + its `/ai-gateway/mlflow/v1` route (the gateway rejects
-# requests whose output exceeds the cap), not of any one agent — so every agent
-# that serves OSS models reads this single table and translates it into its own
+# Output cap pinned next to a known context window. It is OpenCode's own default
+# (the `OUTPUT_TOKEN_MAX` it clamps `max_tokens` to) and stays under every
+# listed model's gateway `max_tokens` cap.
+_DEFAULT_OUTPUT_TOKENS = 32_000
+
+# Per-model token limits (context window + max output tokens). These are a
+# property of the model + its AI Gateway route (the gateway rejects prompts over
+# the context window and outputs over the cap), not of any one agent — so every
+# agent that needs them reads this single table and translates it into its own
 # config dialect. Both fields are provided because agents like OpenCode require
-# context and output together. Keyed by family substring; add an entry to bound
-# a new model.
+# context and output together. Keyed by model-id substring, first match wins;
+# add an entry to bound a new model. Claude Opus/Sonnet 4.6+ are handled by
+# `claude_has_1m_context` instead because they are matched by version.
 _MODEL_TOKEN_LIMITS: dict[str, dict[str, int]] = {
+    # The gateway accepts 1,048,576 context tokens for these families and a
+    # `max_tokens` above the default output cap.
+    "glm-5": {"context": 1_048_576, "output": _DEFAULT_OUTPUT_TOKENS},
+    "deepseek-v4": {"context": 1_048_576, "output": _DEFAULT_OUTPUT_TOKENS},
+    "kimi-k3": {"context": 1_048_576, "output": _DEFAULT_OUTPUT_TOKENS},
     # GLM-4.6: 200k context, but the gateway caps output well below the model's
     # native 128k — pin 25k so requests aren't rejected.
-    "glm": {"context": 200_000, "output": 25_000},
+    "glm-4": {"context": 200_000, "output": 25_000},
+    "claude-haiku-4-5": {"context": 200_000, "output": _DEFAULT_OUTPUT_TOKENS},
 }
+
+_CLAUDE_1M_CONTEXT_LIMITS = {"context": 1_000_000, "output": _DEFAULT_OUTPUT_TOKENS}
+
+# Matches both the AI Gateway form (`databricks-claude-opus-4-8`) and the UC
+# model-services form (`system.ai.claude-opus-4-8`).
+_CLAUDE_OPUS_SONNET_RE = re.compile(
+    r"^(?:system\.ai\.)?(?:databricks-)?claude-(?:opus|sonnet)-(\d+)(?:-(\d+))?"
+)
+
+
+def claude_has_1m_context(model_id: str) -> bool:
+    """True for Claude Opus/Sonnet 4.6+ ids, which get a 1M-token context window."""
+    match = _CLAUDE_OPUS_SONNET_RE.match(model_id)
+    if not match:
+        return False
+    major, minor = match.groups()
+    return (int(major), int(minor or 0)) >= (4, 6)
 
 
 def model_token_limits(model_id: str) -> dict[str, int] | None:
     """Return ``{"context": ..., "output": ...}`` limits for ``model_id``, or None.
 
-    Matches by family substring (e.g. any ``*glm*`` id). None means the model
-    has no known limits and the agent should not pin any."""
+    None means the model has no known limits and the agent should not pin any."""
+    if claude_has_1m_context(model_id):
+        return dict(_CLAUDE_1M_CONTEXT_LIMITS)
     for family, limits in _MODEL_TOKEN_LIMITS.items():
         if family in model_id:
             return dict(limits)

@@ -154,9 +154,63 @@ class TestRenderOverlay:
         overlay, _ = opencode.render_overlay("system.ai.glm-5-2", "tok", _base_urls(), models)
         glm = overlay["provider"]["databricks-oss"]["models"]["system.ai.glm-5-2"]
         # OpenCode's schema requires both context and output on `limit`.
-        assert glm["limit"] == {"context": 200000, "output": 25000}
+        assert glm["limit"] == {"context": 1048576, "output": 32000}
 
-    def test_non_glm_oss_model_has_no_output_cap(self):
+    @pytest.mark.parametrize(
+        "model", ["system.ai.deepseek-v4-1-flash", "system.ai.kimi-k3", "system.ai.glm-5-3-flash"]
+    )
+    def test_1m_oss_models_get_gateway_context_limit(self, model):
+        overlay, _ = opencode.render_overlay(model, "tok", _base_urls(), {"oss": [model]})
+        entry = overlay["provider"]["databricks-oss"]["models"][model]
+        assert entry["limit"] == {"context": 1048576, "output": 32000}
+        assert "User-Agent" in entry["headers"]
+
+    def test_claude_models_get_context_limits_per_model(self):
+        # Without a pin, OpenCode falls back to a 200K context and compacts
+        # 1M-context Claude sessions far too early.
+        models = {
+            "anthropic": [
+                "system.ai.claude-opus-5-5",
+                "system.ai.claude-sonnet-5-5",
+                "system.ai.claude-haiku-4-5",
+            ]
+        }
+        overlay, _ = opencode.render_overlay(
+            "system.ai.claude-opus-5-5", "tok", _base_urls(), models
+        )
+        entries = overlay["provider"]["databricks-anthropic"]["models"]
+        assert entries["system.ai.claude-opus-5-5"]["limit"] == {
+            "context": 1000000,
+            "output": 32000,
+        }
+        assert entries["system.ai.claude-sonnet-5-5"]["limit"] == {
+            "context": 1000000,
+            "output": 32000,
+        }
+        assert entries["system.ai.claude-haiku-4-5"]["limit"] == {
+            "context": 200000,
+            "output": 32000,
+        }
+        for entry in entries.values():
+            assert entry["options"]["toolStreaming"] is False
+
+    def test_claude_model_without_known_limits_has_no_limit(self):
+        models = {"anthropic": ["system.ai.claude-fable-5"]}
+        overlay, _ = opencode.render_overlay(
+            "system.ai.claude-fable-5", "tok", _base_urls(), models
+        )
+        entry = overlay["provider"]["databricks-anthropic"]["models"]["system.ai.claude-fable-5"]
+        assert "limit" not in entry
+
+    def test_gemini_model_without_known_limits_has_no_limit(self):
+        models = {"gemini": ["system.ai.gemini-2-5-flash"]}
+        overlay, _ = opencode.render_overlay(
+            "system.ai.gemini-2-5-flash", "tok", _base_urls(), models
+        )
+        entry = overlay["provider"]["databricks-google"]["models"]["system.ai.gemini-2-5-flash"]
+        assert "limit" not in entry
+
+    def test_oss_model_without_known_limits_has_no_limit(self):
         models = {"oss": ["system.ai.kimi-k2-7-code"]}
         overlay, _ = opencode.render_overlay(
             "system.ai.kimi-k2-7-code", "tok", _base_urls(), models

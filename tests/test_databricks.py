@@ -466,20 +466,56 @@ def _model_service(model_id: str) -> dict:
 
 
 class TestModelTokenLimits:
-    def test_glm_is_capped(self):
-        assert db_mod.model_token_limits("system.ai.glm-5-2") == {
-            "context": 200_000,
-            "output": 25_000,
-        }
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "system.ai.glm-5-2",
+            "system.ai.glm-5-3",
+            "system.ai.glm-5-3-flash",
+            "system.ai.deepseek-v4-1-flash",
+            "system.ai.deepseek-v4-flash-0731",
+            "system.ai.kimi-k3",
+        ],
+    )
+    def test_oss_1m_context_models(self, model):
+        assert db_mod.model_token_limits(model) == {"context": 1_048_576, "output": 32_000}
 
-    def test_glm_matches_any_version(self):
+    def test_glm_4_keeps_gateway_output_cap(self):
         assert db_mod.model_token_limits("system.ai.glm-4-6-flash") == {
             "context": 200_000,
             "output": 25_000,
         }
 
-    def test_uncapped_model_returns_none(self):
-        assert db_mod.model_token_limits("system.ai.kimi-k2-7-code") is None
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "system.ai.claude-opus-5-5",
+            "system.ai.claude-sonnet-5-5",
+            "system.ai.claude-sonnet-5",
+            "system.ai.claude-opus-4-6",
+            "databricks-claude-sonnet-4-6",
+        ],
+    )
+    def test_claude_1m_context_models(self, model):
+        assert db_mod.model_token_limits(model) == {"context": 1_000_000, "output": 32_000}
+
+    def test_claude_haiku_4_5_has_200k_context(self):
+        assert db_mod.model_token_limits("system.ai.claude-haiku-4-5") == {
+            "context": 200_000,
+            "output": 32_000,
+        }
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "system.ai.kimi-k2-7-code",
+            "system.ai.claude-sonnet-4-5",
+            "system.ai.claude-fable-5",
+            "system.ai.gemini-2-5-flash",
+        ],
+    )
+    def test_unknown_model_returns_none(self, model):
+        assert db_mod.model_token_limits(model) is None
 
 
 class TestDiscoverModelServices:
