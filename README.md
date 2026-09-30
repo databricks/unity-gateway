@@ -205,63 +205,6 @@ unchanged. Native daemon/background propagation of the plugin remains unverified
 | Cursor Agent | `~/.cursor/mcp.json` |
 | Unity Gateway | `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
 
-### Fields `ug` manages
-
-This is the proposed allow list: the fields `ug` sets or replaces, and nothing
-else. Every field not listed is ignored. For Claude Code the fields live in
-`~/.claude/ucode-settings.json` and the OS managed-settings file, which takes
-precedence. For Codex they live in `~/.codex/ucode.config.toml` and
-`/etc/codex/managed_config.toml`. "Managed config" is the coding agent config
-admins publish through the API. Each note says what the field is, plus any part
-`ug` leaves alone or the condition under which `ug` writes it.
-
-This describes the intended behavior. Where today's code differs, mainly by
-clearing fields it should leave alone, the gap is tracked in Jira, not in this
-table.
-
-<details>
-<summary>Claude Code</summary>
-
-| Field | Without managed config | With managed config | Notes |
-|-------|------------------------|---------------------|-------|
-| `apiKeyHelper` | Sets/replaces | Sets/replaces | Gateway auth-token helper |
-| `env.ANTHROPIC_BASE_URL` | Sets/replaces | Sets/replaces | Gateway endpoint URL |
-| `env.ANTHROPIC_CUSTOM_HEADERS` | Sets/replaces | Sets/replaces | `ug`'s routing and attribution headers; other header lines left alone. Admin headers added under managed config |
-| `env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS` | Sets/replaces | Sets/replaces | Auth-helper cache TTL |
-| `env.ENABLE_PROMPT_CACHING_1H` | Sets/replaces | Sets/replaces | Prompt-caching flag |
-| `env.ENABLE_TOOL_SEARCH` | Sets/replaces | Sets/replaces | Tool-search flag |
-| `env.CLAUDE_CODE_USE_GATEWAY` | Sets/replaces | Sets/replaces | Gateway-routing flag |
-| `env.ANTHROPIC_MODEL` | Ignores | Sets/replaces | Launch model, from the config's `default_model` or budget recommendation; set at launch, not by `ug configure` |
-| `env.ANTHROPIC_DEFAULT_*_MODEL` | Sets/replaces | Sets/replaces | Per-family default (opus, sonnet, haiku, fable); the config's family default wins under managed config |
-| Model picker | Ignores | Sets/replaces | `availableModels`, `enforceAvailableModels`, `modelPicker`; only for a managed static model list |
-| `permissions.deny` | Sets/replaces | Sets/replaces | `ug`'s own `WebSearch` rule, added when it replaces web search; other rules left alone |
-| Tracing | Ignores | Sets/replaces | The seven `CLAUDE_CODE_*`/`OTEL_*` trace keys and `otelHeadersHelper`; only when the config enables tracing |
-| `managedMcpServers` | Ignores | Sets/replaces | The config's MCP servers |
-| Smart-routing hooks | Sets/replaces | Sets/replaces | `PreToolUse`, `SessionStart`, `SubagentStart`; `ug`'s own marked handlers, other hooks left alone |
-
-</details>
-
-<details>
-<summary>Codex</summary>
-
-| Field | Without managed config | With managed config | Notes |
-|-------|------------------------|---------------------|-------|
-| `model_provider` | Sets/replaces | Sets/replaces | Gateway provider (`Databricks`) |
-| `model` | Ignores | Sets/replaces | The config's default model |
-| `model_providers.Databricks` | Sets/replaces | Sets/replaces | Provider block: name, gateway base URL, wire API, `ug` auth command; other keys left alone |
-| `http_headers` | Sets/replaces | Sets/replaces | In `[model_providers.Databricks]`; `ug`'s routing headers, admin headers added under managed config |
-| `model_catalog_json` | Sets/replaces | Sets/replaces | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list |
-| `mcp_servers` | Ignores | Sets/replaces | Managed file; the config's MCP servers |
-
-</details>
-
-`ug` also clears some fields today that this list leaves alone: the
-`env.ANTHROPIC_DEFAULT_*_MODEL_NAME` companions,
-`env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`,
-`env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`, and Codex `model_reasoning_effort`.
-Those removals are gaps against this allow list and are tracked in Jira. Codex
-`[otel]` is never written to a file.
-
 ## Development
 
 ```bash
