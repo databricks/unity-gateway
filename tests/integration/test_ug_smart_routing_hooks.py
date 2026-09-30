@@ -57,17 +57,30 @@ def _routing_decisions(session, agent: str) -> list[dict]:
     return read_jsonl(session.home / ".ucode" / f"{agent}-smart-routing-decisions.jsonl")
 
 
+def _routing_banner_for_task(screen: str, marker: str) -> bool:
+    """Whether the rendered router panel belongs to this uniquely tagged task."""
+    lines = screen.splitlines()
+    for index, line in enumerate(lines):
+        if SMART_ROUTING_SUBAGENT_NOTICE not in line:
+            continue
+        panel = []
+        for panel_line in lines[index : index + 12]:
+            panel.append(panel_line)
+            if "└" in panel_line:
+                break
+        if marker in "\n".join(panel):
+            return True
+    return False
+
+
 def _run_calculation(tui, session, agent: str, expression: str, expected: str, *, routed: bool):
     task = SubagentCalculation(expression, expected)
     before = _routing_decisions(session, agent)
     tui.submit(task.prompt)
-    # submit() returns immediately after Enter without reading process output, so this
-    # index excludes every prior turn while retaining the complete response to this one.
-    output_start = len(tui.output)
 
     if routed:
         tui.wait_for(
-            lambda _screen: SMART_ROUTING_SUBAGENT_NOTICE in "".join(tui.output[output_start:]),
+            lambda screen: _routing_banner_for_task(screen, task.marker),
             f"the Smart Router subagent banner for {task.marker}",
             timeout=120,
         )
@@ -75,15 +88,13 @@ def _run_calculation(tui, session, agent: str, expression: str, expected: str, *
     task.assert_completed(session, agent)
     task.assert_completed(session, agent, child=True)
 
-    phase_output = "".join(tui.output[output_start:])
     after = _routing_decisions(session, agent)
     new_decisions = after[len(before) :]
     if not routed:
-        assert SMART_ROUTING_SUBAGENT_NOTICE not in phase_output, phase_output
+        assert not _routing_banner_for_task(tui.visible, task.marker), tui.visible
         assert not new_decisions, new_decisions
         return
 
-    assert SMART_ROUTING_SUBAGENT_NOTICE in phase_output, phase_output
     assert len(new_decisions) == 1, new_decisions
     decision = new_decisions[0]
     assert task.marker in decision.get("task_name", ""), decision
@@ -104,11 +115,9 @@ def _toggle_with_skill(tui, session, agent: str, enabled: bool) -> None:
     invocation = f"/smart-router {state}" if agent == "claude" else f"$smart-router {state}"
     confirmation = f"Smart Router is {state} for this session"
     tui.submit(invocation)
-    output_start = len(tui.output)
     tui.wait_for(
-        lambda _screen: (
-            confirmation in "".join(tui.output[output_start:])
-            and assistant_answer_contains(session, agent, confirmation)
+        lambda screen: (
+            confirmation in screen and assistant_answer_contains(session, agent, confirmation)
         ),
         f"the installed Smart Router skill to turn routing {state}",
         timeout=120,
