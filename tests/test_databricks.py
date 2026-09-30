@@ -3090,6 +3090,34 @@ class TestEnsureDatabricksCliVersion:
 
 
 class TestInstallDatabricksCli:
+    def test_windows_finds_existing_winget_alias_before_reinstalling(self, monkeypatch, tmp_path):
+        links_dir = str(tmp_path / "Microsoft" / "WinGet" / "Links")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("PATH", "/windows/system32")
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(
+            db_mod.shutil,
+            "which",
+            lambda cmd: (
+                str(Path(links_dir) / "databricks.exe")
+                if cmd == "databricks" and links_dir in os.environ["PATH"].split(os.pathsep)
+                else None
+            ),
+        )
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda **kw: pytest.fail("unexpected reinstall"),
+        )
+        checked = []
+        monkeypatch.setattr(
+            db_mod, "ensure_databricks_cli_version", lambda *a, **kw: checked.append(True)
+        )
+
+        install_databricks_cli()
+
+        assert checked == [True]
+
     def test_checks_version_when_present(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_discover_databricks_clis", lambda **kw: [("/usr/bin/databricks", (1, 20, 0))]

@@ -960,6 +960,9 @@ def install_databricks_cli(
     ``databricks aitools`` floor (v1.0.0) rejects a perfectly usable public-preview
     build (e.g. v0.299.2) as a false positive. A missing CLI is still installed —
     only the version *check* is bypassed."""
+    if platform.system() == "Windows":
+        _add_winget_links_to_path()
+
     if databricks_cli_installed():
         if not skip_version_check:
             ensure_databricks_cli_version(minimum)
