@@ -236,20 +236,20 @@ def _enabled_agent_payload(tool: str, agent_config: dict) -> dict:
     return entry
 
 
-def _spend_tiers_payload(spend_tiers: dict) -> dict:
-    """Build the ``spend_tiers`` body, dropping tiers that name an unknown agent.
+def _smart_defaults_payload(smart_defaults: dict) -> dict:
+    """Build the ``smart_defaults`` body, dropping tiers that name an unknown agent.
 
     ``spending_percentage`` is passed through as-is: it is a fraction in [0, 1] both in ucode's
     manifest and in the proto (the server validates that range). Callers prompting an admin in
     percent must divide before building the manifest.
     """
     payload: dict = {}
-    budget_id = spend_tiers.get("budget_id")
+    budget_id = smart_defaults.get("budget_id")
     if isinstance(budget_id, str) and budget_id:
         payload["budget_id"] = budget_id
 
     tiers: list[dict] = []
-    raw_tiers = spend_tiers.get("tiers")
+    raw_tiers = smart_defaults.get("tiers")
     for tier in raw_tiers if isinstance(raw_tiers, list) else []:
         if not isinstance(tier, dict):
             continue
@@ -372,11 +372,11 @@ def serialize_managed_config(manifest: dict) -> dict:
         if selector:
             payload["skills"] = selector
 
-    spend_tiers = manifest.get("spend_tiers")
-    if isinstance(spend_tiers, dict):
-        policy = _spend_tiers_payload(spend_tiers)
+    smart_defaults = manifest.get("smart_defaults")
+    if isinstance(smart_defaults, dict):
+        policy = _smart_defaults_payload(smart_defaults)
         if policy:
-            payload["spend_tiers"] = policy
+            payload["smart_defaults"] = policy
 
     return payload
 
@@ -453,9 +453,9 @@ def validate_manifest(manifest: dict, state: dict | None = None) -> list[str]:
     - every ``enabled_agents`` key must be an agent this ucode build knows;
     - ``mcp_servers`` and ``skills`` each carry either non-empty ``names`` or a
       ``unity_catalog_location``, not both;
-    - a ``spend_tiers`` needs a ``budget_id``, and each tier needs a ``spending_percentage`` in
-      [0, 1] (unique across tiers), a ``default_agent`` that appears in ``enabled_agents``, and a
-      ``default_model``.
+    - ``smart_defaults`` needs a ``budget_id``, and each tier needs a ``spending_percentage`` in
+      [0, 1] (unique across tiers), a ``recommended_agent`` that appears in ``enabled_agents``, and
+      a ``recommended_model``.
 
     When ``state`` is provided, configured models are additionally checked against the workspace's
     discovered inventory — skipped for agents routing through a Model Provider Service, and skipped
@@ -479,8 +479,8 @@ def validate_manifest(manifest: dict, state: dict | None = None) -> list[str]:
             enabled_agents[tool] = agent_config
 
     default_agent = manifest.get("default_agent")
-    spend_tiers = manifest.get("spend_tiers")
-    has_agent_selection = bool(default_agent or enabled_agents_raw or spend_tiers)
+    smart_defaults = manifest.get("smart_defaults")
+    has_agent_selection = bool(default_agent or enabled_agents_raw or smart_defaults)
     if has_agent_selection:
         if not default_agent:
             errors.append("default_agent is required when agent configuration is present.")
@@ -504,8 +504,8 @@ def validate_manifest(manifest: dict, state: dict | None = None) -> list[str]:
     if isinstance(skills, dict):
         errors.extend(_validate_uc_names_or_location("skills", skills))
 
-    if isinstance(spend_tiers, dict):
-        errors.extend(_validate_spend_tiers(spend_tiers, enabled_agents))
+    if isinstance(smart_defaults, dict):
+        errors.extend(_validate_smart_defaults(smart_defaults, enabled_agents))
 
     return errors
 
@@ -533,16 +533,16 @@ def _agent_model_ids(agent_config: dict) -> set[str]:
     return ids
 
 
-def _validate_spend_tiers(spend_tiers: dict, enabled_agents: dict[str, dict]) -> list[str]:
-    """Validate a ``spend_tiers`` against the agents the manifest enables.
+def _validate_smart_defaults(smart_defaults: dict, enabled_agents: dict[str, dict]) -> list[str]:
+    """Validate ``smart_defaults`` against the agents the manifest enables.
 
     Tier positions are reported 0-based to match the server's own messages, which index with
     ``zipWithIndex`` — an admin comparing the two error sources should see the same number.
     """
     errors: list[str] = []
-    budget_id = spend_tiers.get("budget_id")
+    budget_id = smart_defaults.get("budget_id")
     if not budget_id:
-        errors.append("spend_tiers.budget_id is required.")
+        errors.append("smart_defaults.budget_id is required.")
     else:
         # The server requires a parseable UUID here. The wizard can only offer real
         # `budget_configuration_id`s, but `--from-file` and hand-edited manifests can carry
@@ -551,23 +551,23 @@ def _validate_spend_tiers(spend_tiers: dict, enabled_agents: dict[str, dict]) ->
             uuid.UUID(str(budget_id))
         except ValueError:
             errors.append(
-                f"spend_tiers.budget_id must be a UUID (got '{budget_id}'). Use the "
+                f"smart_defaults.budget_id must be a UUID (got '{budget_id}'). Use the "
                 "budget_configuration_id from the workspace's AI Gateway budgets."
             )
 
     percentages: list[float] = []
     combos: list[tuple[str, str]] = []
-    tiers = spend_tiers.get("tiers")
+    tiers = smart_defaults.get("tiers")
     for index, tier in enumerate(tiers if isinstance(tiers, list) else []):
         if not isinstance(tier, dict):
-            errors.append(f"spend_tiers.tiers[{index}] must be an object.")
+            errors.append(f"smart_defaults.tiers[{index}] must be an object.")
             continue
         pct = tier.get("spending_percentage")
         if not isinstance(pct, (int, float)) or isinstance(pct, bool):
-            errors.append(f"spend_tiers.tiers[{index}]: spending_percentage is required.")
+            errors.append(f"smart_defaults.tiers[{index}]: spending_percentage is required.")
         elif not 0 <= float(pct) <= 1:
             errors.append(
-                f"spend_tiers.tiers[{index}]: spending_percentage must be a fraction "
+                f"smart_defaults.tiers[{index}]: spending_percentage must be a fraction "
                 f"between 0 and 1 (got {pct})."
             )
         else:
@@ -575,10 +575,10 @@ def _validate_spend_tiers(spend_tiers: dict, enabled_agents: dict[str, dict]) ->
         tier_agent = tier.get("recommended_agent")
         tier_model = tier.get("recommended_model")
         if not tier_agent:
-            errors.append(f"spend_tiers.tiers[{index}]: recommended_agent is required.")
+            errors.append(f"smart_defaults.tiers[{index}]: recommended_agent is required.")
         elif tier_agent not in enabled_agents:
             errors.append(
-                f"spend_tiers.tiers[{index}]: recommended_agent '{tier_agent}' must appear "
+                f"smart_defaults.tiers[{index}]: recommended_agent '{tier_agent}' must appear "
                 "in enabled_agents."
             )
         elif tier_model:
@@ -589,22 +589,22 @@ def _validate_spend_tiers(spend_tiers: dict, enabled_agents: dict[str, dict]) ->
             available = _agent_model_ids(enabled_agents[tier_agent])
             if available and tier_model not in available:
                 errors.append(
-                    f"spend_tiers.tiers[{index}]: recommended_model '{tier_model}' is not one of the "
+                    f"smart_defaults.tiers[{index}]: recommended_model '{tier_model}' is not one of the "
                     f"models configured for '{tier_agent}' ({', '.join(sorted(available))})."
                 )
         if not tier_model:
-            errors.append(f"spend_tiers.tiers[{index}]: recommended_model is required.")
+            errors.append(f"smart_defaults.tiers[{index}]: recommended_model is required.")
         if tier_agent and tier_model:
             combos.append((str(tier_agent), str(tier_model)))
 
     if len(set(percentages)) != len(percentages):
-        errors.append("spend_tiers tier spending_percentage values must be unique.")
+        errors.append("smart_defaults tier spending_percentage values must be unique.")
     # Two tiers with the same agent+model are a no-op: the server picks the highest crossed tier, so
     # the second never changes what the lower one already selected. Flagging it catches a tier the
     # admin meant to be a real step-down but left unchanged.
     if len(set(combos)) != len(combos):
         errors.append(
-            "spend_tiers tiers must each route to a different agent/model — two tiers with the "
+            "smart_defaults tiers must each route to a different agent/model — two tiers with the "
             "same pair make the higher one a no-op."
         )
     return errors
