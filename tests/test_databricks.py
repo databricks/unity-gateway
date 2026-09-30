@@ -3178,6 +3178,41 @@ class TestUpgradeDatabricksCli:
 
 
 class TestRunDatabricksCliInstaller:
+    @pytest.mark.parametrize("subcommand", ["install", "upgrade"])
+    def test_windows_uses_winget(self, monkeypatch, subcommand):
+        calls = []
+        winget = r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\winget.exe"
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: winget if cmd == "winget" else None)
+        monkeypatch.setattr(db_mod, "run", lambda cmd, **kw: calls.append((cmd, kw)))
+
+        _run_databricks_cli_installer(brew_subcommand=subcommand)
+
+        assert calls == [
+            (
+                [
+                    winget,
+                    subcommand,
+                    "--exact",
+                    "--id",
+                    "Databricks.DatabricksCLI",
+                    "--source",
+                    "winget",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ],
+                {"timeout": 240},
+            )
+        ]
+
+    def test_windows_without_winget_is_actionable(self, monkeypatch):
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: None)
+        monkeypatch.setattr(db_mod, "run", lambda *args, **kwargs: pytest.fail("unexpected run"))
+
+        with pytest.raises(RuntimeError, match="WinGet is required"):
+            _run_databricks_cli_installer()
+
     @pytest.mark.parametrize("brew_subcommand", ["install", "upgrade"])
     def test_macos_uses_fully_qualified_tap_formula(self, monkeypatch, brew_subcommand):
         calls = []

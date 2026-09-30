@@ -51,9 +51,7 @@ from ucode.ui import (
 UNIX_DATABRICKS_INSTALL_URL = (
     "https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh"
 )
-WINDOWS_DATABRICKS_INSTALL_URL = (
-    "https://raw.githubusercontent.com/databricks/setup-cli/main/install.ps1"
-)
+WINDOWS_DATABRICKS_WINGET_PACKAGE = "Databricks.DatabricksCLI"
 AI_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-beta"
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 # v1.0.0 is the release that ships `databricks aitools`.
@@ -824,25 +822,48 @@ def databricks_cli_installed() -> bool:
 def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
     system = platform.system()
     try:
-        if system == "Windows":
-            run(
-                ["powershell", "-Command", f"irm {WINDOWS_DATABRICKS_INSTALL_URL} | iex"],
-                timeout=240,
+        if system != "Windows":
+            if system == "Darwin" and shutil.which("brew"):
+                run(["brew", brew_subcommand, "databricks/tap/databricks"], timeout=240)
+            elif shutil.which("curl"):
+                run(
+                    ["sh", "-c", f"curl -fsSL {UNIX_DATABRICKS_INSTALL_URL} | sudo sh"],
+                    timeout=240,
+                )
+            elif shutil.which("wget"):
+                run(
+                    ["sh", "-c", f"wget -qO- {UNIX_DATABRICKS_INSTALL_URL} | sudo sh"],
+                    timeout=240,
+                )
+            else:
+                raise RuntimeError("Neither curl nor wget is available.")
+            return
+
+        winget = shutil.which("winget")
+        if winget is None:
+            raise RuntimeError(
+                "WinGet is required on Windows. Install App Installer, then run "
+                f"`winget install --exact --id {WINDOWS_DATABRICKS_WINGET_PACKAGE}`."
             )
-        elif system == "Darwin" and shutil.which("brew"):
-            run(["brew", brew_subcommand, "databricks/tap/databricks"], timeout=240)
-        elif shutil.which("curl"):
-            run(["sh", "-c", f"curl -fsSL {UNIX_DATABRICKS_INSTALL_URL} | sudo sh"], timeout=240)
-        elif shutil.which("wget"):
-            run(["sh", "-c", f"wget -qO- {UNIX_DATABRICKS_INSTALL_URL} | sudo sh"], timeout=240)
-        else:
-            raise RuntimeError("Neither curl nor wget is available.")
+        run(
+            [
+                winget,
+                brew_subcommand,
+                "--exact",
+                "--id",
+                WINDOWS_DATABRICKS_WINGET_PACKAGE,
+                "--source",
+                "winget",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+            ],
+            timeout=240,
+        )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
-        # `databricks_cli_path` picks the databricks binary to run by absolute path and by
-        # version, so a second copy earlier on PATH (e.g. ~/.local/bin/databricks ahead of
-        # Homebrew's) can't change which one runs. The message therefore stays terse and
-        # never tells users to delete anything.
-        raise RuntimeError("Failed to install/upgrade Databricks CLI automatically.") from exc
+        message = "Failed to install/upgrade Databricks CLI automatically."
+        if system == "Windows" and isinstance(exc, RuntimeError):
+            message += f"\n{exc}"
+        raise RuntimeError(message) from exc
     # A binary may have just been installed/upgraded at a new (or the same) path;
     # drop any stale discovery/resolution so the next lookup re-scans PATH.
     clear_databricks_cli_cache()
