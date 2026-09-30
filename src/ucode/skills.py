@@ -8,7 +8,9 @@ import shutil
 from importlib.metadata import distribution
 from pathlib import Path
 
-_SKILL_ROOTS = (".claude/skills", ".agents/skills")
+_CLAUDE_SKILL_ROOT = ".claude/skills"
+_CODEX_SKILL_ROOT = ".codex/skills"
+_SHARED_SKILL_ROOT = ".agents/skills"
 _SKILL_NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 SMART_ROUTER_SKILL = "smart-router"
 
@@ -34,6 +36,16 @@ def _remove_skill_path(destination: Path) -> bool:
         shutil.rmtree(destination)
         return True
     return False
+
+
+def _is_codex_alias(alias: Path, claude_skill: Path) -> bool:
+    """Whether Codex already exposes the Claude skill through plugin sync."""
+    if not alias.is_symlink():
+        return False
+    try:
+        return alias.resolve(strict=False) == claude_skill.resolve(strict=False)
+    except OSError:
+        return False
 
 
 def _bundle_digest(skill_dir: Path) -> str | None:
@@ -62,7 +74,7 @@ def _bundle_digest(skill_dir: Path) -> str | None:
 
 
 def install_skill(skill_name: str, home: Path | None = None) -> list[Path]:
-    """Install one skill into each harness, replacing only changed bundles."""
+    """Install one skill for Claude and Codex, replacing only changed bundles."""
     _validate_skill_name(skill_name)
     source = _skills_source() / skill_name
     if not (source / "SKILL.md").is_file():
@@ -72,13 +84,29 @@ def install_skill(skill_name: str, home: Path | None = None) -> list[Path]:
         raise RuntimeError(f"Unity Gateway's `{skill_name}` skill resource is invalid.")
 
     base = Path.home() if home is None else home
+    claude_skill = base / _CLAUDE_SKILL_ROOT / skill_name
+    codex_alias = base / _CODEX_SKILL_ROOT / skill_name
+    shared_skill = base / _SHARED_SKILL_ROOT / skill_name
+    codex_uses_alias = _is_codex_alias(codex_alias, claude_skill)
+
     installed: list[Path] = []
-    for root in _SKILL_ROOTS:
+    roots = (
+        (_CLAUDE_SKILL_ROOT,)
+        if codex_uses_alias
+        else (
+            _CLAUDE_SKILL_ROOT,
+            _SHARED_SKILL_ROOT,
+        )
+    )
+    for root in roots:
         destination = base / root / skill_name
         if _bundle_digest(destination) != source_digest:
             _remove_skill_path(destination)
             shutil.copytree(source, destination)
         installed.append(destination)
+    if codex_uses_alias:
+        _remove_skill_path(shared_skill)
+        installed.append(codex_alias)
     return installed
 
 
@@ -87,9 +115,14 @@ def uninstall_skill(skill_name: str, home: Path | None = None) -> list[Path]:
     _validate_skill_name(skill_name)
 
     base = Path.home() if home is None else home
+    claude_skill = base / _CLAUDE_SKILL_ROOT / skill_name
+    codex_alias = base / _CODEX_SKILL_ROOT / skill_name
+    destinations = [claude_skill, base / _SHARED_SKILL_ROOT / skill_name]
+    if _is_codex_alias(codex_alias, claude_skill):
+        destinations.append(codex_alias)
+
     removed: list[Path] = []
-    for root in _SKILL_ROOTS:
-        destination = base / root / skill_name
+    for destination in destinations:
         if _remove_skill_path(destination):
             removed.append(destination)
     return removed

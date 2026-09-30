@@ -37,6 +37,27 @@ def test_copies_named_skill_to_both_harness_directories(tmp_path, monkeypatch):
     assert not home.joinpath(".agents/skills/second-skill").exists()
 
 
+def test_codex_alias_replaces_duplicate_shared_copy(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    _write_skill(source, skills.SMART_ROUTER_SKILL)
+    monkeypatch.setattr(skills, "_skills_source", lambda: source)
+    home = tmp_path / "home"
+    claude_skill = home / ".claude/skills/smart-router"
+    codex_alias = home / ".codex/skills/smart-router"
+    shared_skill = home / ".agents/skills/smart-router"
+    codex_alias.parent.mkdir(parents=True)
+    codex_alias.symlink_to(claude_skill)
+    shared_skill.mkdir(parents=True)
+    shared_skill.joinpath("stale.txt").write_text("duplicate")
+
+    installed = skills.install_skill(skills.SMART_ROUTER_SKILL, home)
+
+    assert installed == [claude_skill, codex_alias]
+    assert claude_skill.joinpath("SKILL.md").read_text() == "version one"
+    assert codex_alias.joinpath("SKILL.md").read_text() == "version one"
+    assert not shared_skill.exists()
+
+
 def test_reinstall_replaces_existing_skill_contents(tmp_path, monkeypatch):
     source = tmp_path / "source"
     source_skill = _write_skill(source, skills.SMART_ROUTER_SKILL)
@@ -93,6 +114,24 @@ def test_uninstalls_one_skill_from_both_harnesses(tmp_path, monkeypatch):
     assert home.joinpath(".claude/skills/second-skill/SKILL.md").is_file()
     assert home.joinpath(".agents/skills/second-skill/SKILL.md").is_file()
     assert skills.uninstall_skill(skills.SMART_ROUTER_SKILL, home) == []
+
+
+def test_uninstall_removes_matching_codex_alias(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    _write_skill(source, skills.SMART_ROUTER_SKILL)
+    monkeypatch.setattr(skills, "_skills_source", lambda: source)
+    home = tmp_path / "home"
+    claude_skill = home / ".claude/skills/smart-router"
+    codex_alias = home / ".codex/skills/smart-router"
+    codex_alias.parent.mkdir(parents=True)
+    codex_alias.symlink_to(claude_skill)
+    skills.install_skill(skills.SMART_ROUTER_SKILL, home)
+
+    removed = skills.uninstall_skill(skills.SMART_ROUTER_SKILL, home)
+
+    assert removed == [claude_skill, codex_alias]
+    assert not claude_skill.exists()
+    assert not codex_alias.is_symlink()
 
 
 def test_rejects_unsafe_skill_names(tmp_path):
