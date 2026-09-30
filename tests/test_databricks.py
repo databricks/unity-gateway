@@ -52,10 +52,10 @@ WS_HOST = "example.databricks.com"
 
 
 class _FakeResponse:
-    """Minimal urlopen context manager returning a JSON body."""
+    """Minimal urlopen context manager returning a JSON body, or raw bytes as given."""
 
-    def __init__(self, payload: dict):
-        self._body = json.dumps(payload).encode("utf-8")
+    def __init__(self, payload: dict | bytes):
+        self._body = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
 
     def __enter__(self):
         return self
@@ -2708,6 +2708,23 @@ class TestHttpGetJsonRetries:
         assert reason == "HTTP 503 Service Unavailable"
         assert len(calls) == 1
 
+    def test_bytes_retries_429_and_returns_undecoded_body(self, monkeypatch):
+        outcomes = iter([self._http_error(429, "Too Many Requests"), _FakeResponse(b"\x89PNG\x00")])
+
+        def fake_urlopen(request, timeout=None):
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
+
+        body, reason = db_mod._http_get_bytes("https://x/y", "tok", max_retries=2)
+
+        assert body == b"\x89PNG\x00"
+        assert reason is None
+
 
 class TestParseDatabricksCliVersion:
     def test_parses_standard_format(self):
@@ -2954,6 +2971,18 @@ class TestHttpGetJsonTimeout:
         payload, reason = db_mod._http_post_json(f"{WS}/api/2.0/anything", "tok", {"k": "v"})
 
         assert payload is None
+        assert reason is not None
+        assert "timed out" in reason
+
+    def test_bytes_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
+        def raise_timeout(request, timeout=None):
+            raise TimeoutError("The read operation timed out")
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_timeout)
+
+        body, reason = db_mod._http_get_bytes(f"{WS}/api/2.0/fs/files/anything", "tok")
+
+        assert body is None
         assert reason is not None
         assert "timed out" in reason
 
