@@ -27,6 +27,12 @@ These are component checks, not live Windows coverage for every agent.
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
+Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
+`test_managed_setup.py`, `test_databricks.py`, and `test_managed_budget.py`: parsing the
+`smart_defaults` wire field, reading older `spend_tiers` caches, skipping recommendations
+without tier rules, applying recommendations when tiers exist, and serializing the current
+API field. These are unit/component checks; live request-count coverage is not included.
+
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
 `test_databricks.py` checks bounded Anthropic catalog requests with `limit=1000`, including
