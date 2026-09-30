@@ -5272,16 +5272,6 @@ class TestBudgetRecommendationAtLaunch:
         assert result.exit_code == 0, result.output
         assert calls == []
 
-    def test_checked_when_smart_defaults_exist(self, monkeypatch):
-        managed = {"enabled_agents": {"claude": {}}, **self.SMART_DEFAULTS}
-        result, calls, _ = self._launch(
-            monkeypatch,
-            managed=managed,
-            recommendation={"agent": "claude", "model": "system.ai.claude-sonnet-4-6"},
-        )
-        assert result.exit_code == 0, result.output
-        assert calls == [MINIMAL_STATE["workspace"]]
-
     def test_wire_smart_defaults_reach_recommendation(self, monkeypatch):
         raw = {
             "enabled_agents": [

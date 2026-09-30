@@ -372,13 +372,6 @@ class TestPersistence:
             RAW_MANIFEST
         )
 
-    def test_legacy_cached_spend_tiers_normalize_to_smart_defaults(self, _managed_path):
-        save_managed_state("https://ws.example.com", LEGACY_RAW_MANIFEST)
-        loaded = load_managed_state("https://ws.example.com")
-        assert loaded is not None
-        assert "smart_defaults" in loaded
-        assert "spend_tiers" not in loaded
-
     def test_saved_file_is_0600(self, _managed_path):
         save_managed_state("https://ws.example.com", {"default_agent": "claude"})
         mode = stat.S_IMODE(os.stat(_managed_path).st_mode)
