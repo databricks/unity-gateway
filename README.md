@@ -214,46 +214,46 @@ Codex, they live in `~/.codex/ucode.config.toml` and
 `/etc/codex/managed_config.toml`. "Managed config" is the coding agent config
 admins publish through the API.
 
-Setting or replacing a field `ug` owns is expected. ⚠️ marks the cells where
-`ug` reaches beyond its own fields today: it removes a field by name whoever
-wrote it, or replaces a whole value it only partly owns.
+Setting or replacing a field `ug` owns is expected. ⚠️ marks where `ug` reaches
+beyond its own value today: it removes a field by name without checking who set
+it, or replaces a whole value it only partly owns.
 
 <details>
 <summary>Claude Code</summary>
 
 | Field | Without managed config | With managed config |
 |-------|------------------------|---------------------|
-| `apiKeyHelper` | Set to the `ug auth-token` helper. Removed for relayed subscription auth | Same |
+| `apiKeyHelper` | Set to the `ug auth-token` helper. ⚠️ Removed by name for relayed subscription auth | Same |
 | `env.ANTHROPIC_BASE_URL` | Set to the workspace gateway URL | Same |
 | `env.ANTHROPIC_CUSTOM_HEADERS` | Merged by header name: replaces `x-databricks-use-coding-agent-mode`, `User-Agent`, `Databricks-Model-Provider-Service`, `Databricks-Model-Service-Parent-Schema`, and `Databricks-Smart-Router-Recipe`, and keeps other lines | ⚠️ Whole value replaced with `ug` headers plus admin headers, dropping other lines |
 | `env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS` | Set | Same |
 | `env.ENABLE_PROMPT_CACHING_1H` | Set | Same |
 | `env.ENABLE_TOOL_SEARCH` | Set | Same |
 | `env.CLAUDE_CODE_USE_GATEWAY` | Set | Same |
-| `env.ANTHROPIC_MODEL` | Removed | Removed. `ug claude` then sets it to the budget recommendation or the config's `default_model` |
-| `env.ANTHROPIC_DEFAULT_FABLE_MODEL` | Private file: set to the discovered default. Managed file: keeps a value that differs from `ug`'s last write, otherwise set to the discovered default | The config's family default wins. Otherwise, same as without |
-| `env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME` | Removed | Removed |
-| `env.ANTHROPIC_DEFAULT_OPUS_MODEL` | Private file: set to the discovered default. Managed file: keeps a value that differs from `ug`'s last write, otherwise set to the discovered default | The config's family default wins. Otherwise, same as without |
-| `env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME` | Removed | Removed |
-| `env.ANTHROPIC_DEFAULT_SONNET_MODEL` | Private file: set to the discovered default. Managed file: keeps a value that differs from `ug`'s last write, otherwise set to the discovered default | The config's family default wins. Otherwise, same as without |
-| `env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME` | Removed | Removed |
-| `env.ANTHROPIC_DEFAULT_HAIKU_MODEL` | Private file: set to the discovered default. Managed file: keeps a value that differs from `ug`'s last write, otherwise set to the discovered default | The config's family default wins. Otherwise, same as without |
-| `env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME` | Removed | Removed |
-| `env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | Removed | Removed |
-| `env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` | Removed | Removed |
-| `env.CLAUDE_CODE_ENABLE_TELEMETRY` | ⚠️ Removed by name, whoever wrote it | Set when the config enables tracing. ⚠️ Otherwise removed by name |
-| `env.CLAUDE_CODE_ENHANCED_TELEMETRY_BETA` | ⚠️ Removed by name, whoever wrote it | Set when the config enables tracing. ⚠️ Otherwise removed by name |
-| `env.OTEL_TRACES_EXPORTER` | ⚠️ Removed by name, whoever wrote it | Set when the config enables tracing. ⚠️ Otherwise removed by name |
-| `env.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | ⚠️ Removed by name, whoever wrote it | Set when the config enables tracing. ⚠️ Otherwise removed by name |
-| `env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | ⚠️ Removed by name, whoever wrote it | Set to the workspace trace endpoint when the config enables tracing. ⚠️ Otherwise removed by name |
-| `env.CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS` | ⚠️ Removed by name, whoever wrote it | Set when the config enables tracing. ⚠️ Otherwise removed by name |
-| `env.CLAUDE_CODE_PROPAGATE_TRACEPARENT` | ⚠️ Removed by name, whoever wrote it | Set when the config enables tracing. ⚠️ Otherwise removed by name |
-| `otelHeadersHelper` | ⚠️ Removed, whoever wrote it | Set to the `ug otel-headers` helper when the config enables tracing. ⚠️ Otherwise removed |
-| `availableModels` | Normally not written. The private file removes it. The managed file keeps it unless it matches `ug`'s last write | Set for a static model list |
+| `env.ANTHROPIC_MODEL` | ⚠️ Removed by name. `ug claude` then sets it to the budget recommendation or the config's `default_model` | Same |
+| `env.ANTHROPIC_DEFAULT_FABLE_MODEL` | Private file: set to the discovered default. Managed file: keeps a value that differs from `ug`'s last write, otherwise set to the discovered default | Same. `ug claude` applies the config's family default |
+| `env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME` | ⚠️ Removed by name | ⚠️ Removed by name |
+| `env.ANTHROPIC_DEFAULT_OPUS_MODEL` | Private file: set to the discovered default. Managed file: keeps a value that differs from `ug`'s last write, otherwise set to the discovered default | Same. `ug claude` applies the config's family default |
+| `env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME` | ⚠️ Removed by name | ⚠️ Removed by name |
+| `env.ANTHROPIC_DEFAULT_SONNET_MODEL` | Private file: set to the discovered default. Managed file: keeps a value that differs from `ug`'s last write, otherwise set to the discovered default | Same. `ug claude` applies the config's family default |
+| `env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME` | ⚠️ Removed by name | ⚠️ Removed by name |
+| `env.ANTHROPIC_DEFAULT_HAIKU_MODEL` | Private file: set to the discovered default. Managed file: keeps a value that differs from `ug`'s last write, otherwise set to the discovered default | Same. `ug claude` applies the config's family default |
+| `env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME` | ⚠️ Removed by name | ⚠️ Removed by name |
+| `env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | ⚠️ Removed by name | ⚠️ Removed by name |
+| `env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` | ⚠️ Removed by name | ⚠️ Removed by name |
+| `env.CLAUDE_CODE_ENABLE_TELEMETRY` | ⚠️ Removed by name | Set when the config enables tracing. ⚠️ Otherwise removed by name |
+| `env.CLAUDE_CODE_ENHANCED_TELEMETRY_BETA` | ⚠️ Removed by name | Set when the config enables tracing. ⚠️ Otherwise removed by name |
+| `env.OTEL_TRACES_EXPORTER` | ⚠️ Removed by name | Set when the config enables tracing. ⚠️ Otherwise removed by name |
+| `env.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | ⚠️ Removed by name | Set when the config enables tracing. ⚠️ Otherwise removed by name |
+| `env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | ⚠️ Removed by name | Set to the workspace trace endpoint when the config enables tracing. ⚠️ Otherwise removed by name |
+| `env.CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS` | ⚠️ Removed by name | Set when the config enables tracing. ⚠️ Otherwise removed by name |
+| `env.CLAUDE_CODE_PROPAGATE_TRACEPARENT` | ⚠️ Removed by name | Set when the config enables tracing. ⚠️ Otherwise removed by name |
+| `otelHeadersHelper` | ⚠️ Removed by name | Set to the `ug otel-headers` helper when the config enables tracing. ⚠️ Otherwise removed by name |
+| `availableModels` | Normally not written. ⚠️ The private file removes it by name. The managed file keeps it unless it matches `ug`'s last write | Set for a static model list |
 | `enforceAvailableModels` | Same as `availableModels` | Same as `availableModels` |
 | `modelPicker` | Same as `availableModels` | Set for a static model list. `ug claude` also sets it for config family defaults |
 | `permissions.deny` | The managed file adds `WebSearch` and keeps existing rules. ⚠️ The private file replaces the whole list | Same |
-| `managedMcpServers` (managed file only) | Whole key removed | Whole key replaced with the config's MCP servers |
+| `managedMcpServers` (managed file only) | ⚠️ Whole key removed, dropping other authors' servers | ⚠️ Whole key replaced with the config's MCP servers, dropping other authors' servers. An empty set removes the key |
 | `hooks.PreToolUse` | Removes only `ug`'s own marked smart-routing hooks | Same |
 | `hooks.SessionStart` | Same as `hooks.PreToolUse` | Same |
 | `hooks.SubagentStart` | Same as `hooks.PreToolUse` | Same |
@@ -266,12 +266,12 @@ wrote it, or replaces a whole value it only partly owns.
 | Field | Without managed config | With managed config |
 |-------|------------------------|---------------------|
 | `model_provider` | Set to `Databricks` | Same |
-| `model` | Removed, unless smart routing is enabled | Set to the config's default model |
-| `model_reasoning_effort` | Removed, unless smart routing is enabled | Same, unless the config sets a default model |
-| `model_providers.Databricks` | Set: name, gateway base URL, wire API, and the `ug` auth command | Same |
-| `model_providers.Databricks.http_headers` | ⚠️ Whole table replaced with `User-Agent` and routing headers, dropping other headers | ⚠️ Whole table replaced with those plus admin headers, dropping other headers |
+| `model` | ⚠️ Removed by name, unless smart routing is enabled | Set to the config's default model. ⚠️ Removed by name when the config has no default model, unless smart routing is enabled |
+| `model_reasoning_effort` | ⚠️ Removed by name, unless smart routing is enabled | Same |
+| `model_providers.Databricks` | Set: name, gateway base URL, wire API, and the `ug` auth command and timeouts. Other keys are merged, not replaced | Same |
+| `model_providers.Databricks.http_headers` | ⚠️ Whole table replaced with `User-Agent` and routing headers, dropping other headers | ⚠️ Whole table replaced with those plus admin headers, dropping other headers. `ug configure` still drops `Databricks-Model-Provider-Service`; the launch path adds it |
 | `model_catalog_json` (`~/.codex/config.toml`) | Adds or removes only `ug`'s own catalog reference | Same |
-| `mcp_servers` (managed file only) | Whole table removed | Whole table replaced with the config's MCP servers |
+| `mcp_servers` (managed file only) | ⚠️ Whole table removed, dropping other authors' servers | ⚠️ Whole table replaced with the config's MCP servers, dropping other authors' servers. An empty set removes the key |
 
 Codex `[otel]` is never written to a file.
 
