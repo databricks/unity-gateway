@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from decimal import Decimal
@@ -4027,3 +4028,29 @@ class TestMcpServiceNeedsConnectionLogin:
         # Safe default: an unreachable API must not push a service into an OAuth flow.
         self._mock_http(monkeypatch, details=None, err="HTTP 500")
         assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.github") is False
+
+
+class TestRunDecodesUtf8:
+    @staticmethod
+    def _force_cp1252_default(monkeypatch):
+        real_run = db_mod.subprocess.run
+
+        def run_with_cp1252_default(*args, **kwargs):
+            if kwargs.get("text") and "encoding" not in kwargs:
+                kwargs["encoding"] = "cp1252"
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(db_mod.subprocess, "run", run_with_cp1252_default)
+
+    def test_text_mode_decodes_utf8_even_when_locale_defaults_to_cp1252(self, monkeypatch):
+        # Force the dependency's omitted encoding to behave like Windows on every host.
+        self._force_cp1252_default(monkeypatch)
+        script = r"import sys; sys.stdout.buffer.write('“ok”'.encode('utf-8'))"
+        result = db_mod.run([sys.executable, "-c", script], capture_output=True, text=True)
+        assert result.stdout == "“ok”"
+
+    def test_binary_mode_is_unchanged(self, monkeypatch):
+        self._force_cp1252_default(monkeypatch)
+        script = r"import sys; sys.stdout.buffer.write(b'\xff')"
+        result = db_mod.run([sys.executable, "-c", script], capture_output=True)
+        assert result.stdout == b"\xff"
