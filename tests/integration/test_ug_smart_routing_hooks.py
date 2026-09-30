@@ -1,17 +1,22 @@
-"""CUJs for the subagent-only smart-routing hook commands against the live workspace router.
+"""CUJs for subagent-only routing against the live workspace router.
 
 The agent harness invokes ``ug claude-router-hook route-subagent`` /
 ``ug codex-router-hook route-subagent`` on its PreToolUse event with a JSON payload on
 stdin. These journeys drive the real installed hook commands through that stdin contract,
 so the routing decision, response shape, and audit trail are asserted without relying on
-an agent choosing to spawn a subagent. The interactive spawn decision itself remains
-uncovered; see the gaps matrix in tests/README.md.
+an agent choosing to spawn a subagent. The TUI journeys additionally invoke the installed
+Smart Router skill and spawn real children before and after its session-local toggles.
 """
 
 import json
 
 import pytest
-from utils.evidence import FileTask
+from utils.evidence import (
+    SubagentCalculation,
+    assert_subagent_routed,
+    assistant_answer_contains,
+    read_jsonl,
+)
 from utils.terminal import AgentTerminal
 
 # The same model lists as the managed_fixture smart-routing banner journeys, which are
@@ -45,6 +50,64 @@ CODEX_MODEL_SLUGS = {
     "glm-5-3",
     "kimi-k3",
 }
+
+
+def _routing_decisions(session, agent: str) -> list[dict]:
+    return read_jsonl(session.home / ".ucode" / f"{agent}-smart-routing-decisions.jsonl")
+
+
+def _run_calculation(tui, session, agent: str, expression: str, expected: str, *, routed: bool):
+    task = SubagentCalculation(expression, expected)
+    before = _routing_decisions(session, agent)
+    tui.submit(task.prompt)
+    # submit() returns immediately after Enter without reading process output, so this
+    # index excludes every prior turn while retaining the complete response to this one.
+    output_start = len(tui.output)
+
+    if routed:
+        tui.wait_for(
+            lambda _screen: SMART_ROUTING_SUBAGENT_NOTICE in "".join(tui.output[output_start:]),
+            f"the Smart Router subagent banner for {task.marker}",
+            timeout=120,
+        )
+    tui.wait_for_task(task, timeout=180)
+    task.assert_completed(session, agent)
+    task.assert_completed(session, agent, child=True)
+
+    phase_output = "".join(tui.output[output_start:])
+    after = _routing_decisions(session, agent)
+    new_decisions = after[len(before) :]
+    if not routed:
+        assert SMART_ROUTING_SUBAGENT_NOTICE not in phase_output, phase_output
+        assert not new_decisions, new_decisions
+        return
+
+    assert SMART_ROUTING_SUBAGENT_NOTICE in phase_output, phase_output
+    assert len(new_decisions) == 1, new_decisions
+    decision = new_decisions[0]
+    assert task.marker in decision.get("task_name", ""), decision
+    assert_subagent_routed(
+        session,
+        agent,
+        task,
+        decision_ids={decision["decision_id"]},
+    )
+
+
+def _toggle_with_skill(tui, session, agent: str, enabled: bool) -> None:
+    state = "on" if enabled else "off"
+    invocation = f"/smart-router {state}" if agent == "claude" else f"$smart-router {state}"
+    confirmation = f"Smart Router is {state} for this session"
+    tui.submit(invocation)
+    output_start = len(tui.output)
+    tui.wait_for(
+        lambda _screen: (
+            confirmation in "".join(tui.output[output_start:])
+            and assistant_answer_contains(session, agent, confirmation)
+        ),
+        f"the installed Smart Router skill to turn routing {state}",
+        timeout=120,
+    )
 
 
 @pytest.mark.live
@@ -155,17 +218,14 @@ def test_smart_routing_codex_route_subagent_hook(live_session, workspace):
 
 @pytest.mark.live
 @pytest.mark.claude
-def test_smart_routing_claude_subagent_only_launch_shows_no_first_prompt_banner(
-    live_session, workspace
-):
-    """Scenario: configure Claude, then launch the real TUI with both the full and the
-    subagent-only routing flags set and submit one file prompt.
+def test_smart_router_skill_toggles_claude_subagent_routing(live_session, workspace):
+    """Scenario: launch Claude with subagent routing enabled, spawn a child, invoke the
+    installed Smart Router skill to turn routing off, spawn another child, turn routing
+    back on through the skill, and spawn a third child in the same real TUI session.
 
-    Expected: subagent-only takes precedence over the ambient full flag: the routing
-    hooks are armed (SessionStart canary), yet the prompt completes with no
-    smart-routing banner and no first-prompt routing wrapper anywhere in the session,
-    and the TUI exits normally. Only first-prompt silence is asserted here; subagent
-    routing engagement is covered by the route-subagent hook journey above.
+    Expected: all three uniquely tagged calculations complete in native child sessions;
+    only the first and third show the subagent-routing banner and produce live gateway
+    decisions correlated with those children. No first-prompt routing wrapper starts.
     """
     session = live_session
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
@@ -180,35 +240,33 @@ def test_smart_routing_claude_subagent_only_launch_shows_no_first_prompt_banner(
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
-    task = FileTask(session)
     with AgentTerminal(
-        session, "claude", [str(session.binary), "claude"], "subagent-only-launch"
+        session, "claude", [str(session.binary), "claude"], "smart-router-skill-toggle"
     ) as tui:
         tui.boot()
-        tui.submit(task.prompt)
-        tui.wait_for_task(task)
+        _run_calculation(tui, session, "claude", "1+1", "2", routed=True)
+        _toggle_with_skill(tui, session, "claude", enabled=False)
+        _run_calculation(tui, session, "claude", "1+2", "3", routed=False)
+        _toggle_with_skill(tui, session, "claude", enabled=True)
+        _run_calculation(tui, session, "claude", "2+2", "4", routed=True)
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
     session.assert_not_routed()
-    task.assert_completed(session, "claude")
     canary = session.home / ".ucode" / "claude-smart-routing-canary.json"
     assert canary.is_file(), f"routing hooks were not armed: {canary}"
 
 
 @pytest.mark.live
 @pytest.mark.codex
-def test_smart_routing_codex_subagent_only_launch_shows_no_first_prompt_banner(
-    live_session, workspace
-):
-    """Scenario: configure Codex, then launch the real TUI with both the full and the
-    subagent-only routing flags set and submit one file prompt.
+def test_smart_router_skill_toggles_codex_subagent_routing(live_session, workspace):
+    """Scenario: launch Codex with subagent routing enabled, spawn a child, invoke the
+    installed Smart Router skill to turn routing off, spawn another child, turn routing
+    back on through the skill, and spawn a third child in the same real TUI session.
 
-    Expected: subagent-only takes precedence over the ambient full flag: the prompt
-    completes with no smart-routing banner and no interposer first-prompt routing wrapper
-    anywhere in the session, and the TUI exits normally. Only first-prompt silence is
-    asserted here; subagent routing engagement is covered by the route-subagent hook
-    journey above.
+    Expected: all three uniquely tagged calculations complete in native child sessions;
+    only the first and third show the subagent-routing banner and produce live gateway
+    decisions correlated with those children. No first-prompt interposer starts.
     """
     session = live_session
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
@@ -223,15 +281,16 @@ def test_smart_routing_codex_subagent_only_launch_shows_no_first_prompt_banner(
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
-    task = FileTask(session)
     with AgentTerminal(
-        session, "codex", [str(session.binary), "codex"], "subagent-only-launch"
+        session, "codex", [str(session.binary), "codex"], "smart-router-skill-toggle"
     ) as tui:
         tui.boot()
-        tui.submit(task.prompt)
-        tui.wait_for_task(task)
+        _run_calculation(tui, session, "codex", "1+1", "2", routed=True)
+        _toggle_with_skill(tui, session, "codex", enabled=False)
+        _run_calculation(tui, session, "codex", "1+2", "3", routed=False)
+        _toggle_with_skill(tui, session, "codex", enabled=True)
+        _run_calculation(tui, session, "codex", "2+2", "4", routed=True)
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
     session.assert_not_routed()
-    task.assert_completed(session, "codex")
