@@ -69,6 +69,24 @@ MAX_SPEC_VERSION = 1
 # hitting the control plane every launch; `ug configure` forces a fresh read (force_refresh=True).
 MANAGED_CONFIG_TTL = timedelta(minutes=5)
 
+# Process-local switch for a launch that passed ``--suppress-managed-config``. While set, every
+# managed-config read returns none, so the launch (including the settings writers' own re-reads)
+# treats the workspace as unmanaged. A module global, not an env var, so it is never inherited by
+# the launched agent or a nested ``ug``.
+_reads_suppressed = False
+
+
+def set_managed_config_reads_suppressed(suppressed: bool) -> None:
+    """Suppress (or restore) every managed-config read for the current launch process."""
+    global _reads_suppressed
+    _reads_suppressed = suppressed
+
+
+def managed_config_reads_suppressed() -> bool:
+    """Whether managed-config reads are currently suppressed for this launch."""
+    return _reads_suppressed
+
+
 # The last authoritative read's outcome, persisted alongside the config so a cached wrapper can be
 # replayed without a GET. "none" and "feature_disabled" both persist an empty config, so the outcome
 # is what tells them apart.
@@ -776,6 +794,9 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     case (returned manifest is None), so a launch doesn't re-apply a policy the workspace has turned
     off and ``ug configure`` doesn't route into a managed-setup flow that would dead-end.
     """
+    if _reads_suppressed:
+        # --suppress-managed-config: the launch runs as unmanaged, so every read returns none.
+        return ManagedConfigResult(None, False)
     workspace = state.get("workspace")
     if not workspace:
         return ManagedConfigResult(None, False)

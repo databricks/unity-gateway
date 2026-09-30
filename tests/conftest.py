@@ -74,6 +74,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     )
     # A developer's ambient managed-config stub would otherwise short-circuit every fetch in the suite.
     monkeypatch.delenv("UCODE_MANAGED_CONFIG_STUB", raising=False)
+    # Reset the launch opt-out switch so a leak from one test can't suppress reads in the next.
+    managed_config_mod.set_managed_config_reads_suppressed(False)
     # The model-services listing is memoized for the life of the process, so without this a cached
     # result would leak into the next test and make a stubbed listing look like it was never called.
     databricks_mod.clear_model_services_cache()
