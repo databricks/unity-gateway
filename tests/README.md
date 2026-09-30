@@ -201,6 +201,10 @@ tests` yet. The descriptive jobs provide the actual coverage and diagnostics.
 
 ## Gaps and deferred scope
 
+Custom OAuth lock tests cover release after use, Windows contention retries, and
+permanent lock-error propagation. Native Windows browser consent and concurrent
+OAuth helpers still need platform validation.
+
 `test_managed_files.py` covers a lazy sudo worker shared across multiple managed-file writes,
 no elevation for unchanged files, target/symlink rejection, bounded shutdown and cancellation,
 and real-shell copy/rename failure handling in temporary directories.
