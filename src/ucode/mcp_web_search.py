@@ -28,6 +28,7 @@ SERVER_NAME = "ucode-web-search"
 SERVER_VERSION = "0.1.0"
 PROVIDER_ENV = "UCODE_CLAUDE_WEB_SEARCH_PROVIDER"
 MANAGED_ENTRY_FLAG = "--managed-by-ucode"
+EXTERNAL_PROVIDER_OVERRIDE_FLAG = "--external-provider-override"
 AUTOMATIC_PROVIDER = "external-if-safe"
 
 
@@ -231,13 +232,22 @@ def _handle_request(req: dict[str, Any], *, search_enabled: bool = True) -> dict
     return _error(req_id, -32601, f"Method not found: {method!r}")
 
 
-def serve(stdin=None, stdout=None, *, managed_by_ucode: bool = False) -> None:
+def serve(
+    stdin=None,
+    stdout=None,
+    *,
+    managed_by_ucode: bool = False,
+    external_provider_override: bool = False,
+) -> None:
     """Read newline-delimited JSON-RPC requests from stdin, write responses to
     stdout. Loops until EOF. Injectable streams for testing."""
     in_stream = stdin if stdin is not None else sys.stdin
     out_stream = stdout if stdout is not None else sys.stdout
-    # Unmarked helpers are user-owned, even if they run the same executable.
-    search_enabled = not (managed_by_ucode and external_provider_selected())
+    # A copied registration retains its marker. Only a verified launch override
+    # may suppress it; inherited provider selection alone cannot establish ownership.
+    search_enabled = not (
+        managed_by_ucode and external_provider_override and external_provider_selected()
+    )
 
     for line in in_stream:
         line = line.strip()

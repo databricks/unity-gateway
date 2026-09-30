@@ -13,6 +13,11 @@ Shared subprocess command resolution is covered by `../test_subprocess_cross_os.
 enforced by Ruff. These component checks do not establish native Windows coverage
 for every agent; the Windows journeys below validate their explicitly selected paths.
 
+The provider component checks in `../test_claude_search_provider.py` verify that
+copied marked helpers remain available in user aliases, project config, and strict
+caller config. Only the verified launch override suppresses its catalog; these
+local JSON-RPC checks make no model request and are not native integration coverage.
+
 The sudo-session regression checks live in `../test_managed_files.py` and `../test_cli.py`.
 They cover shared-worker invocation counts, shutdown/cancellation, and temporary-file failure
 handling without sudo.

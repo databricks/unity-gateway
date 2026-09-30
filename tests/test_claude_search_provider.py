@@ -97,8 +97,12 @@ def test_external_launch_uses_current_helper_and_preserves_configuration(search_
 
 def test_concurrent_standalone_and_custom_helpers_remain_available(search_config):
     external = _override(claude._external_web_search_args(search_config.state, []))
-    standalone = {**external, "env": {}}
-    custom = {**standalone, "args": external["args"][:-1]}
+    standalone = {
+        **external,
+        "args": ["-m", "ucode.cli", "mcp", "web-search", MANAGED_ENTRY_FLAG],
+        "env": {},
+    }
+    custom = {**standalone, "args": ["-m", "ucode.cli", "mcp", "web-search"]}
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [
             executor.submit(_exchange, external),
@@ -327,6 +331,47 @@ def test_automatic_selection_uses_verified_override(search_config, monkeypatch):
     monkeypatch.setenv(PROVIDER_ENV, AUTOMATIC_PROVIDER)
     entry = _override(claude._external_web_search_args(search_config.state, []))
     assert _exchange(entry)[1]["result"]["tools"] == []
+
+
+@pytest.mark.parametrize("provider", ["external", AUTOMATIC_PROVIDER])
+@pytest.mark.parametrize("scope", ["alias", "strict", "project"])
+def test_only_verified_override_suppresses_marked_helpers(
+    search_config, monkeypatch, provider, scope
+):
+    monkeypatch.setenv(PROVIDER_ENV, provider)
+    # Users may copy a generated helper into their own registration. Its marker
+    # cannot transfer ownership of that new registration to the launcher.
+    caller_entry = {
+        "type": "stdio",
+        "command": sys.executable,
+        "args": ["-m", "ucode.cli", "mcp", "web-search", MANAGED_ENTRY_FLAG],
+        "env": copy.deepcopy(search_config.config["mcpServers"]["web_search"]["env"]),
+    }
+    args = []
+    if scope == "alias":
+        search_config.config["mcpServers"]["my_search"] = caller_entry
+    elif scope == "strict":
+        args = [
+            "--strict-mcp-config",
+            "--mcp-config",
+            json.dumps({"mcpServers": {"web_search": caller_entry}}),
+        ]
+    else:
+        del search_config.config["mcpServers"]["web_search"]
+        write_json_file(
+            search_config.project / ".mcp.json", {"mcpServers": {"web_search": caller_entry}}
+        )
+    write_json_file(claude.claude_mcp_config_path(), search_config.config)
+    before = claude.claude_mcp_config_path().read_bytes()
+
+    launch_args = claude._external_web_search_args(search_config.state, args)
+    if scope == "alias":
+        assert _exchange(_override(launch_args), provider=provider)[1]["result"]["tools"] == []
+    else:
+        assert launch_args == args
+    response = _exchange(caller_entry, provider=provider)
+    assert response[1]["result"]["tools"][0]["name"] == "web_search"
+    assert claude.claude_mcp_config_path().read_bytes() == before
 
 
 def test_repeated_caller_mcp_options_keep_override_in_last_group(search_config):

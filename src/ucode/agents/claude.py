@@ -74,6 +74,7 @@ from ucode.mcp_oauth import (
 )
 from ucode.mcp_web_search import (
     AUTOMATIC_PROVIDER,
+    EXTERNAL_PROVIDER_OVERRIDE_FLAG,
     MANAGED_ENTRY_FLAG,
     PROVIDER_ENV,
     external_provider_selected,
@@ -1196,7 +1197,14 @@ def _prepare_external_web_search_args(state: dict, tool_args: list[str]) -> list
     override = {
         "type": "stdio",
         "command": sys.executable,
-        "args": ["-m", "ucode.cli", "mcp", "web-search", MANAGED_ENTRY_FLAG],
+        "args": [
+            "-m",
+            "ucode.cli",
+            "mcp",
+            "web-search",
+            EXTERNAL_PROVIDER_OVERRIDE_FLAG,
+            MANAGED_ENTRY_FLAG,
+        ],
         "env": {**entry["env"], PROVIDER_ENV: "external"},
     }
     value = json.dumps({"mcpServers": {WEB_SEARCH_MCP_NAME: override}})

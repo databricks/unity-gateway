@@ -1587,6 +1587,9 @@ def mcp_web_search_cmd(
     managed_by_ucode: Annotated[
         bool, typer.Option("--managed-by-ucode", help="Identify a ug-generated registration.")
     ] = False,
+    external_provider_override: Annotated[
+        bool, typer.Option("--external-provider-override", hidden=True)
+    ] = False,
     show_capabilities: Annotated[
         bool, typer.Option("--capabilities", help="Print the launcher contract as JSON and exit.")
     ] = False,
@@ -1599,7 +1602,10 @@ def mcp_web_search_cmd(
     if show_capabilities:
         print(json.dumps(capabilities()))
         return
-    serve(managed_by_ucode=managed_by_ucode)
+    serve(
+        managed_by_ucode=managed_by_ucode,
+        external_provider_override=external_provider_override,
+    )
 
 
 def _stdin_is_interactive() -> bool:

@@ -34,7 +34,7 @@ live search, parent/child discovery, or classifier permission behavior.
 
 `test_claude_search_provider.py` covers external-provider setup and launch using
 real temporary config files and local helper JSON-RPC subprocesses. It checks
-legacy ownership, custom/disabled entry preservation, config conflicts, caller
+legacy ownership, copied marked helpers, custom/disabled entry preservation, config conflicts, caller
 arguments, routing/direct/relayed paths, and concurrent standalone/custom helper
 catalogs. These are component checks, not a live Isaac or gateway journey.
 

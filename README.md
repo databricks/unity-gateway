@@ -147,8 +147,9 @@ Launchers that supply their own search server can first query
 when the capability response advertises that `automatic_provider` value.
 The default (unset or `ucode`) retains standalone ug search. External mode
 does not create, update, or delete saved search registrations. Generated
-helpers carry `--managed-by-ucode` and expose no tools in external mode;
-unmarked custom helpers retain their tools.
+helpers carry `--managed-by-ucode`. Only the launch override created after
+ownership verification exposes no tools; copied helpers and custom registrations
+retain their tools even when they inherit external provider selection.
 
 For an existing generated `web_search` entry, ug verifies its saved ownership
 fingerprint and uses a launch-only MCP override pointing at the current ug
