@@ -50,6 +50,7 @@ CODEX_MODEL_SLUGS = {
     "glm-5-3",
     "kimi-k3",
 }
+SKILL_ROOTS = {"claude": ".claude/skills", "codex": ".codex/skills"}
 
 
 def _routing_decisions(session, agent: str) -> list[dict]:
@@ -95,6 +96,10 @@ def _run_calculation(tui, session, agent: str, expression: str, expected: str, *
 
 
 def _toggle_with_skill(tui, session, agent: str, enabled: bool) -> None:
+    skill_root = session.home / SKILL_ROOTS[agent]
+    installed_skills = sorted(path.name for path in skill_root.iterdir() if path.is_dir())
+    assert installed_skills == ["smart-router"], installed_skills
+
     state = "on" if enabled else "off"
     invocation = f"/smart-router {state}" if agent == "claude" else f"$smart-router {state}"
     confirmation = f"Smart Router is {state} for this session"
@@ -223,9 +228,10 @@ def test_smart_router_skill_toggles_claude_subagent_routing(live_session, worksp
     installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
 
-    Expected: all three uniquely tagged calculations complete in native child sessions;
-    only the first and third show the subagent-routing banner and produce live gateway
-    decisions correlated with those children. No first-prompt routing wrapper starts.
+    Expected: Smart Router is the only installed Claude skill; all three uniquely tagged
+    calculations complete in native child sessions; only the first and third show the
+    subagent-routing banner and produce live gateway decisions correlated with those children.
+    No first-prompt routing wrapper starts.
     """
     session = live_session
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
@@ -264,9 +270,10 @@ def test_smart_router_skill_toggles_codex_subagent_routing(live_session, workspa
     installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
 
-    Expected: all three uniquely tagged calculations complete in native child sessions;
-    only the first and third show the subagent-routing banner and produce live gateway
-    decisions correlated with those children. No first-prompt interposer starts.
+    Expected: Smart Router is the only installed Codex skill; all three uniquely tagged
+    calculations complete in native child sessions; only the first and third show the
+    subagent-routing banner and produce live gateway decisions correlated with those children.
+    No first-prompt interposer starts.
     """
     session = live_session
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
