@@ -700,6 +700,18 @@ class TestSubcommandRouting:
 
         assert options.launch_smart_routing is expected
 
+    def test_managed_claude_smart_routing_is_disabled_on_windows(self, monkeypatch):
+        monkeypatch.setattr(cli_mod.os, "name", "nt")
+        managed = {
+            "enabled_agents": {
+                "claude": {"smart_routing_enabled": True},
+                "codex": {"smart_routing_enabled": True},
+            }
+        }
+
+        assert cli_mod._managed_smart_routing_enabled(managed, "claude") is False
+        assert cli_mod._managed_smart_routing_enabled(managed, "codex") is True
+
     def test_codex_refresh_is_consumed_by_ucode(self):
         with patch("ucode.cli._launch_tool") as mock_launch:
             result = runner.invoke(app, ["codex", "--refresh"])
