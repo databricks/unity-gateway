@@ -1,4 +1,4 @@
-"""Install the skills packaged with Unity Gateway."""
+"""Install skills shipped with Unity Gateway."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ SMART_ROUTER_SKILL = "smart-router"
 
 
 def _skills_source() -> Path:
-    packaged = Path(str(distribution("unity-gateway").locate_file("skills")))
-    if packaged.is_dir():
-        return packaged
+    installed = Path(str(distribution("unity-gateway").locate_file("skills")))
+    if installed.is_dir():
+        return installed
     return Path(__file__).resolve().parents[2] / "skills"
 
 
@@ -61,15 +61,15 @@ def _bundle_digest(skill_dir: Path) -> str | None:
     return digest.hexdigest()
 
 
-def install_packaged_skills(skill_name: str, home: Path | None = None) -> list[Path]:
-    """Install one packaged skill into each harness, replacing only changed bundles."""
+def install_skill(skill_name: str, home: Path | None = None) -> list[Path]:
+    """Install one skill into each harness, replacing only changed bundles."""
     _validate_skill_name(skill_name)
     source = _skills_source() / skill_name
     if not (source / "SKILL.md").is_file():
-        raise RuntimeError(f"Unity Gateway's packaged `{skill_name}` skill resource is missing.")
+        raise RuntimeError(f"Unity Gateway's `{skill_name}` skill resource is missing.")
     source_digest = _bundle_digest(source)
     if source_digest is None:
-        raise RuntimeError(f"Unity Gateway's packaged `{skill_name}` skill resource is invalid.")
+        raise RuntimeError(f"Unity Gateway's `{skill_name}` skill resource is invalid.")
 
     base = Path.home() if home is None else home
     installed: list[Path] = []
@@ -82,8 +82,8 @@ def install_packaged_skills(skill_name: str, home: Path | None = None) -> list[P
     return installed
 
 
-def uninstall_packaged_skill(skill_name: str, home: Path | None = None) -> list[Path]:
-    """Remove one packaged skill from each harness's global skill directory."""
+def uninstall_skill(skill_name: str, home: Path | None = None) -> list[Path]:
+    """Remove one skill from each harness's global skill directory."""
     _validate_skill_name(skill_name)
 
     base = Path.home() if home is None else home
