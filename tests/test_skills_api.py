@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -437,6 +438,37 @@ class TestListSkillFiles:
         assert paths == []
         assert state["peak"] <= sa._MAX_CONCURRENT_FILES_API_REQUESTS
 
+    def test_queued_listings_are_cancelled_after_a_failure(self, monkeypatch):
+        skill = "/Skills/main/default/triage"
+        subdirs = ["fail"] + [f"dir_{i}" for i in range(6)]
+        root_listing = {
+            "contents": [{"path": f"{skill}/{d}/", "is_directory": True} for d in subdirs]
+        }
+        release = threading.Event()
+        started = []
+
+        def fake_get(url, token, **kwargs):
+            directory = url.split("/api/2.0/fs/directories/", 1)[1]
+            if directory == "Skills/main/default/triage":
+                return root_listing, None
+            if directory.endswith("/fail"):
+                return None, "HTTP 429"
+            started.append(directory)
+            release.wait()
+            return {"contents": []}, None
+
+        pool = ThreadPoolExecutor(max_workers=2)
+        monkeypatch.setattr(sa, "_files_api_pool", pool)
+        monkeypatch.setattr(sa, "_http_get_json", fake_get)
+        try:
+            result = sa.list_skill_files(WS, "token", "main", "default", "triage")
+        finally:
+            release.set()
+            pool.shutdown(wait=True)
+
+        assert result == ([], "HTTP 429")
+        assert len(started) <= 2
+
 
 class TestFetchSkillFile:
     def test_returns_raw_bytes_from_files_api(self, monkeypatch):
@@ -602,37 +634,30 @@ class TestFetchSkillBundle:
             blocker.set()
             t.join()
 
-    def test_fetches_waiting_for_a_slot_skip_after_a_failure(self, monkeypatch):
-        paths = [f"file_{i}.md" for i in range(5)]
+    def test_queued_fetches_are_cancelled_after_a_failure(self, monkeypatch):
+        paths = ["fail.md"] + [f"file_{i}.md" for i in range(6)]
+        release = threading.Event()
+        started = []
+
+        def fake_fetch(ws, tok, c, s, leaf, rel):
+            if rel == "fail.md":
+                return None, "HTTP 429"
+            started.append(rel)
+            release.wait()
+            return b"data", None
+
+        pool = ThreadPoolExecutor(max_workers=2)
+        monkeypatch.setattr(sa, "_files_api_pool", pool)
         monkeypatch.setattr(sa, "list_skill_files", lambda *a, **k: (paths, None))
-        fetched = []
-        monkeypatch.setattr(
-            sa,
-            "fetch_skill_file",
-            lambda ws, tok, c, s, leaf, rel: fetched.append(rel) or (None, "HTTP 429"),
-        )
-
-        all_waiting = threading.Barrier(len(paths), timeout=2.0)
-        bundle_returned = threading.Event()
-        released = threading.Semaphore(0)
-
-        class OneSlotUntilBundleReturns:
-            def __enter__(self):
-                if all_waiting.wait():
-                    bundle_returned.wait()
-
-            def __exit__(self, *exc):
-                released.release()
-
-        monkeypatch.setattr(sa, "_files_api_slots", OneSlotUntilBundleReturns())
-
-        result = sa.fetch_skill_bundle(WS, "token", "main", "default", "triage")
-        bundle_returned.set()
-        for _ in paths:
-            assert released.acquire(timeout=2.0)
+        monkeypatch.setattr(sa, "fetch_skill_file", fake_fetch)
+        try:
+            result = sa.fetch_skill_bundle(WS, "token", "main", "default", "triage")
+        finally:
+            release.set()
+            pool.shutdown(wait=True)
 
         assert result == (None, "HTTP 429")
-        assert len(fetched) == 1
+        assert len(started) <= 2
 
 
 class TestGetSkill:
