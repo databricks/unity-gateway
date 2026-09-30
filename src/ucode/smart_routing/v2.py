@@ -51,7 +51,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
-from ucode.smart_routing.session_env import start_session
+from ucode.smart_routing.session_env import SESSION_ENV_VAR, start_session
 from ucode.ui import print_warning
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
@@ -79,12 +79,12 @@ class ClaudeRoutingSetupError(RuntimeError):
     """Routing files could not be written; the caller can launch Claude normally."""
 
 
-def _prepare_smart_router_session() -> None:
+def _prepare_smart_router_session(agent: str) -> Path:
     try:
-        install_skill(SMART_ROUTER_SKILL, config_io.APP_DIR.parent)
+        install_skill(SMART_ROUTER_SKILL, agent, config_io.APP_DIR.parent)
     except (OSError, RuntimeError) as exc:
         print_warning(f"Could not install the Smart Router skill: {exc}")
-    start_session()
+    return start_session()
 
 
 def _launch_token(state: dict, workspace: str) -> str:
@@ -562,7 +562,7 @@ def launch_claude(
                 str(plugin_dir),
                 *remaining,
             ]
-            _prepare_smart_router_session()
+            _prepare_smart_router_session("claude")
             if route_first_prompt:
                 returncode = claude_pty.run_claude_pty(
                     argv,
@@ -650,8 +650,12 @@ def launch_codex(
     overlay["hooks"] = {
         "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
     }
+    session_env_path = _prepare_smart_router_session("codex")
+    # Codex constructs tool subprocess environments through its shell policy.
+    # Set the session marker there explicitly so the Smart Router skill updates
+    # this session instead of treating its command as a fresh TUI launch.
+    overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
     config_args = codex_config_args(overlay)
-    _prepare_smart_router_session()
     if not first_prompt_routing_enabled():
         # Subagent-only routing needs neither the app-server nor the interposer:
         # the hooks ride in the CLI config, so launch the TUI directly.

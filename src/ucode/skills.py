@@ -8,7 +8,7 @@ import shutil
 from importlib.metadata import distribution
 from pathlib import Path
 
-_SKILL_ROOTS = (".claude/skills", ".agents/skills")
+_SKILL_ROOTS = {"claude": ".claude/skills", "codex": ".codex/skills"}
 _SKILL_NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 SMART_ROUTER_SKILL = "smart-router"
 
@@ -61,9 +61,13 @@ def _bundle_digest(skill_dir: Path) -> str | None:
     return digest.hexdigest()
 
 
-def install_skill(skill_name: str, home: Path | None = None) -> list[Path]:
-    """Install one skill into each harness, replacing only changed bundles."""
+def install_skill(skill_name: str, agent: str, home: Path | None = None) -> Path:
+    """Install one skill for an agent, replacing only a changed bundle."""
     _validate_skill_name(skill_name)
+    try:
+        root = _SKILL_ROOTS[agent]
+    except KeyError:
+        raise ValueError(f"Unsupported skill agent: {agent!r}") from None
     source = _skills_source() / skill_name
     if not (source / "SKILL.md").is_file():
         raise RuntimeError(f"Unity Gateway's `{skill_name}` skill resource is missing.")
@@ -72,23 +76,20 @@ def install_skill(skill_name: str, home: Path | None = None) -> list[Path]:
         raise RuntimeError(f"Unity Gateway's `{skill_name}` skill resource is invalid.")
 
     base = Path.home() if home is None else home
-    installed: list[Path] = []
-    for root in _SKILL_ROOTS:
-        destination = base / root / skill_name
-        if _bundle_digest(destination) != source_digest:
-            _remove_skill_path(destination)
-            shutil.copytree(source, destination)
-        installed.append(destination)
-    return installed
+    destination = base / root / skill_name
+    if _bundle_digest(destination) != source_digest:
+        _remove_skill_path(destination)
+        shutil.copytree(source, destination)
+    return destination
 
 
 def uninstall_skill(skill_name: str, home: Path | None = None) -> list[Path]:
-    """Remove one skill from each harness's global skill directory."""
+    """Remove one skill from each agent's global skill directory."""
     _validate_skill_name(skill_name)
 
     base = Path.home() if home is None else home
     removed: list[Path] = []
-    for root in _SKILL_ROOTS:
+    for root in _SKILL_ROOTS.values():
         destination = base / root / skill_name
         if _remove_skill_path(destination):
             removed.append(destination)

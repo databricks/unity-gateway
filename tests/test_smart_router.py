@@ -13,14 +13,15 @@ from ucode.smart_routing import session_env, v2
 runner = CliRunner()
 
 
-def test_smart_routed_session_installs_skill(tmp_path, monkeypatch):
+def test_smart_routed_codex_session_installs_skill(tmp_path, monkeypatch):
     monkeypatch.delenv(session_env.SESSION_ENV_VAR, raising=False)
 
-    v2._prepare_smart_router_session()
+    session_path = v2._prepare_smart_router_session("codex")
 
     home = config_io.APP_DIR.parent
-    assert home.joinpath(f".claude/skills/{SMART_ROUTER_SKILL}/SKILL.md").is_file()
-    assert home.joinpath(f".agents/skills/{SMART_ROUTER_SKILL}/SKILL.md").is_file()
+    assert home.joinpath(f".codex/skills/{SMART_ROUTER_SKILL}/SKILL.md").is_file()
+    assert not home.joinpath(f".agents/skills/{SMART_ROUTER_SKILL}").exists()
+    assert session_path == Path(os.environ[session_env.SESSION_ENV_VAR])
     assert Path(os.environ[session_env.SESSION_ENV_VAR]).is_file()
 
 
