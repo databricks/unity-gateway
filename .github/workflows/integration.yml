@@ -403,9 +403,6 @@ jobs:
           UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET: ${{ matrix.agent == 'claude' && secrets.UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET || '' }}
           UCODE_TEST_SECOND_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
           DATABRICKS_SECOND_BEARER: ${{ secrets.DATABRICKS_BEARER }}
-          # Durable SP-minted PAT for the MDM `--use-pat` journeys (the runner's own token
-          # is hourly M2M; the `_via_pat` tests need a real auth_type=pat profile).
-          E2E_ADMIN_SP_PAT: ${{ secrets.E2E_ADMIN_SP_PAT }}
         run: |
           # A managed config enables both agents and `ug configure` applies it to every enabled
           # agent, so both CLIs must be installed even though this lane asserts only one agent.

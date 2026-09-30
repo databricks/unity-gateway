@@ -57,7 +57,7 @@
 
       <!-- Gateway credential helper: mints the AI Gateway token per request. -->
       <key>apiKeyHelper</key>
-      <string>ug auth-token --host https://WORKSPACE_HOST --profile ug-mdm --use-pat</string>
+      <string>ug auth-token --host https://WORKSPACE_HOST</string>
 
       <!-- Point Claude Code at the workspace's AI Gateway. -->
       <key>env</key>

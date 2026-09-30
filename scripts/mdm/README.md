@@ -6,11 +6,18 @@ two independent layers. Keep them separate.
 ## Layer 1 — provisioning (`../mdm-bootstrap.sh`)
 
 A JAMF policy script, run as root on each machine. It ensures prerequisites
-(`uv`, `node`), installs `ug`, writes a PAT-based Databricks profile, runs
-`ug configure` **non-interactively**, and probes each enabled agent. Because it
+(`uv`, `node`), installs `ug`, mints a short-lived service-principal (OAuth M2M)
+token from `UG_CLIENT_ID`/`UG_CLIENT_SECRET` and hands it to `ug` via
+`DATABRICKS_BEARER_COMMAND` (never written to disk), runs `ug configure
+--workspace` **non-interactively**, and probes each enabled agent. Because it
 runs non-interactively, `ug` writes only its **local** settings and never touches
 the OS-managed files, so there is no `sudo` password prompt. `ug claude` /
 `ug codex` work off those local settings.
+
+That service-principal token is a scoped, ephemeral **provisioning** credential:
+`ug configure` persists the workspace and model lists but no token, so once the
+script exits, real developer launches authenticate with their own per-developer
+OAuth for inference. The bootstrap never becomes the fleet's standing identity.
 
 See `../mdm-bootstrap.sh` for inputs (env vars) and the JAMF wrapper snippet.
 

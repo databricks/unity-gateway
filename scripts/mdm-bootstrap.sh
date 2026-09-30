@@ -10,11 +10,21 @@
 # The script:
 #   1. Ensures ug's external prerequisites exist (curl/git, uv, node/npm).
 #   2. Installs ug via uv.
-#   3. Writes a PAT-based Databricks CLI profile.
-#   4. Runs `ug configure --use-pat` headlessly (this also installs the
+#   3. Mints a short-lived service-principal (OAuth M2M) token from
+#      UG_CLIENT_ID/UG_CLIENT_SECRET and exposes it to ug via
+#      DATABRICKS_BEARER_COMMAND, so the token is re-minted on demand and never
+#      written to disk.
+#   4. Runs `ug configure --workspace <url>` headlessly (this also installs the
 #      Databricks CLI and the enabled agent CLIs via npm).
 #   5. Probes every agent in the workspace's managed `enabled_agents` with a
 #      real one-shot inference call through the AI Gateway.
+#
+# Provisioning vs. runtime auth: the SP token above is a scoped, ephemeral
+# PROVISIONING credential. It is never persisted (`ug configure` writes only the
+# workspace and model lists, not a token, and never sets use_pat), so once this
+# script exits a real developer's `ug` launch falls back to their own
+# per-developer OAuth for inference. The bootstrap never becomes the fleet's
+# standing inference identity.
 #
 # All inputs are environment variables. JAMF reserves the positional parameters
 # $1-$4 (mount point, computer name, user name, and its first script parameter),
@@ -22,10 +32,10 @@
 #
 # Required:
 #   UG_WORKSPACE_HOST   Databricks workspace URL, e.g. https://myws.cloud.databricks.com
-#   UG_PAT              Databricks personal access token for that workspace
+#   UG_CLIENT_ID        Service-principal OAuth client id (application id)
+#   UG_CLIENT_SECRET    Service-principal OAuth client secret
 #
 # Optional:
-#   UG_PROFILE_NAME     Databricks CLI profile name to write (default: ug-mdm)
 #   UG_AGENTS           Comma-separated agents to force (e.g. "claude,codex").
 #                       Default: let the workspace's managed enabled_agents decide.
 #   UG_INSTALL_SPEC     uv install spec for ug
@@ -38,23 +48,26 @@
 #
 #   docker run --rm \
 #     -e UG_WORKSPACE_HOST="https://myws.cloud.databricks.com" \
-#     -e UG_PAT="dapi..." \
+#     -e UG_CLIENT_ID="<sp-application-id>" \
+#     -e UG_CLIENT_SECRET="<sp-secret>" \
 #     my-image /path/to/mdm-bootstrap.sh
 #
 # JAMF usage: JAMF passes positional parameters ($4-$11) rather than env vars,
 # and reserves $1-$3 (mount, computer, user). Deploy this script unchanged and
-# upload a tiny wrapper as the JAMF policy script, mapping two JAMF parameters
-# to the env vars this script reads (using $5/$6 to stay clear of $1-$4):
+# upload a tiny wrapper as the JAMF policy script, mapping three JAMF parameters
+# to the env vars this script reads (using $5-$7 to stay clear of $1-$4):
 #
 #   #!/bin/bash
-#   # JAMF policy parameters: 5 = workspace URL, 6 = PAT
+#   # JAMF policy parameters: 5 = workspace URL, 6 = SP client id, 7 = SP secret
 #   export UG_WORKSPACE_HOST="$5"
-#   export UG_PAT="$6"
+#   export UG_CLIENT_ID="$6"
+#   export UG_CLIENT_SECRET="$7"
 #   exec /usr/local/bin/mdm-bootstrap.sh
 #
-# Note: a PAT passed as a JAMF parameter is visible in the JAMF policy config and
-# logs. For a real fleet, prefer a Databricks service principal (OAuth M2M) as the
-# machine identity rather than a shared user PAT (see the team writeup).
+# Prefer a Databricks service principal (OAuth M2M) as the machine identity over
+# a shared user PAT: the token minted here is short-lived and scoped, and this
+# script never writes any credential to disk (contrast a PAT profile in
+# ~/.databrickscfg, which would persist a replayable inference credential).
 #
 # OS-managed enforcement layer:
 # This script provisions ug + LOCAL settings and runs `ug configure` NON-
@@ -71,7 +84,6 @@ set -euo pipefail
 
 # ── configuration ────────────────────────────────────────────────────────────
 
-UG_PROFILE_NAME="${UG_PROFILE_NAME:-ug-mdm}"
 UG_INSTALL_SPEC="${UG_INSTALL_SPEC:-git+https://github.com/databricks/unity-gateway}"
 UG_NODE_VERSION="${UG_NODE_VERSION:-22.14.0}" # current LTS; overridable
 UG_AGENTS="${UG_AGENTS:-}"
@@ -79,6 +91,10 @@ UG_SKIP_PROBE="${UG_SKIP_PROBE:-}"
 
 PROBE_PROMPT="say hi in 5 words or less"
 NODE_PREFIX="${UG_NODE_PREFIX:-/opt/ug-node}"
+
+# Path to the ephemeral bearer broker written by setup_bearer_broker; cleaned up
+# on exit. Empty until then.
+BEARER_BROKER=""
 
 # ── UI helpers ───────────────────────────────────────────────────────────────
 
@@ -148,13 +164,14 @@ add_to_path() {
 require_inputs() {
   section "Validating inputs"
   [ -n "${UG_WORKSPACE_HOST:-}" ] || die "UG_WORKSPACE_HOST is required (e.g. https://myws.cloud.databricks.com)."
-  [ -n "${UG_PAT:-}" ] || die "UG_PAT is required (a Databricks personal access token)."
+  [ -n "${UG_CLIENT_ID:-}" ] || die "UG_CLIENT_ID is required (the service principal's OAuth client id)."
+  [ -n "${UG_CLIENT_SECRET:-}" ] || die "UG_CLIENT_SECRET is required (the service principal's OAuth client secret)."
   case "$UG_WORKSPACE_HOST" in
     https://*) : ;;
     *) die "UG_WORKSPACE_HOST must start with https:// (got: $UG_WORKSPACE_HOST)." ;;
   esac
   ok "workspace: $UG_WORKSPACE_HOST"
-  ok "profile:   $UG_PROFILE_NAME"
+  ok "auth:      service principal $UG_CLIENT_ID (OAuth M2M, ephemeral)"
   if [ -n "$UG_AGENTS" ]; then
     ok "agents override: $UG_AGENTS"
   else
@@ -247,47 +264,76 @@ install_ug() {
   ok "ug installed ($(ug --version 2>/dev/null))"
 }
 
-# ── phase 3: configure headlessly ────────────────────────────────────────────
+# ── phase 3: ephemeral provisioning credential ───────────────────────────────
 
-write_databricks_profile() {
-  section "Writing Databricks CLI profile [$UG_PROFILE_NAME]"
-  local cfg="${DATABRICKS_CONFIG_FILE:-$HOME/.databrickscfg}"
-  local tmp
-  tmp="$(mktemp)"
-  # Drop any pre-existing block for this profile, keeping every other profile
-  # intact, then append a fresh PAT block.
-  if [ -f "$cfg" ]; then
-    awk -v prof="[$UG_PROFILE_NAME]" '
-      $0 == prof { skip = 1; next }
-      /^\[/      { skip = 0 }
-      !skip      { print }
-    ' "$cfg" > "$tmp"
-  fi
-  {
-    printf '[%s]\n' "$UG_PROFILE_NAME"
-    printf 'host = %s\n' "$UG_WORKSPACE_HOST"
-    printf 'token = %s\n' "$UG_PAT"
-    printf 'auth_type = pat\n'
-  } >> "$tmp"
-  mkdir -p "$(dirname "$cfg")"
-  mv "$tmp" "$cfg"
-  chmod 600 "$cfg"
-  ok "wrote profile to $cfg (mode 600)"
+cleanup_bearer_broker() {
+  [ -n "$BEARER_BROKER" ] && rm -f "$BEARER_BROKER" 2>/dev/null || true
 }
 
+# Mint provisioning auth from the service principal's client_id/secret without
+# ever writing a credential to disk. ug reads DATABRICKS_BEARER_COMMAND and runs
+# it on every token fetch, using the bare stdout as the bearer and failing closed
+# if it errors — so the token stays short-lived, is re-minted on demand, and is
+# never persisted. `ug configure` then needs no --profile and no --use-pat.
+setup_bearer_broker() {
+  section "Preparing ephemeral provisioning credential (SP OAuth M2M)"
+  # The broker reads these from its environment; export so ug's child invocation
+  # (and its own child curl) inherit them. The secret is never baked into the
+  # DATABRICKS_BEARER_COMMAND string (which ug echoes in error diagnostics).
+  export UG_WORKSPACE_HOST UG_CLIENT_ID UG_CLIENT_SECRET
+  BEARER_BROKER="$(mktemp)"
+  trap cleanup_bearer_broker EXIT
+  chmod 700 "$BEARER_BROKER"
+  cat > "$BEARER_BROKER" <<'BROKER'
+#!/usr/bin/env bash
+# Ephemeral bearer broker: mint a short-lived workspace token from the service
+# principal's client_id/secret and print the bare token to stdout. Reads creds
+# from the environment only. curl gets the credentials through a config file on
+# stdin (-K -) so they never land in argv/ps.
+set -euo pipefail
+: "${UG_WORKSPACE_HOST:?}" "${UG_CLIENT_ID:?}" "${UG_CLIENT_SECRET:?}"
+resp="$(printf 'user = "%s:%s"\n' "$UG_CLIENT_ID" "$UG_CLIENT_SECRET" \
+  | curl -sSf --max-time 10 -K - \
+      --data-urlencode 'grant_type=client_credentials' \
+      --data-urlencode 'scope=all-apis' \
+      "${UG_WORKSPACE_HOST%/}/oidc/v1/token")"
+printf '%s' "$resp" | node -e '
+  let d = "";
+  process.stdin.on("data", c => (d += c)).on("end", () => {
+    let t = "";
+    try { t = JSON.parse(d).access_token || ""; } catch (e) { process.exit(3); }
+    if (!t) process.exit(4);
+    process.stdout.write(t);
+  });
+'
+BROKER
+  # Fail fast with an actionable message if the SP creds cannot mint a token,
+  # rather than surfacing later as an opaque 401 during configure.
+  if ! "$BEARER_BROKER" >/dev/null; then
+    die "Could not mint a token from UG_CLIENT_ID/UG_CLIENT_SECRET against ${UG_WORKSPACE_HOST%/}/oidc/v1/token. Check the service principal's credentials and its access to the workspace."
+  fi
+  export DATABRICKS_BEARER_COMMAND="$BEARER_BROKER"
+  ok "ephemeral SP token verified; ug re-mints on demand (nothing written to disk)"
+}
+
+# ── phase 4: configure headlessly ────────────────────────────────────────────
+
 configure_ug() {
-  section "Configuring ug (headless, PAT)"
-  local args=(configure --profile "$UG_PROFILE_NAME" --use-pat)
+  section "Configuring ug (headless, ephemeral SP token)"
+  local args=(configure --workspace "$UG_WORKSPACE_HOST")
   [ -n "$UG_AGENTS" ] && args+=(--agents "$UG_AGENTS")
   info "ug ${args[*]}"
   # stdin from /dev/null keeps ug non-interactive: it writes only local settings
   # and skips the sudo OS-managed reconciliation (which would prompt). The
   # OS-managed enforcement is deployed via MDM profiles — see scripts/mdm/.
+  # DATABRICKS_BEARER_COMMAND (set above) supplies auth; with no --profile and no
+  # --use-pat, ug persists workspace + model lists only and never sets use_pat,
+  # so post-provisioning launches fall back to per-developer OAuth.
   ug "${args[@]}" </dev/null
   ok "ug configured"
 }
 
-# ── phase 4: verify with a real inference probe ──────────────────────────────
+# ── phase 5: verify with a real inference probe ──────────────────────────────
 
 # Map a CODING_AGENT_* proto enum to the ug agent name (see
 # src/ucode/managed_config.py:AGENT_ENUM_TO_TOOL).
@@ -334,6 +380,9 @@ probe_agent() {
 
 probe_enabled_agents() {
   section "Probing enabled agents (real inference)"
+  # The probe authenticates with the provisioning SP token (via
+  # DATABRICKS_BEARER_COMMAND); it is a provisioning sanity check, not the
+  # representative runtime path — real developer launches use per-developer OAuth.
   if [ -n "$UG_SKIP_PROBE" ]; then
     info "UG_SKIP_PROBE set — skipping inference probe"
     return 0
@@ -385,7 +434,7 @@ main() {
   ensure_uv
   ensure_node
   install_ug
-  write_databricks_profile
+  setup_bearer_broker
   configure_ug
   probe_enabled_agents
   section "Done"
