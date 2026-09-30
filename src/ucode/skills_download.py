@@ -56,8 +56,8 @@ SKILL_BASE_DIR_NAMES = (".claude/skills", ".agents/skills")
 # Parallel skill fetches per schema; writes stay sequential (they prompt).
 _MAX_FETCH_WORKERS = 8
 
-# The launch-time refresh runs at most once per interval (Isaac's plugin marketplace staleness
-# window) and gives up after the budget, so a slow Unity Catalog can't hold up a launch for long.
+# The launch-time refresh runs at most once per interval and gives up after the budget, so a slow
+# Unity Catalog can't hold up a launch for long.
 SKILL_UPDATE_CHECK_INTERVAL = timedelta(hours=24)
 SKILL_UPDATE_BUDGET_SECONDS = 60.0
 

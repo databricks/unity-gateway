@@ -1424,7 +1424,7 @@ def _record_download(home, monkeypatch, *, uc_update_time="2026-01-01T00:00:00Z"
 
 
 class TestRefreshOnLaunch:
-    def test_interval_matches_isaac(self):
+    def test_interval_is_one_day(self):
         assert sd.SKILL_UPDATE_CHECK_INTERVAL == timedelta(hours=24)
 
     def test_rate_limited_skips_network(self, monkeypatch):
