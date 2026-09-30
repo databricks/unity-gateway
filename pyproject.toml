@@ -87,9 +87,13 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011", "TID251"]  # tests may exercise subprocess directly
+"src/ucode/os_compatibility/file_lock_cross_os.py" = ["TID251"]
 "src/ucode/os_compatibility/subprocess_cross_os.py" = ["TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
+"fcntl.flock".msg = "Use ucode.os_compatibility.file_lock_cross_os for cross-platform file locking."
+"fcntl.lockf".msg = "Use ucode.os_compatibility.file_lock_cross_os for cross-platform file locking."
+"msvcrt.locking".msg = "Use ucode.os_compatibility.file_lock_cross_os for cross-platform file locking."
 "subprocess.run".msg = "Use ucode.os_compatibility.subprocess_cross_os.run for cross-platform commands and text encoding."
 "subprocess.Popen".msg = "Use ucode.os_compatibility.subprocess_cross_os.popen for cross-platform commands and text encoding."
 "subprocess.call".msg = "Use ucode.os_compatibility.subprocess_cross_os.run to resolve Windows commands automatically."

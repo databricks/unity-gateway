@@ -24,7 +24,9 @@ def pytest_collection_modifyitems(config, items):
         # Fail if someone accidentally invokes this under the unit-test fixtures.
         if "monkeypatch" in item.fixturenames:
             raise pytest.UsageError("Use the integration runner; unit fixtures were inherited.")
-        if any(item.get_closest_marker(a) and a not in agents for a in ("claude", "codex")):
+        if any(
+            item.get_closest_marker(a) and a not in agents for a in ("claude", "codex", "opencode")
+        ):
             deselected.append(item)
         else:
             selected.append(item)

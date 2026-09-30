@@ -116,7 +116,7 @@ class FileTask:
             final = [row for row in payloads if row.get("type") == "result"]
             assert final and not final[-1].get("is_error"), result.stdout
             assert self.value in final[-1].get("result", ""), result.stdout
-        else:
+        elif agent == "codex":
             assert any(row.get("type") == "turn.completed" for row in payloads), result.stdout
             answers = [
                 row.get("item", {}).get("text", "")
@@ -125,6 +125,29 @@ class FileTask:
                 and row.get("item", {}).get("type") == "agent_message"
             ]
             assert any(self.value in answer for answer in answers), result.stdout
+        elif agent == "opencode":
+            assert result.returncode == 0, result.stdout
+            reads = [
+                (row.get("part") or {})
+                for row in payloads
+                if row.get("type") == "tool_use"
+                and (row.get("part") or {}).get("tool") == "read"
+                and ((row.get("part") or {}).get("state") or {}).get("status") == "completed"
+            ]
+            # The Read must target the fixture file, not some other path.
+            assert any(
+                self.filename in json.dumps((part.get("state") or {}).get("input", {}))
+                for part in reads
+            ), result.stdout
+            # Assert the value in the assistant's text, not the tool output that echoes the file.
+            answer = "".join(
+                (row.get("part") or {}).get("text", "")
+                for row in payloads
+                if row.get("type") == "text"
+            )
+            assert self.value in answer, result.stdout
+        else:
+            raise AssertionError(f"Unknown agent: {agent}")
 
 
 def assert_subagent_routed(session, agent: str, task: FileTask) -> None:
