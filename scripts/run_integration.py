@@ -26,7 +26,11 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-AGENT_PACKAGES = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}
+AGENT_PACKAGES = {
+    "claude": "@anthropic-ai/claude-code",
+    "codex": "@openai/codex",
+    "opencode": "opencode-ai",
+}
 MANAGED_DEFAULTS_TARGETS = (
     (
         "UG_MPS_DEFAULTS_BEARER",
@@ -51,6 +55,7 @@ INSTALLER_CREDENTIAL_ENV = (*UV_INDEX_CREDENTIAL_ENV, NPM_TOKEN_ENV)
 HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
     "codex": "test_ug_codex_headless.py::test_ug_codex_headless_prompt_argument",
+    "opencode": "test_ug_opencode_headless.py::test_ug_opencode_headless_prompt_argument",
 }
 
 
@@ -282,8 +287,12 @@ def arguments(
     parser.add_argument("--entry-point", choices=["ug", "ucode"], default="ug")
     parser.add_argument("--claude-version", type=exact_npm_version)
     parser.add_argument("--codex-version", type=exact_npm_version)
+    parser.add_argument("--opencode-version", type=exact_npm_version)
     parser.add_argument("--claude-model", default=environment.get("UG_INTEGRATION_CLAUDE_MODEL"))
     parser.add_argument("--codex-model", default=environment.get("UG_INTEGRATION_CODEX_MODEL"))
+    parser.add_argument(
+        "--opencode-model", default=environment.get("UG_INTEGRATION_OPENCODE_MODEL")
+    )
     parser.add_argument(
         "--claude-provider",
         default="main.ucode.ci_e2e_anthropic_nonrelay_mps",
@@ -387,8 +396,10 @@ def arguments(
             args.pytest_args.extend([flag, str(value)])
     if selected.x:
         args.pytest_args.append("-x")
-    if not (args.claude_version or args.codex_version):
-        parser.error("Select --claude-version and/or --codex-version explicitly.")
+    if not (args.claude_version or args.codex_version or args.opencode_version):
+        parser.error(
+            "Select --claude-version, --codex-version and/or --opencode-version explicitly."
+        )
     if args.ug_version != "checkout" and not re.fullmatch(
         r"[0-9][0-9A-Za-z.!+_-]*", args.ug_version
     ):
@@ -560,8 +571,10 @@ def main() -> int:
             "entry_point": args.entry_point,
             "claude": args.claude_version,
             "codex": args.codex_version,
+            "opencode": args.opencode_version,
             "claude_model": args.claude_model,
             "codex_model": args.codex_model,
+            "opencode_model": args.opencode_model,
             "claude_provider": args.claude_provider,
             "claude_relayed_provider": args.claude_relayed_provider,
             "claude_provider_model": args.claude_provider_model,
