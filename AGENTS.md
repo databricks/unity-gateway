@@ -38,21 +38,20 @@ Tests live in `tests/`.
 ## Fields `ug` manages
 
 This is the allow list of fields `ug` owns. Every field not listed is left
-alone. For each listed field `ug` does one of: **Create/replace** the whole
-value it owns, **Merge** its own entries into a shared value while leaving the
-rest alone, or **Ignore** it, shown per column for launches without and with a
-managed config. For Claude Code these fields live in
-`~/.claude/ucode-settings.json` and the OS-managed settings file, which takes
-precedence; for Codex in `~/.codex/ucode.config.toml` and
-`/etc/codex/managed_config.toml`. "Managed config" is the coding agent config
-admins publish through the API.
+alone. For each listed field, `ug` does one of:
 
-This describes the intended behavior. Where today's code differs, mainly by
-clearing or wholesale-replacing fields it should leave alone or merge, the gap
-is tracked in Jira (epic AIGTWY-4329).
+- **Create/replace**: `ug` owns the whole value and writes it.
+- **Merge**: `ug` writes only its own entries within a shared value and leaves the rest alone.
+- **Ignore**: `ug` does not touch the field.
+
+The two columns show what `ug` does without and with a [managed config](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-configure-govern), the coding agent config admins publish through the API.
+
+This is the intended behavior; we are still working to make the code match it in every case. In particular, `ug` today also clears some fields that this list leaves alone: the `env.ANTHROPIC_DEFAULT_*_MODEL_NAME` companions, `env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`, `env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`, and Codex `model_reasoning_effort`. Codex `[otel]` is never written to a file.
 
 <details>
 <summary>Claude Code</summary>
+
+Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file (`/etc/claude-code/managed-settings.json` on Linux, `/Library/Application Support/ClaudeCode/managed-settings.json` on macOS), which takes precedence.
 
 | Field | Without managed config | With managed config | Notes |
 |-------|------------------------|---------------------|-------|
@@ -76,6 +75,8 @@ is tracked in Jira (epic AIGTWY-4329).
 <details>
 <summary>Codex</summary>
 
+Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`.
+
 | Field | Without managed config | With managed config | Notes |
 |-------|------------------------|---------------------|-------|
 | `model_provider` | Create/replace | Create/replace | Gateway provider (`Databricks`) |
@@ -86,10 +87,3 @@ is tracked in Jira (epic AIGTWY-4329).
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone |
 
 </details>
-
-`ug` also clears some fields today that this list leaves alone: the
-`env.ANTHROPIC_DEFAULT_*_MODEL_NAME` companions,
-`env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`,
-`env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`, and Codex `model_reasoning_effort`.
-Those removals are gaps against this allow list and are tracked in Jira. Codex
-`[otel]` is never written to a file.
