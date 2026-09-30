@@ -250,6 +250,8 @@ class ManagedFileSnapshots:
 
     original_before_ug: dict | None
     last_applied_by_ug: dict | None
+    # Key paths ucode has written to this file, keyed by the file rather than the workspace.
+    owned_paths: list | None = None
 
 
 def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnapshots:
@@ -275,9 +277,11 @@ def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnaps
         entry = _manifest_files(_load_manifest()).get(tool)
         if not isinstance(entry, dict):
             return ManagedFileSnapshots(None, None)
+        owned_paths = entry.get("owned_paths")
         return ManagedFileSnapshots(
             _parse(_snapshot_text(entry, "backup_file")),
             _parse(_snapshot_text(entry, "last_applied_file")),
+            owned_paths if isinstance(owned_paths, list) else None,
         )
     except RuntimeError:
         return ManagedFileSnapshots(None, None)

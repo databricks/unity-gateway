@@ -1480,7 +1480,9 @@ class TestWriteToolConfigManagedSettings:
             claude,
             "managed_file_snapshots",
             lambda tool, parser: managed_files.ManagedFileSnapshots(
-                {}, existing[str(FAKE_MANAGED_PATH)]
+                {},
+                existing[str(FAKE_MANAGED_PATH)],
+                [[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS],
             ),
         )
         state = {"workspace": WS, "claude_models": {"opus": "system.ai.claude-opus-4-8"}}
@@ -1550,6 +1552,66 @@ class TestWriteToolConfigManagedSettings:
         assert written["availableModels"] == ["system.ai.glm-5-2"], written
         assert written["modelPicker"] == admin_picker, written
         assert written["enforceAvailableModels"] is True, written
+
+    def test_managed_file_keeps_foreign_picker_matching_last_write_over_stale_baseline(
+        self, monkeypatch
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        # Isaac's picker predated ucode (the baseline), and Isaac later replaced it. A previous
+        # launch preserved the current picker and re-saved it into ucode's last-applied snapshot,
+        # so it now matches that snapshot. ucode never wrote a picker, so it must not restore the
+        # stale baseline; before this fix the picker flipped back on every other launch.
+        stale = {"replaceBuiltInOptions": True, "options": [{"model": "m", "label": "old"}]}
+        current = {"replaceBuiltInOptions": True, "options": [{"model": "m", "label": "new"}]}
+        existing = {str(FAKE_MANAGED_PATH): {"modelPicker": current}}
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setattr(
+            claude,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(
+                {"modelPicker": stale}, {"modelPicker": current}
+            ),
+        )
+        state = {"workspace": WS, "claude_models": {"opus": "system.ai.claude-opus-4-8"}}
+
+        claude.write_tool_config(state, None)
+
+        written = json.loads(managed_writes[0][1])
+        assert written["modelPicker"] == current, written
+
+    def test_managed_file_reverts_owned_unchanged_picker_when_static_list_dropped(
+        self, monkeypatch
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        # ucode wrote this static picker to the file and it is unchanged; the config no longer
+        # supplies a static list, so ucode restores the pre-ucode baseline picker.
+        baseline = {"replaceBuiltInOptions": True, "options": [{"model": "m", "label": "admin"}]}
+        ucode_static = {
+            "availableModels": ["system.ai.claude-opus-4-8"],
+            "enforceAvailableModels": True,
+            "modelPicker": {"replaceBuiltInOptions": True, "options": []},
+        }
+        existing = {str(FAKE_MANAGED_PATH): dict(ucode_static)}
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setattr(
+            claude,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(
+                {"modelPicker": baseline},
+                dict(ucode_static),
+                [[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS],
+            ),
+        )
+        state = {"workspace": WS, "claude_models": {"opus": "system.ai.claude-opus-4-8"}}
+
+        claude.write_tool_config(state, None)
+
+        written = json.loads(managed_writes[0][1])
+        assert written["modelPicker"] == baseline, written
+        assert "availableModels" not in written, written
+        assert "enforceAvailableModels" not in written, written
 
     def test_managed_file_keeps_admin_edited_picker_as_a_unit(self, monkeypatch):
         private_writes: list = []
