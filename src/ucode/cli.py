@@ -2370,8 +2370,8 @@ def _fetch_budget_recommendation(state: dict, managed: dict | None) -> dict | No
     Enforcement is server-side, so a failed read only costs the recommendation: the config's own
     ``default_model`` still applies and the launch proceeds.
     """
-    spend_tiers = (managed or {}).get("spend_tiers")
-    tiers = spend_tiers.get("tiers") if isinstance(spend_tiers, dict) else None
+    smart_defaults = (managed or {}).get("smart_defaults")
+    tiers = smart_defaults.get("tiers") if isinstance(smart_defaults, dict) else None
     if not tiers or is_dry_run():
         return None
     reason: str | None = None

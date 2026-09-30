@@ -9,6 +9,10 @@ The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
 
+The `smart_defaults` wire schema, legacy `spend_tiers` cache reads, and recommendation
+request gating are covered by unit/component tests listed in `../README.md`. This suite
+does not yet assert live `recommendModel` request counts for configs with and without tiers.
+
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
 for every agent; the Windows journeys below validate their explicitly selected paths.

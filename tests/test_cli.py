@@ -24,6 +24,7 @@ import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
+from ucode.managed_config import normalize_managed_config
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -5214,7 +5215,7 @@ class TestBudgetRecommendationAtLaunch:
     """The budget read informs the launch; it never blocks it."""
 
     SMART_DEFAULTS = {
-        "spend_tiers": {
+        "smart_defaults": {
             "budget_id": "c6563b45-df9a-4b19-afb2-d42dc2b52576",
             "tiers": [
                 {
@@ -5261,9 +5262,9 @@ class TestBudgetRecommendationAtLaunch:
             {"enabled_agents": {"claude": {}}},
             {
                 "enabled_agents": {"claude": {}},
-                "spend_tiers": {"budget_id": "c6563b45-df9a-4b19-afb2-d42dc2b52576"},
+                "smart_defaults": {"budget_id": "c6563b45-df9a-4b19-afb2-d42dc2b52576"},
             },
-            {"enabled_agents": {"claude": {}}, "spend_tiers": {"tiers": []}},
+            {"enabled_agents": {"claude": {}}, "smart_defaults": {"tiers": []}},
         ],
     )
     def test_not_checked_without_smart_defaults(self, monkeypatch, managed):
@@ -5278,6 +5279,27 @@ class TestBudgetRecommendationAtLaunch:
             managed=managed,
             recommendation={"agent": "claude", "model": "system.ai.claude-sonnet-4-6"},
         )
+        assert result.exit_code == 0, result.output
+        assert calls == [MINIMAL_STATE["workspace"]]
+
+    def test_wire_smart_defaults_reach_recommendation(self, monkeypatch):
+        raw = {
+            "enabled_agents": [
+                {"agent": "CODING_AGENT_CLAUDE_CODE", "config": {}},
+            ],
+            "smart_defaults": {
+                "tiers": [
+                    {
+                        "spending_percentage": 0.8,
+                        "recommended_agent": "CODING_AGENT_CLAUDE_CODE",
+                        "recommended_model": "system.ai.claude-sonnet-4-6",
+                    }
+                ]
+            },
+        }
+        managed = normalize_managed_config(raw)
+        assert "smart_defaults" in managed
+        result, calls, _ = self._launch(monkeypatch, managed=managed)
         assert result.exit_code == 0, result.output
         assert calls == [MINIMAL_STATE["workspace"]]
 
