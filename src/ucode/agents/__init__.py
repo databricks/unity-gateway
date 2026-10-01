@@ -63,7 +63,7 @@ AGENTS: dict[str, Agent] = {
     "codex": LEGACY_AGENTS["codex"],
     "claude": LEGACY_AGENTS["claude"],
     "gemini": LEGACY_AGENTS["gemini"],
-    "opencode": LEGACY_AGENTS["opencode"],
+    "opencode": opencode.AGENT,
     "copilot": LEGACY_AGENTS["copilot"],
     "pi": LEGACY_AGENTS["pi"],
 }

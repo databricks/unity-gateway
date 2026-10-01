@@ -6,6 +6,7 @@ import json
 import os
 import re
 import signal
+from collections.abc import Mapping
 
 from ucode.config_io import (
     APP_DIR,
@@ -14,9 +15,11 @@ from ucode.config_io import (
     backup_existing_file,
     deep_merge_dict,
     read_json_safe,
+    restore_file,
     write_json_file,
     write_text_file,
 )
+from ucode.constants import MCP_USER_SCOPE
 from ucode.databricks import (
     build_auth_token_argv,
     build_opencode_base_urls,
@@ -28,6 +31,7 @@ from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
+from .interface import ConfigureRequest, Install, McpClient, McpServer, Models
 
 OPENCODE_XDG_CONFIG_HOME = APP_DIR / "opencode-xdg"
 OPENCODE_CONFIG_DIR = OPENCODE_XDG_CONFIG_HOME / "opencode"
@@ -449,3 +453,95 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
 
 def validate_cmd(binary: str) -> list[str]:
     return [binary, "run", "say hi in 5 words or less"]
+
+
+def _model_ids(value: object) -> list[str]:
+    """Flatten a state model inventory (str, list, or family-keyed dict) into model ids."""
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item]
+    if isinstance(value, dict):
+        return [model for models in value.values() for model in _model_ids(models)]
+    return []
+
+
+def _user_scope(removed: bool) -> list[str]:
+    """``add``/``remove``'s return shape: OpenCode has one MCP scope, where ug writes."""
+    return [MCP_USER_SCOPE] if removed else []
+
+
+class OpenCodeMcpClient:
+    """OpenCode's MCP registration: ug merges ``mcp`` entries into its isolated opencode.json.
+
+    OpenCode has no published OAuth app ug can pin, so every server is the stdio
+    ``ug mcp-proxy`` bridge and ``McpServer.oauth_client`` / ``always_load`` are ignored."""
+
+    display: str = SPEC["display"]
+    binary: str = SPEC["binary"]
+    oauth_client_id: str | None = None
+
+    def add(self, name: str, server: McpServer) -> list[str]:
+        return _user_scope(write_mcp_server_config(name, list(server.proxy_argv)))
+
+    def remove(self, name: str) -> list[str]:
+        return _user_scope(remove_mcp_server_config(name))
+
+    def apply(self, add: Mapping[str, McpServer], remove: set[str]) -> set[str]:
+        entries = {name: self.entry(server) for name, server in add.items()}
+        return write_user_mcp_servers(entries, remove) or set()
+
+    def entry(self, server: McpServer) -> dict:
+        """The on-disk ``mcp`` entry :meth:`add` would have written for ``server``."""
+        return build_mcp_server_entry(list(server.proxy_argv))
+
+    def live_status(self) -> dict[str, str]:
+        # Lazy: ucode.mcp imports the agent registry, which imports this module.
+        from ucode import mcp
+
+        output = mcp._read_mcp_listing([self.binary, "mcp", "list"])
+        if output is None:
+            return {}
+        # Read the output as "no servers configured" only when no row parsed: that check matches
+        # phrases ("not found") that also appear inside one failing server's status line.
+        parsed = mcp._parse_health_mcp_list(output)
+        if not parsed and mcp._is_missing_mcp_server_output(output):
+            return {}
+        return parsed
+
+
+class OpenCodeAgent:
+    """OpenCode as an :class:`~ucode.agents.interface.Agent`."""
+
+    display: str = SPEC["display"]
+    install = Install(
+        binary=SPEC["binary"],
+        package=SPEC["package"],
+        version_error=minimum_version_error,
+    )
+    mcp: McpClient | None = OpenCodeMcpClient()
+
+    def models(self, state: dict) -> Models:
+        # A managed static list replaces discovery outright.
+        static_models = _model_ids(state.get("opencode_static_models"))
+        available = tuple(dict.fromkeys(static_models or _model_ids(state.get("opencode_models"))))
+        explicit = state.get("opencode_default_model")
+        if isinstance(explicit, str) and explicit:
+            return Models(available, explicit)
+        return Models(available, available[0] if available else None)
+
+    def configure(self, state: dict, request: ConfigureRequest) -> dict:
+        if not request.model:
+            raise RuntimeError("A opencode model must be selected before configuration.")
+        return write_tool_config(state, request.model)[0]
+
+    def launch(self, state: dict, args: list[str], *, options: LaunchOptions) -> None:
+        launch(state, args, options=options)
+
+    def revert(self, state: dict) -> list[tuple[str, str]]:
+        managed = bool((state.get("managed_configs") or {}).get("opencode"))
+        restored = restore_file(SPEC["config_path"], SPEC["backup_path"], managed)
+        return [(f"{self.display} config", "restored" if restored else "unchanged")]
+
+
+AGENT = OpenCodeAgent()

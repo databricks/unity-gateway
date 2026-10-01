@@ -20,11 +20,14 @@ ALL_MCP_CLIENTS = ["codex", "claude", "gemini", "opencode", "copilot"]
 
 
 def _client(name):
-    """The concrete `LegacyMcpClient` behind `mcp.MCP_CLIENTS[name]`.
+    """The concrete client behind `mcp.MCP_CLIENTS[name]`.
 
-    Its `entry` / `parse_listing` helpers are the adapter's own API, not part of the `McpClient`
-    protocol ug core dispatches through, so tests reach for the adapter rather than the registry."""
-    return CURSOR_MCP_CLIENT if name == "cursor" else LEGACY_MCP_CLIENTS[name]
+    Its `entry` / `parse_listing` helpers are the client's own API, not part of the `McpClient`
+    protocol ug core dispatches through, so tests reach for the concrete client."""
+    if name == "cursor":
+        return CURSOR_MCP_CLIENT
+    # Agents with a native class expose their client as `AGENT.mcp`, i.e. `mcp.MCP_CLIENTS[name]`.
+    return LEGACY_MCP_CLIENTS.get(name) or mcp.MCP_CLIENTS[name]
 
 
 class TestMcpChangeSummary:
