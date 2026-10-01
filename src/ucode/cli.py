@@ -1245,9 +1245,9 @@ def revert() -> int:
     print_kv("Workspace", state.get("workspace") or "none")
     for label, outcome in agent_rows:
         print_kv(label, outcome)
-    for client, spec in MCP_CLIENTS.items():
+    for client, target in MCP_CLIENTS.items():
         print_kv(
-            f"{spec['display']} MCP config",
+            f"{target.display} MCP config",
             "restored" if mcp_results.get(client) else "unchanged",
         )
     print_success("ug state cleared")

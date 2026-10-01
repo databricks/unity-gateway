@@ -70,6 +70,47 @@ class ConfigureRequest:
     extras: Mapping[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, kw_only=True)
+class McpServer:
+    """One MCP server to register, with its delivery already chosen by ug core."""
+
+    url: str
+    # The `ug mcp-proxy ...` stdio command, which injects a fresh Databricks token. Used unless
+    # `oauth_client` is set.
+    proxy_argv: tuple[str, ...]
+    # Register natively over HTTP+OAuth with this published app id instead of the proxy. Core sets
+    # it only for a client with an `oauth_client_id`, on a connection-backed service.
+    oauth_client: str | None = None
+    # Load the server's tools at session start (only Claude honours it; others ignore it).
+    always_load: bool = False
+
+
+@runtime_checkable
+class McpClient(Protocol):
+    """Something ug can register MCP servers into: an agent's ``mcp``, or an MCP-only client."""
+
+    display: str
+    binary: str
+    # Published OAuth app id for native HTTP+OAuth entries, or None to always use the proxy.
+    oauth_client_id: str | None
+
+    def add(self, name: str, server: McpServer) -> list[str]:
+        """Register (or replace) one server; return the scopes an existing entry was removed from."""
+        ...
+
+    def remove(self, name: str) -> list[str]:
+        """Remove one server; return the scopes it was removed from (empty if it wasn't there)."""
+        ...
+
+    def apply(self, add: Mapping[str, McpServer], remove: set[str]) -> set[str]:
+        """Apply many adds and removes in one write; return the names actually removed."""
+        ...
+
+    def live_status(self) -> dict[str, str]:
+        """``{server_name: state}`` from the client's own listing; empty when it can't be read."""
+        ...
+
+
 @runtime_checkable
 class Agent(Protocol):
     """A coding agent ug configures and launches through Databricks AI Gateway."""
@@ -77,6 +118,9 @@ class Agent(Protocol):
     # Human-readable name for messages ("Claude Code", "GitHub Copilot CLI").
     display: str
     install: Install
+    # Where ug registers MCP servers for this agent, or None when the agent can't receive them.
+    # Required (no default) so "doesn't support MCP" is always an explicit choice.
+    mcp: McpClient | None
 
     def models(self, state: dict) -> Models:
         """What this agent can use from the workspace inventory in ``state``.
