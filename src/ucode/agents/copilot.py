@@ -21,6 +21,7 @@ import os
 import re
 import signal
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 
 from ucode.config_io import (
@@ -30,9 +31,11 @@ from ucode.config_io import (
     backup_existing_file,
     parse_dotenv,
     read_json_safe,
+    restore_file,
     write_dotenv,
     write_json_file,
 )
+from ucode.constants import MCP_USER_SCOPE
 from ucode.databricks import (
     TOKEN_REFRESH_INTERVAL_SECONDS,
     build_copilot_base_url,
@@ -42,6 +45,7 @@ from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
 
 from .args import LaunchOptions, explicit_model_arg_value
+from .interface import ConfigureRequest, Install, McpServer, Models
 
 COPILOT_CONFIG_DIR = Path.home() / ".copilot"
 COPILOT_ENV_PATH = COPILOT_CONFIG_DIR / "ucode.env"
@@ -249,3 +253,102 @@ def mcp_config_args() -> list[str]:
     if not COPILOT_MCP_CONFIG_PATH.exists():
         return []
     return ["--additional-mcp-config", f"@{COPILOT_MCP_CONFIG_PATH}"]
+
+
+def restore_mcp_config(managed: bool) -> bool:
+    """Restore Copilot's MCP file from its whole-file backup; ``managed`` also deletes a ug-created one.
+
+    Copilot keeps MCP servers in a file of its own (not in the env file its agent revert restores),
+    so ``ug revert`` calls this after removing each registered server."""
+    return restore_file(COPILOT_MCP_CONFIG_PATH, COPILOT_MCP_BACKUP_PATH, managed)
+
+
+def _model_ids(value: object) -> list[str]:
+    """Flatten a state model inventory (str, list, or provider-keyed dict) into model ids."""
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item]
+    if isinstance(value, dict):
+        return [model for models in value.values() for model in _model_ids(models)]
+    return []
+
+
+def _user_scope(removed: bool) -> list[str]:
+    """``add``/``remove``'s return shape: Copilot has only one scope, where ug writes."""
+    return [MCP_USER_SCOPE] if removed else []
+
+
+class CopilotMcpClient:
+    """Registers MCP servers in Copilot's own ``ucode-mcp-config.json`` (``--additional-mcp-config``)."""
+
+    display: str = SPEC["display"]
+    binary: str = SPEC["binary"]
+    # Copilot has no native HTTP+OAuth registration ug can drive, so it always uses the stdio proxy.
+    oauth_client_id: str | None = None
+
+    def add(self, name: str, server: McpServer) -> list[str]:
+        return _user_scope(write_mcp_server_config(name, list(server.proxy_argv)))
+
+    def remove(self, name: str) -> list[str]:
+        return _user_scope(remove_mcp_server_config(name))
+
+    def apply(self, add: Mapping[str, McpServer], remove: set[str]) -> set[str]:
+        """One read-modify-write of the MCP file for a whole diff (see ``mcp.apply_mcp_server_changes``)."""
+        entries = {name: self.entry(server) for name, server in add.items()}
+        return write_user_mcp_servers(entries, remove) or set()
+
+    def entry(self, server: McpServer) -> dict:
+        """The on-disk entry :meth:`add` would have written for ``server``."""
+        return build_mcp_server_entry(list(server.proxy_argv))
+
+    def live_status(self) -> dict[str, str]:
+        # Imported lazily: `ucode.mcp` imports this package. The shared `mcp list` reader and
+        # health-line parser stay in mcp.py, where Claude, Gemini and OpenCode use them too.
+        from ucode import mcp
+
+        output = mcp._read_mcp_listing([self.binary, "mcp", "list"], env=None)
+        if output is None:
+            return {}
+        # Parse the rows first and read the output as "no servers configured" only when none
+        # parsed: that check matches phrases ("not found") also present in one server's failure.
+        parsed = mcp._parse_health_mcp_list(output)
+        if not parsed and mcp._is_missing_mcp_server_output(output):
+            return {}
+        return parsed
+
+
+class CopilotAgent:
+    """GitHub Copilot CLI as an :class:`~ucode.agents.interface.Agent`."""
+
+    display: str = SPEC["display"]
+    install = Install(binary=SPEC["binary"], package=SPEC["package"])
+    mcp = CopilotMcpClient()
+
+    def models(self, state: dict) -> Models:
+        # A managed static list replaces discovery; otherwise Copilot can use Claude and Codex models.
+        available = _model_ids(state.get("copilot_static_models")) or (
+            _model_ids(state.get("claude_models")) + _model_ids(state.get("codex_models"))
+        )
+        available = tuple(dict.fromkeys(available))
+        explicit = state.get("copilot_default_model")
+        if isinstance(explicit, str) and explicit:
+            return Models(available, explicit)
+        # Copilot writes the first resolved model into its ug config, so that is the starting model.
+        return Models(available, available[0] if available else None)
+
+    def configure(self, state: dict, request: ConfigureRequest) -> dict:
+        if not request.model:
+            raise RuntimeError("A copilot model must be selected before configuration.")
+        return write_tool_config(state, request.model)[0]
+
+    def launch(self, state: dict, args: list[str], *, options: LaunchOptions) -> None:
+        launch(state, args, options=options)
+
+    def revert(self, state: dict) -> list[tuple[str, str]]:
+        managed = bool((state.get("managed_configs") or {}).get("copilot"))
+        restored = restore_file(SPEC["config_path"], SPEC["backup_path"], managed)
+        return [(f"{self.display} config", "restored" if restored else "unchanged")]
+
+
+AGENT = CopilotAgent()

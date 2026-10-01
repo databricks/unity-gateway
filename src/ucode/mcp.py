@@ -25,7 +25,6 @@ from ucode.agents import (
     copilot,
     gemini,
 )
-from ucode.config_io import restore_file
 from ucode.constants import MCP_USER_SCOPE
 from ucode.databricks import (
     AIGW_MCP_SERVICES_SEGMENT,
@@ -353,6 +352,12 @@ def remove_client_mcp_server(client: str, name: str) -> list[str]:
     return _mcp_client(client).remove(name)
 
 
+# Whole-file MCP restore on revert, for the clients that keep MCP servers in a file of their own with
+# a backup of it: `restore(managed)` puts the original back (or deletes a ug-created file when
+# `managed`). A feature table rather than an `McpClient` member because only Copilot has one.
+_MCP_FILE_RESTORES: dict[str, Callable[[bool], bool]] = {"copilot": copilot.restore_mcp_config}
+
+
 def revert_mcp_configs(state: dict) -> dict[str, bool]:
     results: dict[str, bool] = {}
     # Both the developer's own servers and any registered from the workspace's managed config, so a
@@ -370,18 +375,14 @@ def revert_mcp_configs(state: dict) -> dict[str, bool]:
             removed_scopes = remove_client_mcp_server(client, name)
             results[client] = bool(removed_scopes) or results.get(client, False)
 
-    # OpenCode MCP entries live in the normal OpenCode config and are restored
-    # by the main agent config revert. Copilot stores MCP servers separately,
-    # so restore its original MCP file after removing per-server entries above.
-    # Deliberately still a named special case here rather than behind `McpClient`: no other client
-    # keeps a whole-file MCP backup, so the Copilot agent PR absorbs this into Copilot's own code.
-    results["copilot"] = restore_file(
-        copilot.COPILOT_MCP_CONFIG_PATH,
-        copilot.COPILOT_MCP_BACKUP_PATH,
-        any(
-            "copilot" in (server.get("clients") or []) for server in state.get("mcp_servers") or []
-        ),
-    ) or results.get("copilot", False)
+    # A client in `_MCP_FILE_RESTORES` keeps its MCP servers in a file of its own, so after the
+    # per-server removals above it restores that file from its backup. Every other client's entries
+    # live in its main config (OpenCode's, for one), which the agent's own revert restores.
+    for client, restore in _MCP_FILE_RESTORES.items():
+        was_registered = any(
+            client in (server.get("clients") or []) for server in state.get("mcp_servers") or []
+        )
+        results[client] = restore(was_registered) or results.get(client, False)
     return results
 
 
