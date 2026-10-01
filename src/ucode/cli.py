@@ -605,7 +605,10 @@ def configure_shared_state(
         fetch_all or "claude" in tools or "opencode" in tools or "copilot" in tools or "pi" in tools
     )
     want_gemini = fetch_all or "gemini" in tools or "opencode" in tools or "pi" in tools
-    want_codex = fetch_all or "codex" in tools or "copilot" in tools or "pi" in tools
+    # Claude's web-search server also needs a Responses-capable model.
+    want_codex = (
+        fetch_all or "codex" in tools or "claude" in tools or "copilot" in tools or "pi" in tools
+    )
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
     # configure must persist that discovered family too.
     want_oss = fetch_all or "opencode" in tools or "codex" in tools
@@ -2572,7 +2575,10 @@ def _launch_options(
 def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
     """Whether the workspace enabled smart routing for this specific agent."""
     agent_config = ((managed or {}).get("enabled_agents") or {}).get(tool) or {}
-    return agent_config.get("smart_routing_enabled") is True
+    if agent_config.get("smart_routing_enabled") is not True:
+        return False
+    # TODO(AIGTWY-4385): Remove this workaround when Claude Code supports smart routing on Windows.
+    return tool != "claude" or os.name != "nt"
 
 
 def _launch_tool(
@@ -2676,7 +2682,15 @@ def _launch_tool(
             os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         # The environment switch remains a developer override; managed config is the workspace
         # policy equivalent and must take effect before launch options are computed.
+        managed_smart_routing_requested = (
+            ((managed or {}).get("enabled_agents") or {}).get(tool) or {}
+        ).get("smart_routing_enabled") is True
         managed_smart_routing_enabled = _managed_smart_routing_enabled(managed, tool)
+        if managed_smart_routing_requested and not managed_smart_routing_enabled:
+            print_warning(
+                "Smart routing is not supported for Claude Code on Windows; "
+                "launching with normal model selection."
+            )
         smart_routing_enabled = smart_routing_v2.smart_routing_enabled(
             default=managed_smart_routing_enabled
         )

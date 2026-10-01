@@ -13,6 +13,7 @@ from ucode.config_io import atomic_write_json
 from ucode.constants import SMART_ROUTING_ENV_KEYS
 
 SESSION_ENV_VAR = "UCODE_SESSION_ENV_FILE"
+SESSION_PYTHON_ENV_VAR = "UCODE_SMART_ROUTER_PYTHON"
 _ALLOWED_KEYS = frozenset(SMART_ROUTING_ENV_KEYS)
 
 
@@ -22,6 +23,9 @@ def start_session(env: MutableMapping[str, str] | None = None) -> Path:
     path = Path(tempfile.mkdtemp(prefix="ug-session-env-")) / "env.json"
     atomic_write_json(path, {})
     target[SESSION_ENV_VAR] = str(path)
+    # Preserve the virtualenv executable: resolving its symlink can select system Python.
+    # The skill uses this interpreter with -m ucode.cli, independent of the tool's PATH.
+    target[SESSION_PYTHON_ENV_VAR] = sys.executable
     return path
 
 

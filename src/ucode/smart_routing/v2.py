@@ -55,7 +55,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
-from ucode.smart_routing.session_env import SESSION_ENV_VAR, start_session
+from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_warning
 
 LEGACY_STATE_KEY = "smart_routing_enabled"
@@ -547,6 +547,9 @@ def launch_claude(
             plugin_dir = launch_dir / "plugin"
             if route_first_prompt:
                 env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
+            session_path = _prepare_smart_router_session("claude")
+            env[SESSION_ENV_VAR] = str(session_path)
+            env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             try:
                 write_json_file(settings_path, settings)
                 _write_routed_claude_plugin(plugin_dir, model_ids)
@@ -562,7 +565,6 @@ def launch_claude(
                 str(plugin_dir),
                 *remaining,
             ]
-            _prepare_smart_router_session("claude")
             if route_first_prompt:
                 returncode = claude_pty.run_claude_pty(
                     argv,
@@ -652,9 +654,11 @@ def launch_codex(
     }
     session_env_path = _prepare_smart_router_session("codex")
     # Codex constructs tool subprocess environments through its shell policy.
-    # Set the session marker there explicitly so the Smart Router skill updates
-    # this session instead of treating its command as a fresh TUI launch.
+    # Pass both the session marker and its launching interpreter through that policy.
     overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
+    overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
+        SESSION_PYTHON_ENV_VAR
+    ]
     config_args = codex_config_args(overlay)
     if not first_prompt_routing_enabled():
         # Subagent-only routing needs neither the app-server nor the interposer:

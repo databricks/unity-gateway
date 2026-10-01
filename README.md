@@ -134,6 +134,10 @@ profile. V2 AI Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
 
+Claude-only setup also discovers GPT models for its generated `web_search`
+server; installing or configuring Codex is not required. Search registration
+requires an available Responses-capable model.
+
 Claude's generated `web_search` server uses the same saved custom OAuth CLI
 profile as its harness, when configured. It stores the profile name, not an
 access token, and refreshes credentials for search requests. This does not
@@ -167,6 +171,8 @@ an override. Unknown ownership, overlapping config scopes, or command-based
 MCP policies produce a warning and retain the existing provider; duplicate
 providers may remain. Explicit `external` selection instead fails on a conflict.
 Standalone refreshes preserve edited user entries and project/local servers.
+If no search model is available, they retain ownership of the installed entry so a
+later refresh or external-provider launch can still verify it.
 The selection does not authorize search or remove any permission denial.
 Concurrent setup still uses ug's existing whole-workspace state writes. A stale
 ownership fingerprint safely preserves the server and prevents automatic handoff;

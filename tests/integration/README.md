@@ -26,6 +26,14 @@ The provider component checks in `../test_claude_search_provider.py` verify that
 copied marked helpers remain available in user aliases, project config, and strict
 caller config. Only the verified launch override suppresses its catalog; these
 local JSON-RPC checks make no model request and are not native integration coverage.
+The same component suite checks ownership retention across an empty search-model
+catalog and subsequent external handoff or standalone refresh. That recovery path
+does not yet have a live integration journey.
+
+Fresh Claude-only search discovery and registration are covered by component
+tests in `../test_claude_search_discovery.py`, including legacy catalog fallback,
+an explicit model override, and no available GPT model. Live search remains
+outside this integration suite.
 
 The sudo-session regression checks live in `../test_managed_files.py` and `../test_cli.py`.
 They cover shared-worker invocation counts, shutdown/cancellation, and temporary-file failure
@@ -212,6 +220,11 @@ subagent banner plus a correlated live decision only while routing is enabled. P
 survival, native daemon/background dispatch, interactive explicit-model bypass, and dedicated
 smart-routing CI shards remain deferred. Plugin generation and launch arguments are covered
 by component tests in `../test_claude_smart_routing_v2.py`, not by a live registration journey.
+
+PATH conflicts for the Smart Router skill have subprocess/component coverage in
+`../test_smart_router.py`: the skill uses the launching interpreter despite a different
+`ug` first in PATH. The live journeys above do not inject a second installation or
+establish PowerShell command execution.
 
 The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
 completes a file task on two models: a bare Anthropic id the subscription serves
