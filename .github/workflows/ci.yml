@@ -165,5 +165,4 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           RESULT: ${{ needs.e2e.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
-        # The merge queue skips e2e and integration, so the required context passes there.
         run: test "$EVENT_NAME" = merge_group || { test "$RESULT" = success && test "$INTEGRATION_RESULT" = success; }
