@@ -55,6 +55,13 @@ required unless a provider or parent schema is given) and forwarding of launch-t
 rows, and its native `McpClient` (`claude.AGENT.mcp`): per-scope cleanup, the stdio and HTTP+OAuth
 registration paths, `always_load`, the batched `~/.claude.json` write, and `claude mcp list` parsing.
 
+Codex is a native `Agent` (`codex.AGENT`, with `codex.AGENT.mcp` as its `McpClient`): the class and
+its MCP client are covered in `test_agent_codex.py` (`TestCodexAgent`, `TestCodexMcpClient`) —
+`configure` returning state with and without a model, `models()` status semantics with static
+models and no side-effecting `default_model`, revert rows, `codex mcp` registration, batched
+entries, and the `codex mcp list` table parser. Its `codex mcp add/remove` CLI helpers live in
+`agents/codex.py`; `test_mcp.py` reaches them through the shared registration paths.
+
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 

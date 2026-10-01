@@ -2750,6 +2750,7 @@ class TestRevert:
             patch("ucode.agents.legacy.restore_file", return_value=False),
             patch("ucode.agents.opencode.restore_file", return_value=False),
             patch("ucode.agents.pi.restore_file", return_value=False),
+            patch("ucode.agents.codex.restore_file", return_value=False),
             patch(
                 "ucode.cli.revert_mcp_configs",
                 side_effect=lambda loaded_state: (

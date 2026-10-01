@@ -55,12 +55,11 @@ from .interface import ConfigureRequest as ConfigureRequest
 from .interface import McpClient as McpClient
 from .interface import McpServer as McpServer
 from .legacy import CURSOR_MCP_CLIENT as CURSOR_MCP_CLIENT
-from .legacy import LEGACY_AGENTS
 
 # The agents ug drives, in the order ug lists them. One entry per agent, and the only place
 # an agent is listed: every dispatcher below resolves through it rather than branching on a name.
 AGENTS: dict[str, Agent] = {
-    "codex": LEGACY_AGENTS["codex"],
+    "codex": codex.AGENT,
     "claude": claude.AGENT,
     "gemini": gemini.AGENT,
     "opencode": opencode.AGENT,

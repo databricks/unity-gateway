@@ -90,9 +90,9 @@ class TestAddCodexMcpServer:
             calls.append({"args": args, "kwargs": kwargs})
             return MagicMock(returncode=0)
 
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
+        monkeypatch.setattr(codex.subprocess, "run", fake_run)
 
-        mcp.add_codex_mcp_server("github", _proxy_argv())
+        codex.add_codex_mcp_server("github", _proxy_argv())
 
         args = calls[0]["args"]
         assert args[:4] == ["codex", "mcp", "add", "github"]
@@ -265,14 +265,14 @@ class TestConfigureClientMcpServer:
         )
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
-        monkeypatch.setattr(mcp, "remove_codex_mcp_server", lambda name: False)
+        monkeypatch.setattr(codex, "remove_codex_mcp_server", lambda name: False)
         monkeypatch.setattr(
-            mcp,
+            codex,
             "add_codex_http_mcp_server",
             lambda name, url, client_id: http_calls.append((name, url, client_id)),
         )
         monkeypatch.setattr(
-            mcp, "add_codex_mcp_server", lambda name, argv: proxy_calls.append((name, argv))
+            codex, "add_codex_mcp_server", lambda name, argv: proxy_calls.append((name, argv))
         )
         return http_calls, proxy_calls
 
