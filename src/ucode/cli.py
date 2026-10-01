@@ -868,7 +868,9 @@ def _configure_workspace_command(
         )
         state = states[0]
         parent_schema = None
-        managed, _ = refresh_managed_config(state, force_refresh=True)
+        # A named agent reuses the cached managed read within its TTL; only bare `ug configure`
+        # forces a fresh fetch. Keeps `--agent` off the control plane on repeat runs.
+        managed, _ = refresh_managed_config(state, force_refresh=False)
         if _launches_self_managed(managed, state, tool):
             managed = None
         _reject_disabled_agent(managed, tool)
@@ -907,9 +909,10 @@ def _configure_workspace_command(
     save_state(state)
 
     # A published managed config means the admin dictates the setup: apply it to every enabled agent
-    # now rather than prompting the developer to pick. Configure always reads fresh so it never
-    # applies a config the admin has since changed.
-    managed, _ = refresh_managed_config(state, force_refresh=True)
+    # now rather than prompting the developer to pick. Bare `ug configure` reads fresh so it never
+    # applies a config the admin has since changed; a named-agent (`--agents`) run reuses the cached
+    # read within its TTL to stay off the control plane.
+    managed, _ = refresh_managed_config(state, force_refresh=selected_tools is None)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     # Named agents (`--agents X,Y`) on a managed workspace: configure each per the soft default
     # — admin-enabled applies the admin config, self-managed runs standalone, anything the admin
