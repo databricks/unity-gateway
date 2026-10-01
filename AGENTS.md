@@ -47,7 +47,7 @@ alone. For each listed field, `ug` does one of:
 
 The two columns show what `ug` does without and with a [managed config](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-configure-govern), the coding agent config admins publish through the API.
 
-This is the intended behavior; we are still working to make the code match it in every case. In particular, `ug` today also clears some fields that this list leaves alone: the `env.ANTHROPIC_DEFAULT_*_MODEL_NAME` companions, `env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`, `env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`, and Codex `model_reasoning_effort`. Codex `[otel]` is never written to a file.
+This is the intended behavior; we are still working to make the code match it in every case. Fields outside this list are removed only when ug's provenance record, or for files from an older ug its last write, shows ug wrote the current value, for example values older ug versions wrote such as `env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`. Codex `model_reasoning_effort` is never removed. Codex `[otel]` is never written to a file.
 
 ### How `ug` tracks what it wrote (provenance)
 
