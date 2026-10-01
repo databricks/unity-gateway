@@ -63,7 +63,8 @@ MCP service with different routing or selectors, and an unfinalized skill.
 
 ## Managed config for CUJ3
 
-Publish this config in the dedicated CUJ3 workspace after fixture validation:
+Publish `cuj3-managed-config.json` in the dedicated CUJ3 workspace after fixture
+validation. Its contents are shown here for review:
 
 ```json
 {
