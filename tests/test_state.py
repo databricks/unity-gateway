@@ -25,6 +25,7 @@ from ucode.state import (
     save_state,
     self_managed_agents,
     set_applied_managed_update_time,
+    set_current_workspace,
     set_provider_service,
     workspace_self_managed_agents,
 )
@@ -379,43 +380,30 @@ class TestSelfManagedAgents:
 
 
 class TestSelfManagedWorkspaceIsolation:
-    """Switching workspaces via `configure_shared_state` keeps each one's opt-in to itself."""
+    """Each workspace's self-managed opt-in persists on its own block across switches.
 
-    @pytest.fixture(autouse=True)
-    def _stub_cli_side_effects(self, monkeypatch):
-        # Everything configure_shared_state touches under --skip-preflight except real
-        # state persistence (which this test exercises): no network, no profile lookup.
-        import ucode.cli as cli_mod
-
-        monkeypatch.setattr(cli_mod, "normalize_workspace_url", lambda ws: ws)
-        monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda ws: {})
-        monkeypatch.setattr(cli_mod, "find_profile_name_for_host", lambda ws: None)
-        monkeypatch.setattr(cli_mod, "purge_cross_workspace_mcp_residue", lambda *a, **kw: None)
+    The configure-switch logic that reads the destination's own list lives in
+    ``TestConfigureSharedStateWorkspaceIsolation`` (tests/test_agents_commands.py); this
+    exercises the underlying persistence that keeps the lists independent.
+    """
 
     def test_a_to_b_to_a_round_trip_and_removal_stay_isolated(self):
-        import ucode.cli as cli_mod
-
         a = "https://a.databricks.com"
         b = "https://b.databricks.com"
 
-        # Configure A and opt into OpenCode there.
-        cli_mod.configure_shared_state(a, skip_preflight=True)
-        state = load_state()
-        add_self_managed_agent(state, "opencode")
-        save_state(state)
+        # In A, opt into OpenCode.
+        save_state({"workspace": a, SELF_MANAGED_AGENTS_KEY: ["opencode"]})
 
-        # A -> B: B must not inherit A's opt-in; opt into a different agent in B.
-        cli_mod.configure_shared_state(b, skip_preflight=True)
+        # Switch to B: it has its own (empty) list, not A's; opt into a different agent there.
+        set_current_workspace(b)
         assert self_managed_agents(load_state()) == []
-        state = load_state()
-        add_self_managed_agent(state, "copilot")
-        save_state(state)
+        save_state({"workspace": b, SELF_MANAGED_AGENTS_KEY: ["copilot"]})
 
-        # B -> A: A keeps only its own opt-in, not B's.
-        cli_mod.configure_shared_state(a, skip_preflight=True)
+        # Switch back to A: A still carries only its own opt-in.
+        set_current_workspace(a)
         assert self_managed_agents(load_state()) == ["opencode"]
 
-        # Removing in A leaves B's list untouched.
+        # Removing the opt-in in A leaves B's list untouched.
         state = load_state()
         remove_self_managed_agent(state, "opencode")
         save_state(state)
