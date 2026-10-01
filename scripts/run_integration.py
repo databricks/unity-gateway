@@ -373,6 +373,11 @@ def arguments(
     parser.add_argument("--profile", help="Explicit Databricks profile to mint the live bearer.")
     parser.add_argument("--workspace", default=environment.get("UCODE_TEST_WORKSPACE"))
     parser.add_argument(
+        "--mps-fixture-schema",
+        default=environment.get("UG_INTEGRATION_MPS_FIXTURE_SCHEMA"),
+        help="Catalog.schema for reusable Anthropic/OpenAI MPS fixtures in fresh-provider tests.",
+    )
+    parser.add_argument(
         "--second-workspace",
         default=environment.get("UCODE_TEST_SECOND_WORKSPACE"),
         help="Second real workspace for workspace_switch CUJs; requires DATABRICKS_SECOND_BEARER.",
@@ -421,6 +426,10 @@ def arguments(
     for dependency in args.dependency:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+", dependency):
             parser.error("--dependency requires an exact PACKAGE==VERSION constraint.")
+    if args.mps_fixture_schema and not re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*", args.mps_fixture_schema
+    ):
+        parser.error("--mps-fixture-schema requires catalog.schema.")
     if not args.installation_only:
         if not args.workspace or not args.workspace.startswith("https://"):
             parser.error(
@@ -589,6 +598,7 @@ def main() -> int:
             "claude_bedrock_allow_all_model": args.claude_bedrock_allow_all_model,
             "codex_provider": args.codex_provider,
             "codex_provider_model": args.codex_provider_model,
+            "mps_fixture_schema": args.mps_fixture_schema,
             "parent_schema": args.parent_schema,
             "claude_parent_model": args.claude_parent_model,
             "codex_parent_model": args.codex_parent_model,
@@ -871,6 +881,7 @@ def main() -> int:
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL": args.claude_bedrock_allow_all_model,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
+                "UG_INTEGRATION_MPS_FIXTURE_SCHEMA": args.mps_fixture_schema or "",
                 "UG_INTEGRATION_PARENT_SCHEMA": args.parent_schema,
                 "UG_INTEGRATION_CLAUDE_PARENT_MODEL": args.claude_parent_model,
                 "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,

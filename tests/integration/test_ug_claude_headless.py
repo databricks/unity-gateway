@@ -1,9 +1,12 @@
 """CUJs for using claude from scripts through installed ug."""
 
 import json
+import os
 
 import pytest
+from utils.constants import CLAUDE_TEST_MODEL
 from utils.evidence import FileTask
+from utils.provider_catalog import fetch_anthropic_provider_catalog
 
 pytestmark = [pytest.mark.live, pytest.mark.claude]
 
@@ -111,6 +114,107 @@ def test_ug_claude_headless_prompt_after_separator(live_session, workspace):
         timeout=180,
     )
     task.assert_headless_answer("claude", result)
+    session.assert_not_routed()
+
+
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_claude_headless_fresh_workspace(live_session, workspace):
+    """Scenario: launch Claude headlessly against an unmanaged workspace from fresh state.
+
+    Expected: ``ug claude --workspace`` starts the real installed Claude CLI without a
+    configure step, and its structured result contains the unpredictable fixture value after
+    using the Read tool with the inexpensive Haiku model; the command exits without routing.
+    """
+    session = live_session
+    task = FileTask(session)
+
+    result = session.run(
+        "claude",
+        "--workspace",
+        workspace,
+        "--",
+        "--model",
+        CLAUDE_TEST_MODEL,
+        "-p",
+        task.prompt,
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Read",
+        timeout=180,
+    )
+    task.assert_headless_answer("claude", result)
+    session.assert_not_routed()
+
+
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_claude_headless_fresh_model_location(live_session, workspace):
+    """Scenario: launch Claude from fresh state with the system.ai model location.
+
+    Expected: the real Claude CLI uses the inexpensive Haiku model to read an unpredictable
+    file value through the selected location and returns it in a completed structured answer;
+    the command exits without routing.
+    """
+    session = live_session
+    task = FileTask(session)
+
+    result = session.run(
+        "claude",
+        "--workspace",
+        workspace,
+        "--model-location",
+        "system.ai",
+        "--",
+        "--model",
+        CLAUDE_TEST_MODEL,
+        "-p",
+        task.prompt,
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Read",
+        timeout=180,
+    )
+    task.assert_headless_answer("claude", result)
+    session.assert_not_routed()
+
+
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_claude_fresh_provider_launch(
+    live_session, workspace, claude_provider, claude_provider_model, mps_fixture
+):
+    """Scenario: launch Claude from fresh state with an explicit provider service.
+
+    Expected: ``ug claude --workspace`` with ``--provider`` starts the real installed Claude
+    CLI without a configure step, reports the selected provider, and writes the provider header
+    to its generated settings. The dummy all-targets MPS exposes more than its declared model;
+    ``--version`` exits successfully without inference or routing.
+    """
+    session = live_session
+    provider = mps_fixture.provider_for(
+        "anthropic", fallback_provider=claude_provider, model=claude_provider_model
+    )
+
+    result = session.run(
+        "claude",
+        "--workspace",
+        workspace,
+        "--provider",
+        provider.provider,
+        "--",
+        "--version",
+        timeout=180,
+    )
+    assert provider.provider in result.stdout
+    settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
+    headers = (settings.get("env") or {}).get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
+    assert f"Databricks-Model-Provider-Service: {provider.provider}" in headers
+    if provider.allow_all_targets:
+        catalog = fetch_anthropic_provider_catalog(
+            workspace, os.environ["DATABRICKS_BEARER"], provider.provider
+        )
+        assert provider.model in catalog.model_ids
+        assert any(model != provider.model for model in catalog.model_ids)
     session.assert_not_routed()
 
 

@@ -158,3 +158,106 @@ def test_ug_codex_headless_explicit_model_bypasses_routing(live_session, workspa
     )
     task.assert_headless_answer("codex", result)
     session.assert_not_routed()
+
+
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_codex_headless_fresh_workspace(live_session, workspace):
+    """Scenario: launch Codex headlessly against an unmanaged workspace from fresh state.
+
+    Expected: ``ug codex --workspace`` starts the real installed Codex CLI without a
+    configure step, and its structured completed answer contains the unpredictable fixture
+    value after using the workspace model; the command exits successfully without routing.
+    """
+    session = live_session
+    task = FileTask(session)
+
+    result = session.run(
+        "codex",
+        "--workspace",
+        workspace,
+        "--",
+        "exec",
+        "--skip-git-repo-check",
+        "--json",
+        "--model",
+        CODEX_TEST_MODEL,
+        task.prompt,
+        timeout=180,
+    )
+    task.assert_headless_answer("codex", result)
+    session.assert_not_routed()
+
+
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_codex_fresh_provider_launch(
+    live_session, workspace, codex_provider, codex_provider_model, mps_fixture
+):
+    """Scenario: launch Codex from fresh state with an explicit provider service.
+
+    Expected: ``ug codex --workspace`` with ``--provider`` starts the real installed Codex
+    CLI without a configure step, reports the selected provider, and exposes exactly its model
+    through the real app-server; ``--version`` exits without inference or routing.
+    """
+    session = live_session
+    provider = mps_fixture.provider_for(
+        "openai", fallback_provider=codex_provider, model=codex_provider_model
+    )
+
+    result = session.run(
+        "codex",
+        "--workspace",
+        workspace,
+        "--provider",
+        provider.provider,
+        "--",
+        "--version",
+        timeout=180,
+    )
+    assert provider.provider in result.stdout
+    models = session.codex_model_ids(
+        [
+            "--workspace",
+            workspace,
+            "--provider",
+            provider.provider,
+            "--",
+            "app-server",
+            "--listen",
+            "stdio://",
+        ]
+    )
+    assert models == [provider.model]
+    session.assert_not_routed()
+
+
+@pytest.mark.usefixtures("unmanaged_workspace")
+def test_ug_codex_headless_fresh_model_location(
+    live_session, workspace, parent_schema, codex_parent_model
+):
+    """Scenario: launch Codex headlessly from fresh state with a model location.
+
+    Expected: ``ug codex --workspace`` with ``--model-location`` starts the real installed
+    Codex CLI without a configure step, and its structured completed answer contains the
+    unpredictable fixture value after using the parent-schema model; the command exits
+    successfully without routing.
+    """
+    session = live_session
+    task = FileTask(session)
+
+    result = session.run(
+        "codex",
+        "--workspace",
+        workspace,
+        "--model-location",
+        parent_schema,
+        "--",
+        "exec",
+        "--skip-git-repo-check",
+        "--json",
+        "--model",
+        codex_parent_model,
+        task.prompt,
+        timeout=180,
+    )
+    task.assert_headless_answer("codex", result)
+    session.assert_not_routed()
