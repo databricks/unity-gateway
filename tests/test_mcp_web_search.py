@@ -283,6 +283,10 @@ class TestConfiguredSearchAuthentication:
         entry = claude._web_search_mcp_entry(WS, "search-model", profile)
         for name, value in entry["env"].items():
             monkeypatch.setenv(name, value)
+        # Pin the resolved CLI so token acquisition doesn't probe `databricks
+        # --version` through the patched `run`; discovery is cached once per
+        # process in production, not re-run on every token refresh.
+        monkeypatch.setattr(databricks, "databricks_cli_path", lambda: "databricks")
 
     def search(self):
         return _drive(

@@ -21,7 +21,7 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from ucode.databricks import AIGW_MCP_SERVICES_SEGMENT
+from ucode.databricks import AIGW_MCP_SERVICES_SEGMENT, databricks_cli_path
 from ucode.os_compatibility import subprocess_cross_os
 
 # Login can pop a browser and wait for the user to complete the SaaS login, so
@@ -71,7 +71,7 @@ def run_connection_login(
     workspace: str,
     *,
     profile: str | None = None,
-    login_binary: str = "databricks",
+    login_binary: str | None = None,
 ) -> tuple[bool, str]:
     """Run the CLI U2M login with an RFC 8707 resource indicator for this service.
 
@@ -87,6 +87,7 @@ def run_connection_login(
     stays visible when the browser can't open (e.g. a headless remote). Returns
     ``(ok, message)``; on failure ``message`` points at that log.
     """
+    login_binary = login_binary or databricks_cli_path()
     connection = connection_from_url(resource_url) or resource_url
     if not _cli_supports_resource_flag(login_binary):
         return False, (
