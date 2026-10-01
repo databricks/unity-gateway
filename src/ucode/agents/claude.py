@@ -95,6 +95,7 @@ from ucode.ui import print_note, print_success, print_warning
 
 from .args import LaunchOptions, has_explicit_model_arg
 from .interface import ConfigureRequest, Install, McpServer, Models
+from .inventory import model_values
 
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
 # If set, Claude Code launches in headless mode instead of the interactive login flow.
@@ -2120,17 +2121,6 @@ def validate_cmd(binary: str) -> list[str]:
     ]
 
 
-def _model_ids(value: object) -> list[str]:
-    """Flatten a state model inventory (str, list, or family-keyed dict) into model ids."""
-    if isinstance(value, str):
-        return [value] if value else []
-    if isinstance(value, list):
-        return [item for item in value if isinstance(item, str) and item]
-    if isinstance(value, dict):
-        return [model for models in value.values() for model in _model_ids(models)]
-    return []
-
-
 class ClaudeMcpClient:
     """Claude Code's :class:`~ucode.agents.interface.McpClient`.
 
@@ -2231,8 +2221,8 @@ class ClaudeAgent:
 
     def models(self, state: dict) -> Models:
         # A managed static list replaces discovery outright.
-        static_models = _model_ids(state.get("claude_static_models"))
-        available = tuple(dict.fromkeys(static_models or _model_ids(state.get("claude_models"))))
+        static_models = model_values(state.get("claude_static_models"))
+        available = tuple(dict.fromkeys(static_models or model_values(state.get("claude_models"))))
         # Claude leaves the starting model to the agent unless one is pinned.
         pinned = state.get("claude_default_model")
         return Models(available, pinned if isinstance(pinned, str) and pinned else None)

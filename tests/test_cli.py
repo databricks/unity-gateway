@@ -2745,9 +2745,8 @@ class TestRevert:
 
         with (
             patch("ucode.cli.load_state", return_value=state),
-            # Each agent restores its own files now, so the stub belongs at the adapter that
-            # calls restore_file — the developer's real agent configs stay untouched.
-            patch("ucode.agents.legacy.restore_file", return_value=False),
+            # Each agent restores its own files, so stub restore_file in each agent module — the
+            # developer's real agent configs stay untouched.
             patch("ucode.agents.opencode.restore_file", return_value=False),
             patch("ucode.agents.pi.restore_file", return_value=False),
             patch("ucode.agents.codex.restore_file", return_value=False),
@@ -2861,7 +2860,7 @@ class TestOpenCodeModelFlag:
 
 
 class TestAutoConfigureOnFirstRun:
-    @pytest.mark.parametrize("tool", list(cli_mod.TOOL_SPECS))
+    @pytest.mark.parametrize("tool", list(cli_mod.AGENTS))
     @pytest.mark.parametrize("has_workspace", [False, True])
     def test_launch_autoconfigures_without_test_prompt(self, tool, has_workspace):
         initial_state = {**MINIMAL_STATE, "available_tools": []} if has_workspace else {}
@@ -2880,15 +2879,15 @@ class TestAutoConfigureOnFirstRun:
             patch("ucode.cli.ensure_provider_state", return_value=configured_state),
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
             patch("ucode.cli.configure_tool", return_value=configured_state),
-            # Launching must never restore a config; agents own restore_file now.
-            patch("ucode.agents.legacy.restore_file") as mock_restore,
+            # Launching must never restore a config.
+            patch.object(type(cli_mod.AGENTS[tool]), "revert") as mock_revert,
             patch("ucode.cli.launch_agent") as mock_launch,
         ):
             result = runner.invoke(app, [tool])
 
         assert result.exit_code == 0, result.output
         mock_configure.assert_called_once_with(tool, configured_state)
-        mock_restore.assert_not_called()
+        mock_revert.assert_not_called()
         mock_launch.assert_called_once()
         assert mock_launch.call_args.args[:2] == (tool, configured_state)
 

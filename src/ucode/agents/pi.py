@@ -53,6 +53,7 @@ from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions
 from .interface import ConfigureRequest, Install, Models
+from .inventory import model_values
 
 PI_UCODE_HOME = APP_DIR / "pi-home"
 PI_CONFIG_DIR = PI_UCODE_HOME / ".pi" / "agent"
@@ -253,17 +254,6 @@ def build_runtime_env(token: str) -> dict[str, str]:
     return env
 
 
-def _model_ids(value: object) -> list[str]:
-    """Flatten a state model inventory (str, list, or family-keyed dict) into model ids."""
-    if isinstance(value, str):
-        return [value] if value else []
-    if isinstance(value, list):
-        return [item for item in value if isinstance(item, str) and item]
-    if isinstance(value, dict):
-        return [model for models in value.values() for model in _model_ids(models)]
-    return []
-
-
 class PiAgent:
     """Pi as an :class:`~ucode.agents.interface.Agent`."""
 
@@ -276,11 +266,11 @@ class PiAgent:
         # A managed static list replaces discovery outright; otherwise Pi serves every family.
         available = tuple(
             dict.fromkeys(
-                _model_ids(state.get("pi_static_models"))
+                model_values(state.get("pi_static_models"))
                 or (
-                    _model_ids(state.get("claude_models"))
-                    + _model_ids(state.get("codex_models"))
-                    + _model_ids(state.get("gemini_models"))
+                    model_values(state.get("claude_models"))
+                    + model_values(state.get("codex_models"))
+                    + model_values(state.get("gemini_models"))
                 )
             )
         )

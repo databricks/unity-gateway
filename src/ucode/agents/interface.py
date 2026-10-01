@@ -118,9 +118,14 @@ class Agent(Protocol):
     # Human-readable name for messages ("Claude Code", "GitHub Copilot CLI").
     display: str
     install: Install
-    # Where ug registers MCP servers for this agent, or None when the agent can't receive them.
-    # Required (no default) so "doesn't support MCP" is always an explicit choice.
-    mcp: McpClient | None
+
+    @property
+    def mcp(self) -> McpClient | None:
+        """Where ug registers MCP servers for this agent, or None when it can't receive them.
+
+        Required (no default) so "doesn't support MCP" is always an explicit choice. Read-only, so an
+        agent may declare it as a class attribute of its concrete client type."""
+        ...
 
     def models(self, state: dict) -> Models:
         """What this agent can use from the workspace inventory in ``state``.

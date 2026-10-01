@@ -10,8 +10,8 @@ import pytest
 
 import ucode.agents as agents_mod
 from ucode.agents import (
+    AGENTS,
     DEFAULT_TOOL,
-    TOOL_SPECS,
     LaunchOptions,
     check_gateway_endpoint,
     configure_selected_tools,
@@ -49,15 +49,15 @@ class TestModelArgumentParsing:
         assert has_explicit_model_arg(["--model", "model-a", "--", "--model", "model-b"])
 
 
-class TestToolSpecs:
+class TestAgentRegistry:
     def test_all_tools_present(self):
-        assert set(TOOL_SPECS) == {"codex", "claude", "gemini", "opencode", "copilot", "pi"}
+        assert set(AGENTS) == {"codex", "claude", "gemini", "opencode", "copilot", "pi"}
 
-    def test_each_spec_has_required_keys(self):
-        required = {"binary", "package", "display", "config_path", "backup_path"}
-        for tool, spec in TOOL_SPECS.items():
-            missing = required - set(spec)
-            assert not missing, f"{tool} spec missing: {missing}"
+    def test_each_agent_has_display_and_install_target(self):
+        for tool, agent in AGENTS.items():
+            assert agent.display, f"{tool} has no display name"
+            assert agent.install.binary, f"{tool} has no binary"
+            assert agent.install.package, f"{tool} has no package"
 
     def test_default_tool_is_codex(self):
         assert DEFAULT_TOOL == "codex"
@@ -676,7 +676,7 @@ class TestInstallToolBinary:
 
         assert install_tool_binary(tool) is True
         assert calls == [command]
-        assert prompts == [(f"Upgrade {TOOL_SPECS[tool]['display']} if available?", True)]
+        assert prompts == [(f"Upgrade {AGENTS[tool].display} if available?", True)]
 
     @pytest.mark.parametrize(
         "catalog_ref",
@@ -803,7 +803,7 @@ class TestInstallToolBinary:
         with pytest.raises(RuntimeError, match="still too old"):
             install_tool_binary("claude")
 
-    @pytest.mark.parametrize("tool", list(TOOL_SPECS))
+    @pytest.mark.parametrize("tool", list(AGENTS))
     def test_compatible_tool_does_not_check_update_or_prompt(self, monkeypatch, tool):
         monkeypatch.setattr("ucode.agents.shutil.which", lambda binary: f"/usr/bin/{binary}")
         monkeypatch.setattr("ucode.agents._minimum_version_error", lambda _: None)

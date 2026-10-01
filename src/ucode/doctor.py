@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ucode.agents import (
-    TOOL_SPECS,
+    AGENTS,
     tool_binary_installed,
     tool_version_error,
     update_tool_binary,
@@ -149,16 +149,16 @@ def _check_agent_clis() -> list[Check]:
     tools = load_state().get("available_tools") or []
     checks: list[Check] = []
     for tool in tools:
-        if tool not in TOOL_SPECS:
+        if tool not in AGENTS:
             continue
-        spec = TOOL_SPECS[tool]
-        display = spec["display"]
+        agent = AGENTS[tool]
+        display = agent.display
         if not tool_binary_installed(tool):
             checks.append(
                 Check(
                     display,
                     "warn",
-                    f"`{spec['binary']}` not found on PATH",
+                    f"`{agent.install.binary}` not found on PATH",
                     Suggestion(f"Install {display}?", lambda t=tool: update_tool_binary(t)),
                 )
             )

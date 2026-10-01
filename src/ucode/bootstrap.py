@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from ucode.agents import TOOL_SPECS, ensure_bootstrap_dependencies
+from ucode.agents import AGENTS, ensure_bootstrap_dependencies
 from ucode.ui import print_err
 
 
 def main() -> int:
     try:
-        for tool in TOOL_SPECS:
+        for tool in AGENTS:
             ensure_bootstrap_dependencies(tool)
     except RuntimeError as exc:
         print_err(f"ucode bootstrap failed: {exc}")
