@@ -290,7 +290,7 @@ startup banners and footer text cannot satisfy discovery assertions. Cases 7–1
 they only configure, list models, and open/close the picker. Other live CUJs perform
 real model tasks.
 
-There are **61 live cases** (including 12 marked TUI journeys) and **7 installation
+There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
@@ -315,7 +315,7 @@ constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-
 mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
 `ug configure` and Claude. The client secrets do not enter the pytest process.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 100 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 101 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -454,12 +454,12 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 61 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 62 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 27 |
+| Claude | `live and claude` | 28 |
 | Codex | `live and codex` | 34 |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
@@ -502,6 +502,12 @@ west-2 must publish a Claude MPS source with Anthropic family defaults, and nort
 publish a Claude `system.ai` parent-schema source with Unity Catalog family defaults. `ug configure`
 fetches the config; the tests assert the generated private and OS-managed Claude settings after
 launch. Their exact required defaults and source headers are reflected in the tests.
+
+`test_unmanaged_claude_preserves_preexisting_family_defaults` is a live lifecycle journey against
+one real workspace. A read-only check first proves that the workspace publishes no
+CodingAgentConfig. The test then seeds `/etc/claude-code/managed-settings.json`, runs public
+`ug configure`, and requires every pre-existing family default to survive exactly. It checks
+settings reconciliation and makes no model-inference claim.
 
 Treat that published CodingAgentConfig as shared CI fixture state. The managed lanes assert its
 exact model ids and its both-agent enablement, so editing the managed workspace's config (models,
@@ -766,7 +772,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 61 live cases. For the seven installation checks, run the same
+This runs all 62 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

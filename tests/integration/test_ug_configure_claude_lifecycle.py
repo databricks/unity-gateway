@@ -8,6 +8,59 @@ from utils.terminal import TerminalProcess
 
 pytestmark = [pytest.mark.live, pytest.mark.claude]
 
+MANAGED_SETTINGS_PATH = "/etc/claude-code/managed-settings.json"
+PREEXISTING_FAMILY_DEFAULTS = {
+    "ANTHROPIC_DEFAULT_FABLE_MODEL": "preexisting-fable",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "preexisting-opus",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "preexisting-sonnet",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "preexisting-haiku",
+}
+
+
+def test_unmanaged_claude_preserves_preexisting_family_defaults(live_session, unmanaged_workspace):
+    """Scenario: seed Claude's OS-managed family defaults, then configure ug against a real
+    workspace verified to publish no CodingAgentConfig.
+
+    Expected: settings reconciliation preserves every pre-existing family default exactly. This
+    test does not claim model inference.
+    """
+    session = live_session
+    session.run("install", "-d", "-m", "0755", "/etc/claude-code", binary="sudo")
+    session.run(
+        "tee",
+        MANAGED_SETTINGS_PATH,
+        binary="sudo",
+        input_text=json.dumps({"env": PREEXISTING_FAMILY_DEFAULTS}),
+    )
+
+    try:
+        session.run(
+            "configure",
+            "--agents",
+            "claude",
+            "--workspace",
+            unmanaged_workspace,
+            "--skip-upgrade",
+            "--disable-databricks-ai-tools",
+            timeout=240,
+        )
+        settings = json.loads(session.run(MANAGED_SETTINGS_PATH, binary="cat", timeout=30).stdout)
+        assert {
+            key: settings.get("env", {}).get(key) for key in PREEXISTING_FAMILY_DEFAULTS
+        } == PREEXISTING_FAMILY_DEFAULTS
+    finally:
+        try:
+            if any(
+                (session.home / ".ucode" / name).is_file()
+                for name in ("state.json", "managed-backups/manifest.json")
+            ):
+                with TerminalProcess(
+                    session, "ug", [str(session.binary), "revert"], "family-defaults-revert"
+                ) as terminal:
+                    terminal.finish()
+        finally:
+            session.run("rm", "-f", MANAGED_SETTINGS_PATH, binary="sudo")
+
 
 def test_ug_configure_claude_repeat_and_revert(live_session, workspace):
     """Scenario: configure twice over user-owned settings, use the agent, then revert.

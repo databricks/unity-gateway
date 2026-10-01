@@ -32,6 +32,12 @@ SWITCH_TIMEOUT_S = 6.0
 MODEL_PERSIST_TIMEOUT_S = 2.0
 READY_QUIET_S = 0.75
 SELECT_TIMEOUT_S = 0.2
+PASTE_SUBMIT_DELAY_S = 0.3
+# Covers the hook CLI cold start (~1.4s measured) before it reports the submit.
+SUBMIT_VERIFY_S = 4.0
+MAX_SUBMIT_ATTEMPTS = 3
+READY_TIMEOUT_S = 10.0
+ESC_GAP_S = 0.3
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._:/\-\[\]]+$")
 _ANSI_RE = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
 
@@ -123,7 +129,11 @@ def inject_model_switch(master_fd: int, model: str) -> None:
 
 
 def inject_prompt(master_fd: int, prompt: str, *, submit: bool = True) -> None:
-    """Replay a captured prompt as one bracketed paste."""
+    """Replay a captured prompt as one bracketed paste.
+
+    The replay loop pastes with ``submit=False`` and sends Enter after
+    PASTE_SUBMIT_DELAY_S: a CR bundled with the paste close can be absorbed.
+    """
     clean = prompt.replace("\r\n", "\n").replace("\r", "\n")
     clean = clean.replace("\x00", "").replace("\x1b", "")
     suffix = b"\r" if submit else b""
@@ -186,6 +196,7 @@ def serve_first_prompt_socket(
     on_blocked_prompt: Callable[[str, str], None],
     stop: threading.Event,
     *,
+    on_submitted_prompt: Callable[[str], None] = lambda _prompt: None,
     log: Callable[[str], None] = lambda _message: None,
 ) -> threading.Thread:
     """Serve the hook protocol, blocking exactly one non-command prompt."""
@@ -214,6 +225,7 @@ def serve_first_prompt_socket(
                 with conn, conn.makefile("rwb") as stream:
                     response: dict = {"action": "allow"}
                     blocked: tuple[str, str] | None = None
+                    submitted: str | None = None
                     try:
                         request = json.loads(stream.readline())
                         prompt = request.get("prompt") if isinstance(request, dict) else None
@@ -242,12 +254,23 @@ def serve_first_prompt_socket(
                                 }
                                 response["display_model"] = display_model
                                 blocked = (prompt, model)
+                        elif (
+                            is_route
+                            and claimed
+                            and not is_command
+                            and isinstance(prompt, str)
+                            and prompt.strip()
+                        ):
+                            # Replayed prompt was submitted; UserPromptSubmit hook fires again.
+                            submitted = prompt
                     except Exception as exc:  # noqa: BLE001 - hooks must fail open
                         log(f"[ERR] first-prompt request: {exc!r}")
                     stream.write((json.dumps(response) + "\n").encode())
                     stream.flush()
                     if blocked is not None:
                         on_blocked_prompt(*blocked)
+                    if submitted is not None:
+                        on_submitted_prompt(submitted)
         finally:
             server.close()
 
@@ -311,14 +334,24 @@ def run_claude_pty(
     stop = threading.Event()
     pending_lock = threading.Lock()
     pending: dict[str, tuple[str, str] | None] = {"value": None}
+    # Set when the UserPromptSubmit hook fires after the claim, confirming submission.
+    submitted_event = threading.Event()
 
     def on_blocked_prompt(prompt: str, model: str) -> None:
         with pending_lock:
             pending["value"] = (prompt, model)
         log(f"[ROUTE] first prompt -> {model!r}")
 
+    def on_submitted_prompt(_prompt: str) -> None:
+        submitted_event.set()
+
     server_thread = serve_first_prompt_socket(
-        socket_path, route_prompt, on_blocked_prompt, stop, log=log
+        socket_path,
+        route_prompt,
+        on_blocked_prompt,
+        stop,
+        on_submitted_prompt=on_submitted_prompt,
+        log=log,
     )
     socket_deadline = time.monotonic() + 2.0
     while (
@@ -352,6 +385,11 @@ def run_claude_pty(
             routed_prompt = ""
             routed_model = ""
             switch_started = 0.0
+            ready_capture = 0.0
+            paste_deadline = 0.0
+            verify_deadline = 0.0
+            esc_deadline = 0.0
+            submit_attempts = 0
             switch_complete: OutputMarkerDetector | None = None
             while True:
                 readable = [master_fd, 0] if stdin_open else [master_fd]
@@ -393,6 +431,7 @@ def run_claude_pty(
                     if captured is not None:
                         routed_prompt, routed_model = captured
                         phase = "waiting_to_switch"
+                        ready_capture = time.monotonic()
 
                 now = time.monotonic()
                 idle = last_output > 0.0 and now - last_output >= READY_QUIET_S
@@ -404,6 +443,17 @@ def run_claude_pty(
                     switch_started = now
                     phase = "switching"
                     log(f"[SWITCH] /model {routed_model}")
+                elif phase == "waiting_to_switch" and now - ready_capture >= READY_TIMEOUT_S:
+                    # Output never went quiet; skip the switch and submit on the default model.
+                    inject_note(
+                        1,
+                        "Smart Routing could not find a quiet window to switch models; "
+                        "submitting your prompt on the default model.",
+                    )
+                    inject_prompt(master_fd, routed_prompt, submit=False)
+                    paste_deadline = now + PASTE_SUBMIT_DELAY_S
+                    phase = "pasting"
+                    log("[WARN] waiting_to_switch timed out; skipping /model, pasting prompt")
                 elif (
                     phase == "switching"
                     and switch_complete is not None
@@ -411,31 +461,64 @@ def run_claude_pty(
                 ):
                     phase = "waiting_persist"
                     switch_started = now
-                elif phase == "waiting_persist" and model_switch_persisted():
-                    restore_model_setting()
-                    inject_prompt(master_fd, routed_prompt)
-                    phase = "done"
-                    log("[REPLAY] first prompt submitted")
-                elif phase == "waiting_persist" and now - switch_started >= MODEL_PERSIST_TIMEOUT_S:
-                    inject_note(
-                        1,
-                        "Smart Routing could not safely preserve your default model. "
-                        "Claude is exiting without submitting your prompt.",
-                    )
-                    os.kill(pid, signal.SIGTERM)
-                    phase = "failed"
-                    log("[ERR] routed model was not persisted before timeout")
                 elif phase == "switching" and now - switch_started >= SWITCH_TIMEOUT_S:
+                    # ESC cancels the /model command; gap prevents ESC+\x1b[200~ being an Alt-seq.
                     os.write(master_fd, b"\x1b")
                     restore_model_setting()
                     inject_note(
                         1,
-                        "Smart Routing could not confirm the model switch. "
-                        "Your prompt was restored but not submitted.",
+                        "Smart Routing could not confirm the model switch; "
+                        "submitting your prompt on the default model.",
+                    )
+                    esc_deadline = now + ESC_GAP_S
+                    phase = "esc_gap"
+                    log(f"[ERR] direct model switch timed out for {routed_model!r}")
+                elif phase == "esc_gap" and now >= esc_deadline:
+                    inject_prompt(master_fd, routed_prompt, submit=False)
+                    paste_deadline = now + PASTE_SUBMIT_DELAY_S
+                    phase = "pasting"
+                elif phase == "waiting_persist" and model_switch_persisted():
+                    restore_model_setting()
+                    inject_prompt(master_fd, routed_prompt, submit=False)
+                    paste_deadline = now + PASTE_SUBMIT_DELAY_S
+                    phase = "pasting"
+                    log("[PASTE] first prompt pasted; waiting for submit delay")
+                elif phase == "waiting_persist" and now - switch_started >= MODEL_PERSIST_TIMEOUT_S:
+                    # Fail-open: don't kill claude; submit on whatever model is active.
+                    restore_model_setting()
+                    inject_note(
+                        1,
+                        "Smart Routing could not confirm the default model was preserved. "
+                        "Check /model if needed.",
                     )
                     inject_prompt(master_fd, routed_prompt, submit=False)
-                    phase = "failed"
-                    log(f"[ERR] direct model switch timed out for {routed_model!r}")
+                    paste_deadline = now + PASTE_SUBMIT_DELAY_S
+                    phase = "pasting"
+                    log("[ERR] routed model was not persisted before timeout; submitting anyway")
+                elif phase == "pasting" and now >= paste_deadline:
+                    os.write(master_fd, b"\r")
+                    verify_deadline = now + SUBMIT_VERIFY_S
+                    submit_attempts = 1
+                    phase = "verifying"
+                    log("[SUBMIT] Enter sent; verifying submission")
+                elif phase == "verifying":
+                    if submitted_event.is_set():
+                        phase = "done"
+                        log("[DONE] first prompt confirmed submitted")
+                    elif now >= verify_deadline:
+                        if submit_attempts >= MAX_SUBMIT_ATTEMPTS:
+                            inject_note(
+                                1,
+                                "Smart Routing could not confirm your prompt was submitted. "
+                                "Check that it was sent.",
+                            )
+                            phase = "done"
+                            log("[WARN] prompt submit unconfirmed after max attempts")
+                        else:
+                            os.write(master_fd, b"\r")
+                            submit_attempts += 1
+                            verify_deadline = now + SUBMIT_VERIFY_S
+                            log(f"[RETRY] resending Enter (attempt {submit_attempts})")
     finally:
         signal.signal(signal.SIGWINCH, previous_winch)
         stop.set()
