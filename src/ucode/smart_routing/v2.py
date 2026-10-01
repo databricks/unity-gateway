@@ -507,6 +507,8 @@ def launch_claude(
     model_ids = catalog.model_ids
 
     route_first_prompt = first_prompt_routing_enabled()
+    # TODO: Restore first-prompt routing on Windows after replacing the Unix-only PTY wrapper:
+    # https://databricks.atlassian.net/browse/AIGTWY-4385
     if route_first_prompt and os.name == "nt":
         print_warning(
             "Claude first-prompt smart routing is unavailable on Windows; using subagent-only "
