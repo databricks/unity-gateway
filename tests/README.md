@@ -42,6 +42,13 @@ returning state (and requiring a model), launch delegation, revert rows, and its
 pinned starting model, the model-required guard and state-returning `configure`, declaring no MCP
 client, and `revert` rows for both `models.json` and the second `settings.json` file.
 
+`test_agent_gemini.py` also covers Gemini's native `GeminiAgent` and its `GeminiMcpClient`
+(`gemini.AGENT`, `gemini.AGENT.mcp`): install metadata, model inventory and pinned default,
+`configure` returning state directly (provider pass-through and the model-required guard), revert
+rows, and `gemini mcp add/remove/list` subprocess argv plus the pinned `GEMINI_CLI_HOME` env, the
+batched settings write, and the on-disk entry. These stub the subprocess boundary; they are not live
+Gemini CLI coverage.
+
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 

@@ -62,7 +62,7 @@ from .legacy import LEGACY_AGENTS
 AGENTS: dict[str, Agent] = {
     "codex": LEGACY_AGENTS["codex"],
     "claude": LEGACY_AGENTS["claude"],
-    "gemini": LEGACY_AGENTS["gemini"],
+    "gemini": gemini.AGENT,
     "opencode": opencode.AGENT,
     "copilot": copilot.AGENT,
     "pi": pi.AGENT,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
@@ -23,9 +22,7 @@ from ucode.agents import (
     claude,
     codex,
     copilot,
-    gemini,
 )
-from ucode.constants import MCP_USER_SCOPE
 from ucode.databricks import (
     AIGW_MCP_SERVICES_SEGMENT,
     AuthTokenError,
@@ -181,60 +178,6 @@ def remove_codex_mcp_server(name: str) -> bool:
         return False
     if result.returncode != 0:
         raise RuntimeError(f"Failed to remove MCP server '{name}' via codex CLI.")
-    return True
-
-
-def _gemini_cli_env() -> dict[str, str]:
-    # Pin GEMINI_CLI_HOME to the same directory the launcher.
-    env = os.environ.copy()
-    env["GEMINI_CLI_HOME"] = str(gemini.GEMINI_HOME_DIR)
-    return env
-
-
-def add_gemini_mcp_server(name: str, argv: list[str]) -> None:
-    # Register the proxy as a stdio server: `gemini mcp add <name> <cmd> <args…>
-    # --type stdio`. The scope/type flags trail the captured command + args.
-    try:
-        subprocess_cross_os.run(
-            [
-                "gemini",
-                "mcp",
-                "add",
-                name,
-                *argv,
-                "--type",
-                "stdio",
-                "--scope",
-                MCP_USER_SCOPE,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=_gemini_cli_env(),
-        )
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"Failed to add MCP server '{name}' via gemini CLI.") from exc
-
-
-def remove_gemini_mcp_server(name: str) -> bool:
-    try:
-        result = subprocess_cross_os.run(
-            ["gemini", "mcp", "remove", name, "--scope", MCP_USER_SCOPE],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=_gemini_cli_env(),
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"Timed out removing MCP server '{name}' via gemini CLI.") from exc
-
-    output = f"{result.stderr or ''}\n{result.stdout or ''}"
-    if _is_missing_mcp_server_output(output):
-        return False
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to remove MCP server '{name}' via gemini CLI.")
     return True
 
 
