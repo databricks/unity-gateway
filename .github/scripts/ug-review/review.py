@@ -241,6 +241,7 @@ def build_responses_request(
         "model": model,
         "instructions": build_system_prompt(review_policy, repository_policy),
         "input": user_prompt,
+        "reasoning": {"effort": "high"},
         "max_output_tokens": 4_000,
         "store": False,
     }

@@ -119,6 +119,7 @@ def test_responses_request_uses_instructions_and_does_not_store_output():
     assert request["model"] == "system.ai.gpt"
     assert request["input"] == "Review this diff"
     assert "Review policy" in request["instructions"]
+    assert request["reasoning"] == {"effort": "high"}
     assert request["store"] is False
     assert "messages" not in request
 
