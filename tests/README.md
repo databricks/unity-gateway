@@ -37,7 +37,9 @@ live search, parent/child discovery, or classifier permission behavior.
 real temporary config files and local helper JSON-RPC subprocesses. It checks
 legacy ownership, copied marked helpers, custom/disabled entry preservation, config conflicts, caller
 arguments, routing/direct/relayed paths, and concurrent standalone/custom helper
-catalogs. These are component checks, not a live Isaac or gateway journey.
+catalogs. It also checks that an empty search-model catalog preserves registration
+ownership for later external handoff or standalone refresh. These are component
+checks, not a live Isaac or gateway journey.
 
 `test_agent_claude.py` covers OS-managed telemetry ownership and headless configuration. These are
 unit/component regressions, not automated Isaac or live telemetry-export coverage.

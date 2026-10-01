@@ -157,6 +157,8 @@ an override. Unknown ownership, overlapping config scopes, or command-based
 MCP policies produce a warning and retain the existing provider; duplicate
 providers may remain. Explicit `external` selection instead fails on a conflict.
 Standalone refreshes preserve edited user entries and project/local servers.
+If no search model is available, they retain ownership of the installed entry so a
+later refresh or external-provider launch can still verify it.
 The selection does not authorize search or remove any permission denial.
 Concurrent setup still uses ug's existing whole-workspace state writes. A stale
 ownership fingerprint safely preserves the server and prevents automatic handoff;

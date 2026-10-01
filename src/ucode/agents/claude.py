@@ -1484,6 +1484,7 @@ def write_tool_config(
         if isinstance(custom_oauth, dict) and custom_oauth.get("profile")
         else state.get("profile")
     )
+    # Ownership describes the installed registration, even when no search model is available.
     if web_search_model and not external_search:
         web_search_entry = _web_search_mcp_entry(
             state["workspace"],
@@ -1500,8 +1501,6 @@ def write_tool_config(
             )
             if registration_success:
                 state[WEB_SEARCH_MCP_STATE_KEY] = web_search_entry
-    elif not external_search:
-        state.pop(WEB_SEARCH_MCP_STATE_KEY, None)
 
     # Persist relayed mode + proxy port so launch() wires the refresh proxy and
     # subscription login; cleared on a non-relayed launch.
