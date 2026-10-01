@@ -20,23 +20,18 @@ from types import ModuleType
 from ucode.config_io import restore_file
 from ucode.constants import MCP_USER_SCOPE
 from ucode.mcp_oauth import (
-    CODEX_CLI_OAUTH_CLIENT_ID,
     CURSOR_OAUTH_CLIENT_ID,
 )
 
-from . import codex, cursor
+from . import cursor
 from .args import LaunchOptions
 from .interface import ConfigureRequest, Install, McpServer, Models
 
 # The agent modules this adapter wraps, in the order ug lists agents.
-LEGACY_MODULES: dict[str, ModuleType] = {
-    "codex": codex,
-}
+LEGACY_MODULES: dict[str, ModuleType] = {}
 
 # Agents with their own self-updater, which ug prefers over npm when the binary is installed.
-_NATIVE_UPGRADE_ARGV: dict[str, tuple[str, ...]] = {
-    "codex": ("codex", "update"),
-}
+_NATIVE_UPGRADE_ARGV: dict[str, tuple[str, ...]] = {}
 
 # Agents that write the first resolved model into their ug config, so ug knows the starting
 # model. Claude and Codex deliberately leave that choice to the agent unless a model is pinned.
@@ -71,7 +66,6 @@ class LegacyAgent:
                 self._version_error if hasattr(module, "minimum_version_error") else None
             ),
             too_new=self._too_new if hasattr(module, "too_new_downgrade") else None,
-            before_install=self._detach_app_model_catalog if tool == "codex" else None,
         )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
@@ -84,11 +78,6 @@ class LegacyAgent:
 
     def _too_new(self) -> tuple[str, str] | None:
         return self._module.too_new_downgrade()
-
-    def _detach_app_model_catalog(self) -> None:
-        # Codex only: drop ug's shared app catalog reference before the binary changes, so a
-        # version that can no longer read it never starts against it.
-        self._module.detach_app_model_catalog()
 
     # -- models -------------------------------------------------------------------------
 
@@ -120,10 +109,6 @@ class LegacyAgent:
 
     def _write_tool_config(self, state: dict, request: ConfigureRequest) -> dict | tuple[dict, str]:
         write = self._module.write_tool_config
-        if self._tool == "codex":
-            return write(
-                state, request.model, provider=request.provider, parent_schema=request.parent_schema
-            )
         # Every remaining agent needs a model.
         if not request.model:
             raise RuntimeError(self._model_required_error)
@@ -145,14 +130,6 @@ class LegacyAgent:
         spec = self._module.SPEC
         restored = restore_file(spec["config_path"], spec["backup_path"], managed)
         rows = [(f"{self.display} config", "restored" if restored else "unchanged")]
-        if self._tool == "codex":
-            # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
-            # place; restoring the per-profile file above does not undo that.
-            if self._module.revert_legacy_shared_config():
-                rows.append((f"{self.display} shared config", "ucode entries removed"))
-            rows.append(
-                (f"{self.display} OS-managed settings", self._module.revert_managed_config())
-            )
         return rows
 
 
@@ -166,23 +143,18 @@ class LegacyAgent:
 # Both need the app *published on the workspace* (ug core checks that per-workspace via
 # `oauth_client_available`) and its loopback `/callback` redirect registered on `/oidc` — which
 # lacks dynamic client registration, so a pre-registered client is required.
-#   - Codex: a `url` server with `oauth.client_id` (`codex mcp add --oauth-client-id
-#     --oauth-resource`). Codex derives a per-MCP-server callback path (`/callback/<hash>`) that
-#     can't be pre-registered, so `/oidc` accepts it via the
-#     `enableCodexLoopbackRedirectExemption` SAFE flag (loopback + codex-cli only).
 # Clients whose `mcp add` accepts only a static bearer, not an OAuth client — gemini (`--header`) —
 # stay on the stdio proxy even where their apps exist; add one here (with its registration branch in
 # `LegacyMcpClient._add_native_http`) once its CLI can pin a client.
 _OAUTH_CLIENT_IDS: dict[str, str] = {
     "cursor": CURSOR_OAUTH_CLIENT_ID,
-    "codex": CODEX_CLI_OAUTH_CLIENT_ID,
 }
 
 
 def _mcp_module() -> ModuleType:
     """:mod:`ucode.mcp`, imported lazily to break the cycle (it imports the agent modules).
 
-    Holds the per-client CLI helpers (`add_codex_mcp_server`, ...) and the
+    Holds the per-client CLI helpers and the
     ``mcp list`` parsers that have not moved into their agent modules yet; the per-agent PRs take
     them, and these call sites go with them."""
     from ucode import mcp
@@ -230,28 +202,16 @@ class LegacyMcpClient:
         when this client has no such registration syntax."""
         if self._client == "cursor":
             return _user_scope(cursor.write_http_mcp_server_config(name, url, client_id=client_id))
-        if self._client == "codex":
-            mcp = _mcp_module()
-            removed = mcp.remove_codex_mcp_server(name)
-            mcp.add_codex_http_mcp_server(name, url, client_id=client_id)
-            return _user_scope(removed)
         return None
 
     def _add_stdio(self, name: str, argv: list[str], *, always_load: bool) -> list[str]:
         """Register the `ug mcp-proxy ...` command as a stdio server; only the syntax differs per
         client. ``always_load`` (the skills registry) is a Claude-only hint to load the server's
         tools at session start; the others don't support it and ignore it."""
-        if self._client == "codex":
-            mcp = _mcp_module()
-            removed = mcp.remove_codex_mcp_server(name)
-            mcp.add_codex_mcp_server(name, argv)
-            return _user_scope(removed)
         # cursor merges the entry into its own config file.
         return _user_scope(self._module.write_mcp_server_config(name, argv))
 
     def remove(self, name: str) -> list[str]:
-        if self._client == "codex":
-            return _user_scope(_mcp_module().remove_codex_mcp_server(name))
         return _user_scope(self._module.remove_mcp_server_config(name))
 
     # -- batched write ------------------------------------------------------------------
@@ -271,15 +231,11 @@ class LegacyMcpClient:
             if native is not None:
                 return native
         argv = list(server.proxy_argv)
-        if self._client == "codex":
-            return codex.managed_mcp_entry(argv)
         return self._module.build_mcp_server_entry(argv)
 
     def _native_http_entry(self, url: str, client_id: str) -> dict | None:
         if self._client == "cursor":
             return cursor.build_http_mcp_server_entry(url, client_id)
-        if self._client == "codex":
-            return codex.managed_mcp_http_entry(url, client_id)
         return None
 
     # -- live status --------------------------------------------------------------------
@@ -296,12 +252,7 @@ class LegacyMcpClient:
         failure detail (``Failed to connect - HTTP 404 Not Found``), so checking it up front would
         let one broken server empty the whole listing."""
         mcp = _mcp_module()
-        # Codex prints a columnar enabled/disabled table; every other client prints health lines.
-        parsed = (
-            mcp._parse_codex_mcp_list(output)
-            if self._client == "codex"
-            else mcp._parse_health_mcp_list(output)
-        )
+        parsed = mcp._parse_health_mcp_list(output)
         if not parsed and mcp._is_missing_mcp_server_output(output):
             return {}
         return parsed
@@ -316,7 +267,7 @@ LEGACY_MCP_CLIENTS: dict[str, LegacyMcpClient] = {
         display=str(LEGACY_MODULES[client].SPEC["display"]),
         binary=str(LEGACY_MODULES[client].SPEC["binary"]),
     )
-    for client in ("codex",)
+    for client in ()
 }
 
 # Cursor takes MCP servers but is NOT an `Agent`: it runs models on the user's own Cursor account,

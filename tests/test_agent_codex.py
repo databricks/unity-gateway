@@ -11,6 +11,7 @@ import pytest
 
 from ucode import managed_files
 from ucode.agents import LaunchOptions, codex
+from ucode.agents.interface import Agent, ConfigureRequest, McpClient, McpServer, Models
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
 
@@ -2086,17 +2087,14 @@ class TestWriteUserMcpServers:
         added: list[tuple[str, list]] = []
         http_added: list[tuple[str, str, str]] = []
         removed: list[str] = []
-        import ucode.mcp as mcp_mod
 
+        monkeypatch.setattr(codex, "add_codex_mcp_server", lambda n, argv: added.append((n, argv)))
         monkeypatch.setattr(
-            mcp_mod, "add_codex_mcp_server", lambda n, argv: added.append((n, argv))
-        )
-        monkeypatch.setattr(
-            mcp_mod,
+            codex,
             "add_codex_http_mcp_server",
             lambda n, url, client_id: http_added.append((n, url, client_id)),
         )
-        monkeypatch.setattr(mcp_mod, "remove_codex_mcp_server", lambda n: removed.append(n) or True)
+        monkeypatch.setattr(codex, "remove_codex_mcp_server", lambda n: removed.append(n) or True)
 
         # An HTTP+OAuth entry (no `command`) alongside a stdio one: the fallback must dispatch on
         # shape, not blindly read entry["command"] (which KeyError'd), and register HTTP as HTTP.
@@ -2138,3 +2136,249 @@ class TestWriteUserMcpServers:
             "args": ["x"],
         }
         assert not default_path.exists()
+
+
+class TestCodexAgent:
+    """The native `Agent` the registry exposes as `AGENTS["codex"]`."""
+
+    def test_is_the_registered_agent(self):
+        from ucode.agents import AGENTS
+
+        assert AGENTS["codex"] is codex.AGENT
+        assert isinstance(codex.AGENT, Agent)
+        assert codex.AGENT.display == "Codex"
+
+    def test_install_describes_the_cli(self):
+        install = codex.AGENT.install
+        assert (install.binary, install.package) == ("codex", "@openai/codex")
+        assert install.upgrade_argv == ("codex", "update")
+        assert install.too_new is None
+
+    def test_install_hooks_follow_the_module_functions(self, monkeypatch):
+        calls: list[str] = []
+        monkeypatch.setattr(codex, "minimum_version_error", lambda: "too old")
+        monkeypatch.setattr(codex, "detach_app_model_catalog", lambda: calls.append("detach"))
+
+        install = codex.AGENT.install
+        assert install.version_error is not None and install.before_install is not None
+        assert install.version_error() == "too old"
+        install.before_install()
+        assert calls == ["detach"]
+
+    def test_configure_returns_state_without_a_model(self, monkeypatch):
+        seen: list[tuple] = []
+
+        def fake_write(state, model=None, provider=None, parent_schema=None):
+            seen.append((model, provider, parent_schema))
+            return {**state, "written": True}
+
+        monkeypatch.setattr(codex, "write_tool_config", fake_write)
+
+        # Codex is the agent that may be configured with no model at all.
+        result = codex.AGENT.configure({"workspace": WS}, ConfigureRequest())
+
+        assert result == {"workspace": WS, "written": True}
+        assert seen == [(None, None, None)]
+
+    def test_configure_passes_model_provider_and_parent_schema(self, monkeypatch):
+        seen: list[tuple] = []
+        monkeypatch.setattr(
+            codex,
+            "write_tool_config",
+            lambda state, model=None, provider=None, parent_schema=None: (
+                seen.append((model, provider, parent_schema)) or state
+            ),
+        )
+
+        codex.AGENT.configure(
+            {"workspace": WS},
+            ConfigureRequest(model="gpt-5", provider="svc", parent_schema="main.models"),
+        )
+
+        assert seen == [("gpt-5", "svc", "main.models")]
+
+    def test_configure_writes_the_profile_config(self, tmp_path, monkeypatch):
+        config_path = tmp_path / ".codex" / "ucode.config.toml"
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.145.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+
+        result = codex.AGENT.configure(state, ConfigureRequest())
+
+        assert isinstance(result, dict)
+        assert read_toml_safe(config_path)["model_provider"] == "Databricks"
+
+    def test_models_lists_discovered_models_and_pins_nothing(self):
+        models = codex.AGENT.models({"codex_models": ["gpt-5", "gpt-5", "gpt-5-mini"]})
+
+        assert models == Models(("gpt-5", "gpt-5-mini"), None)
+
+    def test_models_prefers_a_managed_static_list(self):
+        state = {"codex_models": ["discovered"], "codex_static_models": ["pinned-a", "pinned-b"]}
+
+        assert codex.AGENT.models(state).available == ("pinned-a", "pinned-b")
+
+    def test_models_default_is_only_a_managed_pin(self):
+        state = {"codex_models": ["gpt-5"], "codex_default_model": "gpt-5-mini"}
+
+        assert codex.AGENT.models(state).default == "gpt-5-mini"
+        assert (
+            codex.AGENT.models({"codex_models": ["gpt-5"], "codex_default_model": ""}).default
+            is None
+        )
+
+    def test_models_never_runs_the_side_effecting_default_model(self, monkeypatch):
+        def boom(state):
+            raise AssertionError("models() must not call codex.default_model")
+
+        monkeypatch.setattr(codex, "default_model", boom)
+        monkeypatch.setattr(codex, "clear_model_preferences", boom)
+
+        assert codex.AGENT.models({"codex_models": ["gpt-5"]}).default is None
+
+    def test_launch_delegates_to_the_module_launcher(self, monkeypatch):
+        calls: list[tuple] = []
+        monkeypatch.setattr(
+            codex, "launch", lambda state, args, *, options: calls.append((state, args, options))
+        )
+        options = LaunchOptions()
+
+        codex.AGENT.launch({"workspace": WS}, ["--x"], options=options)
+
+        assert calls == [({"workspace": WS}, ["--x"], options)]
+
+    def test_revert_rows_cover_profile_shared_and_os_managed_config(self, monkeypatch):
+        restored: list[tuple] = []
+        monkeypatch.setattr(
+            codex, "restore_file", lambda path, backup, managed: restored.append(managed) or True
+        )
+        monkeypatch.setattr(codex, "revert_legacy_shared_config", lambda: True)
+        monkeypatch.setattr(codex, "revert_managed_config", lambda: "removed")
+
+        rows = codex.AGENT.revert({"managed_configs": {"codex": True}})
+
+        assert rows == [
+            ("Codex config", "restored"),
+            ("Codex shared config", "ucode entries removed"),
+            ("Codex OS-managed settings", "removed"),
+        ]
+        assert restored == [True]
+
+    def test_revert_omits_the_shared_row_when_nothing_was_stripped(self, monkeypatch):
+        monkeypatch.setattr(codex, "restore_file", lambda *_a: False)
+        monkeypatch.setattr(codex, "revert_legacy_shared_config", lambda: False)
+        monkeypatch.setattr(codex, "revert_managed_config", lambda: "unchanged")
+
+        assert codex.AGENT.revert({}) == [
+            ("Codex config", "unchanged"),
+            ("Codex OS-managed settings", "unchanged"),
+        ]
+
+
+CODEX_MCP_LIST = """\
+Name          Command  Args          Env  Cwd  Status    Auth
+github        ug       mcp-proxy x   -    -    enabled   Unsupported
+chrome        npx      chrome        -    -    disabled  Unsupported
+"""
+
+
+def _mcp_client() -> codex.CodexMcpClient:
+    client = codex.AGENT.mcp
+    assert isinstance(client, codex.CodexMcpClient)
+    return client
+
+
+class TestCodexMcpClient:
+    PROXY = ("ug", "mcp-proxy", "--url", "https://ws/x")
+
+    def test_is_the_agents_mcp_client(self):
+        client = _mcp_client()
+        assert isinstance(client, McpClient)
+        assert (client.display, client.binary) == ("Codex", "codex")
+        assert client.oauth_client_id == codex.CODEX_CLI_OAUTH_CLIENT_ID
+
+    def test_add_registers_the_stdio_proxy_after_removing_the_old_entry(self, monkeypatch):
+        calls: list[tuple] = []
+        monkeypatch.setattr(
+            codex, "remove_codex_mcp_server", lambda n: calls.append(("remove", n)) or True
+        )
+        monkeypatch.setattr(codex, "add_codex_mcp_server", lambda n, a: calls.append(("add", n, a)))
+
+        scopes = _mcp_client().add("svc", McpServer(url="https://ws/x", proxy_argv=self.PROXY))
+
+        assert calls == [("remove", "svc"), ("add", "svc", list(self.PROXY))]
+        assert scopes == ["user"]
+
+    def test_add_registers_native_http_when_an_oauth_client_is_set(self, monkeypatch):
+        calls: list[tuple] = []
+        monkeypatch.setattr(codex, "remove_codex_mcp_server", lambda n: False)
+        monkeypatch.setattr(
+            codex,
+            "add_codex_http_mcp_server",
+            lambda n, url, client_id: calls.append((n, url, client_id)),
+        )
+
+        scopes = _mcp_client().add(
+            "svc", McpServer(url="https://ws/x", proxy_argv=self.PROXY, oauth_client="codex-cli")
+        )
+
+        assert calls == [("svc", "https://ws/x", "codex-cli")]
+        assert scopes == []
+
+    def test_remove_reports_user_scope_only_when_present(self, monkeypatch):
+        monkeypatch.setattr(codex, "remove_codex_mcp_server", lambda n: n == "here")
+
+        assert _mcp_client().remove("here") == ["user"]
+        assert _mcp_client().remove("gone") == []
+
+    def test_entry_matches_the_managed_entry_shapes(self):
+        client = _mcp_client()
+        stdio = McpServer(url="https://ws/x", proxy_argv=self.PROXY)
+        http = McpServer(url="https://ws/x", proxy_argv=self.PROXY, oauth_client="codex-cli")
+
+        assert client.entry(stdio) == codex.managed_mcp_entry(list(self.PROXY))
+        assert client.entry(http) == codex.managed_mcp_http_entry("https://ws/x", "codex-cli")
+
+    def test_apply_batches_into_one_user_config_write(self, tmp_path, monkeypatch):
+        path = tmp_path / "config.toml"
+        path.write_text('[mcp_servers.old]\ncommand = "x"\n')
+        monkeypatch.setattr(codex, "LEGACY_CODEX_CONFIG_PATH", path)
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+
+        removed = _mcp_client().apply(
+            {"svc": McpServer(url="https://ws/x", proxy_argv=self.PROXY)}, {"old", "never"}
+        )
+
+        assert removed == {"old"}
+        table = read_toml_safe(path)["mcp_servers"]
+        assert "old" not in table
+        assert dict(table["svc"]) == {"command": "ug", "args": list(self.PROXY[1:])}
+
+    def test_parse_listing_reads_the_enabled_disabled_table(self):
+        assert _mcp_client().parse_listing(CODEX_MCP_LIST) == {
+            "github": "enabled",
+            "chrome": "disabled",
+        }
+
+    def test_parse_listing_of_an_empty_listing_is_empty(self):
+        assert _mcp_client().parse_listing("No MCP servers configured yet.") == {}
+
+    def test_live_status_runs_codex_mcp_list(self, monkeypatch):
+        from ucode import mcp
+
+        seen: list[list[str]] = []
+        monkeypatch.setattr(
+            mcp, "_read_mcp_listing", lambda argv, **_k: seen.append(argv) or CODEX_MCP_LIST
+        )
+
+        assert _mcp_client().live_status() == {"github": "enabled", "chrome": "disabled"}
+        assert seen == [["codex", "mcp", "list"]]
+
+    def test_live_status_is_empty_when_the_listing_fails(self, monkeypatch):
+        from ucode import mcp
+
+        monkeypatch.setattr(mcp, "_read_mcp_listing", lambda argv, **_k: None)
+
+        assert _mcp_client().live_status() == {}

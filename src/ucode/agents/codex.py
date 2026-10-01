@@ -7,9 +7,10 @@ import hashlib
 import os
 import re
 import signal
+import subprocess
 import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import tomlkit
@@ -32,11 +33,13 @@ from ucode.config_io import (
     prune_key_paths,
     read_json_safe,
     read_toml_safe,
+    restore_file,
     write_json_file,
     write_toml_file,
 )
 from ucode.constants import (
     LOOPBACK_HOST,
+    MCP_USER_SCOPE,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
@@ -69,6 +72,7 @@ from ucode.managed_files import (
     reconcile_managed_file,
     revert_managed_file,
 )
+from ucode.mcp_oauth import CODEX_CLI_OAUTH_CLIENT_ID
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.codex_hooks import (
@@ -84,6 +88,7 @@ from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
+from .interface import ConfigureRequest, Install, McpClient, McpServer, Models
 
 CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"
@@ -659,6 +664,109 @@ def _read_user_config_for_rewrite(path: Path) -> tomlkit.TOMLDocument | None:
         return None
 
 
+def add_codex_mcp_server(name: str, argv: list[str]) -> None:
+    # `--` fences the proxy argv off from codex's own flag parser, registering
+    # it as a stdio server (codex spawns the command and speaks MCP over it).
+    try:
+        subprocess_cross_os.run(
+            ["codex", "mcp", "add", name, "--", *argv],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"Failed to add MCP server '{name}' via codex CLI.") from exc
+
+
+def add_codex_http_mcp_server(name: str, url: str, client_id: str) -> None:
+    """Register a Databricks MCP endpoint as a **direct HTTP** server so Codex is the OAuth client
+    and drives the RFC 8707 connection login itself, instead of the token-injecting stdio proxy.
+
+    `--oauth-client-id` pins the published `codex-cli` app and `--oauth-resource` sends the
+    connection FQN as the RFC 8707 resource so `/oidc` drives the connection's SaaS login. Codex
+    derives its own per-server loopback `/callback/<hash>` redirect at login time; `/oidc` accepts
+    that unregistered path via the `enableCodexLoopbackRedirectExemption` flag (loopback host only)."""
+    try:
+        subprocess_cross_os.run(
+            [
+                "codex",
+                "mcp",
+                "add",
+                name,
+                "--url",
+                url,
+                "--oauth-client-id",
+                client_id,
+                "--oauth-resource",
+                url,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"Failed to add HTTP MCP server '{name}' via codex CLI.") from exc
+
+
+def remove_codex_mcp_server(name: str) -> bool:
+    # Imported lazily: `_is_missing_mcp_server_output` is a shared CLI-output matcher in `mcp.py`,
+    # which itself imports the agent modules.
+    from ucode.mcp import _is_missing_mcp_server_output
+
+    try:
+        result = subprocess_cross_os.run(
+            ["codex", "mcp", "remove", name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Timed out removing MCP server '{name}' via codex CLI.") from exc
+
+    output = f"{result.stderr or ''}\n{result.stdout or ''}"
+    if _is_missing_mcp_server_output(output):
+        return False
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to remove MCP server '{name}' via codex CLI.")
+    return True
+
+
+def parse_codex_mcp_list(output: str) -> dict[str, str]:
+    """Parse `codex mcp list`'s columnar table into ``{server_name: state}``.
+
+    Codex reports config state (``enabled``/``disabled``), not a health probe. Columns are
+    separated by runs of two-plus spaces; the name is the first column and the state column holds
+    ``enabled`` or ``disabled``. The header row and prose lines are skipped, so an unrecognized
+    line contributes nothing rather than a bogus entry.
+    """
+    # Imported lazily: the live-state names are `mcp.py`'s display vocabulary, and it imports us.
+    from ucode.mcp import LIVE_DISABLED, LIVE_ENABLED, LIVE_UNKNOWN
+
+    status_by_label = {"enabled": LIVE_ENABLED, "disabled": LIVE_DISABLED}
+    statuses: dict[str, str] = {}
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        fields = re.split(r"\s{2,}", line)
+        name = fields[0].strip()
+        # Registered MCP server names are single tokens (the health parser assumes the same), so a
+        # first column with a space is prose: the header, or the "no servers configured" message.
+        if not name or name == "Name" or " " in name:
+            continue
+        state = LIVE_UNKNOWN
+        for field in fields[1:]:
+            mapped = status_by_label.get(field.strip().lower())
+            if mapped is not None:
+                state = mapped
+                break
+        statuses[name] = state
+    return statuses
+
+
 def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     """Apply ``add``/``remove`` to Codex's user-scope ``[mcp_servers]`` (``~/.codex/config.toml``,
     or under ``$CODEX_HOME``) in a single read-modify-write, instead of one ``codex mcp`` subprocess
@@ -667,12 +775,6 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
 
     If the file exists but can't be parsed, defer to the per-server ``codex`` CLI rather than
     overwrite it."""
-    from ucode.mcp import (
-        add_codex_http_mcp_server,
-        add_codex_mcp_server,
-        remove_codex_mcp_server,
-    )
-
     path = user_mcp_config_path()
     doc = _read_user_config_for_rewrite(path)
     if doc is None:
@@ -1244,3 +1346,133 @@ def validate_cmd(binary: str) -> list[str]:
         "--skip-git-repo-check",
         "say hi in 5 words or less",
     ]
+
+
+def _model_values(value: object) -> list[str]:
+    """Flatten a state model inventory (str, list, or provider-keyed dict) into model ids."""
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item]
+    if isinstance(value, dict):
+        return [model for models in value.values() for model in _model_values(models)]
+    return []
+
+
+def _user_scope(removed: bool) -> list[str]:
+    """``add``/``remove``'s return shape for a client with one scope: ug writes at user scope."""
+    return [MCP_USER_SCOPE] if removed else []
+
+
+class CodexMcpClient:
+    """Where ug registers MCP servers for Codex: the ``codex mcp`` CLI, or a batched write of
+    ``[mcp_servers]`` in ``~/.codex/config.toml``.
+
+    Codex can register a connection-backed service as a native HTTP+OAuth entry (``codex mcp add
+    --oauth-client-id --oauth-resource``). It derives a per-MCP-server callback path
+    (``/callback/<hash>``) that can't be pre-registered, so ``/oidc`` accepts it via the
+    ``enableCodexLoopbackRedirectExemption`` SAFE flag (loopback + codex-cli only)."""
+
+    display = str(SPEC["display"])
+    binary = str(SPEC["binary"])
+    oauth_client_id: str | None = CODEX_CLI_OAUTH_CLIENT_ID
+
+    def add(self, name: str, server: McpServer) -> list[str]:
+        removed = remove_codex_mcp_server(name)
+        if server.oauth_client is not None:
+            add_codex_http_mcp_server(name, server.url, client_id=server.oauth_client)
+        else:
+            add_codex_mcp_server(name, list(server.proxy_argv))
+        return _user_scope(removed)
+
+    def remove(self, name: str) -> list[str]:
+        return _user_scope(remove_codex_mcp_server(name))
+
+    def apply(self, add: Mapping[str, McpServer], remove: set[str]) -> set[str]:
+        """Collapse a whole diff into ONE read-modify-write of the user-scope config, instead of a
+        ``codex mcp`` subprocess per server (see ``mcp.apply_mcp_server_changes``)."""
+        entries = {name: self.entry(server) for name, server in add.items()}
+        return write_user_mcp_servers(entries, remove) or set()
+
+    def entry(self, server: McpServer) -> dict:
+        """The on-disk ``[mcp_servers.<name>]`` entry ``server`` is recorded as, matching exactly
+        what :meth:`add` would have registered through the CLI."""
+        if server.oauth_client is not None:
+            return managed_mcp_http_entry(server.url, server.oauth_client)
+        return managed_mcp_entry(list(server.proxy_argv))
+
+    def live_status(self) -> dict[str, str]:
+        # Imported lazily: the shared `mcp list` runner lives in `mcp.py`, which imports us.
+        from ucode import mcp
+
+        output = mcp._read_mcp_listing([self.binary, "mcp", "list"], env=None)
+        return self.parse_listing(output) if output is not None else {}
+
+    def parse_listing(self, output: str) -> dict[str, str]:
+        """``{server_name: live-state}`` from ``codex mcp list``'s enabled/disabled table."""
+        return parse_codex_mcp_list(output)
+
+
+class CodexAgent:
+    """Codex as an :class:`Agent`, wrapping this module's config writer, launcher and reverts."""
+
+    display = str(SPEC["display"])
+
+    def __init__(self) -> None:
+        self.mcp: McpClient | None = CodexMcpClient()
+        self.install = Install(
+            binary=str(SPEC["binary"]),
+            package=str(SPEC["package"]),
+            upgrade_argv=("codex", "update"),
+            version_error=self._version_error,
+            # Drop ug's shared app catalog reference before the binary changes, so a version that
+            # can no longer read it never starts against it.
+            before_install=self._detach_app_model_catalog,
+        )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "CodexAgent()"
+
+    # Hooks are looked up on the module at call time, so this class follows the functions it wraps.
+    @staticmethod
+    def _version_error() -> str | None:
+        return minimum_version_error()
+
+    @staticmethod
+    def _detach_app_model_catalog() -> None:
+        detach_app_model_catalog()
+
+    def models(self, state: dict) -> Models:
+        # A managed static list replaces discovery outright.
+        available = _model_values(state.get("codex_static_models")) or _model_values(
+            state.get("codex_models")
+        )
+        # Codex leaves the starting model to Codex unless one is pinned. Not `default_model()`:
+        # that clears model preferences on disk, and this must not mutate anything.
+        pinned = state.get("codex_default_model")
+        return Models(
+            tuple(dict.fromkeys(available)), pinned if isinstance(pinned, str) and pinned else None
+        )
+
+    def configure(self, state: dict, request: ConfigureRequest) -> dict:
+        # Codex may be configured with no model: it then picks its own from what the gateway serves.
+        return write_tool_config(
+            state, request.model, provider=request.provider, parent_schema=request.parent_schema
+        )
+
+    def launch(self, state: dict, args: list[str], *, options: LaunchOptions) -> None:
+        launch(state, args, options=options)
+
+    def revert(self, state: dict) -> list[tuple[str, str]]:
+        managed = bool((state.get("managed_configs") or {}).get("codex"))
+        restored = restore_file(SPEC["config_path"], SPEC["backup_path"], managed)
+        rows = [(f"{self.display} config", "restored" if restored else "unchanged")]
+        # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in place;
+        # restoring the per-profile file above does not undo that.
+        if revert_legacy_shared_config():
+            rows.append((f"{self.display} shared config", "ucode entries removed"))
+        rows.append((f"{self.display} OS-managed settings", revert_managed_config()))
+        return rows
+
+
+AGENT = CodexAgent()

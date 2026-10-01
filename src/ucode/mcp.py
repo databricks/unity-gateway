@@ -115,72 +115,6 @@ def _is_missing_mcp_server_output(output: str) -> bool:
     )
 
 
-def add_codex_mcp_server(name: str, argv: list[str]) -> None:
-    # `--` fences the proxy argv off from codex's own flag parser, registering
-    # it as a stdio server (codex spawns the command and speaks MCP over it).
-    try:
-        subprocess_cross_os.run(
-            ["codex", "mcp", "add", name, "--", *argv],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"Failed to add MCP server '{name}' via codex CLI.") from exc
-
-
-def add_codex_http_mcp_server(name: str, url: str, client_id: str) -> None:
-    """Register a Databricks MCP endpoint as a **direct HTTP** server so Codex is the OAuth client
-    and drives the RFC 8707 connection login itself, instead of the token-injecting stdio proxy.
-
-    `--oauth-client-id` pins the published `codex-cli` app and `--oauth-resource` sends the
-    connection FQN as the RFC 8707 resource so `/oidc` drives the connection's SaaS login. Codex
-    derives its own per-server loopback `/callback/<hash>` redirect at login time; `/oidc` accepts
-    that unregistered path via the `enableCodexLoopbackRedirectExemption` flag (loopback host only)."""
-    try:
-        subprocess_cross_os.run(
-            [
-                "codex",
-                "mcp",
-                "add",
-                name,
-                "--url",
-                url,
-                "--oauth-client-id",
-                client_id,
-                "--oauth-resource",
-                url,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"Failed to add HTTP MCP server '{name}' via codex CLI.") from exc
-
-
-def remove_codex_mcp_server(name: str) -> bool:
-    try:
-        result = subprocess_cross_os.run(
-            ["codex", "mcp", "remove", name],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"Timed out removing MCP server '{name}' via codex CLI.") from exc
-
-    output = f"{result.stderr or ''}\n{result.stdout or ''}"
-    if _is_missing_mcp_server_output(output):
-        return False
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to remove MCP server '{name}' via codex CLI.")
-    return True
-
-
 def available_mcp_clients() -> list[str]:
     return [client for client, target in MCP_CLIENTS.items() if shutil.which(target.binary)]
 
@@ -2073,7 +2007,6 @@ _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 # Glyphs agent CLIs use for MCP health (claude: ✔/✘; others commonly ✓/✗ or 🟢/🔴).
 _HEALTH_OK_MARKERS = ("✔", "✓", "🟢")
 _HEALTH_FAIL_MARKERS = ("✘", "✗", "🔴")
-_CODEX_STATUS_BY_LABEL = {"enabled": LIVE_ENABLED, "disabled": LIVE_DISABLED}
 
 
 def _classify_health_line(rest: str) -> str:
@@ -2131,35 +2064,6 @@ def _parse_health_mcp_list(output: str) -> dict[str, str]:
         if not name or " " in name:
             continue
         statuses[name] = _classify_health_line(rest)
-    return statuses
-
-
-def _parse_codex_mcp_list(output: str) -> dict[str, str]:
-    """Parse `codex mcp list`'s columnar table into ``{server_name: state}``.
-
-    Codex reports config state (``enabled``/``disabled``), not a health probe. Columns are
-    separated by runs of two-plus spaces; the name is the first column and the state column holds
-    ``enabled`` or ``disabled``. The header row and prose lines are skipped, so an unrecognized
-    line contributes nothing rather than a bogus entry.
-    """
-    statuses: dict[str, str] = {}
-    for raw in output.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        fields = re.split(r"\s{2,}", line)
-        name = fields[0].strip()
-        # Registered MCP server names are single tokens (the health parser assumes the same), so a
-        # first column with a space is prose: the header, or the "no servers configured" message.
-        if not name or name == "Name" or " " in name:
-            continue
-        state = LIVE_UNKNOWN
-        for field in fields[1:]:
-            mapped = _CODEX_STATUS_BY_LABEL.get(field.strip().lower())
-            if mapped is not None:
-                state = mapped
-                break
-        statuses[name] = state
     return statuses
 
 
