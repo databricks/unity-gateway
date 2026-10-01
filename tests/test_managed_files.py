@@ -340,9 +340,9 @@ class TestSudoReplace:
             return process
 
         monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
-        monkeypatch.setattr(managed_files.subprocess, "Popen", popen)
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "popen", popen)
         monkeypatch.setattr(
-            managed_files.subprocess,
+            managed_files.subprocess_cross_os,
             "run",
             lambda *args, **kwargs: pytest.fail("session must not start another sudo process"),
         )
@@ -416,10 +416,10 @@ class TestSudoReplace:
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
         monkeypatch.setattr(managed_files, "current_os", lambda: managed_files.OS.LINUX)
-        monkeypatch.setattr(managed_files.subprocess, "run", run)
+        monkeypatch.setattr(managed_files.subprocess_cross_os, "run", run)
         monkeypatch.setattr(
-            managed_files.subprocess,
-            "Popen",
+            managed_files.subprocess_cross_os,
+            "popen",
             lambda *args, **kwargs: pytest.fail("one-shot replacement must not start a session"),
         )
         parent = tmp_path / "managed settings; $(not-a-command)"
@@ -724,6 +724,34 @@ class TestManagedFileLifecycle:
         )
         manifest = json.loads((backup_dir / "manifest.json").read_text())
         assert manifest["files"]["claude"]["original_existed"] is True
+
+    def test_snapshots_report_paths_ucode_wrote_to_the_file(
+        self, tmp_path, backup_dir, monkeypatch
+    ):
+        path = tmp_path / "managed.json"
+        path.write_text('{"enterprise": true}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            managed_files,
+            "_sudo_replace",
+            lambda target, text: target.write_text(text, encoding="utf-8"),
+        )
+
+        managed_files.reconcile_managed_file(
+            path,
+            '{"enterprise": true, "ucode": true}\n',
+            tool="claude",
+            display="Claude Code",
+            owned_paths=[["ucode"]],
+            parser=json.loads,
+        )
+
+        snapshots = managed_files.managed_file_snapshots("claude", json.loads)
+        assert snapshots.original_before_ug == {"enterprise": True}
+        assert snapshots.last_applied_by_ug == {"enterprise": True, "ucode": True}
+        assert snapshots.owned_paths == [["ucode"]]
+
+    def test_snapshots_without_a_record_report_no_owned_paths(self, backup_dir):
+        assert managed_files.managed_file_snapshots("claude", json.loads).owned_paths is None
 
     def test_batch_messages_name_all_agents_once(self, tmp_path, backup_dir, monkeypatch):
         notes: list[str] = []

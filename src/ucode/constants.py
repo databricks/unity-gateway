@@ -3,6 +3,13 @@
 LOCALHOST = "localhost"
 LOOPBACK_HOST = "127.0.0.1"
 
+ENABLE_SMART_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_V2"
+ENABLE_SUBAGENT_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"
+SMART_ROUTING_ENV_KEYS = (
+    ENABLE_SMART_ROUTING_ENV_VAR,
+    ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+)
+
 MODEL_PROVIDER_SERVICE_HEADER = "Databricks-Model-Provider-Service"
 MODEL_SERVICE_PARENT_SCHEMA_HEADER = "Databricks-Model-Service-Parent-Schema"
 # Names the smart-router recipe (e.g. `task_v3`) in use; sent only when smart routing is enabled.

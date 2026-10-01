@@ -51,6 +51,18 @@ On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
 
+Use `ug opencode --model system.ai.glm-5-3` (or `-m`) to select a configured
+model for one launch. OpenCode's `provider/model` form is also accepted.
+Unknown Databricks models produce an error; this option does not add models
+to discovery or change ug's saved default.
+
+`ug copilot` uses the Responses API for GPT-6 and newer model IDs, and Chat
+Completions for other models. The model selected at launch (including `--model`)
+determines the API. An inherited `COPILOT_PROVIDER_WIRE_MODEL` takes precedence
+because it overrides the model sent to the gateway. Restart Copilot through `ug`
+to change the wire model or API; in-session model selection does not rebuild its
+provider configuration.
+
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
@@ -122,6 +134,34 @@ profile. V2 AI Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
 
+Claude's generated `web_search` server uses the same saved custom OAuth CLI
+profile as its harness, when configured. It stores the profile name, not an
+access token, and refreshes credentials for search requests. This does not
+change search permissions.
+
+Launchers that supply their own search server can first query
+`ug mcp web-search --capabilities`. Contract version 1 supports setting
+`UCODE_CLAUDE_WEB_SEARCH_PROVIDER=external-if-safe` on the ug child process only
+when the capability response advertises that `automatic_provider` value.
+The default (unset or `ucode`) retains standalone ug search. External mode
+does not create, update, or delete saved search registrations. Generated
+helpers carry `--managed-by-ucode`. Only the launch override created after
+ownership verification exposes no tools; copied helpers and custom registrations
+retain their tools even when they inherit external provider selection.
+
+For an existing generated `web_search` entry, ug verifies its saved ownership
+fingerprint and uses a launch-only MCP override pointing at the current ug
+installation. This also handles older helper executables. Disabled entries
+are preserved without launch overrides, and `--strict-mcp-config` excludes saved registrations without
+an override. Unknown ownership, overlapping config scopes, or command-based
+MCP policies produce a warning and retain the existing provider; duplicate
+providers may remain. Explicit `external` selection instead fails on a conflict.
+Standalone refreshes preserve edited user entries and project/local servers.
+The selection does not authorize search or remove any permission denial.
+Concurrent setup still uses ug's existing whole-workspace state writes. A stale
+ownership fingerprint safely preserves the server and prevents automatic handoff;
+this contract does not make shared setup transactional.
+
 ## Skills
 
 Unity Catalog Skills can be registered as MCP tools or downloaded into local
@@ -176,6 +216,14 @@ ug skills remove --location main.default --via mcp
 Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
 with `ug configure` to control installation.
+
+## Claude Routing Plugin
+
+Smart routing passes generated agents through a per-launch `--plugin-dir`,
+alongside `--settings`, without persistent plugin registration. One temporary
+directory holds the settings, socket, and plugin and is removed when the launch
+finishes or fails. Existing hook configuration and disable/revert behavior are
+unchanged. Native daemon/background propagation of the plugin remains unverified.
 
 ## Managed Files
 

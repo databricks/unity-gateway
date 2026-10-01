@@ -24,6 +24,7 @@ import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
+from ucode.managed_config import normalize_managed_config
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -212,7 +213,7 @@ class TestUpgrade:
     def test_before_cutover_upgrades_ucode_normally_without_verification(self, prog_name):
         with (
             patch("ucode.cli._installed_cli_distribution", return_value="ucode"),
-            patch("subprocess.run", return_value=self._ok()) as run,
+            patch("ucode.cli.subprocess_cross_os.run", return_value=self._ok()) as run,
         ):
             result = runner.invoke(app, ["upgrade"], prog_name=prog_name)
 
@@ -240,7 +241,7 @@ class TestUpgrade:
             patch("ucode.cli._installed_cli_distribution", return_value="ucode"),
             patch("ucode.cli.shutil.which", side_effect=self._which),
             patch(
-                "subprocess.run",
+                "ucode.cli.subprocess_cross_os.run",
                 side_effect=[
                     rename_failure,
                     self._ok(),
@@ -281,7 +282,7 @@ class TestUpgrade:
     def test_after_cutover_upgrades_unity_gateway_normally_without_verification(self, prog_name):
         with (
             patch("ucode.cli._installed_cli_distribution", return_value="unity-gateway"),
-            patch("subprocess.run", return_value=self._ok()) as run,
+            patch("ucode.cli.subprocess_cross_os.run", return_value=self._ok()) as run,
         ):
             result = runner.invoke(app, ["upgrade"], prog_name=prog_name)
 
@@ -306,7 +307,7 @@ class TestUpgrade:
         )
         with (
             patch("ucode.cli._installed_cli_distribution", return_value="ucode"),
-            patch("subprocess.run", return_value=failure) as run,
+            patch("ucode.cli.subprocess_cross_os.run", return_value=failure) as run,
         ):
             result = runner.invoke(app, ["upgrade"])
 
@@ -329,7 +330,7 @@ class TestUpgrade:
         )
         with (
             patch("ucode.cli._installed_cli_distribution", return_value="ucode"),
-            patch("subprocess.run") as run,
+            patch("ucode.cli.subprocess_cross_os.run") as run,
         ):
             run.side_effect = [
                 rename_failure,
@@ -355,7 +356,7 @@ class TestUpgrade:
             patch("ucode.cli._installed_cli_distribution", return_value="ucode"),
             patch("ucode.cli.shutil.which", return_value=None),
             patch(
-                "subprocess.run",
+                "ucode.cli.subprocess_cross_os.run",
                 side_effect=[rename_failure, self._ok(), self._ok()],
             ),
         ):
@@ -367,7 +368,7 @@ class TestUpgrade:
     def test_missing_uv_is_actionable(self):
         with (
             patch("ucode.cli._installed_cli_distribution", return_value="ucode"),
-            patch("subprocess.run", side_effect=FileNotFoundError),
+            patch("ucode.cli.subprocess_cross_os.run", side_effect=FileNotFoundError),
         ):
             result = runner.invoke(app, ["upgrade"])
 
@@ -473,7 +474,7 @@ def _launch_policy_patches(
         patch("ucode.cli.resolve_gemini_provider_model", return_value=("gemini-2.0-flash", None)),
         patch(
             "ucode.cli.resolve_launch_model",
-            side_effect=lambda _tool, state, _model: (state, "databricks-claude-sonnet-4"),
+            wraps=cli_mod.resolve_launch_model,
         ) as resolve_model,
         patch(
             "ucode.cli.list_anthropic_model_catalog", return_value=picker_catalog
@@ -920,11 +921,17 @@ class TestSubcommandRouting:
         assert "--model-location must be `<catalog>.<schema>`." in _strip_ansi(result.output)
 
     @pytest.mark.parametrize("tool", ["codex", "claude"])
-    def test_disable_smart_routing_is_not_consumed_by_ucode(self, tool):
+    def test_disable_smart_routing_is_consumed_by_ug(self, tool):
+        routing_during_launch = []
         with (
             patch("ucode.cli.codex_agent.disable_smart_routing") as mock_disable,
             patch("ucode.cli.claude_agent.disable_smart_routing") as mock_disable_claude,
-            patch("ucode.cli._launch_tool") as mock_launch,
+            patch(
+                "ucode.cli._launch_tool",
+                side_effect=lambda *_args, **_kwargs: routing_during_launch.append(
+                    cli_mod.smart_routing_v2.smart_routing_enabled()
+                ),
+            ) as mock_launch,
         ):
             result = runner.invoke(app, [tool, "--disable-smart-routing"])
 
@@ -932,14 +939,8 @@ class TestSubcommandRouting:
         mock_disable.assert_not_called()
         mock_disable_claude.assert_not_called()
         mock_launch.assert_called_once()
-        assert mock_launch.call_args.args[1].args == ["--disable-smart-routing"]
-
-    @pytest.mark.parametrize("tool", ["codex", "claude"])
-    def test_disable_smart_routing_is_not_in_help(self, tool):
-        result = runner.invoke(app, [tool, "--help"])
-
-        assert result.exit_code == 0, result.output
-        assert "--disable-smart-routing" not in result.output
+        assert mock_launch.call_args.args[1].args == []
+        assert routing_during_launch == [False]
 
     def test_legacy_opt_in_migrates_both_agents(self):
         from ucode.cli import _migrate_legacy_smart_routing
@@ -2773,6 +2774,85 @@ class TestDoctorCommand:
             result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 1
         assert "boom" in _strip_ansi(result.output)
+
+
+class TestOpenCodeModelFlag:
+    @pytest.mark.parametrize("flag", ["--model", "-m"])
+    def test_model_option_threads_to_config_and_launch(self, flag):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["opencode", flag, "databricks-claude-sonnet-4"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.args[2] == "databricks-claude-sonnet-4"
+        assert (
+            calls["launch"].call_args.kwargs["options"].user_pinned_model
+            == "databricks-claude-sonnet-4"
+        )
+
+    def test_native_model_is_forwarded_alongside_owned_option(self):
+        native = "openrouter/anthropic/claude-sonnet"
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(
+                app,
+                [
+                    "opencode",
+                    "--model",
+                    "databricks-claude-sonnet-4",
+                    "run",
+                    "--",
+                    "--model",
+                    native,
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.args[2] == "databricks-claude-sonnet-4"
+        assert calls["launch"].call_args.args[2] == ["run", "--model", native]
+        # The launcher receives both raw selections and applies native argument precedence.
+        assert (
+            calls["launch"].call_args.kwargs["options"].user_pinned_model
+            == "databricks-claude-sonnet-4"
+        )
+
+    def test_unknown_model_fails_before_native_launch(self):
+        from ucode.agents import launch
+
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.agents.opencode.subprocess_cross_os.popen") as popen,
+        ):
+            calls["launch"].side_effect = launch
+            result = runner.invoke(app, ["opencode", "--model", "missing-model"])
+
+        assert result.exit_code == 1
+        assert "not configured" in _strip_ansi(result.output)
+        popen.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--model", "openrouter/custom-model"],
+            ["run", "--", "--model", "openrouter/custom-model"],
+        ],
+    )
+    def test_explicit_model_still_requires_a_configured_default(self, args):
+        with _launch_policy_patches(None) as calls:
+            calls["state"]["opencode_models"] = {}
+            result = runner.invoke(app, ["opencode", *args])
+
+        assert result.exit_code == 1
+        assert "No models available for opencode" in _strip_ansi(result.output)
+        calls["configure"].assert_not_called()
+        calls["launch"].assert_not_called()
+
+    def test_model_after_separator_is_prompt_text(self):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["opencode", "run", "--", "--", "--model", "literal"])
+
+        assert result.exit_code == 0, result.output
+        assert calls["configure"].call_args.args[2] == "databricks-claude-sonnet-4"
+        assert calls["launch"].call_args.args[2] == ["run", "--", "--model", "literal"]
+        assert calls["launch"].call_args.kwargs["options"].user_pinned_model is None
 
 
 class TestAutoConfigureOnFirstRun:
@@ -4993,6 +5073,17 @@ class TestBareUcode:
         assert "paved" not in result.output  # no policy set in this config
         assert "Claude Code" in result.output
 
+    def test_bare_launch_skips_recommendation_without_smart_defaults(self, monkeypatch):
+        monkeypatch.setattr("ucode.cli.get_databricks_token", lambda *args: "token")
+        monkeypatch.setattr(
+            "ucode.cli.get_model_recommendation",
+            lambda *args: pytest.fail("recommendModel must not run without smart defaults"),
+        )
+        result, launched = self._run(monkeypatch, managed=self.MANAGED)
+        assert result.exit_code == 0, result.output
+        assert launched[0][0] == "claude"
+        assert launched[0][1]["recommendation"] is None
+
     def test_falls_back_to_the_first_enabled_agent(self, monkeypatch):
         managed = {"enabled_agents": {"opencode": {}}}
         result, launched = self._run(monkeypatch, managed=managed)
@@ -5123,6 +5214,19 @@ class TestBareUcode:
 class TestBudgetRecommendationAtLaunch:
     """The budget read informs the launch; it never blocks it."""
 
+    SMART_DEFAULTS = {
+        "smart_defaults": {
+            "budget_id": "c6563b45-df9a-4b19-afb2-d42dc2b52576",
+            "tiers": [
+                {
+                    "spending_percentage": 0.8,
+                    "recommended_agent": "claude",
+                    "recommended_model": "system.ai.claude-sonnet-4-6",
+                }
+            ],
+        }
+    }
+
     @staticmethod
     def _launch(monkeypatch, *, tool="claude", managed, recommendation=None, reason=None):
         state = dict(MINIMAL_STATE)
@@ -5152,11 +5256,49 @@ class TestBudgetRecommendationAtLaunch:
         assert result.exit_code == 0, result.output
         assert calls == []
 
+    @pytest.mark.parametrize(
+        "managed",
+        [
+            {"enabled_agents": {"claude": {}}},
+            {
+                "enabled_agents": {"claude": {}},
+                "smart_defaults": {"budget_id": "c6563b45-df9a-4b19-afb2-d42dc2b52576"},
+            },
+            {"enabled_agents": {"claude": {}}, "smart_defaults": {"tiers": []}},
+        ],
+    )
+    def test_not_checked_without_smart_defaults(self, monkeypatch, managed):
+        result, calls, _ = self._launch(monkeypatch, managed=managed)
+        assert result.exit_code == 0, result.output
+        assert calls == []
+
+    def test_wire_smart_defaults_reach_recommendation(self, monkeypatch):
+        raw = {
+            "enabled_agents": [
+                {"agent": "CODING_AGENT_CLAUDE_CODE", "config": {}},
+            ],
+            "smart_defaults": {
+                "tiers": [
+                    {
+                        "spending_percentage": 0.8,
+                        "recommended_agent": "CODING_AGENT_CLAUDE_CODE",
+                        "recommended_model": "system.ai.claude-sonnet-4-6",
+                    }
+                ]
+            },
+        }
+        managed = normalize_managed_config(raw)
+        assert "smart_defaults" in managed
+        result, calls, _ = self._launch(monkeypatch, managed=managed)
+        assert result.exit_code == 0, result.output
+        assert calls == [MINIMAL_STATE["workspace"]]
+
     def test_the_recommended_agent_gets_the_recommended_model(self, monkeypatch):
         managed = {
             "enabled_agents": {
                 "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}}
-            }
+            },
+            **self.SMART_DEFAULTS,
         }
         _result, _calls, cfg = self._launch(
             monkeypatch,
@@ -5192,7 +5334,8 @@ class TestBudgetRecommendationAtLaunch:
             "enabled_agents": {
                 "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}},
                 "opencode": {},
-            }
+            },
+            **self.SMART_DEFAULTS,
         }
         result, _calls, cfg = self._launch(
             monkeypatch,
@@ -5211,7 +5354,7 @@ class TestBudgetRecommendationAtLaunch:
     def test_a_failed_read_does_not_block_the_launch(self, monkeypatch):
         result, _calls, _cfg = self._launch(
             monkeypatch,
-            managed={"enabled_agents": {"claude": {}}},
+            managed={"enabled_agents": {"claude": {}}, **self.SMART_DEFAULTS},
             recommendation=None,
             reason="HTTP 500",
         )
@@ -5221,7 +5364,7 @@ class TestBudgetRecommendationAtLaunch:
     def test_a_404_is_silently_ignored(self, monkeypatch):
         result, _calls, _cfg = self._launch(
             monkeypatch,
-            managed={"enabled_agents": {"claude": {}}},
+            managed={"enabled_agents": {"claude": {}}, **self.SMART_DEFAULTS},
             recommendation=None,
             reason=(
                 'HTTP 404 Not Found: {"error_code":"FEATURE_DISABLED",'
@@ -5246,7 +5389,10 @@ class TestBudgetRecommendationAtLaunch:
             patch("ucode.cli.get_databricks_token", side_effect=RuntimeError("token expired")),
             patch(
                 "ucode.cli._fetch_managed_config",
-                return_value=({"enabled_agents": {"claude": {}}}, False),
+                return_value=(
+                    {"enabled_agents": {"claude": {}}, **self.SMART_DEFAULTS},
+                    False,
+                ),
             ),
             patch("ucode.cli.launch_agent"),
         ):
@@ -5257,7 +5403,7 @@ class TestBudgetRecommendationAtLaunch:
     def test_shows_the_budget_bar(self, monkeypatch):
         result, _calls, _cfg = self._launch(
             monkeypatch,
-            managed={"enabled_agents": {"claude": {}}},
+            managed={"enabled_agents": {"claude": {}}, **self.SMART_DEFAULTS},
             recommendation={
                 "agent": "claude",
                 "model": "m",

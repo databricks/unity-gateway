@@ -35,6 +35,28 @@ from ucode.ui import (
 )
 
 
+class TestPrintSuccess:
+    @pytest.mark.parametrize(
+        ("encoding", "expected_marker"),
+        [("utf-8", "✔"), ("cp1252", "+"), ("ascii", "+")],
+    )
+    def test_uses_a_marker_supported_by_the_output_encoding(
+        self, monkeypatch, encoding, expected_marker
+    ):
+        output = io.BytesIO()
+        stream = io.TextIOWrapper(output, encoding=encoding, errors="strict")
+        monkeypatch.setattr(
+            ui_mod,
+            "console",
+            Console(file=stream, force_terminal=False, width=200),
+        )
+
+        ui_mod.print_success("[bold]Connected[/bold]")
+        stream.flush()
+
+        assert output.getvalue().decode(encoding) == f"{expected_marker} Connected\n"
+
+
 class TestPromptForTools:
     @pytest.mark.parametrize(
         ("keys", "preselected", "expected"),

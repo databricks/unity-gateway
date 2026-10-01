@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from decimal import Decimal
@@ -51,10 +52,10 @@ WS_HOST = "example.databricks.com"
 
 
 class _FakeResponse:
-    """Minimal urlopen context manager returning a JSON body."""
+    """Minimal urlopen context manager returning a JSON body, or raw bytes as given."""
 
-    def __init__(self, payload: dict):
-        self._body = json.dumps(payload).encode("utf-8")
+    def __init__(self, payload: dict | bytes):
+        self._body = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
 
     def __enter__(self):
         return self
@@ -2531,10 +2532,9 @@ class TestProbeUnityGatewayCapabilities:
         )
 
     def test_raise_for_invalid_access_token(self):
-        with pytest.raises(db_mod.AuthTokenError, match="expired or invalid") as e:
+        with pytest.raises(db_mod.AuthTokenError) as e:
             db_mod.raise_for_invalid_access_token(WS, "HTTP 403 Forbidden: Invalid access token.")
-        assert "databricks auth login" in str(e.value)
-        assert "PAT" in str(e.value)
+        assert str(e.value) == "Your access token is expired or invalid."
         # No-op for a permission 403 or a clean result, so best-effort discovery still skips quietly.
         db_mod.raise_for_invalid_access_token(WS, "HTTP 403: Missing Unity Catalog grants")
         db_mod.raise_for_invalid_access_token(WS, None)
@@ -2706,6 +2706,23 @@ class TestHttpGetJsonRetries:
         assert payload is None
         assert reason == "HTTP 503 Service Unavailable"
         assert len(calls) == 1
+
+    def test_bytes_retries_429_and_returns_undecoded_body(self, monkeypatch):
+        outcomes = iter([self._http_error(429, "Too Many Requests"), _FakeResponse(b"\x89PNG\x00")])
+
+        def fake_urlopen(request, timeout=None):
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
+
+        body, reason = db_mod._http_get_bytes("https://x/y", "tok", max_retries=2)
+
+        assert body == b"\x89PNG\x00"
+        assert reason is None
 
 
 class TestParseDatabricksCliVersion:
@@ -2953,6 +2970,18 @@ class TestHttpGetJsonTimeout:
         payload, reason = db_mod._http_post_json(f"{WS}/api/2.0/anything", "tok", {"k": "v"})
 
         assert payload is None
+        assert reason is not None
+        assert "timed out" in reason
+
+    def test_bytes_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
+        def raise_timeout(request, timeout=None):
+            raise TimeoutError("The read operation timed out")
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_timeout)
+
+        body, reason = db_mod._http_get_bytes(f"{WS}/api/2.0/fs/files/anything", "tok")
+
+        assert body is None
         assert reason is not None
         assert "timed out" in reason
 
@@ -3409,6 +3438,8 @@ class TestCodingAgentConfigCrudClients:
         assert "default_options" not in db_mod.MANAGED_CONFIG_UPDATE_MASK_PATHS
         assert "tiers" not in db_mod.MANAGED_CONFIG_UPDATE_MASK_PATHS
         assert "spec_version" not in db_mod.MANAGED_CONFIG_UPDATE_MASK_PATHS
+        assert "spend_tiers" not in db_mod.MANAGED_CONFIG_UPDATE_MASK_PATHS
+        assert "smart_defaults" in db_mod.MANAGED_CONFIG_UPDATE_MASK_PATHS
 
     def test_update_mask_covers_every_field_the_manifest_can_set(self):
         # A path ucode omits is a field a re-run silently cannot clear, since the server merges per
@@ -3425,7 +3456,7 @@ class TestCodingAgentConfigCrudClients:
                     },
                     "mcp_servers": {"names": ["main.default.databricks_sql"]},
                     "skills": {"names": ["main.default.triage"]},
-                    "spend_tiers": {
+                    "smart_defaults": {
                         "budget_id": "11111111-1111-1111-1111-111111111111",
                         "tiers": [],
                     },
@@ -4027,3 +4058,29 @@ class TestMcpServiceNeedsConnectionLogin:
         # Safe default: an unreachable API must not push a service into an OAuth flow.
         self._mock_http(monkeypatch, details=None, err="HTTP 500")
         assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.github") is False
+
+
+class TestRunDecodesUtf8:
+    @staticmethod
+    def _force_cp1252_default(monkeypatch):
+        real_run = db_mod.subprocess.run
+
+        def run_with_cp1252_default(*args, **kwargs):
+            if kwargs.get("text") and "encoding" not in kwargs:
+                kwargs["encoding"] = "cp1252"
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(db_mod.subprocess, "run", run_with_cp1252_default)
+
+    def test_text_mode_decodes_utf8_even_when_locale_defaults_to_cp1252(self, monkeypatch):
+        # Force the dependency's omitted encoding to behave like Windows on every host.
+        self._force_cp1252_default(monkeypatch)
+        script = r"import sys; sys.stdout.buffer.write('“ok”'.encode('utf-8'))"
+        result = db_mod.run([sys.executable, "-c", script], capture_output=True, text=True)
+        assert result.stdout == "“ok”"
+
+    def test_binary_mode_is_unchanged(self, monkeypatch):
+        self._force_cp1252_default(monkeypatch)
+        script = r"import sys; sys.stdout.buffer.write(b'\xff')"
+        result = db_mod.run([sys.executable, "-c", script], capture_output=True)
+        assert result.stdout == b"\xff"

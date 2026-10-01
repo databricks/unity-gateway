@@ -7,7 +7,6 @@ import hashlib
 import os
 import re
 import signal
-import subprocess
 import tempfile
 import threading
 from collections.abc import Callable
@@ -70,6 +69,7 @@ from ucode.managed_files import (
     reconcile_managed_file,
     revert_managed_file,
 )
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.codex_hooks import (
     remove_smart_routing_hooks,
@@ -630,6 +630,15 @@ def managed_mcp_entry(argv: list[str]) -> dict:
     return {"command": argv[0], "args": list(argv[1:])}
 
 
+def managed_mcp_http_entry(url: str, client_id: str) -> dict:
+    """A ``[mcp_servers.<name>]`` **direct HTTP+OAuth** entry: Codex is the OAuth client and drives
+    the connection login itself (the batched analogue of ``add_codex_http_mcp_server``). ``url`` is
+    both the server URL and the RFC 8707 ``oauth_resource``; ``client_id`` is the published
+    ``codex-cli`` app. Codex derives its per-server loopback ``/callback/<hash>`` redirect at login,
+    so no callback need be written here."""
+    return {"url": url, "oauth_resource": url, "oauth": {"client_id": client_id}}
+
+
 def user_mcp_config_path() -> Path:
     """The file ``codex mcp add`` writes user-scope MCP servers to: ``$CODEX_HOME/config.toml`` when
     that env var is set (the ``codex`` CLI honors it), else the default ``~/.codex/config.toml``. A
@@ -658,14 +667,23 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
 
     If the file exists but can't be parsed, defer to the per-server ``codex`` CLI rather than
     overwrite it."""
-    from ucode.mcp import add_codex_mcp_server, remove_codex_mcp_server
+    from ucode.mcp import (
+        add_codex_http_mcp_server,
+        add_codex_mcp_server,
+        remove_codex_mcp_server,
+    )
 
     path = user_mcp_config_path()
     doc = _read_user_config_for_rewrite(path)
     if doc is None:
         removed = {name for name in remove if remove_codex_mcp_server(name)}
         for name, entry in add.items():
-            add_codex_mcp_server(name, [entry["command"], *entry.get("args", [])])
+            # Dispatch on entry shape: a native HTTP+OAuth entry has `url` (+ `oauth.client_id`)
+            # and no `command`, so it must go through the HTTP CLI path, not the stdio proxy one.
+            if "url" in entry:
+                add_codex_http_mcp_server(name, entry["url"], entry["oauth"]["client_id"])
+            else:
+                add_codex_mcp_server(name, [entry["command"], *entry.get("args", [])])
         return removed
 
     table = doc.get(MANAGED_MCP_CONFIG_KEY)
@@ -1033,7 +1051,7 @@ def _launch_codex_with_otel_proxy(
     server_thread.start()
     endpoint = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/v1/traces"
     otel_args = codex_config_args(_otel_proxy_overlay(endpoint))
-    proc = subprocess.Popen([*base_argv, *otel_args, *tool_args])
+    proc = subprocess_cross_os.popen([*base_argv, *otel_args, *tool_args])
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

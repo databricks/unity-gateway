@@ -7,6 +7,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -16,6 +17,14 @@ from pathlib import Path
 from .constants import CLAUDE_TEST_MODEL, CODEX_TEST_MODEL
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def process_group_options() -> dict:
+    if os.name == "posix":
+        return {"start_new_session": True}
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {}
 
 
 def clean_environment(home: Path) -> dict[str, str]:
@@ -51,7 +60,6 @@ def clean_environment(home: Path) -> dict[str, str]:
             "NO_COLOR": "1",
             "TERM": "dumb",
             "COLUMNS": "160",
-            "ENABLE_SMART_ROUTING_V2": "0",
             "PYTHONNOUSERSITE": "1",
         }
     )
@@ -70,8 +78,19 @@ def stop_process(proc: subprocess.Popen) -> None:
         # The leader may have exited while a grandchild kept running.
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
-    elif proc.poll() is None:
-        proc.kill()
+    elif os.name == "nt" and proc.poll() is None:
+        try:
+            subprocess.run(
+                [shutil.which("taskkill") or "taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        if proc.poll() is None:
+            proc.kill()
     proc.wait(timeout=5)
 
 
@@ -113,7 +132,7 @@ class UserSession:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            start_new_session=os.name == "posix",
+            **process_group_options(),
         )
         timed_out = False
         try:
@@ -217,6 +236,29 @@ class UserSession:
         )
         return ids
 
+    def claude_gateway_cache_ready(self, expected_ids: list[str] | None = None) -> bool:
+        """Report whether Claude's gateway cache has landed, without asserting.
+
+        Claude Code writes ``cache/gateway-models.json`` asynchronously while the
+        model picker discovers the gateway catalog, so a test must wait for the
+        cache before reading it or capturing the picker.  Return True once the
+        cache is a well-formed, non-empty catalog and, when ``expected_ids`` is
+        given, contains every one of them.  Tolerate a missing or half-written
+        file by returning False so callers can poll.
+        """
+        path = Path(self.env["CLAUDE_CONFIG_DIR"]) / "cache/gateway-models.json"
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return False
+        models = payload.get("models") if isinstance(payload, dict) else None
+        if not isinstance(models, list) or not models:
+            return False
+        ids = {model.get("id") for model in models if isinstance(model, dict)}
+        if expected_ids is None:
+            return True
+        return set(expected_ids) <= ids
+
     def app_server_handshake(
         self,
         args: list[str],
@@ -239,7 +281,7 @@ class UserSession:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            start_new_session=os.name == "posix",
+            **process_group_options(),
         )
 
         def read_output():
