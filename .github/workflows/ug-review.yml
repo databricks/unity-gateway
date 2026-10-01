@@ -25,7 +25,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-      pull-requests: read
+      pull-requests: write
     runs-on:
       group: databricks-protected-runner-group
       labels: linux-ubuntu-latest
