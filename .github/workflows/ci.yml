@@ -131,7 +131,7 @@ jobs:
   integration:
     name: Integration
     needs: lint
-    # The condition ensures integration tests if lint passes and the overal workflow is not cancelled.
+    # The condition runs integration tests only if lint passes and the overall workflow is not cancelled.
     # The merge queue skips integration tests; they already ran on the PR.
     if: ${{ github.event_name != 'merge_group' && needs.lint.result == 'success' && !cancelled() }}
     permissions:
