@@ -352,7 +352,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     env:
-      UCODE_TEST_WORKSPACE: https://dbc-0352a8c1-19ad.cloud.databricks.com
+      UCODE_TEST_WORKSPACE: ${{ secrets.UG_CUJ7_WORKSPACE }}
       DATABRICKS_CLIENT_ID: ${{ secrets.UG_CUJ7_SP_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_CUJ7_SP_CLIENT_SECRET }}
       DEPENDENCY: ${{ inputs.dependency }}
