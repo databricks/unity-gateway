@@ -112,8 +112,9 @@ class TestUsageCommand:
             lambda *_: pytest.fail("invalid credentials must not look like absent budget"),
         )
 
-        with pytest.raises(RuntimeError, match="expired or invalid"):
+        with pytest.raises(RuntimeError) as exc_info:
             usage()
+        assert str(exc_info.value) == "Your access token is expired or invalid."
 
     def test_requires_a_configured_workspace(self, monkeypatch):
         monkeypatch.setattr(usage_mod, "load_state", lambda: {})
