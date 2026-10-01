@@ -466,14 +466,16 @@ Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workf
 uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
 cannot receive those secrets.
 
-CUJ7 (`test_case_07_configured_claude_discovers_system_models`) runs in its own required
-CI job. The workspace URL comes from the `UG_CUJ7_WORKSPACE` repository secret;
-the shared CUJ service-principal credentials come from `UG_CUJ_SP_CLIENT_ID` and
-`UG_CUJ_SP_CLIENT_SECRET`.
+CUJ7 (`test_case_07_configured_claude_discovers_system_models` and
+`test_case_08_configured_codex_uses_default_models`) runs in its own required CI
+job as one matrix leg per agent. The workspace URL comes from the
+`UG_CUJ7_WORKSPACE` repository secret; the shared CUJ service-principal credentials
+come from `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET`.
 The runner mints a short-lived workspace bearer from those credentials. The shared
-Claude job excludes the `cuj7` marker, so this case runs only on the dedicated workspace. That workspace
-must have no published CodingAgentConfig and must expose discoverable `system.ai`
-Claude models. The dedicated job is required for full, live, and TUI CI suites.
+Claude and Codex jobs exclude the `cuj7` marker, so these cases run only on the dedicated
+workspace. That workspace must have no published CodingAgentConfig and must expose
+discoverable `system.ai` models for both agents. The dedicated job is required for
+full, live, and TUI CI suites.
 
 The workspace check requires the secret to match
 `https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash
@@ -485,14 +487,15 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs 67 live cases in the shared Claude and Codex lanes and
-CUJ7 in a separate dedicated-workspace lane:
+two agent jobs). Full runs 66 live cases in the shared Claude and Codex lanes and
+CUJ7 in two dedicated-workspace matrix legs:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
 | Claude | `live and claude and not cuj7` | 30 |
-| Codex | `live and codex` | 37 |
-| CUJ7 | `live and tui and claude and cuj7` | 1 |
+| Codex | `live and codex and not cuj7` | 36 |
+| CUJ7 · Claude | `live and claude and cuj7` | 1 |
+| CUJ7 · Codex | `live and codex and cuj7` | 1 |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
@@ -509,7 +512,7 @@ No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, shared workspace validation,
-smoke, both full lanes, CUJ7, and both **Managed config** lanes to pass for full/live runs. Each tracing
+smoke, both full lanes, both CUJ7 matrix legs, and both **Managed config** lanes to pass for full/live runs. Each tracing
 journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
 a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
 and installation subsets do not select managed tests and do not require them.
@@ -631,8 +634,9 @@ comment removes the label and reruns the gate; manually adding the label does no
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
 and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
 alias for `full`. Manual subsets are explicit: `smoke` runs just the six smoke
-cases; `tui` adds `and tui` to each agent lane's marker and runs all 12 live TUI cases. Installation
-checks always run. Set the ug/agent versions. From the CLI:
+cases; `tui` adds `and tui` to each shared agent lane's marker and runs all 12 live
+TUI cases, while the dedicated CUJ7 matrix still runs both of its discovery cases.
+Installation checks always run. Set the ug/agent versions. From the CLI:
 
 ```bash
 gh workflow run integration.yml -R databricks/unity-gateway --ref YOUR_BRANCH \

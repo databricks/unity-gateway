@@ -347,18 +347,22 @@ jobs:
     steps: *live-steps
 
   cuj7:
-    name: CUJ7 · configured Claude model discovery
+    name: CUJ7 · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
     if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [claude, codex]
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UG_CUJ7_WORKSPACE }}
       DATABRICKS_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
       DEPENDENCY: ${{ inputs.dependency }}
-      AGENT: claude
-      TEST_MARKER: live and tui and claude and cuj7
-      ARTIFACT_NAME: integration-cuj7
+      AGENT: ${{ matrix.agent }}
+      TEST_MARKER: live and ${{ matrix.agent }} and cuj7
+      ARTIFACT_NAME: integration-cuj7-${{ matrix.agent }}
     steps: *live-steps
 
   # Non-blocking: continue-on-error and absent from the cujs `needs`, so a flaky OpenCode
