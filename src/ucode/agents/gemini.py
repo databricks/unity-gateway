@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import re
 import signal
+import subprocess
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 
 from ucode.agent_updates import latest_version_below
@@ -17,9 +19,11 @@ from ucode.config_io import (
     deep_merge_dict,
     parse_dotenv,
     read_json_safe,
+    restore_file,
     write_dotenv,
     write_json_file,
 )
+from ucode.constants import MCP_USER_SCOPE
 from ucode.databricks import (
     TOKEN_REFRESH_INTERVAL_SECONDS,
     build_tool_base_url,
@@ -35,6 +39,7 @@ from ucode.state import (
 from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions
+from .interface import ConfigureRequest, Install, McpServer, Models
 
 GEMINI_CONFIG_DIR = Path.home() / ".gemini"
 GEMINI_ENV_PATH = GEMINI_CONFIG_DIR / "ucode.env"
@@ -132,6 +137,64 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     """Apply ``add``/``remove`` to Gemini's `mcpServers` (in ug's Gemini home settings) in a single
     read-modify-write. Returns the names actually removed."""
     return apply_json_mcp_diff(GEMINI_SETTINGS_PATH, "mcpServers", add, remove)
+
+
+def _gemini_cli_env() -> dict[str, str]:
+    # Pin GEMINI_CLI_HOME to the same directory the launcher.
+    env = os.environ.copy()
+    env["GEMINI_CLI_HOME"] = str(GEMINI_HOME_DIR)
+    return env
+
+
+def add_gemini_mcp_server(name: str, argv: list[str]) -> None:
+    # Register the proxy as a stdio server: `gemini mcp add <name> <cmd> <args…>
+    # --type stdio`. The scope/type flags trail the captured command + args.
+    try:
+        subprocess_cross_os.run(
+            [
+                "gemini",
+                "mcp",
+                "add",
+                name,
+                *argv,
+                "--type",
+                "stdio",
+                "--scope",
+                MCP_USER_SCOPE,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=_gemini_cli_env(),
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"Failed to add MCP server '{name}' via gemini CLI.") from exc
+
+
+def remove_gemini_mcp_server(name: str) -> bool:
+    # Imported lazily: `_is_missing_mcp_server_output` is a shared CLI-output matcher in
+    # ucode.mcp, which imports the agent modules at load time.
+    from ucode.mcp import _is_missing_mcp_server_output
+
+    try:
+        result = subprocess_cross_os.run(
+            ["gemini", "mcp", "remove", name, "--scope", MCP_USER_SCOPE],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=_gemini_cli_env(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Timed out removing MCP server '{name}' via gemini CLI.") from exc
+
+    output = f"{result.stderr or ''}\n{result.stdout or ''}"
+    if _is_missing_mcp_server_output(output):
+        return False
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to remove MCP server '{name}' via gemini CLI.")
+    return True
 
 
 def render_env_overlay(
@@ -271,3 +334,105 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
 
 def validate_cmd(binary: str) -> list[str]:
     return [binary, "-p", "say hi in 5 words or less"]
+
+
+def _model_ids(value: object) -> list[str]:
+    """Flatten a state model inventory (str, list, or provider-keyed dict) into model ids."""
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item]
+    if isinstance(value, dict):
+        return [model for models in value.values() for model in _model_ids(models)]
+    return []
+
+
+class GeminiMcpClient:
+    """Gemini CLI's MCP registration: `gemini mcp add/remove` under ug's pinned Gemini home."""
+
+    display = SPEC["display"]
+    binary = SPEC["binary"]
+    # `gemini mcp add` accepts only a static `--header` bearer, not an OAuth client, so Gemini
+    # always uses the stdio `ug mcp-proxy`.
+    oauth_client_id = None
+
+    def add(self, name: str, server: McpServer) -> list[str]:
+        removed = remove_gemini_mcp_server(name)
+        add_gemini_mcp_server(name, list(server.proxy_argv))
+        return [MCP_USER_SCOPE] if removed else []
+
+    def remove(self, name: str) -> list[str]:
+        return [MCP_USER_SCOPE] if remove_gemini_mcp_server(name) else []
+
+    def apply(self, add: Mapping[str, McpServer], remove: set[str]) -> set[str]:
+        """Collapse a whole diff into ONE read-modify-write of Gemini's user-scope settings,
+        instead of a `gemini mcp` subprocess per server."""
+        entries = {name: self.entry(server) for name, server in add.items()}
+        return write_user_mcp_servers(entries, remove) or set()
+
+    def entry(self, server: McpServer) -> dict:
+        """The on-disk `mcpServers` entry `gemini mcp add` records ``server`` as."""
+        return build_mcp_server_entry(list(server.proxy_argv))
+
+    def live_status(self) -> dict[str, str]:
+        from ucode.mcp import _read_mcp_listing
+
+        # Gemini reads its config from a pinned home dir, matching how ug registers servers there.
+        output = _read_mcp_listing([self.binary, "mcp", "list"], env=_gemini_cli_env())
+        return self.parse_listing(output) if output is not None else {}
+
+    def parse_listing(self, output: str) -> dict[str, str]:
+        """Parse ``gemini mcp list`` output into ``{server_name: live-state}``.
+
+        Parse the rows first, and read the output as "no servers configured" only when none parsed.
+        That check looks for phrases like "not found", which also appear inside a single server's
+        failure detail (``Failed to connect - HTTP 404 Not Found``), so checking it up front would
+        let one broken server empty the whole listing."""
+        from ucode.mcp import _is_missing_mcp_server_output, _parse_health_mcp_list
+
+        parsed = _parse_health_mcp_list(output)
+        if not parsed and _is_missing_mcp_server_output(output):
+            return {}
+        return parsed
+
+
+class GeminiAgent:
+    """Gemini CLI as an :class:`~ucode.agents.interface.Agent`."""
+
+    display = SPEC["display"]
+    install = Install(
+        binary=SPEC["binary"],
+        package=SPEC["package"],
+        too_new=lambda: too_new_downgrade(),
+    )
+    mcp = GeminiMcpClient()
+
+    def models(self, state: dict) -> Models:
+        # A managed static list replaces discovery outright.
+        available = _model_ids(state.get("gemini_static_models")) or _model_ids(
+            state.get("gemini_models")
+        )
+        available = tuple(dict.fromkeys(available))
+        explicit = state.get("gemini_default_model")
+        if isinstance(explicit, str) and explicit:
+            return Models(available, explicit)
+        # Gemini writes the first resolved model into its ug config, so ug knows the starting model.
+        return Models(available, available[0] if available else None)
+
+    def configure(self, state: dict, request: ConfigureRequest) -> dict:
+        # Gemini always needs a model — including under a provider, which still pins the
+        # service's target model in the URL.
+        if not request.model:
+            raise RuntimeError("A gemini model must be selected before configuration.")
+        return write_tool_config(state, request.model, provider=request.provider)[0]
+
+    def launch(self, state: dict, args: list[str], *, options: LaunchOptions) -> None:
+        launch(state, args, options=options)
+
+    def revert(self, state: dict) -> list[tuple[str, str]]:
+        managed = bool((state.get("managed_configs") or {}).get("gemini"))
+        restored = restore_file(SPEC["config_path"], SPEC["backup_path"], managed)
+        return [(f"{self.display} config", "restored" if restored else "unchanged")]
+
+
+AGENT = GeminiAgent()

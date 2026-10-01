@@ -25,7 +25,7 @@ from ucode.mcp_oauth import (
     CURSOR_OAUTH_CLIENT_ID,
 )
 
-from . import claude, codex, cursor, gemini
+from . import claude, codex, cursor
 from .args import LaunchOptions
 from .interface import ConfigureRequest, Install, McpServer, Models
 
@@ -33,7 +33,6 @@ from .interface import ConfigureRequest, Install, McpServer, Models
 LEGACY_MODULES: dict[str, ModuleType] = {
     "codex": codex,
     "claude": claude,
-    "gemini": gemini,
 }
 
 # Agents with their own self-updater, which ug prefers over npm when the binary is installed.
@@ -44,7 +43,7 @@ _NATIVE_UPGRADE_ARGV: dict[str, tuple[str, ...]] = {
 
 # Agents that write the first resolved model into their ug config, so ug knows the starting
 # model. Claude and Codex deliberately leave that choice to the agent unless a model is pinned.
-_PINS_FIRST_MODEL = frozenset({"gemini"})
+_PINS_FIRST_MODEL: frozenset[str] = frozenset()
 
 
 def model_values(value: object) -> list[str]:
@@ -119,7 +118,7 @@ class LegacyAgent:
 
     def configure(self, state: dict, request: ConfigureRequest) -> dict:
         result = self._write_tool_config(state, request)
-        # gemini/copilot/pi return (state, token); codex/claude return state.
+        # codex/claude return state.
         return result[0] if isinstance(result, tuple) else result
 
     def _write_tool_config(self, state: dict, request: ConfigureRequest) -> dict | tuple[dict, str]:
@@ -146,12 +145,9 @@ class LegacyAgent:
                 parent_schema=request.parent_schema,
                 picker_catalog=extras.get("picker_catalog"),
             )
-        # Every remaining agent needs a model — including gemini under a provider,
-        # which still pins the service's target model in the URL.
+        # Every remaining agent needs a model.
         if not request.model:
             raise RuntimeError(self._model_required_error)
-        if self._tool == "gemini":
-            return write(state, request.model, provider=request.provider)
         return write(state, request.model)
 
     @property
@@ -212,7 +208,7 @@ _OAUTH_CLIENT_IDS: dict[str, str] = {
 def _mcp_module() -> ModuleType:
     """:mod:`ucode.mcp`, imported lazily to break the cycle (it imports the agent modules).
 
-    Holds the per-client CLI helpers (`add_codex_mcp_server`, `_gemini_cli_env`, ...) and the
+    Holds the per-client CLI helpers (`add_codex_mcp_server`, ...) and the
     ``mcp list`` parsers that have not moved into their agent modules yet; the per-agent PRs take
     them, and these call sites go with them."""
     from ucode import mcp
@@ -284,12 +280,7 @@ class LegacyMcpClient:
             removed = mcp.remove_codex_mcp_server(name)
             mcp.add_codex_mcp_server(name, argv)
             return _user_scope(removed)
-        if self._client == "gemini":
-            mcp = _mcp_module()
-            removed = mcp.remove_gemini_mcp_server(name)
-            mcp.add_gemini_mcp_server(name, argv)
-            return _user_scope(removed)
-        # copilot/cursor each merge the entry into their own config file.
+        # cursor merges the entry into its own config file.
         return _user_scope(self._module.write_mcp_server_config(name, argv))
 
     def remove(self, name: str) -> list[str]:
@@ -297,8 +288,6 @@ class LegacyMcpClient:
             return self._remove_claude_every_scope(name)
         if self._client == "codex":
             return _user_scope(_mcp_module().remove_codex_mcp_server(name))
-        if self._client == "gemini":
-            return _user_scope(_mcp_module().remove_gemini_mcp_server(name))
         return _user_scope(self._module.remove_mcp_server_config(name))
 
     @staticmethod
@@ -344,7 +333,7 @@ class LegacyMcpClient:
     # -- live status --------------------------------------------------------------------
 
     def live_status(self) -> dict[str, str]:
-        output = _mcp_module()._read_mcp_listing([self.binary, "mcp", "list"], env=self._cli_env())
+        output = _mcp_module()._read_mcp_listing([self.binary, "mcp", "list"])
         return self.parse_listing(output) if output is not None else {}
 
     def parse_listing(self, output: str) -> dict[str, str]:
@@ -365,10 +354,6 @@ class LegacyMcpClient:
             return {}
         return parsed
 
-    def _cli_env(self) -> dict[str, str] | None:
-        # Gemini reads its config from a pinned home dir, matching how ug registers servers there.
-        return _mcp_module()._gemini_cli_env() if self._client == "gemini" else None
-
 
 # The MCP clients this adapter wraps. The agents take their display and binary from their own
 # `SPEC`; pi is absent because it has no MCP support yet.
@@ -379,7 +364,7 @@ LEGACY_MCP_CLIENTS: dict[str, LegacyMcpClient] = {
         display=str(LEGACY_MODULES[client].SPEC["display"]),
         binary=str(LEGACY_MODULES[client].SPEC["binary"]),
     )
-    for client in ("claude", "codex", "gemini")
+    for client in ("claude", "codex")
 }
 
 # Cursor takes MCP servers but is NOT an `Agent`: it runs models on the user's own Cursor account,

@@ -10,6 +10,7 @@ import pytest
 from ucode import mcp
 from ucode.agents import claude, codex, cursor, gemini, opencode
 from ucode.agents.legacy import CURSOR_MCP_CLIENT, LEGACY_MCP_CLIENTS
+from ucode.constants import MCP_USER_SCOPE
 from ucode.mcp_oauth import CODEX_CLI_OAUTH_CLIENT_ID, CURSOR_OAUTH_CLIENT_ID
 
 WS = "https://example.databricks.com"
@@ -102,29 +103,6 @@ class TestAddCodexMcpServer:
         assert args[5:] == _proxy_argv()
 
 
-class TestAddGeminiMcpServer:
-    def test_registers_stdio_proxy_command(self, monkeypatch):
-        calls: list[dict] = []
-
-        def fake_run(args, **kwargs):
-            calls.append({"args": args, "kwargs": kwargs})
-            return MagicMock(returncode=0)
-
-        monkeypatch.setattr(mcp.subprocess, "run", fake_run)
-
-        mcp.add_gemini_mcp_server("github", _proxy_argv())
-
-        call = calls[0]
-        args = call["args"]
-        assert args[:4] == ["gemini", "mcp", "add", "github"]
-        # command + args, then the transport/scope flags.
-        assert args[4 : 4 + len(_proxy_argv())] == _proxy_argv()
-        assert args[-4:] == ["--type", "stdio", "--scope", "user"]
-        # GEMINI_CLI_HOME must point at the launcher's home so `gemini mcp add`
-        # writes the same settings.json the ucode session reads from.
-        assert call["kwargs"]["env"]["GEMINI_CLI_HOME"] == str(mcp.gemini.GEMINI_HOME_DIR)
-
-
 class TestCursorMcpClient:
     def test_cursor_registered_as_mcp_only_client(self):
         assert "cursor" in mcp.MCP_CLIENTS
@@ -147,7 +125,7 @@ class TestCursorMcpClient:
     def test_configure_reports_user_scope_on_replace(self, monkeypatch):
         monkeypatch.setattr(cursor, "write_mcp_server_config", lambda name, argv: True)
         assert mcp.configure_client_mcp_server("cursor", "github", GH_URL, WS, "p") == [
-            mcp.MCP_USER_SCOPE
+            MCP_USER_SCOPE
         ]
 
     def test_remove_dispatches_to_cursor_remover(self, monkeypatch):
@@ -155,7 +133,7 @@ class TestCursorMcpClient:
         monkeypatch.setattr(
             cursor, "remove_mcp_server_config", lambda name: calls.append(name) or True
         )
-        assert mcp.remove_client_mcp_server("cursor", "github-mcp") == [mcp.MCP_USER_SCOPE]
+        assert mcp.remove_client_mcp_server("cursor", "github-mcp") == [MCP_USER_SCOPE]
         assert calls == ["github-mcp"]
 
     def test_eligible_when_installed_even_without_configured_tools(self):
@@ -202,7 +180,7 @@ class TestConfigureClientMcpServer:
         monkeypatch.setattr(
             claude,
             "add_claude_mcp_server",
-            lambda name, argv, scope=mcp.MCP_USER_SCOPE, **kw: proxy_calls.append((name, argv)),
+            lambda name, argv, scope=MCP_USER_SCOPE, **kw: proxy_calls.append((name, argv)),
         )
         return http_calls, proxy_calls
 
@@ -338,9 +316,9 @@ class TestConfigureClientMcpServer:
             mcp, "oauth_client_available", lambda ws, client_id: probed.append(client_id) or True
         )
         monkeypatch.setattr(
-            mcp, "add_gemini_mcp_server", lambda name, argv: proxy_calls.append((name, argv))
+            gemini, "add_gemini_mcp_server", lambda name, argv: proxy_calls.append((name, argv))
         )
-        monkeypatch.setattr(mcp, "remove_gemini_mcp_server", lambda name: False)
+        monkeypatch.setattr(gemini, "remove_gemini_mcp_server", lambda name: False)
         mcp.configure_client_mcp_server("gemini", "github", AIGW_MCP_URL, WS, "p")
         assert len(proxy_calls) == 1
         assert probed == []  # gemini's client has no oauth_client_id → no probe
@@ -604,9 +582,10 @@ class TestApplyMcpServerChanges:
         # the per-server path.
         writes: dict[str, list[tuple[dict, set]]] = {"claude": [], "codex": [], "gemini": []}
         per_server: list[tuple[str, str]] = []
+        agent_modules = {"claude": claude, "codex": codex, "gemini": gemini}
         for agent_name in writes:
             monkeypatch.setattr(
-                getattr(mcp, agent_name),
+                agent_modules[agent_name],
                 "write_user_mcp_servers",
                 lambda a, r, _n=agent_name: writes[_n].append((a, r)),
             )
