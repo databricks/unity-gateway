@@ -38,6 +38,10 @@ metadata and the minimum-version gate, model inventory and pinned starting model
 returning state (and requiring a model), launch delegation, revert rows, and its `AGENT.mcp` client
 (add/remove/batched apply against a redirected `opencode.json`, and live-status parsing).
 
+`test_agent_pi.py` covers Pi's native `Agent` class (`pi.AGENT`): its model fallback chain and
+pinned starting model, the model-required guard and state-returning `configure`, declaring no MCP
+client, and `revert` rows for both `models.json` and the second `settings.json` file.
+
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 

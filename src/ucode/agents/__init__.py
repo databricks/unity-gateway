@@ -65,7 +65,7 @@ AGENTS: dict[str, Agent] = {
     "gemini": LEGACY_AGENTS["gemini"],
     "opencode": opencode.AGENT,
     "copilot": LEGACY_AGENTS["copilot"],
-    "pi": LEGACY_AGENTS["pi"],
+    "pi": pi.AGENT,
 }
 
 # Direct module access for the few things that are deliberately not in the Agent interface

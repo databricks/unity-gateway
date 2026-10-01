@@ -25,7 +25,7 @@ from ucode.mcp_oauth import (
     CURSOR_OAUTH_CLIENT_ID,
 )
 
-from . import claude, codex, copilot, cursor, gemini, pi
+from . import claude, codex, copilot, cursor, gemini
 from .args import LaunchOptions
 from .interface import ConfigureRequest, Install, McpServer, Models
 
@@ -35,7 +35,6 @@ LEGACY_MODULES: dict[str, ModuleType] = {
     "claude": claude,
     "gemini": gemini,
     "copilot": copilot,
-    "pi": pi,
 }
 
 # Agents with their own self-updater, which ug prefers over npm when the binary is installed.
@@ -46,7 +45,7 @@ _NATIVE_UPGRADE_ARGV: dict[str, tuple[str, ...]] = {
 
 # Agents that write the first resolved model into their ug config, so ug knows the starting
 # model. Claude and Codex deliberately leave that choice to the agent unless a model is pinned.
-_PINS_FIRST_MODEL = frozenset({"gemini", "copilot", "pi"})
+_PINS_FIRST_MODEL = frozenset({"gemini", "copilot"})
 
 
 def model_values(value: object) -> list[str]:
@@ -110,12 +109,6 @@ class LegacyAgent:
         if self._tool == "copilot":
             return model_values(state.get("claude_models")) + model_values(
                 state.get("codex_models")
-            )
-        if self._tool == "pi":
-            return (
-                model_values(state.get("claude_models"))
-                + model_values(state.get("codex_models"))
-                + model_values(state.get("gemini_models"))
             )
         return model_values(state.get(f"{self._tool}_models"))
 
@@ -194,12 +187,6 @@ class LegacyAgent:
             rows.append(
                 (f"{self.display} OS-managed settings", self._module.revert_managed_settings())
             )
-        if self._tool == "pi":
-            # Pi keeps its gateway providers in a second file next to the config.
-            pi_restored = restore_file(
-                self._module.PI_SETTINGS_PATH, self._module.PI_SETTINGS_BACKUP_PATH, managed
-            )
-            rows.append((f"{self.display} settings", "restored" if pi_restored else "unchanged"))
         return rows
 
 
