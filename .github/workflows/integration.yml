@@ -347,7 +347,7 @@ jobs:
     steps: *live-steps
 
   cuj7:
-    name: CUJ7 · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
+    name: "CUJ7: unmanaged journey · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}"
     if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 20

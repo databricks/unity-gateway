@@ -494,8 +494,8 @@ CUJ7 in two dedicated-workspace matrix legs:
 | --- | --- | --- |
 | Claude | `live and claude and not cuj7` | 30 |
 | Codex | `live and codex and not cuj7` | 36 |
-| CUJ7 · Claude | `live and claude and cuj7` | 1 |
-| CUJ7 · Codex | `live and codex and cuj7` | 1 |
+| CUJ7: unmanaged journey · Claude | `live and claude and cuj7` | 1 |
+| CUJ7: unmanaged journey · Codex | `live and codex and cuj7` | 1 |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
