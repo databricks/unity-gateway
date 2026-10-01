@@ -3097,12 +3097,12 @@ class TestInstallDatabricksCli:
         monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
         monkeypatch.setattr(db_mod, "_windows_user_path", lambda: installed_dir)
         monkeypatch.setattr(
-            db_mod.shutil,
-            "which",
-            lambda cmd: (
-                str(Path(installed_dir) / "databricks.exe")
-                if cmd == "databricks" and installed_dir in os.environ["PATH"].split(os.pathsep)
-                else None
+            db_mod,
+            "_discover_databricks_clis",
+            lambda **kw: (
+                [(str(Path(installed_dir) / "databricks.exe"), (1, 18, 0))]
+                if installed_dir in os.environ["PATH"].split(os.pathsep)
+                else []
             ),
         )
         monkeypatch.setattr(
