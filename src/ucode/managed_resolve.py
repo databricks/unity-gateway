@@ -228,6 +228,17 @@ def managed_default_model(managed: dict, tool: str) -> str | None:
     return _str(_agent_model_config(managed, tool).get("default_model"))
 
 
+def managed_pins_gateway_models(managed: dict, tool: str) -> bool:
+    """Whether managed config pins ``tool``'s models to gateway-served ids (not a provider or UC)."""
+    if managed_unity_catalog_location(managed, tool):
+        return False
+    return bool(
+        managed_static_models(managed, tool)
+        or managed_default_model(managed, tool)
+        or _manifest_models(managed, tool)
+    )
+
+
 def managed_claude_family_models(managed: dict) -> dict[str, str] | None:
     """Claude family models explicitly authored by Coding Agent Config."""
 
@@ -317,12 +328,16 @@ def resolve_state(managed: dict, state: dict, tool: str) -> dict:
             overlay[key] = state.get(key)
             resolved[key] = value
     provider = managed_provider_service(managed, tool)
+    providers = dict(_as_dict(state.get("provider_services")))
     if provider:
-        providers = dict(_as_dict(state.get("provider_services")))
         if providers.get(tool) != provider:
             overlay["provider_services"] = state.get("provider_services")
             providers[tool] = provider
             resolved["provider_services"] = providers
+    elif providers.get(tool) and managed_pins_gateway_models(managed, tool):
+        overlay["provider_services"] = state.get("provider_services")
+        providers.pop(tool, None)
+        resolved["provider_services"] = providers
     if overlay:
         resolved[MANAGED_OVERLAY_KEY] = overlay
     return resolved
