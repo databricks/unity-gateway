@@ -85,8 +85,11 @@ from ucode.managed_budget import (
 )
 from ucode.managed_config import (
     ManagedConfigResult,
+    cached_source_file,
+    file_config_override,
     get_managed_config,
     get_model_recommendation,
+    load_file_config,
     load_managed_state,
     normalize_managed_config,
     refresh_managed_config,
@@ -1136,6 +1139,8 @@ def _live_status_managed_state(state: dict, cached: dict | None) -> tuple[dict |
     workspace = state.get("workspace")
     if not workspace:
         return cached, "cached"
+    if cached_source_file(workspace):
+        return cached, "from --file"
     profile = state.get("profile")
     if not profile and not external_bearer_configured():
         print_warning("Live managed configuration needs the CLI profile saved by ug configure.")
@@ -2382,7 +2387,9 @@ def _fetch_managed_config(state: dict) -> ManagedConfigResult:
     ``ManagedConfigResult(None, False)`` when the feature is on but no config is published.
     """
     with spinner("Loading..."):
-        return refresh_managed_config(state)
+        result = refresh_managed_config(state)
+    _note_cached_source_file(state.get("workspace"))
+    return result
 
 
 def _note_recommended_agent(recommendation: dict | None, tool: str) -> None:
@@ -3071,6 +3078,7 @@ def _launch_managed_default(
     else:
         with spinner("Loading..."):
             managed, coding_agent_config_feature_disabled = refresh_managed_config(state)
+    _note_cached_source_file(current)
     if coding_agent_config_feature_disabled:
         print_note(
             "Run `ug configure` to set up your coding agents, then launch one with "
@@ -3108,6 +3116,15 @@ def _print_no_managed_config_guidance() -> None:
         "No managed coding agent config is published for this workspace. Run `ug configure` to "
         "set up your coding agents, then launch one with `ug <agent>` (for example `ug claude`)."
     )
+
+
+def _note_cached_source_file(workspace: str | None) -> None:
+    source_file = cached_source_file(workspace)
+    if source_file:
+        print_note(
+            f"Using managed config from {source_file} (set with --file); "
+            "run `ug configure` to use the workspace's config."
+        )
 
 
 @app.command(
@@ -3411,6 +3428,15 @@ def configure(
             help="Configure a comma-separated list of agents without prompting (e.g. claude,codex).",
         ),
     ] = None,
+    file: Annotated[
+        str | None,
+        typer.Option(
+            "--file",
+            "-f",
+            help="Configure every agent in a local managed-config JSON file instead of fetching the "
+            "workspace's. Cannot be combined with --agent or --agents.",
+        ),
+    ] = None,
     workspace: Annotated[
         str | None,
         typer.Option(
@@ -3546,6 +3572,13 @@ def configure(
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
+        if file is not None and (agent is not None or agents is not None):
+            raise RuntimeError(
+                "--file applies to every agent the file enables; drop --agent/--agents."
+            )
+        file_config = load_file_config(file) if file is not None else None
+        if file_config is not None and not managed_enabled_tools(file_config.manifest):
+            raise RuntimeError("--file enables no known coding agents.")
         install_databricks_cli()
         if agent is not None and agents is not None:
             raise RuntimeError("Use either --agent or --agents, not both.")
@@ -3582,7 +3615,10 @@ def configure(
         # MCP setup prompt so flag-driven / scripted runs are never interrupted.
         fully_interactive = False
         combined_optional_setup = False
-        if agent is not None:
+        if file_config is not None:
+            with file_config_override(file_config):
+                configure_workspace_command(workspaces=workspace_entries, **skip_kwargs)
+        elif agent is not None:
             tool = normalize_tool(agent)
             install_tool_binary(
                 tool,

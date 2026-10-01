@@ -3360,6 +3360,71 @@ class TestConfigureAgentFlag:
         mock_cfg.assert_not_called()
 
 
+class TestConfigureFileFlag:
+    """`ug configure --file`: CLI validation order and routing (loader cases live elsewhere)."""
+
+    CLAUDE_JSON = Path(__file__).parent / "fixtures" / "managed_config" / "claude.json"
+
+    @pytest.mark.parametrize(
+        ("content", "extra", "message"),
+        [
+            (
+                "claude.json",
+                ["--agent", "claude"],
+                "--file applies to every agent the file enables",
+            ),
+            (
+                "claude.json",
+                ["--agents", "claude,codex"],
+                "--file applies to every agent the file enables",
+            ),
+            (
+                '{"spec_version": 1, "enabled_agents": [{"agent": "CODING_AGENT_NEXT", "config": {}}]}',
+                [],
+                "--file enables no known coding agents",
+            ),
+            (None, [], "Cannot read --file"),
+        ],
+        ids=["with-agent", "with-agents", "only-unknown-agent", "missing-file"],
+    )
+    def test_rejected_before_any_setup(self, tmp_path, content, extra, message):
+        path = self.CLAUDE_JSON if content == "claude.json" else tmp_path / "config.json"
+        if content not in (None, "claude.json"):
+            path.write_text(content)
+
+        with (
+            patch("ucode.cli.install_databricks_cli") as install,
+            patch("ucode.cli._configure_shared_workspace_states") as shared,
+            patch("ucode.cli.configure_workspace_command") as configure,
+        ):
+            result = runner.invoke(app, ["configure", "--file", str(path), *extra])
+
+        assert result.exit_code == 1
+        assert message in _strip_ansi(result.output)
+        install.assert_not_called()
+        shared.assert_not_called()
+        configure.assert_not_called()
+
+    def test_configures_under_the_file_override_without_prompting(self):
+        import ucode.managed_config as mc
+
+        seen = []
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch(
+                "ucode.cli.configure_workspace_command",
+                side_effect=lambda **kw: seen.append(mc._FILE_CONFIG),
+            ),
+            patch("ucode.cli.prompt_yes_no", side_effect=AssertionError("prompted")),
+        ):
+            result = runner.invoke(app, ["configure", "--file", str(self.CLAUDE_JSON)])
+
+        assert result.exit_code == 0, result.output
+        assert len(seen) == 1
+        assert seen[0].manifest["enabled_agents"].keys() == {"claude"}
+        assert mc._FILE_CONFIG is None
+
+
 class TestConfigureMcpFlag:
     def test_mcp_with_agents_configures_then_registers_services(self):
         with (
