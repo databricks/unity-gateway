@@ -1,7 +1,8 @@
 # Integration tests
 
-This suite runs the **installed product** through subprocesses, against the same
-`UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
+This suite runs the **installed product** through subprocesses. Most live cases use
+the same `UCODE_TEST_WORKSPACE` as existing e2e tests; CUJ7 uses a dedicated
+unmanaged workspace in CI. It does not import `ucode`,
 patch application functions, substitute agent executables, run a fake gateway,
 or construct ug state files. The normal test suite checks these boundaries.
 
@@ -465,6 +466,15 @@ Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workf
 uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
 cannot receive those secrets.
 
+CUJ7 (`test_case_07_configured_claude_discovers_system_models`) runs in its own required
+CI job. It reads `UG_CUJ7_WORKSPACE`, `UG_CUJ7_SP_CLIENT_ID`, and
+`UG_CUJ7_SP_CLIENT_SECRET` from repository secrets. The runner mints a short-lived
+workspace bearer from the service-principal credentials. CI checks the workspace
+URL against its pinned value before running the test. The shared Claude job excludes
+the `cuj7` marker, so this case runs only on the dedicated workspace. That workspace
+must have no published CodingAgentConfig and must expose discoverable `system.ai`
+Claude models. The dedicated job is required for full, live, and TUI CI suites.
+
 The workspace check requires the secret to match
 `https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash
 is accepted). It never changes the secret or switches workspaces. There is no
@@ -475,13 +485,14 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 68 live cases, including those smoke cases, in two
-disjoint agent lanes:
+two agent jobs). Full runs 67 live cases in the shared Claude and Codex lanes and
+CUJ7 in a separate dedicated-workspace lane:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 31 |
+| Claude | `live and claude and not cuj7` | 30 |
 | Codex | `live and codex` | 37 |
+| CUJ7 | `live and tui and claude and cuj7` | 1 |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
@@ -497,8 +508,8 @@ shards and other PRs; this limit does not guarantee freedom from rate limits.
 No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
-The **All integration tests** check requires installation, workspace validation, smoke,
-both full lanes, and both **Managed config** lanes to pass for full/live runs. Each tracing
+The **All integration tests** check requires installation, both workspace validations,
+smoke, both full lanes, CUJ7, and both **Managed config** lanes to pass for full/live runs. Each tracing
 journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
 a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
 and installation subsets do not select managed tests and do not require them.

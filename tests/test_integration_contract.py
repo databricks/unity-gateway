@@ -71,12 +71,20 @@ def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_resul
     assert script is not None
     results = {
         job: {"result": "success"}
-        for job in ("installation", "workspace", "smoke", "full", "managed")
+        for job in (
+            "installation",
+            "workspace",
+            "smoke",
+            "full",
+            "cuj7-workspace",
+            "cuj7",
+            "managed",
+        )
     }
     results["managed"]["result"] = managed_result
     for job in {
-        "installation": ("workspace", "smoke", "full"),
-        "smoke": ("full",),
+        "installation": ("workspace", "smoke", "full", "cuj7-workspace", "cuj7"),
+        "smoke": ("full", "cuj7-workspace", "cuj7"),
         "tui": ("smoke",),
     }.get(suite, ()):
         results[job]["result"] = "skipped"
@@ -93,6 +101,39 @@ def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_resul
     else:
         assert result.returncode == 0, result.stderr
         assert "All selected integration jobs passed:" in result.stdout
+
+
+@pytest.mark.parametrize("suite", ["full", "live", "tui", "smoke", "installation"])
+def test_integration_ci_gate_requires_cuj7_for_live_suites(suite):
+    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+    gate = workflow.read_text().split("\n  cujs:\n", 1)[1]
+    script = re.search(r"          python3 - <<'PY'\n(.*?)          PY", gate, re.DOTALL)
+    assert script is not None
+    results = {
+        job: {"result": "success"}
+        for job in (
+            "installation",
+            "workspace",
+            "smoke",
+            "full",
+            "cuj7-workspace",
+            "cuj7",
+            "managed",
+        )
+    }
+    results["cuj7"]["result"] = "failure"
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script.group(1))],
+        env={"RESULTS": json.dumps(results), "SUITE": suite},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if suite in {"full", "live", "tui"}:
+        assert result.returncode != 0
+        assert "Integration jobs did not pass: cuj7" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
 
 
 def test_integration_suite_uses_only_public_process_boundaries():
