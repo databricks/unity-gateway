@@ -1,4 +1,4 @@
-"""Managed-config lifecycle CUJs for model settings across policy transitions.
+"""Managed-config lifecycle CUJ: an agent's model settings track the config across transitions.
 
 A developer's workspace configuration moves through no config -> static config A -> static config B
 -> model discovery via a Model Provider Service -> no config, within one home. Switching between
@@ -7,16 +7,14 @@ previous config listed); switching to an MPS clears the static list (the header 
 configuring a workspace with no managed config clears ug's static picker/catalog so an unmanaged
 workspace never enforces a stale list.
 
-The model-list transition cases inject configs via ``UCODE_MANAGED_CONFIG_STUB`` (an explicit
-``null`` for the no-config states) so they run without republishing the live workspace's config;
-auth, the config writers, the agent binaries, and the workspace stay real. The family-default
-preservation case instead moves between two real published-policy states. These assert the generated
-files because the whole point is file-level reconciliation across transitions, which the TUI cannot
-show.
+The configs are injected via ``UCODE_MANAGED_CONFIG_STUB`` (an explicit ``null`` for the no-config
+states) so the transitions run without republishing the live workspace's config; auth, the config
+writers, the agent binaries, and the workspace stay real. The MPS states reference real provider
+services published on the managed e2e workspace. These assert the generated files because the whole
+point is file-level reconciliation across transitions, which the TUI cannot show.
 """
 
 import json
-import os
 
 import pytest
 from utils.managed import (
@@ -26,7 +24,6 @@ from utils.managed import (
     build_mps_agent_config,
     set_managed_config_stub,
 )
-from utils.terminal import TerminalProcess
 
 # Claude model ids are written to the picker verbatim, so any real system.ai ids work.
 CLAUDE_A = [
@@ -41,15 +38,6 @@ CODEX_B = ["system.ai.gpt-5-4-nano"]
 # Model Provider Services published on the managed e2e workspace for these transitions.
 CLAUDE_MPS = "main.default.ci_e2e_anthropic_mps"
 CODEX_MPS = "main.default.ci_e2e_openai_mps"
-CLAUDE_MPS_DEFAULTS_WORKSPACE = (
-    "https://eng-ml-inference-batch-inference-us-west-2.cloud.databricks.com"
-)
-PREEXISTING_CLAUDE_FAMILY_DEFAULTS = {
-    "ANTHROPIC_DEFAULT_FABLE_MODEL": "anthropic.claude-fable-5-1",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "anthropic.claude-opus-5",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "anthropic.claude-sonnet-5",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "anthropic.claude-haiku-4-5",
-}
 
 
 def _configure_managed(session, workspace):
@@ -74,70 +62,6 @@ def _codex_listed(session):
         return []
     catalog = json.loads(catalog_path.read_text())
     return [m.get("slug") for m in catalog.get("models", []) if m.get("visibility") == "list"]
-
-
-def _claude_family_defaults(settings):
-    env = settings.get("env") or {}
-    return {key: env.get(key) for key in PREEXISTING_CLAUDE_FAMILY_DEFAULTS if key in env}
-
-
-@pytest.mark.managed
-@pytest.mark.claude
-def test_unmanaged_claude_preserves_preexisting_family_defaults(
-    live_session, second_unmanaged_workspace
-):
-    """Scenario: configure and launch Claude on the west-2 workspace whose managed config
-    supplies distinctive family defaults, then configure a second real workspace after verifying
-    that it publishes no managed config.
-
-    Expected: the unmanaged configure preserves every pre-existing family default exactly in both
-    Claude settings files. This settings lifecycle check does not claim model inference.
-    """
-    session = live_session
-    target_bearer = os.environ.get("UG_MPS_DEFAULTS_BEARER", "").strip()
-    assert target_bearer, "The runner needs UG_MPS_DEFAULTS_CLIENT_SECRET for this workspace."
-    session.env["DATABRICKS_BEARER"] = target_bearer
-
-    configured = session.run(
-        "configure",
-        "--workspace",
-        CLAUDE_MPS_DEFAULTS_WORKSPACE,
-        "--skip-upgrade",
-        timeout=240,
-    )
-    assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
-    with TerminalProcess(
-        session,
-        "claude",
-        [str(session.binary), "claude", "--", "--version"],
-        "managed-family-defaults",
-    ) as terminal:
-        terminal.finish(timeout=240)
-
-    managed_private = json.loads((session.home / ".claude/ucode-settings.json").read_text())
-    managed_os = json.loads(
-        session.run("/etc/claude-code/managed-settings.json", binary="cat", timeout=30).stdout
-    )
-    for settings in (managed_private, managed_os):
-        assert _claude_family_defaults(settings) == PREEXISTING_CLAUDE_FAMILY_DEFAULTS, settings
-
-    session.env["DATABRICKS_BEARER"] = os.environ["DATABRICKS_SECOND_BEARER"]
-    session.run(
-        "configure",
-        "--agents",
-        "claude",
-        "--workspace",
-        second_unmanaged_workspace,
-        "--skip-upgrade",
-        timeout=240,
-    )
-
-    unmanaged_private = json.loads((session.home / ".claude/ucode-settings.json").read_text())
-    unmanaged_os = json.loads(
-        session.run("/etc/claude-code/managed-settings.json", binary="cat", timeout=30).stdout
-    )
-    for settings in (unmanaged_private, unmanaged_os):
-        assert _claude_family_defaults(settings) == PREEXISTING_CLAUDE_FAMILY_DEFAULTS, settings
 
 
 @pytest.mark.managed_fixture

@@ -50,11 +50,12 @@ def workspace():
     return value
 
 
-def _assert_workspace_is_unmanaged(workspace: str, bearer: str) -> str:
+@pytest.fixture(scope="session")
+def unmanaged_workspace(workspace):
     """Require a real no-config workspace, without injecting or changing its policy."""
     request = urllib.request.Request(
         workspace + MANAGED_CONFIGS_PATH,
-        headers={"Authorization": f"Bearer {bearer}"},
+        headers={"Authorization": f"Bearer {os.environ['DATABRICKS_BEARER']}"},
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
@@ -67,11 +68,6 @@ def _assert_workspace_is_unmanaged(workspace: str, bearer: str) -> str:
         return workspace
     assert_no_managed_config(payload)
     return workspace
-
-
-@pytest.fixture(scope="session")
-def unmanaged_workspace(workspace):
-    return _assert_workspace_is_unmanaged(workspace, os.environ["DATABRICKS_BEARER"])
 
 
 @pytest.fixture(scope="session")
@@ -90,11 +86,6 @@ def second_workspace(workspace):
     if parsed.hostname == urlparse(workspace).hostname:
         pytest.fail("Workspace-switch CUJs require two distinct workspace hosts.")
     return value
-
-
-@pytest.fixture(scope="session")
-def second_unmanaged_workspace(second_workspace):
-    return _assert_workspace_is_unmanaged(second_workspace, os.environ["DATABRICKS_SECOND_BEARER"])
 
 
 @pytest.fixture
