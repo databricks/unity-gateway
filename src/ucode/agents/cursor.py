@@ -2,7 +2,7 @@
 
 Cursor is an MCP-only integration. `cursor-agent` runs models on the user's own
 Cursor account and exposes no gateway base URL, so ucode configures no models
-for it (it stays out of `agents.__init__._MODULES`). What ucode does is register
+for it (it is an `McpClient`, not an `Agent`, so it stays out of `agents.AGENTS`). What ucode does is register
 Databricks MCP servers in Cursor's config, using the same uniform mechanism as
 every other client: a local **stdio** server that runs `ug mcp-proxy`, which
 bridges to the Databricks MCP endpoint and mints a fresh OAuth token per request
@@ -17,10 +17,15 @@ whole-file backup.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 from ucode.config_io import apply_json_mcp_diff, read_json_safe, write_json_file
+from ucode.constants import MCP_USER_SCOPE
 from ucode.launcher import exec_or_spawn
+from ucode.mcp_oauth import CURSOR_OAUTH_CLIENT_ID
+
+from .interface import McpServer
 
 CURSOR_BINARY = "cursor-agent"
 CURSOR_CONFIG_DIR = Path.home() / ".cursor"
@@ -103,3 +108,65 @@ def launch(state: dict, tool_args: list[str]) -> None:
     convenience wrapper over `cursor-agent` (kept for symmetry with the other
     `ucode <agent>` launchers)."""
     exec_or_spawn([CURSOR_BINARY, *tool_args])
+
+
+def _user_scope(removed: bool) -> list[str]:
+    """``add``/``remove``'s return shape: Cursor has only one scope, where ug writes."""
+    return [MCP_USER_SCOPE] if removed else []
+
+
+class CursorMcpClient:
+    """Registers MCP servers in Cursor's ``~/.cursor/mcp.json``.
+
+    Cursor can drive OAuth itself against a published app (a ``url`` entry with an ``auth`` block,
+    so it shows its own connection login), which is a much better experience than the stdio
+    ``ug mcp-proxy`` for a connection-backed service. ug core decides *what* to register (an
+    :class:`McpServer`, with the proxy-vs-native-OAuth choice already made); this decides *how*.
+    """
+
+    display: str = "Cursor"
+    binary: str = CURSOR_BINARY
+    # The published OAuth app a native HTTP+OAuth entry registers against. It must be published on
+    # the workspace, with its loopback `/callback` redirect registered on `/oidc` (which lacks
+    # dynamic client registration), so ug core checks that per workspace (`oauth_client_available`).
+    oauth_client_id: str | None = CURSOR_OAUTH_CLIENT_ID
+
+    def add(self, name: str, server: McpServer) -> list[str]:
+        if server.oauth_client is not None:
+            return _user_scope(
+                write_http_mcp_server_config(name, server.url, client_id=server.oauth_client)
+            )
+        return _user_scope(write_mcp_server_config(name, list(server.proxy_argv)))
+
+    def remove(self, name: str) -> list[str]:
+        return _user_scope(remove_mcp_server_config(name))
+
+    def apply(self, add: Mapping[str, McpServer], remove: set[str]) -> set[str]:
+        """Collapse a whole diff into ONE read-modify-write of ``mcp.json``, instead of a config
+        write per server (see ``mcp.apply_mcp_server_changes``)."""
+        entries = {name: self.entry(server) for name, server in add.items()}
+        return write_user_mcp_servers(entries, remove) or set()
+
+    def entry(self, server: McpServer) -> dict:
+        """The on-disk entry :meth:`add` would have written for ``server``."""
+        if server.oauth_client is not None:
+            return build_http_mcp_server_entry(server.url, server.oauth_client)
+        return build_mcp_server_entry(list(server.proxy_argv))
+
+    def live_status(self) -> dict[str, str]:
+        # Imported lazily: `ucode.mcp` imports this package. The shared `mcp list` reader and
+        # health-line parser live in mcp.py, where the other clients use them too.
+        from ucode import mcp
+
+        output = mcp._read_mcp_listing([self.binary, "mcp", "list"])
+        if output is None:
+            return {}
+        # Parse the rows first and read the output as "no servers configured" only when none
+        # parsed: that check matches phrases ("not found") also present in one server's failure.
+        parsed = mcp._parse_health_mcp_list(output)
+        if not parsed and mcp._is_missing_mcp_server_output(output):
+            return {}
+        return parsed
+
+
+MCP_CLIENT = CursorMcpClient()

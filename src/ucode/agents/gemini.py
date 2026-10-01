@@ -40,6 +40,7 @@ from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions
 from .interface import ConfigureRequest, Install, McpServer, Models
+from .inventory import model_values
 
 GEMINI_CONFIG_DIR = Path.home() / ".gemini"
 GEMINI_ENV_PATH = GEMINI_CONFIG_DIR / "ucode.env"
@@ -336,17 +337,6 @@ def validate_cmd(binary: str) -> list[str]:
     return [binary, "-p", "say hi in 5 words or less"]
 
 
-def _model_ids(value: object) -> list[str]:
-    """Flatten a state model inventory (str, list, or provider-keyed dict) into model ids."""
-    if isinstance(value, str):
-        return [value] if value else []
-    if isinstance(value, list):
-        return [item for item in value if isinstance(item, str) and item]
-    if isinstance(value, dict):
-        return [model for models in value.values() for model in _model_ids(models)]
-    return []
-
-
 class GeminiMcpClient:
     """Gemini CLI's MCP registration: `gemini mcp add/remove` under ug's pinned Gemini home."""
 
@@ -409,7 +399,7 @@ class GeminiAgent:
 
     def models(self, state: dict) -> Models:
         # A managed static list replaces discovery outright.
-        available = _model_ids(state.get("gemini_static_models")) or _model_ids(
+        available = model_values(state.get("gemini_static_models")) or model_values(
             state.get("gemini_models")
         )
         available = tuple(dict.fromkeys(available))

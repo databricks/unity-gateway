@@ -32,6 +32,7 @@ from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
 from .interface import ConfigureRequest, Install, McpClient, McpServer, Models
+from .inventory import model_values
 
 OPENCODE_XDG_CONFIG_HOME = APP_DIR / "opencode-xdg"
 OPENCODE_CONFIG_DIR = OPENCODE_XDG_CONFIG_HOME / "opencode"
@@ -455,17 +456,6 @@ def validate_cmd(binary: str) -> list[str]:
     return [binary, "run", "say hi in 5 words or less"]
 
 
-def _model_ids(value: object) -> list[str]:
-    """Flatten a state model inventory (str, list, or family-keyed dict) into model ids."""
-    if isinstance(value, str):
-        return [value] if value else []
-    if isinstance(value, list):
-        return [item for item in value if isinstance(item, str) and item]
-    if isinstance(value, dict):
-        return [model for models in value.values() for model in _model_ids(models)]
-    return []
-
-
 def _user_scope(removed: bool) -> list[str]:
     """``add``/``remove``'s return shape: OpenCode has one MCP scope, where ug writes."""
     return [MCP_USER_SCOPE] if removed else []
@@ -523,8 +513,10 @@ class OpenCodeAgent:
 
     def models(self, state: dict) -> Models:
         # A managed static list replaces discovery outright.
-        static_models = _model_ids(state.get("opencode_static_models"))
-        available = tuple(dict.fromkeys(static_models or _model_ids(state.get("opencode_models"))))
+        static_models = model_values(state.get("opencode_static_models"))
+        available = tuple(
+            dict.fromkeys(static_models or model_values(state.get("opencode_models")))
+        )
         explicit = state.get("opencode_default_model")
         if isinstance(explicit, str) and explicit:
             return Models(available, explicit)

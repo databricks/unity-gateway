@@ -29,8 +29,10 @@ the `AGENTS` registry: protocol conformance, install metadata, model inventories
 state, the status semantics of the pinned starting model, and revert row shape. It also checks that
 an unknown agent name raises instead of configuring OpenCode. It covers the `McpClient` half the
 same way, over `mcp.MCP_CLIENTS`: registry membership and order, protocol conformance, each agent's
-`mcp` being its registered client, Pi declaring none, and Cursor being an MCP client but not an
-agent. These are component checks over the shared dispatch; per-agent config writing stays in each
+`mcp` being its registered client, Pi declaring none, and Cursor being an MCP client (the native
+`cursor.MCP_CLIENT`, including its stdio-proxy and native HTTP+OAuth entry shapes) but not an
+agent. It also covers `agents/inventory.py`'s `model_values`, the one model-inventory flattener
+every agent shares. These are component checks over the shared dispatch; per-agent config writing stays in each
 `test_agent_<name>.py`, and the per-client MCP registration/entry/listing behavior in `test_mcp.py`.
 
 `test_agent_opencode.py` also covers OpenCode's native `Agent` class (`opencode.AGENT`): install

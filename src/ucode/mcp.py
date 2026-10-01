@@ -16,12 +16,12 @@ from rich.table import Table
 
 from ucode.agents import (
     AGENTS,
-    CURSOR_MCP_CLIENT,
     McpClient,
     McpServer,
     claude,
     codex,
     copilot,
+    cursor,
 )
 from ucode.databricks import (
     AIGW_MCP_SERVICES_SEGMENT,
@@ -78,7 +78,7 @@ MCP_SQL_PATH = "/api/2.0/mcp/sql"
 # client's name — core decides *what* to register and the client decides *how*.
 MCP_CLIENTS: dict[str, McpClient] = {
     name: agent.mcp for name, agent in AGENTS.items() if agent.mcp is not None
-} | {"cursor": CURSOR_MCP_CLIENT}
+} | {"cursor": cursor.MCP_CLIENT}
 
 
 def _mcp_client(client: str) -> McpClient:

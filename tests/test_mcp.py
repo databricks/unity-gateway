@@ -9,7 +9,6 @@ import pytest
 
 from ucode import mcp
 from ucode.agents import claude, codex, cursor, gemini, opencode
-from ucode.agents.legacy import CURSOR_MCP_CLIENT
 from ucode.constants import MCP_USER_SCOPE
 from ucode.mcp_oauth import CODEX_CLI_OAUTH_CLIENT_ID, CURSOR_OAUTH_CLIENT_ID
 
@@ -25,7 +24,7 @@ def _client(name):
 
     Its `entry` / `parse_listing` helpers are each client's own API, not part of the `McpClient`
     protocol ug core dispatches through, so tests reach for the concrete client."""
-    return CURSOR_MCP_CLIENT if name == "cursor" else mcp.MCP_CLIENTS[name]
+    return cursor.MCP_CLIENT if name == "cursor" else mcp.MCP_CLIENTS[name]
 
 
 class TestMcpChangeSummary:

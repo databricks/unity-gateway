@@ -46,6 +46,7 @@ from ucode.state import mark_tool_managed, save_state
 
 from .args import LaunchOptions, explicit_model_arg_value
 from .interface import ConfigureRequest, Install, McpServer, Models
+from .inventory import model_values
 
 COPILOT_CONFIG_DIR = Path.home() / ".copilot"
 COPILOT_ENV_PATH = COPILOT_CONFIG_DIR / "ucode.env"
@@ -263,17 +264,6 @@ def restore_mcp_config(managed: bool) -> bool:
     return restore_file(COPILOT_MCP_CONFIG_PATH, COPILOT_MCP_BACKUP_PATH, managed)
 
 
-def _model_ids(value: object) -> list[str]:
-    """Flatten a state model inventory (str, list, or provider-keyed dict) into model ids."""
-    if isinstance(value, str):
-        return [value] if value else []
-    if isinstance(value, list):
-        return [item for item in value if isinstance(item, str) and item]
-    if isinstance(value, dict):
-        return [model for models in value.values() for model in _model_ids(models)]
-    return []
-
-
 def _user_scope(removed: bool) -> list[str]:
     """``add``/``remove``'s return shape: Copilot has only one scope, where ug writes."""
     return [MCP_USER_SCOPE] if removed else []
@@ -327,8 +317,8 @@ class CopilotAgent:
 
     def models(self, state: dict) -> Models:
         # A managed static list replaces discovery; otherwise Copilot can use Claude and Codex models.
-        available = _model_ids(state.get("copilot_static_models")) or (
-            _model_ids(state.get("claude_models")) + _model_ids(state.get("codex_models"))
+        available = model_values(state.get("copilot_static_models")) or (
+            model_values(state.get("claude_models")) + model_values(state.get("codex_models"))
         )
         available = tuple(dict.fromkeys(available))
         explicit = state.get("copilot_default_model")

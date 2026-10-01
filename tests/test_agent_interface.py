@@ -2,7 +2,7 @@
 
 Every agent ug drives has to satisfy `agents/interface.py` the same way, so these tests are
 parametrized over the registry rather than written per agent. An agent that grows its own
-native class (replacing `LegacyAgent`) must keep passing them unchanged.
+native class must keep passing them unchanged.
 """
 
 from __future__ import annotations
@@ -11,8 +11,9 @@ import copy
 
 import pytest
 
-from ucode.agents import AGENTS, TOOL_SPECS, configure_tool
-from ucode.agents.interface import Agent, McpClient, Models
+from ucode.agents import AGENTS, configure_tool, cursor
+from ucode.agents.interface import Agent, McpClient, McpServer, Models
+from ucode.agents.inventory import model_values
 from ucode.mcp import MCP_CLIENTS
 
 # One state that gives every agent something to find, so `models()` is exercised with a
@@ -33,9 +34,8 @@ def no_revert_side_effects(monkeypatch):
     `SPEC` config/backup paths and the OS-managed settings files point at the developer's real
     machine, so conformance must check the shape of the rows without touching anything.
     """
-    from ucode.agents import claude, codex, copilot, gemini, legacy, opencode, pi
+    from ucode.agents import claude, codex, copilot, gemini, opencode, pi
 
-    monkeypatch.setattr(legacy, "restore_file", lambda *_a: False)
     monkeypatch.setattr(codex, "restore_file", lambda *_a: False)
     monkeypatch.setattr(claude, "restore_file", lambda *_a: False)
     monkeypatch.setattr(gemini, "restore_file", lambda *_a: False)
@@ -51,8 +51,12 @@ class TestRegistry:
     def test_lists_every_agent_in_order(self):
         assert list(AGENTS) == ["codex", "claude", "gemini", "opencode", "copilot", "pi"]
 
-    def test_matches_the_derived_tool_specs(self):
-        assert list(AGENTS) == list(TOOL_SPECS)
+    def test_every_entry_is_a_native_agent_class(self):
+        for tool, agent in AGENTS.items():
+            assert isinstance(agent, Agent)
+            # The agent's class lives in its own module, which `default_model_for_tool` and
+            # `configured_paths` reach for the hooks that are deliberately not in the interface.
+            assert type(agent).__module__ == f"ucode.agents.{tool}"
 
 
 @pytest.mark.parametrize("tool", list(AGENTS))
@@ -121,7 +125,40 @@ class TestMcpClientRegistry:
     def test_cursor_is_an_mcp_client_but_not_an_agent(self):
         # Cursor runs models on the user's own account, so ug configures none for it.
         assert isinstance(MCP_CLIENTS["cursor"], McpClient)
+        assert MCP_CLIENTS["cursor"] is cursor.MCP_CLIENT
         assert "cursor" not in AGENTS
+
+
+class TestCursorMcpClient:
+    """Cursor is an MCP-only client: a native `McpClient` outside `AGENTS`."""
+
+    def test_satisfies_the_protocol(self):
+        assert isinstance(cursor.MCP_CLIENT, McpClient)
+        assert cursor.MCP_CLIENT.display == "Cursor"
+        assert cursor.MCP_CLIENT.binary == cursor.CURSOR_BINARY
+
+    def test_entry_is_the_stdio_proxy_unless_an_oauth_client_is_chosen(self):
+        proxy = McpServer(url="https://ws/mcp", proxy_argv=("ug", "mcp-proxy", "https://ws/mcp"))
+        assert cursor.MCP_CLIENT.entry(proxy) == {
+            "command": "ug",
+            "args": ["mcp-proxy", "https://ws/mcp"],
+        }
+        native = McpServer(url="https://ws/mcp", proxy_argv=proxy.proxy_argv, oauth_client="app")
+        assert cursor.MCP_CLIENT.entry(native) == {
+            "url": "https://ws/mcp",
+            "auth": {"CLIENT_ID": "app"},
+        }
+
+
+class TestModelValues:
+    def test_flattens_strings_lists_and_keyed_dicts(self):
+        assert model_values("a") == ["a"]
+        assert model_values(["a", "", 3, "b"]) == ["a", "b"]
+        assert model_values({"x": ["a"], "y": {"z": "b"}}) == ["a", "b"]
+
+    @pytest.mark.parametrize("value", [None, "", [], {}, 3])
+    def test_anything_else_is_empty(self, value):
+        assert model_values(value) == []
 
 
 class TestModelsSemantics:

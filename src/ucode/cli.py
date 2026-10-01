@@ -22,7 +22,6 @@ from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 from ucode import custom_oauth
 from ucode.agents import (
     AGENTS,
-    TOOL_SPECS,
     LaunchOptions,
     check_gateway_endpoint,
     configure_selected_tools,
@@ -198,9 +197,9 @@ def _policy_summary_lines(managed: dict) -> list[str]:
             else "?"
         )
         # A tier whose agent enum this build doesn't know is dropped during normalization, so it
-        # arrives unset rather than as a tool name TOOL_SPECS could resolve.
+        # arrives unset rather than as a tool name AGENTS could resolve.
         agent = tier.get("default_agent")
-        agent_display = TOOL_SPECS[agent]["display"] if agent in TOOL_SPECS else "?"
+        agent_display = AGENTS[agent].display if agent in AGENTS else "?"
         model = str(tier.get("default_model") or "?")
         lines.append(
             f"  [dim]·[/dim] [bold]at {pct}[/bold] → {agent_display} · [magenta]{model}[/magenta]"
@@ -248,20 +247,18 @@ def _print_managed_summary(
         return
     lines = [f"[bold]Workspace:[/bold] [cyan]{state.get('workspace', '?')}[/cyan]"]
     if tool is not None:
-        lines.append(f"[bold]Agent:[/bold] [green]{TOOL_SPECS[tool]['display']}[/green]")
-    enabled = [t for t in (managed.get("enabled_agents") or {}) if t in TOOL_SPECS]
+        lines.append(f"[bold]Agent:[/bold] [green]{AGENTS[tool].display}[/green]")
+    enabled = [t for t in (managed.get("enabled_agents") or {}) if t in AGENTS]
     failed: list[str] = []
     if configured_tools is not None:
         failed = [t for t in enabled if t not in configured_tools]
         enabled = [t for t in enabled if t in configured_tools]
     if enabled:
-        lines.append(
-            f"[bold]Coding Agents:[/bold] {', '.join(TOOL_SPECS[t]['display'] for t in enabled)}"
-        )
+        lines.append(f"[bold]Coding Agents:[/bold] {', '.join(AGENTS[t].display for t in enabled)}")
     if failed:
         lines.append(
             f"[bold]Failed to configure:[/bold] "
-            f"[yellow]{', '.join(TOOL_SPECS[t]['display'] for t in failed)}[/yellow]"
+            f"[yellow]{', '.join(AGENTS[t].display for t in failed)}[/yellow]"
         )
     if tool is not None:
         provider = managed_provider_service(managed, tool)
@@ -293,7 +290,7 @@ def _print_managed_summary_abridged(managed: dict, state: dict, tool: str | None
     if tool is None:
         print_note("Using managed config.")
         return
-    agent = TOOL_SPECS[tool]["display"]
+    agent = AGENTS[tool].display
     model = managed_default_model(managed, tool)
     model_suffix = f" with [magenta]{model}[/magenta]" if model else ""
     # "as the default agent" only when this really is the config's default: a budget tier can
@@ -345,7 +342,7 @@ def _prompt_for_configuration(tool: str | None = None) -> tuple[str, str | None]
     if tool is None:
         desc = "Configure your Databricks workspace"
     else:
-        desc = f"Configure {TOOL_SPECS[tool]['display']} to use your Databricks endpoint."
+        desc = f"Configure {AGENTS[tool].display} to use your Databricks endpoint."
     with spinner("Loading Databricks workspaces and profiles..."):
         profiles = get_databricks_profiles()
     return prompt_for_workspace(desc, profiles)
@@ -741,7 +738,7 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     """
     if tool not in ("claude", "codex", "gemini"):
         return state
-    display = TOOL_SPECS[tool]["display"]
+    display = AGENTS[tool].display
 
     def _use_databricks() -> dict:
         new_state = set_provider_service(state, tool, None)
@@ -860,12 +857,12 @@ def _configure_workspace_command(
         install_databricks_ai_tools_for_agents(
             [tool], state, force_refresh=tool not in ("claude", "codex")
         )
-        spec = TOOL_SPECS[tool]
+        agent = AGENTS[tool]
         provider_summary = "Databricks" if parent_schema else _provider_summary(tool, state)
         console.print(
             Panel(
                 f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]\n"
-                f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
+                f"[bold]{agent.display}:[/bold] [green]configured[/green] "
                 f"[dim](Provider: {provider_summary})[/dim]",
                 title="Configuration Complete",
                 style="green",
@@ -939,9 +936,9 @@ def _configure_workspace_command(
         return 0
 
     available_on_workspace: list[str] = []
-    tools_to_check = selected_tools or list(TOOL_SPECS)
+    tools_to_check = selected_tools or list(AGENTS)
     for tool_name in tools_to_check:
-        with spinner(f"Checking {TOOL_SPECS[tool_name]['display']} availability..."):
+        with spinner(f"Checking {AGENTS[tool_name].display} availability..."):
             if check_gateway_endpoint(state, tool_name):
                 available_on_workspace.append(tool_name)
 
@@ -950,16 +947,14 @@ def _configure_workspace_command(
         raise RuntimeError("No coding agents are available on this workspace.")
 
     if selected_tools is None:
-        picked = prompt_for_tools([(t, TOOL_SPECS[t]["display"]) for t in available_on_workspace])
+        picked = prompt_for_tools([(t, AGENTS[t].display) for t in available_on_workspace])
     else:
         unavailable_tools = [
             tool_name for tool_name in selected_tools if tool_name not in available_on_workspace
         ]
         if unavailable_tools:
             _print_discovery_diagnostics(state)
-            displays = ", ".join(
-                TOOL_SPECS[tool_name]["display"] for tool_name in unavailable_tools
-            )
+            displays = ", ".join(AGENTS[tool_name].display for tool_name in unavailable_tools)
             print_warning(f"Skipping agent(s) not available on this workspace: {displays}.")
         picked = [tool_name for tool_name in selected_tools if tool_name in available_on_workspace]
 
@@ -999,15 +994,15 @@ def _configure_workspace_command(
     )
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
-        spec = TOOL_SPECS[tool_name]
+        agent = AGENTS[tool_name]
         if tool_name in configured_set:
             summary_lines.append(
-                f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
+                f"[bold]{agent.display}:[/bold] [green]configured[/green] "
                 f"[dim](Provider: {_provider_summary(tool_name, state)})[/dim]"
             )
         else:
             summary_lines.append(
-                f"[bold]{spec['display']}:[/bold] [yellow]not configured "
+                f"[bold]{agent.display}:[/bold] [yellow]not configured "
                 "(see warnings above)[/yellow]"
             )
     console.print(
@@ -1168,8 +1163,8 @@ def status() -> int:
 
     model_state, model_freshness = _live_status_model_state(state, configured_tools)
     print_heading("Coding Agents")
-    skill_counts_by_agent = configured_skill_counts_by_agent(state, TOOL_SPECS)
-    for tool, spec in TOOL_SPECS.items():
+    skill_counts_by_agent = configured_skill_counts_by_agent(state, AGENTS)
+    for tool, agent in AGENTS.items():
         if tool not in configured_tools:
             continue
         effective_state = resolve_state(managed, model_state, tool) if managed else model_state
@@ -1226,7 +1221,7 @@ def status() -> int:
         if isinstance(base_url, dict):
             base_url = ", ".join(str(url) for url in base_url.values())
         rows.append(("Endpoint", str(base_url or "not configured")))
-        _print_status_panel(str(spec["display"]), rows)
+        _print_status_panel(agent.display, rows)
 
     if not configured_tools:
         print_note("No coding agents are configured.")
@@ -2223,11 +2218,11 @@ def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = Non
 
     state = configure_single_tool(tool, state)
 
-    spec = TOOL_SPECS[tool]
+    agent = AGENTS[tool]
     console.print(
         Panel(
             f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]\n"
-            f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
+            f"[bold]{agent.display}:[/bold] [green]configured[/green] "
             f"[dim](Provider: {_provider_summary(tool, state)})[/dim]",
             title="Configuration Complete",
             style="green",
@@ -2237,6 +2232,8 @@ def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = Non
 
 
 CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
+# Feature table (presentation): agents whose launch note says ug refreshes their token every 30 minutes.
+AUTO_TOKEN_REFRESH_AGENTS = frozenset({"gemini", "opencode", "copilot", "pi"})
 
 
 @contextmanager
@@ -2307,9 +2304,9 @@ def _reject_disabled_agent(managed: dict | None, tool: str) -> None:
     """
     enabled = managed_enabled_tools(managed or {})
     if enabled and tool not in enabled:
-        names = ", ".join(TOOL_SPECS[name]["display"] for name in enabled)
+        names = ", ".join(AGENTS[name].display for name in enabled)
         raise RuntimeError(
-            f"Your workspace's managed config doesn't enable {TOOL_SPECS[tool]['display']}. "
+            f"Your workspace's managed config doesn't enable {AGENTS[tool].display}. "
             f"Enabled: {names}."
         )
 
@@ -2346,13 +2343,13 @@ def _note_recommended_agent(recommendation: dict | None, tool: str) -> None:
     # The tier's own agent, not `recommended_agent`'s default_agent fallback: there is nothing to
     # say when the config's baseline simply differs from what the developer asked for.
     agent = (recommendation or {}).get("agent")
-    if agent == tool or agent not in TOOL_SPECS:
+    if agent == tool or agent not in AGENTS:
         return
     model = (recommendation or {}).get("model")
     suffix = f" with {model}" if isinstance(model, str) and model else ""
     print_note(
-        f"Your budget tier recommends {TOOL_SPECS[agent]['display']}{suffix}; "
-        f"launching {TOOL_SPECS[tool]['display']} as requested."
+        f"Your budget tier recommends {AGENTS[agent].display}{suffix}; "
+        f"launching {AGENTS[tool].display} as requested."
     )
 
 
@@ -2387,13 +2384,13 @@ def _fetch_budget_recommendation(state: dict, managed: dict | None) -> dict | No
 
 
 def _launch_title(tool: str) -> str:
-    return f"Launching {TOOL_SPECS[tool]['display']} with Unity Gateway"
+    return f"Launching {AGENTS[tool].display} with Unity Gateway"
 
 
 def _print_budget_panel(recommendation: dict, tool: str, managed: dict | None = None) -> None:
     """Show the workspace budget this launch spends against, when one is configured."""
     agent = recommendation.get("agent")
-    display_agent = TOOL_SPECS[agent]["display"] if agent in TOOL_SPECS else None
+    display_agent = AGENTS[agent].display if agent in AGENTS else None
     percent = budget_usage_percent(
         float(recommendation.get("current_spend") or 0.0),
         float(recommendation.get("effective_threshold") or 0.0),
@@ -2667,7 +2664,7 @@ def _launch_tool(
         # guard too, or routing would be persisted as on while a provider is active.
         if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and provider:
             raise RuntimeError(
-                f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
+                f"{AGENTS[tool].display} smart routing cannot be enabled with "
                 "--provider. Launch without a Model Provider Service and try again."
             )
         # Validate the provider service before launching — it must exist, be a
@@ -2697,7 +2694,7 @@ def _launch_tool(
                     # Clear error if the admin has Unity Catalog grants the developer doesn't.
                     raise RuntimeError(
                         f"Your admin's managed config specifies provider {provider} for "
-                        f"{TOOL_SPECS[tool]['display']}, which can't be used: {error}"
+                        f"{AGENTS[tool].display}, which can't be used: {error}"
                     )
                 raise RuntimeError(error)
             # A managed config launch uses exactly what the admin authored: pin Claude's family
@@ -2853,12 +2850,12 @@ def _launch_tool(
             print_kv("Provider", provider)
         if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and not provider:
             print_note(
-                f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
+                f"{AGENTS[tool].display} may require one-time hook review. Open "
                 "`/hooks` and trust the ug routing hooks if prompted."
             )
-        if tool in ("gemini", "opencode", "copilot", "pi"):
+        if tool in AUTO_TOKEN_REFRESH_AGENTS:
             print_note(
-                f"{TOOL_SPECS[tool]['display']} token refresh is managed automatically "
+                f"{AGENTS[tool].display} token refresh is managed automatically "
                 f"every 30 minutes while the session is running."
             )
         if recommendation is not None:
@@ -2883,7 +2880,7 @@ def _launch_tool(
             user_pinned_model=model or forwarded_model,
             provider=provider,
         )
-        print_success(f"Starting {TOOL_SPECS[tool]['display']}")
+        print_success(f"Starting {AGENTS[tool].display}")
         with _smart_routing_v2_flag(
             True if managed_smart_routing_enabled and smart_routing_enabled else None
         ):

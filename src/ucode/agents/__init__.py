@@ -7,17 +7,18 @@ aggregates the registry and exposes uniform dispatchers for the rest of the code
 Adding a new agent: implement the `Agent` protocol in `agents/interface.py` — read it first,
 it is the contract — and add the one instance to `AGENTS` below (plus `TOOL_ALIASES` if the
 CLI needs extra spellings). `AGENTS` is the single place an agent is listed; the dispatchers
-here go through it instead of branching on the agent's name. Agents written before the
-interface existed are adapted by `LegacyAgent` (see `agents/legacy.py`).
+here go through it instead of branching on the agent's name. Cursor is an MCP-only client, not an
+agent, so it is not listed; `mcp.py` registers `cursor.MCP_CLIENT` on its own.
 """
 
 from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+from types import ModuleType
 
-from ucode.config_io import ToolSpec
 from ucode.databricks import (
     AnthropicModelCatalog,
     get_databricks_token,
@@ -54,7 +55,6 @@ from .interface import Agent as Agent
 from .interface import ConfigureRequest as ConfigureRequest
 from .interface import McpClient as McpClient
 from .interface import McpServer as McpServer
-from .legacy import CURSOR_MCP_CLIENT as CURSOR_MCP_CLIENT
 
 # The agents ug drives, in the order ug lists them. One entry per agent, and the only place
 # an agent is listed: every dispatcher below resolves through it rather than branching on a name.
@@ -67,25 +67,10 @@ AGENTS: dict[str, Agent] = {
     "pi": pi.AGENT,
 }
 
-# Direct module access for the few things that are deliberately not in the Agent interface
-# (side-effecting default-model selection and the configured-paths summary).
-_MODULES = {
-    "codex": codex,
-    "claude": claude,
-    "gemini": gemini,
-    "opencode": opencode,
-    "copilot": copilot,
-    "pi": pi,
-}
-
-# Config-file locations and labels, kept for modules that still read specs directly.
-TOOL_SPECS: dict[str, ToolSpec] = {name: module.SPEC for name, module in _MODULES.items()}
-
-
 # Model-routing agents ucode configures end to end. Cursor is deliberately NOT
 # here: it runs models on the user's own Cursor account, so `normalize_tool`
 # rejects it and the model-config paths never see it. The `configure`/MCP flows
-# handle "cursor" separately as an MCP-only client (`CURSOR_MCP_CLIENT`).
+# handle "cursor" separately as an MCP-only client (`cursor.MCP_CLIENT`).
 TOOL_ALIASES = {
     "codex": "codex",
     "claude": "claude",
@@ -307,8 +292,14 @@ def ensure_bootstrap_dependencies(
     )
 
 
+def _agent_module(tool: str) -> ModuleType:
+    """The module defining ``tool``'s agent, for the few things deliberately not in the ``Agent``
+    interface (side-effecting default-model selection and the configured-paths summary)."""
+    return sys.modules[type(AGENTS[tool]).__module__]
+
+
 def default_model_for_tool(tool: str, state: dict) -> str | None:
-    return _MODULES[tool].default_model(state)
+    return _agent_module(tool).default_model(state)
 
 
 def resolve_launch_model(
@@ -445,7 +436,7 @@ def configured_paths(tool: str, state: dict) -> list[str]:
 
     Each agent module reports its own settings files; the OS-managed file, when one was written, is
     recorded per tool in ``state`` and appended here so every agent surfaces it uniformly."""
-    module = _MODULES.get(tool)
+    module = _agent_module(tool) if tool in AGENTS else None
     paths = list(module.configured_paths(state)) if hasattr(module, "configured_paths") else []
     record = (state.get("managed_file_fingerprints") or {}).get(tool)
     if isinstance(record, dict) and record.get("path"):
@@ -510,12 +501,12 @@ def configure_single_tool(tool: str, state: dict, *, parent_schema: str | None =
     # A Model Provider Service or parent schema routes through the same gateway and pins no
     # globally discovered Databricks model, so the availability check doesn't apply.
     if not provider and not parent_schema:
-        with spinner(f"Checking {TOOL_SPECS[tool]['display']} availability..."):
+        with spinner(f"Checking {AGENTS[tool].display} availability..."):
             ok = check_gateway_endpoint(state, tool)
         if not ok:
             detail = _availability_failure_detail(tool, state)
             raise RuntimeError(
-                f"{TOOL_SPECS[tool]['display']} is not available on this workspace.{detail}"
+                f"{AGENTS[tool].display} is not available on this workspace.{detail}"
             )
     with managed_write_batch(_managed_settings_displays([tool])):
         state = _configure_one(tool, state, provider, parent_schema=parent_schema)
@@ -578,9 +569,7 @@ def configure_selected_tools(
             try:
                 state = _configure_one(tool, state, provider, parent_schema=parent_schema)
             except Exception as exc:  # noqa: BLE001 -- surface any harness failure as a warning
-                print_warning(
-                    f"Could not configure {TOOL_SPECS[tool]['display']}: {exc}. Continuing."
-                )
+                print_warning(f"Could not configure {AGENTS[tool].display}: {exc}. Continuing.")
                 continue
             configured.append(tool)
 
@@ -594,7 +583,7 @@ def configure_selected_tools(
 
 
 def _managed_settings_displays(tools: list[str]) -> list[str]:
-    return [TOOL_SPECS[tool]["display"] for tool in tools if tool in _MANAGED_SETTINGS_TOOLS]
+    return [AGENTS[tool].display for tool in tools if tool in _MANAGED_SETTINGS_TOOLS]
 
 
 def configure_all_tools(state: dict) -> dict:
@@ -606,8 +595,8 @@ def configure_all_tools(state: dict) -> dict:
     available_tools: list[str] = []
     unavailable_tools: list[str] = []
 
-    for tool in TOOL_SPECS:
-        with spinner(f"Checking {TOOL_SPECS[tool]['display']} availability..."):
+    for tool in AGENTS:
+        with spinner(f"Checking {AGENTS[tool].display} availability..."):
             ok = check_gateway_endpoint(state, tool)
         if ok:
             available_tools.append(tool)
@@ -615,7 +604,7 @@ def configure_all_tools(state: dict) -> dict:
             unavailable_tools.append(tool)
 
     for tool in unavailable_tools:
-        print_err(f"{TOOL_SPECS[tool]['display']} is not available on this workspace")
+        print_err(f"{AGENTS[tool].display} is not available on this workspace")
 
     return configure_selected_tools(state, available_tools)
 
@@ -630,7 +619,7 @@ def ensure_provider_state(tool: str) -> dict:
     available_tools = state.get("available_tools") or []
     if tool not in available_tools:
         raise RuntimeError(
-            f"{TOOL_SPECS[tool]['display']} is not available on this workspace. "
+            f"{AGENTS[tool].display} is not available on this workspace. "
             f"Run `ucode configure` to set up your agents."
         )
     return state
