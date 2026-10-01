@@ -66,6 +66,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(managed_files_mod, "_sudo_replace", reject_privileged_write)
     monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
+    monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
     # On Windows, resolve_command swaps a bare program name for whatever `shutil.which`
     # finds on the developer's PATH (e.g. a real `codex.CMD`). Rebind only the compatibility
     # helper's `shutil` so argv stays host-independent; helper tests patch `which` explicitly.

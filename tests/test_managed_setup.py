@@ -26,7 +26,7 @@ from ucode.managed_setup import (
 
 WORKSPACE = "https://ws.example.com"
 
-# The server requires `spend_tiers.budget_id` to parse as a UUID, so fixtures that aren't
+# The server requires `smart_defaults.budget_id` to parse as a UUID, so fixtures that aren't
 # *testing* that rule need a real one.
 BUDGET_ID = "11111111-1111-1111-1111-111111111111"
 
@@ -85,7 +85,7 @@ def _full_manifest() -> dict:
         },
         "mcp_servers": {"names": ["system.ai.github", "main.default.jira"]},
         "skills": {"names": ["system.ai.pdf-extraction"]},
-        "spend_tiers": {
+        "smart_defaults": {
             "budget_id": "c6563b45-df9a-4b19-afb2-d42dc2b52576",
             "tiers": [
                 {
@@ -254,15 +254,16 @@ class TestSerialize:
     def test_budget_tiers_keep_fractions(self):
         # The server validates 0 <= spending_percentage <= 1, so these stay fractions.
         payload = serialize_managed_config(_full_manifest())
-        tiers = payload["spend_tiers"]["tiers"]
+        tiers = payload["smart_defaults"]["tiers"]
         assert [tier["spending_percentage"] for tier in tiers] == [0.8, 1.0]
         assert tiers[1]["recommended_agent"] == "CODING_AGENT_OPENCODE"
 
-    def test_budget_id_appears_only_under_spend_tiers(self):
-        # The budget id must appear under spend_tiers, not at the top level.
+    def test_budget_id_appears_only_under_smart_defaults(self):
+        # The budget id must appear under smart_defaults, not at the top level.
         payload = serialize_managed_config(_full_manifest())
         assert "budget_id" not in payload
-        assert payload["spend_tiers"]["budget_id"] == "c6563b45-df9a-4b19-afb2-d42dc2b52576"
+        assert "spend_tiers" not in payload
+        assert payload["smart_defaults"]["budget_id"] == "c6563b45-df9a-4b19-afb2-d42dc2b52576"
 
     def test_a_manifest_carrying_a_top_level_budget_id_still_omits_it(self):
         # A hand-written `--from-file` manifest could set it; the serializer must not pass it on.
@@ -644,7 +645,7 @@ class TestValidate:
     def test_budget_policy_needs_a_budget_id(self):
         manifest = {
             **_minimal_manifest(),
-            "spend_tiers": {
+            "smart_defaults": {
                 "tiers": [
                     {
                         "spending_percentage": 0.5,
@@ -655,14 +656,14 @@ class TestValidate:
             },
         }
         errors = validate_manifest(manifest, STATE)
-        assert any("spend_tiers.budget_id is required" in e for e in errors)
+        assert any("smart_defaults.budget_id is required" in e for e in errors)
 
     @pytest.mark.parametrize("pct", [1.5, -0.1, 80])
     def test_tier_percentage_must_be_a_fraction(self, pct):
         # 80 is the classic mistake: the spec doc writes percents, the API wants fractions.
         manifest = {
             **_minimal_manifest(),
-            "spend_tiers": {
+            "smart_defaults": {
                 "budget_id": BUDGET_ID,
                 "tiers": [
                     {
@@ -684,7 +685,7 @@ class TestValidate:
         }
         manifest = {
             **_minimal_manifest(),
-            "spend_tiers": {"budget_id": BUDGET_ID, "tiers": [tier, dict(tier)]},
+            "smart_defaults": {"budget_id": BUDGET_ID, "tiers": [tier, dict(tier)]},
         }
         errors = validate_manifest(manifest, STATE)
         assert any("must be unique" in e for e in errors)
@@ -694,7 +695,7 @@ class TestValidate:
         # picks the highest crossed tier and it selects the same pair the lower one already did.
         manifest = {
             **_minimal_manifest(),
-            "spend_tiers": {
+            "smart_defaults": {
                 "budget_id": BUDGET_ID,
                 "tiers": [
                     {
@@ -730,7 +731,7 @@ class TestValidate:
                     }
                 }
             },
-            "spend_tiers": {
+            "smart_defaults": {
                 "budget_id": BUDGET_ID,
                 "tiers": [
                     {
@@ -751,7 +752,7 @@ class TestValidate:
     def test_tier_agent_must_be_enabled(self):
         manifest = {
             **_minimal_manifest(),
-            "spend_tiers": {
+            "smart_defaults": {
                 "budget_id": BUDGET_ID,
                 "tiers": [
                     {
@@ -768,7 +769,7 @@ class TestValidate:
     def test_tier_needs_a_default_model(self):
         manifest = {
             **_minimal_manifest(),
-            "spend_tiers": {
+            "smart_defaults": {
                 "budget_id": BUDGET_ID,
                 "tiers": [{"spending_percentage": 0.5, "recommended_agent": "claude"}],
             },
@@ -789,7 +790,7 @@ class TestValidate:
                     }
                 }
             },
-            "spend_tiers": {
+            "smart_defaults": {
                 "budget_id": BUDGET_ID,
                 "tiers": [
                     {
@@ -814,7 +815,7 @@ class TestValidate:
                     }
                 }
             },
-            "spend_tiers": {
+            "smart_defaults": {
                 "budget_id": BUDGET_ID,
                 "tiers": [
                     {
@@ -840,7 +841,7 @@ class TestValidate:
                     }
                 }
             },
-            "spend_tiers": {
+            "smart_defaults": {
                 "budget_id": BUDGET_ID,
                 "tiers": [
                     {
@@ -865,7 +866,7 @@ class TestValidate:
                     }
                 }
             },
-            "spend_tiers": {
+            "smart_defaults": {
                 "budget_id": BUDGET_ID,
                 "tiers": [
                     {
@@ -878,8 +879,8 @@ class TestValidate:
         }
         assert validate_manifest(manifest, STATE) == []
 
-    def test_spend_tiers_alone_still_requires_a_default_agent(self):
-        errors = validate_manifest({"spend_tiers": {"budget_id": BUDGET_ID}})
+    def test_smart_defaults_alone_still_requires_a_default_agent(self):
+        errors = validate_manifest({"smart_defaults": {"budget_id": BUDGET_ID}})
         assert any("default_agent is required" in e for e in errors)
 
     @pytest.mark.parametrize("bad_id", ["not-a-uuid", "b", "1111", "11111111-1111-1111-1111"])
@@ -888,7 +889,7 @@ class TestValidate:
         # `--from-file` can carry anything, and rejecting it here beats a round-trip failure.
         manifest = {
             **_minimal_manifest(),
-            "spend_tiers": {"budget_id": bad_id, "tiers": []},
+            "smart_defaults": {"budget_id": bad_id, "tiers": []},
         }
         errors = validate_manifest(manifest, STATE)
         assert any("must be a UUID" in e for e in errors), errors
@@ -896,7 +897,7 @@ class TestValidate:
     def test_a_real_uuid_is_accepted(self):
         manifest = {
             **_minimal_manifest(),
-            "spend_tiers": {"budget_id": "c6563b45-df9a-4b19-afb2-d42dc2b52576", "tiers": []},
+            "smart_defaults": {"budget_id": "c6563b45-df9a-4b19-afb2-d42dc2b52576", "tiers": []},
         }
         assert validate_manifest(manifest, STATE) == []
 
@@ -905,7 +906,7 @@ class TestValidate:
         # the API's must see the same number for the same tier.
         manifest = {
             **_minimal_manifest(),
-            "spend_tiers": {
+            "smart_defaults": {
                 "budget_id": BUDGET_ID,
                 "tiers": [{"spending_percentage": 0.5, "recommended_agent": "claude"}],
             },

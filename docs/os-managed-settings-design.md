@@ -53,6 +53,18 @@ command shape in some flows and did not guard managed-file writes consistently.
 agent-specific reconciliation path. A first-time launch from an interactive terminal can therefore
 request administrator permission. A first-time non-interactive launch remains local-only.
 
+For Claude, turning off UG tracing preserves the live OS-managed telemetry values unchanged,
+including values UG wrote on an earlier run. The same applies when the workspace has no managed
+Coding Agent Config, even if stale local state says tracing was enabled. A tracing-disabled write
+does not claim ownership of external telemetry merely because it appears in the full-file snapshot.
+This does not relax conflicts when a workspace managed config explicitly enables UG tracing.
+
+Claude custom headers are compared by name and value, ignoring order, name casing, and surrounding
+whitespace. Differences in `User-Agent` and `Databricks-Smart-Router-Recipe` alone do not block a
+local-only launch: these headers attribute traffic, rather than select the gateway or provider.
+The OS-managed header string still wins, so UG attribution may be unavailable for those launches.
+Required coding-agent-mode, provider, authentication, and other header differences remain blockers.
+
 ## Interactive Reconciliation
 
 For each agent, ucode:
