@@ -162,7 +162,7 @@ test_ug_codex_tracing.py                # Codex OTLP export reaches the configur
 test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
 test_ug_codex_app_server.py             # actual client/server initialize exchange
-test_ug_smart_routing_hooks.py           # route-subagent hook contract against the live router
+test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
@@ -204,14 +204,14 @@ A fixture file contains an unpredictable value absent from the prompt. Success
 requires an assistant answer in the real agent transcript containing that value,
 plus normal TUI exit. Codex evidence requires its task-complete event.
 Interactive first-prompt routing is covered by the managed_fixture smart-routing
-banner journeys below for both agents. Subagent routing is covered at the hook protocol
-level by the route-subagent hook journeys, which drive the real installed hook commands
-with a harness-shaped payload against the live router; the subagent-only launch journeys
-assert the first-prompt banner and routing wrappers stay silent while the routing hooks
-arm. Interactive spawning, plugin-refresh survival, native daemon/background
-dispatch, interactive explicit-model bypass, and dedicated smart-routing CI shards
-remain deferred. Plugin generation and launch arguments are covered by component
-tests in `../test_claude_smart_routing_v2.py`, not by a live registration journey.
+banner journeys below for both agents. The route-subagent hook journeys drive the real
+installed hook commands with a harness-shaped payload against the live router. The
+subagent-only TUI journeys additionally spawn three native children in one real session,
+invoke the installed Smart Router skill to turn routing off and back on, and require the
+subagent banner plus a correlated live decision only while routing is enabled. Plugin-refresh
+survival, native daemon/background dispatch, interactive explicit-model bypass, and dedicated
+smart-routing CI shards remain deferred. Plugin generation and launch arguments are covered
+by component tests in `../test_claude_smart_routing_v2.py`, not by a live registration journey.
 
 The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
 completes a file task on two models: a bare Anthropic id the subscription serves
