@@ -3221,7 +3221,6 @@ class TestConfigureAgentFlag:
         mock_install.assert_not_called()
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
-            reject_when_managed=True,
         )
 
     def test_agents_flag_normalizes_aliases_and_dedupes(self):
@@ -3234,7 +3233,6 @@ class TestConfigureAgentFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
-            reject_when_managed=True,
         )
 
     def test_workspace_flag_calls_configure_with_workspace(self):
@@ -3266,7 +3264,6 @@ class TestConfigureAgentFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
-            reject_when_managed=True,
             workspaces=[("https://first.com", None)],
         )
 
@@ -3378,7 +3375,6 @@ class TestConfigureAgentFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
-            reject_when_managed=True,
             databricks_ai_tools_enabled=True,
         )
 
@@ -3402,7 +3398,6 @@ class TestConfigureAgentFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
-            reject_when_managed=True,
         )
 
     def test_agent_flag_normalizes_alias(self):
@@ -3489,7 +3484,6 @@ class TestConfigureMcpFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             selected_tools=["claude"],
-            reject_when_managed=True,
         )
         mock_mcp.assert_called_once_with(services={"system.ai.slack", "system.ai.github"})
 
@@ -4315,7 +4309,6 @@ class TestConfigureProfilesFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
-            reject_when_managed=True,
             workspaces=[("https://first.databricks.com", "DEFAULT")],
         )
 
@@ -4355,7 +4348,6 @@ class TestConfigureProfilesFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
-            reject_when_managed=True,
             workspaces=[("https://first.databricks.com", "DEFAULT")],
             use_pat=True,
         )

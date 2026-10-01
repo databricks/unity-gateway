@@ -817,7 +817,6 @@ def configure_workspace_command(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
-    reject_when_managed: bool = False,
 ) -> int:
     """Configure a workspace while sharing one lazy privileged settings session.
 
@@ -834,7 +833,6 @@ def configure_workspace_command(
             databricks_ai_tools_enabled=databricks_ai_tools_enabled,
             custom_oauth=custom_oauth,
             offer_optional_setup=offer_optional_setup,
-            reject_when_managed=reject_when_managed,
         )
 
 
@@ -847,7 +845,6 @@ def _configure_workspace_command(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     offer_optional_setup: bool = False,
-    reject_when_managed: bool = False,
 ) -> int:
     if tool is not None and selected_tools is not None:
         raise RuntimeError("Use either --agent or --agents, not both.")
@@ -871,15 +868,14 @@ def _configure_workspace_command(
         )
         state = states[0]
         parent_schema = None
-        if tool in ("claude", "codex"):
-            managed, _ = refresh_managed_config(state, force_refresh=True)
-            if _launches_self_managed(managed, state, tool):
-                managed = None
-            _reject_disabled_agent(managed, tool)
-            if managed is not None:
-                state = resolve_state(managed, state, tool)
-                if not managed_provider_service(managed, tool):
-                    parent_schema = managed_unity_catalog_location(managed, tool)
+        managed, _ = refresh_managed_config(state, force_refresh=True)
+        if _launches_self_managed(managed, state, tool):
+            managed = None
+        _reject_disabled_agent(managed, tool)
+        if managed is not None:
+            state = resolve_state(managed, state, tool)
+            if tool in ("claude", "codex") and not managed_provider_service(managed, tool):
+                parent_schema = managed_unity_catalog_location(managed, tool)
         state = configure_single_tool(tool, state, parent_schema=parent_schema)
         install_databricks_ai_tools_for_agents(
             [tool], state, force_refresh=tool not in ("claude", "codex")
@@ -914,15 +910,47 @@ def _configure_workspace_command(
     # now rather than prompting the developer to pick. Configure always reads fresh so it never
     # applies a config the admin has since changed.
     managed, _ = refresh_managed_config(state, force_refresh=True)
-    # `ug configure --agents` can't hand-pick agents in a managed workspace: the admin config drives
-    # the setup. Reject before any agent config is written and point at the supported commands.
-    if reject_when_managed and managed is not None:
-        raise RuntimeError(
-            "This workspace has a managed coding-agent config, so `ug configure --agents` isn't "
-            "supported here. Run `ug configure` to set up the managed agents, or "
-            "`ug agents add <agent>` to use another agent self-managed."
-        )
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
+    # Named agents (`--agents X,Y`) on a managed workspace: configure each per the soft default
+    # — admin-enabled applies the admin config, self-managed runs standalone, anything the admin
+    # neither enabled nor the developer added is rejected. Bare `ug configure` (selected_tools
+    # is None) still applies the whole enabled set + managed MCP/skills below.
+    if selected_tools is not None and managed is not None and managed_tools:
+        configured_tools: list[str] = []
+        for tool_name in selected_tools:
+            tool_managed = None if _launches_self_managed(managed, state, tool_name) else managed
+            _reject_disabled_agent(tool_managed, tool_name)
+            if tool_managed is not None:
+                resolved = resolve_state(tool_managed, state, tool_name)
+                parent_schema = (
+                    managed_unity_catalog_location(tool_managed, tool_name)
+                    if tool_name in ("claude", "codex")
+                    and not managed_provider_service(tool_managed, tool_name)
+                    else None
+                )
+            else:
+                resolved = state
+                parent_schema = None
+            if not install_tool_binary(tool_name, strict=False):
+                continue
+            configured = configure_selected_tools(
+                resolved,
+                [tool_name],
+                install_ai_tools=not is_dry_run(),
+                parent_schemas={tool_name: parent_schema} if parent_schema else None,
+            )
+            state["available_tools"] = configured.get("available_tools") or state.get(
+                "available_tools"
+            )
+            last = configured.get("last_configured_tools")
+            if last is None or tool_name in last:
+                configured_tools.append(tool_name)
+        if not configured_tools:
+            raise RuntimeError(
+                "None of the requested coding agents are available on this workspace."
+            )
+        _summarize_managed_config(managed, configured_tools, [])
+        return 0
     if managed is not None and managed_tools:
         configured_tools: list[str] = []
         for tool_name in managed_tools:
@@ -3794,14 +3822,12 @@ def configure(
                 if workspace_entries is None:
                     configure_workspace_command(
                         selected_tools=selected_tools,
-                        reject_when_managed=True,
                         **skip_kwargs,
                     )
                 else:
                     configure_workspace_command(
                         selected_tools=selected_tools,
                         workspaces=workspace_entries,
-                        reject_when_managed=True,
                         **skip_kwargs,
                     )
             elif wants_cursor:

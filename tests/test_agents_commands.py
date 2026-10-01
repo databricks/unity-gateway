@@ -439,12 +439,13 @@ class TestConfigureSingleSelfManagedAgent:
         assert not resolve_calls  # managed config not applied to a self-managed tool
 
 
-class TestConfigureAgentsRejectedWhenManaged:
-    """ug configure --agents (plural) is rejected in a managed workspace; use `ug agents add`."""
+class TestConfigureNamedAgentsManagedRule:
+    """ug configure --agent(s) X: enabled -> admin config, self-managed -> standalone, else reject."""
 
     @staticmethod
     def _run(argv, managed, state):
         configure_calls: list = []
+        resolve_calls: list = []
         with (
             patch("ucode.cli.managed_write_session"),
             patch("ucode.cli.install_databricks_cli"),
@@ -454,16 +455,25 @@ class TestConfigureAgentsRejectedWhenManaged:
             patch("ucode.cli.save_state"),
             patch("ucode.cli.refresh_managed_config", return_value=(managed, False)),
             patch(
+                "ucode.cli.resolve_state",
+                side_effect=lambda m, s, t: (resolve_calls.append(t), s)[1],
+            ),
+            patch("ucode.cli.managed_provider_service", return_value=None),
+            patch("ucode.cli.managed_unity_catalog_location", return_value=None),
+            patch("ucode.cli._summarize_managed_config"),
+            patch("ucode.cli.configure_single_tool", side_effect=lambda t, s, **kw: s),
+            patch("ucode.cli.install_databricks_ai_tools_for_agents"),
+            patch(
                 "ucode.cli.configure_selected_tools",
                 side_effect=lambda s, *a, **kw: (configure_calls.append(a), s)[1],
             ),
         ):
             result = runner.invoke(app, argv)
-        return result, configure_calls
+        return result, configure_calls, resolve_calls
 
-    def test_rejected_when_managed_config_exists(self):
+    def test_rejected_when_agent_not_enabled_or_added(self):
         managed = {"enabled_agents": {"claude": {}}}
-        result, configure_calls = self._run(
+        result, configure_calls, _ = self._run(
             ["configure", "--agents", "opencode", "--workspace", WORKSPACE],
             managed=managed,
             state=dict(BASE_STATE),
@@ -472,26 +482,57 @@ class TestConfigureAgentsRejectedWhenManaged:
         assert "ug agents add" in result.output
         assert not configure_calls  # no agent configuration written
 
-    def test_rejected_even_when_agent_is_self_managed(self):
+    def test_self_managed_agent_configures_standalone(self):
         managed = {"enabled_agents": {"claude": {}}}
         state = {**BASE_STATE, SELF_MANAGED_AGENTS_KEY: ["opencode"]}
-        result, configure_calls = self._run(
+        result, configure_calls, resolve_calls = self._run(
             ["configure", "--agents", "opencode", "--workspace", WORKSPACE],
             managed=managed,
             state=state,
         )
-        assert result.exit_code == 1, result.output
-        assert "ug agents add" in result.output
-        assert not configure_calls
+        assert result.exit_code == 0, result.output
+        assert "ug agents add" not in result.output
+        assert configure_calls
+        assert not resolve_calls  # admin config not applied to a self-managed agent
+
+    def test_admin_enabled_agent_applies_admin_config(self):
+        managed = {"enabled_agents": {"claude": {}}}
+        result, configure_calls, resolve_calls = self._run(
+            ["configure", "--agents", "claude", "--workspace", WORKSPACE],
+            managed=managed,
+            state=dict(BASE_STATE),
+        )
+        assert result.exit_code == 0, result.output
+        assert configure_calls
+        assert resolve_calls == ["claude"]
 
     def test_not_rejected_without_managed_config(self):
-        # No managed config: --agents proceeds past the managed check (does not raise the block).
-        result, _ = self._run(
+        result, _, _ = self._run(
             ["configure", "--agents", "opencode", "--workspace", WORKSPACE],
             managed=None,
             state=dict(BASE_STATE),
         )
         assert "ug agents add" not in result.output
+
+    def test_singular_agent_not_rejected_without_managed_config(self):
+        result, _, resolve_calls = self._run(
+            ["configure", "--agent", "opencode", "--workspace", WORKSPACE],
+            managed=None,
+            state=dict(BASE_STATE),
+        )
+        assert result.exit_code == 0, result.output
+        assert "ug agents add" not in result.output
+        assert not resolve_calls
+
+    def test_singular_non_claude_agent_rejected_when_not_added(self):
+        managed = {"enabled_agents": {"claude": {}}}
+        result, _, _ = self._run(
+            ["configure", "--agent", "opencode", "--workspace", WORKSPACE],
+            managed=managed,
+            state=dict(BASE_STATE),
+        )
+        assert result.exit_code == 1, result.output
+        assert "ug agents add" in result.output
 
 
 class TestConfigureSharedStateWorkspaceIsolation:
