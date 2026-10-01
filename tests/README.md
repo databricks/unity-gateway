@@ -51,6 +51,12 @@ catalogs. These are component checks, not a live Isaac or gateway journey.
 `test_agent_claude.py` covers OS-managed telemetry ownership and headless configuration. These are
 unit/component regressions, not automated Isaac or live telemetry-export coverage.
 
+`test_managed_config.py` also covers the governable-agent boundary: only Claude Code and Codex can
+be managed, so a config enabling any other `CODING_AGENT_*` has that agent dropped and warned about
+once per agent per process, on stderr so `ug export`'s stdout stays machine-readable. Other agents
+remain self-configured, which `test_managed_resolve.py` checks by asserting no state overrides are
+produced for them.
+
 Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 `test_managed_setup.py`, `test_databricks.py`, and `test_managed_budget.py`: parsing the
 `smart_defaults` wire field, reading older `spend_tiers` caches, skipping recommendations

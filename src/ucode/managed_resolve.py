@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from typing import cast
 
-from ucode.databricks import ANTHROPIC_FAMILIES, classify_model_family
 from ucode.state import MANAGED_OVERLAY_KEY
 
 # Proto model-config slot -> the family key `claude.py`'s render_overlay reads. The manifest keeps
@@ -76,27 +75,17 @@ def managed_otel_tracing_enabled(managed: dict, tool: str) -> bool:
 def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
     """The state keys to layer over local state so ``tool``'s writer sees managed settings.
 
-    Each agent reads models from a different shape, so the manifest's list has to be translated.
-    Supported tracing flags are also mapped to the state key each writer consumes.
+    Claude keys its models by family and Codex by flat list, so the manifest's models are translated
+    by :func:`_manifest_models` before they land under ``{tool}_models``. Supported tracing flags are
+    also mapped to the state key each writer consumes.
     """
     overrides: dict[str, object] = {}
     models = _manifest_models(managed, tool)
     if models:
-        if tool == "claude":
-            overrides["claude_models"] = models
-        elif tool == "opencode" and isinstance(models, list):
-            # OpenCode selects `provider/model`, so its state is bucketed by provider rather than flat.
-            # No override when nothing buckets: an empty dict would replace the developer's own
-            # models, leaving opencode with none at all.
-            buckets = _bucket_by_provider(models)
-            if buckets:
-                overrides["opencode_models"] = buckets
-        else:
-            overrides[f"{tool}_models"] = models
-    if tool in ("claude", "codex"):
-        static_models = managed_static_models(managed, tool)
-        if static_models:
-            overrides[f"{tool}_static_models"] = static_models
+        overrides[f"{tool}_models"] = models
+    static_models = managed_static_models(managed, tool)
+    if static_models:
+        overrides[f"{tool}_static_models"] = static_models
     default_model = _str(_agent_model_config(managed, tool).get("default_model"))
     if default_model:
         overrides[f"{tool}_default_model"] = default_model
@@ -106,31 +95,6 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
     if tool in OTEL_TRACING_TOOLS and managed_otel_tracing_enabled(managed, tool):
         overrides[f"{tool}_otel_tracing"] = True
     return overrides
-
-
-def managed_unservable_models(managed: dict, tool: str) -> list[str]:
-    """The models the manifest names for ``tool`` when it has no provider to serve any of them.
-
-    Only non-empty when *every* named model is unservable, which is when the translation yields
-    nothing and the developer's own models stand — so the caller can say why the admin's list had no
-    effect. opencode has no OpenAI provider and pi has no OSS provider, so each can be handed a
-    valid model FQN it cannot route.
-    """
-    if tool not in ("opencode", "pi"):
-        return []
-    models = _manifest_models(managed, tool)
-    if not isinstance(models, list):
-        return []
-    servable = (
-        _bucket_by_provider(models)
-        if tool == "opencode"
-        else [
-            m
-            for m in models
-            if classify_model_family(m) in (*ANTHROPIC_FAMILIES, "codex", "gemini")
-        ]
-    )
-    return [] if servable else models
 
 
 def _manifest_models(managed: dict, tool: str) -> dict | list | None:
@@ -151,28 +115,11 @@ def _manifest_models(managed: dict, tool: str) -> dict | list | None:
     return None
 
 
-def _bucket_by_provider(models: list[str]) -> dict[str, list[str]]:
-    """Group model FQNs into OpenCode's provider buckets, mirroring how discovery builds them.
-
-    Discovery derives these from the per-family lists (claude -> anthropic, and gemini/oss as-is), so
-    the same family classification recovers them from a flat manifest list. Models whose family
-    can't be identified are dropped.
-    """
-    buckets: dict[str, list[str]] = {}
-    for model in models:
-        family = classify_model_family(model)
-        if family in ANTHROPIC_FAMILIES:
-            buckets.setdefault("anthropic", []).append(model)
-        elif family in ("gemini", "oss"):
-            buckets.setdefault(family, []).append(model)
-    return buckets
-
-
 def managed_enabled_tools(managed: dict) -> list[str]:
     """The tools the managed config enables, in the config's own order.
 
-    Every entry is an agent ucode recognizes: ``normalize_managed_config`` drops enum values this
-    build doesn't know, so an unrecognized agent never reaches here."""
+    Every entry is an agent ucode can manage: ``normalize_managed_config`` drops (and warns about)
+    enum values outside claude/codex, so an unmanageable agent never reaches here."""
     return list(_as_dict(_as_dict(managed).get("enabled_agents")))
 
 

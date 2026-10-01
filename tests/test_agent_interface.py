@@ -156,7 +156,8 @@ class TestModelsSemantics:
         )
 
     def test_duplicates_are_collapsed(self):
-        state = {"copilot_models": ["m", "m", "other"]}
+        # copilot composes the claude and codex lists, which can name the same id in both.
+        state = {"claude_models": {"opus": "m", "sonnet": "other"}, "codex_models": ["m"]}
         assert AGENTS["copilot"].models(state).available == ("m", "other")
 
 

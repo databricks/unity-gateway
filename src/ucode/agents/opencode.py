@@ -391,8 +391,6 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
 
 
 def default_model(state: dict) -> str | None:
-    if isinstance(state.get("opencode_default_model"), str):
-        return state.get("opencode_default_model")
     opencode_models = state.get("opencode_models") or {}
     anthropic = opencode_models.get("anthropic") or []
     if anthropic:

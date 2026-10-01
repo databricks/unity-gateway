@@ -7,7 +7,6 @@ import json
 import pytest
 
 import ucode.agents.claude as claude
-import ucode.agents.opencode as opencode
 import ucode.config_io as config_io
 import ucode.state as state_mod
 from ucode.managed_config import normalize_managed_config
@@ -21,7 +20,6 @@ from ucode.managed_resolve import (
     managed_static_models,
     managed_supplies_models,
     managed_unity_catalog_location,
-    managed_unservable_models,
     recommended_agent,
     resolve_state,
 )
@@ -75,9 +73,9 @@ class TestOtelTracing:
             managed = {"enabled_agents": {tool: {"otel_tracing_enabled": True}}}
             assert managed_state_overrides(managed, tool)[f"{tool}_otel_tracing"] is True
 
-    def test_state_overrides_ignore_unsupported_agents(self):
-        managed = {"enabled_agents": {"gemini": {"otel_tracing_enabled": True}}}
-        assert "gemini_otel_tracing" not in managed_state_overrides(managed, "gemini")
+    def test_state_overrides_ignore_agents_the_config_does_not_enable(self):
+        managed = {"enabled_agents": {"claude": {"otel_tracing_enabled": True}}}
+        assert "codex_otel_tracing" not in managed_state_overrides(managed, "codex")
 
     def test_disabled_tracing_adds_no_override(self):
         managed = {"enabled_agents": {"claude": {"otel_tracing_enabled": False}}}
@@ -229,7 +227,7 @@ class TestManagedProviderService:
         assert managed_provider_service({}, "claude") is None
 
     def test_none_for_agent_not_in_manifest(self):
-        assert managed_provider_service(MANAGED, "gemini") is None
+        assert managed_provider_service(MANAGED, "codex") is None
 
 
 class TestManagedUnityCatalogLocation:
@@ -249,7 +247,6 @@ class TestManagedUnityCatalogLocation:
             }
         }
         assert managed_unity_catalog_location(managed, "claude") is None
-        assert managed_unity_catalog_location(managed, "gemini") is None
 
 
 class TestResolveState:
@@ -406,16 +403,13 @@ class TestStateFileIsNotRewritten:
 
     @pytest.mark.parametrize(
         ("tool", "models_key", "managed_models"),
-        [
-            ("codex", "codex_models", ["managed-codex"]),
-            ("gemini", "gemini_models", ["managed-gemini"]),
-        ],
+        [("codex", "codex_models", ["managed-codex"])],
     )
     def test_other_agents_state_is_also_preserved(
         self, tmp_path, monkeypatch, tool, models_key, managed_models
     ):
-        # Every agent's write_tool_config calls save_state, so the swap-back has to hold for all of
-        # them — not just claude.
+        # Codex's write_tool_config calls save_state too, so the swap-back has to hold for it as
+        # well — not just claude.
         monkeypatch.setattr(config_io, "APP_DIR", tmp_path)
         monkeypatch.setattr(state_mod, "STATE_PATH", tmp_path / "state.json")
         state_mod.save_state({"workspace": WORKSPACE, models_key: ["mine"]})
@@ -480,8 +474,8 @@ class TestManagedSuppliesModels:
         assert managed_supplies_models(managed, "claude") is True
 
     def test_true_for_a_flat_model_list(self):
-        managed = {"enabled_agents": {"opencode": {"model_config": {"models": ["a", "b"]}}}}
-        assert managed_supplies_models(managed, "opencode") is True
+        managed = {"enabled_agents": {"codex": {"model_config": {"models": ["a", "b"]}}}}
+        assert managed_supplies_models(managed, "codex") is True
 
     def test_false_when_the_config_names_no_models(self):
         # Discovery still has to run, or the launch has nothing to pin.
@@ -489,7 +483,7 @@ class TestManagedSuppliesModels:
         assert managed_supplies_models(managed, "claude") is False
 
     def test_false_for_an_agent_the_config_does_not_cover(self):
-        assert managed_supplies_models(MANAGED, "gemini") is False
+        assert managed_supplies_models({"enabled_agents": {"claude": {}}}, "codex") is False
 
     def test_false_for_no_config_at_all(self):
         # First launch has no persisted copy yet, so discovery runs exactly as it always did.
@@ -505,88 +499,42 @@ class TestManagedSuppliesModels:
 
 
 class TestManagedStateOverrides:
-    """Each agent reads its models from a different shape, so the manifest has to be translated."""
+    """Claude keys models by family and Codex by flat list, so the manifest has to be translated."""
 
-    def test_opencode_gets_provider_buckets_not_a_flat_list(self):
-        # OpenCode's state is `{provider: [models]}` and its writer calls `.get()` on it, so handing
-        # it the manifest's flat list raises AttributeError.
+    def test_claude_gets_family_slots(self):
         managed = {
             "enabled_agents": {
-                "opencode": {
+                "claude": {
                     "model_config": {
-                        "models": [
-                            "system.ai.claude-opus-4-8",
-                            "system.ai.gemini-3-flash",
-                            "system.ai.kimi-k2-7-code",
-                        ]
+                        "default_models_by_model_family": {
+                            "default_opus_model": "system.ai.claude-opus-4-8"
+                        }
                     }
                 }
             }
         }
-        assert managed_state_overrides(managed, "opencode") == {
-            "opencode_models": {
-                "anthropic": ["system.ai.claude-opus-4-8"],
-                "gemini": ["system.ai.gemini-3-flash"],
-                "oss": ["system.ai.kimi-k2-7-code"],
-            }
+        assert managed_state_overrides(managed, "claude") == {
+            "claude_models": {"opus": "system.ai.claude-opus-4-8"}
         }
 
-    def test_opencode_buckets_are_usable_by_its_own_writer(self):
-        managed = {
-            "enabled_agents": {
-                "opencode": {"model_config": {"models": ["system.ai.claude-opus-4-8"]}}
-            }
-        }
-        buckets = managed_state_overrides(managed, "opencode")["opencode_models"]
-        assert opencode._resolve_model_selector("system.ai.claude-opus-4-8", buckets) == (
-            "databricks-anthropic/system.ai.claude-opus-4-8"
-        )
-
-    @pytest.mark.parametrize("tool", ["pi", "copilot"])
-    def test_pi_and_copilot_get_their_own_key(self, tool):
-        # They compose from claude_models/codex_models/gemini_models, which claude, codex, and gemini
-        # also read — writing a per-agent policy there would let one agent's config change another's.
-        managed = {
-            "enabled_agents": {tool: {"model_config": {"models": ["system.ai.claude-opus-4-8"]}}}
-        }
-        assert managed_state_overrides(managed, tool) == {
-            f"{tool}_models": ["system.ai.claude-opus-4-8"]
-        }
+    def test_codex_gets_the_manifests_flat_list(self):
+        managed = {"enabled_agents": {"codex": {"model_config": {"models": ["a", "b"]}}}}
+        assert managed_state_overrides(managed, "codex") == {"codex_models": ["a", "b"]}
 
     def test_no_overrides_when_the_manifest_names_no_models(self):
         assert managed_state_overrides({}, "claude") == {}
 
-    def test_unclassifiable_models_are_dropped_from_buckets(self):
-        # A model whose family can't be identified has no provider to route through, so guessing a
-        # bucket would produce a selector OpenCode can't resolve. It is dropped, but the models that
-        # do classify still apply.
-        managed = {
-            "enabled_agents": {
-                "opencode": {
-                    "model_config": {"models": ["mystery-model", "system.ai.claude-opus-4-8"]}
-                }
-            }
-        }
-        assert managed_state_overrides(managed, "opencode") == {
-            "opencode_models": {"anthropic": ["system.ai.claude-opus-4-8"]}
-        }
-
-    def test_no_override_when_nothing_is_servable(self):
-        # An all-unservable list must not replace the developer's buckets with an empty dict —
-        # that would leave OpenCode with no models at all.
-        managed = {"enabled_agents": {"opencode": {"model_config": {"models": ["mystery-model"]}}}}
-        state = _state(opencode_models={"anthropic": ["local-opus"]})
+    def test_no_overrides_for_an_agent_the_config_cannot_govern(self):
+        # Only claude and codex are manageable, so a launch of any other agent is never overridden
+        # even when the developer has its models in local state.
+        managed = {"enabled_agents": {"claude": {"model_config": {"models": ["a"]}}}}
         assert managed_state_overrides(managed, "opencode") == {}
-        assert resolve_state(managed, state, "opencode")["opencode_models"] == {
-            "anthropic": ["local-opus"]
-        }
-        assert managed_unservable_models(managed, "opencode") == ["mystery-model"]
 
 
 class TestManagedDefaultModelStateOverrides:
-    """The managed default_model should be layered into state for each agent."""
+    """The managed default_model should be layered into state for each manageable agent."""
 
-    @pytest.mark.parametrize("tool", ["pi", "copilot", "gemini", "opencode", "codex"])
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
     def test_emits_a_per_agent_default_model_key(self, tool):
         managed = {"enabled_agents": {tool: {"model_config": {"default_model": "admin-default"}}}}
         assert managed_state_overrides(managed, tool) == {f"{tool}_default_model": "admin-default"}
@@ -594,7 +542,7 @@ class TestManagedDefaultModelStateOverrides:
     def test_emits_default_model_alongside_the_allowlist(self):
         managed = {
             "enabled_agents": {
-                "pi": {
+                "codex": {
                     "model_config": {
                         "default_model": "admin-default",
                         "models": ["model-a", "model-b"],
@@ -602,9 +550,9 @@ class TestManagedDefaultModelStateOverrides:
                 }
             }
         }
-        assert managed_state_overrides(managed, "pi") == {
-            "pi_default_model": "admin-default",
-            "pi_models": ["model-a", "model-b"],
+        assert managed_state_overrides(managed, "codex") == {
+            "codex_default_model": "admin-default",
+            "codex_models": ["model-a", "model-b"],
         }
 
     def test_codex_only_default_model_no_models_field(self):
@@ -618,51 +566,19 @@ class TestManagedDefaultModelStateOverrides:
 
 class TestManagedEnabledTools:
     def test_lists_the_configs_agents(self):
-        managed = {"enabled_agents": {"claude": {}, "opencode": {}}}
-        assert managed_enabled_tools(managed) == ["claude", "opencode"]
+        managed = {"enabled_agents": {"claude": {}, "codex": {}}}
+        assert managed_enabled_tools(managed) == ["claude", "codex"]
 
     def test_empty_when_the_config_names_no_agents(self):
         # Callers treat this as "no opinion", so a budget-only config blocks nothing.
         assert managed_enabled_tools({"budget_policy": {}}) == []
 
 
-class TestManagedUnservableModels:
-    """Warn when the admin's list names only models the agent has no provider for."""
-
-    @staticmethod
-    def _managed(tool, models):
-        return {"enabled_agents": {tool: {"model_config": {"models": models}}}}
-
-    def test_pi_oss_only_is_unservable(self):
-        # Pi has no OSS provider block.
-        assert managed_unservable_models(
-            self._managed("pi", ["system.ai.kimi-k2-7-code"]), "pi"
-        ) == ["system.ai.kimi-k2-7-code"]
-
-    def test_opencode_gpt_only_is_unservable(self):
-        # OpenCode has no OpenAI provider block.
-        managed = self._managed("opencode", ["system.ai.gpt-5"])
-        assert managed_unservable_models(managed, "opencode") == ["system.ai.gpt-5"]
-
-    @pytest.mark.parametrize(
-        ("tool", "models"),
-        [
-            ("pi", ["system.ai.kimi-k2-7-code", "system.ai.claude-opus-4-8"]),
-            ("opencode", ["system.ai.gpt-5", "system.ai.claude-opus-4-8"]),
-        ],
-    )
-    def test_no_warning_when_anything_is_servable(self, tool, models):
-        assert managed_unservable_models(self._managed(tool, models), tool) == []
-
-    def test_agents_that_pass_models_through_never_warn(self):
-        assert managed_unservable_models(self._managed("codex", ["anything"]), "codex") == []
-
-
 class TestRecommendedAgent:
     """A tier can move the org to a cheaper agent; with none named, default_agent stands."""
 
     def test_tier_agent_wins(self):
-        assert recommended_agent({"agent": "opencode"}, {"default_agent": "claude"}) == "opencode"
+        assert recommended_agent({"agent": "codex"}, {"default_agent": "claude"}) == "codex"
 
     def test_falls_back_to_default_agent(self):
         assert recommended_agent({"agent": None}, {"default_agent": "claude"}) == "claude"
@@ -678,17 +594,17 @@ class TestManagedLaunchModel:
     MANAGED = {
         "enabled_agents": {
             "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}},
-            "opencode": {"model_config": {"default_model": "system.ai.claude-sonnet-4-6"}},
+            "codex": {"model_config": {"default_model": "databricks-gpt-5-3-codex"}},
         }
     }
 
     def test_the_recommended_agent_gets_the_recommended_model(self):
-        rec = {"agent": "opencode", "model": "system.ai.kimi-k2-7-code"}
-        assert managed_launch_model(self.MANAGED, rec, "opencode") == "system.ai.kimi-k2-7-code"
+        rec = {"agent": "codex", "model": "system.ai.gpt-5"}
+        assert managed_launch_model(self.MANAGED, rec, "codex") == "system.ai.gpt-5"
 
     def test_other_agents_keep_their_own_default(self):
-        # opencode's Kimi model is not servable by claude's Anthropic-dialect endpoint.
-        rec = {"agent": "opencode", "model": "system.ai.kimi-k2-7-code"}
+        # codex's GPT model is not servable by claude's Anthropic-dialect endpoint.
+        rec = {"agent": "codex", "model": "system.ai.gpt-5"}
         assert managed_launch_model(self.MANAGED, rec, "claude") == "system.ai.claude-opus-4-8"
 
     def test_a_model_without_an_agent_applies_to_any_tool(self):
@@ -699,7 +615,7 @@ class TestManagedLaunchModel:
         assert managed_launch_model(self.MANAGED, None, "claude") == "system.ai.claude-opus-4-8"
 
     def test_none_when_neither_names_a_model(self):
-        assert managed_launch_model({}, None, "pi") is None
+        assert managed_launch_model({}, None, "codex") is None
 
 
 class TestManagedStaticModels:

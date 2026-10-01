@@ -196,6 +196,63 @@ class TestNormalize:
         assert "spec_version" not in normalize_managed_config(RAW_MANIFEST)
 
 
+class TestUnmanageableAgents:
+    """Only Claude Code and Codex are governable, so any other agent is ignored with a warning."""
+
+    @pytest.fixture(autouse=True)
+    def _forget_warnings(self):
+        # The dedupe set is process-lifetime, so each test starts from a clean slate.
+        mc_mod._WARNED_UNMANAGEABLE_AGENTS.clear()
+        yield
+        mc_mod._WARNED_UNMANAGEABLE_AGENTS.clear()
+
+    @staticmethod
+    def _raw(*agents):
+        return {"enabled_agents": [{"agent": agent, "config": {}} for agent in agents]}
+
+    @pytest.mark.parametrize(
+        "agent",
+        ["CODING_AGENT_OPENCODE", "CODING_AGENT_PI", "CODING_AGENT_GEMINI", "CODING_AGENT_COPILOT"],
+    )
+    def test_ignored_with_one_actionable_warning(self, capsys, agent):
+        assert "enabled_agents" not in normalize_managed_config(self._raw(agent))
+        err = capsys.readouterr().err
+        # Rich hard-wraps the line, so only substrings that survive wrapping are asserted on.
+        assert agent in err
+        assert "ignoring it" in err
+
+    def test_warns_on_stderr_so_ug_export_stdout_stays_machine_readable(self, capsys):
+        normalize_managed_config(self._raw("CODING_AGENT_OPENCODE"))
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "CODING_AGENT_OPENCODE" in captured.err
+
+    def test_managed_agents_are_kept_alongside_the_ignored_one(self, capsys):
+        cfg = normalize_managed_config(
+            self._raw("CODING_AGENT_CLAUDE_CODE", "CODING_AGENT_PI", "CODING_AGENT_CODEX")
+        )
+        assert set(cfg["enabled_agents"]) == {"claude", "codex"}
+        assert "CODING_AGENT_PI" in capsys.readouterr().err
+
+    def test_warns_once_per_agent_across_repeated_normalization(self, capsys):
+        # One command normalizes the same config more than once (a cached read, then a refresh).
+        raw = self._raw("CODING_AGENT_PI")
+        normalize_managed_config(raw)
+        normalize_managed_config(raw)
+        assert capsys.readouterr().err.count("CODING_AGENT_PI") == 1
+
+    def test_each_ignored_agent_gets_its_own_warning(self, capsys):
+        normalize_managed_config(self._raw("CODING_AGENT_PI", "CODING_AGENT_OPENCODE"))
+        err = capsys.readouterr().err
+        assert "CODING_AGENT_PI" in err
+        assert "CODING_AGENT_OPENCODE" in err
+
+    def test_an_entry_naming_no_agent_is_dropped_silently(self, capsys):
+        # Nothing to name in a warning, and it is a malformed entry rather than a policy an admin set.
+        assert "enabled_agents" not in normalize_managed_config({"enabled_agents": [{}]})
+        assert capsys.readouterr().err == ""
+
+
 class TestGetManagedConfig:
     def test_returns_the_first_config_raw(self, monkeypatch):
         # get_managed_config returns the config verbatim now; normalization happens on read.
@@ -980,7 +1037,7 @@ class TestGetModelRecommendation:
         self._stub(
             monkeypatch,
             {
-                "recommended_agent": "CODING_AGENT_OPENCODE",
+                "recommended_agent": "CODING_AGENT_CODEX",
                 "recommended_model": "system.ai.claude-haiku-4-5",
                 "current_spend": "412.50",
                 "effective_threshold": "500.00",
@@ -989,7 +1046,7 @@ class TestGetModelRecommendation:
         rec, reason = mc_mod.get_model_recommendation("https://w", "tok")
         assert reason is None
         assert rec == {
-            "agent": "opencode",
+            "agent": "codex",
             "model": "system.ai.claude-haiku-4-5",
             "current_spend": 412.5,
             "effective_threshold": 500.0,
@@ -1002,9 +1059,11 @@ class TestGetModelRecommendation:
         assert rec is not None and rec["agent"] is None and rec["model"] == "system.ai.gpt-5"
 
     def test_agent_without_a_model(self, monkeypatch):
-        self._stub(monkeypatch, {"recommended_agent": "CODING_AGENT_PI", "current_spend": "1.00"})
+        self._stub(
+            monkeypatch, {"recommended_agent": "CODING_AGENT_CODEX", "current_spend": "1.00"}
+        )
         rec, _ = mc_mod.get_model_recommendation("https://w", "tok")
-        assert rec is not None and rec["agent"] == "pi" and rec["model"] is None
+        assert rec is not None and rec["agent"] == "codex" and rec["model"] is None
 
     @pytest.mark.parametrize("agent_enum", ["CODING_AGENT_UNSPECIFIED", "CODING_AGENT_FUTURE", ""])
     def test_unknown_agent_is_dropped_not_fatal(self, monkeypatch, agent_enum):
@@ -1032,7 +1091,8 @@ class TestGetModelRecommendation:
 
     def test_unparseable_decimals_become_none(self, monkeypatch):
         self._stub(
-            monkeypatch, {"recommended_agent": "CODING_AGENT_PI", "current_spend": "not-a-number"}
+            monkeypatch,
+            {"recommended_agent": "CODING_AGENT_CODEX", "current_spend": "not-a-number"},
         )
         rec, _ = mc_mod.get_model_recommendation("https://w", "tok")
         assert rec is not None and rec["current_spend"] is None

@@ -37,7 +37,7 @@ from ucode.databricks import (
     fetch_model_recommendation,
     get_databricks_token,
 )
-from ucode.ui import console, print_warning
+from ucode.ui import console, print_warning, print_warning_err
 
 MANAGED_CONFIG_PATH = config_io.APP_DIR / "managed-config.json"
 
@@ -45,23 +45,25 @@ MANAGED_CONFIG_PATH = config_io.APP_DIR / "managed-config.json"
 # case, not an error. Kept here so the CLI (which surfaces it) uses one consistent message.
 NO_MANAGED_CONFIG_MESSAGE = "No coding-agent config has been set up by your workspace admin yet."
 
-# CodingAgent proto enum -> ucode tool name. Anything unrecognized (e.g. a newer agent this ucode
-# build doesn't know) is dropped during normalization rather than guessed at. Public because the
-# admin-write side (``managed_setup``) inverts these maps to serialize, so a new agent or MCP type
-# only has to be declared once.
+# CodingAgent proto enum -> ucode tool name. Claude Code and Codex are the only agents a managed
+# config can govern; every other agent ucode can launch is self-configured only. Anything
+# unrecognized (a newer agent, or one ucode launches but cannot manage) is dropped during
+# normalization rather than guessed at. Public because the admin-write side (``managed_setup``)
+# inverts these maps to serialize, so a new agent or MCP type only has to be declared once.
 AGENT_ENUM_TO_TOOL: dict[str, str] = {
     "CODING_AGENT_CLAUDE_CODE": "claude",
     "CODING_AGENT_CODEX": "codex",
-    "CODING_AGENT_GEMINI": "gemini",
-    "CODING_AGENT_COPILOT": "copilot",
-    "CODING_AGENT_PI": "pi",
-    "CODING_AGENT_OPENCODE": "opencode",
 }
 
 _AGENT_ENUM_PREFIX = "CODING_AGENT_"
 AGENT_NAME_TO_TOOL: dict[str, str] = {
     enum[len(_AGENT_ENUM_PREFIX) :].lower(): tool for enum, tool in AGENT_ENUM_TO_TOOL.items()
 }
+
+# Agent references already reported as unmanageable, so repeated normalization within one command
+# warns once per agent. Process-lifetime: a ucode command is short-lived and never serves two
+# workspaces.
+_WARNED_UNMANAGEABLE_AGENTS: set[str] = set()
 
 MAX_SPEC_VERSION = 1
 
@@ -308,8 +310,10 @@ class CodingAgentConfig:
             for entry in raw_agents:
                 entry_dict = _as_dict(entry)
                 tool = _resolve_agent_tool(entry_dict.get("agent"))
-                if tool is not None:
-                    enabled_agents_dict[tool] = AgentConfig.from_wire(entry_dict.get("config"))
+                if tool is None:
+                    _warn_unmanageable_agent(entry_dict.get("agent"))
+                    continue
+                enabled_agents_dict[tool] = AgentConfig.from_wire(entry_dict.get("config"))
 
         mcp_servers = NamesOrLocation.from_wire(raw_dict.get("mcp_servers"))
         skills = NamesOrLocation.from_wire(raw_dict.get("skills"))
@@ -422,13 +426,29 @@ def _resolve_agent_tool(key: object) -> str | None:
     """Map an agent reference to a ucode tool name, accepting either spelling.
 
     The server may send agent references as either proto enum (``CODING_AGENT_CLAUDE_CODE``) or
-    by name (``claude_code``). Both resolve to the same tool, or None when this build doesn't
-    know the agent.
+    by name (``claude_code``). Both resolve to the same tool, or None when the agent is one ucode
+    can't manage.
     """
     name = _str(key)
     if name is None:
         return None
     return AGENT_ENUM_TO_TOOL.get(name) or AGENT_NAME_TO_TOOL.get(name)
+
+
+def _warn_unmanageable_agent(key: object) -> None:
+    """Warn that the config enables an agent ucode can't manage, once per agent per process.
+
+    A single command normalizes the same config more than once (a cached read, then a refresh), so
+    the warning is deduped by agent reference rather than repeated per read. On stderr because
+    ``ug export`` normalizes too and its stdout is a machine-read stream.
+    """
+    name = _str(key)
+    if name is None or name in _WARNED_UNMANAGEABLE_AGENTS:
+        return
+    _WARNED_UNMANAGEABLE_AGENTS.add(name)
+    print_warning_err(
+        f"Your workspace's managed config enables {name}, which ug can't manage; ignoring it."
+    )
 
 
 def normalize_managed_config(raw: dict) -> dict:
@@ -495,7 +515,7 @@ def get_model_recommendation(workspace: str, token: str) -> tuple[dict | None, s
 
     Returns ``(recommendation, reason)`` where the recommendation is ``{"agent", "model",
     "current_spend", "effective_threshold"}``. Every field is optional server-side, so each is
-    normalized independently: an agent this build doesn't recognize is dropped rather than failing
+    normalized independently: an agent ucode can't manage is dropped rather than failing
     the read, and a model can arrive without an agent.
     """
     payload, reason = fetch_model_recommendation(workspace, token)
