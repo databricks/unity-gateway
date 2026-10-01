@@ -531,6 +531,20 @@ class TestManagedStateOverrides:
             }
         }
 
+    def test_opencode_buckets_supported_gpt_models_as_openai(self):
+        managed = {
+            "enabled_agents": {
+                "opencode": {
+                    "model_config": {"models": ["system.ai.gpt-6-sol", "system.ai.gpt-5-5"]}
+                }
+            }
+        }
+        buckets = managed_state_overrides(managed, "opencode")["opencode_models"]
+        assert buckets == {"openai": ["system.ai.gpt-6-sol"]}
+        assert opencode._resolve_model_selector("system.ai.gpt-6-sol", buckets) == (
+            "databricks-openai/system.ai.gpt-6-sol"
+        )
+
     def test_opencode_buckets_are_usable_by_its_own_writer(self):
         managed = {
             "enabled_agents": {
