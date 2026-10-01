@@ -118,18 +118,13 @@ def _toggle_with_skill(tui, session, agent: str, enabled: bool) -> None:
 
     state = "on" if enabled else "off"
     invocation = f"/smart-router {state}" if agent == "claude" else f"$smart-router {state}"
-    confirmations = (
-        f"Smart Router is {state} for this session",
-        f"Smart Router is now {state} for this session",
-    )
+    confirmation = f"{state} for this session"
     tui.submit(invocation)
     tui.wait_for(
         lambda screen: (
-            any(confirmation in screen for confirmation in confirmations)
-            and any(
-                assistant_answer_contains(session, agent, confirmation)
-                for confirmation in confirmations
-            )
+            "Smart Router" in screen
+            and confirmation in screen
+            and assistant_answer_contains(session, agent, confirmation)
         ),
         f"the installed Smart Router skill to turn routing {state}",
         timeout=120,
