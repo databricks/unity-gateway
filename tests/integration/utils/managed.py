@@ -13,6 +13,53 @@ from pathlib import Path
 MANAGED_CONFIGS_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 
 
+def fetch_published_managed_config(workspace: str, token: str) -> dict:
+    """Fetch and validate the selected workspace's published CodingAgentConfig.
+
+    This is a read-only prerequisite check for journeys that must exercise the real managed
+    workspace.  It deliberately does not alter, replay, or inject the response into a test
+    session; the installed CLI performs its own control-plane read.
+    """
+    request = urllib.request.Request(
+        workspace.rstrip("/") + MANAGED_CONFIGS_PATH,
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = json.load(response)
+
+    if isinstance(payload, dict):
+        configs = payload.get("coding_agent_configs")
+    elif isinstance(payload, list):
+        configs = payload
+    else:
+        configs = None
+    assert isinstance(configs, list) and configs, (
+        "CUJ3 requires a published CodingAgentConfig in the selected workspace; "
+        "the workspace returned no config"
+    )
+    assert len(configs) == 1, (
+        "CUJ3 requires exactly one published CodingAgentConfig in the selected workspace; "
+        f"found {len(configs)}"
+    )
+    config = configs[0]
+    assert isinstance(config, dict), "published CodingAgentConfig was not an object"
+    enabled_agents = config.get("enabled_agents")
+    assert isinstance(enabled_agents, list), (
+        "published CodingAgentConfig had no enabled_agents list"
+    )
+    agents = [
+        entry.get("agent")
+        for entry in enabled_agents
+        if isinstance(entry, dict) and isinstance(entry.get("agent"), str)
+    ]
+    expected = {"CODING_AGENT_CLAUDE_CODE", "CODING_AGENT_CODEX"}
+    assert all(agents.count(agent) == 1 for agent in expected), (
+        "CUJ3 requires one published CodingAgentConfig enabling both Claude and Codex; "
+        f"found {agents}"
+    )
+    return config
+
+
 def assert_no_managed_config(payload: object) -> None:
     """Validate the real List response before claiming unmanaged-workspace coverage."""
     configs = payload.get("coding_agent_configs", []) if isinstance(payload, dict) else payload

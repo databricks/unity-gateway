@@ -1,8 +1,8 @@
 """Codex managed-config CUJs for repository scenarios 2, 4, and 6.
 
-The admin CodingAgentConfig is fetched once from the managed workspace, its Codex model source is
-set to the dedicated test MPS, and the result is reused through ``UCODE_MANAGED_CONFIG_STUB`` in
-each isolated session. Normalization, config writers, the gateway, and Codex remain real.
+Cases 2 and 6 use the managed-config fixture seam to cover model-discovery shapes that the shared
+workspace does not publish. Case 4 runs against the selected workspace's published config, which
+must be the dedicated CUJ3 managed workspace.
 """
 
 import json
@@ -13,6 +13,7 @@ import pytest
 from utils.constants import MANAGED_CODEX_PROVIDER_SERVICE
 from utils.managed import (
     fetch_managed_config_stub,
+    fetch_published_managed_config,
     is_managed_config_control_plane_cache,
     use_managed_config_stub,
 )
@@ -23,7 +24,7 @@ from utils.provider_catalog import (
 )
 from utils.terminal import TerminalProcess
 
-pytestmark = [pytest.mark.managed_fixture, pytest.mark.codex]
+pytestmark = pytest.mark.codex
 
 
 @pytest.fixture(scope="module")
@@ -47,9 +48,14 @@ def _managed_codex_provider_catalog(workspace):
     )
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def _managed_codex_config(live_session, _managed_codex_config_stub):
     use_managed_config_stub(live_session, _managed_codex_config_stub)
+
+
+@pytest.fixture(scope="module")
+def _published_managed_config(workspace):
+    return fetch_published_managed_config(workspace, os.environ["DATABRICKS_BEARER"])
 
 
 def _codex_state_and_agent_files(session):
@@ -128,6 +134,8 @@ def _assert_managed_provider_catalog(session, models, expected: CodexProviderCat
     assert models == list(catalog_ids), (models, catalog)
 
 
+@pytest.mark.managed_fixture
+@pytest.mark.usefixtures("_managed_codex_config")
 def test_case_02_managed_codex_uses_admin_discovery_after_configure(
     live_session, workspace, _managed_codex_provider_catalog
 ):
@@ -173,6 +181,8 @@ def test_case_02_managed_codex_uses_admin_discovery_after_configure(
     assert not (session.home / ".ucode" / "codex-model-catalog.json").exists()
 
 
+@pytest.mark.managed_fixture
+@pytest.mark.usefixtures("_managed_codex_config")
 def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(
     live_session, workspace, _managed_codex_provider_catalog
 ):
@@ -193,8 +203,11 @@ def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(
     assert app_models == models, (app_models, models)
 
 
+@pytest.mark.managed
+@pytest.mark.cuj3
+@pytest.mark.workspace_isolated
 def test_case_04_managed_codex_rejects_provider_override_after_configure(
-    live_session, workspace, codex_provider
+    live_session, workspace, codex_provider, _published_managed_config
 ):
     """Scenario: configure managed Codex, then pass a --provider override.
 
@@ -225,8 +238,11 @@ def test_case_04_managed_codex_rejects_provider_override_after_configure(
     _assert_rejected_before_codex_started(session, result, before)
 
 
+@pytest.mark.managed
+@pytest.mark.cuj3
+@pytest.mark.workspace_isolated
 def test_case_04_managed_codex_rejects_provider_override_from_fresh_state(
-    live_session, workspace, codex_provider
+    live_session, workspace, codex_provider, _published_managed_config
 ):
     """Scenario: pass --workspace and a --provider override from fresh state.
 
@@ -249,6 +265,8 @@ def test_case_04_managed_codex_rejects_provider_override_from_fresh_state(
     _assert_rejected_before_codex_started(session, result)
 
 
+@pytest.mark.managed_fixture
+@pytest.mark.usefixtures("_managed_codex_config")
 def test_case_06_managed_codex_rejects_model_location_override_after_configure(
     live_session, workspace, parent_schema
 ):
@@ -281,6 +299,8 @@ def test_case_06_managed_codex_rejects_model_location_override_after_configure(
     _assert_rejected_before_codex_started(session, result, before)
 
 
+@pytest.mark.managed_fixture
+@pytest.mark.usefixtures("_managed_codex_config")
 def test_case_06_managed_codex_rejects_model_location_override_from_fresh_state(
     live_session, workspace, parent_schema
 ):
