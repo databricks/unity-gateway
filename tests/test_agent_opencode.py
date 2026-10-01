@@ -18,6 +18,7 @@ def _base_urls() -> dict[str, str]:
     return {
         "anthropic": f"{WS}/ai-gateway/anthropic/v1",
         "gemini": f"{WS}/ai-gateway/gemini/v1beta",
+        "openai": f"{WS}/ai-gateway/codex/v1",
         "oss": f"{WS}/ai-gateway/mlflow/v1",
     }
 
@@ -70,6 +71,7 @@ class TestAuthPlugin:
 
         assert "config: async (config)" in plugin
         assert "options.fetch = databricksFetch" in plugin
+        assert '"databricks-openai"' in plugin
         assert "expiresAt <= Date.now() + REFRESH_SKEW_MS" in plugin
         assert 'headers.set("Authorization", "Bearer " + token)' in plugin
         assert "if (response.status !== 401) return response" in plugin
@@ -110,6 +112,20 @@ class TestRenderOverlay:
             "system.ai.kimi-k2-7-code", "tok", _base_urls(), models
         )
         assert overlay["provider"]["databricks-oss"]["npm"] == "@ai-sdk/openai"
+
+    def test_gpt_uses_openai_responses_provider(self, monkeypatch):
+        monkeypatch.setattr(opencode, "ug_version", lambda: "1.2.3")
+        monkeypatch.setattr(opencode, "agent_version", lambda tool: "9.9.9")
+        model = "system.ai.gpt-6-sol"
+
+        overlay, keys = opencode.render_overlay(model, "tok", _base_urls(), {"openai": [model]})
+
+        provider = overlay["provider"]["databricks-openai"]
+        assert overlay["model"] == f"databricks-openai/{model}"
+        assert provider["npm"] == "@ai-sdk/openai"
+        assert provider["options"]["baseURL"] == f"{WS}/ai-gateway/codex/v1"
+        assert provider["models"][model]["headers"]["User-Agent"] == "ucode/1.2.3 opencode/9.9.9"
+        assert ["provider", "databricks-openai"] in keys
 
     def test_deepseek_uses_oss_provider(self):
         model = "system.ai.deepseek-v4-pro"
@@ -370,6 +386,15 @@ class TestOpencodeDefaultModel:
         state = {"opencode_models": {"anthropic": [], "gemini": ["gemini-2"]}}
         assert opencode.default_model(state) == "gemini-2"
 
+    def test_falls_back_to_openai_before_oss(self):
+        state = {
+            "opencode_models": {
+                "openai": ["system.ai.gpt-6-sol"],
+                "oss": ["system.ai.kimi-k2-7-code"],
+            }
+        }
+        assert opencode.default_model(state) == "system.ai.gpt-6-sol"
+
     def test_falls_back_to_oss(self):
         state = {
             "opencode_models": {
@@ -390,6 +415,27 @@ class TestOpencodeDefaultModel:
             "opencode_models": {"anthropic": ["claude-sonnet"]},
         }
         assert opencode.default_model(state) == "admin-chosen-default"
+
+
+class TestOpencodeGptModels:
+    def test_keeps_only_gpt_5_6_and_newer(self):
+        models = [
+            "system.ai.gpt-6-1-sol",
+            "system.ai.gpt-6-astra",
+            "system.ai.gpt-6-luna",
+            "system.ai.gpt-6-sol",
+            "databricks-gpt-5-6-luna",
+            "databricks-gpt-5-6-sol",
+            "system.ai.gpt-5-6-terra",
+            "system.ai.gpt-5-5",
+            "system.ai.gpt-5-5-pro",
+            "system.ai.gpt-5-4-mini",
+            "system.ai.gpt-5",
+            "system.ai.gpt-5-2025-08-07",
+            "system.ai.gpt-oss-120b",
+        ]
+
+        assert opencode.opencode_gpt_models(models) == models[:7]
 
 
 class TestOpencodeValidateCmd:

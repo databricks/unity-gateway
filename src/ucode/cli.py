@@ -44,6 +44,7 @@ from ucode.agents import (
 )
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
+from ucode.agents.opencode import build_opencode_models
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import SMART_ROUTING_ENV_KEYS
@@ -605,7 +606,9 @@ def configure_shared_state(
         fetch_all or "claude" in tools or "opencode" in tools or "copilot" in tools or "pi" in tools
     )
     want_gemini = fetch_all or "gemini" in tools or "opencode" in tools or "pi" in tools
-    want_codex = fetch_all or "codex" in tools or "copilot" in tools or "pi" in tools
+    want_codex = (
+        fetch_all or "codex" in tools or "copilot" in tools or "pi" in tools or "opencode" in tools
+    )
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
     # configure must persist that discovered family too.
     want_oss = fetch_all or "opencode" in tools or "codex" in tools
@@ -654,12 +657,9 @@ def configure_shared_state(
                     codex_models, codex_reason = discover_codex_models(workspace, token)
             if want_oss:
                 oss_models, oss_reason = ms_oss, ms_reason
-        if claude_models:
-            opencode_models["anthropic"] = list(claude_models.values())
-        if gemini_models:
-            opencode_models["gemini"] = gemini_models
-        if oss_models:
-            opencode_models["oss"] = oss_models
+        opencode_models = build_opencode_models(
+            claude_models, gemini_models, codex_models, oss_models
+        )
 
     if skip_model_discovery:
         # Don't clobber any previously-discovered Databricks model lists; provider
@@ -1117,14 +1117,9 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
     live["codex_models"] = codex_models
     live["gemini_models"] = gemini_models
     live["oss_models"] = oss_models
-    opencode_models: dict[str, list[str]] = {}
-    if claude_models:
-        opencode_models["anthropic"] = list(claude_models.values())
-    if gemini_models:
-        opencode_models["gemini"] = gemini_models
-    if oss_models:
-        opencode_models["oss"] = oss_models
-    live["opencode_models"] = opencode_models
+    live["opencode_models"] = build_opencode_models(
+        claude_models, gemini_models, codex_models, oss_models
+    )
     live["_status_model_reasons"] = {
         family: reason or shared_reason for family, reason in reasons.items()
     }
