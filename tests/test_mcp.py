@@ -2884,7 +2884,7 @@ class TestRevertMcpConfigs:
             lambda client, name: removed.append((client, name)) or ["user"],
         )
         monkeypatch.setattr(
-            mcp,
+            mcp.copilot,
             "restore_file",
             lambda config_path, backup_path, managed: (
                 restored.append((config_path, backup_path, managed)) or True
@@ -2927,7 +2927,7 @@ class TestRevertMcpConfigs:
             "remove_client_mcp_server",
             lambda client, name: removed.append((client, name)) or ["user"],
         )
-        monkeypatch.setattr(mcp, "restore_file", lambda *a, **kw: False)
+        monkeypatch.setattr(mcp.copilot, "restore_file", lambda *a, **kw: False)
 
         skills_entry = mcp._resolve_skills_mcp_servers(
             WS, ["claude", "codex"], _by_client(["claude", "codex"], ["a.b"]), []

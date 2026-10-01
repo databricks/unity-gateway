@@ -8,6 +8,7 @@ import threading
 import pytest
 
 from ucode.agents import copilot
+from ucode.agents.interface import ConfigureRequest, McpServer
 
 WS = "https://example.databricks.com"
 
@@ -425,3 +426,279 @@ class TestWriteUserMcpServers:
         assert "gone" not in doc["mcpServers"]
         assert doc["mcpServers"]["mine"] == {"type": "local"}
         assert doc["mcpServers"]["svc"]["command"] == "ug"
+
+
+class TestAgentIdentity:
+    def test_is_the_registered_copilot_agent(self):
+        from ucode.agents import AGENTS
+
+        assert AGENTS["copilot"] is copilot.AGENT
+
+    def test_describes_itself_and_its_install(self):
+        agent = copilot.AGENT
+
+        assert agent.display == "GitHub Copilot CLI"
+        assert agent.install.binary == "copilot"
+        assert agent.install.package == "@github/copilot"
+        # Copilot has no native updater, version floor or ceiling: npm installs and upgrades it.
+        assert agent.install.upgrade_argv is None
+        assert agent.install.version_error is None
+        assert agent.install.too_new is None
+        assert agent.install.before_install is None
+
+
+class TestAgentModels:
+    def test_falls_back_to_claude_then_codex_and_pins_the_first(self):
+        models = copilot.AGENT.models(
+            {
+                "claude_models": {"sonnet": "s4", "opus": "o4"},
+                "codex_models": ["gpt-5"],
+                "gemini_models": ["g"],
+            }
+        )
+
+        assert models.available == ("s4", "o4", "gpt-5")
+        assert models.default == "s4"
+
+    def test_dedupes_ids_present_in_both_inventories(self):
+        state = {"claude_models": {"sonnet": "m"}, "codex_models": ["m", "other"]}
+
+        assert copilot.AGENT.models(state).available == ("m", "other")
+
+    def test_empty_inventory_has_no_default(self):
+        models = copilot.AGENT.models({})
+
+        assert models.available == ()
+        assert models.default is None
+
+    def test_static_list_replaces_discovery_and_explicit_default_wins(self):
+        state = {
+            "claude_models": {"sonnet": "s4"},
+            "copilot_static_models": ["managed-a", "managed-b"],
+            "copilot_default_model": "managed-b",
+        }
+
+        models = copilot.AGENT.models(state)
+
+        assert models.available == ("managed-a", "managed-b")
+        assert models.default == "managed-b"
+
+    def test_does_not_mutate_state(self):
+        state = {"claude_models": {"sonnet": "s4"}}
+
+        copilot.AGENT.models(state)
+
+        assert state == {"claude_models": {"sonnet": "s4"}}
+
+
+class TestAgentConfigure:
+    def test_requires_a_model(self):
+        with pytest.raises(RuntimeError, match="A copilot model must be selected"):
+            copilot.AGENT.configure({"workspace": WS}, ConfigureRequest())
+
+    def test_returns_the_state_and_writes_the_env_file(self, tmp_path, monkeypatch):
+        env_path = isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setattr(copilot, "get_databricks_token", lambda *args, **kwargs: "tok")
+
+        result = copilot.AGENT.configure(
+            {"workspace": WS}, ConfigureRequest(model="claude-sonnet-4-6")
+        )
+
+        # Native configure returns the updated state itself, not the (state, token) write result.
+        assert isinstance(result, dict)
+        assert result["managed_configs"]["copilot"]["keys"] == copilot.MANAGED_KEYS
+        written = copilot.parse_dotenv(env_path)
+        assert written["COPILOT_MODEL"] == "claude-sonnet-4-6"
+        assert written["COPILOT_PROVIDER_BEARER_TOKEN"] == "tok"
+
+
+class TestAgentLaunch:
+    def test_hands_state_args_and_options_to_launch(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            copilot, "launch", lambda state, args, *, options: calls.append((state, args, options))
+        )
+        options = copilot.LaunchOptions(user_pinned_model="m")
+
+        copilot.AGENT.launch({"workspace": WS}, ["--flag"], options=options)
+
+        assert calls == [({"workspace": WS}, ["--flag"], options)]
+
+
+class TestAgentRevert:
+    def _point_spec_at(self, monkeypatch, tmp_path):
+        config = tmp_path / "ucode.env"
+        backup = tmp_path / "backup.env"
+        monkeypatch.setitem(copilot.SPEC, "config_path", config)
+        monkeypatch.setitem(copilot.SPEC, "backup_path", backup)
+        return config, backup
+
+    def test_restores_the_env_file_from_backup(self, tmp_path, monkeypatch):
+        config, backup = self._point_spec_at(monkeypatch, tmp_path)
+        config.write_text("COPILOT_MODEL=ug\n", encoding="utf-8")
+        backup.write_text("USER=original\n", encoding="utf-8")
+
+        rows = copilot.AGENT.revert({})
+
+        assert rows == [("GitHub Copilot CLI config", "restored")]
+        assert config.read_text(encoding="utf-8") == "USER=original\n"
+        assert not backup.exists()
+
+    def test_removes_a_ug_created_env_file_when_managed(self, tmp_path, monkeypatch):
+        config, _ = self._point_spec_at(monkeypatch, tmp_path)
+        config.write_text("COPILOT_MODEL=ug\n", encoding="utf-8")
+
+        rows = copilot.AGENT.revert({"managed_configs": {"copilot": {"keys": ["COPILOT_MODEL"]}}})
+
+        assert rows == [("GitHub Copilot CLI config", "restored")]
+        assert not config.exists()
+
+    def test_unmanaged_file_without_backup_is_unchanged(self, tmp_path, monkeypatch):
+        config, _ = self._point_spec_at(monkeypatch, tmp_path)
+        config.write_text("USER=mine\n", encoding="utf-8")
+
+        rows = copilot.AGENT.revert({})
+
+        assert rows == [("GitHub Copilot CLI config", "unchanged")]
+        assert config.read_text(encoding="utf-8") == "USER=mine\n"
+
+
+class TestAgentMcpClient:
+    PROXY_ARGV = ("ug", "mcp-proxy", "--url", f"{WS}/api/2.0/mcp/functions/system/ai")
+
+    @pytest.fixture
+    def mcp_paths(self, tmp_path, monkeypatch):
+        import ucode.config_io as config_io
+
+        monkeypatch.setattr(config_io, "APP_DIR", tmp_path)
+        config = tmp_path / "ucode-mcp-config.json"
+        backup = tmp_path / "mcp-backup.json"
+        monkeypatch.setattr(copilot, "COPILOT_MCP_CONFIG_PATH", config)
+        monkeypatch.setattr(copilot, "COPILOT_MCP_BACKUP_PATH", backup)
+        return config, backup
+
+    def _server(self, **kwargs):
+        return McpServer(url=f"{WS}/api/2.0/mcp/x", proxy_argv=self.PROXY_ARGV, **kwargs)
+
+    def test_describes_itself_and_always_uses_the_proxy(self):
+        client = copilot.AGENT.mcp
+
+        assert client.display == "GitHub Copilot CLI"
+        assert client.binary == "copilot"
+        assert client.oauth_client_id is None
+
+    def test_add_writes_the_proxy_entry_and_reports_replacement(self, mcp_paths):
+        config, _ = mcp_paths
+        client = copilot.AGENT.mcp
+
+        assert client.add("github", self._server()) == []
+        assert client.add("github", self._server()) == ["user"]
+
+        assert json.loads(config.read_text())["mcpServers"]["github"] == {
+            "type": "local",
+            "command": "ug",
+            "args": list(self.PROXY_ARGV[1:]),
+            "tools": ["*"],
+        }
+
+    def test_add_ignores_a_native_oauth_client_and_always_load(self, mcp_paths):
+        config, _ = mcp_paths
+
+        copilot.AGENT.mcp.add("github", self._server(oauth_client="app-id", always_load=True))
+
+        entry = json.loads(config.read_text())["mcpServers"]["github"]
+        assert entry["command"] == "ug"
+        assert "url" not in entry
+
+    def test_remove_reports_the_user_scope_only_when_present(self, mcp_paths):
+        config, _ = mcp_paths
+        client = copilot.AGENT.mcp
+        client.add("github", self._server())
+        client.add("jira", self._server())
+
+        assert client.remove("github") == ["user"]
+        assert client.remove("github") == []
+
+        assert list(json.loads(config.read_text())["mcpServers"]) == ["jira"]
+
+    def test_apply_writes_a_whole_diff_and_returns_the_removed_names(self, mcp_paths):
+        config, _ = mcp_paths
+        config.write_text(
+            json.dumps({"other": 1, "mcpServers": {"mine": {"type": "local"}, "gone": {}}})
+        )
+        client = copilot.AGENT.mcp
+
+        removed = client.apply({"svc": self._server()}, {"gone", "never-there"})
+
+        doc = json.loads(config.read_text())
+        assert removed == {"gone"}
+        assert doc["other"] == 1
+        assert doc["mcpServers"]["mine"] == {"type": "local"}
+        assert "gone" not in doc["mcpServers"]
+        # The batched write records exactly what per-server `add` records.
+        client.add("single", self._server())
+        assert doc["mcpServers"]["svc"] == json.loads(config.read_text())["mcpServers"]["single"]
+
+    def test_live_status_parses_the_mcp_list_output(self, monkeypatch):
+        from ucode import mcp
+
+        seen = []
+        monkeypatch.setattr(
+            mcp,
+            "_read_mcp_listing",
+            lambda argv, env=None: seen.append((argv, env)) or "github: ug mcp-proxy - ✓ Connected",
+        )
+
+        assert copilot.AGENT.mcp.live_status() == {"github": "connected"}
+        assert seen == [(["copilot", "mcp", "list"], None)]
+
+    def test_live_status_is_empty_when_the_listing_cannot_be_read(self, monkeypatch):
+        from ucode import mcp
+
+        monkeypatch.setattr(mcp, "_read_mcp_listing", lambda argv, env=None: None)
+
+        assert copilot.AGENT.mcp.live_status() == {}
+
+
+class TestRestoreMcpConfig:
+    @pytest.fixture
+    def mcp_paths(self, tmp_path, monkeypatch):
+        config = tmp_path / "ucode-mcp-config.json"
+        backup = tmp_path / "mcp-backup.json"
+        monkeypatch.setattr(copilot, "COPILOT_MCP_CONFIG_PATH", config)
+        monkeypatch.setattr(copilot, "COPILOT_MCP_BACKUP_PATH", backup)
+        return config, backup
+
+    def test_restores_the_original_file_and_drops_the_backup(self, mcp_paths):
+        config, backup = mcp_paths
+        config.write_text('{"mcpServers": {"ug": {}}}', encoding="utf-8")
+        backup.write_text('{"mcpServers": {"mine": {}}}', encoding="utf-8")
+
+        assert copilot.restore_mcp_config(False) is True
+
+        assert json.loads(config.read_text()) == {"mcpServers": {"mine": {}}}
+        assert not backup.exists()
+
+    def test_deletes_a_ug_created_file_only_when_managed(self, mcp_paths):
+        config, _ = mcp_paths
+        config.write_text("{}", encoding="utf-8")
+
+        assert copilot.restore_mcp_config(False) is False
+        assert config.exists()
+        assert copilot.restore_mcp_config(True) is True
+        assert not config.exists()
+
+    def test_revert_mcp_configs_restores_the_file_for_copilot_servers(self, mcp_paths, monkeypatch):
+        from ucode import mcp
+
+        config, backup = mcp_paths
+        config.write_text('{"mcpServers": {"ug": {}}}', encoding="utf-8")
+        backup.write_text('{"mcpServers": {"mine": {}}}', encoding="utf-8")
+        monkeypatch.setattr(mcp, "remove_client_mcp_server", lambda client, name: [])
+
+        results = mcp.revert_mcp_configs(
+            {"mcp_servers": [{"name": "github", "clients": ["copilot"]}]}
+        )
+
+        assert results == {"copilot": True}
+        assert json.loads(config.read_text()) == {"mcpServers": {"mine": {}}}

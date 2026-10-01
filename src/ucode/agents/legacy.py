@@ -25,7 +25,7 @@ from ucode.mcp_oauth import (
     CURSOR_OAUTH_CLIENT_ID,
 )
 
-from . import claude, codex, copilot, cursor, gemini
+from . import claude, codex, cursor, gemini
 from .args import LaunchOptions
 from .interface import ConfigureRequest, Install, McpServer, Models
 
@@ -34,7 +34,6 @@ LEGACY_MODULES: dict[str, ModuleType] = {
     "codex": codex,
     "claude": claude,
     "gemini": gemini,
-    "copilot": copilot,
 }
 
 # Agents with their own self-updater, which ug prefers over npm when the binary is installed.
@@ -45,7 +44,7 @@ _NATIVE_UPGRADE_ARGV: dict[str, tuple[str, ...]] = {
 
 # Agents that write the first resolved model into their ug config, so ug knows the starting
 # model. Claude and Codex deliberately leave that choice to the agent unless a model is pinned.
-_PINS_FIRST_MODEL = frozenset({"gemini", "copilot"})
+_PINS_FIRST_MODEL = frozenset({"gemini"})
 
 
 def model_values(value: object) -> list[str]:
@@ -106,10 +105,6 @@ class LegacyAgent:
         static_models = model_values(state.get(f"{self._tool}_static_models"))
         if static_models:
             return static_models
-        if self._tool == "copilot":
-            return model_values(state.get("claude_models")) + model_values(
-                state.get("codex_models")
-            )
         return model_values(state.get(f"{self._tool}_models"))
 
     def _default_model(self, state: dict, available: tuple[str, ...]) -> str | None:
@@ -384,7 +379,7 @@ LEGACY_MCP_CLIENTS: dict[str, LegacyMcpClient] = {
         display=str(LEGACY_MODULES[client].SPEC["display"]),
         binary=str(LEGACY_MODULES[client].SPEC["binary"]),
     )
-    for client in ("claude", "codex", "gemini", "copilot")
+    for client in ("claude", "codex", "gemini")
 }
 
 # Cursor takes MCP servers but is NOT an `Agent`: it runs models on the user's own Cursor account,
