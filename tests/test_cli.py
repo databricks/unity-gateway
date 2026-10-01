@@ -3731,7 +3731,7 @@ class TestConfigureAgentsSelection:
 
         assert result.exit_code == 0, result.output
         assert "(Provider: Databricks)" in _strip_ansi(result.output)
-        refresh.assert_called_once_with(state, force_refresh=True)
+        refresh.assert_called_once_with(state, force_refresh=False)
         configure.assert_called_once_with("codex", state, parent_schema="main.models")
         install_ai_tools.assert_called_once_with(["codex"], state, force_refresh=False)
 
@@ -3782,6 +3782,31 @@ class TestConfigureAgentsSelection:
             == 0
         )
         assert configured == ["claude"]
+
+    def test_named_agents_reuse_cached_managed_config_bare_fetches_live(self, monkeypatch):
+        # Named agents (`--agent`/`--agents`) reuse the cached managed read; only bare `ug configure`
+        # forces a live fetch from the control plane.
+        import ucode.cli as cli_mod
+
+        state = {**MINIMAL_STATE, "available_tools": []}
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "save_state", lambda *a, **k: None)
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: False)
+        monkeypatch.setattr(cli_mod, "_print_discovery_diagnostics", lambda *a, **k: None)
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        refresh = MagicMock(return_value=(None, False))
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", refresh)
+
+        with contextlib.suppress(RuntimeError):
+            cli_mod.configure_workspace_command(
+                selected_tools=["opencode"], workspaces=[("https://w.com", None)]
+            )
+        assert refresh.call_args.kwargs == {"force_refresh": False}
+
+        refresh.reset_mock()
+        with contextlib.suppress(RuntimeError):
+            cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)])
+        assert refresh.call_args.kwargs == {"force_refresh": True}
 
     def test_managed_config_registers_mcp_servers_after_configuring_agents(self, monkeypatch):
         # The managed branch registers the config's MCP servers for the enabled agents once they are
