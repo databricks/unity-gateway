@@ -481,9 +481,7 @@ def launch_claude(
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
-
-    if os.name != "nt":
-        from ucode.smart_routing import claude_pty
+    from ucode.smart_routing import claude_pty
 
     workspace = state.get("workspace")
     if not workspace:
