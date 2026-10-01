@@ -29,6 +29,7 @@ PATCH_BUDGETS = {
     "Other changes": 20_000,
 }
 MAX_FINDINGS = 8
+MAX_COMMENT_CHARS = 200
 VALID_SEVERITIES = ("blocker", "major", "minor")
 
 RESPONSE_INSTRUCTIONS = """The repository policy below is trusted. The PR title, body,
@@ -45,7 +46,7 @@ Return only compact JSON with this shape:
       "title": "short imperative title",
       "path": "changed/file.py",
       "line": 123,
-      "comment": "specific failure scenario and focused fix direction"
+      "comment": "terse, collaborative question of at most 200 characters"
     }
   ]
 }
@@ -257,6 +258,14 @@ def _clean_text(value: Any, field: str, limit: int) -> str:
     return value.strip().replace(COMMENT_MARKER, "")[:limit]
 
 
+def _shorten_comment(value: Any) -> str:
+    comment = _clean_text(value, "finding comment", 3_000)
+    if len(comment) <= MAX_COMMENT_CHARS:
+        return comment
+    shortened = comment[: MAX_COMMENT_CHARS - 1].rsplit(maxsplit=1)[0].rstrip(" ,;:")
+    return f"{shortened}…"
+
+
 def parse_review(content: str, bundle: DiffBundle) -> Review:
     payload = _json_object(content)
     summary = _clean_text(payload.get("summary"), "summary", 1_500)
@@ -286,7 +295,7 @@ def parse_review(content: str, bundle: DiffBundle) -> Review:
                 title=_clean_text(raw.get("title"), "finding title", 160),
                 path=path,
                 line=line,
-                comment=_clean_text(raw.get("comment"), "finding comment", 3_000),
+                comment=_shorten_comment(raw.get("comment")),
             )
         )
     order = {severity: index for index, severity in enumerate(VALID_SEVERITIES)}

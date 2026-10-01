@@ -69,6 +69,20 @@ def test_parse_review_rejects_malformed_findings():
         review_bot.parse_review(content, _bundle())
 
 
+def test_parse_review_shortens_long_comments():
+    long_comment = "can we make this safer for existing users? " * 10
+    content = f"""{{
+      "summary": "Reviewed.",
+      "findings": [{{"severity": "major", "title": "Preserve compatibility",
+        "path": "src/ucode/cli.py", "line": 11, "comment": {long_comment!r}}}]
+    }}""".replace("'", '"')
+
+    review = review_bot.parse_review(content, _bundle())
+
+    assert len(review.findings[0].comment) <= review_bot.MAX_COMMENT_CHARS
+    assert review.findings[0].comment.endswith("…")
+
+
 def test_render_comment_links_to_exact_head_and_marks_partial_review():
     finding = review_bot.Finding(
         severity="major",
