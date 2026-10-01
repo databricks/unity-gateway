@@ -41,6 +41,12 @@ catalogs. It also checks that an empty search-model catalog preserves registrati
 ownership for later external handoff or standalone refresh. These are component
 checks, not a live Isaac or gateway journey.
 
+`test_claude_search_discovery.py` covers fresh Claude-only setup through model
+discovery, saved state, and search registration, with both UC and legacy model
+catalogs. It also checks explicit search-model precedence and preservation of an
+existing Isaac server when no GPT model is available. These component tests mock
+external discovery and the Claude CLI; they do not establish live search coverage.
+
 `test_agent_claude.py` covers OS-managed telemetry ownership and headless configuration. These are
 unit/component regressions, not automated Isaac or live telemetry-export coverage.
 
