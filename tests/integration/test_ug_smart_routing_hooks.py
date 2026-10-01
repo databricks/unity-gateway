@@ -108,7 +108,12 @@ def _run_calculation(tui, session, agent: str, expression: str, expected: str, *
 
 def _toggle_with_skill(tui, session, agent: str, enabled: bool) -> None:
     skill_root = session.home / SKILL_ROOTS[agent]
-    installed_skills = sorted(path.name for path in skill_root.iterdir() if path.is_dir())
+    ignored_skills = {".system"} if agent == "codex" else set()
+    installed_skills = sorted(
+        path.name
+        for path in skill_root.iterdir()
+        if path.is_dir() and path.name not in ignored_skills
+    )
     assert installed_skills == ["smart-router"], installed_skills
 
     state = "on" if enabled else "off"
@@ -237,7 +242,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(live_session, worksp
     installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
 
-    Expected: Smart Router is the only installed Claude skill; all three uniquely tagged
+    Expected: Smart Router is the only user-installed Claude skill; all three uniquely tagged
     calculations complete in native child sessions; only the first and third show the
     subagent-routing banner and produce live gateway decisions correlated with those children.
     No first-prompt routing wrapper starts.
@@ -279,7 +284,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(live_session, workspa
     installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
 
-    Expected: Smart Router is the only installed Codex skill; all three uniquely tagged
+    Expected: Smart Router is the only user-installed Codex skill; all three uniquely tagged
     calculations complete in native child sessions; only the first and third show the
     subagent-routing banner and produce live gateway decisions correlated with those children.
     No first-prompt interposer starts.
