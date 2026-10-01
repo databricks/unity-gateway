@@ -121,27 +121,6 @@ class TestCustomClientToken:
         self.browser.assert_not_called()
         self.refresh.assert_not_called()
 
-    def test_noninteractive_auth_requires_cached_credentials(self):
-        with pytest.raises(RuntimeError, match="run `ug claude`"):
-            get_custom_client_token(
-                WS, client_id="custom-client", scopes=TEST_SCOPES, allow_browser=False
-            )
-        self.browser.assert_not_called()
-
-    def test_noninteractive_refresh_failure_does_not_open_browser(self):
-        self._cache().save(self._credentials("cached", "revoked-refresh"))
-        self.refresh.side_effect = ValueError("sensitive server response")
-        with pytest.raises(RuntimeError, match="run `ug claude`") as error:
-            get_custom_client_token(
-                WS,
-                client_id="custom-client",
-                scopes=TEST_SCOPES,
-                force_refresh=True,
-                allow_browser=False,
-            )
-        self.browser.assert_not_called()
-        assert "sensitive server response" not in str(error.value)
-
     def test_expired_token_refreshes_with_custom_client_and_saves_rotation(self):
         cached = self._credentials("expired", "old-refresh")
         self._cache().save(cached)

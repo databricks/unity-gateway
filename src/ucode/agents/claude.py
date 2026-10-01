@@ -348,8 +348,6 @@ def _web_search_mcp_entry(
     workspace: str,
     search_model: str,
     profile: str | None = None,
-    *,
-    custom_oauth: CustomOAuthConfig | None = None,
 ) -> dict:
     """Stdio MCP server entry pointing at `ug mcp web-search`. Resolves
     the absolute path to the `ug` binary so launchers without the right
@@ -358,15 +356,6 @@ def _web_search_mcp_entry(
         "DATABRICKS_HOST": workspace,
         "UCODE_WEB_SEARCH_MODEL": search_model,
     }
-    if custom_oauth and custom_oauth.get("profile"):
-        profile = custom_oauth["profile"]
-    elif custom_oauth:
-        # Match apiKeyHelper's OAuth client without persisting a short-lived bearer.
-        env.update(
-            UCODE_WEB_SEARCH_CLIENT_ID=custom_oauth["client_id"],
-            UCODE_WEB_SEARCH_REDIRECT_URL=custom_oauth["redirect_url"],
-            UCODE_WEB_SEARCH_SCOPES=",".join(custom_oauth["scopes"]),
-        )
     if profile:
         env["DATABRICKS_CONFIG_PROFILE"] = profile
     return {
@@ -977,7 +966,6 @@ def _register_web_search_mcp(
     search_model: str,
     profile: str | None = None,
     *,
-    custom_oauth: CustomOAuthConfig | None = None,
     previous_entry: object = None,
 ) -> bool:
     """Register (or replace) the web_search MCP server in Claude Code's user
@@ -1003,7 +991,7 @@ def _register_web_search_mcp(
         remove_claude_mcp_server(WEB_SEARCH_MCP_NAME, MCP_USER_SCOPE)
     except RuntimeError:
         pass
-    entry = _web_search_mcp_entry(workspace, search_model, profile, custom_oauth=custom_oauth)
+    entry = _web_search_mcp_entry(workspace, search_model, profile)
     try:
         add_claude_mcp_server(WEB_SEARCH_MCP_NAME, entry)
     except RuntimeError as exc:
@@ -1067,9 +1055,6 @@ def _generated_search_entry(entry: object) -> bool:
             "DATABRICKS_HOST",
             "UCODE_WEB_SEARCH_MODEL",
             "DATABRICKS_CONFIG_PROFILE",
-            "UCODE_WEB_SEARCH_CLIENT_ID",
-            "UCODE_WEB_SEARCH_REDIRECT_URL",
-            "UCODE_WEB_SEARCH_SCOPES",
         }
     )
 
@@ -1458,20 +1443,24 @@ def write_tool_config(
         relayed,
     )
 
+    custom_oauth = state.get("custom_oauth")
+    web_search_profile = (
+        custom_oauth.get("profile")
+        if isinstance(custom_oauth, dict) and custom_oauth.get("profile")
+        else state.get("profile")
+    )
     if web_search_model and not external_search:
         web_search_entry = _web_search_mcp_entry(
             state["workspace"],
             web_search_model,
-            state.get("profile"),
-            custom_oauth=state.get("custom_oauth"),
+            web_search_profile,
         )
         if not _web_search_mcp_is_current(state, web_search_entry):
             # Registration runs multiple `claude mcp` subprocesses and can take several seconds.
             registration_success = _register_web_search_mcp(
                 state["workspace"],
                 web_search_model,
-                state.get("profile"),
-                custom_oauth=state.get("custom_oauth"),
+                web_search_profile,
                 previous_entry=state.get(WEB_SEARCH_MCP_STATE_KEY),
             )
             if registration_success:

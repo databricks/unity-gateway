@@ -20,7 +20,6 @@ from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
-from ucode.custom_oauth import get_custom_client_token
 from ucode.databricks import get_databricks_token
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -121,23 +120,7 @@ def _call_responses_api(query: str) -> dict[str, Any]:
         raise RuntimeError("UCODE_WEB_SEARCH_MODEL env var is not set.")
 
     try:
-        client_id = os.environ.get("UCODE_WEB_SEARCH_CLIENT_ID", "").strip()
-        redirect_url = os.environ.get("UCODE_WEB_SEARCH_REDIRECT_URL", "").strip()
-        scopes = os.environ.get("UCODE_WEB_SEARCH_SCOPES", "").strip()
-        if client_id or redirect_url or scopes:
-            if not (client_id and redirect_url and scopes):
-                raise RuntimeError(
-                    "Incomplete web search OAuth configuration; run `ug claude` again."
-                )
-            token = get_custom_client_token(
-                workspace,
-                client_id,
-                redirect_url,
-                scopes=scopes.split(","),
-                allow_browser=False,
-            )
-        else:
-            token = get_databricks_token(workspace, profile)
+        token = get_databricks_token(workspace, profile)
     except RuntimeError as exc:
         raise RuntimeError(f"Failed to acquire Databricks token: {exc}") from exc
 

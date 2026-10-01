@@ -746,33 +746,8 @@ class TestWebSearchMcpEntry:
         assert entry["env"]["UCODE_WEB_SEARCH_MODEL"] == "databricks-gpt-5"
         assert entry["command"] == "/tools/ug"
 
-    def test_custom_oauth_metadata_matches_harness_helper(self):
-        entry = claude._web_search_mcp_entry(
-            WS,
-            "search-model",
-            "unrelated-profile",
-            custom_oauth={
-                "client_id": "custom-client",
-                "redirect_url": "http://localhost:8020/callback",
-                "scopes": ["offline_access", "all-apis"],
-            },
-        )
-        assert entry["env"]["UCODE_WEB_SEARCH_CLIENT_ID"] == "custom-client"
-        assert entry["env"]["UCODE_WEB_SEARCH_REDIRECT_URL"] == "http://localhost:8020/callback"
-        assert entry["env"]["UCODE_WEB_SEARCH_SCOPES"] == "offline_access,all-apis"
-
-    def test_saved_custom_oauth_profile_wins_over_workspace_profile(self):
-        entry = claude._web_search_mcp_entry(
-            WS,
-            "search-model",
-            "unrelated-profile",
-            custom_oauth={
-                "client_id": "custom-client",
-                "redirect_url": "http://localhost:8020/callback",
-                "scopes": ["offline_access", "all-apis"],
-                "profile": "custom-profile",
-            },
-        )
+    def test_entry_uses_selected_profile(self):
+        entry = claude._web_search_mcp_entry(WS, "search-model", "custom-profile")
         assert entry["env"] == {
             "DATABRICKS_HOST": WS,
             "UCODE_WEB_SEARCH_MODEL": "search-model",
@@ -1975,7 +1950,7 @@ class TestRegisterWebSearchMcp:
     def isolate_mcp_config(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
 
-    def test_configuration_repairs_registration_missing_custom_oauth(self, monkeypatch):
+    def test_configuration_uses_saved_custom_oauth_profile(self, monkeypatch):
         # Isolate config writes and Claude CLI registration; execute the actual config writer.
         prior_entry = claude._web_search_mcp_entry(WS, "search-model", "workspace-profile")
         config = {"mcpServers": {claude.WEB_SEARCH_MCP_NAME: prior_entry}}
@@ -1987,6 +1962,7 @@ class TestRegisterWebSearchMcp:
                 "client_id": "custom-client",
                 "redirect_url": "http://localhost:8020/callback",
                 "scopes": ["offline_access", "all-apis"],
+                "profile": "custom-profile",
             },
             claude.WEB_SEARCH_MCP_STATE_KEY: prior_entry,
         }
@@ -2005,8 +1981,7 @@ class TestRegisterWebSearchMcp:
         result = claude.write_tool_config(state, "claude-model")
 
         entry = config["mcpServers"][claude.WEB_SEARCH_MCP_NAME]
-        assert entry["env"]["UCODE_WEB_SEARCH_CLIENT_ID"] == "custom-client"
-        assert entry["env"]["UCODE_WEB_SEARCH_SCOPES"] == "offline_access,all-apis"
+        assert entry["env"]["DATABRICKS_CONFIG_PROFILE"] == "custom-profile"
         assert result[claude.WEB_SEARCH_MCP_STATE_KEY] == entry
 
     def test_legacy_ucode_command_requires_reregistration(self, monkeypatch):

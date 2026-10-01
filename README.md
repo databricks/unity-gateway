@@ -134,12 +134,10 @@ profile. V2 AI Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
 
-Claude's generated `web_search` server uses the same custom OAuth client or
-saved custom CLI profile as its harness, when configured. It stores public
-client metadata, not an access token, and refreshes credentials for search
-requests. If SDK credentials cannot be refreshed, the tool reports an error
-without opening browser consent; rerun `ug claude` to authenticate. This does
-not change search permissions.
+Claude's generated `web_search` server uses the same saved custom OAuth CLI
+profile as its harness, when configured. It stores the profile name, not an
+access token, and refreshes credentials for search requests. This does not
+change search permissions.
 
 Launchers that supply their own search server can first query
 `ug mcp web-search --capabilities`. Contract version 1 supports setting

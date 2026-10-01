@@ -177,9 +177,8 @@ def get_custom_client_token(
     scopes: Sequence[str],
     profile: str | None = None,
     force_refresh: bool = False,
-    allow_browser: bool = True,
 ) -> str:
-    """Fetch a custom-client token; background tools may disable SDK browser consent."""
+    """Fetch a custom-client token through the selected SDK or CLI backend."""
     config = create_custom_oauth_config(client_id, scopes, redirect_url)
     workspace = normalize_workspace_url(workspace)
     if custom_oauth_cli_enabled(config):
@@ -212,8 +211,6 @@ def get_custom_client_token(
                     print_warning_err("Cached OAuth token could not be refreshed. Sign in again.")
                     credentials = None
             if credentials is None:
-                if not allow_browser:
-                    raise ValueError("No reusable custom OAuth credentials")
                 client = oauth.OAuthClient(
                     oidc_endpoints=endpoints,
                     client_id=config["client_id"],
@@ -233,14 +230,8 @@ def get_custom_client_token(
             cache.save(credentials)
             return token
     except Exception as exc:
-        login_hint = (
-            " Browser sign-in is disabled for this request; run `ug claude` to authenticate, "
-            "then retry."
-            if not allow_browser
-            else ""
-        )
         raise RuntimeError(
             "Custom-client OAuth failed. Check the workspace, client ID, and registered "
             f"redirect URL ({config['redirect_url']}); ensure its local port is available and "
-            f"the SDK token cache is writable, then retry.{login_hint}"
+            "the SDK token cache is writable, then retry."
         ) from exc
