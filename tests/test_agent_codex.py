@@ -8,8 +8,9 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+import tomlkit
 
-from ucode import managed_files
+from ucode import managed_files, provenance
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
@@ -432,12 +433,13 @@ class TestCodexWriteConfig:
         )
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
         monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        provenance.save_provenance("codex", config_path, {("model",): "system.ai.gpt-5-6-luna"})
 
         assert codex.clear_model_preferences({}) is True
 
         doc = read_toml_safe(config_path)
         assert "model" not in doc
-        assert "model_reasoning_effort" not in doc
+        assert doc["model_reasoning_effort"] == "medium"
 
     def test_preserves_profile_without_model_preferences(self, tmp_path, monkeypatch):
         config_path = tmp_path / ".codex" / "ucode.config.toml"
@@ -912,6 +914,7 @@ class TestCodexDefaultModel:
     def test_reads_without_touching_profile_model_preferences(self, tmp_path):
         original = 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "medium"\n'
         codex.CODEX_CONFIG_PATH.write_text(original, encoding="utf-8")
+        provenance.save_provenance("codex", codex.CODEX_CONFIG_PATH, {("model",): "gpt-5.6-sol"})
 
         assert codex.default_model({"codex_models": ["system.ai.gpt-5-6-luna"]}) is None
         assert codex.CODEX_CONFIG_PATH.read_text(encoding="utf-8") == original
@@ -1670,9 +1673,9 @@ class TestCodexManagedConfig:
         codex.write_tool_config(state)
 
         doc = read_toml_safe(managed_path)
-        # ucode removes its stale model pin, but other keys already in the managed file survive.
+        # Keys already in the managed file survive, including a model ucode cannot prove it wrote.
         assert doc["approval_policy"] == "on-request"
-        assert "model" not in doc
+        assert doc["model"] == "my-own"
 
     def _sudo_counting_env(self, tmp_path, monkeypatch):
         """Real reconcile flow (semantic no-op check included) with sudo writes counted."""
@@ -1931,6 +1934,9 @@ class TestWriteConfigBackup:
     ):
         self._patch(monkeypatch, tmp_path)
         (tmp_path / "ucode.config.toml").write_text('model = "system.ai.gpt-5"\n', encoding="utf-8")
+        provenance.save_provenance(
+            "codex", tmp_path / "ucode.config.toml", {("model",): "system.ai.gpt-5"}
+        )
 
         changed = codex.clear_model_preferences(
             {"workspace": WS, "managed_configs": {"codex": {"keys": []}}}
@@ -1939,6 +1945,265 @@ class TestWriteConfigBackup:
         assert changed is True
         assert "model" not in read_toml_safe(tmp_path / "ucode.config.toml")
         assert not (tmp_path / "backup.toml").exists()
+
+
+class TestCodexModelProvenance:
+    """ucode removes a model only when its record proves ucode wrote the value that is there."""
+
+    @pytest.fixture(autouse=True)
+    def _patch(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", tmp_path / ".codex" / "ucode.config.toml")
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr("ucode.config_io.APP_DIR", tmp_path)
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.145.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+        monkeypatch.setattr(codex, "print_warning_err", lambda message: None)
+
+    def _write_developer_config(self, text: str) -> None:
+        codex.CODEX_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        codex.CODEX_CONFIG_PATH.write_text(text, encoding="utf-8")
+
+    def _config(self) -> dict:
+        return read_toml_safe(codex.CODEX_CONFIG_PATH)
+
+    def _owned(self) -> dict | None:
+        return provenance.load_provenance("codex", codex.CODEX_CONFIG_PATH)
+
+    def _launch(self, monkeypatch, state: dict) -> None:
+        monkeypatch.setenv("OAUTH_TOKEN", "")
+        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: None)
+        monkeypatch.setattr(codex, "get_databricks_token", lambda *args, **kwargs: "tok")
+        codex.launch(state, [], options=LaunchOptions())
+
+    def test_managed_default_is_recorded_then_retired(self):
+        codex.write_tool_config({"workspace": WS, "codex_default_model": "managed-a"})
+
+        assert self._config()["model"] == "managed-a"
+        assert self._owned() == {("model",): "managed-a"}
+
+        codex.write_tool_config({"workspace": WS, "managed_configs": {"codex": {"keys": []}}})
+
+        assert "model" not in self._config()
+        assert self._owned() == {}
+
+    def test_first_recorded_write_does_not_adopt_a_matching_developer_model(self):
+        self._write_developer_config('model = "managed-a"\n')
+
+        codex.write_tool_config({"workspace": WS, "codex_default_model": "managed-a"})
+        assert self._owned() == {}
+
+        codex.write_tool_config({"workspace": WS, "managed_configs": {"codex": {"keys": []}}})
+
+        assert self._config()["model"] == "managed-a"
+
+    def test_matching_model_added_after_ucode_is_not_adopted(self):
+        managed = {"workspace": WS, "managed_configs": {"codex": {"keys": []}}}
+        codex.write_tool_config(managed)
+        assert self._owned() == {}
+        text = codex.CODEX_CONFIG_PATH.read_text(encoding="utf-8")
+        codex.CODEX_CONFIG_PATH.write_text('model = "managed-a"\n' + text, encoding="utf-8")
+
+        codex.write_tool_config({**managed, "codex_default_model": "managed-a"})
+        assert self._owned() == {}
+
+        codex.write_tool_config(managed)
+
+        assert self._config()["model"] == "managed-a"
+
+    def test_launch_forgets_a_model_the_developer_edited(self):
+        codex.write_tool_config({"workspace": WS, "codex_default_model": "managed-a"})
+        config = self._config()
+        config["model"] = "dev-y"
+        codex.CODEX_CONFIG_PATH.write_text(tomlkit.dumps(config), encoding="utf-8")
+
+        assert codex.clear_model_preferences({"workspace": WS}) is False
+        assert self._owned() == {}
+
+        config["model"] = "managed-a"
+        codex.CODEX_CONFIG_PATH.write_text(tomlkit.dumps(config), encoding="utf-8")
+        assert codex.clear_model_preferences({"workspace": WS}) is False
+        assert self._config()["model"] == "managed-a"
+
+    def test_retiring_restores_the_pre_ucode_model(self):
+        self._write_developer_config('model = "dev-choice"\n')
+
+        codex.write_tool_config({"workspace": WS, "codex_default_model": "managed-a"})
+        assert self._config()["model"] == "managed-a"
+
+        codex.write_tool_config({"workspace": WS, "managed_configs": {"codex": {"keys": []}}})
+
+        assert self._config()["model"] == "dev-choice"
+        assert self._owned() == {}
+
+    def test_developer_model_survives_configure_launch_and_default_model(self, monkeypatch):
+        self._write_developer_config('model = "dev-choice"\n')
+        state = {"workspace": WS}
+
+        codex.write_tool_config(state)
+        assert self._config()["model"] == "dev-choice"
+        assert self._owned() == {}
+
+        assert codex.clear_model_preferences(state) is False
+        self._launch(monkeypatch, state)
+        assert codex.default_model(state) is None
+
+        assert self._config()["model"] == "dev-choice"
+
+    def test_developer_edit_of_a_ucode_model_survives(self):
+        codex.write_tool_config({"workspace": WS, "codex_default_model": "managed-a"})
+        doc = self._config()
+        doc["model"] = "dev-override"
+        codex.CODEX_CONFIG_PATH.write_text(doc.as_string(), encoding="utf-8")
+
+        codex.write_tool_config({"workspace": WS, "managed_configs": {"codex": {"keys": []}}})
+
+        assert self._config()["model"] == "dev-override"
+
+    def test_developer_reasoning_effort_survives_configure_and_launch(self, monkeypatch):
+        self._write_developer_config('model_reasoning_effort = "high"\n')
+
+        codex.write_tool_config({"workspace": WS, "codex_default_model": "managed-a"})
+        codex.write_tool_config({"workspace": WS, "managed_configs": {"codex": {"keys": []}}})
+        self._launch(monkeypatch, {"workspace": WS})
+
+        assert self._config()["model_reasoning_effort"] == "high"
+
+    def test_smart_routing_keeps_a_recorded_model(self, monkeypatch):
+        codex.write_tool_config({"workspace": WS, "codex_default_model": "managed-a"})
+        monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        state = {"workspace": WS, "managed_configs": {"codex": {"keys": []}}}
+
+        codex.write_tool_config(state)
+        assert codex.clear_model_preferences(state) is False
+
+        assert self._config()["model"] == "managed-a"
+        assert self._owned() == {("model",): "managed-a"}
+
+    def test_fresh_workspace_configure_retires_model_without_late_backup(self):
+        codex.write_tool_config({"workspace": WS, "codex_default_model": "managed-a"})
+        assert not codex.CODEX_BACKUP_PATH.exists()
+
+        codex.write_tool_config({"workspace": "https://other.example.com"})
+
+        assert "model" not in self._config()
+        assert not codex.CODEX_BACKUP_PATH.exists()
+
+    def test_fresh_workspace_launch_clears_model_without_late_backup(self):
+        codex.write_tool_config({"workspace": WS, "codex_default_model": "managed-a"})
+
+        changed = codex.clear_model_preferences({"workspace": "https://other.example.com"})
+
+        assert changed is True
+        assert "model" not in self._config()
+        assert not codex.CODEX_BACKUP_PATH.exists()
+
+
+class TestCodexManagedConfigModelProvenance:
+    """The managed file gets its own record, written only when the privileged write is confirmed."""
+
+    def _patch(self, tmp_path, monkeypatch, outcome="written"):
+        managed_path = tmp_path / "etc-codex" / "managed_config.toml"
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", tmp_path / ".codex" / "ucode.config.toml")
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "codex-ucode-config.backup.toml")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.145.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
+
+        def fake_write_managed(path, text, **kwargs):
+            if outcome in ("written", "created"):
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                Path(path).write_text(text, encoding="utf-8")
+            return outcome
+
+        monkeypatch.setattr(codex, "reconcile_managed_file", fake_write_managed)
+        return managed_path
+
+    def test_records_and_retires_the_managed_model(self, tmp_path, monkeypatch):
+        managed_path = self._patch(tmp_path, monkeypatch)
+
+        codex.write_tool_config({"workspace": WS, "codex_default_model": "managed-a"})
+
+        assert read_toml_safe(managed_path)["model"] == "managed-a"
+        assert provenance.load_provenance("codex", managed_path) == {("model",): "managed-a"}
+
+        codex.write_tool_config({"workspace": WS, "managed_configs": {"codex": {"keys": []}}})
+
+        assert "model" not in read_toml_safe(managed_path)
+        assert provenance.load_provenance("codex", managed_path) == {}
+
+    def test_unchanged_admin_model_is_not_adopted(self, tmp_path, monkeypatch):
+        managed_path = self._patch(tmp_path, monkeypatch, outcome="unchanged")
+        managed_path.parent.mkdir(parents=True)
+        managed_path.write_text('model = "managed-a"\n', encoding="utf-8")
+
+        codex.write_tool_config({"workspace": WS, "codex_default_model": "managed-a"})
+        assert provenance.load_provenance("codex", managed_path) == {}
+
+        codex.write_tool_config({"workspace": WS, "managed_configs": {"codex": {"keys": []}}})
+
+        assert read_toml_safe(managed_path)["model"] == "managed-a"
+
+    def test_first_recorded_write_does_not_adopt_an_admin_model_ucode_never_wrote(
+        self, tmp_path, monkeypatch
+    ):
+        managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path.parent.mkdir(parents=True)
+        managed_path.write_text('model = "managed-a"\n', encoding="utf-8")
+        monkeypatch.setattr(
+            codex,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(None, {}),
+        )
+
+        codex.write_tool_config({"workspace": WS, "codex_default_model": "managed-a"})
+        assert provenance.load_provenance("codex", managed_path) == {}
+
+        codex.write_tool_config({"workspace": WS, "managed_configs": {"codex": {"keys": []}}})
+
+        assert read_toml_safe(managed_path)["model"] == "managed-a"
+
+    def test_upgrade_retires_the_model_ucode_last_wrote_to_the_managed_file(
+        self, tmp_path, monkeypatch
+    ):
+        managed_path = self._patch(tmp_path, monkeypatch, outcome="unchanged")
+        managed_path.parent.mkdir(parents=True)
+        managed_path.write_text('model = "managed-a"\n', encoding="utf-8")
+        monkeypatch.setattr(
+            codex,
+            "managed_file_snapshots",
+            lambda tool, parser: managed_files.ManagedFileSnapshots(None, {"model": "managed-a"}),
+        )
+        written: list[str] = []
+        monkeypatch.setattr(
+            codex,
+            "reconcile_managed_file",
+            lambda path, text, **kwargs: written.append(text) or "written",
+        )
+
+        codex.write_tool_config({"workspace": WS, "managed_configs": {"codex": {"keys": []}}})
+
+        assert not any(line.startswith("model =") for line in written[-1].splitlines())
+
+    def test_unchanged_run_keeps_proven_ownership(self, tmp_path, monkeypatch):
+        managed_path = self._patch(tmp_path, monkeypatch)
+        codex.write_tool_config({"workspace": WS, "codex_default_model": "managed-a"})
+
+        monkeypatch.setattr(codex, "reconcile_managed_file", lambda path, text, **kw: "unchanged")
+        codex.write_tool_config({"workspace": WS, "codex_default_model": "managed-a"})
+        assert provenance.load_provenance("codex", managed_path) == {("model",): "managed-a"}
+
+        self._patch(tmp_path, monkeypatch)
+        codex.write_tool_config({"workspace": WS, "managed_configs": {"codex": {"keys": []}}})
+
+        assert "model" not in read_toml_safe(managed_path)
+
+    def test_skipped_managed_write_records_nothing(self, tmp_path, monkeypatch):
+        managed_path = self._patch(tmp_path, monkeypatch, outcome="unsupported")
+
+        codex.write_tool_config({"workspace": WS, "codex_default_model": "managed-a"})
+
+        assert provenance.load_provenance("codex", managed_path) is None
 
 
 class TestCodexManagedMcpUsesManagedFile:

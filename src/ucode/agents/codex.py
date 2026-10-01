@@ -11,6 +11,7 @@ import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import tomlkit
 from tomlkit.exceptions import ParseError
@@ -61,6 +62,7 @@ from ucode.managed_files import (
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
+    managed_file_snapshots,
     managed_file_status,
     managed_files_supported,
     managed_writes_allowed,
@@ -70,6 +72,14 @@ from ucode.managed_files import (
     revert_managed_file,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.provenance import (
+    KeyPath,
+    load_provenance,
+    owned_after_write,
+    retire,
+    save_provenance,
+    values_at,
+)
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.codex_hooks import (
     remove_smart_routing_hooks,
@@ -122,6 +132,8 @@ MANAGED_KEYS: list[list[str]] = [
     ["model_providers", CODEX_MODEL_PROVIDER_NAME],
     ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers"],
 ]
+
+MODEL_KEY_PATH: KeyPath = ("model",)
 
 LEGACY_MANAGED_KEYS: list[list[str]] = [
     ["profile"],
@@ -443,8 +455,7 @@ def write_tool_config(
             and isinstance(profiles, dict)
             and isinstance(profiles.get(CODEX_PROFILE_NAME), dict)
         ):
-            for key in ("model", "model_reasoning_effort"):
-                profiles[CODEX_PROFILE_NAME].pop(key, None)
+            profiles[CODEX_PROFILE_NAME].pop("model", None)
         _set_provider_header(doc, None)
         write_toml_file(LEGACY_CODEX_CONFIG_PATH, doc)
         state = mark_tool_managed(state, "codex", LEGACY_MANAGED_KEYS)
@@ -468,7 +479,8 @@ def write_tool_config(
     # Back up only a file that predates ucode's management of the tool. A
     # re-configure would otherwise snapshot ucode's own generated file, and
     # revert would restore that snapshot instead of deleting the file.
-    if not is_tool_managed(state, "codex"):
+    record = load_provenance("codex", CODEX_CONFIG_PATH)
+    if not is_tool_managed(state, "codex") and record is None:
         backup_existing_file(CODEX_CONFIG_PATH, CODEX_BACKUP_PATH)
     overlay = render_overlay(
         workspace,
@@ -481,13 +493,20 @@ def write_tool_config(
         managed_http_headers=state.get("codex_http_headers"),
     )
 
-    def compose(base: dict, *, include_catalog: bool = True) -> dict:
+    generated: dict[KeyPath, Any] = {MODEL_KEY_PATH: chosen_model} if chosen_model else {}
+
+    def compose(
+        base: dict,
+        owned: dict[KeyPath, Any],
+        baseline: dict | None,
+        *,
+        include_catalog: bool = True,
+    ) -> dict:
         prune_key_paths(base, _PROVIDER_HTTP_HEADERS_KEY_PATHS)
         deep_merge_dict(base, copy.deepcopy(overlay))
-        # deep_merge can't drop keys, so clear model preferences from an earlier run.
+        # deep_merge can't drop keys, so retire a model ucode pinned on an earlier run.
         if chosen_model is None and not smart_routing_v2.smart_routing_enabled():
-            for key in ("model", "model_reasoning_effort"):
-                base.pop(key, None)
+            retire(base, owned, [MODEL_KEY_PATH], baseline)
         if include_catalog:
             if catalog_path:
                 base["model_catalog_json"] = catalog_path
@@ -504,14 +523,25 @@ def write_tool_config(
             CODEX_MODEL_CATALOG_PATH.unlink()
 
     doc = read_toml_safe(CODEX_CONFIG_PATH)
-    compose(doc)
+    before = copy.deepcopy(doc)
+    owned = record or {}
+    compose(doc, owned, _config_baseline())
     sync_smart_routing_hooks(
         doc,
         state,
         enabled=False,
     )
     write_toml_file(CODEX_CONFIG_PATH, doc)
-    _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
+    save_provenance(
+        "codex", CODEX_CONFIG_PATH, owned_after_write(owned, generated, doc, before=before)
+    )
+    _reconcile_managed_config(
+        state,
+        lambda base, base_owned, baseline: compose(
+            base, base_owned, baseline, include_catalog=False
+        ),
+        generated,
+    )
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     return state
@@ -582,7 +612,16 @@ def revert_managed_config() -> str:
     )
 
 
-def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> None:
+def _config_baseline() -> dict | None:
+    """The pre-ucode snapshot of the private config, or None when ucode created the file."""
+    return read_toml_safe(CODEX_BACKUP_PATH) if CODEX_BACKUP_PATH.exists() else None
+
+
+def _reconcile_managed_config(
+    state: dict,
+    compose: Callable[[dict, dict[KeyPath, Any], dict | None], dict],
+    generated: dict[KeyPath, Any],
+) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
     path = codex_managed_config_path()
     if path is None:
@@ -605,7 +644,14 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
             "the file. Repair it or contact your administrator."
         ) from exc
     managed_before = copy.deepcopy(existing)
-    desired_doc = compose(existing)
+    snapshots = managed_file_snapshots("codex", _parse_managed_config)
+    record = load_provenance("codex", path)
+    owned = (
+        record
+        if record is not None
+        else values_at([list(MODEL_KEY_PATH)], snapshots.last_applied_by_ug)
+    )
+    desired_doc = compose(existing, owned, snapshots.original_before_ug)
     if not managed_writes_allowed():
         conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
         if conflicts:
@@ -618,7 +664,7 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
     try:
-        reconcile_managed_file(
+        outcome = reconcile_managed_file(
             path,
             tomlkit.dumps(desired_doc),
             tool="codex",
@@ -636,6 +682,12 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
         )
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
+    if outcome in ("written", "created"):
+        save_provenance(
+            "codex", path, owned_after_write(owned, generated, desired_doc, before=managed_before)
+        )
+    elif outcome == "unchanged":
+        save_provenance("codex", path, owned_after_write(owned, {}, desired_doc))
     mark_managed_file_verified(state, "codex", path)
 
 
@@ -840,24 +892,23 @@ def config_precedence_paths() -> tuple[Path, ...]:
 
 
 def clear_model_preferences(state: dict) -> bool:
-    """Remove ucode profile model preferences so Codex selects its default."""
+    """Remove a model ucode pinned so Codex selects its default, keeping the developer's own."""
     if smart_routing_v2.smart_routing_enabled():
         return False
     if isinstance(state.get("codex_default_model"), str):
         return False
     doc = read_toml_safe(CODEX_CONFIG_PATH)
-    changed = False
-    for key in ("model", "model_reasoning_effort"):
-        if key in doc:
-            doc.pop(key)
-            changed = True
-    if changed:
-        # Never snapshot ucode's own generated file here; revert would restore
-        # the snapshot instead of deleting the file.
-        if not is_tool_managed(state, "codex"):
-            backup_existing_file(CODEX_CONFIG_PATH, CODEX_BACKUP_PATH)
-        write_toml_file(CODEX_CONFIG_PATH, doc)
-    return changed
+    owned = load_provenance("codex", CODEX_CONFIG_PATH) or {}
+    original_text = tomlkit.dumps(doc)
+    retire(doc, owned, [MODEL_KEY_PATH], _config_baseline())
+    kept = owned_after_write(owned, {}, doc)
+    if tomlkit.dumps(doc) == original_text:
+        if kept != owned:
+            save_provenance("codex", CODEX_CONFIG_PATH, kept)
+        return False
+    write_toml_file(CODEX_CONFIG_PATH, doc)
+    save_provenance("codex", CODEX_CONFIG_PATH, kept)
+    return True
 
 
 def _set_provider_header(config: dict, provider: str | None) -> None:
