@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from decimal import Decimal
+from pathlib import Path
 from urllib.parse import parse_qs
 
 import pytest
@@ -3089,6 +3090,35 @@ class TestEnsureDatabricksCliVersion:
 
 
 class TestInstallDatabricksCli:
+    def test_windows_finds_existing_winget_alias_before_reinstalling(self, monkeypatch, tmp_path):
+        installed_dir = str(tmp_path / "Microsoft" / "WinGet" / "Packages" / "databricks")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("PATH", "/windows/system32")
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: installed_dir)
+        monkeypatch.setattr(
+            db_mod,
+            "_discover_databricks_clis",
+            lambda **kw: (
+                [(str(Path(installed_dir) / "databricks.exe"), (1, 18, 0))]
+                if installed_dir in os.environ["PATH"].split(os.pathsep)
+                else []
+            ),
+        )
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda **kw: pytest.fail("unexpected reinstall"),
+        )
+        checked = []
+        monkeypatch.setattr(
+            db_mod, "ensure_databricks_cli_version", lambda *a, **kw: checked.append(True)
+        )
+
+        install_databricks_cli()
+
+        assert checked == [True]
+
     def test_checks_version_when_present(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_discover_databricks_clis", lambda **kw: [("/usr/bin/databricks", (1, 20, 0))]
@@ -3178,6 +3208,57 @@ class TestUpgradeDatabricksCli:
 
 
 class TestRunDatabricksCliInstaller:
+    @pytest.mark.parametrize("subcommand", ["install", "upgrade"])
+    def test_windows_uses_winget(self, monkeypatch, tmp_path, subcommand):
+        calls = []
+        winget = r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\winget.exe"
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("PATH", "/windows/system32")
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: None)
+        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: winget if cmd == "winget" else None)
+        monkeypatch.setattr(db_mod, "run", lambda cmd, **kw: calls.append((cmd, kw)))
+
+        _run_databricks_cli_installer(brew_subcommand=subcommand)
+
+        assert calls == [
+            (
+                [
+                    winget,
+                    subcommand,
+                    "--exact",
+                    "--id",
+                    "Databricks.DatabricksCLI",
+                    "--source",
+                    "winget",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ],
+                {"timeout": 240},
+            )
+        ]
+        assert os.environ["PATH"].split(os.pathsep)[0] == str(
+            Path(os.environ["LOCALAPPDATA"]) / "Microsoft" / "WinGet" / "Links"
+        )
+
+    def test_windows_does_not_duplicate_persisted_paths(self, monkeypatch, tmp_path):
+        links_dir = str(tmp_path / "Microsoft" / "WinGet" / "Links")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("PATH", os.pathsep.join([links_dir, "/windows/system32"]))
+        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: links_dir)
+
+        db_mod._refresh_windows_path()
+
+        assert os.environ["PATH"].split(os.pathsep).count(links_dir) == 1
+
+    def test_windows_without_winget_is_actionable(self, monkeypatch):
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: None)
+        monkeypatch.setattr(db_mod, "run", lambda *args, **kwargs: pytest.fail("unexpected run"))
+
+        with pytest.raises(RuntimeError, match="WinGet is required"):
+            _run_databricks_cli_installer()
+
     @pytest.mark.parametrize("brew_subcommand", ["install", "upgrade"])
     def test_macos_uses_fully_qualified_tap_formula(self, monkeypatch, brew_subcommand):
         calls = []

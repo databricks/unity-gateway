@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -139,3 +141,24 @@ def test_extract_response_text_ignores_reasoning_items():
     }
 
     assert review_bot.extract_response_text(payload) == "first\nsecond"
+
+
+def test_oauth_access_token_uses_service_principal_credentials(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "client-id")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "client-secret")
+    requests = []
+
+    def urlopen(request, timeout):
+        requests.append((request, timeout))
+        return BytesIO(json.dumps({"access_token": "access-token"}).encode())
+
+    monkeypatch.setattr(review_bot.urllib.request, "urlopen", urlopen)
+
+    token = review_bot._oauth_access_token("https://example.databricks.com")
+
+    assert token == "access-token"
+    request, timeout = requests[0]
+    assert request.full_url == "https://example.databricks.com/oidc/v1/token"
+    assert request.get_header("Authorization").startswith("Basic ")
+    assert request.data == b"grant_type=client_credentials&scope=all-apis"
+    assert timeout == 60

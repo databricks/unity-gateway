@@ -2572,7 +2572,10 @@ def _launch_options(
 def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
     """Whether the workspace enabled smart routing for this specific agent."""
     agent_config = ((managed or {}).get("enabled_agents") or {}).get(tool) or {}
-    return agent_config.get("smart_routing_enabled") is True
+    if agent_config.get("smart_routing_enabled") is not True:
+        return False
+    # TODO(AIGTWY-4385): Remove this workaround when Claude Code supports smart routing on Windows.
+    return tool != "claude" or os.name != "nt"
 
 
 def _launch_tool(
@@ -2676,7 +2679,15 @@ def _launch_tool(
             os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         # The environment switch remains a developer override; managed config is the workspace
         # policy equivalent and must take effect before launch options are computed.
+        managed_smart_routing_requested = (
+            ((managed or {}).get("enabled_agents") or {}).get(tool) or {}
+        ).get("smart_routing_enabled") is True
         managed_smart_routing_enabled = _managed_smart_routing_enabled(managed, tool)
+        if managed_smart_routing_requested and not managed_smart_routing_enabled:
+            print_warning(
+                "Smart routing is not supported for Claude Code on Windows; "
+                "launching with normal model selection."
+            )
         smart_routing_enabled = smart_routing_v2.smart_routing_enabled(
             default=managed_smart_routing_enabled
         )

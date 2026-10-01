@@ -16,6 +16,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -51,9 +52,7 @@ from ucode.ui import (
 UNIX_DATABRICKS_INSTALL_URL = (
     "https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh"
 )
-WINDOWS_DATABRICKS_INSTALL_URL = (
-    "https://raw.githubusercontent.com/databricks/setup-cli/main/install.ps1"
-)
+WINDOWS_DATABRICKS_WINGET_PACKAGE = "Databricks.DatabricksCLI"
 AI_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-beta"
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 # v1.0.0 is the release that ships `databricks aitools`.
@@ -821,14 +820,65 @@ def databricks_cli_installed() -> bool:
     return bool(_discover_databricks_clis())
 
 
+def _windows_user_path() -> str | None:
+    if sys.platform != "win32":
+        return None
+
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, "Path")
+    except OSError:
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _refresh_windows_path() -> None:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    path = os.environ.get("PATH", "")
+    entries = path.split(os.pathsep) if path else []
+    persisted_path = _windows_user_path()
+    candidates = persisted_path.split(os.pathsep) if persisted_path else []
+    if local_app_data:
+        candidates.insert(0, str(Path(local_app_data) / "Microsoft" / "WinGet" / "Links"))
+
+    known = {os.path.normcase(entry) for entry in entries}
+    new_entries = []
+    for entry in candidates:
+        expanded = os.path.expandvars(entry)
+        normalized = os.path.normcase(expanded)
+        if expanded and normalized not in known:
+            new_entries.append(expanded)
+            known.add(normalized)
+    os.environ["PATH"] = os.pathsep.join([*new_entries, *entries])
+
+
 def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
     system = platform.system()
     try:
         if system == "Windows":
+            winget = shutil.which("winget")
+            if winget is None:
+                raise RuntimeError(
+                    "WinGet is required on Windows. Install App Installer, then run "
+                    f"`winget install --exact --id {WINDOWS_DATABRICKS_WINGET_PACKAGE}`."
+                )
             run(
-                ["powershell", "-Command", f"irm {WINDOWS_DATABRICKS_INSTALL_URL} | iex"],
+                [
+                    winget,
+                    brew_subcommand,
+                    "--exact",
+                    "--id",
+                    WINDOWS_DATABRICKS_WINGET_PACKAGE,
+                    "--source",
+                    "winget",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ],
                 timeout=240,
             )
+            _refresh_windows_path()
         elif system == "Darwin" and shutil.which("brew"):
             run(["brew", brew_subcommand, "databricks/tap/databricks"], timeout=240)
         elif shutil.which("curl"):
@@ -838,11 +888,10 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
         else:
             raise RuntimeError("Neither curl nor wget is available.")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
-        # `databricks_cli_path` picks the databricks binary to run by absolute path and by
-        # version, so a second copy earlier on PATH (e.g. ~/.local/bin/databricks ahead of
-        # Homebrew's) can't change which one runs. The message therefore stays terse and
-        # never tells users to delete anything.
-        raise RuntimeError("Failed to install/upgrade Databricks CLI automatically.") from exc
+        message = "Failed to install/upgrade Databricks CLI automatically."
+        if system == "Windows" and isinstance(exc, RuntimeError):
+            message += f"\n{exc}"
+        raise RuntimeError(message) from exc
     # A binary may have just been installed/upgraded at a new (or the same) path;
     # drop any stale discovery/resolution so the next lookup re-scans PATH.
     clear_databricks_cli_cache()
@@ -925,6 +974,9 @@ def install_databricks_cli(
     ``databricks aitools`` floor (v1.0.0) rejects a perfectly usable public-preview
     build (e.g. v0.299.2) as a false positive. A missing CLI is still installed —
     only the version *check* is bypassed."""
+    if platform.system() == "Windows":
+        _refresh_windows_path()
+
     if databricks_cli_installed():
         if not skip_version_check:
             ensure_databricks_cli_version(minimum)
