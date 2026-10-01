@@ -33,6 +33,11 @@ same way, over `mcp.MCP_CLIENTS`: registry membership and order, protocol confor
 agent. These are component checks over the shared dispatch; per-agent config writing stays in each
 `test_agent_<name>.py`, and the per-client MCP registration/entry/listing behavior in `test_mcp.py`.
 
+`test_agent_opencode.py` also covers OpenCode's native `Agent` class (`opencode.AGENT`): install
+metadata and the minimum-version gate, model inventory and pinned starting model, `configure`
+returning state (and requiring a model), launch delegation, revert rows, and its `AGENT.mcp` client
+(add/remove/batched apply against a redirected `opencode.json`, and live-status parsing).
+
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 

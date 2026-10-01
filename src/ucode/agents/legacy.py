@@ -25,7 +25,7 @@ from ucode.mcp_oauth import (
     CURSOR_OAUTH_CLIENT_ID,
 )
 
-from . import claude, codex, copilot, cursor, gemini, opencode, pi
+from . import claude, codex, copilot, cursor, gemini, pi
 from .args import LaunchOptions
 from .interface import ConfigureRequest, Install, McpServer, Models
 
@@ -34,7 +34,6 @@ LEGACY_MODULES: dict[str, ModuleType] = {
     "codex": codex,
     "claude": claude,
     "gemini": gemini,
-    "opencode": opencode,
     "copilot": copilot,
     "pi": pi,
 }
@@ -47,7 +46,7 @@ _NATIVE_UPGRADE_ARGV: dict[str, tuple[str, ...]] = {
 
 # Agents that write the first resolved model into their ug config, so ug knows the starting
 # model. Claude and Codex deliberately leave that choice to the agent unless a model is pinned.
-_PINS_FIRST_MODEL = frozenset({"gemini", "opencode", "copilot", "pi"})
+_PINS_FIRST_MODEL = frozenset({"gemini", "copilot", "pi"})
 
 
 def model_values(value: object) -> list[str]:
@@ -132,7 +131,7 @@ class LegacyAgent:
 
     def configure(self, state: dict, request: ConfigureRequest) -> dict:
         result = self._write_tool_config(state, request)
-        # gemini/opencode/copilot/pi return (state, token); codex/claude return state.
+        # gemini/copilot/pi return (state, token); codex/claude return state.
         return result[0] if isinstance(result, tuple) else result
 
     def _write_tool_config(self, state: dict, request: ConfigureRequest) -> dict | tuple[dict, str]:
@@ -308,7 +307,7 @@ class LegacyMcpClient:
             removed = mcp.remove_gemini_mcp_server(name)
             mcp.add_gemini_mcp_server(name, argv)
             return _user_scope(removed)
-        # opencode/copilot/cursor each merge the entry into their own config file.
+        # copilot/cursor each merge the entry into their own config file.
         return _user_scope(self._module.write_mcp_server_config(name, argv))
 
     def remove(self, name: str) -> list[str]:
@@ -398,7 +397,7 @@ LEGACY_MCP_CLIENTS: dict[str, LegacyMcpClient] = {
         display=str(LEGACY_MODULES[client].SPEC["display"]),
         binary=str(LEGACY_MODULES[client].SPEC["binary"]),
     )
-    for client in ("claude", "codex", "gemini", "opencode", "copilot")
+    for client in ("claude", "codex", "gemini", "copilot")
 }
 
 # Cursor takes MCP servers but is NOT an `Agent`: it runs models on the user's own Cursor account,

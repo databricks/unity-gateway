@@ -10,6 +10,8 @@ import pytest
 
 from ucode.agents import opencode
 from ucode.agents.args import LaunchOptions
+from ucode.agents.interface import Agent, ConfigureRequest, McpClient, McpServer, Models
+from ucode.constants import MCP_USER_SCOPE
 
 WS = "https://example.databricks.com"
 
@@ -594,3 +596,204 @@ class TestWriteUserMcpServers:
         assert "gone" not in doc["mcp"]
         assert doc["mcp"]["mine"] == {"type": "local"}
         assert doc["mcp"]["svc"]["command"] == ["ug", "mcp-proxy", "u"]
+
+
+def _server(*, oauth_client: str | None = None) -> McpServer:
+    return McpServer(
+        url=f"{WS}/api/2.0/mcp/external/github",
+        proxy_argv=("ug", "mcp-proxy", "--url", "u"),
+        oauth_client=oauth_client,
+    )
+
+
+@pytest.fixture
+def oc_paths(tmp_path, monkeypatch):
+    """Redirect OpenCode's config and backup so nothing touches the developer's machine."""
+    config = tmp_path / "opencode.json"
+    backup = tmp_path / "backup.json"
+    monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", config)
+    monkeypatch.setattr(opencode, "OPENCODE_BACKUP_PATH", backup)
+    monkeypatch.setitem(opencode.SPEC, "config_path", config)
+    monkeypatch.setitem(opencode.SPEC, "backup_path", backup)
+    return config, backup
+
+
+class TestOpenCodeAgent:
+    def test_satisfies_the_agent_protocol(self):
+        assert isinstance(opencode.AGENT, Agent)
+        assert opencode.AGENT.display == "OpenCode"
+
+    def test_install_describes_the_cli_and_its_minimum_version(self, monkeypatch):
+        install = opencode.AGENT.install
+        assert (install.binary, install.package) == ("opencode", "opencode-ai@1")
+        assert install.upgrade_argv is None
+        assert install.too_new is None
+        assert install.before_install is None
+        monkeypatch.setattr(opencode, "agent_version", lambda _binary: "1.0.219")
+        assert install.version_error is not None
+        assert "requires OpenCode 1.0.220 or newer" in (install.version_error() or "")
+
+    def test_models_flatten_the_family_inventory_and_pin_the_first(self):
+        state = {"opencode_models": {"anthropic": ["a", "b"], "gemini": ["g"], "oss": ["a"]}}
+        assert opencode.AGENT.models(state) == Models(("a", "b", "g"), "a")
+
+    def test_models_empty_without_discovery(self):
+        assert opencode.AGENT.models({}) == Models((), None)
+
+    def test_models_prefer_a_pinned_default_and_a_static_list(self):
+        state = {
+            "opencode_models": {"anthropic": ["a"]},
+            "opencode_static_models": ["s1", "s2"],
+            "opencode_default_model": "pinned",
+        }
+        assert opencode.AGENT.models(state) == Models(("s1", "s2"), "pinned")
+
+    def test_models_does_not_mutate_state(self):
+        state = {"opencode_models": {"anthropic": ["a"]}}
+        before = deepcopy(state)
+        opencode.AGENT.models(state)
+        assert state == before
+
+    def test_configure_requires_a_model(self):
+        with pytest.raises(RuntimeError, match="opencode model must be selected"):
+            opencode.AGENT.configure({"workspace": WS}, ConfigureRequest())
+
+    def test_configure_returns_state_not_the_write_tuple(self, monkeypatch):
+        written = {"workspace": WS, "marker": True}
+        calls: list[tuple] = []
+
+        def fake_write(state, model, token=None):
+            calls.append((state, model))
+            return written, "tok"
+
+        monkeypatch.setattr(opencode, "write_tool_config", fake_write)
+
+        state = {"workspace": WS}
+        result = opencode.AGENT.configure(state, ConfigureRequest(model="claude-sonnet"))
+
+        assert result is written
+        assert calls == [(state, "claude-sonnet")]
+
+    def test_configure_writes_the_overlay(self, oc_paths):
+        config, _ = oc_paths
+        state = {
+            "workspace": WS,
+            "base_urls": {"opencode": _base_urls()},
+            "opencode_models": {"anthropic": ["claude-sonnet"]},
+        }
+        with (
+            patch("ucode.agents.opencode.get_databricks_token", return_value="tok"),
+            patch("ucode.agents.opencode.save_state"),
+        ):
+            result = opencode.AGENT.configure(state, ConfigureRequest(model="claude-sonnet"))
+
+        assert isinstance(result, dict)
+        assert json.loads(config.read_text())["model"] == "databricks-anthropic/claude-sonnet"
+
+    def test_launch_delegates_to_the_module_launch(self, monkeypatch):
+        seen: list[tuple] = []
+        monkeypatch.setattr(
+            opencode, "launch", lambda state, args, *, options: seen.append((state, args, options))
+        )
+        options = LaunchOptions()
+
+        opencode.AGENT.launch({"workspace": WS}, ["run"], options=options)
+
+        assert seen == [({"workspace": WS}, ["run"], options)]
+
+    def test_revert_reports_restored_or_unchanged(self, monkeypatch, oc_paths):
+        config, backup = oc_paths
+        calls: list[tuple] = []
+
+        def fake_restore(path, backup_path, managed):
+            calls.append((path, backup_path, managed))
+            return True
+
+        monkeypatch.setattr(opencode, "restore_file", fake_restore)
+
+        rows = opencode.AGENT.revert({"managed_configs": {"opencode": True}})
+
+        assert rows == [("OpenCode config", "restored")]
+        assert calls == [(config, backup, True)]
+
+        monkeypatch.setattr(opencode, "restore_file", lambda *_a: False)
+        assert opencode.AGENT.revert({}) == [("OpenCode config", "unchanged")]
+
+
+def _mcp() -> McpClient:
+    client = opencode.AGENT.mcp
+    assert client is not None
+    return client
+
+
+class TestOpenCodeMcpClient:
+    def test_is_the_agents_mcp_client(self):
+        client = _mcp()
+        assert isinstance(client, McpClient)
+        assert (client.display, client.binary, client.oauth_client_id) == (
+            "OpenCode",
+            "opencode",
+            None,
+        )
+
+    def test_add_records_the_proxy_entry_and_reports_a_replaced_entry(self, oc_paths):
+        config, _ = oc_paths
+        assert _mcp().add("github", _server()) == []
+        assert _mcp().add("github", _server()) == [MCP_USER_SCOPE]
+        assert json.loads(config.read_text())["mcp"]["github"] == {
+            "type": "local",
+            "command": ["ug", "mcp-proxy", "--url", "u"],
+            "enabled": True,
+        }
+
+    def test_add_ignores_an_oauth_client_and_uses_the_proxy(self, oc_paths):
+        config, _ = oc_paths
+        _mcp().add("github", _server(oauth_client="some-app"))
+        assert json.loads(config.read_text())["mcp"]["github"]["type"] == "local"
+
+    def test_remove_reports_the_scope_only_when_it_was_there(self, oc_paths):
+        config, _ = oc_paths
+        config.write_text(json.dumps({"mcp": {"github": {}, "keep": {}}}))
+
+        assert _mcp().remove("github") == [MCP_USER_SCOPE]
+        assert _mcp().remove("github") == []
+        assert list(json.loads(config.read_text())["mcp"]) == ["keep"]
+
+    def test_apply_writes_adds_and_removes_in_one_pass(self, oc_paths):
+        config, _ = oc_paths
+        config.write_text(json.dumps({"provider": {"p": 1}, "mcp": {"gone": {}, "mine": {"a": 1}}}))
+
+        removed = _mcp().apply({"svc": _server()}, {"gone", "absent"})
+
+        doc = json.loads(config.read_text())
+        assert removed == {"gone"}
+        assert doc["provider"] == {"p": 1}
+        assert doc["mcp"]["mine"] == {"a": 1}
+        assert doc["mcp"]["svc"]["command"] == ["ug", "mcp-proxy", "--url", "u"]
+
+    def test_apply_with_no_changes_removes_nothing(self, oc_paths):
+        assert _mcp().apply({}, set()) == set()
+
+    def test_live_status_parses_the_health_listing(self, monkeypatch):
+        from ucode import mcp
+
+        seen: list[tuple] = []
+
+        def fake_listing(argv, *, env=None):
+            seen.append((argv, env))
+            return "github: ug mcp-proxy - \u2713 Connected\n"
+
+        monkeypatch.setattr(mcp, "_read_mcp_listing", fake_listing)
+
+        assert _mcp().live_status() == {"github": mcp.LIVE_CONNECTED}
+        assert seen == [(["opencode", "mcp", "list"], None)]
+
+    def test_live_status_is_empty_when_the_listing_cannot_be_read_or_has_no_servers(
+        self, monkeypatch
+    ):
+        from ucode import mcp
+
+        monkeypatch.setattr(mcp, "_read_mcp_listing", lambda *a, **k: None)
+        assert _mcp().live_status() == {}
+        monkeypatch.setattr(mcp, "_read_mcp_listing", lambda *a, **k: "No MCP servers configured.")
+        assert _mcp().live_status() == {}
