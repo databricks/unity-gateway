@@ -6,7 +6,6 @@ import json
 import os
 import re
 import signal
-import subprocess
 
 from ucode.config_io import (
     APP_DIR,
@@ -24,6 +23,7 @@ from ucode.databricks import (
     get_databricks_token,
     model_token_limits,
 )
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
@@ -439,7 +439,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
             *tool_args[separator:],
         ]
 
-    proc = subprocess.Popen([SPEC["binary"], *tool_args], env=env)
+    proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:
