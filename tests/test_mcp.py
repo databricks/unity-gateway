@@ -154,6 +154,49 @@ class TestCursorMcpClient:
         assert "cursor" not in clients
 
 
+class TestKiloMcpClient:
+    def test_kilo_registered_in_mcp_clients(self):
+        assert "kilo" in mcp.MCP_CLIENTS
+        assert mcp.MCP_CLIENTS["kilo"]["binary"] == "kilo"
+        assert mcp.MCP_CLIENTS["kilo"]["list_command"] == "kilo mcp list"
+
+    def test_kilo_in_client_modules(self):
+        assert mcp._MCP_CLIENT_MODULES["kilo"] is mcp.kilo
+
+    def test_configure_dispatches_proxy_argv_to_kilo_writer(self, monkeypatch):
+        calls: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(
+            mcp.kilo,
+            "write_mcp_server_config",
+            lambda name, argv: calls.append((name, argv)) or False,
+        )
+
+        removed_scopes = mcp.configure_client_mcp_server("kilo", "github", GH_URL, WS, "p")
+
+        assert removed_scopes == []
+        assert calls == [("github", _proxy_argv())]
+
+    def test_configure_reports_user_scope_on_replace(self, monkeypatch):
+        monkeypatch.setattr(mcp.kilo, "write_mcp_server_config", lambda name, argv: True)
+        assert mcp.configure_client_mcp_server("kilo", "github", GH_URL, WS, "p") == [
+            mcp.MCP_USER_SCOPE
+        ]
+
+    def test_remove_dispatches_to_kilo_remover(self, monkeypatch):
+        calls: list[str] = []
+        monkeypatch.setattr(
+            mcp.kilo, "remove_mcp_server_config", lambda name: calls.append(name) or True
+        )
+        assert mcp.remove_client_mcp_server("kilo", "github-mcp") == [mcp.MCP_USER_SCOPE]
+        assert calls == ["github-mcp"]
+
+    def test_managed_entry_builds_via_kilo_module(self):
+        argv = mcp.build_mcp_proxy_argv(GH_URL, WS, None, use_pat=False)
+        assert mcp._managed_mcp_entry(
+            "kilo", GH_URL, WS, None, use_pat=False, always_load=False, http_client=None
+        ) == mcp.kilo.build_mcp_server_entry(argv)
+
+
 class TestConfigureClientMcpServer:
     def test_configures_copilot_with_proxy_argv(self, monkeypatch):
         calls: list[tuple[str, list[str]]] = []
