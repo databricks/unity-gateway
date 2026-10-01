@@ -2801,6 +2801,40 @@ class TestRevert:
         assert cleared == [True]
         assert "Claude Code MCP config: restored" in result.output
 
+    def test_clears_provenance_store(self):
+        from ucode import managed_files, provenance
+
+        provenance.save_provenance("claude", Path("/tmp/settings.json"), {("env", "A"): "1"})
+        store_path = managed_files.MANAGED_BACKUP_DIR / "provenance.json"
+        assert store_path.exists()
+
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.restore_file", return_value=False),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.clear_state"),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        assert not store_path.exists()
+
+    def test_clears_state_even_when_clearing_provenance_fails(self):
+        cleared: list[bool] = []
+
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.restore_file", return_value=False),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch("ucode.cli.clear_state", side_effect=lambda: cleared.append(True)),
+            patch("ucode.cli.clear_provenance", side_effect=RuntimeError("boom")),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 1
+        assert "boom" in _strip_ansi(result.output)
+        assert cleared == [True]
+
 
 class TestDoctorCommand:
     def test_invokes_doctor(self):
