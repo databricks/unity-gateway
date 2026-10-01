@@ -76,15 +76,14 @@ def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_resul
             "workspace",
             "smoke",
             "full",
-            "cuj7-workspace",
             "cuj7",
             "managed",
         )
     }
     results["managed"]["result"] = managed_result
     for job in {
-        "installation": ("workspace", "smoke", "full", "cuj7-workspace", "cuj7"),
-        "smoke": ("full", "cuj7-workspace", "cuj7"),
+        "installation": ("workspace", "smoke", "full", "cuj7"),
+        "smoke": ("full", "cuj7"),
         "tui": ("smoke",),
     }.get(suite, ()):
         results[job]["result"] = "skipped"
@@ -116,7 +115,6 @@ def test_integration_ci_gate_requires_cuj7_for_live_suites(suite):
             "workspace",
             "smoke",
             "full",
-            "cuj7-workspace",
             "cuj7",
             "managed",
         )

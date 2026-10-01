@@ -467,11 +467,10 @@ uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because 
 cannot receive those secrets.
 
 CUJ7 (`test_case_07_configured_claude_discovers_system_models`) runs in its own required
-CI job. It reads `UG_CUJ7_WORKSPACE`, `UG_CUJ7_SP_CLIENT_ID`, and
-`UG_CUJ7_SP_CLIENT_SECRET` from repository secrets. The runner mints a short-lived
-workspace bearer from the service-principal credentials. CI checks the workspace
-URL against its pinned value before running the test. The shared Claude job excludes
-the `cuj7` marker, so this case runs only on the dedicated workspace. That workspace
+CI job. The workspace URL is set directly in the workflow; only
+`UG_CUJ7_SP_CLIENT_ID` and `UG_CUJ7_SP_CLIENT_SECRET` are repository secrets.
+The runner mints a short-lived workspace bearer from those credentials. The shared
+Claude job excludes the `cuj7` marker, so this case runs only on the dedicated workspace. That workspace
 must have no published CodingAgentConfig and must expose discoverable `system.ai`
 Claude models. The dedicated job is required for full, live, and TUI CI suites.
 
@@ -508,7 +507,7 @@ shards and other PRs; this limit does not guarantee freedom from rate limits.
 No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
-The **All integration tests** check requires installation, both workspace validations,
+The **All integration tests** check requires installation, shared workspace validation,
 smoke, both full lanes, CUJ7, and both **Managed config** lanes to pass for full/live runs. Each tracing
 journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
 a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
