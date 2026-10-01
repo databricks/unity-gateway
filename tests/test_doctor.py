@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+import pytest
+
 import ucode.doctor as doctor_mod
 from ucode.databricks import MIN_DATABRICKS_CLI_VERSION
 from ucode.doctor import (
@@ -149,6 +151,12 @@ class TestAgentCliChecks:
 
 
 class TestDatabricksAuthCheck:
+    @pytest.fixture(autouse=True)
+    def _clear_bearer_env(self, monkeypatch):
+        # CI sets DATABRICKS_BEARER; clear both so each test selects its own auth branch.
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+
     def test_none_when_no_workspace(self):
         with patch.object(doctor_mod, "load_state", return_value={}):
             assert _check_databricks_auth() is None
@@ -191,6 +199,83 @@ class TestDatabricksAuthCheck:
         ):
             check = _check_databricks_auth()
             assert check.suggestion.apply() is False
+
+    def test_static_bearer_warns_without_verification(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setenv("DATABRICKS_BEARER", "garbage")
+        with patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}):
+            check = _check_databricks_auth()
+        assert check.status == "warn"
+        assert check.suggestion is None
+        assert "not verified" in check.detail.lower()
+        assert check.status != "ok"
+
+    def test_bearer_command_ok_when_obtainable(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setenv("DATABRICKS_BEARER_COMMAND", "echo tok")
+        with (
+            patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}),
+            patch.object(doctor_mod, "get_databricks_token", return_value="tok"),
+        ):
+            check = _check_databricks_auth()
+        assert check.status == "ok"
+        assert check.suggestion is None
+
+    def test_bearer_command_error_when_not_obtainable(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setenv("DATABRICKS_BEARER_COMMAND", "false")
+        with (
+            patch.object(doctor_mod, "load_state", return_value={"workspace": "https://ws"}),
+            patch.object(doctor_mod, "get_databricks_token", side_effect=RuntimeError("nope")),
+        ):
+            check = _check_databricks_auth()
+        assert check.status == "error"
+        assert check.suggestion is None
+
+    def test_custom_oauth_ok_when_profile_obtainable(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        state = {
+            "workspace": "https://ws",
+            "custom_oauth": {"profile": "oauth-profile"},
+        }
+        with (
+            patch.object(doctor_mod, "load_state", return_value=state),
+            patch.object(doctor_mod, "has_valid_databricks_auth", return_value=True),
+        ):
+            check = _check_databricks_auth()
+        assert check.status == "ok"
+        assert check.suggestion is None
+
+    def test_custom_oauth_warn_when_profile_not_obtainable(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        state = {
+            "workspace": "https://ws",
+            "custom_oauth": {"profile": "oauth-profile"},
+        }
+        with (
+            patch.object(doctor_mod, "load_state", return_value=state),
+            patch.object(doctor_mod, "has_valid_databricks_auth", return_value=False),
+        ):
+            check = _check_databricks_auth()
+        assert check.status == "warn"
+        assert check.suggestion is None
+
+    def test_custom_oauth_warn_without_profile(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        state = {
+            "workspace": "https://ws",
+            "custom_oauth": {},
+        }
+        with patch.object(doctor_mod, "load_state", return_value=state):
+            check = _check_databricks_auth()
+        assert check.status == "warn"
+        assert check.suggestion is None
 
 
 class TestAnthropicEnvCollision:
