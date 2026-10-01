@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 import questionary
 from rich.table import Table
 
-from ucode.agents import claude, codex, copilot, cursor, gemini, opencode
+from ucode.agents import claude, codex, copilot, cursor, gemini, kilo, opencode
 from ucode.config_io import restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
@@ -115,6 +115,11 @@ MCP_CLIENTS = {
         "binary": "opencode",
         "display": "OpenCode",
         "list_command": "opencode mcp list",
+    },
+    "kilo": {
+        "binary": "kilo",
+        "display": "Kilo",
+        "list_command": "kilo mcp list",
     },
     "copilot": {
         "binary": "copilot",
@@ -389,6 +394,9 @@ def configure_client_mcp_server(
     if client == "opencode":
         removed = opencode.write_mcp_server_config(name, argv)
         return [MCP_USER_SCOPE] if removed else []
+    if client == "kilo":
+        removed = kilo.write_mcp_server_config(name, argv)
+        return [MCP_USER_SCOPE] if removed else []
     if client == "copilot":
         removed = copilot.write_mcp_server_config(name, argv)
         return [MCP_USER_SCOPE] if removed else []
@@ -409,6 +417,8 @@ def remove_client_mcp_server(client: str, name: str) -> list[str]:
         return [MCP_USER_SCOPE] if remove_gemini_mcp_server(name) else []
     if client == "opencode":
         return [MCP_USER_SCOPE] if opencode.remove_mcp_server_config(name) else []
+    if client == "kilo":
+        return [MCP_USER_SCOPE] if kilo.remove_mcp_server_config(name) else []
     if client == "copilot":
         return [MCP_USER_SCOPE] if copilot.remove_mcp_server_config(name) else []
     if client == "cursor":
@@ -1348,6 +1358,7 @@ _MCP_CLIENT_MODULES = {
     "copilot": copilot,
     "cursor": cursor,
     "opencode": opencode,
+    "kilo": kilo,
 }
 
 
@@ -1391,6 +1402,8 @@ def _managed_mcp_entry(
         return copilot.build_mcp_server_entry(argv)
     if client == "opencode":
         return opencode.build_mcp_server_entry(argv)
+    if client == "kilo":
+        return kilo.build_mcp_server_entry(argv)
     raise RuntimeError(f"Unsupported MCP client '{client}'.")
 
 

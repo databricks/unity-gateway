@@ -3,8 +3,8 @@
 Kilo CLI (@kilocode/cli) is a fork of OpenCode; it shares OpenCode's config
 schema, provider model, and plugin system. This module mirrors opencode.py,
 reading the same discovered `opencode_models` view from state, and isolating
-Kilo via a single-file KILO_CONFIG (proven exclusive on kilo 7.2.x, whereas
-KILO_CONFIG_DIR merges the user's real config dir underneath)."""
+Kilo via XDG_CONFIG_HOME (verified on kilo 7.3.1/7.4.1: Kilo reads only
+$XDG_CONFIG_HOME/kilo/ and ignores the user's real ~/.config/kilo)."""
 
 from __future__ import annotations
 
@@ -35,11 +35,11 @@ from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
 
-KILO_CONFIG_DIR = APP_DIR / "kilo-config"
-KILO_CONFIG_INNER_DIR = KILO_CONFIG_DIR
-KILO_CONFIG_PATH = KILO_CONFIG_INNER_DIR / "kilo.json"
+KILO_XDG_CONFIG_HOME = APP_DIR / "kilo-xdg"
+KILO_CONFIG_DIR = KILO_XDG_CONFIG_HOME / "kilo"
+KILO_CONFIG_PATH = KILO_CONFIG_DIR / "kilo.json"
 KILO_BACKUP_PATH = APP_DIR / "kilo-config.backup.json"
-KILO_AUTH_PLUGIN_PATH = KILO_CONFIG_INNER_DIR / "plugin" / "ucode-auth.js"
+KILO_AUTH_PLUGIN_PATH = KILO_CONFIG_DIR / "plugin" / "ucode-auth.js"
 KILO_NPM_PACKAGE = "@kilocode/cli"
 # Minimum Kilo version whose plugin runtime invokes the `config()` hook that our
 # auth plugin (ucode-auth.js) relies on to refresh Databricks tokens.
@@ -220,10 +220,13 @@ def resolve_explicit_model(model: str, state: dict) -> str:
     if "/" not in selector:
         if resolved != selector:
             return resolved
-        raise RuntimeError(
-            f"Kilo model '{selector}' is not configured. "
-            "Choose a discovered model id or pass a provider/model selector."
+        hint = (
+            "Run `ug configure --agent kilo` to discover models, then choose a "
+            "discovered model id or pass a provider/model selector."
+            if not opencode_models
+            else "Choose a discovered model id or pass a provider/model selector."
         )
+        raise RuntimeError(f"Kilo model '{selector}' is not configured. {hint}")
 
     provider, _, model_id = selector.partition("/")
     if not provider or not model_id:
@@ -277,10 +280,9 @@ def render_overlay(
     keys: list[list[str]] = [["model"]]
     if anthropic_models:
         # @ai-sdk/anthropic injects `eager_input_streaming: true` on tool defs;
-        # the Databricks gateway's strict validator rejects it. opencode's
-        # auto-disable in transform.ts skips models whose id contains "claude",
-        # so we opt out per-model. The setting lives in per-call providerOptions,
-        # which opencode reads from `models.<m>.options`, not provider `options`.
+        # the Databricks gateway's strict validator rejects it, so we disable tool
+        # streaming per-model. The setting lives in per-call providerOptions, which
+        # Kilo reads from `models.<m>.options`, not provider `options`.
         anthropic_model_overlay = {
             "headers": ua_header,
             "options": {"toolStreaming": False},
@@ -348,7 +350,6 @@ def write_tool_config(
         for stale in (
             "databricks-anthropic",
             "databricks-google",
-            "databricks-openai",
             "databricks-oss",
         ):
             providers.pop(stale, None)
@@ -400,8 +401,9 @@ def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
 
 
 def default_model(state: dict) -> str | None:
-    if isinstance(state.get("opencode_default_model"), str):
-        return state.get("opencode_default_model")
+    # Kilo does not support admin-managed configs (unlike Claude/Codex), so there is
+    # no `*_default_model` override to honor here; the default is derived purely from
+    # the discovered buckets (anthropic > gemini > oss), which Kilo shares with OpenCode.
     opencode_models = state.get("opencode_models") or {}
     anthropic = opencode_models.get("anthropic") or []
     if anthropic:
@@ -424,14 +426,13 @@ def _configure_launch(state: dict, model: str | None = None) -> str:
 def build_runtime_env(token: str, state: dict | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env["OAUTH_TOKEN"] = token
-    # Isolation: unlike OpenCode (which neutralizes XDG_CONFIG_HOME), Kilo pins a
-    # single config file via KILO_CONFIG. Verified empirically against kilo 7.2.25:
-    # with KILO_CONFIG=<file> set, Kilo loads ONLY that file and does NOT merge the
-    # user's real ~/.config/kilo. (KILO_CONFIG_DIR alone is additive/merges the real
-    # dir, so it is used only to point Kilo at our plugin directory, not for config
-    # isolation.) This keeps a co-installed OpenCode's config out of Kilo's merge chain.
-    env["KILO_CONFIG"] = str(KILO_CONFIG_PATH)
-    env["KILO_CONFIG_DIR"] = str(KILO_CONFIG_INNER_DIR)
+    # Isolation: like OpenCode, Kilo honors XDG_CONFIG_HOME. Pointing it at our
+    # private dir makes Kilo read ONLY $XDG_CONFIG_HOME/kilo/ and ignore the user's
+    # real ~/.config/kilo. Verified on kilo 7.3.1/7.4.1: config() plugin hook fires
+    # (token refresh works) and `kilo mcp list` sees only our managed servers.
+    # Note: KILO_CONFIG merely MERGES on top of the real config (not exclusive), so
+    # it is not used for isolation.
+    env["XDG_CONFIG_HOME"] = str(KILO_XDG_CONFIG_HOME)
     return env
 
 

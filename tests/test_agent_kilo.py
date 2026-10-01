@@ -179,21 +179,21 @@ class TestRenderOverlay:
         # UA must live at the per-model level — Kilo clobbers
         # provider-level `headers["User-Agent"]` in session/llm.ts.
         monkeypatch.setattr(kilo, "ug_version", lambda: "0.1.0")
-        monkeypatch.setattr(kilo, "agent_version", lambda binary: "0.74.0")
+        monkeypatch.setattr(kilo, "agent_version", lambda binary: "7.4.1")
         models = {"anthropic": ["claude-sonnet"]}
         overlay, _ = kilo.render_overlay("claude-sonnet", "tok", _base_urls(), models)
         model_headers = overlay["provider"]["databricks-anthropic"]["models"]["claude-sonnet"][
             "headers"
         ]
-        assert model_headers["User-Agent"] == "ucode/0.1.0 kilo/0.74.0"
+        assert model_headers["User-Agent"] == "ucode/0.1.0 kilo/7.4.1"
 
     def test_user_agent_header_gemini(self, monkeypatch):
         monkeypatch.setattr(kilo, "ug_version", lambda: "0.1.0")
-        monkeypatch.setattr(kilo, "agent_version", lambda binary: "0.74.0")
+        monkeypatch.setattr(kilo, "agent_version", lambda binary: "7.4.1")
         models = {"gemini": ["gemini-2"]}
         overlay, _ = kilo.render_overlay("gemini-2", "tok", _base_urls(), models)
         model_headers = overlay["provider"]["databricks-google"]["models"]["gemini-2"]["headers"]
-        assert model_headers["User-Agent"] == "ucode/0.1.0 kilo/0.74.0"
+        assert model_headers["User-Agent"] == "ucode/0.1.0 kilo/7.4.1"
 
     def test_provider_level_headers_only_authorization(self, monkeypatch):
         # Sanity: provider-level headers should NOT include User-Agent (since
@@ -261,14 +261,13 @@ class TestMcpServerConfig:
         }
 
     def test_writes_mcp_server_without_clobbering_existing_config(self, tmp_path, monkeypatch):
-        import ucode.agents.kilo as oc_mod
         import ucode.config_io as config_io_mod
 
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         config_file = tmp_path / "kilo.json"
         backup_file = tmp_path / "kilo-backup.json"
-        monkeypatch.setattr(oc_mod, "KILO_CONFIG_PATH", config_file)
-        monkeypatch.setattr(oc_mod, "KILO_BACKUP_PATH", backup_file)
+        monkeypatch.setattr(kilo, "KILO_CONFIG_PATH", config_file)
+        monkeypatch.setattr(kilo, "KILO_BACKUP_PATH", backup_file)
 
         config_file.write_text(
             json.dumps(
@@ -280,7 +279,7 @@ class TestMcpServerConfig:
             encoding="utf-8",
         )
 
-        removed = oc_mod.write_mcp_server_config("github", self.PROXY_ARGV)
+        removed = kilo.write_mcp_server_config("github", self.PROXY_ARGV)
 
         written = json.loads(config_file.read_text())
         assert removed is False
@@ -293,28 +292,26 @@ class TestMcpServerConfig:
         }
 
     def test_reports_replaced_mcp_server(self, tmp_path, monkeypatch):
-        import ucode.agents.kilo as oc_mod
         import ucode.config_io as config_io_mod
 
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         config_file = tmp_path / "kilo.json"
         backup_file = tmp_path / "kilo-backup.json"
-        monkeypatch.setattr(oc_mod, "KILO_CONFIG_PATH", config_file)
-        monkeypatch.setattr(oc_mod, "KILO_BACKUP_PATH", backup_file)
+        monkeypatch.setattr(kilo, "KILO_CONFIG_PATH", config_file)
+        monkeypatch.setattr(kilo, "KILO_BACKUP_PATH", backup_file)
 
         config_file.write_text(json.dumps({"mcp": {"github": {"old": True}}}), encoding="utf-8")
 
-        removed = oc_mod.write_mcp_server_config("github", self.PROXY_ARGV)
+        removed = kilo.write_mcp_server_config("github", self.PROXY_ARGV)
 
         assert removed is True
         written = json.loads(config_file.read_text())
         assert written["mcp"]["github"]["command"] == self.PROXY_ARGV
 
     def test_removes_mcp_server_without_clobbering_others(self, tmp_path, monkeypatch):
-        import ucode.agents.kilo as oc_mod
 
         config_file = tmp_path / "kilo.json"
-        monkeypatch.setattr(oc_mod, "KILO_CONFIG_PATH", config_file)
+        monkeypatch.setattr(kilo, "KILO_CONFIG_PATH", config_file)
         config_file.write_text(
             json.dumps(
                 {
@@ -328,7 +325,7 @@ class TestMcpServerConfig:
             encoding="utf-8",
         )
 
-        removed = oc_mod.remove_mcp_server_config("github")
+        removed = kilo.remove_mcp_server_config("github")
 
         written = json.loads(config_file.read_text())
         assert removed is True
@@ -343,13 +340,20 @@ class TestBuildRuntimeEnv:
 
         assert env["OAUTH_TOKEN"] == "tok"
 
-    def test_sets_kilo_config_isolation_vars(self):
-        # Kilo isolates via a single-file KILO_CONFIG (so a co-installed OpenCode
-        # config is never merged in) plus KILO_CONFIG_DIR for the plugin dir.
+    def test_isolates_via_xdg_config_home(self):
+        # Kilo isolates via XDG_CONFIG_HOME: it reads ONLY $XDG_CONFIG_HOME/kilo/
+        # and ignores the user's real ~/.config/kilo. KILO_CONFIG merely merges on
+        # top of the real config (not exclusive on 7.3.1), so it must not be set.
         env = kilo.build_runtime_env("tok")
 
-        assert env["KILO_CONFIG"] == str(kilo.KILO_CONFIG_PATH)
-        assert env["KILO_CONFIG_DIR"] == str(kilo.KILO_CONFIG_INNER_DIR)
+        assert env["XDG_CONFIG_HOME"] == str(kilo.KILO_XDG_CONFIG_HOME)
+        assert "KILO_CONFIG" not in env
+        assert "KILO_CONFIG_DIR" not in env
+
+    def test_config_path_lives_under_xdg_home(self):
+        # The config dir Kilo reads is $XDG_CONFIG_HOME/kilo, and kilo.json sits in it.
+        assert kilo.KILO_CONFIG_DIR == kilo.KILO_XDG_CONFIG_HOME / "kilo"
+        assert kilo.KILO_CONFIG_PATH == kilo.KILO_CONFIG_DIR / "kilo.json"
 
 
 class TestKiloDefaultModel:
@@ -375,12 +379,14 @@ class TestKiloDefaultModel:
         assert kilo.default_model({}) is None
         assert kilo.default_model({"opencode_models": {}}) is None
 
-    def test_kilo_default_model_wins_over_bucketed_models(self):
+    def test_default_derives_from_bucketed_models(self):
+        # Kilo has no `kilo_default_model` key and ignores `opencode_default_model`;
+        # the default is the first bucketed model (anthropic > gemini > oss).
         state = {
-            "opencode_default_model": "admin-chosen-default",
-            "opencode_models": {"anthropic": ["claude-sonnet"]},
+            "opencode_default_model": "ignored-key",
+            "opencode_models": {"anthropic": ["claude-sonnet"], "gemini": ["gemini-2"]},
         }
-        assert kilo.default_model(state) == "admin-chosen-default"
+        assert kilo.default_model(state) == "claude-sonnet"
 
 
 class TestKiloValidateCmd:
@@ -464,7 +470,7 @@ class TestKiloLaunchModel:
         monkeypatch.setattr(kilo, "KILO_BACKUP_PATH", tmp_path / "kilo-backup.json")
         state = {
             "workspace": WS,
-            "base_urls": {"kilo": _base_urls()},
+            "base_urls": {"opencode": _base_urls()},
             "opencode_models": {"anthropic": ["claude-sonnet"], "gemini": ["gemini-2"]},
             "opencode_default_model": "claude-sonnet",
             "managed_configs": {},
@@ -473,7 +479,7 @@ class TestKiloLaunchModel:
         original_args = list(tool_args)
         with (
             patch("ucode.agents.kilo.get_databricks_token", return_value="tok"),
-            patch("ucode.agents.kilo.agent_version", return_value="1.0.220"),
+            patch("ucode.agents.kilo.agent_version", return_value="7.3.1"),
             patch("ucode.agents.kilo.save_state"),
             patch("ucode.agents.kilo.subprocess_cross_os.popen") as popen,
         ):
@@ -507,14 +513,13 @@ class TestKiloLaunchModel:
 
 class TestWriteToolConfigStaleProviderCleanup:
     def test_stale_providers_removed_before_merge(self, tmp_path, monkeypatch):
-        import ucode.agents.kilo as oc_mod
         import ucode.config_io as config_io_mod
 
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         config_file = tmp_path / "kilo.json"
         backup_file = tmp_path / "kilo-backup.json"
-        monkeypatch.setattr(oc_mod, "KILO_CONFIG_PATH", config_file)
-        monkeypatch.setattr(oc_mod, "KILO_BACKUP_PATH", backup_file)
+        monkeypatch.setattr(kilo, "KILO_CONFIG_PATH", config_file)
+        monkeypatch.setattr(kilo, "KILO_BACKUP_PATH", backup_file)
 
         stale = {
             "provider": {
@@ -527,7 +532,7 @@ class TestWriteToolConfigStaleProviderCleanup:
 
         state = {
             "workspace": WS,
-            "base_urls": {"kilo": _base_urls()},
+            "base_urls": {"opencode": _base_urls()},
             "opencode_models": {"anthropic": ["claude-sonnet"]},
             "managed_configs": {},
         }
@@ -536,7 +541,7 @@ class TestWriteToolConfigStaleProviderCleanup:
             patch("ucode.agents.kilo.get_databricks_token", return_value="tok"),
             patch("ucode.agents.kilo.save_state"),
         ):
-            oc_mod.write_tool_config(state, "claude-sonnet", token="tok")
+            kilo.write_tool_config(state, "claude-sonnet", token="tok")
 
         written = json.loads(config_file.read_text())
         providers = written.get("provider", {})
@@ -544,24 +549,22 @@ class TestWriteToolConfigStaleProviderCleanup:
         assert providers.get("databricks-anthropic") != {"old": True}
         # unmanaged provider entry survives
         assert providers.get("other-provider") == {"keep": True}
-        # Kilo 1.0.0 discovers `plugin/`; plural `plugins/` came later.
         plugin = config_file.parent / "plugin" / kilo.KILO_AUTH_PLUGIN_PATH.name
         assert plugin.exists()
         assert "options.fetch = databricksFetch" in plugin.read_text()
 
     def test_config_written_with_correct_model(self, tmp_path, monkeypatch):
-        import ucode.agents.kilo as oc_mod
         import ucode.config_io as config_io_mod
 
         monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
         config_file = tmp_path / "kilo.json"
         backup_file = tmp_path / "kilo-backup.json"
-        monkeypatch.setattr(oc_mod, "KILO_CONFIG_PATH", config_file)
-        monkeypatch.setattr(oc_mod, "KILO_BACKUP_PATH", backup_file)
+        monkeypatch.setattr(kilo, "KILO_CONFIG_PATH", config_file)
+        monkeypatch.setattr(kilo, "KILO_BACKUP_PATH", backup_file)
 
         state = {
             "workspace": WS,
-            "base_urls": {"kilo": _base_urls()},
+            "base_urls": {"opencode": _base_urls()},
             "opencode_models": {"anthropic": ["claude-sonnet"]},
             "managed_configs": {},
         }
@@ -570,7 +573,7 @@ class TestWriteToolConfigStaleProviderCleanup:
             patch("ucode.agents.kilo.get_databricks_token", return_value="tok"),
             patch("ucode.agents.kilo.save_state"),
         ):
-            oc_mod.write_tool_config(state, "claude-sonnet", token="tok")
+            kilo.write_tool_config(state, "claude-sonnet", token="tok")
 
         written = json.loads(config_file.read_text())
         assert written["model"] == "databricks-anthropic/claude-sonnet"
