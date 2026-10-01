@@ -9,11 +9,16 @@ suggestion, and a declined or piped run (no tty) changes nothing.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
+
+import tomlkit
+from tomlkit.exceptions import ParseError
 
 from ucode.agents import (
     TOOL_SPECS,
@@ -21,8 +26,11 @@ from ucode.agents import (
     tool_version_error,
     update_tool_binary,
 )
+from ucode.agents.claude import CLAUDE_SETTINGS_PATH
+from ucode.agents.codex import CODEX_CONFIG_PATH, CODEX_MODEL_PROVIDER_NAME
 from ucode.databricks import (
     MIN_DATABRICKS_CLI_VERSION,
+    build_tool_base_url,
     databricks_cli_version,
     has_valid_databricks_auth,
     install_databricks_cli,
@@ -182,6 +190,151 @@ def _check_agent_clis() -> list[Check]:
     return checks
 
 
+def _gateway_configured(state: dict, tool: str) -> bool:
+    """True when `tool` is configured directly or via a managed config."""
+    configured = set(state.get("available_tools") or []) | set(
+        (state.get("managed_configs") or {}).keys()
+    )
+    return tool in configured
+
+
+def _check_claude_gateway_config() -> Check | None:
+    """Validate ~/.claude/ucode-settings.json against the configured workspace.
+
+    `ug claude` launches with `--settings ucode-settings.json`; if that file is
+    missing or points at another workspace's gateway, launches fail or route to
+    the wrong workspace. Relayed setups (subscription OAuth via a local proxy)
+    deliberately omit apiKeyHelper and use a loopback base URL, so only the
+    base URL's presence is checked there.
+    """
+    state = load_state()
+    if not _gateway_configured(state, "claude"):
+        return None
+    workspace = state.get("workspace")
+    if not workspace:
+        return None  # `_check_workspace` covers the missing workspace.
+    if not CLAUDE_SETTINGS_PATH.exists():
+        return Check(
+            "Claude gateway config",
+            "error",
+            "~/.claude/ucode-settings.json is missing; ug claude cannot route to the "
+            "gateway. Run `ug configure`.",
+        )
+    try:
+        settings = json.loads(CLAUDE_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return Check(
+            "Claude gateway config",
+            "error",
+            f"Claude gateway config is not valid JSON: {exc}",
+        )
+    if not isinstance(settings, dict):
+        return Check(
+            "Claude gateway config",
+            "error",
+            "Claude gateway config is not a JSON object.",
+        )
+    env = settings.get("env")
+    if not isinstance(env, dict):
+        env = {}
+    base_url = env.get("ANTHROPIC_BASE_URL")
+    if state.get("claude_relayed"):
+        if not base_url:
+            return Check(
+                "Claude gateway config",
+                "error",
+                "Claude relay config has no env.ANTHROPIC_BASE_URL.",
+            )
+        return Check(
+            "Claude gateway config",
+            "ok",
+            "relay config present (subscription OAuth via local proxy)",
+        )
+    helper = settings.get("apiKeyHelper")
+    if not isinstance(helper, str) or not helper.strip():
+        return Check(
+            "Claude gateway config",
+            "error",
+            "Claude gateway config has no apiKeyHelper (gateway auth); bare/relaunched "
+            "claude will not authenticate.",
+        )
+    if not base_url:
+        return Check(
+            "Claude gateway config",
+            "error",
+            "Claude gateway config has no env.ANTHROPIC_BASE_URL.",
+        )
+    expected = build_tool_base_url("claude", str(workspace))
+    if str(base_url) != expected:
+        return Check(
+            "Claude gateway config",
+            "error",
+            f"Claude gateway config points at a stale gateway URL ({base_url}); "
+            f"expected {expected} for the configured workspace.",
+        )
+    return Check(
+        "Claude gateway config",
+        "ok",
+        "ucode-settings.json routes to the configured gateway",
+    )
+
+
+def _check_codex_gateway_config() -> Check | None:
+    """Validate ~/.codex/ucode.config.toml against the configured workspace."""
+    state = load_state()
+    if not _gateway_configured(state, "codex"):
+        return None
+    workspace = state.get("workspace")
+    if not workspace:
+        return None  # `_check_workspace` covers the missing workspace.
+    if not CODEX_CONFIG_PATH.exists():
+        return Check(
+            "Codex gateway config",
+            "error",
+            "~/.codex/ucode.config.toml is missing; run `ug configure`.",
+        )
+    try:
+        doc = tomlkit.parse(CODEX_CONFIG_PATH.read_text(encoding="utf-8"))
+    except ParseError as exc:
+        return Check(
+            "Codex gateway config",
+            "error",
+            f"Codex config is not valid TOML: {exc}",
+        )
+    provider_name = doc.get("model_provider")
+    if provider_name != CODEX_MODEL_PROVIDER_NAME:
+        return Check(
+            "Codex gateway config",
+            "error",
+            f"Codex config model_provider is {provider_name}; "
+            f"expected {CODEX_MODEL_PROVIDER_NAME}.",
+        )
+    providers = doc.get("model_providers")
+    provider = providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, dict) else None
+    base_url = provider.get("base_url") if isinstance(provider, dict) else None
+    expected = build_tool_base_url("codex", str(workspace))
+    if base_url is None or str(base_url) != expected:
+        return Check(
+            "Codex gateway config",
+            "error",
+            f"Codex config points at a stale/absent gateway URL ({base_url}); expected {expected}.",
+        )
+    catalog = doc.get("model_catalog_json")
+    if isinstance(catalog, str) and catalog.strip():
+        catalog_path = Path(str(catalog)).expanduser()
+        if not catalog_path.is_file():
+            return Check(
+                "Codex gateway config",
+                "error",
+                f"Codex references a model catalog that is missing: {catalog_path}.",
+            )
+    return Check(
+        "Codex gateway config",
+        "ok",
+        "ucode.config.toml routes to the configured gateway",
+    )
+
+
 def _check_databricks_auth() -> Check | None:
     """Validate the configured workspace's Databricks credentials.
 
@@ -264,6 +417,8 @@ def _gather_checks() -> list[Check]:
         ("Databricks auth", _check_databricks_auth),
         ("Claude auth env", _check_anthropic_env_collision),
         ("Coding agents", _check_agent_clis),
+        ("Claude gateway config", _check_claude_gateway_config),
+        ("Codex gateway config", _check_codex_gateway_config),
         ("ug", _check_ug),
     ]
     checks: list[Check] = []

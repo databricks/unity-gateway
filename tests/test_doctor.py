@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import ucode.doctor as doctor_mod
@@ -18,6 +19,10 @@ from ucode.doctor import (
     _check_workspace,
     doctor,
 )
+
+_WS = "https://ws.example.com"
+_CLAUDE_BASE_URL = "https://ws.example.com/ai-gateway/anthropic"
+_CODEX_BASE_URL = "https://ws.example.com/ai-gateway/codex/v1"
 
 
 class TestUvCheck:
@@ -339,3 +344,126 @@ class TestGatherChecksIsolation:
         uv = next(c for c in checks if c.name == "uv")
         assert uv.status == "error"
         assert uv.detail.startswith("check could not run")
+
+
+class TestClaudeGatewayConfig:
+    def _run(self, tmp_path, monkeypatch, state, contents=None):
+        path = tmp_path / "ucode-settings.json"
+        if contents is not None:
+            path.write_text(contents, encoding="utf-8")
+        monkeypatch.setattr(doctor_mod, "CLAUDE_SETTINGS_PATH", path)
+        with patch.object(doctor_mod, "load_state", return_value=state):
+            return doctor_mod._check_claude_gateway_config()
+
+    def test_none_when_claude_not_configured(self, tmp_path, monkeypatch):
+        state = {"workspace": _WS, "available_tools": ["codex"]}
+        assert self._run(tmp_path, monkeypatch, state) is None
+
+    def test_none_when_no_workspace(self, tmp_path, monkeypatch):
+        state = {"available_tools": ["claude"]}
+        assert self._run(tmp_path, monkeypatch, state) is None
+
+    def test_error_when_settings_missing(self, tmp_path, monkeypatch):
+        state = {"workspace": _WS, "available_tools": ["claude"]}
+        check = self._run(tmp_path, monkeypatch, state)
+        assert check.status == "error"
+        assert "missing" in check.detail
+
+    def test_error_when_settings_malformed(self, tmp_path, monkeypatch):
+        state = {"workspace": _WS, "available_tools": ["claude"]}
+        check = self._run(tmp_path, monkeypatch, state, contents="{not json")
+        assert check.status == "error"
+        assert "not valid JSON" in check.detail
+
+    def test_ok_for_valid_non_relay_config(self, tmp_path, monkeypatch):
+        state = {"workspace": _WS, "managed_configs": {"claude": {"keys": []}}}
+        contents = json.dumps(
+            {"apiKeyHelper": "echo token", "env": {"ANTHROPIC_BASE_URL": _CLAUDE_BASE_URL}}
+        )
+        check = self._run(tmp_path, monkeypatch, state, contents=contents)
+        assert check.status == "ok"
+        assert check.suggestion is None
+
+    def test_error_for_stale_base_url(self, tmp_path, monkeypatch):
+        state = {"workspace": _WS, "available_tools": ["claude"]}
+        contents = json.dumps(
+            {
+                "apiKeyHelper": "echo token",
+                "env": {"ANTHROPIC_BASE_URL": "https://old.example.com/ai-gateway/anthropic"},
+            }
+        )
+        check = self._run(tmp_path, monkeypatch, state, contents=contents)
+        assert check.status == "error"
+        assert "stale gateway URL" in check.detail
+        assert _CLAUDE_BASE_URL in check.detail
+
+    def test_error_when_api_key_helper_missing(self, tmp_path, monkeypatch):
+        state = {"workspace": _WS, "available_tools": ["claude"]}
+        contents = json.dumps({"env": {"ANTHROPIC_BASE_URL": _CLAUDE_BASE_URL}})
+        check = self._run(tmp_path, monkeypatch, state, contents=contents)
+        assert check.status == "error"
+        assert "apiKeyHelper" in check.detail
+
+    def test_ok_for_relay_config_without_api_key_helper(self, tmp_path, monkeypatch):
+        state = {"workspace": _WS, "available_tools": ["claude"], "claude_relayed": True}
+        contents = json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:4567"}})
+        check = self._run(tmp_path, monkeypatch, state, contents=contents)
+        assert check.status == "ok"
+
+
+class TestCodexGatewayConfig:
+    _VALID = f'model_provider = "Databricks"\n\n[model_providers.Databricks]\nbase_url = "{_CODEX_BASE_URL}"\n'
+
+    def _run(self, tmp_path, monkeypatch, state, contents=None):
+        path = tmp_path / "ucode.config.toml"
+        if contents is not None:
+            path.write_text(contents, encoding="utf-8")
+        monkeypatch.setattr(doctor_mod, "CODEX_CONFIG_PATH", path)
+        with patch.object(doctor_mod, "load_state", return_value=state):
+            return doctor_mod._check_codex_gateway_config()
+
+    def _state(self):
+        return {"workspace": _WS, "available_tools": ["codex"]}
+
+    def test_error_when_config_missing(self, tmp_path, monkeypatch):
+        check = self._run(tmp_path, monkeypatch, self._state())
+        assert check.status == "error"
+        assert "missing" in check.detail
+
+    def test_error_when_config_malformed(self, tmp_path, monkeypatch):
+        check = self._run(tmp_path, monkeypatch, self._state(), contents="model_provider = ")
+        assert check.status == "error"
+        assert "not valid TOML" in check.detail
+
+    def test_ok_for_valid_config(self, tmp_path, monkeypatch):
+        check = self._run(tmp_path, monkeypatch, self._state(), contents=self._VALID)
+        assert check.status == "ok"
+        assert check.suggestion is None
+
+    def test_error_for_wrong_model_provider(self, tmp_path, monkeypatch):
+        contents = self._VALID.replace('model_provider = "Databricks"', 'model_provider = "openai"')
+        check = self._run(tmp_path, monkeypatch, self._state(), contents=contents)
+        assert check.status == "error"
+        assert "model_provider" in check.detail
+
+    def test_error_for_stale_base_url(self, tmp_path, monkeypatch):
+        contents = self._VALID.replace(
+            _CODEX_BASE_URL, "https://old.example.com/ai-gateway/codex/v1"
+        )
+        check = self._run(tmp_path, monkeypatch, self._state(), contents=contents)
+        assert check.status == "error"
+        assert "stale/absent gateway URL" in check.detail
+        assert _CODEX_BASE_URL in check.detail
+
+    def test_error_when_model_catalog_missing(self, tmp_path, monkeypatch):
+        contents = f'model_catalog_json = "{tmp_path / "missing.json"}"\n' + self._VALID
+        check = self._run(tmp_path, monkeypatch, self._state(), contents=contents)
+        assert check.status == "error"
+        assert "model catalog" in check.detail
+
+    def test_ok_when_model_catalog_exists(self, tmp_path, monkeypatch):
+        catalog = tmp_path / "catalog.json"
+        catalog.write_text("{}", encoding="utf-8")
+        contents = f'model_catalog_json = "{catalog}"\n' + self._VALID
+        check = self._run(tmp_path, monkeypatch, self._state(), contents=contents)
+        assert check.status == "ok"
