@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 import pytest
 from utils.harness import UserSession
 from utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
+from utils.mps_fixture import MpsFixture
 
 
 def pytest_collection_modifyitems(config, items):
@@ -48,6 +49,16 @@ def workspace():
     if not value.startswith("https://") or not os.environ.get("DATABRICKS_BEARER", "").strip():
         pytest.fail("Live integration requires UCODE_TEST_WORKSPACE and DATABRICKS_BEARER.")
     return value
+
+
+@pytest.fixture
+def mps_fixture(workspace):
+    """Provision optional direct MPSes for a single fresh-provider journey."""
+    yield MpsFixture(
+        workspace,
+        os.environ.get("UG_INTEGRATION_MPS_FIXTURE_SCHEMA", ""),
+        os.environ.get("DATABRICKS_BEARER", "").strip(),
+    )
 
 
 @pytest.fixture(scope="session")
