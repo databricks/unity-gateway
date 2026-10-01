@@ -378,6 +378,74 @@ def test_worker_error_does_not_interrupt_other_requests(
     assert len(ids) == len(set(ids))
 
 
+def test_worker_output_failure_stops_dispatch_and_cancels_queued_searches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_failure = BrokenPipeError("client closed response pipe")
+    queued_cancelled = threading.Event()
+
+    class FailingOutput(ResponseOutput):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fail_writes = threading.Event()
+
+        def write(self, text: str) -> int:
+            if self.fail_writes.is_set():
+                raise output_failure
+            return super().write(text)
+
+        def flush(self) -> None:
+            pass
+
+    original_cancel = mcp_web_search.Future.cancel
+
+    def observe_cancel(future: Any) -> bool:
+        cancelled = original_cancel(future)
+        if cancelled:
+            queued_cancelled.set()
+        return cancelled
+
+    monkeypatch.setattr(mcp_web_search.Future, "cancel", observe_cancel)
+    monkeypatch.setenv("DATABRICKS_HOST", "https://example.databricks.com")
+    monkeypatch.setenv("UCODE_WEB_SEARCH_MODEL", "search-model")
+    monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+    monkeypatch.setattr(mcp_web_search, "get_databricks_token", lambda *_: "test-token")
+    http = ControlledHttp()
+    monkeypatch.setattr(mcp_web_search.urllib_request, "urlopen", http.open)
+    active = [http.add(f"active-{index}") for index in range(4)]
+    queued = http.add("queued", blocked=False)
+    rejected = http.add("rejected", blocked=False)
+    running = RunningServer(http)
+    failing_output = FailingOutput()
+    running.stdout = failing_output
+    running.thread.start()
+    try:
+        for index in range(4):
+            running.search(index, f"active-{index}")
+        for gate in active:
+            assert gate.started.wait(WAIT_SECONDS)
+        running.search(4, "queued")
+        running.catalog("queued-confirmation")
+
+        failing_output.fail_writes.set()
+        active[0].release.set()
+        assert queued_cancelled.wait(WAIT_SECONDS), "output failure did not cancel queued work"
+        running.search(5, "rejected")
+
+        http.release_all()
+        running.thread.join(WAIT_SECONDS)
+        assert not running.thread.is_alive()
+        assert running.error is output_failure
+        assert not queued.started.is_set()
+        assert not rejected.started.is_set()
+        assert set(http.calls) == {f"active-{index}" for index in range(4)}
+    finally:
+        http.release_all()
+        running.stdin.close()
+        running.thread.join(WAIT_SECONDS)
+        assert not running.thread.is_alive(), "serve() leaked its worker shutdown thread"
+
+
 def test_eof_drains_active_and_queued_searches(server: RunningServer) -> None:
     gates = [server.http.add(f"query-{index}") for index in range(6)]
     for index in range(6):

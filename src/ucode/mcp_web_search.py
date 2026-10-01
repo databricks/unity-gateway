@@ -241,6 +241,7 @@ def serve(
 
     response_lock = threading.Lock()
     pending: dict[Any, Future[dict[str, Any] | None]] = {}
+    output_failure: BaseException | None = None
 
     def write_response(response: dict[str, Any] | None) -> None:
         if response is not None:
@@ -248,20 +249,34 @@ def serve(
             out_stream.flush()
 
     def finish_request(req_id: Any, future: Future[dict[str, Any] | None]) -> None:
+        nonlocal output_failure
         try:
             response = future.result()
         except Exception:
             response = _error(req_id, -32603, "Internal error")
+        to_cancel: list[Future[dict[str, Any] | None]] = []
         with response_lock:
             # Cancellation or ID reuse must not deliver an old worker's response.
             if pending.get(req_id) is future:
                 del pending[req_id]
-                write_response(response)
+                try:
+                    write_response(response)
+                except BaseException as exc:
+                    if output_failure is None:
+                        output_failure = exc
+                        to_cancel = list(pending.values())
+                        pending.clear()
+        # cancel() invokes callbacks synchronously, so do not hold response_lock.
+        for pending_future in to_cancel:
+            pending_future.cancel()
 
     # Keep blocking auth/HTTP off the input loop, including while all workers are busy.
     executor = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_SEARCHES)
     try:
         for line in in_stream:
+            with response_lock:
+                if output_failure is not None:
+                    raise output_failure
             line = line.strip()
             if not line:
                 continue
@@ -296,14 +311,21 @@ def serve(
             if req.get("method") == "tools/call":
                 req_id = req["id"]
                 with response_lock:
+                    if output_failure is not None:
+                        raise output_failure
                     future = executor.submit(_handle_request, req, search_enabled=search_enabled)
                     pending[req_id] = future
                 future.add_done_callback(lambda done, req_id=req_id: finish_request(req_id, done))
             else:
                 response = _handle_request(req, search_enabled=search_enabled)
                 with response_lock:
+                    if output_failure is not None:
+                        raise output_failure
                     write_response(response)
         executor.shutdown(wait=True)
+        with response_lock:
+            if output_failure is not None:
+                raise output_failure
     except BaseException:
         with response_lock:
             pending.clear()
