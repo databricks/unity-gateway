@@ -15,9 +15,18 @@ from urllib.parse import urlparse
 import questionary
 from rich.table import Table
 
-from ucode.agents import claude, codex, copilot, cursor, gemini, opencode
+from ucode.agents import (
+    AGENTS,
+    CURSOR_MCP_CLIENT,
+    McpClient,
+    McpServer,
+    claude,
+    codex,
+    copilot,
+    gemini,
+)
 from ucode.config_io import restore_file
-from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
+from ucode.constants import MCP_USER_SCOPE
 from ucode.databricks import (
     AIGW_MCP_SERVICES_SEGMENT,
     AuthTokenError,
@@ -36,12 +45,7 @@ from ucode.databricks import (
     workspace_hostname,
 )
 from ucode.mcp_connection_login import connection_from_url
-from ucode.mcp_oauth import (
-    CLAUDE_CODE_OAUTH_CLIENT_ID,
-    CODEX_CLI_OAUTH_CLIENT_ID,
-    CURSOR_OAUTH_CLIENT_ID,
-    oauth_client_available,
-)
+from ucode.mcp_oauth import oauth_client_available
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_api import (
     _SKILLS_WALK_DEADLINE_SECONDS,
@@ -72,61 +76,23 @@ MCP_VECTOR_SEARCH_PATH = "/api/2.0/mcp/vector-search/"
 MCP_FUNCTIONS_PATH = "/api/2.0/mcp/functions/"
 MCP_SQL_PATH = "/api/2.0/mcp/sql"
 
-# Per-agent published OAuth app used for the direct-HTTP MCP connection login.
-# These agents can pin a pre-registered OAuth client and drive the `/oidc` login
-# themselves (so `/mcp` shows "needs authentication" / Cursor shows a login), which
-# is a much better experience than the stdio proxy for a connection-backed service:
-#   - Claude Code: `claude mcp add --transport http --client-id <app>`.
-#   - Cursor: a `url` server with an `auth.CLIENT_ID` in ~/.cursor/mcp.json.
-# Both need the app *published on the workspace* (checked per-workspace via
-# `oauth_client_available`) and its loopback `/callback` redirect registered on
-# `/oidc` — which lacks dynamic client registration, so a pre-registered client is
-# required.
-#   - Codex: a `url` server with `oauth.client_id` (`codex mcp add --oauth-client-id
-#     --oauth-resource`). Codex derives a per-MCP-server callback path
-#     (`/callback/<hash>`) that can't be pre-registered, so `/oidc` accepts it via the
-#     `enableCodexLoopbackRedirectExemption` SAFE flag (loopback + codex-cli only).
-# Agents whose `mcp add` accepts only a static bearer, not an OAuth client — gemini
-# (`--header`) — stay on the stdio proxy even where their apps exist; add one here
-# (with its registration branch below) once its CLI can pin a client.
-AGENT_OAUTH_CLIENT = {
-    "claude": CLAUDE_CODE_OAUTH_CLIENT_ID,
-    "cursor": CURSOR_OAUTH_CLIENT_ID,
-    "codex": CODEX_CLI_OAUTH_CLIENT_ID,
-}
+# Every client ug can register MCP servers into, in the order ug lists them: the agents whose
+# `Agent.mcp` is set, then the MCP-only clients. Each value is an `McpClient` owning its own
+# registration, removal, batched write, and `mcp list` parsing, so nothing below branches on a
+# client's name — core decides *what* to register and the client decides *how*.
+MCP_CLIENTS: dict[str, McpClient] = {
+    name: agent.mcp for name, agent in AGENTS.items() if agent.mcp is not None
+} | {"cursor": CURSOR_MCP_CLIENT}
 
-MCP_CLIENTS = {
-    "claude": {
-        "binary": "claude",
-        "display": "Claude Code",
-        "list_command": "claude mcp list",
-    },
-    "codex": {
-        "binary": "codex",
-        "display": "Codex",
-        "list_command": "codex mcp list",
-    },
-    "gemini": {
-        "binary": "gemini",
-        "display": "Gemini CLI",
-        "list_command": "gemini mcp list",
-    },
-    "opencode": {
-        "binary": "opencode",
-        "display": "OpenCode",
-        "list_command": "opencode mcp list",
-    },
-    "copilot": {
-        "binary": "copilot",
-        "display": "GitHub Copilot CLI",
-        "list_command": "copilot mcp list",
-    },
-    "cursor": {
-        "binary": "cursor-agent",
-        "display": "Cursor",
-        "list_command": "cursor-agent mcp list",
-    },
-}
+
+def _mcp_client(client: str) -> McpClient:
+    """The registered client, or an actionable error for a name ug doesn't know."""
+    target = MCP_CLIENTS.get(client)
+    if target is None:
+        raise RuntimeError(f"Unsupported MCP client '{client}'.")
+    return target
+
+
 SKILLS_MCP_KIND = "skills"
 SKILLS_MCP_SERVER_NAME = "databricks-skill-registry"
 SKILL_LOCATIONS_BY_CLIENT_KEY = "skill_locations_by_client"
@@ -274,7 +240,7 @@ def remove_gemini_mcp_server(name: str) -> bool:
 
 
 def available_mcp_clients() -> list[str]:
-    return [client for client, spec in MCP_CLIENTS.items() if shutil.which(str(spec["binary"]))]
+    return [client for client, target in MCP_CLIENTS.items() if shutil.which(target.binary)]
 
 
 def configured_mcp_clients(state: dict, installed_clients: list[str]) -> list[str]:
@@ -289,17 +255,17 @@ def configured_mcp_clients(state: dict, installed_clients: list[str]) -> list[st
     ]
 
 
-def _oauth_http_client(client: str, workspace: str, *, use_pat: bool) -> str | None:
+def _oauth_http_client(client: McpClient, workspace: str, *, use_pat: bool) -> str | None:
     """The published OAuth app id to register a **native HTTP+OAuth** MCP entry against for
-    ``client`` (Claude Code / Cursor), or ``None`` to use the stdio ``ug mcp-proxy`` instead.
+    ``client`` (Claude Code / Cursor / Codex), or ``None`` to use the stdio ``ug mcp-proxy`` instead.
 
-    Native HTTP+OAuth fits only an agent that pins an OAuth client (``AGENT_OAUTH_CLIENT``), on a
-    non-PAT run (PAT has no interactive OAuth), whose workspace actually publishes that client.
+    Native HTTP+OAuth fits only a client that pins an OAuth client (``McpClient.oauth_client_id``),
+    on a non-PAT run (PAT has no interactive OAuth), whose workspace actually publishes that client.
     This is the client-level half of the choice, shared by the per-server
-    (:func:`configure_client_mcp_server`) and batched (:func:`_managed_mcp_entry`) paths. It is
+    (:func:`configure_client_mcp_server`) and batched (:func:`apply_mcp_server_changes`) paths. It is
     URL-independent, so callers can compute it once per (client, workspace); the per-server half
     (:func:`_native_oauth_http_entry`) decides whether a *specific* URL warrants the native entry."""
-    oauth_client = AGENT_OAUTH_CLIENT.get(client)
+    oauth_client = client.oauth_client_id
     if oauth_client is not None and not use_pat and oauth_client_available(workspace, oauth_client):
         return oauth_client
     return None
@@ -332,6 +298,33 @@ def _native_oauth_http_entry(
     return oauth_client
 
 
+def _mcp_server_for(
+    url: str,
+    workspace: str,
+    profile: str | None,
+    *,
+    use_pat: bool,
+    always_load: bool,
+    oauth_client: str | None,
+) -> McpServer:
+    """The :class:`McpServer` to hand a client, with the delivery already chosen.
+
+    Connection-backed AI Gateway MCP services carry the OAuth app id so the client registers a
+    direct HTTP server and drives the connection login natively (see `_native_oauth_http_entry`).
+    Everything else falls to the stdio ``ug mcp-proxy`` argv, which is always built: no-login
+    mcp-services (e.g. web_search), non-mcp-services URLs, the skills registry, PAT auth, clients
+    without a mapped OAuth client, and workspaces where the mapped client isn't published.
+
+    ``oauth_client`` is the precomputed :func:`_oauth_http_client` result for this (client,
+    workspace), so a batch loop probes ``oauth_client_available`` once per client, not per server."""
+    return McpServer(
+        url=url,
+        proxy_argv=tuple(build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)),
+        oauth_client=_native_oauth_http_entry(oauth_client, url, workspace, profile),
+        always_load=always_load,
+    )
+
+
 def configure_client_mcp_server(
     client: str,
     name: str,
@@ -342,78 +335,22 @@ def configure_client_mcp_server(
     use_pat: bool = False,
     always_load: bool = False,
 ) -> list[str]:
-    # Connection-backed AI Gateway MCP services register as a direct HTTP server so the agent drives
-    # the connection login natively (see `_native_oauth_http_entry`). Everything else keeps the stdio
-    # proxy: no-login mcp-services (e.g. web_search), non-mcp-services URLs, the skills registry, PAT
-    # auth, agents without a mapped OAuth client, and workspaces where the mapped client isn't published.
-    http_client = _native_oauth_http_entry(
-        _oauth_http_client(client, workspace, use_pat=use_pat), url, workspace, profile
+    """Register (or replace) one MCP server for one client, returning the scopes an existing entry
+    was removed from. ug core picks the delivery; the client records it however it must."""
+    target = _mcp_client(client)
+    server = _mcp_server_for(
+        url,
+        workspace,
+        profile,
+        use_pat=use_pat,
+        always_load=always_load,
+        oauth_client=_oauth_http_client(target, workspace, use_pat=use_pat),
     )
-    if http_client is not None:
-        if client == "claude":
-            removed_scopes = [
-                scope
-                for scope in MCP_CLEANUP_SCOPES
-                if claude.remove_claude_mcp_server(name, scope)
-            ]
-            claude.add_claude_http_mcp_server(name, url, client_id=http_client)
-            return removed_scopes
-        if client == "cursor":
-            removed = cursor.write_http_mcp_server_config(name, url, client_id=http_client)
-            return [MCP_USER_SCOPE] if removed else []
-        if client == "codex":
-            removed = remove_codex_mcp_server(name)
-            add_codex_http_mcp_server(name, url, client_id=http_client)
-            return [MCP_USER_SCOPE] if removed else []
-
-    # Every other case registers the `ug mcp-proxy ...` stdio command; the proxy
-    # forwards to `url` and refreshes the Databricks token itself. Only the
-    # per-client registration syntax differs. `always_load` (skills registry) is
-    # a Claude-only hint to load the server's tools at session start; other
-    # clients don't support it and ignore it.
-    argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
-    if client == "claude":
-        removed_scopes = [
-            scope for scope in MCP_CLEANUP_SCOPES if claude.remove_claude_mcp_server(name, scope)
-        ]
-        claude.add_claude_mcp_server(name, argv, MCP_USER_SCOPE, always_load=always_load)
-        return removed_scopes
-    if client == "codex":
-        removed = remove_codex_mcp_server(name)
-        add_codex_mcp_server(name, argv)
-        return [MCP_USER_SCOPE] if removed else []
-    if client == "gemini":
-        removed = remove_gemini_mcp_server(name)
-        add_gemini_mcp_server(name, argv)
-        return [MCP_USER_SCOPE] if removed else []
-    if client == "opencode":
-        removed = opencode.write_mcp_server_config(name, argv)
-        return [MCP_USER_SCOPE] if removed else []
-    if client == "copilot":
-        removed = copilot.write_mcp_server_config(name, argv)
-        return [MCP_USER_SCOPE] if removed else []
-    if client == "cursor":
-        removed = cursor.write_mcp_server_config(name, argv)
-        return [MCP_USER_SCOPE] if removed else []
-    raise RuntimeError(f"Unsupported MCP client '{client}'.")
+    return target.add(name, server)
 
 
 def remove_client_mcp_server(client: str, name: str) -> list[str]:
-    if client == "claude":
-        return [
-            scope for scope in MCP_CLEANUP_SCOPES if claude.remove_claude_mcp_server(name, scope)
-        ]
-    if client == "codex":
-        return [MCP_USER_SCOPE] if remove_codex_mcp_server(name) else []
-    if client == "gemini":
-        return [MCP_USER_SCOPE] if remove_gemini_mcp_server(name) else []
-    if client == "opencode":
-        return [MCP_USER_SCOPE] if opencode.remove_mcp_server_config(name) else []
-    if client == "copilot":
-        return [MCP_USER_SCOPE] if copilot.remove_mcp_server_config(name) else []
-    if client == "cursor":
-        return [MCP_USER_SCOPE] if cursor.remove_mcp_server_config(name) else []
-    raise RuntimeError(f"Unsupported MCP client '{client}'.")
+    return _mcp_client(client).remove(name)
 
 
 def revert_mcp_configs(state: dict) -> dict[str, bool]:
@@ -436,6 +373,8 @@ def revert_mcp_configs(state: dict) -> dict[str, bool]:
     # OpenCode MCP entries live in the normal OpenCode config and are restored
     # by the main agent config revert. Copilot stores MCP servers separately,
     # so restore its original MCP file after removing per-server entries above.
+    # Deliberately still a named special case here rather than behind `McpClient`: no other client
+    # keeps a whole-file MCP backup, so the Copilot agent PR absorbs this into Copilot's own code.
     results["copilot"] = restore_file(
         copilot.COPILOT_MCP_CONFIG_PATH,
         copilot.COPILOT_MCP_BACKUP_PATH,
@@ -1007,7 +946,9 @@ def _agent_managed_file_entries(
     that name ``agent`` in their ``clients`` are included.
     """
     claude_oauth = (
-        _oauth_http_client("claude", workspace, use_pat=use_pat) if agent == "claude" else None
+        _oauth_http_client(MCP_CLIENTS["claude"], workspace, use_pat=use_pat)
+        if agent == "claude"
+        else None
     )
     entries: dict[str, dict] = {}
     for server in servers:
@@ -1099,7 +1040,7 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         try:
             written = module.reconcile_managed_mcp(state, entries)
         except RuntimeError as exc:
-            print_warning(f"Could not update {MCP_CLIENTS[agent]['display']} managed MCP: {exc}")
+            print_warning(f"Could not update {MCP_CLIENTS[agent].display} managed MCP: {exc}")
             written = False
         if is_eligible and written:
             delivered.update((name, agent) for name in entries)
@@ -1124,7 +1065,7 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
             except RuntimeError as exc:
                 print_warning(
                     f"Failed to unregister managed `{name}` from "
-                    f"{MCP_CLIENTS[client]['display']}: {exc}"
+                    f"{MCP_CLIENTS[client].display}: {exc}"
                 )
 
     # User-scope path for what the managed files don't deliver, diffed so drops apply. Removals key on
@@ -1338,62 +1279,6 @@ def _discover_selected_mcp_sources(
     }
 
 
-# Every MCP client's module, keyed by client name — the batched-writer dispatch table (the MCP
-# analogue of `configure_tool`'s per-agent `write_tool_config`). Each module exposes
-# ``write_user_mcp_servers(add, remove)`` and an entry builder used by `_managed_mcp_entry`.
-_MCP_CLIENT_MODULES = {
-    "claude": claude,
-    "codex": codex,
-    "gemini": gemini,
-    "copilot": copilot,
-    "cursor": cursor,
-    "opencode": opencode,
-}
-
-
-def _managed_mcp_entry(
-    client: str,
-    url: str,
-    workspace: str,
-    profile: str | None,
-    *,
-    use_pat: bool,
-    always_load: bool,
-    http_client: str | None,
-) -> dict:
-    """The user-scope config entry one MCP server registers as for ``client``, mirroring the
-    delivery choice in :func:`configure_client_mcp_server` so a batched direct write matches exactly
-    what the per-server CLI/config path would have registered.
-
-    ``http_client`` is the precomputed :func:`_oauth_http_client` result for this (client,
-    workspace) (or ``None``); the caller computes it once per client so the batch loop doesn't
-    re-probe ``oauth_client_available`` per server. HTTP+OAuth applies here only when that client is
-    set AND this server's URL is a *connection-backed* mcp-service (:func:`_native_oauth_http_entry`);
-    a no-login service (e.g. web_search) or any other URL uses the stdio proxy."""
-    native_client = _native_oauth_http_entry(http_client, url, workspace, profile)
-    if client == "claude":
-        if native_client is not None:
-            return claude.managed_mcp_entry(url)
-        argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
-        return claude.user_stdio_mcp_entry(argv, always_load=always_load)
-    if client == "cursor" and native_client is not None:
-        return cursor.build_http_mcp_server_entry(url, native_client)
-    if client == "codex" and native_client is not None:
-        return codex.managed_mcp_http_entry(url, native_client)
-    argv = build_mcp_proxy_argv(url, workspace, profile, use_pat=use_pat)
-    if client == "codex":
-        return codex.managed_mcp_entry(argv)
-    if client == "cursor":
-        return cursor.build_mcp_server_entry(argv)
-    if client == "gemini":
-        return gemini.build_mcp_server_entry(argv)
-    if client == "copilot":
-        return copilot.build_mcp_server_entry(argv)
-    if client == "opencode":
-        return opencode.build_mcp_server_entry(argv)
-    raise RuntimeError(f"Unsupported MCP client '{client}'.")
-
-
 def apply_mcp_server_changes(
     original_servers: list[dict],
     working_servers: list[dict],
@@ -1412,16 +1297,18 @@ def apply_mcp_server_changes(
     # clobber each other. Each per-server add/remove is a `claude mcp`/`codex mcp`/`gemini mcp`
     # subprocess (~0.3-0.8s) or its own config read-modify-write, so a large set is dozens of them
     # run serially. Agents named in ``batch_agents`` (the workspace-managed path, which can register
-    # a whole `system.ai` schema) instead collapse their whole diff into ONE write each via the
-    # per-agent ``write_user_mcp_servers`` (the MCP analogue of models' `write_tool_config`). Every
-    # agent by default, and any agent not listed, keeps the per-server CLI/config path.
+    # a whole `system.ai` schema) instead collapse their whole diff into ONE write each via
+    # ``McpClient.apply`` (the MCP analogue of models' `write_tool_config`). Every agent by default,
+    # and any agent not listed, keeps the per-server CLI/config path.
     work: dict[str, list[Callable[[], object]]] = {client: [] for client in clients}
-    batched = {c for c in clients if c in batch_agents and c in _MCP_CLIENT_MODULES}
-    batch_add: dict[str, dict[str, dict]] = {c: {} for c in batched}
+    batched = {c for c in clients if c in batch_agents and c in MCP_CLIENTS}
+    batch_add: dict[str, dict[str, McpServer]] = {c: {} for c in batched}
     batch_remove: dict[str, set[str]] = {c: set() for c in batched}
     # The HTTP+OAuth choice is URL-independent, so probe `oauth_client_available` once per batched
-    # client here rather than once per server inside the entry-building loop below.
-    batch_http_client = {c: _oauth_http_client(c, workspace, use_pat=use_pat) for c in batched}
+    # client here rather than once per server inside the loop below.
+    batch_oauth = {
+        c: _oauth_http_client(MCP_CLIENTS[c], workspace, use_pat=use_pat) for c in batched
+    }
     changed = False
 
     for name, server in original_by_name.items():
@@ -1447,14 +1334,13 @@ def apply_mcp_server_changes(
         always_load = server.get("kind") == SKILLS_MCP_KIND
         for client in clients:
             if client in batched:
-                batch_add[client][name] = _managed_mcp_entry(
-                    client,
+                batch_add[client][name] = _mcp_server_for(
                     url,
                     workspace,
                     profile,
                     use_pat=use_pat,
                     always_load=always_load,
-                    http_client=batch_http_client[client],
+                    oauth_client=batch_oauth[client],
                 )
             else:
                 work[client].append(
@@ -1468,8 +1354,8 @@ def apply_mcp_server_changes(
         adds, removes = batch_add[client], batch_remove[client]
         if not adds and not removes:
             continue
-        module = _MCP_CLIENT_MODULES[client]
-        work[client].append(lambda m=module, a=adds, r=removes: m.write_user_mcp_servers(a, r))
+        target = MCP_CLIENTS[client]
+        work[client].append(lambda t=target, a=adds, r=removes: t.apply(a, r))
 
     _run_client_work(work)
     return changed
@@ -1516,7 +1402,7 @@ def _run_client_work(work: dict[str, list[Callable[[], object]]]) -> None:
 
 def _batch_remove_stale_servers(batch_remove: dict[str, set[str]]) -> set[str]:
     """Remove ``{client: {names}}`` from each agent's user-scope config in ONE read-modify-write per
-    client (the ``write_user_mcp_servers`` batched path), instead of a ``claude mcp remove`` /
+    client (the ``McpClient.apply`` batched path), instead of a ``claude mcp remove`` /
     ``codex mcp remove`` subprocess per (client, name) — for Claude that was one subprocess per
     cleanup scope per name, so the ~11 servers the ``system.ai`` default registers turned a workspace
     switch into dozens of serial subprocesses and a multi-second stall. ``ug`` only ever *adds* MCP
@@ -1531,14 +1417,14 @@ def _batch_remove_stale_servers(batch_remove: dict[str, set[str]]) -> set[str]:
 
     def remove_for(client: str, names: set[str]) -> None:
         try:
-            client_removed = _MCP_CLIENT_MODULES[client].write_user_mcp_servers({}, names)
+            client_removed = MCP_CLIENTS[client].apply({}, names)
         except (RuntimeError, subprocess.TimeoutExpired, OSError) as exc:
             print_warning(
-                f"Failed to remove stale MCP entries from {MCP_CLIENTS[client]['display']}: {exc}"
+                f"Failed to remove stale MCP entries from {MCP_CLIENTS[client].display}: {exc}"
             )
             return
         with lock:
-            removed.update(client_removed or set())
+            removed.update(client_removed)
 
     work: dict[str, list[Callable[[], object]]] = {}
     for client, names in batch_remove.items():
@@ -1555,7 +1441,7 @@ def purge_cross_workspace_mcp_residue(state: dict, workspace: str) -> None:
     batch_remove: dict[str, set[str]] = {}
 
     def queue_removal(client: str, name: str) -> None:
-        if client in installed and client in _MCP_CLIENT_MODULES:
+        if client in installed and client in MCP_CLIENTS:
             batch_remove.setdefault(client, set()).add(name)
 
     raw_mcp_servers = list(state.get("mcp_servers") or [])
@@ -1792,11 +1678,11 @@ def setup_mcp_clients(
 
     if not quiet:
         print_section(section)
-        client_names = ", ".join(str(MCP_CLIENTS[client]["display"]) for client in clients)
+        client_names = ", ".join(MCP_CLIENTS[client].display for client in clients)
         print_note(f"{action_note}: {client_names}")
     for client in missing_clients:
         print_warning(
-            f"{MCP_CLIENTS[client]['display']} is configured in ucode but not installed; "
+            f"{MCP_CLIENTS[client].display} is configured in ucode but not installed; "
             "skipping MCP config."
         )
     return workspace, profile, clients
@@ -2102,7 +1988,7 @@ def _mcp_change_summary(added: list[str], removed: list[str], clients: list[str]
     """Human-readable one-liner describing what the MCP add/replace flow just saved, e.g.
     `Added 2, removed 1 MCP server across Claude Code, Codex`. Falls back to a
     plain `Saved` when only client bindings changed (no add/remove)."""
-    client_names = ", ".join(str(MCP_CLIENTS[c]["display"]) for c in clients if c in MCP_CLIENTS)
+    client_names = ", ".join(MCP_CLIENTS[c].display for c in clients if c in MCP_CLIENTS)
     parts: list[str] = []
     if added:
         parts.append(f"added {len(added)}")
@@ -2125,7 +2011,7 @@ def _prompt_for_mcp_removal(servers: list[dict]) -> list[str] | None:
         name = _server_name(server)
         if not name:
             continue
-        on_clients = [str(MCP_CLIENTS[c]["display"]) for c in _mcp_server_clients(server)]
+        on_clients = [MCP_CLIENTS[c].display for c in _mcp_server_clients(server)]
         title = f"{name} ({', '.join(on_clients)})" if on_clients else name
         choices.append(questionary.Choice(title=title, value=name, checked=False))
     if not choices:
@@ -2333,32 +2219,13 @@ def _parse_codex_mcp_list(output: str) -> dict[str, str]:
     return statuses
 
 
-def parse_mcp_list_output(client: str, output: str) -> dict[str, str]:
-    """Parse an agent's `mcp list` output into ``{server_name: live-state}`` (best-effort).
-
-    Parse the rows first, and read the output as "no servers configured" only when none parsed.
-    That check looks for phrases like "not found", which also appear inside a single server's
-    failure detail (``Failed to connect - HTTP 404 Not Found``), so checking it up front would
-    let one broken server empty the whole listing.
-    """
-    parsed = _parse_codex_mcp_list(output) if client == "codex" else _parse_health_mcp_list(output)
-    if not parsed and _is_missing_mcp_server_output(output):
-        return {}
-    return parsed
-
-
-def _run_mcp_list(client: str) -> str | None:
-    """Run an installed agent's `mcp list`, returning combined stdout+stderr, or None on failure.
+def _read_mcp_listing(argv: list[str], *, env: dict[str, str] | None = None) -> str | None:
+    """Run a client's `mcp list`, returning combined stdout+stderr with ANSI escapes stripped, or
+    None on failure.
 
     Best-effort and read-only: a missing binary, timeout, or non-zero exit yields None so the
     caller shows configured servers without live status rather than erroring out.
     """
-    spec = MCP_CLIENTS.get(client)
-    if not spec:
-        return None
-    argv = str(spec["list_command"]).split()
-    # Gemini reads its config from a pinned home dir, matching how ucode registers servers there.
-    env = _gemini_cli_env() if client == "gemini" else None
     try:
         result = subprocess_cross_os.run(
             argv,
@@ -2375,10 +2242,9 @@ def _run_mcp_list(client: str) -> str | None:
 
 def query_live_mcp_status(client: str) -> dict[str, str]:
     """Live ``{server_name: state}`` for one installed agent (empty if its listing can't be read)."""
-    output = _run_mcp_list(client)
-    if output is None:
-        return {}
-    return parse_mcp_list_output(client, output)
+    # Read-only and best-effort, so an unrecognized client is empty rather than an error.
+    target = MCP_CLIENTS.get(client)
+    return target.live_status() if target is not None else {}
 
 
 def _query_live_statuses(clients: list[str]) -> dict[str, dict[str, str]]:
@@ -2733,7 +2599,7 @@ def _skills_workspace(entry: dict) -> str:
 def _print_skills_summary(entry: dict) -> None:
     """Report the registered skills connection and how to start using it."""
     clients = [
-        str(MCP_CLIENTS[client]["display"])
+        MCP_CLIENTS[client].display
         for client in (entry.get("clients") or [])
         if client in MCP_CLIENTS
     ]
@@ -2754,7 +2620,7 @@ def _print_skills_summary(entry: dict) -> None:
         print_kv("Configured", ", ".join(clients) if clients else "none")
         workspace = _skills_workspace(entry)
         for client, locations in scopes.items():
-            display = str(MCP_CLIENTS[client]["display"])
+            display = MCP_CLIENTS[client].display
             print_kv(f"{display} URL", build_skills_mcp_url(workspace, locations))
             print_kv(f"{display} tools", _skills_tools_description(locations))
     print_note(
@@ -3045,7 +2911,7 @@ def _prompt_for_skill_removal(locations_by_client: dict[str, list[str]]) -> list
     )
     for location in ordered_locations:
         displays = [
-            str(MCP_CLIENTS[client]["display"])
+            MCP_CLIENTS[client].display
             for client, locations in locations_by_client.items()
             if location in locations
         ]

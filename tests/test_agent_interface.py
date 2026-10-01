@@ -12,7 +12,8 @@ import copy
 import pytest
 
 from ucode.agents import AGENTS, TOOL_SPECS, configure_tool
-from ucode.agents.interface import Agent, Models
+from ucode.agents.interface import Agent, McpClient, Models
+from ucode.mcp import MCP_CLIENTS
 
 # One state that gives every agent something to find, so `models()` is exercised with a
 # populated inventory and not only the empty case.
@@ -59,6 +60,11 @@ class TestAgentConformance:
         assert agent.install.binary
         assert agent.install.package
 
+    def test_declares_whether_it_takes_mcp_servers(self, tool):
+        # `mcp` has no default, so every agent states this outright rather than inheriting "no".
+        mcp = AGENTS[tool].mcp
+        assert mcp is None or isinstance(mcp, McpClient)
+
     @pytest.mark.parametrize("state", [{}, POPULATED_STATE], ids=["empty", "populated"])
     def test_models_returns_models_without_mutating_state(self, tool, state):
         given = copy.deepcopy(state)
@@ -81,6 +87,35 @@ class TestAgentConformance:
             label, outcome = row
             assert isinstance(label, str) and label
             assert isinstance(outcome, str) and outcome
+
+
+class TestMcpClientRegistry:
+    """The `McpClient` half of the contract: ug's MCP paths dispatch only through these objects."""
+
+    def test_lists_every_mcp_capable_agent_then_the_mcp_only_clients(self):
+        assert list(MCP_CLIENTS) == ["codex", "claude", "gemini", "opencode", "copilot", "cursor"]
+
+    @pytest.mark.parametrize("client", list(MCP_CLIENTS))
+    def test_satisfies_the_protocol(self, client):
+        target = MCP_CLIENTS[client]
+        assert isinstance(target, McpClient)
+        assert target.display and target.binary
+        # None means "always use the stdio proxy"; a string must be a real published app id.
+        assert target.oauth_client_id is None or target.oauth_client_id
+
+    def test_each_agents_client_is_the_registered_one(self):
+        for tool, agent in AGENTS.items():
+            assert agent.mcp is MCP_CLIENTS.get(tool)
+
+    def test_pi_takes_no_mcp_servers(self):
+        # Pi has no MCP support today, so it has no client and never appears in the registry.
+        assert AGENTS["pi"].mcp is None
+        assert "pi" not in MCP_CLIENTS
+
+    def test_cursor_is_an_mcp_client_but_not_an_agent(self):
+        # Cursor runs models on the user's own account, so ug configures none for it.
+        assert isinstance(MCP_CLIENTS["cursor"], McpClient)
+        assert "cursor" not in AGENTS
 
 
 class TestModelsSemantics:

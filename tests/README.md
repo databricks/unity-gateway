@@ -27,8 +27,11 @@ These are component checks, not live Windows coverage for every agent.
 `test_agent_interface.py` covers the `Agent` contract in `agents/interface.py` for every agent in
 the `AGENTS` registry: protocol conformance, install metadata, model inventories that never mutate
 state, the status semantics of the pinned starting model, and revert row shape. It also checks that
-an unknown agent name raises instead of configuring OpenCode. These are component checks over the
-shared dispatch; per-agent config writing stays in each `test_agent_<name>.py`.
+an unknown agent name raises instead of configuring OpenCode. It covers the `McpClient` half the
+same way, over `mcp.MCP_CLIENTS`: registry membership and order, protocol conformance, each agent's
+`mcp` being its registered client, Pi declaring none, and Cursor being an MCP client but not an
+agent. These are component checks over the shared dispatch; per-agent config writing stays in each
+`test_agent_<name>.py`, and the per-client MCP registration/entry/listing behavior in `test_mcp.py`.
 
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.

@@ -8,11 +8,23 @@ from unittest.mock import MagicMock
 import pytest
 
 from ucode import mcp
-from ucode.agents import claude
+from ucode.agents import claude, codex, cursor, gemini, opencode
+from ucode.agents.legacy import CURSOR_MCP_CLIENT, LEGACY_MCP_CLIENTS
+from ucode.mcp_oauth import CODEX_CLI_OAUTH_CLIENT_ID, CURSOR_OAUTH_CLIENT_ID
 
 WS = "https://example.databricks.com"
 CLAUDE_STATE = {"workspace": WS, "available_tools": ["claude"]}
-ALL_MCP_CLIENTS = ["claude", "codex", "gemini", "opencode", "copilot"]
+# Every MCP-capable agent. ug binds and lists clients in `mcp.MCP_CLIENTS` (registry) order,
+# which is the AGENTS order -- codex first -- so the expectations below use it too.
+ALL_MCP_CLIENTS = ["codex", "claude", "gemini", "opencode", "copilot"]
+
+
+def _client(name):
+    """The concrete `LegacyMcpClient` behind `mcp.MCP_CLIENTS[name]`.
+
+    Its `entry` / `parse_listing` helpers are the adapter's own API, not part of the `McpClient`
+    protocol ug core dispatches through, so tests reach for the adapter rather than the registry."""
+    return CURSOR_MCP_CLIENT if name == "cursor" else LEGACY_MCP_CLIENTS[name]
 
 
 class TestMcpChangeSummary:
@@ -113,13 +125,13 @@ class TestAddGeminiMcpServer:
 class TestCursorMcpClient:
     def test_cursor_registered_as_mcp_only_client(self):
         assert "cursor" in mcp.MCP_CLIENTS
-        assert mcp.MCP_CLIENTS["cursor"]["binary"] == "cursor-agent"
+        assert mcp.MCP_CLIENTS["cursor"].binary == "cursor-agent"
         assert "cursor" in mcp.MCP_ONLY_CLIENTS
 
     def test_configure_dispatches_proxy_argv_to_cursor_writer(self, monkeypatch):
         calls: list[tuple[str, list[str]]] = []
         monkeypatch.setattr(
-            mcp.cursor,
+            cursor,
             "write_mcp_server_config",
             lambda name, argv: calls.append((name, argv)) or False,
         )
@@ -130,7 +142,7 @@ class TestCursorMcpClient:
         assert calls == [("github", _proxy_argv())]
 
     def test_configure_reports_user_scope_on_replace(self, monkeypatch):
-        monkeypatch.setattr(mcp.cursor, "write_mcp_server_config", lambda name, argv: True)
+        monkeypatch.setattr(cursor, "write_mcp_server_config", lambda name, argv: True)
         assert mcp.configure_client_mcp_server("cursor", "github", GH_URL, WS, "p") == [
             mcp.MCP_USER_SCOPE
         ]
@@ -138,7 +150,7 @@ class TestCursorMcpClient:
     def test_remove_dispatches_to_cursor_remover(self, monkeypatch):
         calls: list[str] = []
         monkeypatch.setattr(
-            mcp.cursor, "remove_mcp_server_config", lambda name: calls.append(name) or True
+            cursor, "remove_mcp_server_config", lambda name: calls.append(name) or True
         )
         assert mcp.remove_client_mcp_server("cursor", "github-mcp") == [mcp.MCP_USER_SCOPE]
         assert calls == ["github-mcp"]
@@ -237,12 +249,12 @@ class TestConfigureClientMcpServer:
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
         monkeypatch.setattr(
-            mcp.cursor,
+            cursor,
             "write_http_mcp_server_config",
             lambda name, url, client_id: http_calls.append((name, url, client_id)) or False,
         )
         monkeypatch.setattr(
-            mcp.cursor,
+            cursor,
             "write_mcp_server_config",
             lambda name, argv: proxy_calls.append((name, argv)) or False,
         )
@@ -251,7 +263,7 @@ class TestConfigureClientMcpServer:
     def test_cursor_aigw_service_registers_http_when_client_available(self, monkeypatch):
         http_calls, proxy_calls = self._capture_cursor(monkeypatch, cursor_client_available=True)
         mcp.configure_client_mcp_server("cursor", "github", AIGW_MCP_URL, WS, "p")
-        assert http_calls == [("github", AIGW_MCP_URL, mcp.CURSOR_OAUTH_CLIENT_ID)]
+        assert http_calls == [("github", AIGW_MCP_URL, CURSOR_OAUTH_CLIENT_ID)]
         assert proxy_calls == []
 
     def test_cursor_aigw_service_falls_back_to_proxy_without_client(self, monkeypatch):
@@ -289,7 +301,7 @@ class TestConfigureClientMcpServer:
     def test_codex_aigw_service_registers_http_when_client_available(self, monkeypatch):
         http_calls, proxy_calls = self._capture_codex(monkeypatch, codex_client_available=True)
         mcp.configure_client_mcp_server("codex", "github", AIGW_MCP_URL, WS, "p")
-        assert http_calls == [("github", AIGW_MCP_URL, mcp.CODEX_CLI_OAUTH_CLIENT_ID)]
+        assert http_calls == [("github", AIGW_MCP_URL, CODEX_CLI_OAUTH_CLIENT_ID)]
         assert proxy_calls == []
 
     def test_codex_aigw_service_falls_back_to_proxy_without_client(self, monkeypatch):
@@ -328,7 +340,7 @@ class TestConfigureClientMcpServer:
         monkeypatch.setattr(mcp, "remove_gemini_mcp_server", lambda name: False)
         mcp.configure_client_mcp_server("gemini", "github", AIGW_MCP_URL, WS, "p")
         assert len(proxy_calls) == 1
-        assert probed == []  # AGENT_OAUTH_CLIENT has no entry for gemini → no probe
+        assert probed == []  # gemini's client has no oauth_client_id → no probe
 
 
 class TestMcpPicker:
@@ -658,8 +670,9 @@ class TestApplyMcpServerChanges:
         assert add["system-ai-github"]["type"] == "http" and add["system-ai-github"]["url"] == url
 
 
-class TestManagedMcpEntry:
-    """`_managed_mcp_entry` builds the exact on-disk entry each agent's CLI/config would write.
+class TestBatchedMcpEntry:
+    """`McpClient.entry` builds the exact on-disk entry each agent's CLI/config would write, from the
+    `McpServer` ug core hands it (`_mcp_server_for`, which makes the proxy-vs-native-OAuth choice).
 
     Locks in the hand-built HTTP+OAuth and `alwaysLoad` shapes (verified against the real CLIs) so a
     future CLI change that desyncs them fails a test instead of silently."""
@@ -669,93 +682,64 @@ class TestManagedMcpEntry:
     def _argv(self):
         return mcp.build_mcp_proxy_argv(self.MCP_URL, WS, None, use_pat=False)
 
-    def test_claude_stdio_when_no_http_client(self):
-        e = mcp._managed_mcp_entry(
-            "claude", self.MCP_URL, WS, None, use_pat=False, always_load=False, http_client=None
+    def _entry(self, client, url=None, *, always_load=False, oauth_client=None):
+        server = mcp._mcp_server_for(
+            url or self.MCP_URL,
+            WS,
+            None,
+            use_pat=False,
+            always_load=always_load,
+            oauth_client=oauth_client,
         )
+        return _client(client).entry(server)
+
+    def test_claude_stdio_when_no_http_client(self):
+        e = self._entry("claude")
         assert e["type"] == "stdio"
-        assert e == mcp.claude.user_stdio_mcp_entry(self._argv())
+        assert e == claude.user_stdio_mcp_entry(self._argv())
 
     def test_claude_http_when_http_client_and_mcp_services_url(self, monkeypatch):
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
-        e = mcp._managed_mcp_entry(
-            "claude",
-            self.MCP_URL,
-            WS,
-            None,
-            use_pat=False,
-            always_load=False,
-            http_client="claude-code",
-        )
-        assert e == mcp.claude.managed_mcp_entry(self.MCP_URL)
+        e = self._entry("claude", oauth_client="claude-code")
+        assert e == claude.managed_mcp_entry(self.MCP_URL)
         assert e["type"] == "http" and e["url"] == self.MCP_URL
 
     def test_claude_stdio_when_http_client_but_non_mcp_services_url(self):
-        # http_client set, but a non-connection URL still uses the stdio proxy.
+        # oauth_client set, but a non-connection URL still uses the stdio proxy.
         url = f"{WS}/api/2.0/mcp/vector-search/main.docs"
-        e = mcp._managed_mcp_entry(
-            "claude", url, WS, None, use_pat=False, always_load=False, http_client="claude-code"
-        )
-        assert e["type"] == "stdio"
+        assert self._entry("claude", url, oauth_client="claude-code")["type"] == "stdio"
 
     def test_claude_stdio_when_no_login_mcp_service(self, monkeypatch):
-        # A no-login mcp-service (web_search) uses the proxy even with an http_client, so it works
+        # A no-login mcp-service (web_search) uses the proxy even with an oauth_client, so it works
         # without a connection-login OAuth prompt (AIGTWY-4856).
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: False)
         url = f"{WS}/ai-gateway/mcp-services/system.ai.web_search"
-        e = mcp._managed_mcp_entry(
-            "claude", url, WS, None, use_pat=False, always_load=False, http_client="claude-code"
-        )
-        assert e["type"] == "stdio"
+        assert self._entry("claude", url, oauth_client="claude-code")["type"] == "stdio"
 
     def test_claude_always_load_stdio_entry(self):
-        e = mcp._managed_mcp_entry(
-            "claude", self.MCP_URL, WS, None, use_pat=False, always_load=True, http_client=None
-        )
+        e = self._entry("claude", always_load=True)
         assert e.get("alwaysLoad") is True and e["type"] == "stdio"
-        assert e == mcp.claude.user_stdio_mcp_entry(self._argv(), always_load=True)
+        assert e == claude.user_stdio_mcp_entry(self._argv(), always_load=True)
 
     def test_cursor_http_entry_uses_client_id(self, monkeypatch):
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
-        e = mcp._managed_mcp_entry(
-            "cursor",
-            self.MCP_URL,
-            WS,
-            None,
-            use_pat=False,
-            always_load=False,
-            http_client="cursor-oauth",
-        )
-        assert e == mcp.cursor.build_http_mcp_server_entry(self.MCP_URL, "cursor-oauth")
+        e = self._entry("cursor", oauth_client="cursor-oauth")
+        assert e == cursor.build_http_mcp_server_entry(self.MCP_URL, "cursor-oauth")
 
     def test_codex_http_entry_uses_client_id(self, monkeypatch):
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
-        e = mcp._managed_mcp_entry(
-            "codex",
-            self.MCP_URL,
-            WS,
-            None,
-            use_pat=False,
-            always_load=False,
-            http_client="codex-cli",
-        )
-        assert e == mcp.codex.managed_mcp_http_entry(self.MCP_URL, "codex-cli")
+        e = self._entry("codex", oauth_client="codex-cli")
+        assert e == codex.managed_mcp_http_entry(self.MCP_URL, "codex-cli")
 
     def test_other_agents_use_stdio_proxy_entry(self):
         argv = self._argv()
-        assert mcp._managed_mcp_entry(
-            "codex", self.MCP_URL, WS, None, use_pat=False, always_load=False, http_client=None
-        ) == mcp.codex.managed_mcp_entry(argv)
-        assert mcp._managed_mcp_entry(
-            "gemini", self.MCP_URL, WS, None, use_pat=False, always_load=False, http_client=None
-        ) == mcp.gemini.build_mcp_server_entry(argv)
-        assert mcp._managed_mcp_entry(
-            "opencode", self.MCP_URL, WS, None, use_pat=False, always_load=False, http_client=None
-        ) == mcp.opencode.build_mcp_server_entry(argv)
+        assert self._entry("codex") == codex.managed_mcp_entry(argv)
+        assert self._entry("gemini") == gemini.build_mcp_server_entry(argv)
+        assert self._entry("opencode") == opencode.build_mcp_server_entry(argv)
 
 
 class TestApplySkillsMcpChanges:
@@ -877,7 +861,7 @@ class TestConfigureMcpCommand:
                 "name": "github-mcp",
                 "url": f"{WS}/api/2.0/mcp/external/github-mcp",
                 "auth": "proxy",
-                "clients": ["claude", "codex", "gemini", "opencode", "copilot"],
+                "clients": ["codex", "claude", "gemini", "opencode", "copilot"],
             }
         ]
 
@@ -1392,14 +1376,14 @@ class TestConfigureMcpCommand:
         assert mcp.configure_mcp_command() == 0
 
         output = capsys.readouterr().out
-        assert "Configuring for: Claude Code, Codex" in output
-        assert [call[0] for call in configured] == ["claude", "codex"]
+        assert "Configuring for: Codex, Claude Code" in output
+        assert [call[0] for call in configured] == ["codex", "claude"]
         assert saved_states[-1]["mcp_servers"] == [
             {
                 "name": "databricks-sql",
                 "url": f"{WS}/api/2.0/mcp/sql",
                 "auth": "proxy",
-                "clients": ["claude", "codex"],
+                "clients": ["codex", "claude"],
             }
         ]
 
@@ -1699,7 +1683,7 @@ class TestConfigureMcpFromLocation:
 
         assert mcp.configure_mcp_command(location="system.ai") == 0
 
-        assert [c[0] for c in configured] == ["claude", "codex"]
+        assert [c[0] for c in configured] == ["codex", "claude"]
         assert saved_states[-1]["mcp_servers"] == [
             {
                 "name": "system-ai-github",
@@ -3915,8 +3899,10 @@ github           dbexec      repo run mcp start-single github     -    -    enab
 
 
 class TestParseMcpListOutput:
+    """Each client parses its own `mcp list` output (`McpClient.live_status`'s other half)."""
+
     def test_parses_claude_health_output(self):
-        assert mcp.parse_mcp_list_output("claude", CLAUDE_MCP_LIST) == {
+        assert _client("claude").parse_listing(CLAUDE_MCP_LIST) == {
             "github": mcp.LIVE_CONNECTED,
             "databricks": mcp.LIVE_FAILED,
             "approval-demo": mcp.LIVE_FAILED,
@@ -3925,7 +3911,7 @@ class TestParseMcpListOutput:
 
     def test_claude_header_line_is_not_a_server(self):
         # The "Checking MCP server health…" header must not become a bogus entry.
-        assert "Checking" not in mcp.parse_mcp_list_output("claude", CLAUDE_MCP_LIST)
+        assert "Checking" not in _client("claude").parse_listing(CLAUDE_MCP_LIST)
 
     @pytest.mark.parametrize(
         "failure_detail",
@@ -3938,7 +3924,7 @@ class TestParseMcpListOutput:
             CLAUDE_MCP_LIST
             + f"broken: https://h/mcp (HTTP) - ✘ Failed to connect — {failure_detail}\n"
         )
-        parsed = mcp.parse_mcp_list_output("claude", output)
+        parsed = _client("claude").parse_listing(output)
         assert parsed["github"] == mcp.LIVE_CONNECTED
         assert parsed["web_search"] == mcp.LIVE_CONNECTED
         assert parsed["broken"] == mcp.LIVE_FAILED
@@ -3947,21 +3933,21 @@ class TestParseMcpListOutput:
         # A real "no servers" listing must still come back empty, including for codex, whose
         # table parser would otherwise read the message itself as a server name.
         for client in ("claude", "gemini", "codex"):
-            assert mcp.parse_mcp_list_output(client, "No MCP servers configured.") == {}
+            assert _client(client).parse_listing("No MCP servers configured.") == {}
 
     def test_parses_codex_enabled_disabled_table(self):
-        assert mcp.parse_mcp_list_output("codex", CODEX_MCP_LIST) == {
+        assert _client("codex").parse_listing(CODEX_MCP_LIST) == {
             "accounts-admin": mcp.LIVE_ENABLED,
             "chrome-devtools": mcp.LIVE_DISABLED,
             "github": mcp.LIVE_ENABLED,
         }
 
     def test_empty_listing_returns_no_servers(self):
-        assert mcp.parse_mcp_list_output("gemini", "No MCP servers configured.") == {}
+        assert _client("gemini").parse_listing("No MCP servers configured.") == {}
 
     def test_colonless_glyph_shape_is_parsed_best_effort(self):
-        parsed = mcp.parse_mcp_list_output(
-            "gemini", "🟢 alpha - Ready (3 tools)\n🔴 beta - Disconnected\n"
+        parsed = _client("gemini").parse_listing(
+            "🟢 alpha - Ready (3 tools)\n🔴 beta - Disconnected\n"
         )
         assert parsed == {"alpha": mcp.LIVE_CONNECTED, "beta": mcp.LIVE_FAILED}
 
@@ -3978,10 +3964,10 @@ class TestParseMcpListOutput:
         # A healthy server whose name/command contains "error" must not be misread as failed:
         # the ✔ glyph is authoritative.
         out = "error-mcp: /opt/error-runner start - ✔ Connected\n"
-        assert mcp.parse_mcp_list_output("claude", out) == {"error-mcp": mcp.LIVE_CONNECTED}
+        assert _client("claude").parse_listing(out) == {"error-mcp": mcp.LIVE_CONNECTED}
 
     def test_keyword_fallback_used_when_no_glyph(self):
-        assert mcp.parse_mcp_list_output("claude", "foo: bar - Failed to connect\n") == {
+        assert _client("claude").parse_listing("foo: bar - Failed to connect\n") == {
             "foo": mcp.LIVE_FAILED
         }
 
@@ -3993,12 +3979,12 @@ class TestParseMcpListOutput:
             "system-ai-github: https://ws/ai-gateway/mcp-services/system.ai.github (HTTP) "
             "- ! Needs authentication\n"
         )
-        assert mcp.parse_mcp_list_output("claude", out) == {"system-ai-github": mcp.LIVE_NEEDS_AUTH}
+        assert _client("claude").parse_listing(out) == {"system-ai-github": mcp.LIVE_NEEDS_AUTH}
 
     def test_authentication_failure_glyph_stays_failed(self):
         # A hard ✘ failure whose message happens to mention authentication is still a failure.
         out = "svc: https://ws/x (HTTP) - ✘ Failed to connect — 401 authentication error\n"
-        assert mcp.parse_mcp_list_output("claude", out) == {"svc": mcp.LIVE_FAILED}
+        assert _client("claude").parse_listing(out) == {"svc": mcp.LIVE_FAILED}
 
 
 class TestListMcpCommand:

@@ -52,6 +52,9 @@ from .args import LaunchOptions as LaunchOptions
 from .args import explicit_model_arg_value as explicit_model_arg_value
 from .interface import Agent as Agent
 from .interface import ConfigureRequest as ConfigureRequest
+from .interface import McpClient as McpClient
+from .interface import McpServer as McpServer
+from .legacy import CURSOR_MCP_CLIENT as CURSOR_MCP_CLIENT
 from .legacy import LEGACY_AGENTS
 
 # The agents ug drives, in the order ug lists them. One entry per agent, and the only place
@@ -83,7 +86,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {name: module.SPEC for name, module in _MODULE
 # Model-routing agents ucode configures end to end. Cursor is deliberately NOT
 # here: it runs models on the user's own Cursor account, so `normalize_tool`
 # rejects it and the model-config paths never see it. The `configure`/MCP flows
-# handle "cursor" separately as an MCP-only client (see MCP_ONLY_CLIENTS).
+# handle "cursor" separately as an MCP-only client (`CURSOR_MCP_CLIENT`).
 TOOL_ALIASES = {
     "codex": "codex",
     "claude": "claude",
