@@ -1,8 +1,8 @@
 """Claude managed-config CUJs for repository scenarios 1, 3, and 5.
 
-Cases 1 and 5 use the managed-config fixture seam to cover model-discovery shapes that the shared
-workspace does not publish. Case 3 runs against the selected workspace's published config, which
-must be the dedicated CUJ3 managed workspace.
+The admin CodingAgentConfig is fetched once from the managed workspace, its Claude model source is
+set to the dedicated test MPS, and the result is reused through ``UCODE_MANAGED_CONFIG_STUB`` in
+each isolated session. Normalization, config writers, the gateway, and Claude Code remain real.
 """
 
 import json
@@ -12,7 +12,6 @@ import pytest
 from utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
 from utils.managed import (
     fetch_managed_config_stub,
-    fetch_published_managed_config,
     is_managed_config_control_plane_cache,
     use_managed_config_stub,
 )
@@ -23,7 +22,7 @@ from utils.provider_catalog import (
 )
 from utils.terminal import AgentTerminal
 
-pytestmark = pytest.mark.claude
+pytestmark = [pytest.mark.managed_fixture, pytest.mark.claude]
 
 
 @pytest.fixture(scope="module")
@@ -47,14 +46,9 @@ def _managed_claude_provider_catalog(workspace):
     )
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def _managed_claude_config(live_session, _managed_claude_config_stub):
     use_managed_config_stub(live_session, _managed_claude_config_stub)
-
-
-@pytest.fixture(scope="module")
-def _published_managed_config(workspace):
-    return fetch_published_managed_config(workspace, os.environ["DATABRICKS_BEARER"])
 
 
 def _claude_state_and_agent_files(session):
@@ -130,8 +124,6 @@ def _assert_managed_provider_in_picker(
     ), screen
 
 
-@pytest.mark.managed_fixture
-@pytest.mark.usefixtures("_managed_claude_config")
 @pytest.mark.tui
 def test_case_01_managed_claude_uses_admin_discovery_after_configure(
     live_session, workspace, _managed_claude_provider_catalog
@@ -168,8 +160,6 @@ def test_case_01_managed_claude_uses_admin_discovery_after_configure(
     _assert_managed_provider_in_picker(session, workspace, screen, _managed_claude_provider_catalog)
 
 
-@pytest.mark.managed_fixture
-@pytest.mark.usefixtures("_managed_claude_config")
 @pytest.mark.tui
 def test_case_01_fresh_managed_claude_uses_admin_discovery(
     live_session, workspace, _managed_claude_provider_catalog
@@ -196,12 +186,7 @@ def test_case_01_fresh_managed_claude_uses_admin_discovery(
     _assert_managed_provider_in_picker(session, workspace, screen, _managed_claude_provider_catalog)
 
 
-@pytest.mark.managed
-@pytest.mark.cuj3
-@pytest.mark.workspace_isolated
-def test_case_03_managed_claude_rejects_provider_override(
-    live_session, workspace, claude_provider, _published_managed_config
-):
+def test_managed_fixture_claude_rejects_provider_override(live_session, workspace, claude_provider):
     """Scenario: configure managed Claude, then pass --provider.
 
     Expected: ug rejects the override without changing agent-owned state/files.
@@ -230,11 +215,8 @@ def test_case_03_managed_claude_rejects_provider_override(
     _assert_rejected_before_claude_started(session, result, before)
 
 
-@pytest.mark.managed
-@pytest.mark.cuj3
-@pytest.mark.workspace_isolated
-def test_case_03_fresh_managed_claude_rejects_provider_override(
-    live_session, workspace, claude_provider, _published_managed_config
+def test_managed_fixture_fresh_claude_rejects_provider_override(
+    live_session, workspace, claude_provider
 ):
     """Scenario: pass --provider while launching managed Claude from fresh state.
 
@@ -257,8 +239,6 @@ def test_case_03_fresh_managed_claude_rejects_provider_override(
     _assert_rejected_before_claude_started(session, result)
 
 
-@pytest.mark.managed_fixture
-@pytest.mark.usefixtures("_managed_claude_config")
 def test_case_05_managed_claude_rejects_model_location_override(
     live_session, workspace, parent_schema
 ):
@@ -290,8 +270,6 @@ def test_case_05_managed_claude_rejects_model_location_override(
     _assert_rejected_before_claude_started(session, result, before)
 
 
-@pytest.mark.managed_fixture
-@pytest.mark.usefixtures("_managed_claude_config")
 def test_case_05_fresh_managed_claude_rejects_model_location_override(
     live_session, workspace, parent_schema
 ):

@@ -294,9 +294,10 @@ def test_model_discovery_cases_match_current_launch_contract():
     # design document. Configured/fresh variants share their scenario number.
     expected_cases = set(range(1, 15))
     assert set(seen) == expected_cases
-    assert len(seen) == 24
+    # CUJ3 covers both agents in one complete schema-pointer journey each.
+    assert len(seen) == 22
     for case in expected_cases:
-        assert seen.count(case) == (1 if 7 <= case <= 10 else 2), case
+        assert seen.count(case) == (1 if case in {3, 4} or 7 <= case <= 10 else 2), case
 
 
 @pytest.mark.parametrize("payload", [{}, {"coding_agent_configs": []}, []])
