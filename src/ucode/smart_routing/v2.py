@@ -479,8 +479,11 @@ def launch_claude(
     launch_model_args: Callable[[list[str], str | None], list[str]],
     model_name: Callable[[str], str],
 ) -> NoReturn:
-    """Launch Claude with first-prompt or subagent-only smart routing."""
+    """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
+
+    if os.name != "nt":
+        from ucode.smart_routing import claude_pty
 
     workspace = state.get("workspace")
     if not workspace:
@@ -532,20 +535,16 @@ def launch_claude(
     }
     sync_smart_routing_hooks(settings, routing_state, enabled=True)
     if route_first_prompt:
-        from ucode.smart_routing import claude_pty
-
         sync_first_prompt_hook(settings, hook_executable)
-        model_setting = _ClaudeModelSettingGuard(user_settings_path)
+    model_setting = _ClaudeModelSettingGuard(user_settings_path)
 
-        def route_prompt(prompt: str) -> claude_pty.FirstPromptRoute:
-            decision = _route_claude_prompt(state, token, prompt, model_ids)
-            return claude_pty.FirstPromptRoute(
-                model=model_name(_unwrapped_claude_model_id(decision.model)),
-                display_model=catalog.model_id_to_display_name.get(decision.model, decision.model),
-                rationale=decision.rationale,
-            )
-    else:
-        model_setting = None
+    def route_prompt(prompt: str) -> claude_pty.FirstPromptRoute:
+        decision = _route_claude_prompt(state, token, prompt, model_ids)
+        return claude_pty.FirstPromptRoute(
+            model=model_name(_unwrapped_claude_model_id(decision.model)),
+            display_model=catalog.model_id_to_display_name.get(decision.model, decision.model),
+            rationale=decision.rationale,
+        )
 
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -575,7 +574,6 @@ def launch_claude(
                 *remaining,
             ]
             if route_first_prompt:
-                assert model_setting is not None
                 returncode = claude_pty.run_claude_pty(
                     argv,
                     route_prompt=route_prompt,
@@ -593,8 +591,7 @@ def launch_claude(
                     proc.send_signal(signal.SIGINT)
                     returncode = proc.wait()
     finally:
-        if model_setting is not None:
-            model_setting.restore()
+        model_setting.restore()
     sys.exit(returncode)
 
 
