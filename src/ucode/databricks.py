@@ -857,44 +857,36 @@ def _refresh_windows_path() -> None:
 def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
     system = platform.system()
     try:
-        if system != "Windows":
-            if system == "Darwin" and shutil.which("brew"):
-                run(["brew", brew_subcommand, "databricks/tap/databricks"], timeout=240)
-            elif shutil.which("curl"):
-                run(
-                    ["sh", "-c", f"curl -fsSL {UNIX_DATABRICKS_INSTALL_URL} | sudo sh"],
-                    timeout=240,
+        if system == "Windows":
+            winget = shutil.which("winget")
+            if winget is None:
+                raise RuntimeError(
+                    "WinGet is required on Windows. Install App Installer, then run "
+                    f"`winget install --exact --id {WINDOWS_DATABRICKS_WINGET_PACKAGE}`."
                 )
-            elif shutil.which("wget"):
-                run(
-                    ["sh", "-c", f"wget -qO- {UNIX_DATABRICKS_INSTALL_URL} | sudo sh"],
-                    timeout=240,
-                )
-            else:
-                raise RuntimeError("Neither curl nor wget is available.")
-            return
-
-        winget = shutil.which("winget")
-        if winget is None:
-            raise RuntimeError(
-                "WinGet is required on Windows. Install App Installer, then run "
-                f"`winget install --exact --id {WINDOWS_DATABRICKS_WINGET_PACKAGE}`."
+            run(
+                [
+                    winget,
+                    brew_subcommand,
+                    "--exact",
+                    "--id",
+                    WINDOWS_DATABRICKS_WINGET_PACKAGE,
+                    "--source",
+                    "winget",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ],
+                timeout=240,
             )
-        run(
-            [
-                winget,
-                brew_subcommand,
-                "--exact",
-                "--id",
-                WINDOWS_DATABRICKS_WINGET_PACKAGE,
-                "--source",
-                "winget",
-                "--accept-package-agreements",
-                "--accept-source-agreements",
-            ],
-            timeout=240,
-        )
-        _refresh_windows_path()
+            _refresh_windows_path()
+        elif system == "Darwin" and shutil.which("brew"):
+            run(["brew", brew_subcommand, "databricks/tap/databricks"], timeout=240)
+        elif shutil.which("curl"):
+            run(["sh", "-c", f"curl -fsSL {UNIX_DATABRICKS_INSTALL_URL} | sudo sh"], timeout=240)
+        elif shutil.which("wget"):
+            run(["sh", "-c", f"wget -qO- {UNIX_DATABRICKS_INSTALL_URL} | sudo sh"], timeout=240)
+        else:
+            raise RuntimeError("Neither curl nor wget is available.")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
         message = "Failed to install/upgrade Databricks CLI automatically."
         if system == "Windows" and isinstance(exc, RuntimeError):
