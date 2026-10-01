@@ -2574,6 +2574,7 @@ def _managed_smart_routing_enabled(managed: dict | None, tool: str) -> bool:
     agent_config = ((managed or {}).get("enabled_agents") or {}).get(tool) or {}
     if agent_config.get("smart_routing_enabled") is not True:
         return False
+    # TODO(AIGTWY-4385): Remove this workaround when Claude Code supports smart routing on Windows.
     return tool != "claude" or os.name != "nt"
 
 
