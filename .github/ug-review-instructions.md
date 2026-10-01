@@ -6,23 +6,29 @@ by the pull request. Prioritize correctness and user impact over formatting nits
 
 ## Review priorities
 
-1. **Keep the implementation small and reusable.** Flag dead or redundant code,
-   unnecessary parameters or branches, duplicated constants and helpers, agent-specific
-   behavior placed in shared CLI orchestration, and calls to private helpers across module
-   boundaries. Prefer an existing helper or established module boundary when one is visible.
+1. **Keep the pull request small, focused, and reusable.** Favor fewer than 500 total
+   changed lines (additions plus deletions). For a larger change, suggest a stack when it would
+   make review and revert safer. Separate incidental refactors from feature work; behavior being
+   refactored should already have coverage before the refactor. Flag dead or redundant code,
+   unnecessary branches, duplicated helpers, agent-specific logic in shared orchestration, and
+   private helpers called across module boundaries. Prefer an existing helper or module boundary.
 2. **Make intent explicit.** Flag ambiguous tuple or boolean returns, unclear names,
    dense compound conditions, surprising defaults, and comments that fail to explain why.
    Prefer dataclasses or enums for shapes whose fields or valid states are otherwise easy to
    mix up. Do not demand comments for self-explanatory code.
-3. **Require realistic evidence.** Check that externally observable configure, launch,
-   authentication, command-forwarding, recovery, and revert changes have meaningful tests.
-   Unit tests do not replace a user-journey test when the behavior crosses agent or gateway
-   boundaries. Look for relevant failure cases and provider/auth/platform combinations, not
-   exhaustive low-value tests.
-4. **Preserve compatibility and stage risky rollouts.** Look for removed CLI options,
+3. **Require realistic, valuable evidence.** Ask whether every test adds distinct value and
+   suggest removing redundant or low-signal cases. Avoid tests built from excessive monkeypatching;
+   when many patches are needed to simulate the behavior, prefer an integration test. Check that
+   externally observable configure, launch, authentication, command-forwarding, recovery, and
+   revert changes have meaningful coverage. For behavior changes, require the PR description to
+   state `BEFORE: <behavior>` and `AFTER: <behavior>`, ideally with screenshots. Look for relevant
+   failure cases and provider/auth/platform combinations rather than exhaustive test matrices.
+4. **Preserve compatibility and avoid hard-blocking users.** Look for removed CLI options,
    changed config shapes, reliance on unreleased backend behavior, and regressions to existing
-   agents, relayed authentication, non-interactive callers, or older installations. Prefer
-   graceful fallback, deprecation, or an explicit feature gate when rollout is not atomic.
+   agents, relayed authentication, non-interactive callers, or older installations. Favor behavior
+   that lets the user continue safely: skip malformed optional configuration or degrade gracefully
+   when possible, and reserve hard failures for cases where continuing would be unsafe or wrong.
+   Prefer fallback, deprecation, or an explicit feature gate when rollout is not atomic.
 5. **Follow the complete stateful user journey.** Reason about repeated runs and transitions:
    workspace A to B, personal to managed configuration, one agent to another, configure to
    launch to revert, success to partial failure, and enabled to disabled. Unity Gateway must
