@@ -3124,7 +3124,6 @@ class TestConfigureAgentFlag:
         mock_install.assert_not_called()
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
-            explicit_agent_option="--agents",
         )
 
     def test_agents_flag_normalizes_aliases_and_dedupes(self):
@@ -3137,7 +3136,6 @@ class TestConfigureAgentFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
-            explicit_agent_option="--agents",
         )
 
     def test_workspace_flag_calls_configure_with_workspace(self):
@@ -3170,7 +3168,6 @@ class TestConfigureAgentFlag:
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
             workspaces=[("https://first.com", None)],
-            explicit_agent_option="--agents",
         )
 
     def test_agent_and_workspace_flags_call_configure_with_both(self):
@@ -3185,11 +3182,7 @@ class TestConfigureAgentFlag:
             )
         assert result.exit_code == 0, result.output
         mock_install.assert_called_once_with("claude", strict=True)
-        mock_cfg.assert_called_once_with(
-            "claude",
-            workspaces=[("https://first.com", None)],
-            explicit_agent_option="--agent",
-        )
+        mock_cfg.assert_called_once_with("claude", workspaces=[("https://first.com", None)])
 
     def test_deprecated_workspaces_alias_forwards_single_workspace(self):
         # `--workspaces` is a hidden alias of `--workspace` and takes one URL.
@@ -3232,7 +3225,7 @@ class TestConfigureAgentFlag:
             result = runner.invoke(app, ["configure", "--agent", "claude"])
         assert result.exit_code == 0, result.output
         mock_install.assert_called_once_with("claude", strict=True)
-        mock_cfg.assert_called_once_with("claude", explicit_agent_option="--agent")
+        mock_cfg.assert_called_once_with("claude")
 
     @pytest.mark.parametrize("flag", ["--enable-fable", "--disable-fable"])
     def test_fable_toggles_removed(self, flag):
@@ -3285,7 +3278,6 @@ class TestConfigureAgentFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
-            explicit_agent_option="--agents",
             databricks_ai_tools_enabled=True,
         )
 
@@ -3309,7 +3301,6 @@ class TestConfigureAgentFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
-            explicit_agent_option="--agents",
         )
 
     def test_agent_flag_normalizes_alias(self):
@@ -3320,7 +3311,7 @@ class TestConfigureAgentFlag:
         ):
             result = runner.invoke(app, ["configure", "--agent", "claude-code"])
         assert result.exit_code == 0, result.output
-        mock_cfg.assert_called_once_with("claude", explicit_agent_option="--agent")
+        mock_cfg.assert_called_once_with("claude")
 
     def test_agent_flag_rejects_unknown(self):
         with (
@@ -3396,7 +3387,6 @@ class TestConfigureMcpFlag:
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once_with(
             selected_tools=["claude"],
-            explicit_agent_option="--agents",
         )
         mock_mcp.assert_called_once_with(services={"system.ai.slack", "system.ai.github"})
 
@@ -3617,60 +3607,6 @@ class TestConfigureAgentsSelection:
         assert installed == ["claude", "codex"]
         assert configured == ["claude", "codex"]
 
-    @pytest.mark.parametrize("tool", ["claude", "gemini"])
-    def test_agent_option_is_rejected_for_managed_agents(self, monkeypatch, tool):
-        state = {**MINIMAL_STATE, "available_tools": []}
-        managed = {"enabled_agents": {"claude": {}}}
-        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
-        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (managed, False))
-        monkeypatch.setattr(
-            cli_mod,
-            "configure_single_tool",
-            lambda *a, **k: pytest.fail("managed agent selection must fail before configuration"),
-        )
-
-        with pytest.raises(RuntimeError, match="--agent is only supported for self-managed agents"):
-            cli_mod.configure_workspace_command(
-                tool=tool,
-                workspaces=[("https://w.com", None)],
-                explicit_agent_option="--agent",
-            )
-
-    def test_agents_option_is_rejected_for_managed_agents(self, monkeypatch):
-        state = {**MINIMAL_STATE, "available_tools": []}
-        managed = {"enabled_agents": {"claude": {}, "codex": {}}}
-        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
-        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (managed, False))
-        monkeypatch.setattr(
-            cli_mod,
-            "configure_selected_tools",
-            lambda *a, **k: pytest.fail("managed agent selection must fail before configuration"),
-        )
-
-        with pytest.raises(
-            RuntimeError, match="--agents is only supported for self-managed agents"
-        ):
-            cli_mod.configure_workspace_command(
-                selected_tools=["claude"],
-                workspaces=[("https://w.com", None)],
-                explicit_agent_option="--agents",
-            )
-
-    def test_cursor_agents_option_is_rejected_for_managed_agents(self, monkeypatch):
-        state = {**MINIMAL_STATE, "available_tools": []}
-        managed = {"enabled_agents": {"claude": {}}}
-        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda: None)
-        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
-        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (managed, False))
-
-        result = runner.invoke(
-            app,
-            ["configure", "--agents", "cursor", "--workspace", "https://w.com"],
-        )
-
-        assert result.exit_code == 1
-        assert "--agents is only supported for self-managed agents" in _strip_ansi(result.output)
-
     def test_managed_summary_separates_configured_and_failed_agents(self, capsys, monkeypatch):
         # An enabled agent that failed to configure is listed under "Failed to configure",
         # not as a configured coding agent.
@@ -3801,11 +3737,12 @@ class TestConfigureAgentsSelection:
         install_ai_tools = MagicMock()
         monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", install_ai_tools)
 
-        assert (
-            cli_mod.configure_workspace_command(tool="codex", workspaces=[("https://w.com", None)])
-            == 0
+        result = runner.invoke(
+            app, ["configure", "--agent", "codex", "--workspace", "https://w.com"]
         )
 
+        assert result.exit_code == 0, result.output
+        assert "(Provider: Databricks)" in _strip_ansi(result.output)
         refresh.assert_called_once_with(state, force_refresh=True)
         configure.assert_called_once_with("codex", state, parent_schema="main.models")
         install_ai_tools.assert_called_once_with(["codex"], state, force_refresh=False)
@@ -3852,9 +3789,7 @@ class TestConfigureAgentsSelection:
 
         assert (
             cli_mod.configure_workspace_command(
-                selected_tools=["claude"],
-                workspaces=[("https://w.com", None)],
-                explicit_agent_option="--agents",
+                selected_tools=["claude"], workspaces=[("https://w.com", None)]
             )
             == 0
         )
@@ -4276,7 +4211,6 @@ class TestConfigureProfilesFlag:
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
             workspaces=[("https://first.databricks.com", "DEFAULT")],
-            explicit_agent_option="--agents",
         )
 
     def test_profiles_flag_with_agent(self):
@@ -4291,7 +4225,6 @@ class TestConfigureProfilesFlag:
         mock_cfg.assert_called_once_with(
             "claude",
             workspaces=[("https://first.databricks.com", "DEFAULT")],
-            explicit_agent_option="--agent",
         )
 
     def test_use_pat_forwarded_and_skip_validate_ignored(self):
@@ -4317,7 +4250,6 @@ class TestConfigureProfilesFlag:
         mock_cfg.assert_called_once_with(
             selected_tools=["claude", "codex"],
             workspaces=[("https://first.databricks.com", "DEFAULT")],
-            explicit_agent_option="--agents",
             use_pat=True,
         )
 
