@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -242,14 +243,32 @@ def _check_ug() -> Check:
 # ── orchestration ──────────────────────────────────────────────────────────
 
 
+def _run_inspector(name: str, fn: Callable[[], Check | list[Check] | None]) -> list[Check]:
+    try:
+        result = fn()
+    except Exception as exc:  # noqa: BLE001 - one inspector must not suppress the rest
+        return [Check(name, "error", f"check could not run: {type(exc).__name__}: {exc}")]
+    if result is None:
+        return []
+    if isinstance(result, Check):
+        return [result]
+    return result
+
+
 def _gather_checks() -> list[Check]:
-    checks: list[Check] = [_check_uv(), _check_npm(), _check_databricks_cli(), _check_workspace()]
-    # These return None when they don't apply (no workspace, no env collision),
-    # so drop the Nones before display.
-    optional = [_check_databricks_auth(), _check_anthropic_env_collision()]
-    checks.extend(c for c in optional if c is not None)
-    checks.extend(_check_agent_clis())
-    checks.append(_check_ug())
+    inspectors: list[tuple[str, Callable[[], Check | list[Check] | None]]] = [
+        ("uv", _check_uv),
+        ("npm", _check_npm),
+        ("Databricks CLI", _check_databricks_cli),
+        ("Workspace", _check_workspace),
+        ("Databricks auth", _check_databricks_auth),
+        ("Claude auth env", _check_anthropic_env_collision),
+        ("Coding agents", _check_agent_clis),
+        ("ug", _check_ug),
+    ]
+    checks: list[Check] = []
+    for name, fn in inspectors:
+        checks.extend(_run_inspector(name, fn))
     return checks
 
 
@@ -258,20 +277,27 @@ def doctor() -> int:
     console.print(heading("ug doctor"))
     console.print()
 
+    # Piped input must never apply fixes; prompt only on a real tty.
+    interactive = sys.stdin is not None and sys.stdin.isatty()
     checks = _gather_checks()
     problems = 0
     applied = 0
+    unresolved_errors = 0
     for check in checks:
         glyph, kind = _BADGES[check.status]
         console.print(f"  {status_badge(glyph, kind)} {label(check.name)}: {check.detail}")
         if check.status in ("warn", "error"):
             problems += 1
-        if check.suggestion is None:
+        if check.status == "error":
+            unresolved_errors += 1
+        if check.suggestion is None or not interactive:
             continue
         if prompt_yes_no_default(f"    {check.suggestion.prompt}", default=False):
             if check.suggestion.apply():
                 print_success(f"{check.name}: fixed")
                 applied += 1
+                if check.status == "error":
+                    unresolved_errors -= 1
             else:
                 print_warning(f"{check.name}: fix did not complete")
 
@@ -281,4 +307,4 @@ def doctor() -> int:
     else:
         noun = "issue" if problems == 1 else "issues"
         print_note(f"{problems} {noun} found; {applied} fix(es) applied.")
-    return 0
+    return 1 if unresolved_errors else 0
