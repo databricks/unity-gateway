@@ -45,9 +45,10 @@ def test_managed_integration_ci_is_blocking():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     managed, gate = workflow.read_text().split("\n  managed:\n", 1)[1].split("\n  cujs:\n", 1)
     assert "continue-on-error:" not in managed
+    assert "not workspace_isolated" in managed
     needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", gate)
     assert needs is not None
-    assert "managed" in {job.strip() for job in needs.group(1).split(",")}
+    assert {"cuj3", "managed"} <= {job.strip() for job in needs.group(1).split(",")}
     assert (
         "if: ${{ always() && (github.event_name != 'pull_request' || "
         "github.event.pull_request.head.repo.full_name == github.repository) }}"
@@ -60,6 +61,19 @@ def test_windows_integration_ci_uses_shared_claude_version():
 
     assert "  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.280' }}" in contents
     assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
+
+
+def test_cuj3_integration_ci_uses_the_dedicated_managed_workspace():
+    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+    cuj3 = workflow.read_text().split("\n  cuj3:\n", 1)[1].split("\n  opencode:\n", 1)[0]
+
+    assert "agent: [claude, codex]" in cuj3
+    assert "secrets.UG_CUJ3_WORKSPACE" in cuj3
+    assert "secrets.UG_CUJ_SP_CLIENT_ID" in cuj3
+    assert "secrets.UG_CUJ_SP_CLIENT_SECRET" in cuj3
+    assert 'INSTALL_BOTH_AGENTS: "true"' in cuj3
+    assert "TEST_MARKER: managed and cuj3 and workspace_isolated and ${{ matrix.agent }}" in cuj3
+    assert "inputs.suite != 'tui'" in cuj3
 
 
 @pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
@@ -77,6 +91,7 @@ def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_resul
             "smoke",
             "full",
             "cuj7",
+            "cuj3",
             "managed",
         )
     }
@@ -102,6 +117,47 @@ def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_resul
         assert "All selected integration jobs passed:" in result.stdout
 
 
+@pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
+@pytest.mark.parametrize("cuj3_result", ["success", "failure", "cancelled", "skipped"])
+def test_integration_ci_gate_requires_selected_cuj3_jobs(suite, cuj3_result):
+    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+    gate = workflow.read_text().split("\n  cujs:\n", 1)[1]
+    script = re.search(r"          python3 - <<'PY'\n(.*?)          PY", gate, re.DOTALL)
+    assert script is not None
+    results = {
+        job: {"result": "success"}
+        for job in (
+            "installation",
+            "workspace",
+            "smoke",
+            "full",
+            "cuj7",
+            "cuj3",
+            "managed",
+        )
+    }
+    results["cuj3"]["result"] = cuj3_result
+    for job in {
+        "installation": ("workspace", "smoke", "full", "cuj7", "cuj3"),
+        "smoke": ("full", "cuj7", "cuj3"),
+        "tui": ("smoke", "cuj3"),
+    }.get(suite, ()):
+        results[job]["result"] = "skipped"
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script.group(1))],
+        env={"RESULTS": json.dumps(results), "SUITE": suite},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if suite in {"full", "live"} and cuj3_result != "success":
+        assert result.returncode != 0
+        assert "Integration jobs did not pass: cuj3" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "All selected integration jobs passed:" in result.stdout
+
+
 @pytest.mark.parametrize("suite", ["full", "live", "tui", "smoke", "installation"])
 def test_integration_ci_gate_requires_cuj7_for_live_suites(suite):
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
@@ -116,6 +172,7 @@ def test_integration_ci_gate_requires_cuj7_for_live_suites(suite):
             "smoke",
             "full",
             "cuj7",
+            "cuj3",
             "managed",
         )
     }
@@ -220,8 +277,12 @@ def test_model_discovery_cases_match_current_launch_contract():
             case = int(match.group(1))
             seen.append(case)
             marks = module_marks | _markers(node.decorator_list)
-            expected = {"managed_fixture"} if case <= 6 else {"live"}
+            expected = (
+                {"managed"} if case in {3, 4} else ({"managed_fixture"} if case <= 6 else {"live"})
+            )
             assert marks & {"managed_fixture", "managed", "live"} == expected, node.name
+            if case in {3, 4}:
+                assert {"managed", "cuj3", "workspace_isolated"} <= marks, node.name
             assert marks & {"claude", "codex"} == ({"claude"} if case % 2 else {"codex"}), node.name
             assert not any(arg.arg == "configured" for arg in node.args.args), node.name
             for value in ast.walk(node):
@@ -233,9 +294,10 @@ def test_model_discovery_cases_match_current_launch_contract():
     # design document. Configured/fresh variants share their scenario number.
     expected_cases = set(range(1, 15))
     assert set(seen) == expected_cases
-    assert len(seen) == 24
+    # CUJ3 covers both agents in one complete schema-pointer journey each.
+    assert len(seen) == 22
     for case in expected_cases:
-        assert seen.count(case) == (1 if 7 <= case <= 10 else 2), case
+        assert seen.count(case) == (1 if case in {3, 4} or 7 <= case <= 10 else 2), case
 
 
 @pytest.mark.parametrize("payload", [{}, {"coding_agent_configs": []}, []])

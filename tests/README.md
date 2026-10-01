@@ -115,10 +115,11 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure against a workspace that publishes a managed CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch. The Codex case also checks the shared catalog pointer, restart guidance, and a fresh bare app-server's visible model list |
+| CUJ3 managed Claude/Codex journeys | Configure in the dedicated managed workspace with the published schema pointers for models, MCPs, and skills | Each agent discovers the scoped inventory, excludes accessible decoys, invokes each compatible in-scope model, calls both MCP tools, and uses both downloaded skills with native execution evidence |
 | `test_case_01_*` | Launch managed Claude without defaults after configure and from fresh state | Claude receives the admin MPS header; its gateway cache and replacement picker match the independently fetched provider model IDs; catalog labels are preserved and a model appears in a numbered picker row |
-| `test_case_03_*`, `test_case_05_*` | Pass a provider or model-location override to managed Claude after configure and from fresh state | ug rejects the override before Claude starts and preserves agent-owned state |
+| Managed fixture Claude override cases (`test_managed_fixture_*`, `test_case_05_*`) | Pass a provider or model-location override to managed Claude after configure and from fresh state | ug rejects the override before Claude starts and preserves agent-owned state |
 | `test_case_02_*` | Launch managed Codex after configure and from fresh state | The scoped and stable catalogs, ug-launched app server, and fresh bare app server match the independently fetched admin MPS model IDs. The configured case uses real `ug revert` to remove ug's shared pointer and stable file while preserving a user setting |
-| `test_case_04_*`, `test_case_06_*` | Pass a provider or model-location override to managed Codex after configure and from fresh state | ug rejects the override before Codex starts and preserves agent-owned state |
+| Managed fixture Codex override cases (`test_managed_fixture_*`, `test_case_06_*`) | Pass a provider or model-location override to managed Codex after configure and from fresh state | ug rejects the override before Codex starts and preserves agent-owned state |
 | `test_ug_configure_managed_codex_catalog_fallback` | Configure from an injected managed response containing a GPT model absent from Codex's bundled catalog | Actionable metadata warning; conservative catalog entry for the unknown model; real Codex prompt on the valid default model |
 | `test_managed_fixture_codex_http_headers_in_managed_file` | Interactive PTY configure with injected managed `http_headers` for Codex | The specified header (`x-databricks-workspace`) lands in `model_providers.Databricks.http_headers` in `/etc/codex/managed_config.toml` with the exact admin value |
 | `test_managed_claude_mps_defaults_accompany_discovery`, `test_managed_claude_parent_schema_defaults_accompany_discovery` | Configure from the published admin config and launch Claude with MPS on `eng-ml-inference-batch-inference-us-west-2` and Unity Catalog discovery on `eng-ml-inference-ap-northeast-2`, respectively | Both generated settings files retain every admin-authored default alongside the source header; MPS pickers show labeled default rows first and the independently fetched catalog below, including models also used as defaults, while retaining catalog labels; only UC Opus/Sonnet family ids gain `[1m]` |
@@ -131,9 +132,9 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
 With Claude and Codex selected there are **68 live cases** (12 marked TUI cases),
-**6 managed-workspace cases** (marker `managed`, run against workspaces that
+**10 managed-workspace cases** (marker `managed`, run against workspaces that
 publish a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
-**25 managed-fixture cases** (marker `managed_fixture`, with only
+**21 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected), and **7 installation checks**. The 14 retained numbered scenarios
 comprise **24 explicit journeys**: 12 managed configured/fresh executions and 12 unmanaged
 executions. Thirteen additional managed-fixture cases cover focused model, MCP, skills,
@@ -180,8 +181,9 @@ Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
 journeys for both agents, in two parallel jobs. After smoke finishes, the full
 suite runs 66 live cases across the shared Claude and Codex jobs. CUJ7 runs two
 matrix legs in the required dedicated-workspace job, one per agent, bringing live
-coverage to 68 cases. Each job installs its agent and runs its selected cases
-serially.
+coverage to 68 cases. The dedicated CUJ3 matrix adds schema-pointer journeys
+for both agents. Each job installs its selected agent and runs its selected cases
+serially; CUJ3 installs both agent CLIs because its published config enables both.
 CI starts integration alongside unit tests and the existing e2e shards. Integration
 does not wait for agent e2e or get skipped when an agent shard fails. These suites
 share workspace capacity; overlapping their requests can still encounter rate limits.
@@ -196,7 +198,7 @@ journey is deferred while its npm proxy access is blocked. Native TUI
 and managed-settings coverage remain deferred; a green installation check alone
 does not establish a successful live task.
 The `All integration tests` check requires every selected integration job to pass, including
-CUJ7 and both managed-config lanes for full/live runs; full coverage does not depend on a label or
+CUJ7, CUJ3, and both managed-config lanes for full/live runs; full coverage does not depend on a label or
 a manual request.
 
 The existing e2e workflow runs seven parallel shards: gateway checks plus one for

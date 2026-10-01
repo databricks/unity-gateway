@@ -2,7 +2,7 @@
 
 This suite runs the **installed product** through subprocesses. Most live cases use
 the same `UCODE_TEST_WORKSPACE` as existing e2e tests; CUJ7 uses a dedicated
-unmanaged workspace in CI. It does not import `ucode`,
+unmanaged workspace and CUJ3 uses a dedicated managed workspace in CI. It does not import `ucode`,
 patch application functions, substitute agent executables, run a fake gateway,
 or construct ug state files. The normal test suite checks these boundaries.
 
@@ -313,14 +313,15 @@ fresh Claude model-location task also pins Haiku 4.5 to keep inference inexpensi
 fresh `--provider` journeys check setup and launch with dummy MPS credentials, without inference.
 
 There are **68 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
-re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
+checks** with Claude and Codex; selecting OpenCode adds one live headless case. Separate managed-workspace cases (the existing per-agent, idempotent
+re-configure, cache-TTL, and two Claude defaults cases plus CUJ3; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
-A further **25 `managed_fixture`
-cases** use `UCODE_MANAGED_CONFIG_STUB`. Twelve explicit configured/fresh Claude and Codex
+A further **21 `managed_fixture`
+cases** use `UCODE_MANAGED_CONFIG_STUB`. Eight configured/fresh Claude and Codex
 discovery and source-override journeys fetch the published config once per agent, replace that
-agent's static source with its dedicated MPS, and reuse the result. Thirteen other collected cases
+agent's static source with its dedicated MPS, and reuse the result. CUJ3 exercises the selected
+workspace's published schema-pointer config directly. Thirteen other collected cases
 cover focused model, MCP, skills, and lifecycle shapes, including per-agent model reconciliation
 and managed skill cleanup. The two Claude default-model cases read published MPS and Unity
 Catalog sources directly from `eng-ml-inference-batch-inference-us-west-2` and
@@ -479,6 +480,22 @@ published CodingAgentConfig and must expose discoverable `system.ai` models for
 both agents. The dedicated job is required for
 full, live, and TUI CI suites.
 
+CUJ3 runs the published schema-pointer config for both agents in its own required CI job. The
+workspace URL comes from the `UG_CUJ3_WORKSPACE` repository secret as a base HTTPS URL
+without a query string. The shared CUJ service-principal credentials come from `UG_CUJ_SP_CLIENT_ID` and
+`UG_CUJ_SP_CLIENT_SECRET`, and the runner mints a short-lived workspace bearer from them. The
+tests carry `managed`, `cuj3`, and `workspace_isolated` markers, so the shared Claude and Codex
+jobs exclude them. CUJ3 runs for full/live suites only; it is not selected by smoke, TUI, or
+installation runs. Because the published managed config enables both agents, each CUJ3 matrix leg
+installs both pinned agent CLIs before selecting its one agent's tests.
+
+The CUJ3 fixture inventory and exact managed config are in `fixtures/cuj/README.md`. Model
+services in `ug_e2e.models` include the configured default and an additional compatible model
+per agent. The test must invoke both with completed inference and native model-identity evidence.
+It also checks accessible decoys in `ug_e2e.other_models`, `ug_e2e.other_tools`, and
+`ug_e2e.other_skills` while rejecting them from the managed agent views. MCP and skill checks
+require real calls and output values, not just listings.
+
 The workspace check requires the secret to match
 `https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash
 is accepted). It never changes the secret or switches workspaces. There is no
@@ -489,8 +506,9 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs 66 live cases in the shared Claude and Codex lanes and
-CUJ7 in two dedicated-workspace matrix legs:
+two agent jobs). Full runs 66 live cases in the shared Claude and Codex lanes, CUJ7 in two
+dedicated-workspace matrix legs, and CUJ3's schema-pointer cases in two dedicated-workspace
+matrix legs:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
@@ -498,23 +516,26 @@ CUJ7 in two dedicated-workspace matrix legs:
 | Codex | `live and codex and not workspace_isolated` | 36 |
 | CUJ7: unmanaged journey · Claude | `live and claude and cuj7 and workspace_isolated` | 1 |
 | CUJ7: unmanaged journey · Codex | `live and codex and cuj7 and workspace_isolated` | 1 |
+| CUJ3: managed journey · Claude | `managed and cuj3 and workspace_isolated and claude` | 1 |
+| CUJ3: managed journey · Codex | `managed and cuj3 and workspace_isolated and codex` | 1 |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
 
-Each lane installs only its agent CLI, once, and runs all its configure, headless,
+Each shared agent lane installs only its agent CLI, once, and runs all its configure, headless,
 commands, lifecycle, and applicable app-server journeys. Cases remain serial
 inside each fresh VM because configure/revert can touch machine-level settings;
 separate runners isolate those writes as well as the PTYs. Claude and Codex run
 in parallel, with at most one full-suite job per agent in a workflow run. This
-avoids six serial job startups without overlapping same-agent shards. The two
+avoids six serial job startups without overlapping same-agent shards. CUJ3 installs
+both agent CLIs because its published config enables both. The two
 lanes still share workspace capacity with the concurrently running agent e2e
 shards and other PRs; this limit does not guarantee freedom from rate limits.
 No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, shared workspace validation,
-smoke, both full lanes, both CUJ7 matrix legs, and both **Managed config** lanes to pass for full/live runs. Each tracing
+smoke, both full lanes, both CUJ7 matrix legs, both CUJ3 matrix legs, and both **Managed config** lanes to pass for full/live runs. Each tracing
 journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
 a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
 and installation subsets do not select managed tests and do not require them.
@@ -539,6 +560,10 @@ west-2 must publish a Claude MPS source with Anthropic family defaults, and nort
 publish a Claude `system.ai` parent-schema source with Unity Catalog family defaults. `ug configure`
 fetches the config; the tests assert the generated private and OS-managed Claude settings after
 launch. Their exact required defaults and source headers are reflected in the tests.
+
+The CUJ3 schema-pointer cases use the dedicated `UG_CUJ3_WORKSPACE` host described above and
+carry `managed`, `cuj3`, and `workspace_isolated` markers. The dedicated full/live matrix runs
+both agents; the shared managed jobs explicitly exclude `workspace_isolated`.
 
 `test_unmanaged_claude_preserves_preexisting_family_defaults` is a live lifecycle journey against
 one real workspace. A read-only check first proves that the workspace publishes no
