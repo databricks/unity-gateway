@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 import questionary
 from rich.table import Table
 
-from ucode.agents import claude, codex, copilot, cursor, gemini, opencode
+from ucode.agents import claude, codex, copilot, cursor, gemini, kilo, opencode
 from ucode.config_io import restore_file
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
@@ -115,6 +115,11 @@ MCP_CLIENTS = {
         "binary": "opencode",
         "display": "OpenCode",
         "list_command": "opencode mcp list",
+    },
+    "kilo": {
+        "binary": "kilo",
+        "display": "Kilo",
+        "list_command": "kilo mcp list",
     },
     "copilot": {
         "binary": "copilot",
@@ -223,6 +228,14 @@ def _gemini_cli_env() -> dict[str, str]:
     # Pin GEMINI_CLI_HOME to the same directory the launcher.
     env = os.environ.copy()
     env["GEMINI_CLI_HOME"] = str(gemini.GEMINI_HOME_DIR)
+    return env
+
+
+def _kilo_cli_env() -> dict[str, str]:
+    # Pin XDG_CONFIG_HOME to the isolated dir ug writes Kilo's config into, so
+    # `kilo mcp list` reads the same config (matches kilo.build_runtime_env).
+    env = os.environ.copy()
+    env["XDG_CONFIG_HOME"] = str(kilo.KILO_XDG_CONFIG_HOME)
     return env
 
 
@@ -389,6 +402,9 @@ def configure_client_mcp_server(
     if client == "opencode":
         removed = opencode.write_mcp_server_config(name, argv)
         return [MCP_USER_SCOPE] if removed else []
+    if client == "kilo":
+        removed = kilo.write_mcp_server_config(name, argv)
+        return [MCP_USER_SCOPE] if removed else []
     if client == "copilot":
         removed = copilot.write_mcp_server_config(name, argv)
         return [MCP_USER_SCOPE] if removed else []
@@ -409,6 +425,8 @@ def remove_client_mcp_server(client: str, name: str) -> list[str]:
         return [MCP_USER_SCOPE] if remove_gemini_mcp_server(name) else []
     if client == "opencode":
         return [MCP_USER_SCOPE] if opencode.remove_mcp_server_config(name) else []
+    if client == "kilo":
+        return [MCP_USER_SCOPE] if kilo.remove_mcp_server_config(name) else []
     if client == "copilot":
         return [MCP_USER_SCOPE] if copilot.remove_mcp_server_config(name) else []
     if client == "cursor":
@@ -1348,6 +1366,7 @@ _MCP_CLIENT_MODULES = {
     "copilot": copilot,
     "cursor": cursor,
     "opencode": opencode,
+    "kilo": kilo,
 }
 
 
@@ -1391,6 +1410,8 @@ def _managed_mcp_entry(
         return copilot.build_mcp_server_entry(argv)
     if client == "opencode":
         return opencode.build_mcp_server_entry(argv)
+    if client == "kilo":
+        return kilo.build_mcp_server_entry(argv)
     raise RuntimeError(f"Unsupported MCP client '{client}'.")
 
 
@@ -2333,6 +2354,31 @@ def _parse_codex_mcp_list(output: str) -> dict[str, str]:
     return statuses
 
 
+def _parse_kilo_mcp_list(output: str) -> dict[str, str]:
+    """Parse `kilo mcp list`'s tree output into ``{server_name: state}``.
+
+    Kilo prints one server per line as ``●  <glyph> <name> <status>`` (glyph ✓/✗), with indented
+    ``│``-prefixed detail lines (the proxy command, error text) that must be skipped so the command
+    URL isn't misread as a server. (This is the OpenCode-family shape; parsing it generically for
+    every client is tracked separately — here it is scoped to Kilo.)
+    """
+    statuses: dict[str, str] = {}
+    for raw in output.splitlines():
+        line = raw.strip()
+        # Server rows start with the ● bullet; ┌/│/└ tree lines are headers/details.
+        if not line.startswith("●"):
+            continue
+        tokens = line.lstrip("● ").split()
+        # Expect: <glyph> <name> <status…>; require the health glyph so headers don't slip through.
+        if len(tokens) < 2 or tokens[0] not in (_HEALTH_OK_MARKERS + _HEALTH_FAIL_MARKERS):
+            continue
+        name = tokens[1]
+        if " " in name:
+            continue
+        statuses[name] = _classify_health_line(line)
+    return statuses
+
+
 def parse_mcp_list_output(client: str, output: str) -> dict[str, str]:
     """Parse an agent's `mcp list` output into ``{server_name: live-state}`` (best-effort).
 
@@ -2341,7 +2387,12 @@ def parse_mcp_list_output(client: str, output: str) -> dict[str, str]:
     failure detail (``Failed to connect - HTTP 404 Not Found``), so checking it up front would
     let one broken server empty the whole listing.
     """
-    parsed = _parse_codex_mcp_list(output) if client == "codex" else _parse_health_mcp_list(output)
+    if client == "codex":
+        parsed = _parse_codex_mcp_list(output)
+    elif client == "kilo":
+        parsed = _parse_kilo_mcp_list(output)
+    else:
+        parsed = _parse_health_mcp_list(output)
     if not parsed and _is_missing_mcp_server_output(output):
         return {}
     return parsed
@@ -2357,8 +2408,13 @@ def _run_mcp_list(client: str) -> str | None:
     if not spec:
         return None
     argv = str(spec["list_command"]).split()
-    # Gemini reads its config from a pinned home dir, matching how ucode registers servers there.
-    env = _gemini_cli_env() if client == "gemini" else None
+    # Gemini and Kilo read their config from a pinned dir, matching how ucode registers servers there.
+    if client == "gemini":
+        env = _gemini_cli_env()
+    elif client == "kilo":
+        env = _kilo_cli_env()
+    else:
+        env = None
     try:
         result = subprocess_cross_os.run(
             argv,
