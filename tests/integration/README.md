@@ -281,8 +281,9 @@ they only configure, list models, and open/close the picker. Other live CUJs per
 real model tasks.
 
 There are **61 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
-re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
+checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **7 managed-workspace cases** (one per agent, an idempotent
+re-configure, a cache-TTL journey, two Claude defaults cases, and an unmanaged-default
+preservation case; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
 A further **25 `managed_fixture`
@@ -305,7 +306,7 @@ constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-
 mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
 `ug configure` and Claude. The client secrets do not enter the pytest process.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 100 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 101 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -485,9 +486,12 @@ Two `managed` cases in `test_ug_configure_managed_models.py` target separate pub
 west-2 must publish a Claude MPS source with Anthropic family defaults, and northeast-2 must
 publish a Claude `system.ai` parent-schema source with Unity Catalog family defaults. `ug configure`
 fetches the config; the tests assert the generated private and OS-managed Claude settings after
-launch. The MPS case then switches to the real second workspace after a read-only check proves it
-publishes no CodingAgentConfig, and requires every pre-existing family default to survive in both
-files. Their exact required defaults and source headers are reflected in the tests.
+launch. Their exact required defaults and source headers are reflected in the tests.
+
+`test_unmanaged_claude_preserves_preexisting_family_defaults` is a separate lifecycle journey. It
+starts from west-2's distinctive published family defaults, then switches to the real second
+workspace after a read-only check proves it publishes no CodingAgentConfig, and requires every
+pre-existing family default to survive in both settings files.
 
 Treat that published CodingAgentConfig as shared CI fixture state. The managed lanes assert its
 exact model ids and its both-agent enablement, so editing the managed workspace's config (models,
