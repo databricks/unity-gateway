@@ -251,7 +251,8 @@ class ManagedFileSnapshots:
 
     original_before_ug: dict | None
     last_applied_by_ug: dict | None
-    # Picker values ug itself last wrote to this file; only these may later be reverted.
+    # Picker values an earlier ug recorded writing here, consulted only before the file has a
+    # provenance record; the record decides from then on.
     ug_picker: dict | None = None
 
 
@@ -286,27 +287,6 @@ def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnaps
         )
     except RuntimeError:
         return ManagedFileSnapshots(None, None)
-
-
-def record_ug_picker(tool: str, picker: dict) -> None:
-    """Record the picker values ug just confirmed in ``tool``'s managed file; empty clears it.
-
-    Kept in the file-keyed manifest because the managed file is machine-wide, not per workspace. An
-    unreadable manifest or a file ug never wrote leaves no record, so nothing is later reverted."""
-    if is_dry_run():
-        return
-    try:
-        manifest = _load_manifest()
-    except RuntimeError:
-        return
-    entry = _manifest_files(manifest).get(tool)
-    if not isinstance(entry, dict) or entry.get("ug_picker", {}) == picker:
-        return
-    if picker:
-        entry["ug_picker"] = picker
-    else:
-        entry.pop("ug_picker", None)
-    _write_manifest(manifest)
 
 
 def managed_file_conflicts(

@@ -1454,6 +1454,8 @@ class TestWriteToolConfigManagedSettings:
             "managed_file_snapshots",
             lambda tool, parser: managed_files.ManagedFileSnapshots({}, dict(doc)),
         )
+        # A pre-upgrade ug also left no provenance record for the file.
+        provenance.clear_provenance()
         warnings: list[str] = []
         monkeypatch.setattr(claude, "print_warning", warnings.append)
 
@@ -1462,11 +1464,7 @@ class TestWriteToolConfigManagedSettings:
         assert {key: json.loads(managed_path.read_text())[key] for key in picker} == picker
         assert any("ug revert" in warning for warning in warnings) is warns
 
-    @staticmethod
-    def _recorded_picker() -> dict | None:
-        return managed_files.managed_file_snapshots("claude", json.loads).ug_picker
-
-    def test_recorded_ug_picker_is_removed_when_static_list_dropped(self, tmp_path, monkeypatch):
+    def test_ucodes_static_picker_is_removed_after_a_workspace_switch(self, tmp_path, monkeypatch):
         managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
         state = {
             "workspace": WS,
@@ -1474,10 +1472,6 @@ class TestWriteToolConfigManagedSettings:
             "claude_static_models": ["system.ai.claude-opus-4-8"],
         }
         claude.write_tool_config(state, "system.ai.claude-opus-4-8")
-        written = json.loads(managed_path.read_text())
-        assert self._recorded_picker() == {
-            key: written[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS
-        }
 
         # The record is keyed by the machine-wide file, so another workspace's launch reverts it.
         other_workspace = {"workspace": "https://other.cloud.databricks.com", "codex_models": []}
@@ -1486,9 +1480,8 @@ class TestWriteToolConfigManagedSettings:
         written = json.loads(managed_path.read_text())
         for key in claude.CLAUDE_MANAGED_PICKER_KEYS:
             assert key not in written, written
-        assert self._recorded_picker() is None
 
-    def test_recorded_ug_picker_edited_since_is_kept(self, tmp_path, monkeypatch):
+    def test_edited_static_picker_is_kept(self, tmp_path, monkeypatch):
         managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
         state = {
             "workspace": WS,
@@ -1507,7 +1500,6 @@ class TestWriteToolConfigManagedSettings:
         assert {key: written[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS} == {
             key: doc[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS
         }
-        assert self._recorded_picker() is None
 
     @pytest.mark.parametrize(
         ("ug_version", "agent_version"),
@@ -1646,6 +1638,8 @@ class TestWriteToolConfigManagedSettings:
             str(FAKE_MANAGED_PATH): picker,
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing)
+        # The static picker is ucode's own earlier write in both files.
+        _patch_snapshots(monkeypatch, last_applied=picker)
         state = {
             "workspace": WS,
             "managed_configs": {
@@ -1870,12 +1864,11 @@ class TestWriteToolConfigManagedSettings:
             "enforceAvailableModels": True,
             "modelPicker": {"replaceBuiltInOptions": True, "options": []},
         }
-        monkeypatch.setattr(
-            claude,
-            "managed_file_snapshots",
-            lambda tool, parser: managed_files.ManagedFileSnapshots({}, ucode_last),
+        _patch_snapshots(monkeypatch, baseline={}, last_applied=ucode_last)
+        state = _state_owning(
+            *[[key] for key in claude.CLAUDE_MANAGED_PICKER_KEYS],
+            claude_models={"opus": "system.ai.claude-opus-4-8"},
         )
-        state = {"workspace": WS, "claude_models": {"opus": "system.ai.claude-opus-4-8"}}
 
         claude.write_tool_config(state, None)
 
@@ -2410,6 +2403,80 @@ class TestWriteToolConfigProvenanceGatedCleanup:
         for path in _BOTH_FILES:
             assert files[path]["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == ucode_value
 
+    def test_private_file_keeps_a_foreign_picker(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        picker = {
+            "availableModels": ["admin-model"],
+            "enforceAvailableModels": True,
+            "modelPicker": {"replaceBuiltInOptions": True, "options": []},
+        }
+        existing = {str(claude.CLAUDE_SETTINGS_PATH): picker}
+        _patch_both_files(monkeypatch, private_writes, managed_writes, existing)
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        assert private_writes[0][1]["availableModels"] == ["admin-model"]
+        assert private_writes[0][1]["enforceAvailableModels"] is True
+        assert private_writes[0][1]["modelPicker"] == picker["modelPicker"]
+
+    def test_private_file_retires_its_own_static_picker_when_the_list_is_dropped(self, monkeypatch):
+        files: dict = {}
+        managed_writes: list = []
+        _patch_round_trip(monkeypatch, files, managed_writes)
+        static = ["system.ai.claude-opus-4-8"]
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": [], "claude_static_models": static}, None
+        )
+        assert files[str(claude.CLAUDE_SETTINGS_PATH)]["availableModels"] == static
+
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+
+        private = files[str(claude.CLAUDE_SETTINGS_PATH)]
+        for key in claude.CLAUDE_MANAGED_PICKER_KEYS:
+            assert key not in private, private
+
+    def test_provider_switch_retires_the_static_picker_ucode_wrote(self, monkeypatch):
+        files: dict = {}
+        managed_writes: list = []
+        _patch_round_trip(monkeypatch, files, managed_writes)
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_models": [],
+                "claude_static_models": ["system.ai.claude-opus-4-8"],
+            },
+            None,
+        )
+        for path in _BOTH_FILES:
+            files[path]["companyPolicy"] = "keep"
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, None, provider="main.default.anthropic"
+        )
+
+        for path in _BOTH_FILES:
+            for key in claude.CLAUDE_MANAGED_PICKER_KEYS:
+                assert key not in files[path], files[path]
+            assert files[path]["companyPolicy"] == "keep"
+
+    def test_provider_switch_keeps_a_foreign_picker(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        picker = {"availableModels": ["admin-model"], "enforceAvailableModels": True}
+        existing = {path: dict(picker) for path in _BOTH_FILES}
+        _patch_both_files(monkeypatch, private_writes, managed_writes, existing)
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, None, provider="main.default.anthropic"
+        )
+
+        for written in (private_writes[0][1], json.loads(managed_writes[0][1])):
+            assert written["availableModels"] == ["admin-model"], written
+            assert written["enforceAvailableModels"] is True, written
+
     def test_legacy_bootstrap_retires_tracing_on_the_first_recorded_run(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []
@@ -2561,6 +2628,90 @@ class TestWriteToolConfigProvenanceGatedCleanup:
             "claude", claude.CLAUDE_SETTINGS_PATH
         )
 
+    def test_recorded_snapshot_does_not_override_an_admin_picker(self, monkeypatch):
+        files: dict = {}
+        managed_writes: list = []
+        _patch_round_trip(monkeypatch, files, managed_writes)
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_models": [],
+                "claude_static_models": ["system.ai.claude-opus-4-8"],
+            },
+            None,
+        )
+        admin = {
+            "availableModels": ["admin-model"],
+            "enforceAvailableModels": True,
+            "modelPicker": {"replaceBuiltInOptions": True, "options": []},
+        }
+        files[str(FAKE_MANAGED_PATH)].update(admin)
+        _patch_snapshots(
+            monkeypatch,
+            baseline={},
+            last_applied=dict(admin),
+            ug_picker=dict(admin),
+        )
+
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+
+        managed = files[str(FAKE_MANAGED_PATH)]
+        for key, value in admin.items():
+            assert managed[key] == value, managed
+
+    def test_non_interactive_provider_switch_reports_ucode_s_static_picker(self, monkeypatch):
+        files: dict = {}
+        managed_writes: list = []
+        _patch_round_trip(monkeypatch, files, managed_writes)
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_models": [],
+                "claude_static_models": ["system.ai.claude-opus-4-8"],
+            },
+            None,
+        )
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+
+        with pytest.raises(RuntimeError, match="availableModels"):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": []}, None, provider="main.default.anthropic"
+            )
+
+    def test_non_interactive_static_list_drop_does_not_block_a_headless_run(self, monkeypatch):
+        files: dict = {}
+        _patch_round_trip(monkeypatch, files, [])
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_models": [],
+                "claude_static_models": ["system.ai.claude-opus-4-8"],
+            },
+            None,
+        )
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+
+    def test_preserved_admin_picker_is_not_recorded_as_owned_for_revert(self, monkeypatch):
+        files: dict = {}
+        _patch_round_trip(monkeypatch, files, [])
+        files[str(FAKE_MANAGED_PATH)] = {"availableModels": ["admin-model"]}
+        recorded: list = []
+
+        def fake_write_managed(path, text, **kwargs):
+            files[str(path)] = json.loads(text)
+            recorded.extend(kwargs["owned_paths"])
+            return "written"
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", fake_write_managed)
+
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+
+        assert files[str(FAKE_MANAGED_PATH)]["availableModels"] == ["admin-model"]
+        for key in claude.CLAUDE_MANAGED_PICKER_KEYS:
+            assert [key] not in recorded, recorded
+
     @pytest.mark.parametrize("runs", [1, 2])
     def test_externally_edited_telemetry_survives_repeated_runs_without_tracing(
         self, monkeypatch, runs
@@ -2583,6 +2734,29 @@ class TestWriteToolConfigProvenanceGatedCleanup:
         for path in _BOTH_FILES:
             assert "otelHeadersHelper" not in files[path], files[path]
             assert set(claude.CLAUDE_OTEL_TRACE_ENV_KEYS) <= files[path]["env"].keys()
+
+    def test_admin_edited_picker_survives_repeated_runs_without_a_static_list(self, monkeypatch):
+        files: dict = {}
+        managed_writes: list = []
+        _patch_round_trip(monkeypatch, files, managed_writes)
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_models": [],
+                "claude_static_models": ["system.ai.claude-opus-4-8"],
+            },
+            None,
+        )
+        for path in _BOTH_FILES:
+            files[path]["availableModels"] = ["admin-model"]
+
+        for _ in range(2):
+            claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+
+        for path in _BOTH_FILES:
+            assert files[path]["availableModels"] == ["admin-model"], files[path]
+            assert files[path]["enforceAvailableModels"] is True, files[path]
+            assert "modelPicker" in files[path], files[path]
 
     def test_foreign_endpoint_keeps_the_group_without_ucodes_token_helper(self, monkeypatch):
         files: dict = {}
