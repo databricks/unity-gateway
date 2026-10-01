@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-from ucode.agents import pi
+import pytest
+
+from ucode.agents import AGENTS, pi
+from ucode.agents.interface import Agent, ConfigureRequest, Models
 
 WS = "https://example.databricks.com"
 
@@ -433,3 +436,87 @@ class TestBuildPiApiKey:
     def test_forwards_use_pat(self):
         assert "--use-pat" in pi.build_pi_api_key({"workspace": WS, "use_pat": True})
         assert "--use-pat" not in pi.build_pi_api_key({"workspace": WS})
+
+
+class TestPiAgent:
+    """The native `Agent` implementation registered as `AGENTS["pi"]`."""
+
+    STATE = {
+        "claude_models": {"opus": "claude-opus", "sonnet": "claude-sonnet"},
+        "codex_models": ["gpt-5"],
+        "gemini_models": ["gemini-3"],
+    }
+
+    def test_is_the_registered_agent(self):
+        assert AGENTS["pi"] is pi.AGENT
+        assert isinstance(pi.AGENT, Agent)
+
+    def test_describes_itself_from_the_spec(self):
+        assert pi.AGENT.display == "Pi"
+        assert pi.AGENT.install.binary == "pi"
+        assert pi.AGENT.install.package == "@earendil-works/pi-coding-agent"
+
+    def test_takes_no_mcp_servers(self):
+        assert pi.AGENT.mcp is None
+
+    def test_models_chain_claude_codex_gemini_and_pin_the_first(self):
+        assert pi.AGENT.models(self.STATE) == Models(
+            ("claude-opus", "claude-sonnet", "gpt-5", "gemini-3"), "claude-opus"
+        )
+
+    def test_models_empty_workspace_has_no_default(self):
+        assert pi.AGENT.models({}) == Models((), None)
+
+    def test_models_pinned_default_wins(self):
+        state = {**self.STATE, "pi_default_model": "gpt-5"}
+        assert pi.AGENT.models(state).default == "gpt-5"
+
+    def test_models_static_list_replaces_discovery(self):
+        state = {**self.STATE, "pi_static_models": ["only-this"]}
+        assert pi.AGENT.models(state) == Models(("only-this",), "only-this")
+
+    def test_models_does_not_mutate_state(self):
+        state = {**self.STATE}
+        pi.AGENT.models(state)
+        assert state == self.STATE
+
+    def test_configure_requires_a_model(self):
+        with pytest.raises(RuntimeError, match="A pi model must be selected"):
+            pi.AGENT.configure({}, ConfigureRequest())
+
+    def test_configure_returns_state_not_a_tuple(self):
+        written = {"workspace": WS, "marker": True}
+        with patch("ucode.agents.pi.write_tool_config", return_value=(written, "tok")) as write:
+            result = pi.AGENT.configure({"workspace": WS}, ConfigureRequest(model="claude-sonnet"))
+
+        assert result is written
+        write.assert_called_once_with({"workspace": WS}, "claude-sonnet")
+
+    def test_revert_reports_config_and_settings_rows(self, tmp_path, monkeypatch):
+        config, backup = tmp_path / "models.json", tmp_path / "models.backup.json"
+        settings, settings_backup = tmp_path / "settings.json", tmp_path / "settings.backup.json"
+        for name, value in {
+            "PI_CONFIG_PATH": config,
+            "PI_BACKUP_PATH": backup,
+            "PI_SETTINGS_PATH": settings,
+            "PI_SETTINGS_BACKUP_PATH": settings_backup,
+        }.items():
+            monkeypatch.setattr(pi, name, value)
+        config.write_text("{}", encoding="utf-8")
+        settings.write_text("{}", encoding="utf-8")
+        backup.write_text('{"user": true}', encoding="utf-8")
+
+        rows = pi.AGENT.revert({})
+
+        assert rows == [("Pi config", "restored"), ("Pi settings", "unchanged")]
+        assert json.loads(config.read_text()) == {"user": True}
+
+    def test_revert_passes_the_managed_flag_to_both_files(self):
+        with patch("ucode.agents.pi.restore_file", return_value=True) as restore:
+            rows = pi.AGENT.revert({"managed_configs": {"pi": ["model"]}})
+
+        assert rows == [("Pi config", "restored"), ("Pi settings", "restored")]
+        assert [call.args for call in restore.call_args_list] == [
+            (pi.PI_CONFIG_PATH, pi.PI_BACKUP_PATH, True),
+            (pi.PI_SETTINGS_PATH, pi.PI_SETTINGS_BACKUP_PATH, True),
+        ]

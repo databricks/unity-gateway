@@ -33,10 +33,11 @@ def no_revert_side_effects(monkeypatch):
     `SPEC` config/backup paths and the OS-managed settings files point at the developer's real
     machine, so conformance must check the shape of the rows without touching anything.
     """
-    from ucode.agents import claude, codex, legacy, opencode
+    from ucode.agents import claude, codex, legacy, opencode, pi
 
     monkeypatch.setattr(legacy, "restore_file", lambda *_a: False)
     monkeypatch.setattr(opencode, "restore_file", lambda *_a: False)
+    monkeypatch.setattr(pi, "restore_file", lambda *_a: False)
     monkeypatch.setattr(codex, "revert_legacy_shared_config", lambda: True)
     monkeypatch.setattr(codex, "revert_managed_config", lambda: "unchanged")
     monkeypatch.setattr(claude, "revert_managed_settings", lambda: "unchanged")

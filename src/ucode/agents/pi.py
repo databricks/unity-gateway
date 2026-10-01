@@ -39,6 +39,7 @@ from ucode.config_io import (
     backup_existing_file,
     deep_merge_dict,
     read_json_safe,
+    restore_file,
     write_json_file,
 )
 from ucode.databricks import (
@@ -51,6 +52,7 @@ from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions
+from .interface import ConfigureRequest, Install, Models
 
 PI_UCODE_HOME = APP_DIR / "pi-home"
 PI_CONFIG_DIR = PI_UCODE_HOME / ".pi" / "agent"
@@ -251,19 +253,74 @@ def build_runtime_env(token: str) -> dict[str, str]:
     return env
 
 
-def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
-    """Launch Pi; it re-resolves its apiKey command per request, so no refresher."""
-    token = _configure_launch(state)
-    env = build_runtime_env(token)
+def _model_ids(value: object) -> list[str]:
+    """Flatten a state model inventory (str, list, or family-keyed dict) into model ids."""
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item]
+    if isinstance(value, dict):
+        return [model for models in value.values() for model in _model_ids(models)]
+    return []
 
-    proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
-    try:
-        returncode = proc.wait()
-    except KeyboardInterrupt:
-        proc.send_signal(signal.SIGINT)
-        returncode = proc.wait()
 
-    raise SystemExit(returncode)
+class PiAgent:
+    """Pi as an :class:`~ucode.agents.interface.Agent`."""
+
+    display = str(SPEC["display"])
+    install = Install(binary=str(SPEC["binary"]), package=str(SPEC["package"]))
+    # Pi has no MCP support today.
+    mcp = None
+
+    def models(self, state: dict) -> Models:
+        # A managed static list replaces discovery outright; otherwise Pi serves every family.
+        available = tuple(
+            dict.fromkeys(
+                _model_ids(state.get("pi_static_models"))
+                or (
+                    _model_ids(state.get("claude_models"))
+                    + _model_ids(state.get("codex_models"))
+                    + _model_ids(state.get("gemini_models"))
+                )
+            )
+        )
+        explicit = state.get("pi_default_model")
+        if isinstance(explicit, str) and explicit:
+            return Models(available, explicit)
+        # Pi writes the first resolved model into its config, so that is the starting model.
+        return Models(available, available[0] if available else None)
+
+    def configure(self, state: dict, request: ConfigureRequest) -> dict:
+        if not request.model:
+            raise RuntimeError("A pi model must be selected before configuration.")
+        return write_tool_config(state, request.model)[0]
+
+    def launch(self, state: dict, args: list[str], *, options: LaunchOptions) -> None:
+        """Launch Pi; it re-resolves its apiKey command per request, so no refresher."""
+        token = _configure_launch(state)
+        env = build_runtime_env(token)
+
+        proc = subprocess_cross_os.popen([SPEC["binary"], *args], env=env)
+        try:
+            returncode = proc.wait()
+        except KeyboardInterrupt:
+            proc.send_signal(signal.SIGINT)
+            returncode = proc.wait()
+
+        raise SystemExit(returncode)
+
+    def revert(self, state: dict) -> list[tuple[str, str]]:
+        managed = bool((state.get("managed_configs") or {}).get("pi"))
+        restored = restore_file(PI_CONFIG_PATH, PI_BACKUP_PATH, managed)
+        # Pi keeps its gateway providers in a second file next to the config.
+        settings_restored = restore_file(PI_SETTINGS_PATH, PI_SETTINGS_BACKUP_PATH, managed)
+        return [
+            (f"{self.display} config", "restored" if restored else "unchanged"),
+            (f"{self.display} settings", "restored" if settings_restored else "unchanged"),
+        ]
+
+
+AGENT = PiAgent()
 
 
 def validate_cmd(binary: str) -> list[str]:
