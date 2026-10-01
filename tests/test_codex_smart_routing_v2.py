@@ -111,6 +111,7 @@ class TestLaunchCodex:
     def test_codex_launch_normalizes_cached_bootstrap_model(self, monkeypatch):
         calls = []
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: None)
 
@@ -154,6 +155,7 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
         monkeypatch.setattr(codex, "agent_version", lambda _: "0.145.0")
+        monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         if custom_home:
             monkeypatch.setenv("CODEX_HOME", str(config_home))
             monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", tmp_path / "unused.config.toml")
@@ -261,7 +263,12 @@ class TestLaunchCodex:
                 f'"{os.environ["UCODE_SESSION_ENV_FILE"]}"'
             ),
         ]
-        assert processes[0].argv[12:] == [
+        assert processes[0].argv[12:14] == [
+            "--config",
+            "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
+            + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"]),
+        ]
+        assert processes[0].argv[14:] == [
             "--listen",
             "ws://127.0.0.1:41001",
         ]
@@ -385,6 +392,10 @@ class TestLaunchCodex:
         assert (
             "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
             f'"{os.environ["UCODE_SESSION_ENV_FILE"]}"'
+        ) in argv
+        assert (
+            "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
+            + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"])
         ) in argv
         # The hook subprocesses inherit the launch environment and pass the routing gate.
         assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"

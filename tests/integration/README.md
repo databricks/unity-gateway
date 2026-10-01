@@ -216,6 +216,11 @@ survival, native daemon/background dispatch, interactive explicit-model bypass, 
 smart-routing CI shards remain deferred. Plugin generation and launch arguments are covered
 by component tests in `../test_claude_smart_routing_v2.py`, not by a live registration journey.
 
+PATH conflicts for the Smart Router skill have subprocess/component coverage in
+`../test_smart_router.py`: the skill uses the launching interpreter despite a different
+`ug` first in PATH. The live journeys above do not inject a second installation or
+establish PowerShell command execution.
+
 The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
 completes a file task on two models: a bare Anthropic id the subscription serves
 directly (`route=relay`) and a Databricks-hosted `system.ai` id the loopback proxy

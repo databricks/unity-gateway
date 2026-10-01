@@ -74,6 +74,13 @@ definitions, and temporary plugin loading in both routing modes. Existing launch
 tests cover caller argument preservation and file removal after exit. These checks
 do not cover plugin-write/process-start failures, native plugin refresh, or daemon behavior.
 
+`test_smart_router.py` executes the installed skill's shell commands with another `ug`
+first in PATH and a launching interpreter path containing spaces. Both agents' toggles
+must update the session controls through the launching installation. Launch tests check
+that Claude settings and Codex's shell policy carry the interpreter and session marker.
+These are component checks; they do not establish native skill permission matching or
+PowerShell execution.
+
 ## CUJ coverage matrix
 
 These are **implemented assertions**, not a claim that every version passes.

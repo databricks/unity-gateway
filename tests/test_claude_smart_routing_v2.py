@@ -305,6 +305,8 @@ class TestV2Launch:
             "claude-sonnet-5": "system.ai.claude-sonnet-5",
         }
         assert captured["settings"]["env"][v2.ENABLE_SMART_ROUTING_ENV_VAR] == "1"
+        for key in (v2.SESSION_ENV_VAR, v2.SESSION_PYTHON_ENV_VAR):
+            assert captured["settings"]["env"][key] == os.environ[key]
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV in captured["settings"]["env"]
         first_prompt_command = captured["settings"]["hooks"]["UserPromptSubmit"][0]["hooks"][0][
             "command"
@@ -475,6 +477,8 @@ class TestV2Launch:
         settings = captured["settings"]
         env = settings["env"]
         assert env[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
+        for key in (v2.SESSION_ENV_VAR, v2.SESSION_PYTHON_ENV_VAR):
+            assert env[key] == os.environ[key]
         assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in env
         assert claude_hooks.FIRST_PROMPT_SOCKET_ENV not in env
         # Subagent routing is fully wired; only the first-prompt machinery is absent.
