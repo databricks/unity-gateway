@@ -87,6 +87,32 @@ def set_managed_config_stub(session, tmp_path, config: dict | None) -> None:
     use_managed_config_stub(session, stub)
 
 
+def write_config_file(tmp_path: Path, config: dict, name: str = "config.json") -> Path:
+    """Write ``config`` to a JSON file for ``ug configure --file``.
+
+    Use ``set_managed_config_stub(..., None)`` plus a plain configure for the no-config state;
+    ``--file`` rejects a JSON ``null``."""
+    config_path = Path(tmp_path) / name
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    config_path.chmod(0o600)
+    return config_path
+
+
+def claude_picker(session) -> list[str] | None:
+    """The model list ug wrote into Claude's generated settings."""
+    settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
+    return settings.get("availableModels")
+
+
+def codex_listed(session) -> list[str]:
+    """The model slugs ug listed in the generated Codex catalog (empty when there is none)."""
+    catalog_path = session.home / ".ucode" / "codex-model-catalog.json"
+    if not catalog_path.exists():
+        return []
+    catalog = json.loads(catalog_path.read_text())
+    return [m.get("slug") for m in catalog.get("models", []) if m.get("visibility") == "list"]
+
+
 def is_managed_config_control_plane_cache(home: Path, path: Path) -> bool:
     """Whether ``path`` is ug's expected fetched-config cache, not agent-owned state."""
     return path == home / ".ucode" / "managed-config.json"

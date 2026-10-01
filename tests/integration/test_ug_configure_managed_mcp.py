@@ -3,7 +3,8 @@
 The admin CodingAgentConfig is injected via UCODE_MANAGED_CONFIG_STUB so the real configure path
 can be driven against an MCP list the live workspace does not publish; only the config INPUT is
 stubbed (auth, the config writers, the OS-managed reconcile, and the agent binary stay real). See
-tests/AGENTS.md rule 4.
+tests/AGENTS.md rule 4. Configure-only cases pass the config with ``ug configure --file``; the case
+that launches the agent keeps the stub because launch re-reads the managed config.
 
 An interactive `ug configure` (a PTY, so ug performs its sudo OS-managed reconcile) writes the
 managed servers into Codex's `[mcp_servers]` in managed_config.toml, additive to and separate from
@@ -21,6 +22,7 @@ from utils.managed import (
     build_codex_agent_config,
     build_coding_agent_config,
     set_managed_config_stub,
+    write_config_file,
 )
 from utils.terminal import AgentTerminal, ConfigureTerminal
 
@@ -75,8 +77,16 @@ def test_managed_fixture_codex_mcp_written_to_managed_file(live_session, workspa
         build_codex_agent_config(models=[CODEX_MODEL]),
         mcp_names=[MCP_SERVICE],
     )
-    set_managed_config_stub(session, tmp_path, config)
-    command = [str(session.binary), "configure", "--workspace", workspace, "--skip-upgrade"]
+    config_path = write_config_file(tmp_path, config, "codex-mcp.json")
+    command = [
+        str(session.binary),
+        "configure",
+        "--workspace",
+        workspace,
+        "--file",
+        str(config_path),
+        "--skip-upgrade",
+    ]
     with ConfigureTerminal(session, "codex", command, "managed-mcp-file-codex") as configure:
         configure.finish(timeout=300)
 
@@ -120,8 +130,16 @@ def test_managed_fixture_codex_http_headers_in_managed_file(live_session, worksp
             http_headers={managed_header_key: managed_header_value},
         ),
     )
-    set_managed_config_stub(session, tmp_path, config)
-    command = [str(session.binary), "configure", "--workspace", workspace, "--skip-upgrade"]
+    config_path = write_config_file(tmp_path, config, "codex-headers.json")
+    command = [
+        str(session.binary),
+        "configure",
+        "--workspace",
+        workspace,
+        "--file",
+        str(config_path),
+        "--skip-upgrade",
+    ]
     with ConfigureTerminal(session, "codex", command, "managed-http-headers-codex") as configure:
         configure.finish(timeout=300)
 

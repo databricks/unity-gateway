@@ -166,6 +166,7 @@ test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven 
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
+test_ug_configure_file.py               # --file validation, error handling, isolated input
 test_ug_claude_managed_model_discovery.py # fetched/reused Claude MPS policy cases
 test_ug_codex_managed_model_discovery.py  # fetched/reused Codex MPS policy cases
 test_ug_claude_model_discovery.py       # unmanaged scenarios 7, 9, 11, 13
@@ -508,10 +509,17 @@ exact model ids and its both-agent enablement, so editing the managed workspace'
 enabled agents, or defaults) breaks these lanes until the constants in `test_ug_configure_managed.py`
 are updated to match. Do not change it casually.
 
-The `managed_fixture` journeys use `UCODE_MANAGED_CONFIG_STUB` to short-circuit only the
-managed-config HTTP read for config shapes that workspace does not publish. The Claude discovery
-module fetches the workspace's published config once, replaces Claude's static model source with
-`main.default.ci_e2e_anthropic_mps`, drops incompatible static defaults, and reuses that fixture
+The `managed_fixture` journeys supply config shapes the workspace does not publish.
+Configure-only journeys pass the admin config with `ug configure --file` (the lifecycle, Codex
+managed-file, and skills reconcile tests, plus `test_ug_configure_file.py`). `ug configure --file`
+also makes the file sticky for later plain launches, so launch journeys can use it too instead of
+the stub (see `test_ug_configure_file.py`'s launch cases); the other, existing launch journeys keep
+`UCODE_MANAGED_CONFIG_STUB`, which short-circuits only the managed-config HTTP read, for now
+(migrating them to `--file` is an optional follow-up).
+
+The Claude discovery module fetches the workspace's published config once, replaces Claude's
+static model source with `main.default.ci_e2e_anthropic_mps`, drops incompatible static defaults,
+and reuses that fixture
 across all configured/fresh scenarios. The Codex module does the same with
 `main.default.ci_e2e_openai_mps`. Separate read-only, provider-scoped model-list requests
 establish expected IDs independently of the generated agent files. With no authored defaults,
