@@ -1198,12 +1198,18 @@ def write_tool_config(
                 for key in CLAUDE_MANAGED_PICKER_KEYS:
                     merged.pop(key, None)
             elif managed_settings_snapshots.last_applied_by_ug is not None:
+                # Only picker keys ucode wrote to this file are its to revert. A matching
+                # last-applied snapshot can't prove that: ucode re-saves pickers it only preserved.
+                owned_paths = managed_settings_snapshots.owned_paths or []
+                owned_picker_keys = [
+                    key for key in CLAUDE_MANAGED_PICKER_KEYS if [key] in owned_paths
+                ]
                 last_applied = managed_settings_snapshots.last_applied_by_ug
                 live_picker = [merged.get(key) for key in CLAUDE_MANAGED_PICKER_KEYS]
                 ucode_picker = [last_applied.get(key) for key in CLAUDE_MANAGED_PICKER_KEYS]
-                if live_picker == ucode_picker:
+                if owned_picker_keys and live_picker == ucode_picker:
                     baseline = managed_settings_snapshots.original_before_ug or {}
-                    for key in CLAUDE_MANAGED_PICKER_KEYS:
+                    for key in owned_picker_keys:
                         if key in baseline:
                             merged[key] = baseline[key]
                         else:
