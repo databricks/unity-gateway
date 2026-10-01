@@ -154,7 +154,7 @@ class TestRenderOverlay:
         overlay, _ = opencode.render_overlay("system.ai.glm-5-2", "tok", _base_urls(), models)
         glm = overlay["provider"]["databricks-oss"]["models"]["system.ai.glm-5-2"]
         # OpenCode's schema requires both context and output on `limit`.
-        assert glm["limit"] == {"context": 1048576, "output": 32000}
+        assert glm["limit"] == {"context": 1048576, "input": 943718, "output": 32000}
 
     @pytest.mark.parametrize(
         "model", ["system.ai.deepseek-v4-1-flash", "system.ai.kimi-k3", "system.ai.glm-5-3-flash"]
@@ -162,7 +162,7 @@ class TestRenderOverlay:
     def test_1m_oss_models_get_gateway_context_limit(self, model):
         overlay, _ = opencode.render_overlay(model, "tok", _base_urls(), {"oss": [model]})
         entry = overlay["provider"]["databricks-oss"]["models"][model]
-        assert entry["limit"] == {"context": 1048576, "output": 32000}
+        assert entry["limit"] == {"context": 1048576, "input": 943718, "output": 32000}
         assert "User-Agent" in entry["headers"]
 
     def test_claude_models_get_context_limits_per_model(self):
@@ -181,14 +181,17 @@ class TestRenderOverlay:
         entries = overlay["provider"]["databricks-anthropic"]["models"]
         assert entries["system.ai.claude-opus-5-5"]["limit"] == {
             "context": 1000000,
+            "input": 900000,
             "output": 32000,
         }
         assert entries["system.ai.claude-sonnet-5-5"]["limit"] == {
             "context": 1000000,
+            "input": 900000,
             "output": 32000,
         }
         assert entries["system.ai.claude-haiku-4-5"]["limit"] == {
             "context": 200000,
+            "input": 180000,
             "output": 32000,
         }
         for entry in entries.values():

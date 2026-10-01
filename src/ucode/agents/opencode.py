@@ -228,16 +228,25 @@ def resolve_explicit_model(model: str, state: dict) -> str:
     )
 
 
+# OpenCode auto-compacts once usage reaches
+# `min(limit.input - buffer, limit.context - max(min(limit.output, 32000), buffer))`,
+# where `buffer` is its configurable compaction buffer (20K by default).
+# `limit.input` is only read by that check, so pinning it to 90% of the context
+# window starts compaction before the window is nearly full.
+_INPUT_CONTEXT_RATIO = 0.9
+
+
 def _model_overlay(model: str, overlay: dict) -> dict:
-    """Add `limit` (context + output) to a per-model entry with known token limits.
+    """Add `limit` (context + input + output) to a per-model entry with known token limits.
 
     OpenCode has no catalog entry for gateway model ids, so an unpinned model
     falls back to a 200K context and auto-compacts 1M-context models far too
     early. The output cap also clamps `max_tokens` to a value the gateway
-    accepts. OpenCode's schema requires both fields together, so the limits
-    table always supplies both."""
+    accepts. OpenCode's schema requires context and output together, so the
+    limits table always supplies both."""
     limits = model_token_limits(model)
     if limits is not None:
+        limits["input"] = int(limits["context"] * _INPUT_CONTEXT_RATIO)
         overlay["limit"] = limits
     return overlay
 
