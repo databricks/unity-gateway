@@ -1158,6 +1158,19 @@ def write_tool_config(
                     target_env.pop(key, None)
                 else:
                     target_env[key] = selected_default_model
+        if (
+            not managed_config_present
+            and not coding_agent_config_defaults
+            and isinstance(base_env, dict)
+        ):
+            # Without an admin Coding Agent Config, an existing family default belongs to the
+            # developer. Discovery may fill an absent family, but must not replace a value they
+            # already selected in either the private or OS-managed settings file.
+            target_env = overlay_for_merge["env"]
+            for key in CLAUDE_DEFAULT_MODEL_ENV_KEYS.values():
+                existing_default = base_env.get(key)
+                if isinstance(existing_default, str):
+                    target_env[key] = existing_default
         merged = deep_merge_dict(base, overlay_for_merge)
         for key in stale_picker_keys:
             merged.pop(key, None)

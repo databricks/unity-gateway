@@ -1202,6 +1202,39 @@ class TestWriteToolConfigManagedSettings:
             "User-Agent: ucode/1.0 claude/2.0",  # ug-managed name, replaced in place
         ]
 
+    def test_unmanaged_preserves_existing_family_defaults(self, monkeypatch):
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result(None)
+        )
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(claude.CLAUDE_SETTINGS_PATH): {
+                "env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "developer-private-opus"}
+            },
+            str(FAKE_MANAGED_PATH): {
+                "env": {"ANTHROPIC_DEFAULT_SONNET_MODEL": "developer-managed-sonnet"}
+            },
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {
+            "workspace": WS,
+            "claude_models": {
+                "opus": "system.ai.claude-opus-4-8",
+                "sonnet": "system.ai.claude-sonnet-4-6",
+                "haiku": "system.ai.claude-haiku-4-5",
+            },
+        }
+
+        claude.write_tool_config(state, "system.ai.claude-opus-4-8")
+
+        private_env = private_writes[0][1]["env"]
+        assert private_env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "developer-private-opus"
+        assert private_env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "system.ai.claude-sonnet-4-6[1m]"
+        managed_env = json.loads(managed_writes[0][1])["env"]
+        assert managed_env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "developer-managed-sonnet"
+        assert managed_env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "system.ai.claude-haiku-4-5"
+
     def test_managed_file_wholesale_overwrite_survives_real_reconcile_round_trip(
         self, tmp_path, monkeypatch
     ):
