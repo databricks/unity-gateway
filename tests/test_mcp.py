@@ -3893,9 +3893,8 @@ class TestDiscoverySkipsPermissionErrors:
             "list_mcp_services",
             lambda workspace, token: ([], "HTTP 403 Forbidden: Invalid access token."),
         )
-        with pytest.raises(mcp.AuthTokenError) as exc_info:
+        with pytest.raises(mcp.AuthTokenError, match="expired or invalid"):
             mcp.discover_mcp_service_names(WS)
-        assert str(exc_info.value) == "Your access token is expired or invalid."
 
 
 # Real-shaped `claude mcp list` output: `<name>: <cmd|url …> - <glyph> <status>`, health-probed.

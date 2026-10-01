@@ -1322,13 +1322,7 @@ class AuthTokenError(RuntimeError):
 
 
 def raise_for_invalid_access_token(workspace: str, reason: str | None) -> None:
-    """Raise :class:`AuthTokenError` when ``reason`` shows the token was rejected.
-
-    The user-facing message intentionally omits the workspace, endpoint response, and
-    re-auth details so raw RPC/error payloads are not exposed by callers that surface
-    this exception. No-op for any other failure (permission, transient) so a best-effort
-    discovery caller can still skip a source quietly.
-    """
+    """Raise a concise auth error for a rejected token; ignore other failures."""
     if reason and _looks_like_definitive_auth_failure(reason):
         raise AuthTokenError("Your access token is expired or invalid.")
 

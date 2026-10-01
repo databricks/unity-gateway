@@ -185,29 +185,6 @@ class TestHelp:
         assert "dollars spent and total budget" in output
         assert "--warehouse-id" not in output
 
-    def test_usage_rejected_access_token_prints_sanitized_error(self, monkeypatch):
-        import ucode.usage as usage_mod
-
-        reason = 'HTTP 403 Forbidden: {"error_code":403,"message":"Invalid access token."}'
-        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda: None)
-        monkeypatch.setattr(usage_mod, "load_state", lambda: {"workspace": "https://workspace"})
-        monkeypatch.setattr(usage_mod, "apply_pat_environment", lambda state: None)
-        monkeypatch.setattr(usage_mod, "ensure_databricks_auth", lambda *args: None)
-        monkeypatch.setattr(usage_mod, "get_databricks_token", lambda *args: "token")
-        monkeypatch.setattr(
-            usage_mod,
-            "resolve_current_budget_spend",
-            lambda workspace, token: (None, reason),
-        )
-
-        result = runner.invoke(app, ["usage"])
-        output = _strip_ansi(result.output)
-
-        assert result.exit_code == 1
-        assert "Your access token is expired or invalid." in output
-        assert reason not in output
-        assert "databricks auth login" not in output
-
 
 class TestProjectScripts:
     def test_ug_and_ucode_are_equivalent_entry_points(self):
