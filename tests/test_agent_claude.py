@@ -1726,6 +1726,95 @@ class TestWriteToolConfigManagedSettings:
 
         assert managed_writes == []
 
+    def test_headless_isaac_headers_and_telemetry_are_compatible(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        headers = (
+            "x-databricks-use-coding-agent-mode: true\n"
+            "databricks-ai-gateway-request-tags: source=isaac-cli"
+        )
+        admin = {
+            "env": {
+                "ANTHROPIC_CUSTOM_HEADERS": headers,
+                "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "https://admin.example/traces",
+            },
+            "otelHeadersHelper": "isaac-otel-helper",
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, {str(FAKE_MANAGED_PATH): admin})
+        # The Isaac repro has no managed CodingAgentConfig, so its OS-managed headers are preserved.
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result(None)
+        )
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+
+        assert managed_writes == []
+
+    def test_disabled_tracing_preserves_managed_telemetry(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        telemetry_env = {key: f"admin-{key}" for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS}
+        admin = {"env": telemetry_env, "otelHeadersHelper": "admin-otel-helper"}
+        self._patch(monkeypatch, private_writes, managed_writes, {str(FAKE_MANAGED_PATH): admin})
+
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+
+        written = json.loads(managed_writes[0][1])
+        assert {key: written["env"][key] for key in telemetry_env} == telemetry_env
+        assert written["otelHeadersHelper"] == admin["otelHeadersHelper"]
+
+    def test_no_managed_config_removes_private_and_preserves_managed_telemetry(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        admin = {
+            "env": {key: f"admin-{key}" for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS},
+            "otelHeadersHelper": "admin-helper",
+        }
+        self._patch(
+            monkeypatch,
+            private_writes,
+            managed_writes,
+            {
+                str(claude.CLAUDE_SETTINGS_PATH): admin,
+                str(FAKE_MANAGED_PATH): admin,
+            },
+        )
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result(None)
+        )
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": [], "claude_otel_tracing": True}, None
+        )
+
+        written = json.loads(managed_writes[0][1])
+        assert {key: written["env"][key] for key in admin["env"]} == admin["env"]
+        assert written["otelHeadersHelper"] == admin["otelHeadersHelper"]
+        private = private_writes[0][1]
+        assert not any(key in private["env"] for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS)
+        assert "otelHeadersHelper" not in private
+
+    def test_explicit_ug_tracing_still_rejects_conflicting_managed_telemetry(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(
+            monkeypatch,
+            private_writes,
+            managed_writes,
+            {str(FAKE_MANAGED_PATH): {"env": {"OTEL_TRACES_EXPORTER": "console"}}},
+        )
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+
+        with pytest.raises(RuntimeError, match="env.OTEL_TRACES_EXPORTER"):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": [], "claude_otel_tracing": True}, None
+            )
+
+        assert managed_writes == []
+
     def test_sudo_failure_uses_local_settings_when_managed_file_is_compatible(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []
