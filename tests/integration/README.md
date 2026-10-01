@@ -481,9 +481,8 @@ both agents. The dedicated job is required for
 full, live, and TUI CI suites.
 
 CUJ3 adds four real-config managed journeys, two per agent, in its own required CI job. The
-workspace URL comes from the `UG_CUJ3_WORKSPACE` repository secret and must be exactly
-`https://dbc-bbdd5508-648e.cloud.databricks.com` (without a query string; a trailing slash is
-not needed). The shared CUJ service-principal credentials come from `UG_CUJ_SP_CLIENT_ID` and
+workspace URL comes from the `UG_CUJ3_WORKSPACE` repository secret as a base HTTPS URL
+without a query string. The shared CUJ service-principal credentials come from `UG_CUJ_SP_CLIENT_ID` and
 `UG_CUJ_SP_CLIENT_SECRET`, and the runner mints a short-lived workspace bearer from them. The
 tests carry `managed`, `cuj3`, and `workspace_isolated` markers, so the shared Claude and Codex
 jobs exclude them. CUJ3 runs for full/live suites only; it is not selected by smoke, TUI, or
