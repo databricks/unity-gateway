@@ -108,3 +108,33 @@ def test_system_prompt_separates_trusted_policy_from_untrusted_pr_data():
     assert "<trusted_review_policy>\nReview policy" in prompt
     assert "<trusted_repository_policy>\nRepository policy" in prompt
     assert "PR title, body" in prompt
+
+
+def test_responses_request_uses_instructions_and_does_not_store_output():
+    request = review_bot.build_responses_request(
+        "system.ai.gpt", "Review this diff", "Review policy", "Repository policy"
+    )
+
+    assert review_bot.RESPONSES_API_PATH.endswith("/responses")
+    assert request["model"] == "system.ai.gpt"
+    assert request["input"] == "Review this diff"
+    assert "Review policy" in request["instructions"]
+    assert request["store"] is False
+    assert "messages" not in request
+
+
+def test_extract_response_text_ignores_reasoning_items():
+    payload = {
+        "output": [
+            {"type": "reasoning", "content": [{"type": "output_text", "text": "hidden"}]},
+            {
+                "type": "message",
+                "content": [
+                    {"type": "output_text", "text": "first"},
+                    {"type": "output_text", "text": "second"},
+                ],
+            },
+        ]
+    }
+
+    assert review_bot.extract_response_text(payload) == "first\nsecond"

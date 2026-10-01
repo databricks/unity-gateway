@@ -47,9 +47,9 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           DATABRICKS_HOST: ${{ secrets.UCODE_TEST_WORKSPACE }}
           DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
-          UG_REVIEW_MODEL: ${{ vars.UG_CI_REVIEW_MODEL || vars.UG_CI_USER_JOURNEY_JUDGE_MODEL }}
+          UG_REVIEW_MODEL: ${{ vars.UG_CI_REVIEW_MODEL }}
           REVIEW_POLICY_PATH: .github/ug-review-instructions.md
           REPOSITORY_POLICY_PATH: AGENTS.md
         run: |
-          : "${UG_REVIEW_MODEL:?Set the UG_CI_REVIEW_MODEL repository variable to a chat-capable system.ai model}"
+          : "${UG_REVIEW_MODEL:?Set UG_CI_REVIEW_MODEL to a Responses-capable model}"
           python3 .github/scripts/ug-review/review.py

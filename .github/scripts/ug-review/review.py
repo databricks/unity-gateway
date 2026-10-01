@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 COMMENT_MARKER = "<!-- ug-review-bot -->"
+RESPONSES_API_PATH = "/ai-gateway/codex/v1/responses"
 MAX_FILES = 500
 MAX_PATCH_LINES = 500
 MAX_MANIFEST_BYTES = 20_000
@@ -233,6 +234,32 @@ def build_system_prompt(review_policy: str, repository_policy: str) -> str:
     )
 
 
+def build_responses_request(
+    model: str, user_prompt: str, review_policy: str, repository_policy: str
+) -> dict[str, Any]:
+    return {
+        "model": model,
+        "instructions": build_system_prompt(review_policy, repository_policy),
+        "input": user_prompt,
+        "max_output_tokens": 4_000,
+        "store": False,
+    }
+
+
+def extract_response_text(payload: dict[str, Any]) -> str:
+    """Extract final text while ignoring reasoning and tool-call output items."""
+    parts: list[str] = []
+    for item in payload.get("output", []) or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for content in item.get("content", []) or []:
+            if isinstance(content, dict) and content.get("type") == "output_text":
+                text = content.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+    return "\n".join(parts).strip()
+
+
 def _json_object(content: str) -> dict[str, Any]:
     candidate = content.strip()
     candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.IGNORECASE)
@@ -327,21 +354,10 @@ def _request_review(
         "</untrusted_diff>"
     )
     body = json.dumps(
-        {
-            "model": model,
-            "temperature": 0,
-            "max_tokens": 4_000,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": build_system_prompt(review_policy, repository_policy),
-                },
-                {"role": "user", "content": user_prompt},
-            ],
-        }
+        build_responses_request(model, user_prompt, review_policy, repository_policy)
     ).encode()
     request = urllib.request.Request(
-        f"{host}/ai-gateway/mlflow/v1/chat/completions",
+        f"{host}{RESPONSES_API_PATH}",
         data=body,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         method="POST",
@@ -354,12 +370,11 @@ def _request_review(
         raise ReviewError(f"Databricks review request failed ({exc.code}): {detail}") from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise ReviewError(f"Databricks review request failed: {exc}") from exc
-    try:
-        content = payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ReviewError("Databricks returned an unexpected review response.") from exc
-    if not isinstance(content, str):
-        raise ReviewError("Databricks returned non-text review content.")
+    if not isinstance(payload, dict):
+        raise ReviewError("Databricks returned an unexpected review response.")
+    content = extract_response_text(payload)
+    if not content:
+        raise ReviewError("Databricks Responses API returned no output text.")
     return parse_review(content, bundle)
 
 
