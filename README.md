@@ -134,6 +134,34 @@ profile. V2 AI Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
 
+Claude's generated `web_search` server uses the same saved custom OAuth CLI
+profile as its harness, when configured. It stores the profile name, not an
+access token, and refreshes credentials for search requests. This does not
+change search permissions.
+
+Launchers that supply their own search server can first query
+`ug mcp web-search --capabilities`. Contract version 1 supports setting
+`UCODE_CLAUDE_WEB_SEARCH_PROVIDER=external-if-safe` on the ug child process only
+when the capability response advertises that `automatic_provider` value.
+The default (unset or `ucode`) retains standalone ug search. External mode
+does not create, update, or delete saved search registrations. Generated
+helpers carry `--managed-by-ucode`. Only the launch override created after
+ownership verification exposes no tools; copied helpers and custom registrations
+retain their tools even when they inherit external provider selection.
+
+For an existing generated `web_search` entry, ug verifies its saved ownership
+fingerprint and uses a launch-only MCP override pointing at the current ug
+installation. This also handles older helper executables. Disabled entries
+are preserved without launch overrides, and `--strict-mcp-config` excludes saved registrations without
+an override. Unknown ownership, overlapping config scopes, or command-based
+MCP policies produce a warning and retain the existing provider; duplicate
+providers may remain. Explicit `external` selection instead fails on a conflict.
+Standalone refreshes preserve edited user entries and project/local servers.
+The selection does not authorize search or remove any permission denial.
+Concurrent setup still uses ug's existing whole-workspace state writes. A stale
+ownership fingerprint safely preserves the server and prevents automatic handoff;
+this contract does not make shared setup transactional.
+
 ## Skills
 
 Unity Catalog Skills can be registered as MCP tools or downloaded into local
