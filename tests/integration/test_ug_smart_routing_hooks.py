@@ -11,6 +11,7 @@ Smart Router skill and spawn real children before and after its session-local to
 import json
 
 import pytest
+from utils.constants import CLAUDE_SMART_ROUTING_MODELS, CODEX_SMART_ROUTING_MODELS
 from utils.evidence import (
     SubagentCalculation,
     assert_subagent_routed,
@@ -25,36 +26,14 @@ from utils.managed import (
 )
 from utils.terminal import AgentTerminal
 
-# The same model lists as the managed_fixture smart-routing banner journeys, which are
-# proven servable route options on the live e2e workspace.
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 SMART_ROUTING_SUBAGENT_NOTICE = "Using Unity Gateway Smart Router - Subagent"
-CLAUDE_MODELS = [
-    "system.ai.claude-opus-5",
-    "system.ai.claude-sonnet-5",
-    "system.ai.claude-haiku-4-5",
-    "system.ai.glm-5-3",
-    "system.ai.kimi-k3",
-]
-CODEX_MODELS = [
-    "system.ai.gpt-6-astra",
-    "system.ai.gpt-5-6-sol",
-    "system.ai.gpt-5-6-terra",
-    "system.ai.gpt-5-6-luna",
-    "system.ai.gpt-5-5",
-    "system.ai.glm-5-3",
-    "system.ai.kimi-k3",
-]
 # Codex launches subagents on its bundled catalog slugs, not the workspace model id, so
 # the routed model in the hook response must be one of these slugs.
 CODEX_MODEL_SLUGS = {
-    "gpt-6-astra",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
-    "gpt-5.5",
-    "glm-5-3",
-    "kimi-k3",
 }
 SKILL_ROOTS = {"claude": ".claude/skills", "codex": ".codex/skills"}
 
@@ -165,7 +144,7 @@ def test_smart_routing_claude_route_subagent_hook(live_session, workspace):
         "route-subagent",
         "--host",
         workspace,
-        *(arg for model in CLAUDE_MODELS for arg in ("--model", model)),
+        *(arg for model in CLAUDE_SMART_ROUTING_MODELS for arg in ("--model", model)),
         input_text=json.dumps(payload),
         timeout=60,
     )
@@ -188,7 +167,7 @@ def test_smart_routing_claude_route_subagent_hook(live_session, workspace):
     row = rows[0]
     assert row["session_id"] == payload["session_id"], row
     assert row["task_name"] == payload["tool_input"]["prompt"], row
-    assert row["requested_model"] in CLAUDE_MODELS, row
+    assert row["requested_model"] in CLAUDE_SMART_ROUTING_MODELS, row
 
 
 @pytest.mark.live
@@ -218,7 +197,7 @@ def test_smart_routing_codex_route_subagent_hook(live_session, workspace):
         "route-subagent",
         "--host",
         workspace,
-        *(arg for model in CODEX_MODELS for arg in ("--model", model)),
+        *(arg for model in CODEX_SMART_ROUTING_MODELS for arg in ("--model", model)),
         input_text=json.dumps(payload),
         timeout=60,
     )
@@ -261,7 +240,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(live_session, worksp
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
     config = build_coding_agent_config(
         "CODING_AGENT_CLAUDE_CODE",
-        build_claude_agent_config(CLAUDE_MODELS, smart_routing=True),
+        build_claude_agent_config(CLAUDE_SMART_ROUTING_MODELS, smart_routing=True),
     )
     set_managed_config_stub(session, tmp_path, config)
     session.run(
@@ -307,7 +286,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(live_session, workspa
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
     config = build_coding_agent_config(
         "CODING_AGENT_CODEX",
-        build_codex_agent_config(models=CODEX_MODELS, smart_routing=True),
+        build_codex_agent_config(models=CODEX_SMART_ROUTING_MODELS, smart_routing=True),
     )
     set_managed_config_stub(session, tmp_path, config)
     session.run(
