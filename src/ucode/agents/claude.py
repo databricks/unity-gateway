@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from ucode import gateway_proxy
@@ -24,6 +24,7 @@ from ucode.config_io import (
     deep_merge_dict,
     prune_key_paths,
     read_json_safe,
+    restore_file,
     write_json_file,
 )
 from ucode.constants import (
@@ -93,6 +94,7 @@ from ucode.telemetry import agent_version, ug_version
 from ucode.ui import print_note, print_success, print_warning
 
 from .args import LaunchOptions, has_explicit_model_arg
+from .interface import ConfigureRequest, Install, McpServer, Models
 
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
 # If set, Claude Code launches in headless mode instead of the interactive login flow.
@@ -2116,3 +2118,154 @@ def validate_cmd(binary: str) -> list[str]:
         "--max-turns",
         "1",
     ]
+
+
+def _model_ids(value: object) -> list[str]:
+    """Flatten a state model inventory (str, list, or family-keyed dict) into model ids."""
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item]
+    if isinstance(value, dict):
+        return [model for models in value.values() for model in _model_ids(models)]
+    return []
+
+
+class ClaudeMcpClient:
+    """Claude Code's :class:`~ucode.agents.interface.McpClient`.
+
+    Claude keeps MCP servers per scope in ``~/.claude.json``, so every add/remove first clears
+    each scope ug may have written the name to. Registration is a ``claude mcp`` subprocess (stdio
+    proxy, or native HTTP+OAuth against the published ``claude-code`` app, which has the loopback
+    ``/callback`` redirect registered on ``/oidc``); the batched path is one read-modify-write of
+    the user-scope config. The functions it drives are looked up at call time.
+    """
+
+    display = str(SPEC["display"])
+    binary = str(SPEC["binary"])
+    oauth_client_id: str | None = CLAUDE_CODE_OAUTH_CLIENT_ID
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "ClaudeMcpClient()"
+
+    def add(self, name: str, server: McpServer) -> list[str]:
+        removed_scopes = self._remove_every_scope(name)
+        if server.oauth_client is not None:
+            add_claude_http_mcp_server(name, server.url, client_id=server.oauth_client)
+        else:
+            # ``always_load`` (the skills registry) keeps the server's tools loaded at session start.
+            add_claude_mcp_server(
+                name, list(server.proxy_argv), MCP_USER_SCOPE, always_load=server.always_load
+            )
+        return removed_scopes
+
+    def remove(self, name: str) -> list[str]:
+        return self._remove_every_scope(name)
+
+    @staticmethod
+    def _remove_every_scope(name: str) -> list[str]:
+        """Clear every scope ug may have written ``name`` to and report the ones it was in."""
+        return [scope for scope in MCP_CLEANUP_SCOPES if remove_claude_mcp_server(name, scope)]
+
+    def apply(self, add: Mapping[str, McpServer], remove: set[str]) -> set[str]:
+        """Collapse a whole diff into ONE read-modify-write of ``~/.claude.json`` instead of a
+        ``claude mcp`` subprocess per server (see ``mcp.apply_mcp_server_changes``)."""
+        entries = {name: self.entry(server) for name, server in add.items()}
+        return write_user_mcp_servers(entries, remove) or set()
+
+    def entry(self, server: McpServer) -> dict:
+        """The on-disk entry ``claude mcp add`` would have written for ``server``."""
+        if server.oauth_client is not None:
+            return managed_mcp_entry(server.url)
+        return user_stdio_mcp_entry(list(server.proxy_argv), always_load=server.always_load)
+
+    def live_status(self) -> dict[str, str]:
+        # Imported lazily: ``ucode.mcp`` imports this module at load time.
+        from ucode.mcp import _read_mcp_listing
+
+        output = _read_mcp_listing([self.binary, "mcp", "list"], env=None)
+        return self.parse_listing(output) if output is not None else {}
+
+    @staticmethod
+    def parse_listing(output: str) -> dict[str, str]:
+        """Parse ``claude mcp list`` into ``{server_name: live-state}``.
+
+        Parse the rows first, and read the output as "no servers configured" only when none parsed.
+        That check looks for phrases like "not found", which also appear inside a single server's
+        failure detail (``Failed to connect - HTTP 404 Not Found``), so checking it up front would
+        let one broken server empty the whole listing."""
+        from ucode.mcp import _is_missing_mcp_server_output, _parse_health_mcp_list
+
+        parsed = _parse_health_mcp_list(output)
+        if not parsed and _is_missing_mcp_server_output(output):
+            return {}
+        return parsed
+
+
+class ClaudeAgent:
+    """Claude Code as an :class:`~ucode.agents.interface.Agent`.
+
+    A thin wrapper over this module's functions: it owns the per-interface answers (display,
+    install, models, configure arguments, revert rows) and leaves the internals where they are.
+    Smart routing, tracing, Model Provider Services and the OS-managed settings file are features
+    of the module's own code, not of this class.
+    """
+
+    def __init__(self) -> None:
+        self.display = str(SPEC["display"])
+        self.mcp = ClaudeMcpClient()
+        self.install = Install(
+            binary=str(SPEC["binary"]),
+            package=str(SPEC["package"]),
+            # Claude's own updater is preferred over npm when the binary is installed.
+            upgrade_argv=("claude", "upgrade"),
+            version_error=self._version_error,
+        )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "ClaudeAgent()"
+
+    @staticmethod
+    def _version_error() -> str | None:
+        return minimum_version_error()
+
+    def models(self, state: dict) -> Models:
+        # A managed static list replaces discovery outright.
+        static_models = _model_ids(state.get("claude_static_models"))
+        available = tuple(dict.fromkeys(static_models or _model_ids(state.get("claude_models"))))
+        # Claude leaves the starting model to the agent unless one is pinned.
+        pinned = state.get("claude_default_model")
+        return Models(available, pinned if isinstance(pinned, str) and pinned else None)
+
+    def configure(self, state: dict, request: ConfigureRequest) -> dict:
+        # A Model Provider Service or parent schema routes by header and discovers models
+        # natively, so the usual "model required" guard doesn't apply to either Claude source.
+        if not request.model and not request.provider and not request.parent_schema:
+            raise RuntimeError("A claude model must be selected before configuration.")
+        extras = request.extras
+        return write_tool_config(
+            state,
+            request.model,
+            provider=request.provider,
+            provider_models=extras.get("provider_models"),
+            relayed=bool(extras.get("relayed")),
+            route_root_model=extras.get("route_root_model"),
+            custom_model=extras.get("custom_model"),
+            coding_agent_config_defaults=extras.get("coding_agent_config_defaults"),
+            parent_schema=request.parent_schema,
+            picker_catalog=extras.get("picker_catalog"),
+        )
+
+    def launch(self, state: dict, args: list[str], *, options: LaunchOptions) -> None:
+        launch(state, args, options=options)
+
+    def revert(self, state: dict) -> list[tuple[str, str]]:
+        managed = bool((state.get("managed_configs") or {}).get("claude"))
+        restored = restore_file(SPEC["config_path"], SPEC["backup_path"], managed)
+        return [
+            (f"{self.display} config", "restored" if restored else "unchanged"),
+            (f"{self.display} OS-managed settings", revert_managed_settings()),
+        ]
+
+
+AGENT = ClaudeAgent()

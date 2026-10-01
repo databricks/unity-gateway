@@ -49,6 +49,12 @@ rows, and `gemini mcp add/remove/list` subprocess argv plus the pinned `GEMINI_C
 batched settings write, and the on-disk entry. These stub the subprocess boundary; they are not live
 Gemini CLI coverage.
 
+`test_agent_claude.py` also covers Claude's native `Agent` class (`claude.AGENT`): install metadata,
+the family-keyed model inventory with static and pinned models, the configure guard (a model is
+required unless a provider or parent schema is given) and forwarding of launch-time extras, revert
+rows, and its native `McpClient` (`claude.AGENT.mcp`): per-scope cleanup, the stdio and HTTP+OAuth
+registration paths, `always_load`, the batched `~/.claude.json` write, and `claude mcp list` parsing.
+
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 

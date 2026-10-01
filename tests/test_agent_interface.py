@@ -36,6 +36,7 @@ def no_revert_side_effects(monkeypatch):
     from ucode.agents import claude, codex, copilot, gemini, legacy, opencode, pi
 
     monkeypatch.setattr(legacy, "restore_file", lambda *_a: False)
+    monkeypatch.setattr(claude, "restore_file", lambda *_a: False)
     monkeypatch.setattr(gemini, "restore_file", lambda *_a: False)
     monkeypatch.setattr(opencode, "restore_file", lambda *_a: False)
     monkeypatch.setattr(copilot, "restore_file", lambda *_a: False)

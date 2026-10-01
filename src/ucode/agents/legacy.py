@@ -18,26 +18,23 @@ from collections.abc import Mapping
 from types import ModuleType
 
 from ucode.config_io import restore_file
-from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
+from ucode.constants import MCP_USER_SCOPE
 from ucode.mcp_oauth import (
-    CLAUDE_CODE_OAUTH_CLIENT_ID,
     CODEX_CLI_OAUTH_CLIENT_ID,
     CURSOR_OAUTH_CLIENT_ID,
 )
 
-from . import claude, codex, cursor
+from . import codex, cursor
 from .args import LaunchOptions
 from .interface import ConfigureRequest, Install, McpServer, Models
 
 # The agent modules this adapter wraps, in the order ug lists agents.
 LEGACY_MODULES: dict[str, ModuleType] = {
     "codex": codex,
-    "claude": claude,
 }
 
 # Agents with their own self-updater, which ug prefers over npm when the binary is installed.
 _NATIVE_UPGRADE_ARGV: dict[str, tuple[str, ...]] = {
-    "claude": ("claude", "upgrade"),
     "codex": ("codex", "update"),
 }
 
@@ -127,24 +124,6 @@ class LegacyAgent:
             return write(
                 state, request.model, provider=request.provider, parent_schema=request.parent_schema
             )
-        if self._tool == "claude":
-            # A Model Provider Service or parent schema routes by header and discovers models
-            # natively, so the usual "model required" guard doesn't apply to either Claude source.
-            if not request.model and not request.provider and not request.parent_schema:
-                raise RuntimeError(self._model_required_error)
-            extras = request.extras
-            return write(
-                state,
-                request.model,
-                provider=request.provider,
-                provider_models=extras.get("provider_models"),
-                relayed=bool(extras.get("relayed")),
-                route_root_model=extras.get("route_root_model"),
-                custom_model=extras.get("custom_model"),
-                coding_agent_config_defaults=extras.get("coding_agent_config_defaults"),
-                parent_schema=request.parent_schema,
-                picker_catalog=extras.get("picker_catalog"),
-            )
         # Every remaining agent needs a model.
         if not request.model:
             raise RuntimeError(self._model_required_error)
@@ -174,10 +153,6 @@ class LegacyAgent:
             rows.append(
                 (f"{self.display} OS-managed settings", self._module.revert_managed_config())
             )
-        if self._tool == "claude":
-            rows.append(
-                (f"{self.display} OS-managed settings", self._module.revert_managed_settings())
-            )
         return rows
 
 
@@ -199,7 +174,6 @@ class LegacyAgent:
 # stay on the stdio proxy even where their apps exist; add one here (with its registration branch in
 # `LegacyMcpClient._add_native_http`) once its CLI can pin a client.
 _OAUTH_CLIENT_IDS: dict[str, str] = {
-    "claude": CLAUDE_CODE_OAUTH_CLIENT_ID,
     "cursor": CURSOR_OAUTH_CLIENT_ID,
     "codex": CODEX_CLI_OAUTH_CLIENT_ID,
 }
@@ -254,10 +228,6 @@ class LegacyMcpClient:
     def _add_native_http(self, name: str, url: str, client_id: str) -> list[str] | None:
         """Register ``url`` as a direct HTTP server the client drives OAuth against itself, or None
         when this client has no such registration syntax."""
-        if self._client == "claude":
-            removed_scopes = self._remove_claude_every_scope(name)
-            claude.add_claude_http_mcp_server(name, url, client_id=client_id)
-            return removed_scopes
         if self._client == "cursor":
             return _user_scope(cursor.write_http_mcp_server_config(name, url, client_id=client_id))
         if self._client == "codex":
@@ -271,10 +241,6 @@ class LegacyMcpClient:
         """Register the `ug mcp-proxy ...` command as a stdio server; only the syntax differs per
         client. ``always_load`` (the skills registry) is a Claude-only hint to load the server's
         tools at session start; the others don't support it and ignore it."""
-        if self._client == "claude":
-            removed_scopes = self._remove_claude_every_scope(name)
-            claude.add_claude_mcp_server(name, argv, MCP_USER_SCOPE, always_load=always_load)
-            return removed_scopes
         if self._client == "codex":
             mcp = _mcp_module()
             removed = mcp.remove_codex_mcp_server(name)
@@ -284,19 +250,9 @@ class LegacyMcpClient:
         return _user_scope(self._module.write_mcp_server_config(name, argv))
 
     def remove(self, name: str) -> list[str]:
-        if self._client == "claude":
-            return self._remove_claude_every_scope(name)
         if self._client == "codex":
             return _user_scope(_mcp_module().remove_codex_mcp_server(name))
         return _user_scope(self._module.remove_mcp_server_config(name))
-
-    @staticmethod
-    def _remove_claude_every_scope(name: str) -> list[str]:
-        """Claude keeps MCP servers per scope, so clear every scope ug may have written ``name`` to
-        and report the ones it was actually in."""
-        return [
-            scope for scope in MCP_CLEANUP_SCOPES if claude.remove_claude_mcp_server(name, scope)
-        ]
 
     # -- batched write ------------------------------------------------------------------
 
@@ -315,15 +271,11 @@ class LegacyMcpClient:
             if native is not None:
                 return native
         argv = list(server.proxy_argv)
-        if self._client == "claude":
-            return claude.user_stdio_mcp_entry(argv, always_load=server.always_load)
         if self._client == "codex":
             return codex.managed_mcp_entry(argv)
         return self._module.build_mcp_server_entry(argv)
 
     def _native_http_entry(self, url: str, client_id: str) -> dict | None:
-        if self._client == "claude":
-            return claude.managed_mcp_entry(url)
         if self._client == "cursor":
             return cursor.build_http_mcp_server_entry(url, client_id)
         if self._client == "codex":
@@ -364,7 +316,7 @@ LEGACY_MCP_CLIENTS: dict[str, LegacyMcpClient] = {
         display=str(LEGACY_MODULES[client].SPEC["display"]),
         binary=str(LEGACY_MODULES[client].SPEC["binary"]),
     )
-    for client in ("claude", "codex")
+    for client in ("codex",)
 }
 
 # Cursor takes MCP servers but is NOT an `Agent`: it runs models on the user's own Cursor account,
