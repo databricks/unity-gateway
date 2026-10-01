@@ -1158,11 +1158,12 @@ def write_tool_config(
                     target_env.pop(key, None)
                 else:
                     target_env[key] = selected_default_model
-        if (
+        should_preserve_preexisting_claude_family_defaults = (
             not managed_config_present
             and not coding_agent_config_defaults
             and isinstance(base_env, dict)
-        ):
+        )
+        if should_preserve_preexisting_claude_family_defaults:
             # Without an admin Coding Agent Config, an existing family default belongs to the
             # developer. Discovery may fill an absent family, but must not replace a value they
             # already selected in either the private or OS-managed settings file.
