@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
-from ucode import mcp_web_search
+from ucode import databricks, mcp_web_search
+from ucode.agents import claude
 
 WS = "https://example.databricks.com"
 
@@ -240,3 +243,101 @@ class TestCallResponsesApi:
             v for k, v in captured["headers"].items() if k.lower() == "authorization"
         )
         assert auth_header == "Bearer tok"
+
+
+class TestConfiguredSearchAuthentication:
+    @pytest.fixture(autouse=True)
+    def isolated_auth(self, monkeypatch, tmp_path):
+        # Only auth/network boundaries are replaced; registration, MCP dispatch, and CLI profile
+        # token selection execute normally against config isolated from developer credentials.
+        for name in (
+            "DATABRICKS_BEARER",
+            "DATABRICKS_BEARER_COMMAND",
+            "DATABRICKS_CONFIG_PROFILE",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(tmp_path / "empty-databrickscfg"))
+        monkeypatch.setattr(
+            databricks, "run", Mock(side_effect=AssertionError("Unexpected CLI auth"))
+        )
+        self.auth_headers = []
+
+        def search_response(request, timeout):
+            self.auth_headers.append(request.get_header("Authorization"))
+            return io.BytesIO(
+                json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "content": [{"type": "output_text", "text": "Search result"}],
+                            }
+                        ]
+                    }
+                ).encode()
+            )
+
+        monkeypatch.setattr(mcp_web_search.urllib_request, "urlopen", search_response)
+
+    def configure(self, monkeypatch, profile="workspace-profile"):
+        entry = claude._web_search_mcp_entry(WS, "search-model", profile)
+        for name, value in entry["env"].items():
+            monkeypatch.setenv(name, value)
+
+    def search(self):
+        return _drive(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "web_search", "arguments": {"query": "query"}},
+                }
+            ]
+        )[0]["result"]
+
+    @pytest.mark.parametrize("profile", ["workspace-profile", "custom-profile"])
+    def test_search_refreshes_through_selected_cli_profile(self, monkeypatch, profile):
+        self.configure(monkeypatch, profile)
+        calls = []
+
+        def cli_token(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(
+                command, 0, json.dumps({"access_token": f"token-{len(calls)}"}), ""
+            )
+
+        monkeypatch.setattr(databricks, "run", cli_token)
+        assert self.search() == {"content": [{"type": "text", "text": "Search result"}]}
+        assert self.search() == {"content": [{"type": "text", "text": "Search result"}]}
+        assert self.auth_headers == ["Bearer token-1", "Bearer token-2"]
+        assert [command[command.index("--profile") + 1] for command in calls] == [
+            profile,
+            profile,
+        ]
+
+    def test_cli_auth_timeout_returns_tool_error(self, monkeypatch):
+        self.configure(monkeypatch, "custom-profile")
+        calls = []
+
+        def timed_out(command, **kwargs):
+            calls.append((command, kwargs["timeout"]))
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+        monkeypatch.setattr(databricks, "run", timed_out)
+        result = self.search()
+        assert result["isError"] is True
+        assert "Failed to acquire Databricks token" in result["content"][0]["text"]
+        assert self.auth_headers == []
+        assert [timeout for _, timeout in calls] == [15, 30, 15]
+        assert "--no-browser" in calls[1][0]
+        assert all(
+            command[command.index("--profile") + 1] == "custom-profile" for command, _ in calls
+        )
+
+    @pytest.mark.parametrize("profile", ["workspace-profile", "custom-profile"])
+    def test_profile_auth_preserves_explicit_bearer_override(self, monkeypatch, profile):
+        self.configure(monkeypatch, profile)
+        monkeypatch.setenv("DATABRICKS_BEARER", "explicit-bearer")
+        assert self.search() == {"content": [{"type": "text", "text": "Search result"}]}
+        assert self.auth_headers == ["Bearer explicit-bearer"]

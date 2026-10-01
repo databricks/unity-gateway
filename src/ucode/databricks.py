@@ -1322,17 +1322,9 @@ class AuthTokenError(RuntimeError):
 
 
 def raise_for_invalid_access_token(workspace: str, reason: str | None) -> None:
-    """Raise :class:`AuthTokenError` with re-auth guidance when ``reason`` shows the
-    workspace rejected the token itself. No-op for any other failure (permission,
-    transient) so a best-effort discovery caller can still skip a source quietly."""
+    """Raise a concise auth error for a rejected token; ignore other failures."""
     if reason and _looks_like_definitive_auth_failure(reason):
-        raise AuthTokenError(
-            f"Databricks rejected the access token for {workspace} — it is expired or "
-            f"invalid ({reason}). Re-authenticate:\n"
-            f"  databricks auth login --host {workspace}\n"
-            "If this profile uses a personal access token (PAT), generate a new token "
-            "and update it in ~/.databrickscfg."
-        )
+        raise AuthTokenError("Your access token is expired or invalid.")
 
 
 def _looks_like_cli_permission_error(stderr: str | None) -> bool:

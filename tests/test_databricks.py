@@ -2568,10 +2568,9 @@ class TestProbeUnityGatewayCapabilities:
         )
 
     def test_raise_for_invalid_access_token(self):
-        with pytest.raises(db_mod.AuthTokenError, match="expired or invalid") as e:
+        with pytest.raises(db_mod.AuthTokenError) as e:
             db_mod.raise_for_invalid_access_token(WS, "HTTP 403 Forbidden: Invalid access token.")
-        assert "databricks auth login" in str(e.value)
-        assert "PAT" in str(e.value)
+        assert str(e.value) == "Your access token is expired or invalid."
         # No-op for a permission 403 or a clean result, so best-effort discovery still skips quietly.
         db_mod.raise_for_invalid_access_token(WS, "HTTP 403: Missing Unity Catalog grants")
         db_mod.raise_for_invalid_access_token(WS, None)

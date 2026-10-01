@@ -27,6 +27,21 @@ These are component checks, not live Windows coverage for every agent.
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
+`test_mcp_web_search.py` and `test_agent_claude.py` cover custom OAuth search
+registration, stale registration repair, SDK cache reuse/refresh, CLI profile
+selection, and errors without browser consent through the MCP handler. These
+component checks replace external auth/network boundaries; they do not establish
+live search, parent/child discovery, or classifier permission behavior.
+
+`test_claude_search_provider.py` covers external-provider setup and launch using
+real temporary config files and local helper JSON-RPC subprocesses. It checks
+legacy ownership, copied marked helpers, custom/disabled entry preservation, config conflicts, caller
+arguments, routing/direct/relayed paths, and concurrent standalone/custom helper
+catalogs. These are component checks, not a live Isaac or gateway journey.
+
+`test_agent_claude.py` covers OS-managed telemetry ownership and headless configuration. These are
+unit/component regressions, not automated Isaac or live telemetry-export coverage.
+
 Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 `test_managed_setup.py`, `test_databricks.py`, and `test_managed_budget.py`: parsing the
 `smart_defaults` wire field, reading older `spend_tiers` caches, skipping recommendations
@@ -35,6 +50,11 @@ API field. These are unit/component checks; live request-count coverage is not i
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
+`TestBuildClaudeArgv` also checks that caller permission denies survive ug's technical
+native-search deny in direct, relayed, and routing settings composition. Inline/file
+inputs, repeated settings, and empty launch overrides retain restrictions and leave
+source files unchanged. These are actual argv/configuration assertions, not native
+classifier or parent/child acceptance coverage.
 `test_databricks.py` checks bounded Anthropic catalog requests with `limit=1000`, including
 scoped routing headers and model display metadata. Its subprocess regression checks force a
 cp1252 default at the dependency seam, then verify UTF-8 text decoding and unchanged binary
@@ -86,7 +106,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_codex_app_reports_unknown_argument` | Pass an invalid option directly to `ug codex app`, routing off/on | Real Codex parser error and status preserved |
 | `test_ug_codex_app_server_client_initializes` | Connect a stdio client, direct/`--` separator, routing off/on | Actual JSON-RPC initialize response; no non-JSON stdout; no routing |
 | `test_smart_routing_claude_route_subagent_hook`, `test_smart_routing_codex_route_subagent_hook` | Pipe a real PreToolUse spawn payload to the installed route-subagent hook with subagent-only routing enabled | Allow decision against the live router; requested model replaced by a routed agent definition (Claude) or bundled catalog slug (Codex) from the offered models; one audited decision matching the session and task |
-| `test_smart_routing_claude_subagent_only_launch_shows_no_first_prompt_banner`, `test_smart_routing_codex_subagent_only_launch_shows_no_first_prompt_banner` | Configure, then launch the real TUI with both the full and subagent-only routing flags set and submit one file prompt | Subagent-only takes precedence: the prompt completes with no smart-routing banner and no first-prompt routing wrapper (PTY/interposer); Claude's SessionStart canary proves the routing hooks armed; normal exit |
+| `test_smart_router_skill_toggles_claude_subagent_routing`, `test_smart_router_skill_toggles_codex_subagent_routing` | Configure, launch a real subagent-only TUI, then spawn tagged children while invoking the installed Smart Router skill to switch routing on -> off -> on in the same session | All three native children complete; only enabled phases show the subagent banner and produce a live routing decision correlated with the child; no first-prompt routing wrapper; normal exit |
 | `test_ug_configure_claude_repeat_and_revert`, `test_ug_configure_codex_repeat_and_revert` | Configure twice over user settings; complete a task; revert twice | Settings preserved; no bearer in ug state; generated config removed; status unconfigured |
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
@@ -214,7 +234,7 @@ These are unit/component checks; they do not establish live sudo password-prompt
 
 | Scenario | Status / requirement |
 | --- | --- |
-| Live MCP and skills functionality | Deferred; installation tests cover the local web-search MCP handshake and tool listing, not upstream proxying or a real search request |
+| Live MCP and skills functionality | Deferred; installation tests cover the local web-search MCP handshake and tool listing, not upstream proxying or a real search request. Custom OAuth search dispatch/refresh has component coverage; live parent/child search and permission decisions remain unverified |
 | Broad configure flags, multiple workspaces, and PAT flows | Deferred while focusing on basic CUJs |
 | Workspace-switch MCP cleanup | The `workspace_switch` CUJ covers real registration, cleanup, repeat configure, and a completed Claude task. Unit/component tests cover duplicate attempts and injected removal failures; the CUJ does not force an agent timeout. It runs in the required managed CI lane for full/live runs. |
 | Relayed/subscription MPS discovery | Not covered by the scoped discovery journeys |
@@ -222,7 +242,7 @@ These are unit/component checks; they do not establish live sudo password-prompt
 | Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
-| Claude/Codex interactive smart routing | First-prompt routing covered by the `managed_fixture` smart-routing banner journeys; subagent routing covered at the hook protocol level by the route-subagent hook journeys. Interactive spawning, plugin-refresh survival, native daemon/background dispatch, interactive explicit-model bypass, and dedicated routing CI shards remain deferred. Unit/component routing tests do not establish live routing behavior. |
+| Claude/Codex interactive smart routing | First-prompt routing is covered by the `managed_fixture` banner journeys. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing on -> off -> on within one Claude/Codex session. Plugin-refresh survival, native daemon/background dispatch, interactive explicit-model bypass, and dedicated routing CI shards remain deferred. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
 | Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, local helpers, and the Claude headless gateway journey are advisory; Codex Windows CI is blocked on npm proxy access. Live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |
