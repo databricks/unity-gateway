@@ -26,6 +26,7 @@ from ucode.state import (
     self_managed_agents,
     set_applied_managed_update_time,
     set_provider_service,
+    workspace_self_managed_agents,
 )
 
 FAKE_WS = "https://example.databricks.com"
@@ -375,3 +376,48 @@ class TestSelfManagedAgents:
         full = load_full_state()
         ws_raw = full["workspaces"].get(FAKE_WS, {})
         assert SELF_MANAGED_AGENTS_KEY not in ws_raw
+
+
+class TestSelfManagedWorkspaceIsolation:
+    """Switching workspaces via `configure_shared_state` keeps each one's opt-in to itself."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_cli_side_effects(self, monkeypatch):
+        # Everything configure_shared_state touches under --skip-preflight except real
+        # state persistence (which this test exercises): no network, no profile lookup.
+        import ucode.cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "normalize_workspace_url", lambda ws: ws)
+        monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda ws: {})
+        monkeypatch.setattr(cli_mod, "find_profile_name_for_host", lambda ws: None)
+        monkeypatch.setattr(cli_mod, "purge_cross_workspace_mcp_residue", lambda *a, **kw: None)
+
+    def test_a_to_b_to_a_round_trip_and_removal_stay_isolated(self):
+        import ucode.cli as cli_mod
+
+        a = "https://a.databricks.com"
+        b = "https://b.databricks.com"
+
+        # Configure A and opt into OpenCode there.
+        cli_mod.configure_shared_state(a, skip_preflight=True)
+        state = load_state()
+        add_self_managed_agent(state, "opencode")
+        save_state(state)
+
+        # A -> B: B must not inherit A's opt-in; opt into a different agent in B.
+        cli_mod.configure_shared_state(b, skip_preflight=True)
+        assert self_managed_agents(load_state()) == []
+        state = load_state()
+        add_self_managed_agent(state, "copilot")
+        save_state(state)
+
+        # B -> A: A keeps only its own opt-in, not B's.
+        cli_mod.configure_shared_state(a, skip_preflight=True)
+        assert self_managed_agents(load_state()) == ["opencode"]
+
+        # Removing in A leaves B's list untouched.
+        state = load_state()
+        remove_self_managed_agent(state, "opencode")
+        save_state(state)
+        assert workspace_self_managed_agents(a) == []
+        assert workspace_self_managed_agents(b) == ["copilot"]
