@@ -791,11 +791,22 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     return state
 
 
+def _reject_managed_agent_option(managed: dict | None, option: str | None) -> None:
+    if option is None or managed is None or not managed_enabled_tools(managed):
+        return
+    raise RuntimeError(
+        f"{option} is only supported for self-managed agents. This workspace has an "
+        "admin-managed coding agent configuration; run `ug configure` without "
+        f"{option} so workspace policy selects the agents."
+    )
+
+
 def configure_workspace_command(
     tool: str | None = None,
     selected_tools: list[str] | None = None,
     workspaces: list[tuple[str, str | None]] | None = None,
     *,
+    explicit_agent_option: str | None = None,
     use_pat: bool = False,
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
@@ -812,6 +823,7 @@ def configure_workspace_command(
             tool,
             selected_tools,
             workspaces,
+            explicit_agent_option=explicit_agent_option,
             use_pat=use_pat,
             databricks_ai_tools_enabled=databricks_ai_tools_enabled,
             custom_oauth=custom_oauth,
@@ -824,6 +836,7 @@ def _configure_workspace_command(
     selected_tools: list[str] | None = None,
     workspaces: list[tuple[str, str | None]] | None = None,
     *,
+    explicit_agent_option: str | None = None,
     use_pat: bool = False,
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
@@ -851,8 +864,11 @@ def _configure_workspace_command(
         )
         state = states[0]
         parent_schema = None
-        if tool in ("claude", "codex"):
+        managed = None
+        if explicit_agent_option is not None or tool in ("claude", "codex"):
             managed, _ = refresh_managed_config(state, force_refresh=True)
+            _reject_managed_agent_option(managed, explicit_agent_option)
+        if tool in ("claude", "codex"):
             _reject_disabled_agent(managed, tool)
             if managed is not None:
                 state = resolve_state(managed, state, tool)
@@ -893,6 +909,7 @@ def _configure_workspace_command(
     # applies a config the admin has since changed.
     managed, _ = refresh_managed_config(state, force_refresh=True)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
+    _reject_managed_agent_option(managed, explicit_agent_option)
     if managed is not None and managed_tools:
         configured_tools: list[str] = []
         for tool_name in managed_tools:
@@ -3411,14 +3428,16 @@ def configure(
         str | None,
         typer.Option(
             "--agent",
-            help="Configure only the named agent (e.g. claude, codex, gemini, opencode, copilot, pi).",
+            help="Configure only the named agent (e.g. claude, codex, gemini, opencode, "
+            "copilot, pi). Self-managed workspaces only.",
         ),
     ] = None,
     agents: Annotated[
         str | None,
         typer.Option(
             "--agents",
-            help="Configure a comma-separated list of agents without prompting (e.g. claude,codex).",
+            help="Configure a comma-separated list of agents without prompting "
+            "(e.g. claude,codex). Self-managed workspaces only.",
         ),
     ] = None,
     workspace: Annotated[
@@ -3599,11 +3618,16 @@ def configure(
                 strict=True,
             )
             if workspace_entries is None:
-                configure_workspace_command(tool, **skip_kwargs)
+                configure_workspace_command(
+                    tool,
+                    explicit_agent_option="--agent",
+                    **skip_kwargs,
+                )
             else:
                 configure_workspace_command(
                     tool,
                     workspaces=workspace_entries,
+                    explicit_agent_option="--agent",
                     **skip_kwargs,
                 )
         elif agents is not None:
@@ -3622,23 +3646,27 @@ def configure(
                 if workspace_entries is None:
                     configure_workspace_command(
                         selected_tools=selected_tools,
+                        explicit_agent_option="--agents",
                         **skip_kwargs,
                     )
                 else:
                     configure_workspace_command(
                         selected_tools=selected_tools,
                         workspaces=workspace_entries,
+                        explicit_agent_option="--agents",
                         **skip_kwargs,
                     )
             elif wants_cursor:
                 # Cursor-only: establish workspace state without the model picker.
-                _configure_shared_workspace_states(
+                states = _configure_shared_workspace_states(
                     workspace_entries or [_prompt_for_configuration(None)],
                     tools=[],
                     force_login=not use_pat,
                     use_pat=use_pat,
                     custom_oauth=custom_oauth,
                 )
+                managed, _ = refresh_managed_config(states[0], force_refresh=True)
+                _reject_managed_agent_option(managed, "--agents")
             else:
                 # Neither model agents nor cursor -> empty/invalid --agents list.
                 _parse_agents_option(agents)
