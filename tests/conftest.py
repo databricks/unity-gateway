@@ -67,6 +67,13 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
+    # When the suite runs inside a ug smart-routing session, these ambient env vars
+    # make smart_routing_enabled()/configured_router_name() read the host's live
+    # routing state, leaking a Databricks-Smart-Router-Recipe header into
+    # header-rendering tests. Clear them so routing stays off unless a test opts in.
+    monkeypatch.delenv("ENABLE_SMART_ROUTING_V2", raising=False)
+    monkeypatch.delenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", raising=False)
+    monkeypatch.delenv("SMART_ROUTER_NAME", raising=False)
     # On Windows, resolve_command swaps a bare program name for whatever `shutil.which`
     # finds on the developer's PATH (e.g. a real `codex.CMD`). Rebind only the compatibility
     # helper's `shutil` so argv stays host-independent; helper tests patch `which` explicitly.
