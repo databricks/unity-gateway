@@ -2745,7 +2745,9 @@ class TestRevert:
 
         with (
             patch("ucode.cli.load_state", return_value=state),
-            patch("ucode.cli.restore_file", return_value=False),
+            # Each agent restores its own files now, so the stub belongs at the adapter that
+            # calls restore_file — the developer's real agent configs stay untouched.
+            patch("ucode.agents.legacy.restore_file", return_value=False),
             patch(
                 "ucode.cli.revert_mcp_configs",
                 side_effect=lambda loaded_state: (
@@ -2875,7 +2877,8 @@ class TestAutoConfigureOnFirstRun:
             patch("ucode.cli.ensure_provider_state", return_value=configured_state),
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
             patch("ucode.cli.configure_tool", return_value=configured_state),
-            patch("ucode.cli.restore_file") as mock_restore,
+            # Launching must never restore a config; agents own restore_file now.
+            patch("ucode.agents.legacy.restore_file") as mock_restore,
             patch("ucode.cli.launch_agent") as mock_launch,
         ):
             result = runner.invoke(app, [tool])
