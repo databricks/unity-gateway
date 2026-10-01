@@ -30,6 +30,11 @@ The same component suite checks ownership retention across an empty search-model
 catalog and subsequent external handoff or standalone refresh. That recovery path
 does not yet have a live integration journey.
 
+Fresh Claude-only search discovery and registration are covered by component
+tests in `../test_claude_search_discovery.py`, including legacy catalog fallback,
+an explicit model override, and no available GPT model. Live search remains
+outside this integration suite.
+
 The sudo-session regression checks live in `../test_managed_files.py` and `../test_cli.py`.
 They cover shared-worker invocation counts, shutdown/cancellation, and temporary-file failure
 handling without sudo.
