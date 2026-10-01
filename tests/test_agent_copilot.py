@@ -316,7 +316,7 @@ class TestLaunch:
             return Process()
 
         monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
-        state = {"workspace": WS, "copilot_default_model": default}
+        state = {"workspace": WS, "codex_models": [default]}
 
         with pytest.raises(SystemExit) as exit_info:
             copilot.launch(
@@ -330,7 +330,7 @@ class TestLaunch:
         assert argv == ["copilot", *tool_args]
         assert env["COPILOT_MODEL"] == expected_model
         assert env["COPILOT_PROVIDER_WIRE_API"] == expected_api
-        assert state["copilot_default_model"] == default
+        assert state["codex_models"] == [default]
 
     def test_token_refresh_keeps_launch_model(self, tmp_path, monkeypatch):
         env_path = isolate_copilot_config_paths(monkeypatch, tmp_path)
@@ -360,7 +360,7 @@ class TestLaunch:
 
         with pytest.raises(SystemExit) as exit_info:
             copilot.launch(
-                {"workspace": WS, "copilot_default_model": "gpt-5"},
+                {"workspace": WS, "codex_models": ["gpt-5"]},
                 [],
                 options=copilot.LaunchOptions(user_pinned_model="gpt-6-astra"),
             )
@@ -405,25 +405,6 @@ class TestValidateCmd:
         cmd = copilot.validate_cmd("copilot")
 
         assert cmd[:3] == ["copilot", "--additional-mcp-config", f"@{mcp_path}"]
-
-
-class TestManagedModels:
-    def test_managed_models_win_over_the_shared_discovery_lists(self):
-        state = {
-            "copilot_models": ["system.ai.gpt-5"],
-            "claude_models": {"sonnet": "shared-should-not-win"},
-        }
-        assert copilot.default_model(state) == "system.ai.gpt-5"
-
-    def test_falls_back_to_the_shared_lists_without_a_managed_config(self):
-        assert copilot.default_model({"claude_models": {"sonnet": "discovered"}}) == "discovered"
-
-    def test_copilot_default_model_wins_over_allowlist(self):
-        state = {
-            "copilot_default_model": "admin-chosen-default",
-            "copilot_models": ["system.ai.gpt-5"],
-        }
-        assert copilot.default_model(state) == "admin-chosen-default"
 
 
 class TestWriteUserMcpServers:

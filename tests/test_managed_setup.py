@@ -74,12 +74,9 @@ def _full_manifest() -> dict:
             },
             "codex": {
                 "otel_tracing_enabled": False,
-                "model_config": {"default_model": "system.ai.gpt-5-6"},
-            },
-            "opencode": {
                 "model_config": {
-                    "default_model": "system.ai.claude-opus-4-8",
-                    "model_services": ["system.ai.claude-opus-4-8", "system.ai.kimi-k2-6"],
+                    "default_model": "system.ai.gpt-5-6",
+                    "model_services": ["system.ai.gpt-5-6", "system.ai.kimi-k2-6"],
                 },
             },
         },
@@ -95,7 +92,7 @@ def _full_manifest() -> dict:
                 },
                 {
                     "spending_percentage": 1.0,
-                    "recommended_agent": "opencode",
+                    "recommended_agent": "codex",
                     "recommended_model": "system.ai.kimi-k2-6",
                 },
             ],
@@ -132,17 +129,14 @@ class TestRoundTrip:
         assert normalize_managed_config(serialize_managed_config(manifest)) == manifest
 
     def test_every_known_agent_round_trips(self):
-        # Each agent's oneof variant must survive a round trip, including the flat-list agents and
-        # codex (which has no model list at all). Claude uses 'default_models_by_model_family' (a dict of slots); flat-list
-        # agents use 'model_services' (a list); codex uses neither.
+        # Each agent's oneof variant must survive a round trip. Claude uses
+        # 'default_models_by_model_family' (a dict of slots); codex carries only its default_model.
         for tool in AGENT_TOOL_TO_ENUM:
             model_config: dict = {"default_model": "system.ai.some-model"}
             if tool == "claude":
                 model_config["default_models_by_model_family"] = {
                     "default_opus_model": "system.ai.claude-opus-4-8"
                 }
-            elif tool != "codex":
-                model_config["model_services"] = ["system.ai.some-model"]
             manifest = {
                 "default_agent": tool,
                 "enabled_agents": {tool: {"model_config": model_config}},
@@ -209,15 +203,13 @@ class TestSerialize:
         assert "models" not in config
         assert config["default_models"]["default_model"] == "system.ai.gpt-5-6"
 
-    def test_flat_list_agents_use_repeated_models(self):
+    def test_a_static_allow_list_uses_repeated_model_services(self):
         payload = serialize_managed_config(_full_manifest())
-        opencode = next(
-            entry
-            for entry in payload["enabled_agents"]
-            if entry["agent"] == "CODING_AGENT_OPENCODE"
+        codex = next(
+            entry for entry in payload["enabled_agents"] if entry["agent"] == "CODING_AGENT_CODEX"
         )
-        assert opencode["config"]["models"]["model_services"] == [
-            "system.ai.claude-opus-4-8",
+        assert codex["config"]["models"]["model_services"] == [
+            "system.ai.gpt-5-6",
             "system.ai.kimi-k2-6",
         ]
 
@@ -256,7 +248,7 @@ class TestSerialize:
         payload = serialize_managed_config(_full_manifest())
         tiers = payload["smart_defaults"]["tiers"]
         assert [tier["spending_percentage"] for tier in tiers] == [0.8, 1.0]
-        assert tiers[1]["recommended_agent"] == "CODING_AGENT_OPENCODE"
+        assert tiers[1]["recommended_agent"] == "CODING_AGENT_CODEX"
 
     def test_budget_id_appears_only_under_smart_defaults(self):
         # The budget id must appear under smart_defaults, not at the top level.
@@ -322,22 +314,17 @@ class TestModelOptions:
             "system.ai.claude-haiku-4-5",
         ]
 
-    def test_gemini_only_sees_gemini_models(self):
-        assert model_options_for_agent("gemini", STATE) == ["system.ai.gemini-3-flash"]
-
     def test_codex_sees_gpt_and_oss(self):
         assert model_options_for_agent("codex", STATE) == [
             "system.ai.gpt-5-6",
             "system.ai.kimi-k2-6",
         ]
 
-    def test_multi_provider_agents_see_everything(self):
-        for tool in ("opencode", "pi", "copilot"):
-            options = model_options_for_agent(tool, STATE)
-            assert "system.ai.claude-opus-4-8" in options, tool
-            assert "system.ai.gpt-5-6" in options, tool
-            assert "system.ai.gemini-3-flash" in options, tool
-            assert "system.ai.kimi-k2-6" in options, tool
+    @pytest.mark.parametrize("tool", ["gemini", "opencode", "pi", "copilot"])
+    def test_agents_ug_cannot_manage_have_no_options(self, tool):
+        # They are self-configured only, so an admin has nothing to author models for.
+        assert model_families_for_agent(tool) == ()
+        assert model_options_for_agent(tool, STATE) == []
 
     def test_empty_state_yields_no_options(self):
         assert model_options_for_agent("claude", {}) == []
@@ -757,7 +744,7 @@ class TestValidate:
                 "tiers": [
                     {
                         "spending_percentage": 0.5,
-                        "recommended_agent": "opencode",
+                        "recommended_agent": "codex",
                         "recommended_model": "system.ai.kimi-k2-6",
                     }
                 ],
@@ -781,9 +768,9 @@ class TestValidate:
         # The server only checks that the tier's agent is enabled, so without this a tier activates
         # and hands the developer a model their agent was never configured with.
         manifest = {
-            "default_agent": "pi",
+            "default_agent": "codex",
             "enabled_agents": {
-                "pi": {
+                "codex": {
                     "model_config": {
                         "recommended_model": "system.ai.kimi-k2-6",
                         "model_services": ["system.ai.kimi-k2-6"],
@@ -795,20 +782,20 @@ class TestValidate:
                 "tiers": [
                     {
                         "spending_percentage": 0.8,
-                        "recommended_agent": "pi",
+                        "recommended_agent": "codex",
                         "recommended_model": "system.ai.gpt-5-6",
                     }
                 ],
             },
         }
         errors = validate_manifest(manifest, STATE)
-        assert any("is not one of the models configured for 'pi'" in e for e in errors), errors
+        assert any("is not one of the models configured for 'codex'" in e for e in errors), errors
 
     def test_tier_model_from_the_agents_list_is_accepted(self):
         manifest = {
-            "default_agent": "pi",
+            "default_agent": "codex",
             "enabled_agents": {
-                "pi": {
+                "codex": {
                     "model_config": {
                         "default_model": "system.ai.kimi-k2-6",
                         "model_services": ["system.ai.kimi-k2-6", "system.ai.gpt-5-6"],
@@ -820,7 +807,7 @@ class TestValidate:
                 "tiers": [
                     {
                         "spending_percentage": 0.8,
-                        "recommended_agent": "pi",
+                        "recommended_agent": "codex",
                         "recommended_model": "system.ai.gpt-5-6",
                     }
                 ],

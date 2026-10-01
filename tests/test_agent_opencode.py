@@ -384,13 +384,6 @@ class TestOpencodeDefaultModel:
         assert opencode.default_model({}) is None
         assert opencode.default_model({"opencode_models": {}}) is None
 
-    def test_opencode_default_model_wins_over_bucketed_models(self):
-        state = {
-            "opencode_default_model": "admin-chosen-default",
-            "opencode_models": {"anthropic": ["claude-sonnet"]},
-        }
-        assert opencode.default_model(state) == "admin-chosen-default"
-
 
 class TestOpencodeValidateCmd:
     def test_starts_with_binary(self):
@@ -475,7 +468,6 @@ class TestOpencodeLaunchModel:
             "workspace": WS,
             "base_urls": {"opencode": _base_urls()},
             "opencode_models": {"anthropic": ["claude-sonnet"], "gemini": ["gemini-2"]},
-            "opencode_default_model": "claude-sonnet",
             "managed_configs": {},
         }
         original_state = deepcopy(state)
@@ -495,7 +487,6 @@ class TestOpencodeLaunchModel:
         assert popen.call_args.args[0] == ["opencode", *expected_args]
         assert tool_args == original_args
         assert state["opencode_models"] == original_state["opencode_models"]
-        assert state["opencode_default_model"] == original_state["opencode_default_model"]
 
     def test_rejects_invalid_model_before_configure_and_process(self):
         state = {"opencode_models": {"anthropic": ["claude-sonnet"]}}

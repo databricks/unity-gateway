@@ -100,7 +100,6 @@ from ucode.managed_resolve import (
     managed_provider_service,
     managed_supplies_models,
     managed_unity_catalog_location,
-    managed_unservable_models,
     recommended_agent,
     resolve_state,
 )
@@ -2660,12 +2659,6 @@ def _launch_tool(
         _note_recommended_agent(recommendation, tool)
         if managed is not None:
             state = resolve_state(managed, state, tool)
-            unservable = managed_unservable_models(managed, tool)
-            if unservable:
-                print_warning(
-                    f"Your workspace's managed config lists no {TOOL_SPECS[tool]['display']}-servable "
-                    f"models ({', '.join(unservable)}); using your discovered models instead."
-                )
         elif not coding_agent_config_feature_disabled:
             print_note("No managed coding agent config found; using your own settings")
         if provider and parent_schema is not None:

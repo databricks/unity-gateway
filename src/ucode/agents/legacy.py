@@ -109,11 +109,11 @@ class LegacyAgent:
         if static_models:
             return static_models
         if self._tool == "copilot":
-            return model_values(state.get("copilot_models")) or (
-                model_values(state.get("claude_models")) + model_values(state.get("codex_models"))
+            return model_values(state.get("claude_models")) + model_values(
+                state.get("codex_models")
             )
         if self._tool == "pi":
-            return model_values(state.get("pi_models")) or (
+            return (
                 model_values(state.get("claude_models"))
                 + model_values(state.get("codex_models"))
                 + model_values(state.get("gemini_models"))

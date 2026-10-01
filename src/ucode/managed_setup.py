@@ -36,12 +36,9 @@ from ucode.managed_config import (
 
 # ucode tool name -> CodingAgent proto enum. Inverted from the read side's map so the two directions
 # cannot drift: adding an agent to `managed_config._AGENT_ENUM_TO_TOOL` makes it serializable here
-# automatically.
+# automatically. Claude Code and Codex are the only governable agents, so they are all an admin can
+# author.
 AGENT_TOOL_TO_ENUM: dict[str, str] = {tool: enum for enum, tool in AGENT_ENUM_TO_TOOL.items()}
-
-# Agents whose model config carries a flat `models` list. Claude instead uses per-family slots
-# (`ClaudeDefaultModels`), and Codex has no model list at all — it selects exactly one model.
-_FLAT_MODEL_LIST_AGENTS = frozenset({"opencode", "pi", "gemini", "copilot"})
 
 # Claude family slot names in `ClaudeDefaultModels`, keyed by ucode's family name. Public because
 # the wizard prompts one slot at a time.
@@ -50,15 +47,11 @@ CLAUDE_SLOT_FOR_FAMILY: dict[str, str] = {
 }
 
 # Which discovered model families each agent may be configured with, on the Databricks-hosted path.
-# Claude Code only speaks the Anthropic dialect, Gemini CLI only Gemini; Codex's `/v1/models` route
-# serves GPT plus the OSS models; the multi-provider harnesses can use anything discovered.
+# Claude Code only speaks the Anthropic dialect; Codex's `/v1/models` route serves GPT plus the OSS
+# models.
 _AGENT_MODEL_FAMILIES: dict[str, tuple[str, ...]] = {
     "claude": ("claude",),
-    "gemini": ("gemini",),
     "codex": ("codex", "oss"),
-    "opencode": ("claude", "codex", "gemini", "oss"),
-    "pi": ("claude", "codex", "gemini", "oss"),
-    "copilot": ("claude", "codex", "gemini", "oss"),
 }
 
 
@@ -81,7 +74,7 @@ def model_options_for_agent(tool: str, state: dict) -> list[str]:
     """Models an admin may pick for ``tool``, drawn from the workspace's discovered inventory.
 
     ``state`` is a hydrated workspace state (as ``configure_shared_state`` produces): ``claude_models``
-    is a family->id dict, while ``codex_models`` / ``gemini_models`` / ``oss_models`` are lists.
+    is a family->id dict, while ``codex_models`` / ``oss_models`` are lists.
     Returns a de-duplicated list in a stable order (Claude newest-family first, then the family
     order in :data:`_AGENT_MODEL_FAMILIES`) — empty when nothing was discovered for those families,
     in which case the caller should fall back to free-text entry.
@@ -97,7 +90,7 @@ def model_options_for_agent(tool: str, state: dict) -> list[str]:
                     if isinstance(model, str) and model:
                         options.append(model)
             continue
-        key = {"codex": "codex_models", "gemini": "gemini_models", "oss": "oss_models"}[family]
+        key = {"codex": "codex_models", "oss": "oss_models"}[family]
         models = state.get(key)
         if isinstance(models, list):
             options.extend(m for m in models if isinstance(m, str) and m)
@@ -174,7 +167,7 @@ def _model_config_payload(tool: str, model_config: dict) -> dict:
     The wire has two per-agent fields: ``models`` (the source oneof, one of
     model_provider_service / unity_catalog_location / model_services) and ``default_models``
     (the overall default_model plus per-family slots). Internally, claude's family slots live
-    under ``default_models_by_model_family`` and flat-list agents under ``model_services``.
+    under ``default_models_by_model_family`` and a static allow-list under ``model_services``.
     """
     models_obj: dict = {}
     # Exactly one model source (the API oneof), precedence provider > location > model_services.
@@ -333,7 +326,7 @@ def serialize_managed_config(manifest: dict) -> dict:
     The exact inverse of :func:`ucode.managed_config.normalize_managed_config`: tool names become
     ``CODING_AGENT_*`` enums, internal ``models`` slots become ``default_models`` map keys, and the
     ``mcp_servers`` / ``skills`` ``{names, location}`` selectors become ``{names,
-    unity_catalog_location}``. Agents this build doesn't recognize are dropped, mirroring the read
+    unity_catalog_location}``. Agents ucode can't manage are dropped, mirroring the read
     side.
 
     Output-only proto fields (``workspace_id``, ``retrieved_time``, user ids) are never emitted.
@@ -450,7 +443,7 @@ def validate_manifest(manifest: dict, state: dict | None = None) -> list[str]:
 
     - ``default_agent`` is required once any agent configuration is present, must appear in
       ``enabled_agents``, and that agent must have a non-empty ``default_model``;
-    - every ``enabled_agents`` key must be an agent this ucode build knows;
+    - every ``enabled_agents`` key must be an agent ucode can manage (claude or codex);
     - ``mcp_servers`` and ``skills`` each carry either non-empty ``names`` or a
       ``unity_catalog_location``, not both;
     - ``smart_defaults`` needs a ``budget_id``, and each tier needs a ``spending_percentage`` in

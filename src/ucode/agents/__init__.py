@@ -471,31 +471,17 @@ def launch(
 
 
 def check_gateway_endpoint(state: dict, tool: str) -> bool:
-    """V2-only: a tool is available iff we discovered models for it.
+    """V2-only: a tool is available iff workspace discovery found models it can use.
 
-    Deliberately not ``AGENTS[tool].models(state).available``: this gate asks only whether
-    *workspace discovery* found anything, so an admin's managed allow list (``copilot_models``,
-    ``pi_models``, ``{tool}_static_models``) must not make an agent look available when the
-    workspace serves none of the families behind it. The managed configure path calls this with
-    a managed-resolved state, where those keys are set.
+    Claude and Codex check their discovered family directly rather than ``models()``: an admin's
+    managed allow list (``{tool}_static_models``) feeds their ``models()`` but must not make them
+    look available when the workspace serves none of the models behind it. The managed configure
+    path calls this with a managed-resolved state, where that key is set. No other agent is
+    admin-managed, so for them ``models()`` is exactly what discovery found.
     """
-    if tool == "claude":
-        return bool(state.get("claude_models"))
-    if tool == "opencode":
-        return bool(state.get("opencode_models"))
-    if tool == "codex":
-        return bool(state.get("codex_models"))
-    if tool == "gemini":
-        return bool(state.get("gemini_models"))
-    if tool == "copilot":
-        return bool(state.get("claude_models")) or bool(state.get("codex_models"))
-    if tool == "pi":
-        return (
-            bool(state.get("claude_models"))
-            or bool(state.get("codex_models"))
-            or bool(state.get("gemini_models"))
-        )
-    return False
+    if tool in ("claude", "codex"):
+        return bool(state.get(f"{tool}_models"))
+    return bool(AGENTS[tool].models(state).available)
 
 
 _TOOL_DISCOVERY_SOURCES: dict[str, tuple[str, ...]] = {

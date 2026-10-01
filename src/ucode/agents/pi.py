@@ -42,10 +42,8 @@ from ucode.config_io import (
     write_json_file,
 )
 from ucode.databricks import (
-    ANTHROPIC_FAMILIES,
     build_auth_shell_command,
     build_pi_base_urls,
-    classify_model_family,
     get_databricks_token,
 )
 from ucode.os_compatibility import subprocess_cross_os
@@ -188,19 +186,13 @@ def write_tool_config(
     if token is None:
         token = get_databricks_token(state["workspace"], state.get("profile"))
     pi_base_urls = state.get("base_urls", {}).get("pi") or build_pi_base_urls(state["workspace"])
-    managed_families = _managed_model_families(state)
-    claude_models, codex_models, gemini_models = managed_families or (
-        state.get("claude_models") or {},
-        state.get("codex_models") or [],
-        state.get("gemini_models") or [],
-    )
     overlay, managed_keys = render_overlay(
         model,
         build_pi_api_key(state),
         pi_base_urls,
-        claude_models,
-        codex_models,
-        gemini_models,
+        state.get("claude_models") or {},
+        state.get("codex_models") or [],
+        state.get("gemini_models") or [],
     )
     existing = read_json_safe(PI_CONFIG_PATH)
     providers = existing.get("providers")
@@ -228,45 +220,11 @@ def _write_settings(model_selector: str) -> None:
     write_json_file(PI_SETTINGS_PATH, merged)
 
 
-def _managed_model_families(state: dict) -> tuple[dict[str, str], list[str], list[str]] | None:
-    """Split a managed config's ``pi_models`` into the per-family inputs Pi's providers need.
-
-    Pi builds one provider block per family, so a flat list has to be classified back out. Returns
-    None when the managed models yield no family Pi can serve, leaving the workspace-wide discovery
-    lists in play rather than writing a config with no usable provider.
-    """
-    managed = state.get("pi_models")
-    if not isinstance(managed, list) or not managed:
-        return None
-    claude: dict[str, str] = {}
-    codex: list[str] = []
-    gemini: list[str] = []
-    for model in managed:
-        if not isinstance(model, str) or not model.strip():
-            continue
-        family = classify_model_family(model)
-        if family in ANTHROPIC_FAMILIES:
-            claude.setdefault(family, model)
-        elif family == "codex":
-            codex.append(model)
-        elif family == "gemini":
-            gemini.append(model)
-    if not (claude or codex or gemini):
-        return None
-    return claude, codex, gemini
-
-
 def default_model(state: dict) -> str | None:
     """Prefer Claude opus → sonnet → haiku; fall back to codex, gemini.
 
-    A managed config's ``pi_default_model`` and ``pi_models`` both win outright: the former is
-    the admin's chosen session start, the latter their allowlist. Workspace-wide discovery falls back.
+    Drawn from workspace-wide discovery, which is Pi's only source of models.
     """
-    if isinstance(state.get("pi_default_model"), str):
-        return state.get("pi_default_model")
-    managed = state.get("pi_models")
-    if isinstance(managed, list) and managed:
-        return managed[0]
     claude_models = state.get("claude_models") or {}
     for family in ("opus", "sonnet", "haiku"):
         if claude_models.get(family):
