@@ -18,6 +18,7 @@ from utils.evidence import (
     read_jsonl,
 )
 from utils.managed import (
+    build_claude_agent_config,
     build_codex_agent_config,
     build_coding_agent_config,
     set_managed_config_stub,
@@ -244,7 +245,8 @@ def test_smart_routing_codex_route_subagent_hook(live_session, workspace):
 
 @pytest.mark.live
 @pytest.mark.claude
-def test_smart_router_skill_toggles_claude_subagent_routing(live_session, workspace):
+@pytest.mark.managed_fixture
+def test_smart_router_skill_toggles_claude_subagent_routing(live_session, workspace, tmp_path):
     """Scenario: launch Claude with subagent routing enabled, spawn a child, invoke the
     installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
@@ -257,10 +259,13 @@ def test_smart_router_skill_toggles_claude_subagent_routing(live_session, worksp
     session = live_session
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
+    config = build_coding_agent_config(
+        "CODING_AGENT_CLAUDE_CODE",
+        build_claude_agent_config(CLAUDE_MODELS, smart_routing=True),
+    )
+    set_managed_config_stub(session, tmp_path, config)
     session.run(
         "configure",
-        "--agents",
-        "claude",
         "--workspace",
         workspace,
         "--skip-validate",
