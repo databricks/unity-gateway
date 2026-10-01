@@ -55,13 +55,15 @@ CODEX_SMART_ROUTING_MODELS = [
 
 @pytest.mark.managed
 @pytest.mark.claude
-def test_managed_claude_mps_defaults_accompany_discovery(live_session):
-    """Scenario: launch Claude with managed defaults and MPS discovery on the west-2 workspace.
+def test_managed_claude_mps_defaults_accompany_discovery(live_session, second_unmanaged_workspace):
+    """Scenario: launch Claude with managed defaults and MPS discovery on the west-2 workspace,
+    then configure the real second workspace after verifying it publishes no managed config.
 
     Expected: the installed ug launch writes the MPS header and every admin-authored default to
     both Claude settings files without changing the model ids, and replaces built-in picker rows
     with labeled family-default shortcuts followed by the independently fetched MPS catalog,
-    including targets also used as defaults. This settings reconciliation check does not claim
+    including targets also used as defaults. Switching to the unmanaged workspace preserves every
+    pre-existing family default in both files. This settings reconciliation check does not claim
     model inference.
     """
     session = live_session
@@ -113,6 +115,26 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session):
         for option in catalog_options:
             if display_name := catalog.display_names.get(option["model"]):
                 assert option["label"] == display_name, option
+
+    session.env["DATABRICKS_BEARER"] = os.environ["DATABRICKS_SECOND_BEARER"]
+    session.run(
+        "configure",
+        "--agents",
+        "claude",
+        "--workspace",
+        second_unmanaged_workspace,
+        "--skip-upgrade",
+        timeout=240,
+    )
+
+    unmanaged_private = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
+    unmanaged_os_managed = json.loads(
+        session.run("/etc/claude-code/managed-settings.json", binary="cat", timeout=30).stdout
+    )
+    for settings in (unmanaged_private, unmanaged_os_managed):
+        env = settings.get("env") or {}
+        for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
+            assert env.get(env_key) == defaults[config_key], settings
 
 
 @pytest.mark.managed

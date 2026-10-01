@@ -4,7 +4,7 @@ A developer's workspace configuration moves through no config -> static config A
 -> model discovery via a Model Provider Service -> no config, within one home. Switching between
 static configs reconciles the generated model settings to the current config (pruning models the
 previous config listed); switching to an MPS clears the static list (the header routes instead); and
-configuring a workspace with no managed config clears ug's managed model settings so an unmanaged
+configuring a workspace with no managed config clears ug's static picker/catalog so an unmanaged
 workspace never enforces a stale list.
 
 The configs are injected via ``UCODE_MANAGED_CONFIG_STUB`` (an explicit ``null`` for the no-config
