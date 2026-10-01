@@ -45,8 +45,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          DATABRICKS_HOST: ${{ secrets.UCODE_TEST_WORKSPACE }}
-          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+          DATABRICKS_HOST: https://ai-oss-ecosystem-integration-testing.cloud.databricks.com
+          DATABRICKS_CLIENT_ID: 6476a5e7-7f32-4073-abc5-ee30bb7d0060
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_CLI_REVIEW_BOT_SP_CLIENT_SECRET }}
           UG_REVIEW_MODEL: ${{ vars.UG_CI_REVIEW_MODEL }}
           REVIEW_POLICY_PATH: .github/ug-review-instructions.md
           REPOSITORY_POLICY_PATH: AGENTS.md

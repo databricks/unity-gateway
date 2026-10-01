@@ -8,6 +8,7 @@ GitHub API; it never checks out or executes code from the PR head.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -21,6 +22,7 @@ from typing import Any
 
 COMMENT_MARKER = "<!-- ug-review-bot -->"
 RESPONSES_API_PATH = "/ai-gateway/codex/v1/responses"
+OAUTH_TOKEN_PATH = "/oidc/v1/token"
 MAX_FILES = 500
 MAX_PATCH_LINES = 500
 MAX_MANIFEST_BYTES = 20_000
@@ -135,6 +137,34 @@ def _github_pages(path: str) -> list[dict[str, Any]]:
         if len(payload) < 100:
             break
     return items
+
+
+def _oauth_access_token(host: str) -> str:
+    client_id = _env("DATABRICKS_CLIENT_ID")
+    client_secret = _env("DATABRICKS_CLIENT_SECRET")
+    credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    request = urllib.request.Request(
+        f"{host}{OAUTH_TOKEN_PATH}",
+        data=urllib.parse.urlencode(
+            {"grant_type": "client_credentials", "scope": "all-apis"}
+        ).encode(),
+        headers={
+            "Authorization": f"Basic {credentials}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            payload = _decode_json_response(response, "Databricks OAuth token request")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read(1_000).decode(errors="replace").strip()
+        raise ReviewError(f"Databricks OAuth token request failed ({exc.code}): {detail}") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise ReviewError(f"Databricks OAuth token request failed: {exc}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("access_token"), str):
+        raise ReviewError("Databricks OAuth token request returned no access token.")
+    return payload["access_token"]
 
 
 def _limit_bytes(text: str, limit: int) -> tuple[str, bool]:
@@ -339,7 +369,7 @@ def _request_review(
     repository_policy: str,
 ) -> Review:
     host = _env("DATABRICKS_HOST").rstrip("/")
-    token = _env("DATABRICKS_BEARER")
+    token = _oauth_access_token(host)
     model = _env("UG_REVIEW_MODEL")
     bounded_title, _ = _limit_bytes(title, 1_000)
     bounded_description, _ = _limit_bytes(description, 8_000)
