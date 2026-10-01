@@ -471,10 +471,12 @@ CUJ7 (`test_case_07_configured_claude_discovers_system_models` and
 job as one matrix leg per agent. The workspace URL comes from the
 `UG_CUJ7_WORKSPACE` repository secret; the shared CUJ service-principal credentials
 come from `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET`.
-The runner mints a short-lived workspace bearer from those credentials. The shared
-Claude and Codex jobs exclude the `cuj7` marker, so these cases run only on the dedicated
-workspace. That workspace must have no published CodingAgentConfig and must expose
-discoverable `system.ai` models for both agents. The dedicated job is required for
+The runner mints a short-lived workspace bearer from those credentials. Tests that
+require a dedicated workspace carry the `workspace_isolated` marker; the shared
+Claude and Codex jobs exclude that marker. A dedicated job must select each marked
+test with its own workspace and credentials. The CUJ7 workspace must have no
+published CodingAgentConfig and must expose discoverable `system.ai` models for
+both agents. The dedicated job is required for
 full, live, and TUI CI suites.
 
 The workspace check requires the secret to match
@@ -492,10 +494,10 @@ CUJ7 in two dedicated-workspace matrix legs:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude and not cuj7` | 30 |
-| Codex | `live and codex and not cuj7` | 36 |
-| CUJ7: unmanaged journey · Claude | `live and claude and cuj7` | 1 |
-| CUJ7: unmanaged journey · Codex | `live and codex and cuj7` | 1 |
+| Claude | `live and claude and not workspace_isolated` | 30 |
+| Codex | `live and codex and not workspace_isolated` | 36 |
+| CUJ7: unmanaged journey · Claude | `live and claude and cuj7 and workspace_isolated` | 1 |
+| CUJ7: unmanaged journey · Codex | `live and codex and cuj7 and workspace_isolated` | 1 |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.

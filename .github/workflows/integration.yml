@@ -342,7 +342,7 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
-      TEST_MARKER: ${{ inputs.suite == 'tui' && 'live and tui' || 'live' }} and ${{ matrix.agent }} and not cuj7
+      TEST_MARKER: ${{ inputs.suite == 'tui' && 'live and tui' || 'live' }} and ${{ matrix.agent }} and not workspace_isolated
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}
     steps: *live-steps
 
@@ -361,7 +361,7 @@ jobs:
       DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
-      TEST_MARKER: live and ${{ matrix.agent }} and cuj7
+      TEST_MARKER: live and ${{ matrix.agent }} and cuj7 and workspace_isolated
       ARTIFACT_NAME: integration-cuj7-${{ matrix.agent }}
     steps: *live-steps
 

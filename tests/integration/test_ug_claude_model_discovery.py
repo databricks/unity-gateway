@@ -82,6 +82,7 @@ def _assert_replacement_picker(session, expected_ids):
 
 @pytest.mark.live
 @pytest.mark.tui
+@pytest.mark.workspace_isolated
 @pytest.mark.cuj7
 def test_case_07_configured_claude_discovers_system_models(live_session, workspace):
     """Scenario: configure Claude, then launch without source overrides or discovery flags.
