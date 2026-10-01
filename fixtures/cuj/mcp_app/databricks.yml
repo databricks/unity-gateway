@@ -1,0 +1,14 @@
+bundle:
+  name: ug-cuj-fixture
+
+resources:
+  apps:
+    ug-cuj-fixture:
+      name: ug-cuj-fixture
+      source_code_path: .
+      config:
+        command: [python, app.py]
+
+targets:
+  cuj3:
+    default: true

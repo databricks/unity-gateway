@@ -15,6 +15,8 @@ Run identifiers must be 1–128 ASCII letters, digits, `_`, or `-`, starting wit
 a letter or digit. Values are derived in memory from a domain-separated hash;
 the app does not persist data or use secrets. `app.yaml` is the Databricks Apps
 runtime command; install dependencies from `requirements.txt`.
+`databricks.yml` defines the `ug-cuj-fixture` App for deployment through the
+Databricks CLI after selecting the CUJ3 profile explicitly.
 
 For local smoke testing after installing dependencies:
 
