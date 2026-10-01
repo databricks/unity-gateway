@@ -14,7 +14,9 @@ import pytest
 
 from ucode import databricks as db_mod
 from ucode import managed_files
-from ucode.agents import LaunchOptions, claude
+from ucode.agents import AGENTS, ConfigureRequest, LaunchOptions, McpServer, claude
+from ucode.agents.interface import Agent, McpClient
+from ucode.constants import MCP_CLEANUP_SCOPES
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
 
@@ -3377,3 +3379,258 @@ class TestWriteUserMcpServers:
         written = config_dir / ".claude.json"
         assert json.loads(written.read_text())["mcpServers"]["svc"] == {"type": "http", "url": "u"}
         assert not default_path.exists()  # the default location is untouched
+
+
+class TestClaudeAgent:
+    """The native `Agent` implementation in `claude.AGENT` (the interface, not the internals)."""
+
+    def test_is_the_registered_agent(self):
+        assert AGENTS["claude"] is claude.AGENT
+        assert isinstance(claude.AGENT, Agent)
+        assert claude.AGENT.display == "Claude Code"
+        assert isinstance(claude.AGENT.mcp, McpClient)
+
+    def test_install_prefers_claudes_own_updater(self):
+        install = claude.AGENT.install
+        assert (install.binary, install.package) == ("claude", "@anthropic-ai/claude-code")
+        assert install.upgrade_argv == ("claude", "upgrade")
+        assert install.too_new is None
+        assert install.before_install is None
+
+    def test_version_error_is_looked_up_at_call_time(self, monkeypatch):
+        monkeypatch.setattr(claude, "minimum_version_error", lambda: "too old")
+        version_error = claude.AGENT.install.version_error
+        assert version_error is not None
+        assert version_error() == "too old"
+
+    def test_models_flatten_the_family_keyed_inventory_without_pinning(self):
+        state = {"claude_models": {"opus": "claude-opus", "sonnet": "claude-sonnet"}}
+        models = claude.AGENT.models(state)
+        assert models.available == ("claude-opus", "claude-sonnet")
+        # Claude leaves the starting model to the agent unless one is pinned.
+        assert models.default is None
+
+    def test_models_static_list_replaces_discovery_and_pin_wins(self):
+        state = {
+            "claude_models": {"opus": "claude-opus"},
+            "claude_static_models": ["only-this", "only-this"],
+            "claude_default_model": "pinned",
+        }
+        models = claude.AGENT.models(state)
+        assert models.available == ("only-this",)
+        assert models.default == "pinned"
+
+    def test_models_do_not_mutate_state(self):
+        state = {"claude_models": {"opus": "claude-opus"}}
+        claude.AGENT.models(state)
+        assert state == {"claude_models": {"opus": "claude-opus"}}
+
+    @pytest.mark.parametrize("request_", [ConfigureRequest(), ConfigureRequest(model="")])
+    def test_configure_requires_a_model_without_provider_or_parent_schema(
+        self, request_, monkeypatch
+    ):
+        monkeypatch.setattr(claude, "write_tool_config", lambda *a, **kw: pytest.fail("wrote"))
+        with pytest.raises(RuntimeError, match="A claude model must be selected"):
+            claude.AGENT.configure({}, request_)
+
+    @pytest.mark.parametrize(
+        "request_",
+        [
+            ConfigureRequest(provider="main.default.anthropic"),
+            ConfigureRequest(parent_schema="main.default"),
+        ],
+    )
+    def test_configure_needs_no_model_under_a_provider_or_parent_schema(
+        self, request_, monkeypatch
+    ):
+        monkeypatch.setattr(claude, "write_tool_config", lambda *a, **kw: {"written": True})
+        assert claude.AGENT.configure({}, request_) == {"written": True}
+
+    def test_configure_forwards_request_and_extras_and_returns_state(self, monkeypatch):
+        seen: dict = {}
+
+        def fake_write(state, model, **kwargs):
+            seen.update(state=state, model=model, **kwargs)
+            return {"returned": True}
+
+        monkeypatch.setattr(claude, "write_tool_config", fake_write)
+        catalog = object()
+        result = claude.AGENT.configure(
+            {"workspace": WS},
+            ConfigureRequest(
+                model="opus",
+                provider="prov",
+                parent_schema="main.default",
+                extras={
+                    "provider_models": {"opus": "x"},
+                    "relayed": 1,
+                    "route_root_model": "root",
+                    "custom_model": "custom",
+                    "coding_agent_config_defaults": {"opus": "y"},
+                    "picker_catalog": catalog,
+                },
+            ),
+        )
+        assert result == {"returned": True}  # a state dict, not a (state, token) tuple
+        assert seen == {
+            "state": {"workspace": WS},
+            "model": "opus",
+            "provider": "prov",
+            "provider_models": {"opus": "x"},
+            "relayed": True,
+            "route_root_model": "root",
+            "custom_model": "custom",
+            "coding_agent_config_defaults": {"opus": "y"},
+            "parent_schema": "main.default",
+            "picker_catalog": catalog,
+        }
+
+    def test_configure_writes_the_settings_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "backup.json")
+        monkeypatch.setattr("ucode.config_io.APP_DIR", tmp_path)
+        monkeypatch.setattr(claude, "save_state", lambda state: None)
+        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: None)
+
+        state = claude.AGENT.configure(
+            {"workspace": WS, "claude_models": {}},
+            ConfigureRequest(model="databricks-claude-sonnet-4"),
+        )
+
+        assert (tmp_path / "ucode-settings.json").exists()
+        assert "claude" in state["managed_configs"]
+
+    def test_launch_delegates_to_the_module_launch(self, monkeypatch):
+        calls: list[tuple] = []
+        monkeypatch.setattr(
+            claude, "launch", lambda state, args, *, options: calls.append((state, args, options))
+        )
+        options = LaunchOptions()
+        claude.AGENT.launch({"a": 1}, ["--x"], options=options)
+        assert calls == [({"a": 1}, ["--x"], options)]
+
+    def test_revert_rows_cover_settings_file_then_os_managed_settings(self, monkeypatch):
+        seen: list[tuple] = []
+
+        def fake_restore(config_path, backup_path, managed):
+            seen.append((config_path, backup_path, managed))
+            return True
+
+        monkeypatch.setattr(claude, "restore_file", fake_restore)
+        monkeypatch.setattr(claude, "revert_managed_settings", lambda: "removed")
+
+        rows = claude.AGENT.revert({"managed_configs": {"claude": {"keys": []}}})
+
+        assert rows == [
+            ("Claude Code config", "restored"),
+            ("Claude Code OS-managed settings", "removed"),
+        ]
+        assert seen == [(claude.CLAUDE_SETTINGS_PATH, claude.CLAUDE_BACKUP_PATH, True)]
+
+    def test_revert_reports_unchanged_when_nothing_was_restored(self, monkeypatch):
+        monkeypatch.setattr(claude, "restore_file", lambda *_a: False)
+        monkeypatch.setattr(claude, "revert_managed_settings", lambda: "unchanged")
+        assert claude.AGENT.revert({}) == [
+            ("Claude Code config", "unchanged"),
+            ("Claude Code OS-managed settings", "unchanged"),
+        ]
+
+
+class TestClaudeMcpClient:
+    """`claude.AGENT.mcp`: the native `McpClient` (per-scope cleanup, CLI add, batched write)."""
+
+    PROXY = ("ug", "mcp-proxy", "https://ws/svc")
+
+    @pytest.fixture
+    def recorded(self, monkeypatch):
+        calls: list[tuple] = []
+        monkeypatch.setattr(
+            claude, "remove_claude_mcp_server", lambda name, scope: scope in ("user", "local")
+        )
+        monkeypatch.setattr(
+            claude,
+            "add_claude_mcp_server",
+            lambda name, server, scope="user", *, always_load=False: calls.append(
+                ("stdio", name, server, scope, always_load)
+            ),
+        )
+        monkeypatch.setattr(
+            claude,
+            "add_claude_http_mcp_server",
+            lambda name, url, *, client_id: calls.append(("http", name, url, client_id)),
+        )
+        return calls
+
+    def test_identity(self):
+        client = claude.AGENT.mcp
+        assert (client.display, client.binary) == ("Claude Code", "claude")
+        assert client.oauth_client_id == claude.CLAUDE_CODE_OAUTH_CLIENT_ID
+
+    def test_add_stdio_clears_every_scope_then_registers_at_user_scope(self, recorded):
+        removed = claude.AGENT.mcp.add(
+            "svc", McpServer(url="https://ws/svc", proxy_argv=self.PROXY)
+        )
+        assert removed == [scope for scope in MCP_CLEANUP_SCOPES if scope in ("user", "local")]
+        assert recorded == [("stdio", "svc", list(self.PROXY), "user", False)]
+
+    def test_add_always_load_is_passed_through(self, recorded):
+        claude.AGENT.mcp.add("skills", McpServer(url="u", proxy_argv=self.PROXY, always_load=True))
+        assert recorded == [("stdio", "skills", list(self.PROXY), "user", True)]
+
+    def test_add_native_http_uses_the_published_oauth_client(self, recorded):
+        claude.AGENT.mcp.add(
+            "svc", McpServer(url="https://ws/svc", proxy_argv=self.PROXY, oauth_client="app-id")
+        )
+        assert recorded == [("http", "svc", "https://ws/svc", "app-id")]
+
+    def test_remove_reports_only_scopes_it_was_in(self, recorded):
+        assert set(claude.AGENT.mcp.remove("svc")) == {"user", "local"}
+        assert recorded == []
+
+    def test_entry_matches_what_the_cli_would_write(self):
+        client = claude.AGENT.mcp
+        assert client.entry(McpServer(url="u", proxy_argv=self.PROXY)) == {
+            "type": "stdio",
+            "command": "ug",
+            "args": ["mcp-proxy", "https://ws/svc"],
+            "env": {},
+        }
+        assert client.entry(McpServer(url="u", proxy_argv=self.PROXY, always_load=True))[
+            "alwaysLoad"
+        ]
+        assert client.entry(McpServer(url="u", proxy_argv=self.PROXY, oauth_client="app")) == (
+            claude.managed_mcp_entry("u")
+        )
+
+    def test_apply_writes_everything_in_one_batch(self, tmp_path, monkeypatch):
+        path = tmp_path / ".claude.json"
+        path.write_text(json.dumps({"mcpServers": {"old": {"type": "stdio"}, "mine": {}}}))
+        monkeypatch.setattr(claude, "CLAUDE_MCP_CONFIG_PATH", path)
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+        removed = claude.AGENT.mcp.apply(
+            {"svc": McpServer(url="u", proxy_argv=self.PROXY)}, {"old", "absent"}
+        )
+
+        assert removed == {"old"}
+        servers = json.loads(path.read_text())["mcpServers"]
+        assert set(servers) == {"mine", "svc"}
+
+    def test_live_status_parses_claude_mcp_list(self, monkeypatch):
+        from ucode import mcp
+
+        seen: list = []
+
+        def fake_listing(argv, env=None):
+            seen.append((argv, env))
+            return "svc: https://ws/x (HTTP) - \u2714 Connected\n"
+
+        monkeypatch.setattr(mcp, "_read_mcp_listing", fake_listing)
+        assert claude.AGENT.mcp.live_status() == {"svc": mcp.LIVE_CONNECTED}
+        assert seen == [(["claude", "mcp", "list"], None)]
+
+    def test_live_status_is_empty_when_the_listing_cannot_be_read(self, monkeypatch):
+        from ucode import mcp
+
+        monkeypatch.setattr(mcp, "_read_mcp_listing", lambda argv, env=None: None)
+        assert claude.AGENT.mcp.live_status() == {}

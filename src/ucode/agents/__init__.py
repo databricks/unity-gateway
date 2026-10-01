@@ -61,7 +61,7 @@ from .legacy import LEGACY_AGENTS
 # an agent is listed: every dispatcher below resolves through it rather than branching on a name.
 AGENTS: dict[str, Agent] = {
     "codex": LEGACY_AGENTS["codex"],
-    "claude": LEGACY_AGENTS["claude"],
+    "claude": claude.AGENT,
     "gemini": gemini.AGENT,
     "opencode": opencode.AGENT,
     "copilot": copilot.AGENT,
