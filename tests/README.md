@@ -39,6 +39,9 @@ legacy ownership, copied marked helpers, custom/disabled entry preservation, con
 arguments, routing/direct/relayed paths, and concurrent standalone/custom helper
 catalogs. These are component checks, not a live Isaac or gateway journey.
 
+`test_agent_claude.py` covers OS-managed telemetry ownership and headless configuration. These are
+unit/component regressions, not automated Isaac or live telemetry-export coverage.
+
 Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 `test_managed_setup.py`, `test_databricks.py`, and `test_managed_budget.py`: parsing the
 `smart_defaults` wire field, reading older `spend_tiers` caches, skipping recommendations
@@ -214,6 +217,14 @@ pending. The advisory Windows installation and headless lanes are not part of `A
 tests` yet. The descriptive jobs provide the actual coverage and diagnostics.
 
 ## Gaps and deferred scope
+
+Custom OAuth lock tests cover release after use, Windows contention retries, and
+permanent lock-error propagation. Native Windows browser consent and concurrent
+OAuth helpers still need platform validation.
+
+Gateway proxy tests exercise a busy cached port falling back to a free port with
+address reuse disabled, plus the platform-specific reuse policy. Linux runs do
+not establish native Windows socket behavior.
 
 `test_managed_files.py` covers a lazy sudo worker shared across multiple managed-file writes,
 no elevation for unchanged files, target/symlink rejection, bounded shutdown and cancellation,

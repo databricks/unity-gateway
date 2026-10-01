@@ -428,6 +428,11 @@ class _RelayProxyHandler(_ProxyHandler):
         return self.token_header, frozenset(), "relay"
 
 
+class _LoopbackHTTPServer(ThreadingHTTPServer):
+    # Windows permits sharing an active listener when SO_REUSEADDR is enabled.
+    allow_reuse_address = ThreadingHTTPServer.allow_reuse_address and os.name != "nt"
+
+
 def _start_proxy(
     workspace: str,
     token_provider: Callable[[bool], str],
@@ -471,11 +476,11 @@ def _start_proxy(
         ),
     )
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", port), handler)
+        server = _LoopbackHTTPServer(("127.0.0.1", port), handler)
     except OSError:
         # Cached port is occupied (stale proxy from a killed session). Port 0 lets
         # the OS pick any free port; the caller reconciles the base URL to it.
-        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        server = _LoopbackHTTPServer(("127.0.0.1", 0), handler)
 
     refresher = threading.Thread(target=cache.run_refresher, daemon=True)
     refresher.start()
