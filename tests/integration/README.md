@@ -467,9 +467,9 @@ uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because 
 cannot receive those secrets.
 
 CUJ7 (`test_case_07_configured_claude_discovers_system_models`) runs in its own required
-CI job. The workspace URL and service-principal credentials come from the
-`UG_CUJ7_WORKSPACE`, `UG_CUJ7_SP_CLIENT_ID`, and `UG_CUJ7_SP_CLIENT_SECRET`
-repository secrets.
+CI job. The workspace URL comes from the `UG_CUJ7_WORKSPACE` repository secret;
+the shared CUJ service-principal credentials come from `UG_CUJ_SP_CLIENT_ID` and
+`UG_CUJ_SP_CLIENT_SECRET`.
 The runner mints a short-lived workspace bearer from those credentials. The shared
 Claude job excludes the `cuj7` marker, so this case runs only on the dedicated workspace. That workspace
 must have no published CodingAgentConfig and must expose discoverable `system.ai`

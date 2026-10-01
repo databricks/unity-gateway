@@ -353,8 +353,8 @@ jobs:
     timeout-minutes: 20
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UG_CUJ7_WORKSPACE }}
-      DATABRICKS_CLIENT_ID: ${{ secrets.UG_CUJ7_SP_CLIENT_ID }}
-      DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_CUJ7_SP_CLIENT_SECRET }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: claude
       TEST_MARKER: live and tui and claude and cuj7
