@@ -25,6 +25,30 @@ from ucode.databricks import get_databricks_token
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "ucode-web-search"
 SERVER_VERSION = "0.1.0"
+PROVIDER_ENV = "UCODE_CLAUDE_WEB_SEARCH_PROVIDER"
+MANAGED_ENTRY_FLAG = "--managed-by-ucode"
+EXTERNAL_PROVIDER_OVERRIDE_FLAG = "--external-provider-override"
+AUTOMATIC_PROVIDER = "external-if-safe"
+
+
+def external_provider_selected() -> bool:
+    """Launchers opt out of ug's generated search without changing shared configuration."""
+    value = os.environ.get(PROVIDER_ENV, "ucode")
+    if value not in ("ucode", "external", AUTOMATIC_PROVIDER):
+        raise RuntimeError(
+            f"{PROVIDER_ENV} must be 'ucode', 'external', or '{AUTOMATIC_PROVIDER}', got {value!r}."
+        )
+    return value != "ucode"
+
+
+def capabilities() -> dict[str, Any]:
+    return {
+        "external_provider_contract": 1,
+        "provider_env": PROVIDER_ENV,
+        "managed_entry_flag": MANAGED_ENTRY_FLAG,
+        "automatic_provider": AUTOMATIC_PROVIDER,
+    }
+
 
 TOOL_NAME = "web_search"
 TOOL_DESCRIPTION = (
@@ -153,7 +177,7 @@ def _handle_tools_call(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": text}]}
 
 
-def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
+def _handle_request(req: dict[str, Any], *, search_enabled: bool = True) -> dict[str, Any] | None:
     """Dispatch a single JSON-RPC request. Returns the response dict, or None
     for notifications (which must not produce a response per JSON-RPC spec)."""
     method = req.get("method")
@@ -173,10 +197,17 @@ def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
     if method == "notifications/initialized":
         return None
     if method == "tools/list":
-        return _result(req_id, {"tools": [_tool_descriptor()]})
+        return _result(req_id, {"tools": [_tool_descriptor()] if search_enabled else []})
     if method == "tools/call":
         if params.get("name") != TOOL_NAME:
             return _error(req_id, -32602, f"Unknown tool: {params.get('name')!r}")
+        if not search_enabled:
+            return _result(
+                req_id,
+                _tool_error(
+                    "This launch uses an external search provider; ug search is unavailable."
+                ),
+            )
         return _result(req_id, _handle_tools_call(params.get("arguments") or {}))
 
     if is_notification:
@@ -184,11 +215,22 @@ def _handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
     return _error(req_id, -32601, f"Method not found: {method!r}")
 
 
-def serve(stdin=None, stdout=None) -> None:
+def serve(
+    stdin=None,
+    stdout=None,
+    *,
+    managed_by_ucode: bool = False,
+    external_provider_override: bool = False,
+) -> None:
     """Read newline-delimited JSON-RPC requests from stdin, write responses to
     stdout. Loops until EOF. Injectable streams for testing."""
     in_stream = stdin if stdin is not None else sys.stdin
     out_stream = stdout if stdout is not None else sys.stdout
+    # A copied registration retains its marker. Only a verified launch override
+    # may suppress it; inherited provider selection alone cannot establish ownership.
+    search_enabled = not (
+        managed_by_ucode and external_provider_override and external_provider_selected()
+    )
 
     for line in in_stream:
         line = line.strip()
@@ -202,7 +244,7 @@ def serve(stdin=None, stdout=None) -> None:
             out_stream.flush()
             continue
 
-        response = _handle_request(req)
+        response = _handle_request(req, search_enabled=search_enabled)
         if response is None:
             continue
         out_stream.write(json.dumps(response) + "\n")

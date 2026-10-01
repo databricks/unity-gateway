@@ -60,7 +60,6 @@ def clean_environment(home: Path) -> dict[str, str]:
             "NO_COLOR": "1",
             "TERM": "dumb",
             "COLUMNS": "160",
-            "ENABLE_SMART_ROUTING_V2": "0",
             "PYTHONNOUSERSITE": "1",
         }
     )
