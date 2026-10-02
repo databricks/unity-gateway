@@ -18,8 +18,10 @@ explicitly to its schema; inventory ordering does not determine scope.
 
 ## Prerequisites and setup order
 
-1. Use Python 3.12+ and select the exact dedicated CUJ3 HTTPS workspace origin.
-   No SDK, CLI profile, or implicit workspace/authentication fallback is used.
+1. Use Python 3.12+, an environment with `databricks-sdk>=0.135.0`, and select the
+   exact dedicated CUJ3 HTTPS workspace origin. No CLI profile or implicit
+   workspace/authentication fallback is used. The offline plan does not create a
+   workspace client or read credentials.
 2. An operator must explicitly select seven existing, canonical `system.ai.<model>`
    registered-model FQNs in that workspace/region, including both decoys, not
    friendly model-service aliases. Both `--validate` and `--apply` GET every unique source at
@@ -52,10 +54,11 @@ explicitly to its schema; inventory ordering does not determine scope.
    and has no MCP/skill scope.
    Those omissions do not remove unrelated pre-existing local MCP/skill config.
 
-From the repository root, without needing a bearer for the default offline plan:
+From the repository root, without needing a bearer for the default offline plan
+(`uv run` supplies the project SDK environment):
 
 ```bash
-python3 fixtures/cuj/models/provision.py \
+uv run python fixtures/cuj/models/provision.py \
   --workspace "$UG_CUJ3_WORKSPACE" \
   --bearer-env DATABRICKS_BEARER \
   --gpt-luna-source "$GPT_LUNA_SOURCE" \
@@ -69,13 +72,14 @@ python3 fixtures/cuj/models/provision.py \
 
 Each source variable is a concrete `system.ai.<model>` FQN. The default plan checks
 syntax and prints inventory without network access or reading a bearer; it cannot
-check existing resources. `--validate` performs authenticated read-only GETs and
-fails on missing resources or invalid services. It is mutually exclusive with
+check existing resources. `--validate` performs authenticated, read-only SDK GETs
+and fails on missing resources or invalid services. It is mutually exclusive with
 `--apply`, which completes full source/inventory/routing preflight **before any POST**,
 creates only missing catalog → schemas → services, and reads back all seven services.
-Mismatches abort: there is no overwrite, update, delete, or cleanup path. Concurrent
-create conflicts and partial failures stop the non-atomic run; created resources
-persist. Inspect with `--validate` before retrying.
+Requests use a 30-second SDK timeout and a one-second SDK retry budget. Mismatches
+abort: there is no overwrite, update, delete, or cleanup path. Concurrent create
+conflicts and partial failures stop the non-atomic run; created resources persist.
+Inspect with `--validate` before retrying.
 
 ## Compatibility and validation boundary
 
@@ -93,6 +97,12 @@ from the managed catalog.
 
 The API uses `/api/2.1/unity-catalog/model-services`, a schema `parent`, and
 canonical snake_case fields from Universe's Python SDK model-service sample.
+Provisioning uses the SDK's public `WorkspaceClient` and `api_client.do` with raw
+REST calls. Its per-request bearer callback rejects redirects before requests
+follows them and requires every successful GET response to be a JSON object before
+the SDK parses it. That preserves unknown routing flags and prevents SDK coercion
+of JSON `null` or strings from weakening validation; private sessions, global
+environment, and settings are not changed.
 Creation sets `pay_per_token_config.model = models/system.ai.<model>` and
 `traffic_percentage = 100`; usage tracking is always on and its removed/reserved
 configuration field is omitted. Preflight/readback require one destination with
@@ -116,5 +126,5 @@ Suggested focused local checks (no workspace or bearer needed):
 ```bash
 uv run ruff check fixtures/cuj/models/provision.py
 uv run ruff format --check fixtures/cuj/models/provision.py
-python3 fixtures/cuj/models/provision.py --help
+uv run python fixtures/cuj/models/provision.py --help
 ```

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
+
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.core import Config
+from databricks.sdk.errors import DatabricksError, NotFound
+from requests.exceptions import RequestException
 
 UC = "/api/2.1/unity-catalog"
 SCHEMAS = ("models", "other_models")
@@ -27,71 +29,88 @@ SOURCE = re.compile(r"system\.ai\.[A-Za-z0-9_-]+\Z")
 DESTINATION_TYPE = "DESTINATION_TYPE_PAY_PER_TOKEN_FOUNDATION_MODEL"
 
 
-class ApiError(RuntimeError):
-    def __init__(self, method: str, path: str, status: int):
-        super().__init__(f"{method} {path.split('?', 1)[0]} returned HTTP {status}")
-        self.status = status
-
-
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
 def workspace_origin(workspace: str) -> str:
-    parsed = urllib.parse.urlsplit(workspace)
+    try:
+        parsed = urllib.parse.urlsplit(workspace)
+        port = parsed.port
+    except (TypeError, ValueError):
+        raise ValueError(
+            "--workspace must be an HTTPS workspace origin without credentials"
+        ) from None
     if (
-        parsed.scheme != "https"
+        not isinstance(workspace, str)
+        or parsed.scheme != "https"
         or not parsed.hostname
         or parsed.username is not None
         or parsed.password is not None
         or parsed.path not in ("", "/")
         or parsed.query
         or parsed.fragment
+        or (port is not None and not 0 < port <= 65535)
+        or re.search(r"[\s\\]", workspace)
     ):
         raise ValueError("--workspace must be an HTTPS workspace origin without credentials")
     return f"https://{parsed.netloc}"
 
 
-class Client:
-    def __init__(self, workspace: str, bearer: str):
-        self.origin = workspace_origin(workspace)
-        self.bearer = bearer
-        self.opener = urllib.request.build_opener(NoRedirect())
-
-    def request(self, method: str, path: str, *, params=None, body=None):
-        query = f"?{urllib.parse.urlencode(params)}" if params else ""
-        data = json.dumps(body).encode() if body is not None else None
-        headers = {"Authorization": f"Bearer {self.bearer}"}
-        if data is not None:
-            headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(
-            self.origin + path + query, data=data, headers=headers, method=method
-        )
-        try:
-            with self.opener.open(request, timeout=60) as response:
-                payload = response.read()
-        except urllib.error.HTTPError as error:
-            raise ApiError(method, path, error.code) from None
-        except (urllib.error.URLError, TimeoutError, OSError):
-            raise RuntimeError("Workspace request failed; check connectivity and TLS") from None
-        try:
-            return json.loads(payload) if payload else None
-        except (ValueError, UnicodeError):
-            raise RuntimeError("Workspace returned an invalid JSON response") from None
-
-    def get_optional(self, path: str):
-        try:
-            return self.request("GET", path)
-        except ApiError as error:
-            if error.status == 404:
-                return None
-            raise
-
-
 def require(condition: bool, message: str):
     if not condition:
         raise RuntimeError(message)
+
+
+def bearer_auth(bearer: str):
+    def reject_redirect(response, **kwargs):
+        if 300 <= response.status_code < 400:
+            response.close()
+            raise AssertionError(
+                f"Workspace request redirected with HTTP {response.status_code}"
+            ) from None
+        if (
+            200 <= response.status_code < 300
+            and response.request.method == "GET"
+            and not isinstance(response.json(), dict)
+        ):
+            raise AssertionError("Workspace GET returned a non-object JSON response") from None
+        return response
+
+    def authenticate(request):
+        request.headers["Authorization"] = f"Bearer {bearer}"
+        request.register_hook("response", reject_redirect)
+        return request
+
+    return authenticate
+
+
+def _request(api_client, auth, method: str, path: str, *, query=None, body=None, missing_ok=False):
+    try:
+        return api_client.do(method, path, query=query, body=body, auth=auth)
+    except NotFound:
+        if missing_ok:
+            return None
+        raise RuntimeError("Workspace API request failed") from None
+    except DatabricksError:
+        raise RuntimeError("Workspace API request failed") from None
+    except (RequestException, OSError, ValueError):
+        raise RuntimeError("Workspace request failed; check connectivity and TLS") from None
+
+
+def _get_optional(api_client, auth, path: str):
+    return _request(api_client, auth, "GET", path, missing_ok=True)
+
+
+def workspace_client(origin: str, bearer: str):
+    try:
+        return WorkspaceClient(
+            config=Config(
+                host=origin,
+                token=bearer,
+                auth_type="pat",
+                http_timeout_seconds=30,
+                retry_timeout_seconds=1,
+            )
+        )
+    except (DatabricksError, RequestException, OSError, ValueError):
+        raise RuntimeError("Workspace SDK client initialization failed") from None
 
 
 def model_body(source: str):
@@ -150,9 +169,10 @@ def print_plan(sources: dict[str, str]):
     )
 
 
-def provision(client: Client, sources: dict[str, str], apply: bool):
+def provision(api_client, sources: dict[str, str], apply: bool, bearer: str):
+    auth = bearer_auth(bearer)
     for source in sorted(set(sources.values())):
-        registered_model = client.get_optional(f"{UC}/models/{source}")
+        registered_model = _get_optional(api_client, auth, f"{UC}/models/{source}")
         require(
             isinstance(registered_model, dict) and registered_model.get("full_name") == source,
             f"Source registered model {source} is missing or has an unexpected full_name; "
@@ -161,14 +181,14 @@ def provision(client: Client, sources: dict[str, str], apply: bool):
         )
         print(f"source registered model {source}: validated")
     missing = []
-    if client.get_optional(f"{UC}/catalogs/ug_e2e") is None:
+    if _get_optional(api_client, auth, f"{UC}/catalogs/ug_e2e") is None:
         missing.append((f"{UC}/catalogs", None, {"name": "ug_e2e", "comment": "UG CUJ fixtures"}))
         print("catalog ug_e2e: would create")
     else:
         print("catalog ug_e2e: existing")
     for schema in SCHEMAS:
         fqn = f"ug_e2e.{schema}"
-        if client.get_optional(f"{UC}/schemas/{fqn}") is None:
+        if _get_optional(api_client, auth, f"{UC}/schemas/{fqn}") is None:
             missing.append(
                 (
                     f"{UC}/schemas",
@@ -183,7 +203,7 @@ def provision(client: Client, sources: dict[str, str], apply: bool):
         schema = MODEL_SCHEMAS[leaf]
         fqn = f"ug_e2e.{schema}.{leaf}"
         source = sources[leaf]
-        existing = client.get_optional(f"{UC}/model-services/{fqn}")
+        existing = _get_optional(api_client, auth, f"{UC}/model-services/{fqn}")
         if existing is None:
             missing.append(
                 (
@@ -201,11 +221,15 @@ def provision(client: Client, sources: dict[str, str], apply: bool):
         require(not missing, "Inventory is incomplete; review the offline plan before --apply")
         return
     for path, params, body in missing:
-        client.request("POST", path, params=params, body=body)
+        _request(api_client, auth, "POST", path, query=params, body=body)
     for leaf in MODEL_LEAVES:
         schema = MODEL_SCHEMAS[leaf]
         fqn = f"ug_e2e.{schema}.{leaf}"
-        validate_model(client.request("GET", f"{UC}/model-services/{fqn}"), fqn, sources[leaf])
+        validate_model(
+            _request(api_client, auth, "GET", f"{UC}/model-services/{fqn}"),
+            fqn,
+            sources[leaf],
+        )
     print("Model-only fixture inventory is ready; managed config was not published")
 
 
@@ -246,12 +270,13 @@ def main():
     require(
         not any(character.isspace() for character in bearer), "Bearer must not contain whitespace"
     )
-    provision(Client(origin, bearer), sources, args.apply)
+    client = workspace_client(origin, bearer)
+    provision(client.api_client, sources, args.apply, bearer=bearer)
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (ApiError, RuntimeError, ValueError) as error:
+    except (AssertionError, RuntimeError, ValueError) as error:
         print(f"model fixture provisioning failed: {error}", file=sys.stderr)
         sys.exit(1)
