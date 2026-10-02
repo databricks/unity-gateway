@@ -517,7 +517,13 @@ def _availability_failure_detail(tool: str, state: dict) -> str:
     return " (" + "; ".join(parts) + ")"
 
 
-def configure_single_tool(tool: str, state: dict, *, parent_schema: str | None = None) -> dict:
+def configure_single_tool(
+    tool: str,
+    state: dict,
+    *,
+    parent_schema: str | None = None,
+    coding_agent_config_defaults: dict[str, str] | None = None,
+) -> dict:
     """Check availability, configure, and persist state for one tool only."""
     provider = None if parent_schema else get_provider_service(state, tool)
     # A Model Provider Service or parent schema routes through the same gateway and pins no
@@ -531,7 +537,13 @@ def configure_single_tool(tool: str, state: dict, *, parent_schema: str | None =
                 f"{TOOL_SPECS[tool]['display']} is not available on this workspace.{detail}"
             )
     with managed_write_batch(_managed_settings_displays([tool])):
-        state = _configure_one(tool, state, provider, parent_schema=parent_schema)
+        state = _configure_one(
+            tool,
+            state,
+            provider,
+            parent_schema=parent_schema,
+            coding_agent_config_defaults=coding_agent_config_defaults,
+        )
     available_tools = list(set((state.get("available_tools") or []) + [tool]))
     state["available_tools"] = available_tools
     save_state(state)
@@ -539,11 +551,27 @@ def configure_single_tool(tool: str, state: dict, *, parent_schema: str | None =
 
 
 def _configure_one(
-    tool: str, state: dict, provider: str | None, *, parent_schema: str | None = None
+    tool: str,
+    state: dict,
+    provider: str | None,
+    *,
+    parent_schema: str | None = None,
+    coding_agent_config_defaults: dict[str, str] | None = None,
 ) -> dict:
-    """Write one tool's config, routing through ``provider`` when set."""
+    """Write one tool's config, routing through ``provider`` when set.
+
+    ``coding_agent_config_defaults`` carries the managed config's authored Claude family defaults so
+    the writer persists them (and the overall default) at configure, not just at launch. It is only
+    threaded for the gateway and Unity Catalog sources, whose ids are routable; a Model Provider
+    Service keeps its own target-derived pins.
+    """
     if parent_schema:
-        return configure_tool(tool, state, parent_schema=parent_schema)
+        return configure_tool(
+            tool,
+            state,
+            parent_schema=parent_schema,
+            coding_agent_config_defaults=coding_agent_config_defaults,
+        )
     if provider:
         if tool == "gemini":
             # Gemini pins a concrete target in the URL, so configure must resolve one now —
@@ -562,7 +590,9 @@ def _configure_one(
     if tool == "codex":
         return configure_tool("codex", state)
     state, model = resolve_launch_model(tool, state, None)
-    return configure_tool(tool, state, model)
+    return configure_tool(
+        tool, state, model, coding_agent_config_defaults=coding_agent_config_defaults
+    )
 
 
 def configure_selected_tools(
@@ -571,6 +601,7 @@ def configure_selected_tools(
     *,
     install_ai_tools: bool = True,
     parent_schemas: dict[str, str] | None = None,
+    coding_agent_config_defaults: dict[str, str] | None = None,
 ) -> dict:
     """Configure the given tools. Caller is responsible for ensuring each tool
     is available on the workspace.
@@ -589,7 +620,13 @@ def configure_selected_tools(
             parent_schema = (parent_schemas or {}).get(tool)
             provider = None if parent_schema else get_provider_service(state, tool)
             try:
-                state = _configure_one(tool, state, provider, parent_schema=parent_schema)
+                state = _configure_one(
+                    tool,
+                    state,
+                    provider,
+                    parent_schema=parent_schema,
+                    coding_agent_config_defaults=coding_agent_config_defaults,
+                )
             except Exception as exc:  # noqa: BLE001 -- surface any harness failure as a warning
                 print_warning(
                     f"Could not configure {TOOL_SPECS[tool]['display']}: {exc}. Continuing."

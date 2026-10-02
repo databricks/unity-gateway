@@ -103,6 +103,7 @@ from ucode.managed_resolve import (
     managed_unity_catalog_location,
     managed_unservable_models,
     recommended_agent,
+    recommended_launch_model,
     resolve_state,
 )
 from ucode.mcp import (
@@ -854,6 +855,7 @@ def _configure_workspace_command(
         )
         state = states[0]
         parent_schema = None
+        managed = None
         if tool in ("claude", "codex"):
             managed, _ = refresh_managed_config(state, force_refresh=True)
             _reject_disabled_agent(managed, tool)
@@ -861,7 +863,16 @@ def _configure_workspace_command(
                 state = resolve_state(managed, state, tool)
                 if not managed_provider_service(managed, tool):
                     parent_schema = managed_unity_catalog_location(managed, tool)
-        state = configure_single_tool(tool, state, parent_schema=parent_schema)
+        state = configure_single_tool(
+            tool,
+            state,
+            parent_schema=parent_schema,
+            coding_agent_config_defaults=(
+                managed_claude_family_models(managed)
+                if managed is not None and tool == "claude"
+                else None
+            ),
+        )
         install_databricks_ai_tools_for_agents(
             [tool], state, force_refresh=tool not in ("claude", "codex")
         )
@@ -918,6 +929,9 @@ def _configure_workspace_command(
                     [tool_name],
                     install_ai_tools=not is_dry_run(),
                     parent_schemas={tool_name: parent_schema} if parent_schema else None,
+                    coding_agent_config_defaults=(
+                        managed_claude_family_models(managed) if tool_name == "claude" else None
+                    ),
                 )
                 # Each iteration resolves from `state` and persists a copy, so carry the
                 # accumulated available_tools forward — otherwise the last agent's save drops
@@ -2812,9 +2826,10 @@ def _launch_tool(
                 else None
             )
             if tool == "claude" and managed_parent_schema:
-                # Native discovery supplies the catalog, but the managed policy still controls
-                # which model Claude starts on.
-                route_root_model = managed_source_model
+                # Native discovery supplies the catalog; the admin's default resolves through the
+                # persisted ANTHROPIC_DEFAULT_MODEL (its UC ids are routable), so only a smart-default
+                # recommendation pins ANTHROPIC_MODEL here, matching the gateway source.
+                route_root_model = recommended_launch_model(recommendation, tool)
             provider_launch_model = model
             if tool == "claude" and managed_provider:
                 # A CLI model still wins, followed by the budget recommendation and the managed
@@ -2848,12 +2863,18 @@ def _launch_tool(
                 managed_launch_model(managed, recommendation, tool) if managed is not None else None
             )
             state, resolved_model = resolve_launch_model(tool, state, managed_model)
-            # The admin's model outranks a smart-routing pick too. Claude only launches on it when
-            # pinned as ANTHROPIC_MODEL (route_root_model); other agents take `resolved_model`,
-            # which already holds it from resolve_launch_model above.
+            # Non-claude agents take the admin's model as `resolved_model` (already held above). For
+            # claude: a static allow-list sets enforceAvailableModels, under which Claude Code
+            # ignores ANTHROPIC_DEFAULT_MODEL, so the admin's default is still force-pinned as
+            # ANTHROPIC_MODEL. A gateway default (no list) resolves through the persisted
+            # ANTHROPIC_DEFAULT_MODEL instead, so only a smart-default recommendation pins it there.
             if managed_model:
                 if tool == "claude":
-                    route_root_model = managed_model
+                    route_root_model = (
+                        managed_model
+                        if state.get("claude_static_models")
+                        else recommended_launch_model(recommendation, tool)
+                    )
                 else:
                     resolved_model = managed_model
             # An explicit `--model` is the user's own choice and outranks everything above (managed

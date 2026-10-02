@@ -1321,10 +1321,11 @@ class TestManagedClaudeModelDiscovery:
         assert result.exit_code == 0, result.output
         calls["list_catalog"].assert_not_called()
         picker = calls["configure"].call_args.kwargs["picker_catalog"]
-        assert picker.model_ids == [
-            explicit_model or default_model or "system.ai.claude-sonnet-5[1m]"
-        ]
-        assert calls["configure"].call_args.kwargs["route_root_model"] == default_model
+        # No source force-pins ANTHROPIC_MODEL now: an explicit --model is kept exact; otherwise the
+        # sonnet shortcut gets the 1m suffix (a managed default_model resolves via
+        # ANTHROPIC_DEFAULT_MODEL, not a pinned launch model).
+        assert picker.model_ids == [explicit_model or "system.ai.claude-sonnet-5[1m]"]
+        assert calls["configure"].call_args.kwargs["route_root_model"] is None
         assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == picker.model_ids
         assert calls["launch"].call_args.kwargs["options"].user_pinned_model == explicit_model
 
@@ -3688,7 +3689,9 @@ class TestConfigureAgentsSelection:
             cli_mod.configure_workspace_command(tool="claude", workspaces=[("https://w.com", None)])
             == 0
         )
-        configure.assert_called_once_with("claude", state, parent_schema="main.models")
+        configure.assert_called_once_with(
+            "claude", state, parent_schema="main.models", coding_agent_config_defaults=None
+        )
 
     def test_managed_codex_parent_is_passed_to_generic_configure(self, monkeypatch):
         state = {
@@ -3744,8 +3747,29 @@ class TestConfigureAgentsSelection:
         assert result.exit_code == 0, result.output
         assert "(Provider: Databricks)" in _strip_ansi(result.output)
         refresh.assert_called_once_with(state, force_refresh=True)
-        configure.assert_called_once_with("codex", state, parent_schema="main.models")
+        configure.assert_called_once_with(
+            "codex", state, parent_schema="main.models", coding_agent_config_defaults=None
+        )
         install_ai_tools.assert_called_once_with(["codex"], state, force_refresh=False)
+
+    def test_single_non_claude_agent_configures_without_managed_lookup(self, monkeypatch):
+        # Regression: `--agent gemini` (and other non-claude/codex) must not reference `managed`,
+        # which is resolved only for claude/codex, when computing coding_agent_config_defaults.
+        state = {**MINIMAL_STATE}
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        configure = MagicMock(return_value=state)
+        monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+
+        result = runner.invoke(
+            app, ["configure", "--agent", "gemini", "--workspace", "https://w.com"]
+        )
+
+        assert result.exit_code == 0, result.output
+        configure.assert_called_once_with(
+            "gemini", state, parent_schema=None, coding_agent_config_defaults=None
+        )
 
     def test_managed_config_fails_when_no_enabled_agent_is_available(self, monkeypatch):
         import ucode.cli as cli_mod
@@ -5318,6 +5342,56 @@ class TestBudgetRecommendationAtLaunch:
             recommendation={"agent": "claude", "model": "system.ai.claude-haiku-4-5"},
         )
         assert cfg.call_args.args[2] == "system.ai.claude-haiku-4-5"
+
+    def test_recommendation_pins_claude_anthropic_model(self, monkeypatch):
+        # A smart-default recommendation is still force-pinned via ANTHROPIC_MODEL
+        # (route_root_model), the one case where Claude launches on a specific model.
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}}
+            },
+            **self.SMART_DEFAULTS,
+        }
+        _result, _calls, cfg = self._launch(
+            monkeypatch,
+            managed=managed,
+            recommendation={"agent": "claude", "model": "system.ai.claude-haiku-4-5"},
+        )
+        assert cfg.call_args.kwargs["route_root_model"] == "system.ai.claude-haiku-4-5"
+
+    def test_plain_default_model_is_not_pinned_as_anthropic_model(self, monkeypatch):
+        # Without a recommendation, a managed default_model is no longer force-pinned via
+        # ANTHROPIC_MODEL; it resolves through the persisted ANTHROPIC_DEFAULT_MODEL. It still
+        # reaches configure_tool as the model so Claude's "model required" guard is satisfied.
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"default_model": "system.ai.claude-opus-4-8"}}
+            }
+        }
+        result, _calls, cfg = self._launch(monkeypatch, managed=managed)
+        assert result.exit_code == 0, result.output
+        assert cfg.call_args.kwargs["route_root_model"] is None
+        assert cfg.call_args.args[2] == "system.ai.claude-opus-4-8"
+
+    def test_static_list_pins_claude_anthropic_model(self, monkeypatch):
+        # A static allow-list (model_services) enforces availableModels, under which Claude Code
+        # ignores ANTHROPIC_DEFAULT_MODEL, so the admin default is still force-pinned via
+        # ANTHROPIC_MODEL (route_root_model) even without a recommendation.
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "model_services": [
+                            "system.ai.claude-opus-4-8",
+                            "system.ai.claude-sonnet-5",
+                        ],
+                        "default_model": "system.ai.claude-opus-4-8",
+                    }
+                }
+            }
+        }
+        _result, _calls, cfg = self._launch(monkeypatch, managed=managed)
+        assert cfg.call_args.kwargs["route_root_model"] == "system.ai.claude-opus-4-8"
 
     def test_passes_configured_claude_defaults_to_writer(self, monkeypatch):
         managed = {

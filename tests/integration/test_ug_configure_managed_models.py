@@ -92,7 +92,10 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session):
         env = settings.get("env") or {}
         expected_header = f"Databricks-Model-Provider-Service: {MANAGED_CLAUDE_PROVIDER_SERVICE}"
         assert expected_header in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines(), settings
+        # An MPS routes to the provider's namespace, so the default stays a forced ANTHROPIC_MODEL
+        # pin; the bare ANTHROPIC_DEFAULT_MODEL (a gateway-id Default row) is not written.
         assert env.get("ANTHROPIC_MODEL") == defaults["default_model"], settings
+        assert "ANTHROPIC_DEFAULT_MODEL" not in env, settings
         for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
             assert env.get(env_key) == defaults[config_key], settings
         picker = settings["modelPicker"]
@@ -154,18 +157,17 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session)
         env = settings.get("env") or {}
         expected_header = f"Databricks-Model-Service-Parent-Schema: {parent_schema}"
         assert expected_header in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines(), settings
-        assert env.get("ANTHROPIC_MODEL") == defaults["default_model"], settings
+        # A Unity Catalog location routes gateway ids, so the admin default resolves through
+        # ANTHROPIC_DEFAULT_MODEL (verbatim) rather than being force-pinned via ANTHROPIC_MODEL.
+        assert "ANTHROPIC_MODEL" not in env, settings
+        assert env.get("ANTHROPIC_DEFAULT_MODEL") == defaults["default_model"], settings
         expected_picker_models = []
         for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
             expected = defaults[config_key]
             if config_key in {"default_opus_model", "default_sonnet_model"}:
                 expected += "[1m]"
             assert env.get(env_key) == expected, settings
-            expected_picker_models.append(
-                defaults[config_key]
-                if defaults[config_key] == defaults["default_model"]
-                else expected
-            )
+            expected_picker_models.append(expected)
         picker = settings["modelPicker"]
         assert picker["replaceBuiltInOptions"] is True, picker
         assert sorted(option["model"] for option in picker["options"]) == sorted(
@@ -197,6 +199,97 @@ def test_managed_fixture_claude_model_picker_reflects_the_config(live_session, w
             lambda s: "sonnet-5" in s, "the /model picker to list the injected model", timeout=60
         )
         assert LIVE_ONLY not in tui.visible, tui.visible
+
+
+@pytest.mark.managed_fixture
+@pytest.mark.claude
+def test_managed_fixture_claude_default_model_persisted_without_forcing(
+    live_session, workspace, tmp_path
+):
+    """Scenario: an admin config names only an overall default_model (no model list, no provider).
+
+    Expected: `ug configure` plus a plain launch persist the default as ANTHROPIC_DEFAULT_MODEL
+    (Claude Code's /model "Default" row) in both Claude settings files and never force-pin
+    ANTHROPIC_MODEL, so the session starts on the admin's model while the user can still switch via
+    /model. This settings reconciliation check does not claim model inference.
+    """
+    session = live_session
+    config = build_coding_agent_config(
+        "CODING_AGENT_CLAUDE_CODE",
+        {
+            "agent": "CODING_AGENT_CLAUDE_CODE",
+            "config": {"default_models": {"default_model": CLAUDE_OPUS}},
+        },
+    )
+    set_managed_config_stub(session, tmp_path, config)
+    result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+    assert "Select coding agents to configure:" not in result.stdout, result.stdout
+
+    command = [str(session.binary), "claude", "--", "--version"]
+    with TerminalProcess(session, "claude", command, "managed-default-model") as terminal:
+        terminal.finish(timeout=240)
+
+    private_settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
+    os_managed_settings = json.loads(
+        session.run("/etc/claude-code/managed-settings.json", binary="cat", timeout=30).stdout
+    )
+    for settings in (private_settings, os_managed_settings):
+        env = settings.get("env") or {}
+        assert env.get("ANTHROPIC_DEFAULT_MODEL") == CLAUDE_OPUS, settings
+        assert "ANTHROPIC_MODEL" not in env, settings
+
+
+@pytest.mark.managed_fixture
+@pytest.mark.claude
+def test_managed_fixture_claude_model_services_pin_default_and_persist_family(
+    live_session, workspace, tmp_path
+):
+    """Scenario: an admin config lists model_services with an overall default and family slots.
+
+    Expected: the static list sets `enforceAvailableModels`, under which Claude Code ignores
+    `ANTHROPIC_DEFAULT_MODEL`, so `ug` force-pins the admin default via `ANTHROPIC_MODEL` and does
+    not write the bare `ANTHROPIC_DEFAULT_MODEL`; each family slot is still persisted as
+    `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` (opus/sonnet gain `[1m]`) in both settings files. This
+    settings reconciliation check does not claim model inference.
+    """
+    session = live_session
+    sonnet = "system.ai.claude-sonnet-5"
+    haiku = "system.ai.claude-haiku-4-5"
+    config = build_coding_agent_config(
+        "CODING_AGENT_CLAUDE_CODE",
+        build_claude_agent_config(
+            [CLAUDE_OPUS, sonnet, haiku],
+            family_defaults={"opus": CLAUDE_OPUS, "sonnet": sonnet, "haiku": haiku},
+        ),
+    )
+    set_managed_config_stub(session, tmp_path, config)
+    result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
+    assert "Select coding agents to configure:" not in result.stdout, result.stdout
+
+    command = [str(session.binary), "claude", "--", "--version"]
+    with TerminalProcess(session, "claude", command, "managed-model-services") as terminal:
+        terminal.finish(timeout=240)
+
+    private_settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
+    os_managed_settings = json.loads(
+        session.run("/etc/claude-code/managed-settings.json", binary="cat", timeout=30).stdout
+    )
+    for settings in (private_settings, os_managed_settings):
+        env = settings.get("env") or {}
+        # Static list -> enforceAvailableModels -> ADM ignored, so the admin default
+        # (build_claude_agent_config uses the first listed model) is force-pinned via ANTHROPIC_MODEL
+        # and the bare ANTHROPIC_DEFAULT_MODEL is not written.
+        assert env.get("ANTHROPIC_MODEL") == CLAUDE_OPUS, settings
+        assert "ANTHROPIC_DEFAULT_MODEL" not in env, settings
+    # Family slots are persisted in the OS-managed file. At launch the forced ANTHROPIC_MODEL path
+    # suppresses the private file's family pins (render_overlay's model if/elif), so the family keys
+    # live only in the OS-managed file for a static list.
+    managed_env = os_managed_settings.get("env") or {}
+    assert managed_env.get("ANTHROPIC_DEFAULT_OPUS_MODEL") == CLAUDE_OPUS + "[1m]", (
+        os_managed_settings
+    )
+    assert managed_env.get("ANTHROPIC_DEFAULT_SONNET_MODEL") == sonnet + "[1m]", os_managed_settings
+    assert managed_env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL") == haiku, os_managed_settings
 
 
 @pytest.mark.managed_fixture

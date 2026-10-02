@@ -23,6 +23,7 @@ from ucode.managed_resolve import (
     managed_unity_catalog_location,
     managed_unservable_models,
     recommended_agent,
+    recommended_launch_model,
     resolve_state,
 )
 from ucode.state import MANAGED_OVERLAY_KEY
@@ -700,6 +701,27 @@ class TestManagedLaunchModel:
 
     def test_none_when_neither_names_a_model(self):
         assert managed_launch_model({}, None, "pi") is None
+
+
+class TestRecommendedLaunchModel:
+    """Only the recommendation half of managed_launch_model: the config default is not a pin."""
+
+    def test_returns_recommended_model_for_its_agent(self):
+        rec = {"agent": "claude", "model": "system.ai.claude-haiku-4-5"}
+        assert recommended_launch_model(rec, "claude") == "system.ai.claude-haiku-4-5"
+
+    def test_applies_to_any_tool_when_agent_unset(self):
+        rec = {"agent": None, "model": "system.ai.claude-haiku-4-5"}
+        assert recommended_launch_model(rec, "codex") == "system.ai.claude-haiku-4-5"
+
+    def test_none_for_a_different_agent(self):
+        rec = {"agent": "opencode", "model": "system.ai.kimi-k2-7-code"}
+        assert recommended_launch_model(rec, "claude") is None
+
+    def test_none_without_a_recommendation(self):
+        # No recommendation, or one that names no model: nothing for claude to force.
+        assert recommended_launch_model(None, "claude") is None
+        assert recommended_launch_model({"agent": "claude"}, "claude") is None
 
 
 class TestManagedStaticModels:

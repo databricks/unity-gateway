@@ -283,21 +283,28 @@ def recommended_agent(recommendation: dict | None, managed: dict) -> str | None:
     return agent or _str(_as_dict(managed).get("default_agent"))
 
 
+def recommended_launch_model(recommendation: dict | None, tool: str) -> str | None:
+    """The model a budget recommendation names for ``tool``, or None.
+
+    A tier that moves the org to another agent names that agent's model, which the one being
+    launched may not be able to serve, so a recommendation applies only to the agent it names (or
+    to any agent when it names none).
+    """
+    recommended = _as_dict(recommendation)
+    agent = _str(recommended.get("agent"))
+    if agent is None or agent == tool:
+        return _str(recommended.get("model"))
+    return None
+
+
 def managed_launch_model(managed: dict, recommendation: dict | None, tool: str) -> str | None:
     """The model the admin's policy wants ``tool`` to start on, or None.
 
     A budget recommendation supersedes the config's own ``default_model``, since it additionally
     reflects which spend tier the developer has reached — but only for the agent it was recommended
-    for. A tier that moves the org to another agent names that agent's model, which the one being
-    launched may not be able to serve.
+    for.
     """
-    recommended = _as_dict(recommendation)
-    agent = _str(recommended.get("agent"))
-    if agent is None or agent == tool:
-        model = _str(recommended.get("model"))
-        if model:
-            return model
-    return managed_default_model(managed, tool)
+    return recommended_launch_model(recommendation, tool) or managed_default_model(managed, tool)
 
 
 def resolve_state(managed: dict, state: dict, tool: str) -> dict:
