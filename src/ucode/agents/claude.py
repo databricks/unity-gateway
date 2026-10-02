@@ -1309,17 +1309,9 @@ def write_tool_config(
     )
     source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
     generated = values_at(managed_keys, overlay)
-    # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
-    # written by this launch, and remove only previously owned picker keys that no longer apply.
-    stale_picker_keys = [
-        key
-        for key in CLAUDE_MANAGED_PICKER_KEYS
-        if [key] in previous_keys and key not in overlay and (provider or parent_schema)
-    ]
     managed_file_keys = list(managed_keys)
     for path in (
-        [[key] for key in stale_picker_keys]
-        + [["env", key] for key in CLAUDE_MANAGED_MODEL_ENV_KEYS]
+        [["env", key] for key in CLAUDE_MANAGED_MODEL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_CONDITIONAL_ENV_KEYS]
         + [["env", key] for key in CLAUDE_REMOVED_ENV_KEYS]
         + [["env", key] for key in CLAUDE_OTEL_TRACE_ENV_KEYS]
@@ -1426,8 +1418,6 @@ def write_tool_config(
                 if isinstance(existing_default, str):
                     target_env[key] = existing_default
         merged = deep_merge_dict(base, overlay_for_merge)
-        for key in stale_picker_keys:
-            merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
         if managed_config_present:
             # ug owns the whole value under a managed config: overwrite wholesale so a header ug no
@@ -1465,11 +1455,18 @@ def write_tool_config(
                 [("env", key) for key in CLAUDE_OTEL_TRACE_ENV_KEYS] + [("otelHeadersHelper",)],
                 baseline,
             )
-        if not any(key in overlay_for_merge for key in CLAUDE_MANAGED_PICKER_KEYS):
-            if managed_settings_snapshots is None:
-                for key in CLAUDE_MANAGED_PICKER_KEYS:
-                    merged.pop(key, None)
-            elif managed_settings_snapshots.last_applied_by_ug is not None:
+        retire_group(
+            merged,
+            owned,
+            [(key,) for key in CLAUDE_MANAGED_PICKER_KEYS if key not in overlay_for_merge],
+            baseline,
+        )
+        if (
+            managed_settings_snapshots is not None
+            and not managed_has_record
+            and not any(key in overlay_for_merge for key in CLAUDE_MANAGED_PICKER_KEYS)
+        ):
+            if managed_settings_snapshots.last_applied_by_ug is not None:
                 # Only picker keys ucode wrote to this file are its to revert. A matching
                 # last-applied snapshot can't prove that: ucode re-saves pickers it only preserved.
                 owned_paths = managed_settings_snapshots.owned_paths or []
@@ -1535,6 +1532,9 @@ def write_tool_config(
         managed_owned,
         managed_generated,
         managed_has_record,
+        [[key] for key in CLAUDE_MANAGED_PICKER_KEYS if key not in overlay]
+        if provider or parent_schema
+        else [],
     )
 
     custom_oauth = state.get("custom_oauth")
@@ -1674,6 +1674,7 @@ def _reconcile_managed_settings(
     owned: dict[KeyPath, Any],
     generated: dict[KeyPath, Any],
     has_record: bool,
+    picker_conflict_paths: list[list[str]],
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -1723,8 +1724,9 @@ def _reconcile_managed_settings(
     managed_before = copy.deepcopy(existing)
     desired_settings = compose(existing)
     _preserve_permission_denies(managed_before, desired_settings)
+    conflict_paths = owned_paths + picker_conflict_paths
     if not managed_writes_allowed():
-        conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
+        conflicts = _managed_settings_conflicts(managed_before, desired_settings, conflict_paths)
         if conflicts:
             raise RuntimeError(
                 "Claude Code configuration cannot be applied non-interactively because "
@@ -1744,7 +1746,7 @@ def _reconcile_managed_settings(
             parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
-        conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
+        conflicts = _managed_settings_conflicts(managed_before, desired_settings, conflict_paths)
         if conflicts:
             raise
         print_warning(
