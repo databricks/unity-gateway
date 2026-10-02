@@ -23,7 +23,7 @@ from ucode.agents import (
     normalize_tool,
     resolve_launch_model,
 )
-from ucode.agents.args import has_explicit_model_arg
+from ucode.agents.args import has_explicit_model_arg, replace_model_arg_value
 from ucode.managed_config import ManagedConfigResult
 
 
@@ -43,6 +43,21 @@ class TestModelArgumentParsing:
     )
     def test_explicit_model_arg_value(self, tool_args, expected):
         assert explicit_model_arg_value(tool_args) == expected
+
+    @pytest.mark.parametrize(
+        ("tool_args", "expected"),
+        [
+            ([], []),
+            (["--model", "a", "-p", "hi"], ["--model", "target", "-p", "hi"]),
+            (["-m", "a"], ["-m", "target"]),
+            (["--model=a"], ["--model=target"]),
+            (["--model", "a", "--model=b"], ["--model", "a", "--model=target"]),
+            (["--model", "a", "--", "--model", "b"], ["--model", "target", "--", "--model", "b"]),
+            (["--", "--model", "a"], ["--", "--model", "a"]),
+        ],
+    )
+    def test_replace_model_arg_value(self, tool_args, expected):
+        assert replace_model_arg_value(tool_args, "target") == expected
 
     def test_has_explicit_model_arg_stops_at_harness_separator(self):
         assert has_explicit_model_arg(["--", "--model", "model-a"]) is False
@@ -474,6 +489,36 @@ class TestResolveProviderModels:
         assert error == "boom"
         assert relayed is False
 
+    def test_copilot_bedrock_pins_family_targets(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {
+                "provider_type": "amazon_bedrock",
+                "targets": ["us.anthropic.claude-sonnet-4-6", "global.anthropic.claude-opus-4-8"],
+            },
+            None,
+        )
+        models, error, relayed = agents_mod.resolve_provider_models(
+            "copilot", self._STATE, "main.b.svc"
+        )
+        assert error is None
+        assert relayed is False
+        assert models == {
+            "sonnet": "us.anthropic.claude-sonnet-4-6",
+            "opus": "global.anthropic.claude-opus-4-8",
+        }
+
+    def test_copilot_rejects_relayed_service(self, monkeypatch):
+        self._patch(
+            monkeypatch, {"provider_type": "anthropic", "targets": [], "relayed": True}, None
+        )
+        models, error, relayed = agents_mod.resolve_provider_models(
+            "copilot", self._STATE, "main.a.relayed"
+        )
+        assert models is None
+        assert error is not None and "relayed" in error
+        assert relayed is True
+
     @pytest.mark.parametrize("tool", ["gemini", "codex"])
     def test_non_claude_pins_no_family_map(self, monkeypatch, tool):
         # Only claude pins a per-family map; codex ignores it and gemini resolves its own
@@ -518,6 +563,56 @@ class TestConfigureOneGeminiProvider:
         )
         with pytest.raises(RuntimeError, match="pick a model"):
             agents_mod._configure_one("gemini", self._STATE, "c.s.g")
+
+
+class TestConfigureOneCopilotProvider:
+    _STATE = {"workspace": "https://ws.databricks.com", "profile": None}
+    _BEDROCK = {
+        "sonnet": "us.anthropic.claude-sonnet-4-6",
+        "opus": "us.anthropic.claude-opus-4-6-v1",
+    }
+
+    def _patch(self, monkeypatch, provider_models, error=None):
+        monkeypatch.setattr(
+            agents_mod,
+            "resolve_provider_models",
+            lambda tool, state, provider: (provider_models, error, False),
+        )
+        captured = {}
+
+        def _fake_configure_tool(tool, state, model=None, **kwargs):
+            captured.update(tool=tool, model=model, provider=kwargs.get("provider"))
+            return state
+
+        monkeypatch.setattr(agents_mod, "configure_tool", _fake_configure_tool)
+        return captured
+
+    def test_resolves_launch_tier_target_before_configure(self, monkeypatch):
+        # Regression: configure_tool's copilot branch requires a model, so the provider path must
+        # hand it the service's target rather than model=None.
+        captured = self._patch(monkeypatch, self._BEDROCK)
+        agents_mod._configure_one("copilot", self._STATE, "c.s.bedrock")
+        assert captured == {
+            "tool": "copilot",
+            "model": "us.anthropic.claude-sonnet-4-6",
+            "provider": "c.s.bedrock",
+        }
+
+    def test_managed_default_maps_to_the_service_slug(self, monkeypatch):
+        captured = self._patch(monkeypatch, self._BEDROCK)
+        state = {**self._STATE, "copilot_default_model": "claude-opus-4-6"}
+        agents_mod._configure_one("copilot", state, "c.s.bedrock")
+        assert captured["model"] == "us.anthropic.claude-opus-4-6-v1"
+
+    def test_service_without_claude_targets_raises(self, monkeypatch):
+        self._patch(monkeypatch, None)
+        with pytest.raises(RuntimeError, match="declares no Claude models"):
+            agents_mod._configure_one("copilot", self._STATE, "c.s.bedrock")
+
+    def test_resolution_error_raises(self, monkeypatch):
+        self._patch(monkeypatch, None, error="not routable")
+        with pytest.raises(RuntimeError, match="not routable"):
+            agents_mod._configure_one("copilot", self._STATE, "c.s.bedrock")
 
 
 class TestResolveGeminiProviderModel:

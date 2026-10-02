@@ -335,10 +335,19 @@ def resolve_provider_models(
     relayed = bool(service.get("relayed"))
     # Relayed services enforce their declared targets too, so map them like any Anthropic service
     # (allow_all declares none). relayed gates auth, not model reconciliation.
-    # Only Claude pins per-family model ids. Codex ignores this map, and gemini resolves
-    # its target through resolve_gemini_provider_model instead — so mapping their targets
-    # through Claude-family logic would be meaningless (see docstring).
-    if tool != "claude":
+    if tool == "copilot" and relayed:
+        return (
+            None,
+            (
+                f"Model provider service '{provider}' is a relayed Anthropic subscription, "
+                f"which {tool} can't use."
+            ),
+            relayed,
+        )
+    # Only Claude and Copilot (via its Anthropic route) pin per-family model ids. Codex ignores this
+    # map, and gemini resolves its target through resolve_gemini_provider_model instead — so mapping
+    # their targets through Claude-family logic would be meaningless (see docstring).
+    if tool not in ("claude", "copilot"):
         return None, None, relayed
     return map_claude_family_models(service.get("targets") or []) or None, None, relayed
 
@@ -435,7 +444,7 @@ def configure_tool(
         if tool == "gemini":
             result = gemini.write_tool_config(state, model, provider=provider)
         elif tool == "copilot":
-            result = copilot.write_tool_config(state, model)
+            result = copilot.write_tool_config(state, model, provider=provider)
         elif tool == "pi":
             result = pi.write_tool_config(state, model)
         else:
@@ -556,6 +565,19 @@ def _configure_one(
         provider_models, error, relayed = resolve_provider_models(tool, state, provider)
         if error:
             raise RuntimeError(error)
+        if tool == "copilot":
+            # Like gemini, Copilot's config writer needs a concrete model, so resolve the service's
+            # target now (the managed default when it names one, else the launch-tier preference).
+            model = copilot.resolve_provider_model(
+                state.get("copilot_default_model"), provider_models or {}
+            )
+            if not model:
+                raise RuntimeError(
+                    f"Model provider service '{provider}' declares no Claude models, so "
+                    f"{TOOL_SPECS[tool]['display']} has no model to start on. Add targets to "
+                    "the service or set a default model in the managed config."
+                )
+            return configure_tool(tool, state, model, provider=provider)
         return configure_tool(
             tool, state, None, provider=provider, provider_models=provider_models, relayed=relayed
         )

@@ -371,8 +371,15 @@ class TestProviderServiceSupport:
         assert not supports_provider_service("claude", "openai")
 
     def test_other_agents_have_no_provider_support(self):
-        for tool in ("gemini", "opencode", "pi", "copilot"):
+        for tool in ("gemini", "opencode", "pi"):
             assert not supports_provider_service(tool, "anthropic"), tool
+
+    @pytest.mark.parametrize("provider_type", ["anthropic", "amazon_bedrock"])
+    def test_copilot_supports_anthropic_route_providers(self, provider_type):
+        assert supports_provider_service("copilot", provider_type)
+
+    def test_copilot_does_not_support_openai(self):
+        assert not supports_provider_service("copilot", "openai")
 
 
 class TestClaudeSlots:

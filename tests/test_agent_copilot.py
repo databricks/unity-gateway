@@ -259,6 +259,138 @@ def isolate_copilot_config_paths(monkeypatch, tmp_path):
     return env_path
 
 
+BEDROCK_SONNET = "us.anthropic.claude-sonnet-4-6"
+SERVICE = "main.default.bedrock"
+
+
+class TestProviderRouting:
+    def test_provider_overlay_uses_anthropic_route_with_service_header(self):
+        env = copilot.render_env_overlay(WS, BEDROCK_SONNET, "tok", provider=SERVICE)
+        assert env["COPILOT_PROVIDER_TYPE"] == "anthropic"
+        assert env["COPILOT_PROVIDER_BASE_URL"] == f"{WS}/ai-gateway/anthropic"
+        assert env["COPILOT_PROVIDER_HEADERS"] == f"Databricks-Model-Provider-Service: {SERVICE}"
+        assert env["COPILOT_MODEL"] == BEDROCK_SONNET
+        assert "COPILOT_PROVIDER_MODEL_ID" not in env
+        assert "COPILOT_PROVIDER_WIRE_API" not in env
+
+    def test_runtime_env_sets_canonical_model_id(self, monkeypatch):
+        monkeypatch.delenv("COPILOT_PROVIDER_MODEL_ID", raising=False)
+        env = copilot.build_runtime_env(WS, BEDROCK_SONNET, "tok", provider=SERVICE)
+        assert env["COPILOT_PROVIDER_MODEL_ID"] == "claude-sonnet-4.6"
+
+    def test_runtime_env_keeps_user_model_id(self, monkeypatch):
+        monkeypatch.setenv("COPILOT_PROVIDER_MODEL_ID", "user-model-id")
+        env = copilot.build_runtime_env(WS, BEDROCK_SONNET, "tok", provider=SERVICE)
+        assert env["COPILOT_PROVIDER_MODEL_ID"] == "user-model-id"
+
+    def test_unrecognised_model_runtime_env_sets_no_canonical_id(self, monkeypatch):
+        monkeypatch.delenv("COPILOT_PROVIDER_MODEL_ID", raising=False)
+        env = copilot.build_runtime_env(WS, "openai.gpt-oss-120b-1:0", "tok", provider=SERVICE)
+        assert "COPILOT_PROVIDER_MODEL_ID" not in env
+
+    def test_provider_write_leaves_user_model_id_in_env_file(self, tmp_path, monkeypatch):
+        env_path = isolate_copilot_config_paths(monkeypatch, tmp_path)
+        env_path.parent.mkdir(parents=True)
+        env_path.write_text("COPILOT_PROVIDER_MODEL_ID=user-model-id\n", encoding="utf-8")
+        copilot.write_tool_config({"workspace": WS}, BEDROCK_SONNET, token="tok", provider=SERVICE)
+        assert copilot.parse_dotenv(env_path)["COPILOT_PROVIDER_MODEL_ID"] == "user-model-id"
+        copilot.write_tool_config({"workspace": WS}, "system.ai.gpt-5-6-sol", token="tok")
+        assert copilot.parse_dotenv(env_path)["COPILOT_PROVIDER_MODEL_ID"] == "user-model-id"
+
+    def test_overlay_without_provider_is_unchanged(self):
+        env = copilot.render_env_overlay(WS, "claude-sonnet-4-6", "tok")
+        assert env["COPILOT_PROVIDER_TYPE"] == "openai"
+        assert "COPILOT_PROVIDER_HEADERS" not in env
+
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("us.anthropic.claude-sonnet-4-6", "claude-sonnet-4.6"),
+            ("global.anthropic.claude-opus-4-8", "claude-opus-4.8"),
+            ("anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4.5"),
+            ("claude-sonnet-4-20250514", "claude-sonnet-4"),
+            ("claude-haiku-4-5", "claude-haiku-4.5"),
+            ("claude-sonnet-4.6", "claude-sonnet-4.6"),
+            ("claude-opus-4.8", "claude-opus-4.8"),
+            ("gpt-5", None),
+        ],
+    )
+    def test_canonical_claude_model_id(self, model, expected):
+        assert copilot.canonical_claude_model_id(model) == expected
+
+    def test_resolve_provider_model_maps_canonical_request_to_service_slug(self):
+        models = {"sonnet": BEDROCK_SONNET, "opus": "global.anthropic.claude-opus-4-8"}
+        assert copilot.resolve_provider_model("claude-sonnet-4-6", models) == BEDROCK_SONNET
+        assert copilot.resolve_provider_model("claude-sonnet-4.6", models) == BEDROCK_SONNET
+        assert copilot.resolve_provider_model("sonnet", models) == BEDROCK_SONNET
+        assert copilot.resolve_provider_model(None, models) == BEDROCK_SONNET
+        assert copilot.resolve_provider_model("custom-target", models) == "custom-target"
+
+    def test_resolve_provider_model_is_none_without_targets_or_request(self):
+        assert copilot.resolve_provider_model(None, {}) is None
+
+    def test_write_tool_config_swaps_wire_api_for_headers_and_back(self, tmp_path, monkeypatch):
+        env_path = isolate_copilot_config_paths(monkeypatch, tmp_path)
+        env_path.parent.mkdir(parents=True)
+        env_path.write_text("COPILOT_PROVIDER_WIRE_API=responses\n", encoding="utf-8")
+
+        copilot.write_tool_config({"workspace": WS}, BEDROCK_SONNET, token="tok", provider=SERVICE)
+        written = copilot.parse_dotenv(env_path)
+        assert written["COPILOT_PROVIDER_TYPE"] == "anthropic"
+        assert "COPILOT_PROVIDER_WIRE_API" not in written
+        assert SERVICE in written["COPILOT_PROVIDER_HEADERS"]
+
+        copilot.write_tool_config({"workspace": WS}, "gpt-5", token="tok")
+        written = copilot.parse_dotenv(env_path)
+        assert written["COPILOT_PROVIDER_TYPE"] == "openai"
+        assert written["COPILOT_PROVIDER_WIRE_API"] == "completions"
+        assert "COPILOT_PROVIDER_HEADERS" not in written
+
+    def test_launch_with_provider_uses_anthropic_route_and_keeps_it_on_refresh(
+        self, tmp_path, monkeypatch
+    ):
+        env_path = isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setenv("COPILOT_PROVIDER_WIRE_API", "responses")
+        monkeypatch.setattr(copilot, "TOKEN_REFRESH_INTERVAL_SECONDS", 0.01)
+        refreshed = threading.Event()
+        calls = []
+
+        def get_token(*args, force_refresh=False, **kwargs):
+            if force_refresh:
+                refreshed.set()
+            return "tok"
+
+        class Process:
+            def wait(self):
+                assert refreshed.wait(timeout=2)
+                return 0
+
+        def popen(argv, *, env):
+            calls.append((argv, env))
+            return Process()
+
+        monkeypatch.setattr(copilot, "get_databricks_token", get_token)
+        monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
+
+        with pytest.raises(SystemExit):
+            copilot.launch(
+                {"workspace": WS, "_copilot_launch_provider": SERVICE},
+                ["-p", "hi"],
+                options=copilot.LaunchOptions(user_pinned_model=BEDROCK_SONNET),
+            )
+
+        argv, env = calls[0]
+        assert argv == ["copilot", "-p", "hi"]
+        assert env["COPILOT_PROVIDER_TYPE"] == "anthropic"
+        assert env["COPILOT_PROVIDER_BASE_URL"] == f"{WS}/ai-gateway/anthropic"
+        assert SERVICE in env["COPILOT_PROVIDER_HEADERS"]
+        assert env["COPILOT_MODEL"] == BEDROCK_SONNET
+        assert "COPILOT_PROVIDER_WIRE_API" not in env
+        written = copilot.parse_dotenv(env_path)
+        assert written["COPILOT_PROVIDER_TYPE"] == "anthropic"
+        assert SERVICE in written["COPILOT_PROVIDER_HEADERS"]
+
+
 class TestWriteToolConfig:
     def test_manages_wire_api_and_preserves_wire_model_and_user_values(self, tmp_path, monkeypatch):
         env_path = isolate_copilot_config_paths(monkeypatch, tmp_path)

@@ -2320,6 +2320,9 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
     "claude": ("anthropic", "amazon_bedrock"),
     "codex": ("openai", "azure_openai", "microsoft_foundry"),
     "gemini": ("gemini_enterprise",),
+    # Copilot CLI reaches these through its Anthropic BYOK type; the OpenAI-style MLflow route it
+    # otherwise uses rejects Bedrock-backed services.
+    "copilot": ("anthropic", "amazon_bedrock"),
 }
 
 # Provider types that expose Bedrock-style model ids (e.g.
