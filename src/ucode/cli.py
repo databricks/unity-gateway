@@ -43,7 +43,7 @@ from ucode.agents import copilot as copilot_agent
 from ucode.agents import (
     launch as launch_agent,
 )
-from ucode.agents.args import has_explicit_model_arg
+from ucode.agents.args import has_explicit_model_arg, replace_model_arg_value
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
@@ -2836,11 +2836,16 @@ def _launch_tool(
                     )
             if provider and tool == "copilot":
                 # Copilot reaches the service through its Anthropic route, which needs a concrete
-                # target id: the admin's default model, else the service's best tier.
+                # target id: the user's --model, else the admin's default, else the best tier.
+                forwarded_copilot_model = explicit_model_arg_value(ctx.args)
                 resolved_model = copilot_agent.resolve_provider_model(
-                    managed_launch_model(managed or {}, recommendation, tool),
+                    forwarded_copilot_model
+                    or managed_launch_model(managed or {}, recommendation, tool),
                     provider_models or {},
                 )
+                if forwarded_copilot_model and resolved_model:
+                    # Copilot applies its own --model over COPILOT_MODEL, so hand it the target id.
+                    ctx.args = replace_model_arg_value(ctx.args, resolved_model)
                 if not resolved_model:
                     raise RuntimeError(
                         f"Model provider service '{provider}' declares no Claude models, so "

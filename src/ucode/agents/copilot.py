@@ -75,7 +75,7 @@ LEGACY_ENV_KEYS = [
     "OPENAI_API_KEY",
     "COPILOT_PROVIDER_API_KEY",
 ]
-_CLAUDE_MODEL_PATTERN = re.compile(r"claude-(opus|sonnet|haiku)-(\d+)(?:-(\d{1,2})(?!\d))?")
+_CLAUDE_MODEL_PATTERN = re.compile(r"claude-(opus|sonnet|haiku)-(\d+)(?:[-.](\d{1,2})(?!\d))?")
 _GPT_MODEL_MAJOR_PATTERN = re.compile(r"^(?:system\.ai\.)?(?:databricks-)?gpt-(\d+)(?=$|[.-])")
 
 

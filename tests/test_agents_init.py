@@ -23,7 +23,7 @@ from ucode.agents import (
     normalize_tool,
     resolve_launch_model,
 )
-from ucode.agents.args import has_explicit_model_arg
+from ucode.agents.args import has_explicit_model_arg, replace_model_arg_value
 from ucode.managed_config import ManagedConfigResult
 
 
@@ -43,6 +43,21 @@ class TestModelArgumentParsing:
     )
     def test_explicit_model_arg_value(self, tool_args, expected):
         assert explicit_model_arg_value(tool_args) == expected
+
+    @pytest.mark.parametrize(
+        ("tool_args", "expected"),
+        [
+            ([], []),
+            (["--model", "a", "-p", "hi"], ["--model", "target", "-p", "hi"]),
+            (["-m", "a"], ["-m", "target"]),
+            (["--model=a"], ["--model=target"]),
+            (["--model", "a", "--model=b"], ["--model", "a", "--model=target"]),
+            (["--model", "a", "--", "--model", "b"], ["--model", "target", "--", "--model", "b"]),
+            (["--", "--model", "a"], ["--", "--model", "a"]),
+        ],
+    )
+    def test_replace_model_arg_value(self, tool_args, expected):
+        assert replace_model_arg_value(tool_args, "target") == expected
 
     def test_has_explicit_model_arg_stops_at_harness_separator(self):
         assert has_explicit_model_arg(["--", "--model", "model-a"]) is False

@@ -290,6 +290,8 @@ class TestProviderRouting:
             ("anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4.5"),
             ("claude-sonnet-4-20250514", "claude-sonnet-4"),
             ("claude-haiku-4-5", "claude-haiku-4.5"),
+            ("claude-sonnet-4.6", "claude-sonnet-4.6"),
+            ("claude-opus-4.8", "claude-opus-4.8"),
             ("gpt-5", None),
         ],
     )
@@ -299,6 +301,7 @@ class TestProviderRouting:
     def test_resolve_provider_model_maps_canonical_request_to_service_slug(self):
         models = {"sonnet": BEDROCK_SONNET, "opus": "global.anthropic.claude-opus-4-8"}
         assert copilot.resolve_provider_model("claude-sonnet-4-6", models) == BEDROCK_SONNET
+        assert copilot.resolve_provider_model("claude-sonnet-4.6", models) == BEDROCK_SONNET
         assert copilot.resolve_provider_model("sonnet", models) == BEDROCK_SONNET
         assert copilot.resolve_provider_model(None, models) == BEDROCK_SONNET
         assert copilot.resolve_provider_model("custom-target", models) == "custom-target"
