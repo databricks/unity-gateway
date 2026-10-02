@@ -562,23 +562,20 @@ cannot still be running when that gate passes. Full coverage on PRs needs no lab
 
 ### CUJ3 model-discovery stack
 
-The first CUJ3 layer covers only models, for both Claude and Codex. Provision
-`ug_e2e.models` and `ug_e2e.other_models` using `fixtures/cuj/models/provision.py`,
-then review and publish `fixtures/cuj/models/cuj3-managed-config.json` in the
-dedicated workspace. The model-only fixtures do not require an App, UC connection,
-MCP service, or skill bundle. Resource provisioning and config publication are
-explicit admin setup, not work performed by the integration tests.
+CUJ3 first covers Claude/Codex models only. An authorized admin provisions both
+schemas with `fixtures/cuj/models/provision.py` and separately reviews/publishes
+`fixtures/cuj-3/managed-config.json` in the dedicated workspace. Follow the fixture
+README's prerequisites, explicit auth, and preflight-before-write rules. Tests
+do not provision resources or policy; Apps, connections, MCP, and skills are not required.
 
-Each journey calls the real `ug configure` before checking its persisted schema
-pointer and defaults. A separate UC inventory check proves that all five in-scope
-services exist, including Gemini. It independently requests each agent's scoped catalog,
-proves the compatible decoy is accessible in another schema, and compares the
-generated catalog and native picker/model-list with that oracle. Native
-pickers must contain exactly the expected numbered model rows, with no unmatched,
-ambiguous, or duplicate entries; friendly labels cannot hide an excluded service.
-The configured default and every additional in-scope compatible model must complete a file task
-whose contents are withheld from the prompt, with native model identity evidence.
-Discovery or startup alone cannot pass.
+Each journey runs real `ug configure`, checks persisted schema/defaults and all
+seven UC services, and independently fetches scoped and compatible-decoy catalogs.
+Generated settings/catalogs, native caches/model lists, and exact numbered picker
+rows must agree: no unmatched, ambiguous, duplicate, or excluded entries hidden
+by labels. Defaults and every extra compatible model must complete file tasks
+with values withheld from prompts. Claude checks the response-reported model;
+Codex checks the client-selected model. Neither proves the executed gateway backing
+destination; discovery or startup alone cannot pass.
 
 The version-agnostic services under `ug_e2e.models` and expected discovery sets are:
 
@@ -590,31 +587,23 @@ The version-agnostic services under `ug_e2e.models` and expected discovery sets 
 | `kimi` | Included | Included |
 | `gemini_flash` | Excluded | Excluded |
 
-Gemini is inside the managed schema: its exclusion tests agent compatibility,
-not schema scoping. The accessible compatible services
-`ug_e2e.other_models.claude_decoy` and `ug_e2e.other_models.codex_decoy` separately
-test schema exclusion. Exact backing `system.ai` source versions are supplied
-explicitly during provisioning. These expected subsets are an intended contract,
-not a claim of a live pass: gateway API-type metadata, feature flags, and harness
-compatibility must be verified in the dedicated workspace. Unexpected Gemini
-visibility fails the tests; no local filtering hides it.
+In-schema Gemini tests compatibility; accessible `ug_e2e.other_models.claude_decoy`
+and `ug_e2e.other_models.codex_decoy` test scope exclusion. Provisioning takes explicit
+backing `system.ai` versions. These sets require live verification of gateway API-type
+metadata, feature flags, and harness compatibility; unexpected Gemini visibility
+fails without local filtering. Offline checks are not a live pass.
 
-When the gateway's Claude discovery-alias feature is enabled, non-Claude IDs such
-as Kimi are returned as `anthropic-aigw-<8-character SHA-256 prefix>-<service FQN>`.
-The journey verifies the checksum and exact service inventory without dropping
-entries. Generated settings, the native cache, picker, explicit tasks, and native
-transcript identity must retain the actual returned wire ID; Codex keeps raw FQNs.
-The dedicated workspace enables this feature: its Claude journey requires the
-exact encoded wire inventory as well as service identities and the coding-agent
-mode header needed for inference to reverse the alias.
+The dedicated workspace must enable Claude discovery aliases, including Kimi's
+`anthropic-aigw-<8-character SHA-256 prefix>-<service FQN>` form. The journey checks
+checksums, exact service/wire inventories, and the coding-agent-mode header needed
+to reverse aliases for inference. Settings, cache, picker, tasks, and response-reported
+models retain returned wire IDs; Codex keeps raw FQNs. No entries are dropped.
 
-With the published policy selecting Claude as the default agent, both bare `ug`
-and explicit `ug claude` must launch Claude/Sonnet and complete separate real TUI
-tasks. `ug claude -p "task"` must
-complete a print-mode task on Sonnet without a model override. Codex's default
-must complete both a TUI task and `ug codex -- exec --skip-git-repo-check --json "task"`
-on `gpt_luna`, also without a model override. Native Codex `-p` selects a profile,
-not a headless prompt; `ug codex -p "task"` is not the supported task command.
+Bare `ug` and explicit `ug claude` each complete a separate Claude/Sonnet TUI task
+and exit normally; `ug claude -p "task"` completes a Sonnet print task. Codex completes
+both TUI and `ug codex -- exec --skip-git-repo-check --json "task"` tasks on `gpt_luna`.
+All default tasks omit model overrides; routing stays off. Codex `-p` selects a native
+profile, not a headless prompt.
 
 CI runs `managed and cuj3 and workspace_isolated` in a two-agent matrix using
 `UG_CUJ3_WORKSPACE` and the shared CUJ SP secrets. The shared managed lanes exclude
@@ -628,10 +617,7 @@ python3.12 scripts/run_integration.py \
   -- -m 'managed and cuj3 and workspace_isolated'
 ```
 
-MCP discovery/execution and skills discovery/invocation remain separate later
-layers. The existing full CUJ3 and fixture branches are retained until those
-layers are extracted and restacked. The model-only fixture PR is based directly
-on main; the discovery-test PR is stacked only on that fixture PR, not CUJ7.
+MCP/skills remain separate layers; this model suite does not depend on CUJ7.
 
 ### Managed-workspace journeys
 

@@ -17,7 +17,7 @@ from utils.cuj3 import (
     MODEL_SCHEMA,
     MODEL_SERVICES,
     OTHER_MODEL_SCHEMA,
-    assert_native_model_identity,
+    assert_completed_task_model,
     assert_persisted_config,
     assert_picker_inventory,
     claude_discovery_model_id,
@@ -38,17 +38,15 @@ pytestmark = [pytest.mark.managed, pytest.mark.cuj3, pytest.mark.workspace_isola
 @pytest.mark.claude
 @pytest.mark.tui
 def test_case_03_managed_schema_pointers_claude(live_session, workspace):
-    """Scenario: configure Claude from the published CUJ3 model schema, then use every model.
+    """Scenario: configure published CUJ3 policy; launch bare ug, ug claude, and print tasks.
 
-    Expected: public configure persists the exact managed schema/defaults. An independent
-    UC GETs prove all five in-scope services, including Gemini, and both decoys exist.
-    An independent compatible inventory proves scoped models and the accessible decoy;
-    generated settings, native gateway cache, and exact numbered picker inventory match the scoped
-    inventory. Bare ug and explicit ug claude each complete a separate real Claude/Sonnet
-    TUI file task with native exact default identity and normal exit, without model overrides;
-    ug claude -p completes a Sonnet print task; every extra model completes a task with native identity. In-scope
-    Gemini and both out-of-scope decoys are excluded. These intended compatibility assertions
-    fail if the live backend differs; they are not a claim of live verification.
+    Expected: persisted schema/defaults and all seven UC services match policy; independent
+    catalogs, settings, cache, and exact numbered picker agree on Sonnet/Haiku/Kimi,
+    excluding Gemini and both accessible out-of-scope decoys. Both TUI launches exit
+    normally after separate Sonnet file tasks; print mode uses Sonnet without an override,
+    and every extra model completes a headless task, with routing off throughout.
+    Claude's response-reported model must match; it does not prove the executed gateway
+    backing destination. These assertions require a live pass, not collection alone.
     """
     session = live_session
     configured = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
@@ -127,7 +125,7 @@ def test_case_03_managed_schema_pointers_claude(live_session, workspace):
         tui.wait_for_task(default_task, timeout=240)
         tui.exit_normally()
     default_task.assert_completed(session, "claude")
-    assert_native_model_identity(session, "claude", default_task.value, CLAUDE_DEFAULT)
+    assert_completed_task_model(session, "claude", default_task.value, CLAUDE_DEFAULT)
 
     explicit_task = FileTask(session)
     with AgentTerminal(
@@ -138,7 +136,7 @@ def test_case_03_managed_schema_pointers_claude(live_session, workspace):
         tui.wait_for_task(explicit_task, timeout=240)
         tui.exit_normally()
     explicit_task.assert_completed(session, "claude")
-    assert_native_model_identity(session, "claude", explicit_task.value, CLAUDE_DEFAULT)
+    assert_completed_task_model(session, "claude", explicit_task.value, CLAUDE_DEFAULT)
 
     gateway_ids = session.claude_gateway_model_ids()
     assert len(gateway_ids) == len(set(gateway_ids)), gateway_ids
@@ -158,7 +156,7 @@ def test_case_03_managed_schema_pointers_claude(live_session, workspace):
     )
     print_task.assert_headless_answer("claude", result)
     print_task.assert_completed(session, "claude")
-    assert_native_model_identity(session, "claude", print_task.value, CLAUDE_DEFAULT)
+    assert_completed_task_model(session, "claude", print_task.value, CLAUDE_DEFAULT)
 
     for model in parent_catalog.model_ids:
         if model == CLAUDE_DEFAULT:
@@ -179,23 +177,22 @@ def test_case_03_managed_schema_pointers_claude(live_session, workspace):
         )
         task.assert_headless_answer("claude", result)
         task.assert_completed(session, "claude")
-        assert_native_model_identity(session, "claude", task.value, model)
+        assert_completed_task_model(session, "claude", task.value, model)
     session.assert_not_routed()
 
 
 @pytest.mark.codex
 @pytest.mark.tui
 def test_case_04_managed_schema_pointers_codex(live_session, workspace):
-    """Scenario: configure Codex from the published CUJ3 model schema, then use every model.
+    """Scenario: configure published CUJ3 policy; launch Codex TUI and ug codex -- exec.
 
-    Expected: public configure persists the exact managed schema/defaults. An independent
-    UC GETs prove all five in-scope services, including Gemini, and both decoys exist.
-    Independent compatible inventories, generated catalogs, real model/list protocol results,
-    and the exact numbered native /model picker inventory agree. A default TUI task, a default exec task,
-    and every extra-model task complete with native identity. Codex -p is a native profile
-    option, not print mode: headless tasks use ug codex -- exec. In-scope Gemini and both
-    out-of-scope decoys are excluded. Intended compatibility fails if the backend differs;
-    these expectations are not a claim of live verification.
+    Expected: persisted schema/defaults and all seven UC services match policy; independent
+    catalogs, generated catalogs, model/list, and exact numbered picker agree on GPT Luna/Kimi,
+    excluding Gemini and both accessible out-of-scope decoys. TUI exits normally after a
+    GPT Luna file task; exec uses that default without an override, and every extra model
+    completes a headless task, with routing off throughout. Native -p selects a profile.
+    Codex's client-selected model must match; it does not prove the executed gateway
+    backing destination. These assertions require a live pass, not collection alone.
     """
     session = live_session
     configured = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
@@ -271,7 +268,7 @@ def test_case_04_managed_schema_pointers_codex(live_session, workspace):
         tui.wait_for_task(default_task, timeout=240)
         tui.exit_normally()
     default_task.assert_completed(session, "codex")
-    assert_native_model_identity(session, "codex", default_task.value, CODEX_DEFAULT)
+    assert_completed_task_model(session, "codex", default_task.value, CODEX_DEFAULT)
 
     exec_task = FileTask(session)
     result = session.run(
@@ -285,7 +282,7 @@ def test_case_04_managed_schema_pointers_codex(live_session, workspace):
     )
     exec_task.assert_headless_answer("codex", result)
     exec_task.assert_completed(session, "codex")
-    assert_native_model_identity(session, "codex", exec_task.value, CODEX_DEFAULT)
+    assert_completed_task_model(session, "codex", exec_task.value, CODEX_DEFAULT)
 
     for model in parent_catalog.model_ids:
         if model == CODEX_DEFAULT:
@@ -304,5 +301,5 @@ def test_case_04_managed_schema_pointers_codex(live_session, workspace):
         )
         task.assert_headless_answer("codex", result)
         task.assert_completed(session, "codex")
-        assert_native_model_identity(session, "codex", task.value, model)
+        assert_completed_task_model(session, "codex", task.value, model)
     session.assert_not_routed()

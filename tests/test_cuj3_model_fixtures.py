@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.cuj3_fixture_data import INVALID_DESTINATIONS, model_readback
+
 ROOT = Path(__file__).parent.parent
 SCRIPT = ROOT / "fixtures/cuj/models/provision.py"
 
@@ -62,40 +64,6 @@ def complete_inventory(provisioner):
             provisioner.model_body(source)
         )
     return inventory
-
-
-def model_readback(*, server_defaults):
-    destination = {
-        "name": "system.ai.databricks-gpt-6-luna",
-        "destination_type": "DESTINATION_TYPE_PAY_PER_TOKEN_FOUNDATION_MODEL",
-        "pay_per_token_config": {"model": "models/system.ai.databricks-gpt-6-luna"},
-    }
-    routing = {"destinations": [destination]}
-    if server_defaults:
-        destination.update(traffic_percentage=100, is_deleted=False)
-        routing["fallback"] = {"destinations": []}
-    return {
-        "name": "model-services/ug_e2e.models.gpt_luna",
-        "config": {"routing": routing, "usage_tracking": {"enabled": True}},
-    }
-
-
-INVALID_DESTINATIONS = [
-    {"name": "system.ai.wrong_source"},
-    {"name": "other.ai.fixture"},
-    {"destination_type": "DESTINATION_TYPE_EXTERNAL_MODEL"},
-    {"pay_per_token_config": {"model": "models/system.ai.wrong_source"}},
-    {"pay_per_token_config": None},
-    {"traffic_percentage": 0},
-    {"traffic_percentage": 50},
-    {"traffic_percentage": "100"},
-    {"traffic_percentage": None},
-    {"traffic_percentage": True},
-    {"is_deleted": True},
-    {"is_deleted": "false"},
-    {"is_disabled": True},
-    {"disabled": True},
-]
 
 
 def test_model_fixture_create_body_uses_canonical_sdk_fields(provisioner):
@@ -184,7 +152,7 @@ def test_model_fixture_dry_plan_requires_no_credentials_or_network():
 
 
 def test_model_fixture_config_is_model_only():
-    config = json.loads(SCRIPT.with_name("cuj3-managed-config.json").read_text())
+    config = json.loads((ROOT / "fixtures/cuj-3/managed-config.json").read_text())
     assert "mcp_servers" not in config
     assert "skills" not in config
     agents = {entry["agent"]: entry["config"] for entry in config["enabled_agents"]}
