@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = {
@@ -203,6 +203,25 @@ def npm_executable(bin_dir: Path, name: str) -> Path:
     return bin_dir / (f"{name}.cmd" if os.name == "nt" else name)
 
 
+def cuj_test_target(nodeid: str) -> str:
+    """Resolve an exact collected node without allowing selection outside the CUJ suite."""
+    filename, separator, selector = nodeid.partition("::")
+    path = PurePosixPath(filename)
+    if (
+        not separator
+        or not re.fullmatch(r"TestCuj\w*::test_cuj_\w+(?:\[.*\])?", selector)
+        or path.parent != PurePosixPath("tests")
+        or not path.name.startswith("test_cuj_")
+        or path.suffix != ".py"
+        or filename != path.as_posix()
+        or "\\" in nodeid
+        or "\n" in nodeid
+        or "\r" in nodeid
+    ):
+        raise ValueError("--cuj-nodeid must be an exact collected tests/test_cuj_*.py::... node.")
+    return f"{SUITES['e2e-integration'] / filename}::{selector}"
+
+
 def workspace_auth_inputs(suite: str, environment: Mapping[str, str]) -> tuple[str, str, str]:
     """Select scoped credentials without mutating the environment or recording secrets.
 
@@ -310,6 +329,9 @@ def arguments(
         default="integration",
         help="Test suite to run; e2e-integration contains only full, unstubbed CUJs.",
     )
+    parser.add_argument(
+        "--cuj-nodeid", help="Run exactly one collected node from --suite e2e-integration."
+    )
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--ug-version", default="checkout", help="Exact ug release, or checkout.")
     source.add_argument(
@@ -404,6 +426,13 @@ def arguments(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
     )
     args = parser.parse_args(argv)
+    if args.cuj_nodeid:
+        if args.suite != "e2e-integration":
+            parser.error("--cuj-nodeid requires --suite e2e-integration.")
+        try:
+            cuj_test_target(args.cuj_nodeid)
+        except ValueError as error:
+            parser.error(str(error))
     if args.suite == "e2e-integration" and (args.installation_only or args.headless_only):
         parser.error("--installation-only and --headless-only belong to --suite integration.")
     if platform_name != "posix" and not (args.installation_only or args.headless_only):
@@ -625,6 +654,7 @@ def main() -> int:
             "codex_parent_model": args.codex_parent_model,
             "dependencies": args.dependency,
             "workspace": args.workspace,
+            "cuj_nodeid": args.cuj_nodeid,
             "second_workspace": args.second_workspace,
             "warehouse_id": args.warehouse_id,
         },
@@ -930,7 +960,12 @@ def main() -> int:
             )
         suite = SUITES[args.suite]
         suite_hash = hashlib.sha256()
-        for path in [Path(__file__), *sorted(suite.rglob("*.py")), suite / "pytest.ini"]:
+        for path in [
+            Path(__file__),
+            *sorted(suite.rglob("*.py")),
+            *sorted((ROOT / "tests/e2e_helpers").rglob("*.py")),
+            suite / "pytest.ini",
+        ]:
             suite_hash.update(str(path.relative_to(ROOT)).encode() + b"\0" + path.read_bytes())
         report["suite_sha256"] = suite_hash.hexdigest()
         extra = args.pytest_args
@@ -944,6 +979,8 @@ def main() -> int:
             installation_only=args.installation_only,
             headless_only=args.headless_only,
         )
+        if args.cuj_nodeid:
+            test_targets = [cuj_test_target(args.cuj_nodeid)]
         with managed_process(
             [
                 test_python,
@@ -974,6 +1011,10 @@ def main() -> int:
                 for key in totals:
                     totals[key] += int(suite_result.get(key, "0"))
             report["results"] = totals
+            if args.cuj_nodeid and totals["tests"] != 1:
+                raise RuntimeError(
+                    f"Expected exactly one CUJ for --cuj-nodeid, but {totals['tests']} executed."
+                )
             if totals["skipped"]:
                 raise RuntimeError("Requested integration tests were skipped; see junit.xml.")
             if not totals["tests"] and not exitcode:

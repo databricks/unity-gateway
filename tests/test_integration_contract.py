@@ -62,6 +62,19 @@ def test_windows_integration_ci_uses_shared_claude_version():
     assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
 
 
+def test_integration_ci_separates_fixture_config_from_real_config():
+    contents = (Path(__file__).parents[1] / ".github/workflows/integration.yml").read_text()
+    managed = contents.split("\n  managed:\n", 1)[1].split("\n  cujs:\n", 1)[0]
+    assert "config: [real, fixture]" in managed
+    assert "'managed_fixture' || '(managed or workspace_switch) and not managed_fixture'" in managed
+    assert ' -- -m "($CONFIG_MARKER) and $AGENT"' in managed
+    assert "integration-managed-${{ matrix.config }}-${{ matrix.agent }}" in managed
+    assert "Fixture-backed config" in managed
+    for line in contents.splitlines():
+        if "TEST_MARKER:" in line:
+            assert "not managed_fixture" in line, "Real-config jobs must exclude injected config"
+
+
 @pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
 @pytest.mark.parametrize("managed_result", ["success", "failure", "cancelled", "skipped"])
 def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_result):

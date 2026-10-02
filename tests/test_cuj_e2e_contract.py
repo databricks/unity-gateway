@@ -29,7 +29,7 @@ def test_cuj_e2e_naming_and_scenarios():
 def test_cuj_e2e_has_no_stubs_or_legacy_imports():
     forbidden_names = {"monkeypatch", "MonkeyPatch", "Mock", "MagicMock", "patch"}
     forbidden_attributes = forbidden_names | {"mock", "skip", "skipif", "xfail"}
-    for path in SUITE.rglob("*.py"):
+    for path in [*SUITE.rglob("*.py"), *(SUITE.parent / "e2e_helpers").rglob("*.py")]:
         for node in ast.walk(ast.parse(path.read_text())):
             modules = []
             if isinstance(node, ast.Import):

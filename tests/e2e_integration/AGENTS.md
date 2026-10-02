@@ -3,16 +3,21 @@
 These instructions are shared by Codex and Claude Code. `CLAUDE.md` imports this
 file; keep all suite guidance here.
 
-This suite contains full journeys against real workspaces and installed agents,
-without stubbed configuration. The existing `tests/integration/` suite remains
-separate, including its `managed_fixture` cases. No existing tests have moved.
+This suite is for **dedicated-workspace** journeys against real services and
+installed agents, without stubbed configuration. The existing `tests/integration/`
+suite uses **shared workspaces** and contains both real-config tests and
+`managed_fixture` tests with injected configuration. No existing tests have moved.
+Pytest markers and JUnit properties record this distinction; using a pytest
+fixture for credentials or a temporary home does not make configuration stubbed.
 
 ## Primary requirement: one Databricks workspace per test
 
 Every test invocation must have its own exclusively assigned Databricks workspace.
 This means a distinct workspace identity, not just a different local directory,
-schema, config name, or session. Claude and Codex tests get separate workspaces;
-parallel workers, developers, and CI runs must not share an assigned workspace.
+schema, config name, or session. Independently collected Claude and Codex tests
+get separate workspaces; a single CUJ may exercise both agents sequentially in
+its workspace. Parallel workers, developers, and CI runs must not share an
+assigned workspace.
 
 Use function-scoped allocation and hold ownership through setup, all phases of
 the journey, and verified cleanup. Each test sets up its required real configuration
@@ -27,8 +32,9 @@ without credentials. Implement allocation before adding executable journeys.
 
 The current suite is scaffolding only: `tests/test_cuj_smart_routing.py` specifies future
 journeys and collects no tests. Do not add passing or skipped placeholders, or
-convert empty collection into a successful E2E run. Process, terminal, evidence,
-workspace-lifecycle, and agent-selection helpers are not implemented yet.
+convert empty collection into a successful E2E run. Neutral process and terminal
+mechanics live in `tests/e2e_helpers/` and are reused by the existing integration
+suite. Dedicated evidence and workspace-lifecycle helpers arrive with live CUJs.
 
 ## Adding journeys
 
@@ -67,13 +73,15 @@ required before adding live journeys.
 - Name every journey module and test method `test_cuj_*` and classes `TestCuj*`.
   Keep tests in `tests/`, with explicit agent scenarios and `Scenario:` / `Expected:`
   docstrings. Keep configure, launch, task, and assertions visible in each test.
-- Put independently written reusable functionality in `helpers/`. Fixtures supply
+- Put suite-specific reusable functionality in `helpers/`. Reuse neutral mechanics
+  from `tests.e2e_helpers`; do not build a second terminal/process framework. Fixtures supply
   isolated environments and credentials, not preconfigured application state.
   Add helpers alongside the journeys that need them, not unused implementations.
 - Mark journeys `live`, interactive journeys `tui`, and each agent's tests `claude`
   or `codex`.
 - Exercise installed public CLIs and real services. Do not import `ucode` internals,
-  existing `test_e2e*` modules, or `tests/integration/utils` helpers.
+  existing `test_e2e*` modules, or `tests/integration/utils` helpers. Shared mechanics
+  must have no dependency on either suite's configuration or fixtures.
 - No mocks, monkeypatching, config stubs, fake services, replacement executables,
   or fabricated ug state. The parent suite's `managed_fixture` exception does not
   apply here, including `UCODE_MANAGED_CONFIG_STUB`.
@@ -127,7 +135,7 @@ and artifacts. Missing prerequisites and empty selections fail honestly.
 ## GitHub Actions
 
 `.github/workflows/e2e-integration.yml` provides the manual **Full E2E CUJs**
-workflow and **Full E2E CUJs · Smart routing** job. It is separate from the
+workflow and **Dedicated workspace · test_cuj_…** jobs. It is separate from the
 existing integration workflow and is not a required or automatic PR check.
 Once the workflow is on the default branch, use **Actions → Full E2E CUJs → Run
 workflow**, selecting a branch that includes the executable CUJ. Running the
@@ -136,20 +144,24 @@ it never reports an empty selection as a successful E2E run.
 
 Configure GitHub Actions secrets `UG_CUJ_SP_CLIENT_ID` and
 `UG_CUJ_SP_CLIENT_SECRET`; local shell variables do not populate GitHub secrets.
-The job installs both pinned agents on a clean Ubuntu runner, verifies the native
-sandbox, and invokes the independent suite. JUnit, versions, logs, and redacted
+Discovery collects tests without credentials and builds the Actions matrix from
+each CUJ's exact node ID, `WORKSPACE_URL`, and `claude`/`codex` markers. Adding a
+test requires **no workflow edit or registry entry**. Each job installs its marked
+agents at pinned versions on a clean Ubuntu runner, verifies the native sandbox,
+and executes only that collected node. JUnit, versions, logs, and redacted
 session evidence are uploaded even after failures, when those files exist.
 Early collection/setup failures appear in the step logs without a test artifact.
 
-The fixed concurrency group coordinates this CUJ's dedicated workspace across
+The workspace-derived concurrency group coordinates each dedicated workspace across
 branches and runs with `cancel-in-progress: false`, allowing active cleanup to
 finish. It is not workspace allocation and does not coordinate local invocations;
-the executable CUJ still needs its remote ownership guard. Give future CUJs their
-own workspaces and groups. Do not enable automatic PR runs or make this a required
+the executable CUJ still needs its remote ownership guard. Concurrent local runs
+must fail before mutation if the declared workspace is already owned. Give future
+CUJs their own workspaces; CI derives their groups automatically. Do not enable automatic PR runs or make this a required
 check until the executable journey and its cleanup have been validated.
 
 Keep local helper/contract tests in the ordinary unit suite. Current checks live
-in `tests/test_cuj_e2e_contract.py`, `tests/test_cuj_workflow.py`, and
+in `tests/test_cuj_e2e_contract.py`, `tests/test_cuj_discovery.py`, `tests/test_cuj_workflow.py`, and
 `tests/test_integration_runner.py`. Update
 this file and coverage documentation when implemented coverage changes. Report
 local checks, live results, and unexecuted scenarios separately.

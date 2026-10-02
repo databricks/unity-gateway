@@ -8,8 +8,9 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | --- | --- | --- |
 | Unit/component | Existing `test_*.py` files | Individual behavior; dependencies may be mocked |
 | Existing e2e | `test_e2e*.py` | Real workspace behavior with some patched setup/internal calls |
-| Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
-| Full E2E CUJs (scaffold) | `e2e_integration/tests/test_cuj_*.py` | Reserved for entirely unstubbed journeys; no executable cases yet |
+| Shared workspace / real config | `integration/test_*.py`, excluding `managed_fixture` | Installed public CLI journeys fetching real configuration; no exclusive per-test workspace |
+| Fixture-backed config | `integration/test_*.py` marked `managed_fixture` | Injected admin config; real agents and gateway on shared workspaces |
+| Dedicated workspace (scaffold) | `e2e_integration/tests/test_cuj_*.py` | One exclusively owned workspace per CUJ, real configuration only; no executable cases yet |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
 The independent [full E2E CUJ suite](e2e_integration/AGENTS.md) uses `test_cuj_`
@@ -17,11 +18,16 @@ module/function names and its own `helpers/`. Select it with
 `scripts/run_integration.py --suite e2e-integration`; the existing runner default
 is unchanged. Its smart-routing module currently documents acceptance criteria
 only, and empty collection is not a passing E2E result. Existing integration
-cases, including `managed_fixture` cases, remain in their current suite.
+cases, including `managed_fixture` cases, remain in their current suite. Both suites
+reuse neutral process/terminal mechanics from `e2e_helpers/`; configuration and
+workspace-lifecycle helpers remain suite-specific. Ordinary fixtures for credentials
+and local isolation are not the same as fixture-backed configuration.
 
 The separate **Full E2E CUJs** GitHub Actions workflow is manual-only. Its
-**Full E2E CUJs · Smart routing** job uses CUJ-specific SP secrets, a dedicated
-workspace concurrency group, and independent result artifacts. Scaffold-only
+**Dedicated workspace · test_cuj_…** jobs are discovered automatically from pytest,
+with each class's workspace and agent markers. No YAML entry is needed per test.
+They use CUJ-specific SP secrets, workspace-derived concurrency groups, and independent
+result artifacts. Scaffold-only
 branches fail its collection preflight; this is not yet an automatic or required
 live check. See the suite's AGENTS.md for dispatch and setup requirements.
 
@@ -128,7 +134,8 @@ These are **implemented assertions**, not a claim that every version passes.
 Consult the run's JUnit report and artifacts for results. Each function states
 its **Scenario** and **Expected** outcome and shows its configure and launch
 commands. Fixtures supply fresh environments and credentials, never configured ug.
-All tests live directly in `integration/`; shared mechanics live in `utils/`.
+These existing tests live directly in `integration/`; suite-specific helpers live
+in `utils/` and neutral process/terminal mechanics in `tests/e2e_helpers/`.
 
 | Test | User action | Expected evidence |
 | --- | --- | --- |
@@ -176,14 +183,16 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_and_ucode_auth_helpers_emit_only_the_supplied_bearer` | Run both auth helper commands with the public bearer override, with and without forced refresh | Exact token-only stdout, no warnings or ANSI escapes; no workspace authentication or saved state |
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
-With Claude and Codex selected there are **62 live cases** (12 marked TUI cases),
+With Claude and Codex selected there are **60 real-config live cases**,
 **6 managed-workspace cases** (marker `managed`, run against workspaces that
 publish a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
-**25 managed-fixture cases** (marker `managed_fixture`, with only
+**27 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected), and **7 installation checks**. The 14 retained numbered scenarios
 comprise **24 explicit journeys**: 12 managed configured/fresh executions and 12 unmanaged
-executions. Thirteen additional managed-fixture cases cover focused model, MCP, skills,
-and lifecycle shapes; two published-config cases cover Claude defaults. Parametrization varies
+executions. Fifteen additional managed-fixture cases cover focused model, MCP, skills,
+lifecycle, and routing shapes; two published-config cases cover Claude defaults. The two
+subagent-routing cases also carry `live`, but CI selects them only in the fixture-config
+lanes. Parametrization varies
 argument spelling or routing mode, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
 Generated-file cleanup and strict app-server stdout assertions remain enforced.
@@ -224,7 +233,7 @@ dependency graph to reproduce a user's combination. Every relevant same-reposito
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
 journeys for both agents, in two parallel jobs. After smoke finishes, the full
-suite runs all 62 live cases across two parallel agent jobs: one Claude VM and one
+suite runs all 60 real-config live cases across two parallel agent jobs: one Claude VM and one
 Codex VM, each running its configure, headless, and commands/lifecycle cases
 serially. Each agent is installed once for the full suite, and no two full jobs
 for the same agent overlap within a run.
@@ -255,8 +264,9 @@ Codex-specific, and Grok exclusions remain. `test_agent_copilot.py` covers API
 selection, model-override precedence, persisted configuration, and token refresh
 locally; it does not establish live inference or in-session model switching.
 Check names describe the coverage: `Unit tests`, `Gateway API tests`,
-`Agent launch tests · Claude`, `Smoke journeys · Claude`, and
-`Full journeys · Claude` (with the other agents named likewise).
+`Agent launch tests · Claude`, `Shared workspace / real config · Smoke · Claude`,
+`Shared workspace / real config · Full · Claude`, and `Fixture-backed config · Managed · Claude`
+(with the other agents named likewise). Dedicated CUJs have their own per-test jobs.
 Unit tests still run as one job. Both matrices use `fail-fast: false` so one
 failure does not cancel other coverage.
 

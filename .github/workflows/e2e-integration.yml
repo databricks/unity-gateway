@@ -24,21 +24,50 @@ on:
 permissions:
   contents: read
 
-# One dedicated workspace for this CUJ. Coordinate across branches and runs,
-# not just within a PR. Never cancel an active run during policy restoration.
-# Other CUJs must have different workspaces and their own concurrency groups.
-concurrency:
-  group: full-e2e-cuj-smart-routing-dbc-1a9622fc-2e91
-  cancel-in-progress: false
-
 jobs:
-  smart-routing:
-    name: Full E2E CUJs · Smart routing
+  discover:
+    name: Discover full E2E CUJs
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.collect.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: 0.9.8
+      - name: Collect every CUJ without workspace credentials
+        id: collect
+        shell: bash
+        run: |
+          uv run --no-project --python 3.12 --with pytest==9.0.3 --with pexpect==4.9.0 --with pyte==0.8.2 \
+            python -m pytest -c tests/e2e_integration/pytest.ini \
+            --confcutdir=tests/e2e_integration tests/e2e_integration \
+            --collect-only -q --cuj-matrix-output "$RUNNER_TEMP/cuj-matrix.json"
+          matrix="$(jq -c . "$RUNNER_TEMP/cuj-matrix.json")"
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+
+  cuj:
+    name: Dedicated workspace · ${{ matrix.name }}
+    needs: discover
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    runs-on: ubuntu-22.04
+    # Distinct tests have distinct workspaces. Coordinate repeats of the same
+    # workspace across branches without cancelling active cleanup.
+    concurrency:
+      group: full-e2e-cuj-${{ matrix.workspace_key }}
+      cancel-in-progress: false
     # Above the runner's 3600s pytest deadline to leave room for cleanup.
     timeout-minutes: 75
     env:
-      CUJ_WORKSPACE: https://dbc-1a9622fc-2e91.cloud.databricks.com
+      CUJ_WORKSPACE: ${{ matrix.workspace }}
+      CUJ_NODEID: ${{ matrix.nodeid }}
+      NEEDS_CLAUDE: ${{ matrix.claude }}
+      NEEDS_CODEX: ${{ matrix.codex }}
       UG_VERSION: ${{ inputs.ug_version }}
       CLAUDE_VERSION: ${{ inputs.claude_version }}
       CODEX_VERSION: ${{ inputs.codex_version }}
@@ -57,14 +86,6 @@ jobs:
         with:
           version: 1.17.0
 
-      - name: Require an executable CUJ before accessing workspace credentials
-        shell: bash
-        run: |
-          uv run --no-project --python 3.12 --with pytest==9.0.3 \
-            python -m pytest -c tests/e2e_integration/pytest.ini \
-            --confcutdir=tests/e2e_integration tests/e2e_integration \
-            --collect-only -q -k test_cuj_smart_routing
-
       - name: Verify the native agent sandbox
         shell: bash
         run: |
@@ -72,7 +93,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends bubblewrap
           bwrap --ro-bind / / --unshare-user --proc /proc --dev /dev /usr/bin/true
 
-      - name: Run test_cuj_smart_routing with both agents
+      - name: Run the discovered CUJ
         shell: bash
         env:
           UG_CUJ_SP_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
@@ -80,18 +101,23 @@ jobs:
         run: |
           : "${UG_CUJ_SP_CLIENT_ID:?Set the UG_CUJ_SP_CLIENT_ID GitHub Actions secret}"
           : "${UG_CUJ_SP_CLIENT_SECRET:?Set the UG_CUJ_SP_CLIENT_SECRET GitHub Actions secret}"
+          agents=()
+          if [[ "$NEEDS_CLAUDE" == true ]]; then
+            agents+=(--claude-version "$CLAUDE_VERSION")
+          fi
+          if [[ "$NEEDS_CODEX" == true ]]; then
+            agents+=(--codex-version "$CODEX_VERSION")
+          fi
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --suite e2e-integration --python 3.12 --ug-version "$UG_VERSION" \
-            --claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION" \
-            --workspace "$CUJ_WORKSPACE" \
-            --output "$RUNNER_TEMP/ug-e2e-integration" \
-            -- -k test_cuj_smart_routing
+            "${agents[@]}" --workspace "$CUJ_WORKSPACE" --cuj-nodeid "$CUJ_NODEID" \
+            --output "$RUNNER_TEMP/ug-e2e-integration"
 
       - name: Upload full E2E CUJ evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: full-e2e-cuj-smart-routing-${{ github.run_id }}-${{ github.run_attempt }}
+          name: full-e2e-cuj-${{ matrix.artifact_key }}-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: warn
           include-hidden-files: true
           path: |
