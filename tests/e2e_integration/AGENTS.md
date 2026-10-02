@@ -56,10 +56,10 @@ class TestCujSmartRouting(BaseCujTest):
     WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
 ```
 
-Journey methods use `self.workspace_url`, which validates and normalizes the URL.
-The URL must be declared on the concrete class; there is no inherited or global
-workspace fallback. Collection rejects missing/invalid URLs and duplicate workspace
-assignments across collected tests. Independently collected scenarios need separate
+Journey methods use `self.workspace_url`, which returns the class's `WORKSPACE_URL`
+directly. Collection rejects missing URLs and duplicate workspace URL declarations
+across collected tests; it does not validate or normalize URLs.
+Independently collected scenarios need separate
 classes and workspaces, including parametrized cases. This check does not provision
 workspaces or establish exclusive ownership across processes; allocation is still
 required before adding live journeys.
@@ -118,7 +118,7 @@ and artifacts. Missing prerequisites and empty selections fail honestly. Add no
 live CI lane until there is an executable journey.
 
 Keep local helper/contract tests in the ordinary unit suite. Current checks live
-in `tests/test_cuj_base.py`, `tests/test_cuj_e2e_contract.py`, and
+in `tests/test_cuj_e2e_contract.py` and
 `tests/test_integration_runner.py`. Update
 this file and coverage documentation when implemented coverage changes. Report
 local checks, live results, and unexecuted scenarios separately.
