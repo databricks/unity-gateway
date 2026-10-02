@@ -5,6 +5,7 @@ import copy
 
 import pytest
 
+from tests.e2e_integration.helpers.constants import CodingAgent
 from tests.e2e_integration.helpers.workspace import ApiError, Workspace
 
 
@@ -19,7 +20,7 @@ def workspace(monkeypatch):
         "spec_version": 1,
         "enabled_agents": [
             {"agent": agent, "config": {"smart_routing": {"enabled": True}}}
-            for agent in ("CODING_AGENT_CLAUDE_CODE", "CODING_AGENT_CODEX")
+            for agent in (CodingAgent.CLAUDE_CODE, CodingAgent.CODEX)
         ],
     }
     state = {"config": config, "claim": None}

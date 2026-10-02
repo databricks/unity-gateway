@@ -2,6 +2,7 @@
 
 import pytest
 from helpers.base import BaseCujTest
+from helpers.constants import CodingAgent
 from helpers.evidence import FileTask, SessionEvidence
 from helpers.terminal import Terminal
 
@@ -32,14 +33,14 @@ class TestCujSmartRouting(BaseCujTest):
         assert workspace.url == self.workspace_url.rstrip("/")
         published = workspace.original
         assert published["spec_version"] == 1
-        assert published["default_agent"] == "CODING_AGENT_CLAUDE_CODE"
+        assert published["default_agent"] == CodingAgent.CLAUDE_CODE
         entries = published["enabled_agents"]
         assert len(entries) == 2
         configs = {entry["agent"]: entry["config"] for entry in entries}
-        assert set(configs) == {"CODING_AGENT_CLAUDE_CODE", "CODING_AGENT_CODEX"}
+        assert set(configs) == {CodingAgent.CLAUDE_CODE, CodingAgent.CODEX}
         agents = {
-            "claude": configs["CODING_AGENT_CLAUDE_CODE"],
-            "codex": configs["CODING_AGENT_CODEX"],
+            "claude": configs[CodingAgent.CLAUDE_CODE],
+            "codex": configs[CodingAgent.CODEX],
         }
         supported, defaults, overrides = {}, {}, {}
         for agent, config in agents.items():
