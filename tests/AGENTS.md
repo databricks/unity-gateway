@@ -6,7 +6,7 @@ tests. Keep work scoped to the behavior requested by the user.
 ## Categories
 
 - `e2e_integration/` is the independent full E2E CUJ suite. Name all journey
-  modules and functions `test_cuj_*`; keep journeys at that suite's root and
+  modules and functions `test_cuj_*`; keep journeys in that suite's `tests/` and
   independently written shared code in `helpers/`. Follow its `AGENTS.md`. No
   two test invocations may share an assigned Databricks workspace, including
   across concurrent runs; per-test workspace allocation is required. No

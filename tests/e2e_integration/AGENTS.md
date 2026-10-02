@@ -25,15 +25,29 @@ Do not fall back to a shared workspace when allocation is unavailable: fail befo
 configuration or inference. Record each test's workspace identity in its artifacts,
 without credentials. Implement allocation before adding executable journeys.
 
-The current suite is scaffolding only: `test_cuj_smart_routing.py` specifies future
+The current suite is scaffolding only: `tests/test_cuj_smart_routing.py` specifies future
 journeys and collects no tests. Do not add passing or skipped placeholders, or
 convert empty collection into a successful E2E run. Process, terminal, evidence,
 workspace-lifecycle, and agent-selection helpers are not implemented yet.
 
 ## Adding journeys
 
-- Name every journey module and function `test_cuj_*`. Keep tests at this directory's
-  root, with separate explicit Claude and Codex functions and `Scenario:` / `Expected:`
+Keep journey modules in `tests/`, reusable code in `helpers/`, and pytest
+configuration and shared instructions at the suite root:
+
+```text
+e2e_integration/
+├── AGENTS.md
+├── CLAUDE.md
+├── conftest.py
+├── pytest.ini
+├── helpers/
+└── tests/
+    └── test_cuj_smart_routing.py
+```
+
+- Name every journey module and function `test_cuj_*`. Keep tests in `tests/`,
+  with separate explicit Claude and Codex functions and `Scenario:` / `Expected:`
   docstrings. Keep configure, launch, task, and assertions visible in each test.
 - Put independently written reusable functionality in `helpers/`. Fixtures supply
   isolated environments and credentials, not preconfigured application state.

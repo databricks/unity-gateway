@@ -16,7 +16,7 @@ SUITE = Path(__file__).parent / "e2e_integration"
 def test_cuj_e2e_naming_and_scenarios():
     for path in SUITE.rglob("test_*.py"):
         assert path.name.startswith("test_cuj_"), path
-        assert path.parent == SUITE, "Keep journeys at the suite root and helpers in helpers/."
+        assert path.parent == SUITE / "tests", "Keep journeys in tests/ and helpers in helpers/."
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith(
                 "test_"

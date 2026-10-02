@@ -1,4 +1,4 @@
-"""Specification for future smart-routing CUJs; no executable tests yet.
+"""Future smart-routing CUJ specification; no executable tests yet.
 
 Planned tests: test_cuj_smart_routing_claude and test_cuj_smart_routing_codex.
 

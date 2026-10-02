@@ -9,7 +9,7 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Unit/component | Existing `test_*.py` files | Individual behavior; dependencies may be mocked |
 | Existing e2e | `test_e2e*.py` | Real workspace behavior with some patched setup/internal calls |
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
-| Full E2E CUJs (scaffold) | `e2e_integration/test_cuj_*.py` | Reserved for entirely unstubbed journeys; no executable cases yet |
+| Full E2E CUJs (scaffold) | `e2e_integration/tests/test_cuj_*.py` | Reserved for entirely unstubbed journeys; no executable cases yet |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
 The independent [full E2E CUJ suite](e2e_integration/AGENTS.md) uses `test_cuj_`
