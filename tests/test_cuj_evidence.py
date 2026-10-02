@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.e2e_cuj.helpers.constants import CLAUDE, CODEX
 from tests.e2e_cuj.helpers.evidence import (
     SessionEvidence,
     canonical_model,
@@ -15,7 +16,7 @@ from tests.integration.utils.evidence import FileTask, read_jsonl
 
 
 def records(agent, task, model):
-    if agent == "claude":
+    if agent == CLAUDE:
         return [
             {"type": "user", "sessionId": "session", "message": {"content": task.prompt}},
             {
@@ -29,20 +30,23 @@ def records(agent, task, model):
                 },
             },
         ]
-    return [
-        {"type": "session_meta", "payload": {"id": "session", "source": "cli"}},
-        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn"}},
-        {"type": "turn_context", "payload": {"turn_id": "turn", "model": model}},
-        {"type": "event_msg", "payload": {"type": "user_message", "message": task.prompt}},
-        {
-            "type": "event_msg",
-            "payload": {
-                "type": "task_complete",
-                "turn_id": "turn",
-                "last_agent_message": task.value,
+    elif agent == CODEX:
+        return [
+            {"type": "session_meta", "payload": {"id": "session", "source": "cli"}},
+            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn"}},
+            {"type": "turn_context", "payload": {"turn_id": "turn", "model": model}},
+            {"type": "event_msg", "payload": {"type": "user_message", "message": task.prompt}},
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": "turn",
+                    "last_agent_message": task.value,
+                },
             },
-        },
-    ]
+        ]
+    else:
+        raise ValueError(f"Unsupported agent: {agent!r}")
 
 
 def write_rows(path, rows):
@@ -50,26 +54,41 @@ def write_rows(path, rows):
     path.write_text("".join(json.dumps(row) + "\n" for row in rows))
 
 
+@pytest.mark.parametrize("agent", ["", "claud", "unsupported"])
+def test_cuj_evidence_rejects_unknown_agents(tmp_path, agent):
+    task = SimpleNamespace(prompt="prompt", value="answer")
+    for generate in (records, log):
+        with pytest.raises(ValueError, match="Unsupported agent"):
+            generate(agent, task, "model")
+    with pytest.raises(ValueError, match="Unsupported agent"):
+        completed_turn(agent, [], task)
+    with pytest.raises(ValueError, match="Unsupported agent"):
+        SessionEvidence(tmp_path, agent)
+
+
 def log(agent, task, model):
-    if agent == "claude":
+    if agent == CLAUDE:
         return f"12:00:00 [ROUTE] first prompt -> '{model}'\n12:00:01 [DONE] first prompt confirmed submitted\n"
-    body = {
-        "task": {"prompt": task.prompt},
-        "route_selector": {"router_name": "task_v3"},
-        "route_options": [{"harness": "codex", "model": model}],
-    }
-    return (
-        "[ROUTE] request POST https://example.test/ai-gateway/routing/v1/routes:select: "
-        + json.dumps(body)
-        + f"\n[ROUTE] selected '{model}'; rationale='test'\n"
-    )
+    elif agent == CODEX:
+        body = {
+            "task": {"prompt": task.prompt},
+            "route_selector": {"router_name": "task_v3"},
+            "route_options": [{"harness": CODEX, "model": model}],
+        }
+        return (
+            "[ROUTE] request POST https://example.test/ai-gateway/routing/v1/routes:select: "
+            + json.dumps(body)
+            + f"\n[ROUTE] selected '{model}'; rationale='test'\n"
+        )
+    else:
+        raise ValueError(f"Unsupported agent: {agent!r}")
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
 @pytest.mark.parametrize("routed", [True, False])
 def test_cuj_evidence_completed_native_turn_and_model(tmp_path, agent, routed):
     task = FileTask(SimpleNamespace(cwd=tmp_path))
-    model = "system.ai.claude-opus-4-8" if agent == "claude" else "system.ai.gpt-6-luna"
+    model = {CLAUDE: "system.ai.claude-opus-4-8", CODEX: "system.ai.gpt-6-luna"}[agent]
     boundary = SessionEvidence(tmp_path, agent)
     write_rows(boundary.directory / "new.jsonl", records(agent, task, model))
     route_path = next(iter(boundary.boundaries))
@@ -80,7 +99,7 @@ def test_cuj_evidence_completed_native_turn_and_model(tmp_path, agent, routed):
     assert result["selected_model"] == model
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
 @pytest.mark.parametrize(
     "failure",
     [
@@ -96,7 +115,7 @@ def test_cuj_evidence_completed_native_turn_and_model(tmp_path, agent, routed):
 )
 def test_cuj_evidence_rejects_false_positives(tmp_path, agent, failure):
     task = FileTask(SimpleNamespace(cwd=tmp_path))
-    model = "system.ai.claude-opus-4-8" if agent == "claude" else "system.ai.gpt-6-sol"
+    model = {CLAUDE: "system.ai.claude-opus-4-8", CODEX: "system.ai.gpt-6-sol"}[agent]
     baseline = SessionEvidence(tmp_path, agent)
     path = next(iter(baseline.boundaries))
     path.parent.mkdir(exist_ok=True)
@@ -113,10 +132,12 @@ def test_cuj_evidence_rejects_false_positives(tmp_path, agent, failure):
     if failure == "incomplete":
         rows.pop()
     if failure == "child":
-        if agent == "claude":
+        if agent == CLAUDE:
             rows[0]["isSidechain"] = True
-        else:
+        elif agent == CODEX:
             rows[0]["payload"]["source"] = {"subagent": "parent"}
+        else:
+            raise ValueError(f"Unsupported agent: {agent!r}")
     write_rows(boundary.directory / "new.jsonl", rows)
     if failure != "stale":
         text = (
@@ -131,7 +152,7 @@ def test_cuj_evidence_rejects_false_positives(tmp_path, agent, failure):
         )
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
 def test_cuj_evidence_disabled_rejects_new_routing(tmp_path, agent):
     task = FileTask(SimpleNamespace(cwd=tmp_path))
     boundary = SessionEvidence(tmp_path, agent)
@@ -146,27 +167,27 @@ def test_cuj_evidence_disabled_rejects_new_routing(tmp_path, agent):
 
 def test_cuj_evidence_codex_rejects_wrong_turn_and_router_prompt(tmp_path):
     task = FileTask(SimpleNamespace(cwd=tmp_path))
-    rows = records("codex", task, "gpt-6-sol")
+    rows = records(CODEX, task, "gpt-6-sol")
     wrong_turn = copy.deepcopy(rows)
     wrong_turn[-1]["payload"]["turn_id"] = "different-turn"
-    assert completed_turn("codex", wrong_turn, task) is None
-    boundary = SessionEvidence(tmp_path, "codex")
+    assert completed_turn(CODEX, wrong_turn, task) is None
+    boundary = SessionEvidence(tmp_path, CODEX)
     write_rows(boundary.directory / "new.jsonl", rows)
     path = next(iter(boundary.boundaries))
     path.parent.mkdir(exist_ok=True)
-    path.write_text(log("codex", SimpleNamespace(prompt="different prompt"), "gpt-6-sol"))
+    path.write_text(log(CODEX, SimpleNamespace(prompt="different prompt"), "gpt-6-sol"))
     with pytest.raises(AssertionError):
         boundary.assert_applied(task, {"system.ai.gpt-6-sol"}, routed=True)
 
 
 def test_cuj_evidence_ignores_existing_session_and_detects_truncated_log(tmp_path):
     task = FileTask(SimpleNamespace(cwd=tmp_path))
-    first = SessionEvidence(tmp_path, "claude")
-    write_rows(first.directory / "old.jsonl", records("claude", task, "system.ai.claude-opus-4-8"))
+    first = SessionEvidence(tmp_path, CLAUDE)
+    write_rows(first.directory / "old.jsonl", records(CLAUDE, task, "system.ai.claude-opus-4-8"))
     path = next(iter(first.boundaries))
     path.parent.mkdir(exist_ok=True)
     path.write_text("old log")
-    boundary = SessionEvidence(tmp_path, "claude")
+    boundary = SessionEvidence(tmp_path, CLAUDE)
     assert boundary.completed(task) is None
     path.write_text("replacement")
     with pytest.raises(AssertionError, match="rotated/truncated"):

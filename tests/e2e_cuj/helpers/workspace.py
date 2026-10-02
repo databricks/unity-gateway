@@ -16,6 +16,8 @@ import urllib.request
 from contextlib import contextmanager
 from uuid import uuid4
 
+from .constants import CLAUDE, CODEX
+
 
 class ApiError(RuntimeError):
     def __init__(self, status, code):
@@ -225,6 +227,13 @@ class Workspace:
     def model_ids(self, agent):
         from .evidence import canonical_model
 
+        if agent == CLAUDE:
+            prefix = "system.ai.claude-"
+        elif agent == CODEX:
+            prefix = "system.ai.gpt-"
+        else:
+            raise ValueError(f"Unsupported agent: {agent!r}")
+
         models, seen, token = set(), set(), None
         for _ in range(100):
             params = {"parent": "schemas/system.ai", "page_size": "100"}
@@ -244,9 +253,8 @@ class Workspace:
             seen.add(token)
         else:
             raise AssertionError("Catalog pagination exceeded 100 pages")
-        prefix = "system.ai.claude-" if agent == "claude" else "system.ai.gpt-"
         models = {model for model in models if model.startswith(prefix)}
-        if agent == "claude":
+        if agent == CLAUDE:
             result = self.request("GET", "/ai-gateway/anthropic/v1/models?limit=1000")
             assert not result.get("has_more"), "Anthropic catalog pagination needs implementation"
             models &= {canonical_model(row["id"]) for row in result["data"]}

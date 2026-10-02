@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from .helpers.constants import CLAUDE, CODEX
+
 
 def pytest_configure(config):
     boundary = config.getoption("confcutdir")
@@ -23,7 +25,7 @@ def cuj(request, setup_workspace, tmp_path):
     assert not any(path.exists() for path in MANAGED_PATHS), (
         "Existing machine-wide agent settings; use a clean disposable runner. Nothing was changed."
     )
-    for tool in ("ug", "claude", "codex", "databricks"):
+    for tool in ("ug", CLAUDE, CODEX, "databricks"):
         assert shutil.which(tool), f"Install the required CLI before running this CUJ: {tool}"
 
     authorization = request.instance.workspace.config.authenticate().get("Authorization", "")

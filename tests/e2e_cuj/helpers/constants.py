@@ -1,6 +1,9 @@
-"""Public API wire values shared by independent CUJs."""
+"""CLI agent names and public API wire values shared by CUJs."""
 
 from enum import StrEnum
+
+CLAUDE = "claude"
+CODEX = "codex"
 
 
 class CodingAgent(StrEnum):

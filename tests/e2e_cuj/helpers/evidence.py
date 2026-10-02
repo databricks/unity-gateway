@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 
 from tests.integration.utils.evidence import read_jsonl
 
+from .constants import CLAUDE, CODEX
+
 
 def canonical_model(value):
     """Only documented gateway aliases, not fuzzy family/date matching."""
@@ -34,7 +36,7 @@ class CompletedTurn:
 
 def completed_turn(agent, records, task):
     """Match one exact user prompt in one parent session, then its completed answer."""
-    if agent == "claude":
+    if agent == CLAUDE:
         if any(row.get("isSidechain") for row in records):
             return None
         prompts = [
@@ -70,48 +72,60 @@ def completed_turn(agent, records, task):
         assert all(msg.get("model") for msg in responses), "Missing inference model metadata"
         return CompletedTurn(session_id, last["id"], [msg["model"] for msg in responses], answer)
 
-    meta = [row["payload"] for row in records if row.get("type") == "session_meta"]
-    if len(meta) != 1 or isinstance(meta[0].get("source"), dict):
+    elif agent == CODEX:
+        meta = [row["payload"] for row in records if row.get("type") == "session_meta"]
+        if len(meta) != 1 or isinstance(meta[0].get("source"), dict):
+            return None
+        contexts, prompt_count, seen_prompt, active_turn = {}, 0, False, None
+        for row in records:
+            payload = row.get("payload", {})
+            if row.get("type") == "turn_context":
+                contexts.setdefault(payload.get("turn_id"), []).append(payload.get("model"))
+            if row.get("type") != "event_msg":
+                continue
+            if payload.get("type") == "task_started":
+                if seen_prompt:
+                    return None
+                active_turn = payload.get("turn_id")
+            if payload.get("type") == "user_message":
+                if payload.get("message") == task.prompt:
+                    prompt_count += 1
+                    assert prompt_count == 1, "Prompt was submitted more than once"
+                    seen_prompt = True
+                elif seen_prompt:
+                    return None
+            if seen_prompt and payload.get("type") == "task_complete":
+                turn_id = payload.get("turn_id")
+                answer = payload.get("last_agent_message") or ""
+                if (
+                    task.value in answer
+                    and turn_id
+                    and turn_id == active_turn
+                    and contexts.get(turn_id)
+                ):
+                    assert all(contexts[turn_id]), "Missing native turn model metadata"
+                    return CompletedTurn(meta[0]["id"], turn_id, contexts[turn_id], answer)
         return None
-    contexts, prompt_count, seen_prompt, active_turn = {}, 0, False, None
-    for row in records:
-        payload = row.get("payload", {})
-        if row.get("type") == "turn_context":
-            contexts.setdefault(payload.get("turn_id"), []).append(payload.get("model"))
-        if row.get("type") != "event_msg":
-            continue
-        if payload.get("type") == "task_started":
-            if seen_prompt:
-                return None
-            active_turn = payload.get("turn_id")
-        if payload.get("type") == "user_message":
-            if payload.get("message") == task.prompt:
-                prompt_count += 1
-                assert prompt_count == 1, "Prompt was submitted more than once"
-                seen_prompt = True
-            elif seen_prompt:
-                return None
-        if seen_prompt and payload.get("type") == "task_complete":
-            turn_id = payload.get("turn_id")
-            answer = payload.get("last_agent_message") or ""
-            if (
-                task.value in answer
-                and turn_id
-                and turn_id == active_turn
-                and contexts.get(turn_id)
-            ):
-                assert all(contexts[turn_id]), "Missing native turn model metadata"
-                return CompletedTurn(meta[0]["id"], turn_id, contexts[turn_id], answer)
-    return None
+    else:
+        raise ValueError(f"Unsupported agent: {agent!r}")
 
 
 class SessionEvidence:
     def __init__(self, home, agent):
         self.agent = agent
-        self.directory = home / (".claude/projects" if agent == "claude" else ".codex/sessions")
+        if agent == CLAUDE:
+            self.directory = home / ".claude/projects"
+            log_name = "claude-v2-pty.log"
+            self.route_pattern = r"\[ROUTE\] first prompt -> '([^']+)'"
+        elif agent == CODEX:
+            self.directory = home / ".codex/sessions"
+            log_name = "codex-v2-interposer.log"
+            self.route_pattern = r"\[ROUTE\] selected '([^']+)'; rationale="
+        else:
+            raise ValueError(f"Unsupported agent: {agent!r}")
         self.existing = set(self.directory.rglob("*.jsonl"))
         names = [
-            "claude-v2-pty.log" if agent == "claude" else "codex-v2-interposer.log",
+            log_name,
             f"{agent}-smart-routing-decisions.jsonl",
         ]
         self.boundaries = {
@@ -165,20 +179,15 @@ class SessionEvidence:
         assert supported and all(model.startswith("system.ai.") for model in supported)
         supported = {canonical_model(model) for model in supported}
         if routed:
-            pattern = (
-                r"\[ROUTE\] first prompt -> '([^']+)'"
-                if self.agent == "claude"
-                else r"\[ROUTE\] selected '([^']+)'; rationale="
-            )
-            decisions = re.findall(pattern, route_log)
+            decisions = re.findall(self.route_pattern, route_log)
             assert len(decisions) == 1, "Require one fresh successful router decision, not a banner"
             expected = canonical_model(decisions[0])
             assert expected in supported, (
                 f"Router selected a target absent from the live catalog: {expected}"
             )
-            if self.agent == "claude":
+            if self.agent == CLAUDE:
                 assert "[DONE] first prompt confirmed submitted" in route_log
-            else:
+            elif self.agent == CODEX:
                 requests = re.findall(r"\[ROUTE\] request POST ([^ ]+): (\{.*\})", route_log)
                 assert len(requests) == 1, "Missing/duplicate live router request"
                 url, body = requests[0]
@@ -187,8 +196,10 @@ class SessionEvidence:
                 assert request["task"]["prompt"] == task.prompt
                 assert request["route_selector"]["router_name"]
                 options = request["route_options"]
-                assert all(option["harness"] == "codex" for option in options)
+                assert all(option["harness"] == CODEX for option in options)
                 assert expected in {canonical_model(option["model"]) for option in options}
+            else:
+                raise ValueError(f"Unsupported agent: {self.agent!r}")
         else:
             assert not route_log.strip(), "Bypassed/disabled session emitted new routing activity"
             assert expected is not None

@@ -9,6 +9,17 @@ from tests.e2e_cuj.helpers.constants import CodingAgent
 from tests.e2e_cuj.helpers.workspace import ApiError, Workspace
 
 
+def test_cuj_catalog_rejects_unknown_agent_before_network_access(monkeypatch):
+    workspace = Workspace("https://example.test", "secret", lambda name, value: None)
+
+    def unexpected_request(*args):
+        pytest.fail("Unsupported agents must be rejected before network access")
+
+    monkeypatch.setattr(workspace, "request", unexpected_request)
+    with pytest.raises(ValueError, match="Unsupported agent"):
+        workspace.model_ids("unsupported")
+
+
 @pytest.fixture
 def workspace(monkeypatch):
     artifacts, calls = {}, []

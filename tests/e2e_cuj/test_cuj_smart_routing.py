@@ -3,7 +3,7 @@
 from tests.integration.utils.evidence import FileTask
 
 from .base import BaseCujTest
-from .helpers.constants import CodingAgent
+from .helpers.constants import CLAUDE, CODEX, CodingAgent
 from .helpers.evidence import SessionEvidence
 
 
@@ -38,8 +38,8 @@ class TestCujSmartRouting(BaseCujTest):
         configs = {entry["agent"]: entry["config"] for entry in entries}
         assert set(configs) == {CodingAgent.CLAUDE_CODE, CodingAgent.CODEX}
         agents = {
-            "claude": configs[CodingAgent.CLAUDE_CODE],
-            "codex": configs[CodingAgent.CODEX],
+            CLAUDE: configs[CodingAgent.CLAUDE_CODE],
+            CODEX: configs[CodingAgent.CODEX],
         }
         supported, defaults, overrides = {}, {}, {}
         for agent, config in agents.items():
@@ -77,7 +77,7 @@ class TestCujSmartRouting(BaseCujTest):
             ["configure", "--workspace", self.WORKSPACE_URL, "--disable-databricks-ai-tools"],
         )
         session_ids = set()
-        for agent in ("claude", "codex"):
+        for agent in (CLAUDE, CODEX):
             workspace.assert_unchanged()
             task = FileTask(session)
             task.prompt += " Do not delegate."
@@ -124,7 +124,7 @@ class TestCujSmartRouting(BaseCujTest):
             "configure-disabled",
             ["configure", "--workspace", self.WORKSPACE_URL, "--disable-databricks-ai-tools"],
         )
-        for agent in ("claude", "codex"):
+        for agent in (CLAUDE, CODEX):
             workspace.assert_unchanged()
             task = FileTask(session)
             task.prompt += " Do not delegate."

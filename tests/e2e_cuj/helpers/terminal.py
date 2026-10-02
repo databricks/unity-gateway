@@ -3,9 +3,13 @@
 from tests.integration.utils.evidence import assert_no_terminal_api_error
 from tests.integration.utils.terminal import AgentTerminal
 
+from .constants import CLAUDE, CODEX
+
 
 class Terminal(AgentTerminal):
     def __init__(self, session, name, args, *, evidence):
+        if not args or args[0] not in (CLAUDE, CODEX):
+            raise ValueError("CUJ terminal requires a Claude or Codex command.")
         self.evidence = evidence
         super().__init__(session, args[0], [str(session.binary), *args], name)
 
