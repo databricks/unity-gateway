@@ -1,7 +1,8 @@
 # Integration tests
 
-This suite runs the **installed product** through subprocesses, against the same
-`UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
+This suite runs the **installed product** through subprocesses. Most live cases use
+the same `UCODE_TEST_WORKSPACE` as existing e2e tests; CUJ7 uses a dedicated
+unmanaged workspace in CI. It does not import `ucode`,
 patch application functions, substitute agent executables, run a fake gateway,
 or construct ug state files. The normal test suite checks these boundaries.
 
@@ -248,8 +249,26 @@ MPS CUJs select the existing services already used by e2e:
 Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` to
 reproduce another existing service. Use `--claude-provider-model` /
 `--codex-provider-model` when it allows a different model. Those choices are recorded in `versions.json`.
-No service is created or modified. A missing service, permission, or OAuth token
+By default, no service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
+
+The two fresh `--provider` setup journeys can get or create named MPS fixtures as part of test
+setup. Pass `--mps-fixture-schema ug_e2e.provider` in the integration workspace. The fixtures
+reuse existing Anthropic and OpenAI services after validating their provider types,
+all-targets setting, and declared model metadata, or create them with literal dummy provider
+keys if absent. The Anthropic fixture allows all provider models; the OpenAI fixture allows only
+its declared target. The schema must already exist; the MPS resources remain for later runs.
+These journeys check ug's provider selection and real agent CLI launch; they do not send
+inference requests or claim that the dummy keys can serve model traffic. This option does not
+change the other MPS journeys.
+
+```bash
+python3.12 scripts/run_integration.py \
+  --ug-version checkout --claude-version 2.1.268 --codex-version 0.154.0 \
+  --workspace https://dbc-14e376e8-6541.cloud.databricks.com --profile YOUR_PROFILE \
+  --mps-fixture-schema ug_e2e.provider \
+  -- -k fresh_provider
+```
 
 The tracing journeys are part of their respective Full agent lanes and use the existing
 e2e workspace and bearer. Because that workspace deliberately has no published managed
@@ -304,10 +323,13 @@ provider or parent replacement picker can render the raw gateway ID/display name
 the assertion accepts either numbered-row form. Custom Model Services must
 still appear by their gateway IDs or display names in a numbered picker row;
 startup banners and footer text cannot satisfy discovery assertions. Cases 7–14 send no inference prompts;
-they only configure, list models, and open/close the picker. Other live CUJs perform
-real model tasks.
+they only configure, list models, and open/close the picker. Separate fresh-state headless
+CUJs complete real file tasks through `--workspace` and `--model-location` when no managed
+config is present. The fresh workspace tasks pin Claude Haiku 4.5 and Codex GPT-5.4 Nano; the
+fresh Claude model-location task also pins Haiku 4.5 to keep inference inexpensive. The two
+fresh `--provider` journeys check setup and launch with dummy MPS credentials, without inference.
 
-There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
+There are **68 live cases** (including 12 marked TUI journeys) and **7 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
@@ -332,7 +354,7 @@ constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-
 mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
 `ug configure` and Claude. The client secrets do not enter the pytest process.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 101 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 107 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -465,6 +487,19 @@ Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workf
 uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
 cannot receive those secrets.
 
+CUJ7 (`test_case_07_configured_claude_discovers_system_models` and
+`test_case_08_configured_codex_uses_default_models`) runs in its own required CI
+job as one matrix leg per agent. The workspace URL comes from the
+`UG_CUJ7_WORKSPACE` repository secret; the shared CUJ service-principal credentials
+come from `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET`.
+The runner mints a short-lived workspace bearer from those credentials. Tests that
+require a dedicated workspace carry the `workspace_isolated` marker; the shared
+Claude and Codex jobs exclude that marker. A dedicated job must select each marked
+test with its own workspace and credentials. The CUJ7 workspace must have no
+published CodingAgentConfig and must expose discoverable `system.ai` models for
+both agents. The dedicated job is required for
+full, live, and TUI CI suites.
+
 The workspace check requires the secret to match
 `https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash
 is accepted). It never changes the secret or switches workspaces. There is no
@@ -475,13 +510,15 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 62 live cases, including those smoke cases, in two
-disjoint agent lanes:
+two agent jobs). Full runs 66 live cases in the shared Claude and Codex lanes and
+CUJ7 in two dedicated-workspace matrix legs:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 28 |
-| Codex | `live and codex` | 34 |
+| Claude | `live and claude and not workspace_isolated` | 30 |
+| Codex | `live and codex and not workspace_isolated` | 36 |
+| CUJ7: unmanaged journey · Claude | `live and claude and cuj7 and workspace_isolated` | 1 |
+| CUJ7: unmanaged journey · Codex | `live and codex and cuj7 and workspace_isolated` | 1 |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
@@ -497,8 +534,8 @@ shards and other PRs; this limit does not guarantee freedom from rate limits.
 No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
-The **All integration tests** check requires installation, workspace validation, smoke,
-both full lanes, and both **Managed config** lanes to pass for full/live runs. Each tracing
+The **All integration tests** check requires installation, shared workspace validation,
+smoke, both full lanes, both CUJ7 matrix legs, and both **Managed config** lanes to pass for full/live runs. Each tracing
 journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
 a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
 and installation subsets do not select managed tests and do not require them.
@@ -620,8 +657,9 @@ comment removes the label and reruns the gate; manually adding the label does no
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
 and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
 alias for `full`. Manual subsets are explicit: `smoke` runs just the six smoke
-cases; `tui` adds `and tui` to each agent lane's marker and runs all 12 live TUI cases. Installation
-checks always run. Set the ug/agent versions. From the CLI:
+cases; `tui` adds `and tui` to each shared agent lane's marker and runs all 12 live
+TUI cases, while the dedicated CUJ7 matrix still runs both of its discovery cases.
+Installation checks always run. Set the ug/agent versions. From the CLI:
 
 ```bash
 gh workflow run integration.yml -R databricks/unity-gateway --ref YOUR_BRANCH \
@@ -793,7 +831,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 62 live cases. For the seven installation checks, run the same
+This runs all 68 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.

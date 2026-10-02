@@ -132,6 +132,10 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
 | `test_ug_opencode_headless_prompt_argument` | Run OpenCode from a script (`run --format json --auto`) with an argument prompt | Completed Read tool call; final text answer contains the file value; exit zero (non-blocking CI lane) |
+| `test_ug_claude_headless_fresh_workspace`, `test_ug_codex_headless_fresh_workspace` | From fresh state, launch an agent with `--workspace` against a workspace with no managed config | Claude Haiku 4.5 and Codex GPT-5.4 Nano read an unpredictable file value through the gateway and return it in a structured completed answer; exit zero; no routing |
+| Fresh Claude/Codex `--provider` journeys | From fresh state, launch each real agent CLI with `--workspace` and an explicit provider, optionally obtained from a reusable dummy MPS fixture | Claude's provider header and all-targets catalog, plus Codex's app-server model catalog, match the selected services; both CLIs exit successfully without routing or inference |
+| `test_ug_claude_headless_fresh_model_location` | From fresh state, launch Claude with `--workspace` and `--model-location system.ai` | Haiku 4.5 reads an unpredictable file value and returns it in a structured completed answer; exit zero; no routing |
+| `test_ug_codex_headless_fresh_model_location` | From fresh state, launch Codex with `--workspace` and `--model-location` | Codex uses a model in the parent schema to read an unpredictable file value and returns it in a structured completed answer; exit zero; no routing |
 | `test_ug_claude_exports_trace_to_configured_table`, `test_ug_codex_exports_trace_to_configured_table` | Configure tracing, complete a headless task carrying a unique trace marker, then wait for ingestion | The configured trace table contains an agent span with the same trace-safe marker and requested model |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` with routing enabled | Real file task completes; no routing wrapper |
 | `test_ug_codex_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` / `-m VALUE` with routing enabled | Real file task completes; no routing wrapper |
@@ -162,7 +166,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_and_ucode_auth_helpers_emit_only_the_supplied_bearer` | Run both auth helper commands with the public bearer override, with and without forced refresh | Exact token-only stdout, no warnings or ANSI escapes; no workspace authentication or saved state |
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
-With Claude and Codex selected there are **62 live cases** (12 marked TUI cases),
+With Claude and Codex selected there are **68 live cases** (12 marked TUI cases),
 **6 managed-workspace cases** (marker `managed`, run against workspaces that
 publish a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
 **25 managed-fixture cases** (marker `managed_fixture`, with only
@@ -210,10 +214,10 @@ dependency graph to reproduce a user's combination. Every relevant same-reposito
 PR and push to `main` runs both smoke and the full CUJ suite. Smoke covers the
 Databricks Hosted configure/TUI, custom OAuth CLI TUI, and headless argument
 journeys for both agents, in two parallel jobs. After smoke finishes, the full
-suite runs all 62 live cases across two parallel agent jobs: one Claude VM and one
-Codex VM, each running its configure, headless, and commands/lifecycle cases
-serially. Each agent is installed once for the full suite, and no two full jobs
-for the same agent overlap within a run.
+suite runs 66 live cases across the shared Claude and Codex jobs. CUJ7 runs two
+matrix legs in the required dedicated-workspace job, one per agent, bringing live
+coverage to 68 cases. Each job installs its agent and runs its selected cases
+serially.
 CI starts integration alongside unit tests and the existing e2e shards. Integration
 does not wait for agent e2e or get skipped when an agent shard fails. These suites
 share workspace capacity; overlapping their requests can still encounter rate limits.
@@ -228,7 +232,7 @@ journey is deferred while its npm proxy access is blocked. Native TUI
 and managed-settings coverage remain deferred; a green installation check alone
 does not establish a successful live task.
 The `All integration tests` check requires every selected integration job to pass, including
-both managed-config lanes for full/live runs; full coverage does not depend on a label or
+CUJ7 and both managed-config lanes for full/live runs; full coverage does not depend on a label or
 a manual request.
 
 The existing e2e workflow runs seven parallel shards: gateway checks plus one for

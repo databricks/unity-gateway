@@ -32,6 +32,8 @@ def _assert_default_models(session, models):
 
 
 @pytest.mark.live
+@pytest.mark.workspace_isolated
+@pytest.mark.cuj7
 def test_case_08_configured_codex_uses_default_models(live_session, workspace):
     """Scenario: configure Codex, then launch without source overrides.
 
