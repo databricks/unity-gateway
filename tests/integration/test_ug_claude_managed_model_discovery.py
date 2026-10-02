@@ -186,7 +186,7 @@ def test_case_01_fresh_managed_claude_uses_admin_discovery(
     _assert_managed_provider_in_picker(session, workspace, screen, _managed_claude_provider_catalog)
 
 
-def test_case_03_managed_claude_rejects_provider_override(live_session, workspace, claude_provider):
+def test_managed_fixture_claude_rejects_provider_override(live_session, workspace, claude_provider):
     """Scenario: configure managed Claude, then pass --provider.
 
     Expected: ug rejects the override without changing agent-owned state/files.
@@ -215,7 +215,7 @@ def test_case_03_managed_claude_rejects_provider_override(live_session, workspac
     _assert_rejected_before_claude_started(session, result, before)
 
 
-def test_case_03_fresh_managed_claude_rejects_provider_override(
+def test_managed_fixture_fresh_claude_rejects_provider_override(
     live_session, workspace, claude_provider
 ):
     """Scenario: pass --provider while launching managed Claude from fresh state.
