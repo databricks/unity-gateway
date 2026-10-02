@@ -616,7 +616,7 @@ class TestConfigureOneCopilotProvider:
 
 
 class TestResolveGeminiProviderModel:
-    _STATE ={"workspace": "https://ws.databricks.com", "profile": None}
+    _STATE = {"workspace": "https://ws.databricks.com", "profile": None}
 
     def _patch(self, monkeypatch, service, error=None, persisted=None):
         monkeypatch.setattr(agents_mod, "get_databricks_token", lambda w, p: "token")
