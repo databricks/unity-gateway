@@ -16,9 +16,9 @@ from ucode.databricks import (
 )
 from ucode.ui import normalize_workspace_url
 
-# The integration suite has its own configuration and subprocess-only fixtures.
+# The integration suites have their own configuration and subprocess-only fixtures.
 # Run it through scripts/run_integration.py, outside this fixture hierarchy.
-collect_ignore = ["integration"]
+collect_ignore = ["integration", "e2e_integration"]
 
 
 @pytest.fixture(autouse=True)

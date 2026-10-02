@@ -1,5 +1,11 @@
 # Integration tests
 
+For new entirely unstubbed CUJs, see the separate
+[`tests/e2e_integration/` scaffold](../e2e_integration/README.md), selected with
+`--suite e2e-integration`. It has no executable journeys yet. This existing suite
+retains its current tests, including `managed_fixture` cases, and remains the
+runner's default (`--suite integration`). No existing coverage has moved.
+
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
 patch application functions, substitute agent executables, run a fake gateway,

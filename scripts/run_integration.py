@@ -26,6 +26,10 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+SUITES = {
+    "integration": ROOT / "tests/integration",
+    "e2e-integration": ROOT / "tests/e2e_integration",
+}
 AGENT_PACKAGES = {
     "claude": "@anthropic-ai/claude-code",
     "codex": "@openai/codex",
@@ -279,6 +283,12 @@ def arguments(
     platform_name = os.name if platform_name is None else platform_name
     environment = os.environ if environment is None else environment
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--suite",
+        choices=SUITES,
+        default="integration",
+        help="Test suite to run; e2e-integration contains only full, unstubbed CUJs.",
+    )
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--ug-version", default="checkout", help="Exact ug release, or checkout.")
     source.add_argument(
@@ -373,6 +383,8 @@ def arguments(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
     )
     args = parser.parse_args(argv)
+    if args.suite == "e2e-integration" and (args.installation_only or args.headless_only):
+        parser.error("--installation-only and --headless-only belong to --suite integration.")
     if platform_name != "posix" and not (args.installation_only or args.headless_only):
         parser.error(
             "Live agent/TUI integration requires POSIX PTY, managed-settings, and signal "
@@ -593,6 +605,7 @@ def main() -> int:
         "platform": platform.platform(),
         "installation_only": args.installation_only,
         "headless_only": args.headless_only,
+        "suite": args.suite,
     }
     manifest = output / "versions.json"
     exitcode = 1
@@ -889,7 +902,7 @@ def main() -> int:
             runtime_env[f"UG_INTEGRATION_{agent.upper()}_MODEL"] = (
                 getattr(args, f"{agent}_model") or ""
             )
-        suite = ROOT / "tests/integration"
+        suite = SUITES[args.suite]
         suite_hash = hashlib.sha256()
         for path in [Path(__file__), *sorted(suite.rglob("*.py")), suite / "pytest.ini"]:
             suite_hash.update(str(path.relative_to(ROOT)).encode() + b"\0" + path.read_bytes())

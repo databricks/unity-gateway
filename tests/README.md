@@ -9,7 +9,15 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Unit/component | Existing `test_*.py` files | Individual behavior; dependencies may be mocked |
 | Existing e2e | `test_e2e*.py` | Real workspace behavior with some patched setup/internal calls |
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
+| Full E2E CUJs (scaffold) | `e2e_integration/test_cuj_*.py` | Reserved for entirely unstubbed journeys; no executable cases yet |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
+
+The independent [full E2E CUJ suite](e2e_integration/README.md) uses `test_cuj_`
+module/function names and its own `helpers/`. Select it with
+`scripts/run_integration.py --suite e2e-integration`; the existing runner default
+is unchanged. Its smart-routing module currently documents acceptance criteria
+only, and empty collection is not a passing E2E result. Existing integration
+cases, including `managed_fixture` cases, remain in their current suite.
 
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.
