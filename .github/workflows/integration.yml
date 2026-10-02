@@ -212,15 +212,11 @@ jobs:
       - name: Run the selected live cases against the e2e workspace
         shell: bash
         run: |
-          if [[ "${INSTALL_BOTH_AGENTS:-}" == "true" ]]; then
-            args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION")
-          else
-            case "$AGENT" in
-              claude) args=(--claude-version "$CLAUDE_VERSION") ;;
-              codex) args=(--codex-version "$CODEX_VERSION") ;;
-              opencode) args=(--opencode-version "$OPENCODE_VERSION") ;;
-            esac
-          fi
+          case "$AGENT" in
+            claude) args=(--claude-version "$CLAUDE_VERSION") ;;
+            codex) args=(--codex-version "$CODEX_VERSION") ;;
+            opencode) args=(--opencode-version "$OPENCODE_VERSION") ;;
+          esac
           if [[ -n "$DEPENDENCY" ]]; then
             args+=(--dependency "$DEPENDENCY")
           fi
@@ -365,10 +361,45 @@ jobs:
       DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
-      INSTALL_BOTH_AGENTS: "true"
       TEST_MARKER: managed and catalog_discovery and workspace_isolated and ${{ matrix.agent }}
       ARTIFACT_NAME: integration-catalog_discovery-${{ matrix.agent }}
-    steps: *live-steps
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.19.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: 0.9.8
+      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+        with:
+          version: 1.17.0
+      - name: Run catalog discovery against the dedicated managed workspace
+        shell: bash
+        run: |
+          args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION")
+          if [[ -n "$DEPENDENCY" ]]; then
+            args+=(--dependency "$DEPENDENCY")
+          fi
+          uv run --no-project --python 3.12 python scripts/run_integration.py \
+            --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
+            --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
+            "${args[@]}" -- -m "$TEST_MARKER"
+      - name: Upload catalog discovery evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/ug-integration/*.json
+            ${{ runner.temp }}/ug-integration/*.txt
+            ${{ runner.temp }}/ug-integration/*.xml
+            ${{ runner.temp }}/ug-integration/*.log
+            ${{ runner.temp }}/ug-integration/artifacts/
+            ${{ runner.temp }}/ug-integration/wheels/
 
   # Non-blocking: continue-on-error and absent from the cujs `needs`, so a flaky OpenCode
   # leg cannot block merges. Add it to cujs once the lane is stable.

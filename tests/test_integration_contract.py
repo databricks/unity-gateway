@@ -75,7 +75,6 @@ def test_catalog_discovery_integration_ci_uses_the_dedicated_managed_workspace()
     assert "secrets.UG_CUJ3_WORKSPACE" in catalog_discovery
     assert "secrets.UG_CUJ_SP_CLIENT_ID" in catalog_discovery
     assert "secrets.UG_CUJ_SP_CLIENT_SECRET" in catalog_discovery
-    assert 'INSTALL_BOTH_AGENTS: "true"' in catalog_discovery
     assert (
         "TEST_MARKER: managed and catalog_discovery and workspace_isolated and ${{ matrix.agent }}"
         in catalog_discovery
@@ -85,9 +84,14 @@ def test_catalog_discovery_integration_ci_uses_the_dedicated_managed_workspace()
     assert "inputs.suite != 'installation'" in catalog_discovery
     assert "continue-on-error:" not in catalog_discovery
     assert "fail-fast: false" in catalog_discovery
-    assert "steps: *live-steps" in catalog_discovery
-    assert 'if [[ "${INSTALL_BOTH_AGENTS:-}" == "true" ]]; then' in contents
-    assert 'args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION")' in contents
+    assert "steps: *live-steps" not in catalog_discovery
+    assert "INSTALL_BOTH_AGENTS" not in contents
+    assert (
+        'args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION")'
+        in catalog_discovery
+    )
+    assert "scripts/run_integration.py" in catalog_discovery
+    assert '"${args[@]}" -- -m "$TEST_MARKER"' in catalog_discovery
 
 
 @pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
