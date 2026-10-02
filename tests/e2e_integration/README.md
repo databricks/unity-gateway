@@ -1,5 +1,8 @@
 # Full E2E critical user journeys
 
+For agent contributors, [AGENTS.md](AGENTS.md) contains the shared Codex and
+Claude Code instructions; `CLAUDE.md` imports the same file.
+
 This directory is reserved for complete journeys against real workspaces and
 real installed agents, with no stubbed configuration. The existing
 `tests/integration/` suite remains separate and includes both real-workspace
