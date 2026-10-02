@@ -57,12 +57,9 @@ model-selection journey.
 
 ## Shared agent helpers
 
-`utils/agents/claude.py` and `utils/agents/codex.py` own native transcript parsing and
-discovery adapters. `utils/evidence.py` dispatches shared file-task evidence through those
-adapters for existing journeys. Shared HTTP, catalog, picker, and terminal mechanics stay
-in `utils/`; workspace-specific expectations belong in the consuming journey.
-Claude model evidence is response-reported; Codex evidence is client-selected and joined
-to the completed turn. Neither proves the gateway's backing destination.
+`utils/agents/claude.py` and `utils/agents/codex.py` own the existing native answer
+parsing, session paths, and child-session detection. `utils/evidence.py` dispatches
+through them without changing existing journey commands or completion assertions.
 
 ## Run a specific combination
 

@@ -1,7 +1,6 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
 import json
-from types import SimpleNamespace
 
 import pytest
 
@@ -16,9 +15,19 @@ from tests.integration.utils.evidence import (
 class _Session:
     def __init__(self, home):
         self.home = home
+        self.artifacts = {}
 
-    def record(self, _name, _value):
-        pass
+    def record(self, name, value):
+        self.artifacts[name] = value
+
+
+def _transcript_session(home, agent, transcripts):
+    directory = home / {"claude": ".claude/projects", "codex": ".codex/sessions"}[agent]
+    for name, records in transcripts.items():
+        path = directory / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    return _Session(home)
 
 
 def _write_answer(home, agent, *, child, value):
@@ -93,7 +102,7 @@ def test_tagged_calculation_requires_the_native_child_answer(tmp_path, agent):
     assert "1+1" in task.prompt
 
 
-def test_codex_model_identity_uses_only_the_completed_answer_turn(monkeypatch):
+def test_codex_model_identity_uses_only_the_completed_answer_turn():
     records = [
         {
             "type": "turn_context",
@@ -112,13 +121,12 @@ def test_codex_model_identity_uses_only_the_completed_answer_turn(monkeypatch):
             },
         },
     ]
-    monkeypatch.setattr(evidence, "agent_sessions", lambda *_: {"transcript": records})
-    assert evidence.completed_task_models(None, "codex", "withheld-file-value") == {
+    assert evidence.codex_completed_task_models(records, "withheld-file-value") == {
         "catalog.models.gpt_luna"
     }
 
 
-def test_codex_model_identity_rejects_prompt_only_evidence(monkeypatch):
+def test_codex_model_identity_rejects_prompt_only_evidence():
     records = [
         {
             "type": "turn_context",
@@ -129,11 +137,10 @@ def test_codex_model_identity_rejects_prompt_only_evidence(monkeypatch):
             "payload": {"type": "message", "role": "user", "content": "withheld-file-value"},
         },
     ]
-    monkeypatch.setattr(evidence, "agent_sessions", lambda *_: {"transcript": records})
-    assert evidence.completed_task_models(None, "codex", "withheld-file-value") == set()
+    assert evidence.codex_completed_task_models(records, "withheld-file-value") == set()
 
 
-def test_claude_model_identity_uses_assistant_answer_not_tool_output(monkeypatch):
+def test_claude_model_identity_uses_assistant_answer_not_tool_output():
     records = [
         {
             "type": "user",
@@ -151,8 +158,7 @@ def test_claude_model_identity_uses_assistant_answer_not_tool_output(monkeypatch
             },
         },
     ]
-    monkeypatch.setattr(evidence, "agent_sessions", lambda *_: {"transcript": records})
-    assert evidence.completed_task_models(None, "claude", "value") == {
+    assert evidence.claude_completed_task_models(records, "value") == {
         "catalog.models.claude_sonnet"
     }
 
@@ -181,7 +187,7 @@ def completed_records(agent, model, answer="value", turn_id="matching"):
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 @pytest.mark.parametrize("parent_answer", [None, "value", "unrelated-answer"])
 def test_completed_task_models_excludes_child_only_and_conflicting_child_evidence(
-    monkeypatch, agent, parent_answer
+    tmp_path, agent, parent_answer
 ):
     child = completed_records(agent, "child-model")
     if agent == "codex":
@@ -189,27 +195,27 @@ def test_completed_task_models_excludes_child_only_and_conflicting_child_evidenc
     sessions = {"project/subagents/child.jsonl": child}
     if parent_answer is not None:
         sessions["project/parent.jsonl"] = completed_records(agent, "parent-model", parent_answer)
-    monkeypatch.setattr(evidence, "agent_sessions", lambda *_: sessions)
+    session = _transcript_session(tmp_path, agent, sessions)
     expected = {"parent-model"} if parent_answer == "value" else set()
-    assert evidence.completed_task_models(None, agent, "value") == expected
+    assert evidence.completed_task_models(session, agent, "value") == expected
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 @pytest.mark.parametrize("model", [None, "", " ", 5, {}, [], "model with whitespace"])
-def test_completed_task_models_fails_closed_on_malformed_model(monkeypatch, agent, model):
+def test_completed_task_models_fails_closed_on_malformed_model(tmp_path, agent, model):
     records = completed_records(agent, model)
-    monkeypatch.setattr(evidence, "agent_sessions", lambda *_: {"parent": records})
+    session = _transcript_session(tmp_path, agent, {"parent.jsonl": records})
     with pytest.raises(AssertionError, match="model"):
-        evidence.completed_task_models(None, agent, "value")
+        evidence.completed_task_models(session, agent, "value")
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
-def test_completed_task_models_fails_closed_on_missing_model(monkeypatch, agent):
+def test_completed_task_models_fails_closed_on_missing_model(tmp_path, agent):
     records = completed_records(agent, "model")
     del records[0]["message" if agent == "claude" else "payload"]["model"]
-    monkeypatch.setattr(evidence, "agent_sessions", lambda *_: {"parent": records})
+    session = _transcript_session(tmp_path, agent, {"parent.jsonl": records})
     with pytest.raises(AssertionError, match="model"):
-        evidence.completed_task_models(None, agent, "value")
+        evidence.completed_task_models(session, agent, "value")
 
 
 @pytest.mark.parametrize("turn_id", [None, "", " ", 5, {}, [], "turn with whitespace"])
@@ -229,38 +235,34 @@ def test_codex_completed_task_models_fails_closed_on_missing_turn_ids(record_ind
         evidence.codex_completed_task_models(records, "value")
 
 
-def test_codex_completed_task_models_requires_context_in_same_session(monkeypatch):
+def test_codex_completed_task_models_requires_context_in_same_session(tmp_path):
     context, completion = completed_records("codex", "model")
-    monkeypatch.setattr(
-        evidence,
-        "agent_sessions",
-        lambda *_: {"context-session": [context], "answer-session": [completion]},
+    session = _transcript_session(
+        tmp_path,
+        "codex",
+        {"context-session.jsonl": [context], "answer-session.jsonl": [completion]},
     )
     with pytest.raises(AssertionError, match="Missing Codex model context"):
-        evidence.completed_task_models(None, "codex", "value")
+        evidence.completed_task_models(session, "codex", "value")
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 @pytest.mark.parametrize("models", [[], ["unexpected"], ["expected", "conflicting"]])
-def test_completed_task_model_assertion_requires_exact_singleton(monkeypatch, agent, models):
+def test_completed_task_model_assertion_requires_exact_singleton(tmp_path, agent, models):
     records = [record for model in models for record in completed_records(agent, model)]
-    monkeypatch.setattr(evidence, "agent_sessions", lambda *_: {"parent": records})
-    artifacts = {}
-    session = SimpleNamespace(record=lambda name, payload: artifacts.update({name: payload}))
+    session = _transcript_session(tmp_path, agent, {"parent.jsonl": records})
     with pytest.raises(AssertionError):
         evidence.assert_completed_task_model(session, agent, "value", "expected")
-    assert next(iter(artifacts.values()))["observed"] == sorted(models)
+    assert next(iter(session.artifacts.values()))["observed"] == sorted(models)
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
-def test_completed_task_model_records_evidence_limits(monkeypatch, agent):
-    monkeypatch.setattr(
-        evidence, "agent_sessions", lambda *_: {"parent": completed_records(agent, "expected")}
+def test_completed_task_model_records_evidence_limits(tmp_path, agent):
+    session = _transcript_session(
+        tmp_path, agent, {"parent.jsonl": completed_records(agent, "expected")}
     )
-    artifacts = {}
-    session = SimpleNamespace(record=lambda name, payload: artifacts.update({name: payload}))
     evidence.assert_completed_task_model(session, agent, "value", "expected")
-    assert artifacts == {
+    assert session.artifacts == {
         f"completed-task-model-{agent}-value.json": {
             "expected": "expected",
             "observed": ["expected"],
@@ -274,13 +276,7 @@ def test_completed_task_model_records_evidence_limits(monkeypatch, agent):
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 @pytest.mark.parametrize("answer_value", [None, "", " \t", 1, [], {}])
-def test_completed_task_models_rejects_empty_or_malformed_expected_answers(
-    monkeypatch, agent, answer_value
-):
-    def unexpected_read(*args):
-        pytest.fail("Invalid answer must not read session evidence")
-
-    monkeypatch.setattr(evidence, "agent_sessions", unexpected_read)
+def test_completed_task_models_rejects_empty_or_malformed_expected_answers(agent, answer_value):
     with pytest.raises(AssertionError, match="nonempty answer value"):
         evidence.completed_task_models(None, agent, answer_value)
     adapter = (

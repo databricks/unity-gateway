@@ -1,86 +1,54 @@
-"""Component checks for the reusable integration agent helper contracts."""
+"""Regression checks for extracted native transcript parsing."""
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
-from tests.integration.utils import evidence, model_discovery, provider_catalog
+from tests.integration.utils import evidence
 from tests.integration.utils.agents import claude, codex
 
 
-def test_evidence_keeps_legacy_completed_task_names_as_adapter_aliases():
-    assert evidence.claude_completed_task_models is claude.completed_task_models
-    assert evidence.codex_completed_task_models is codex.completed_task_models
-
-
-def test_agent_modules_expose_direct_model_discovery_helpers():
-    assert claude.fetch_parent_catalog is provider_catalog.fetch_anthropic_parent_catalog
-    assert claude.discovery_model_id is model_discovery.claude_discovery_model_id
-    assert claude.model_service_id is model_discovery.claude_model_service_id
-    assert claude.model_in_picker is model_discovery.claude_model_in_picker
-    assert codex.fetch_parent_catalog is provider_catalog.fetch_codex_parent_catalog
-    assert codex.model_in_picker is model_discovery.codex_model_in_picker
-
-
-def test_agent_modules_preserve_exact_completion_attribution():
-    claude_records = [
-        {
-            "type": "user",
-            "message": {"model": "catalog.other_models.decoy", "content": []},
-        },
+@pytest.mark.parametrize("agent,helper", [("claude", claude), ("codex", codex)])
+def test_agent_helpers_preserve_native_answers(agent, helper):
+    records = [
+        {"type": "user", "message": {"content": [{"type": "text", "text": "prompt"}]}},
         {
             "type": "assistant",
             "message": {
                 "role": "assistant",
-                "model": "catalog.models.claude_sonnet[1m]",
-                "content": [{"type": "text", "text": "value"}],
+                "content": [{"type": "text", "text": "claude-answer"}, {"type": "tool_use"}],
             },
         },
-    ]
-    codex_records = [
-        {
-            "type": "turn_context",
-            "payload": {"turn_id": "other", "model": "catalog.other_models.decoy"},
-        },
-        {
-            "type": "turn_context",
-            "payload": {"turn_id": "matching", "model": "catalog.models.gpt_luna"},
-        },
+        {"type": "event_msg", "payload": {"type": "task_started"}},
         {
             "type": "event_msg",
-            "payload": {
-                "type": "task_complete",
-                "turn_id": "matching",
-                "last_agent_message": "value",
-            },
+            "payload": {"type": "task_complete", "last_agent_message": "codex-answer"},
         },
     ]
-
-    assert claude.completed_task_models(claude_records, "value") == {"catalog.models.claude_sonnet"}
-    assert codex.completed_task_models(codex_records, "value") == {"catalog.models.gpt_luna"}
-
-
-def test_evidence_dispatches_assistant_answers_to_agent_modules():
-    claude_records = [
-        {
-            "type": "assistant",
-            "message": {"role": "assistant", "content": [{"type": "text", "text": "answer"}]},
-        }
-    ]
-    codex_records = [
-        {
-            "type": "event_msg",
-            "payload": {"type": "task_complete", "last_agent_message": "answer"},
-        }
-    ]
-
-    assert evidence.assistant_answers("claude", claude_records) == ["answer"]
-    assert evidence.assistant_answers("codex", codex_records) == ["answer"]
+    expected = [f"{agent}-answer"]
+    assert helper.assistant_answers(records) == expected
+    assert evidence.assistant_answers(agent, records) == expected
 
 
-def test_unsupported_evidence_agents_fail_without_codex_fallback():
-    session = SimpleNamespace(home=None, record=lambda *_: None)
-    with pytest.raises(AssertionError, match="Unsupported evidence agent: opencode"):
-        evidence.completed_task_models(session, "opencode", "value")
-    with pytest.raises(AssertionError, match="Unsupported evidence agent: opencode"):
-        evidence.assert_completed_task_model(session, "opencode", "value", "model")
+@pytest.mark.parametrize("agent,helper", [("claude", claude), ("codex", codex)])
+def test_agent_helpers_preserve_session_paths_and_child_detection(tmp_path, agent, helper):
+    expected_directory = {"claude": ".claude/projects", "codex": ".codex/sessions"}[agent]
+    assert helper.SESSION_DIRECTORY == expected_directory
+    directory = tmp_path / expected_directory
+    directory.mkdir(parents=True)
+    parent = [{"type": "session_meta", "payload": {"source": "cli"}}]
+    child = [{"type": "session_meta", "payload": {"source": {"subagent": "spawn"}}}]
+    child_path = directory / "project/subagents/child.jsonl"
+    child_path.parent.mkdir(parents=True)
+    (directory / "parent.jsonl").write_text(json.dumps(parent[0]) + "\n")
+    child_path.write_text(json.dumps(child[0]) + "\n")
+    session = SimpleNamespace(home=tmp_path)
+    assert evidence.agent_sessions(session, agent) == {
+        "parent.jsonl": parent,
+        "project/subagents/child.jsonl": child,
+    }
+    assert not helper.is_child_session("parent.jsonl", parent)
+    assert not evidence.is_child_session(agent, "parent.jsonl", parent)
+    assert helper.is_child_session("project/subagents/child.jsonl", child)
+    assert evidence.is_child_session(agent, "project/subagents/child.jsonl", child)
