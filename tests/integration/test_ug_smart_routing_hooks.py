@@ -11,16 +11,21 @@ Smart Router skill and spawn real children before and after its session-local to
 import json
 
 import pytest
+from utils.constants import CLAUDE_SMART_ROUTING_MODELS, CODEX_SMART_ROUTING_MODELS
 from utils.evidence import (
     SubagentCalculation,
     assert_subagent_routed,
     assistant_answer_contains,
     read_jsonl,
 )
+from utils.managed import (
+    build_claude_agent_config,
+    build_codex_agent_config,
+    build_coding_agent_config,
+    set_managed_config_stub,
+)
 from utils.terminal import AgentTerminal
 
-# The same model lists as the managed_fixture smart-routing banner journeys, which are
-# proven servable route options on the live e2e workspace.
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 SMART_ROUTING_SUBAGENT_NOTICE = "Using Unity Gateway Smart Router - Subagent"
 CLAUDE_MODELS = [
@@ -68,7 +73,9 @@ def _routing_banner_for_task(screen: str, marker: str) -> bool:
             panel.append(panel_line)
             if "└" in panel_line:
                 break
-        if marker in "\n".join(panel):
+        # Rich can wrap the marker between any two characters in a narrow TUI.
+        # Compare without rendered whitespace so the banner remains attributable.
+        if marker in "".join("\n".join(panel).split()):
             return True
     return False
 
@@ -239,7 +246,8 @@ def test_smart_routing_codex_route_subagent_hook(live_session, workspace):
 
 @pytest.mark.live
 @pytest.mark.claude
-def test_smart_router_skill_toggles_claude_subagent_routing(live_session, workspace):
+@pytest.mark.managed_fixture
+def test_smart_router_skill_toggles_claude_subagent_routing(live_session, workspace, tmp_path):
     """Scenario: launch Claude with subagent routing enabled, spawn a child, invoke the
     installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
@@ -252,10 +260,13 @@ def test_smart_router_skill_toggles_claude_subagent_routing(live_session, worksp
     session = live_session
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
+    config = build_coding_agent_config(
+        "CODING_AGENT_CLAUDE_CODE",
+        build_claude_agent_config(CLAUDE_SMART_ROUTING_MODELS, smart_routing=True),
+    )
+    set_managed_config_stub(session, tmp_path, config)
     session.run(
         "configure",
-        "--agents",
-        "claude",
         "--workspace",
         workspace,
         "--skip-validate",
@@ -281,7 +292,8 @@ def test_smart_router_skill_toggles_claude_subagent_routing(live_session, worksp
 
 @pytest.mark.live
 @pytest.mark.codex
-def test_smart_router_skill_toggles_codex_subagent_routing(live_session, workspace):
+@pytest.mark.managed_fixture
+def test_smart_router_skill_toggles_codex_subagent_routing(live_session, workspace, tmp_path):
     """Scenario: launch Codex with subagent routing enabled, spawn a child, invoke the
     installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
@@ -294,10 +306,13 @@ def test_smart_router_skill_toggles_codex_subagent_routing(live_session, workspa
     session = live_session
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
+    config = build_coding_agent_config(
+        "CODING_AGENT_CODEX",
+        build_codex_agent_config(models=CODEX_SMART_ROUTING_MODELS, smart_routing=True),
+    )
+    set_managed_config_stub(session, tmp_path, config)
     session.run(
         "configure",
-        "--agents",
-        "codex",
         "--workspace",
         workspace,
         "--skip-validate",
