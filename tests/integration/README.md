@@ -543,9 +543,12 @@ Picker cases dismiss the menu without changing selection, then complete a task o
 Separate cases cover bare `ug`, `ug claude`, and `ug codex` TUI first tasks and Claude print/Codex
 exec defaults. Each additional compatible model gets its own headless task case.
 Success depends on native behavior, not generated settings, managed-config JSON, or catalog caches.
-Defaults omit model overrides; expected answers are withheld from prompts. Claude model evidence is
-response-reported; Codex evidence joins the completed answer to its client-selected turn
-model. Neither proves the gateway's backing destination. Only live passes establish coverage.
+Defaults omit model overrides; expected answers are withheld from prompts. Claude headless results
+require the requested service/alias in `modelUsage` with nonzero output tokens; TUI cases check the
+selected default in the native banner and a completed assistant answer. Claude transcript model IDs
+name the backing model, not the service. Codex evidence joins the completed answer to its
+client-selected turn model. None proves the gateway's backing destination. Only live passes
+establish coverage.
 
 CI runs explicit agent journeys in a two-agent matrix using `UG_CUJ3_WORKSPACE` and shared
 CUJ SP secrets. Both lanes block full/live runs; shared managed lanes exclude

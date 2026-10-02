@@ -197,8 +197,8 @@ footers. Offline regressions cover that distinction, native Haiku/Opus/Sonnet
 deduplication, and raw catalog ID/display-name rows for scoped pickers.
 Managed discovery expectations come from separate read-only, provider-scoped
 model-list requests; they do not rely solely on ug's generated catalog. Catalog discovery checks native behavior, not generated settings/cache files. Tasks
-check Claude's response-reported model and Codex's client-selected model; neither
-proves the executed gateway backing destination. Native picker/task coverage
+check Claude's headless `modelUsage` service key or TUI default banner plus a completed answer,
+and Codex's client-selected model; none proves the executed gateway backing destination. Native picker/task coverage
 requires a live journey pass, not collection or lint success.
 
 ug no longer runs a post-configure agent probe; the deprecated `--skip-validate`
