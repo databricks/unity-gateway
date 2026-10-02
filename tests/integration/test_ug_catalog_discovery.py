@@ -1,5 +1,6 @@
 """Managed catalog discovery, default launches, and explicit model selection."""
 
+import json
 import os
 
 import pytest
@@ -22,6 +23,29 @@ from utils.terminal import AgentTerminal
 pytestmark = [pytest.mark.managed, pytest.mark.catalog_discovery, pytest.mark.workspace_isolated]
 
 
+def _claude_file_task(session):
+    task = FileTask(session)
+    task.prompt = (
+        f"Use the Read tool to read {session.cwd / task.filename}. Reply with only its contents."
+    )
+    return task
+
+
+def _assert_claude_headless_model(result, expected):
+    final = None
+    for line in result.stdout.splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("type") == "result":
+            final = payload
+    assert final is not None and not final.get("is_error"), result.stdout
+    usage = final["modelUsage"]
+    assert set(usage) == {expected}, {"expected": expected, "observed": sorted(usage)}
+    assert usage[expected]["outputTokens"] > 0, usage
+
+
 @pytest.mark.claude
 @pytest.mark.tui
 def test_catalog_discovery_claude_picker_preserves_default(live_session, workspace):
@@ -41,7 +65,7 @@ def test_catalog_discovery_claude_picker_preserves_default(live_session, workspa
     }, parent_catalog
     assert set(decoy_catalog.model_ids) == {claude.discovery_model_id(CLAUDE_DECOY)}, decoy_catalog
 
-    task = FileTask(session)
+    task = _claude_file_task(session)
     with AgentTerminal(
         session,
         "claude",
@@ -59,10 +83,11 @@ def test_catalog_discovery_claude_picker_preserves_default(live_session, workspa
         for excluded in (GEMINI_MODEL, CLAUDE_DECOY, CODEX_DECOY):
             assert excluded not in picker_screen, picker_screen
             assert excluded.rsplit(".", 1)[-1] not in picker_screen, picker_screen
+        assert f"{CLAUDE_DEFAULT} · api usage billing" in tui.visible.casefold(), tui.visible
         tui.submit(task.prompt)
         tui.wait_for_task(task, timeout=240)
         tui.exit_normally()
-    assert_completed_task_model(session, "claude", task.value, CLAUDE_DEFAULT)
+    task.assert_completed(session, "claude")
     session.assert_not_routed()
 
 
@@ -124,15 +149,16 @@ def test_catalog_discovery_bare_ug_uses_claude_default(live_session, workspace):
     """
     session = live_session
     session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
-    task = FileTask(session)
+    task = _claude_file_task(session)
     with AgentTerminal(
         session, "claude", [str(session.binary)], "catalog-discovery-bare-ug-default"
     ) as tui:
         tui.boot()
+        assert f"{CLAUDE_DEFAULT} · api usage billing" in tui.visible.casefold(), tui.visible
         tui.submit(task.prompt)
         tui.wait_for_task(task, timeout=240)
         tui.exit_normally()
-    assert_completed_task_model(session, "claude", task.value, CLAUDE_DEFAULT)
+    task.assert_completed(session, "claude")
     session.assert_not_routed()
 
 
@@ -145,7 +171,7 @@ def test_catalog_discovery_claude_tui_uses_default(live_session, workspace):
     """
     session = live_session
     session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
-    task = FileTask(session)
+    task = _claude_file_task(session)
     with AgentTerminal(
         session,
         "claude",
@@ -153,10 +179,11 @@ def test_catalog_discovery_claude_tui_uses_default(live_session, workspace):
         "catalog-discovery-claude-tui-default",
     ) as tui:
         tui.boot()
+        assert f"{CLAUDE_DEFAULT} · api usage billing" in tui.visible.casefold(), tui.visible
         tui.submit(task.prompt)
         tui.wait_for_task(task, timeout=240)
         tui.exit_normally()
-    assert_completed_task_model(session, "claude", task.value, CLAUDE_DEFAULT)
+    task.assert_completed(session, "claude")
     session.assert_not_routed()
 
 
@@ -189,7 +216,7 @@ def test_catalog_discovery_claude_headless_uses_default(live_session, workspace)
     """
     session = live_session
     session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
-    task = FileTask(session)
+    task = _claude_file_task(session)
     result = session.run(
         "claude",
         "-p",
@@ -201,7 +228,7 @@ def test_catalog_discovery_claude_headless_uses_default(live_session, workspace)
         timeout=240,
     )
     task.assert_headless_answer("claude", result)
-    assert_completed_task_model(session, "claude", task.value, CLAUDE_DEFAULT)
+    _assert_claude_headless_model(result, CLAUDE_DEFAULT)
     session.assert_not_routed()
 
 
@@ -231,7 +258,7 @@ def test_catalog_discovery_claude_explicit_model_completes_task(live_session, wo
     """
     session = live_session
     session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
-    task = FileTask(session)
+    task = _claude_file_task(session)
     result = session.run(
         "claude",
         "--",
@@ -246,7 +273,7 @@ def test_catalog_discovery_claude_explicit_model_completes_task(live_session, wo
         timeout=240,
     )
     task.assert_headless_answer("claude", result)
-    assert_completed_task_model(session, "claude", task.value, claude.discovery_model_id(model))
+    _assert_claude_headless_model(result, claude.discovery_model_id(model))
     session.assert_not_routed()
 
 
