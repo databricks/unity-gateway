@@ -39,3 +39,11 @@ cleanup fails. Never retry a failed task, fall back to a shared workspace, or
 overwrite unexpected admin edits. Leave actionable recovery evidence on failure.
 These mechanisms will be implemented with the live tests, not this scaffold.
 """
+
+from helpers.base import BaseCujTest
+
+
+class TestCujSmartRouting(BaseCujTest):
+    """Workspace declaration for this CUJ; no executable journey methods yet."""
+
+    WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
