@@ -336,10 +336,14 @@ def resolve_provider_models(
     # Relayed services enforce their declared targets too, so map them like any Anthropic service
     # (allow_all declares none). relayed gates auth, not model reconciliation.
     if tool == "copilot" and relayed:
-        return None, (
-            f"Model provider service '{provider}' is a relayed Anthropic subscription, "
-            f"which {tool} can't use."
-        ), relayed
+        return (
+            None,
+            (
+                f"Model provider service '{provider}' is a relayed Anthropic subscription, "
+                f"which {tool} can't use."
+            ),
+            relayed,
+        )
     # Only Claude and Copilot (via its Anthropic route) pin per-family model ids. Codex ignores this
     # map, and gemini resolves its target through resolve_gemini_provider_model instead — so mapping
     # their targets through Claude-family logic would be meaningless (see docstring).
