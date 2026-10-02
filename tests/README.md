@@ -139,6 +139,12 @@ Pi's token-command tests in `test_agent_pi.py` exercise Windows executable paths
 through POSIX parsing, including spaces, apostrophes, profile names, and PAT mode.
 They do not launch Pi or Git Bash on Windows.
 
+Shared integration helpers have component coverage in `test_integration_agent_helpers.py`,
+`test_integration_evidence.py`, `test_integration_model_discovery.py`,
+`test_integration_provider_catalog.py`, `test_integration_http.py`, and
+`test_integration_managed_config.py`. They check native transcript parsing, model attribution,
+picker matching, scoped catalog requests, and persisted managed input; they are not live passes.
+
 ## CUJ coverage matrix
 
 These are **implemented assertions**, not a claim that every version passes.
