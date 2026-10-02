@@ -23,17 +23,9 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Mapping
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SUITES = {
-    "integration": ROOT / "tests/integration",
-    "e2e-integration": ROOT / "tests/e2e_integration",
-}
-SERVICE_PRINCIPAL_ENV = {
-    "integration": ("DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET"),
-    "e2e-integration": ("UG_CUJ_SP_CLIENT_ID", "UG_CUJ_SP_CLIENT_SECRET"),
-}
 AGENT_PACKAGES = {
     "claude": "@anthropic-ai/claude-code",
     "codex": "@openai/codex",
@@ -203,42 +195,6 @@ def npm_executable(bin_dir: Path, name: str) -> Path:
     return bin_dir / (f"{name}.cmd" if os.name == "nt" else name)
 
 
-def cuj_test_target(nodeid: str) -> str:
-    """Resolve an exact collected node without allowing selection outside the CUJ suite."""
-    filename, separator, selector = nodeid.partition("::")
-    path = PurePosixPath(filename)
-    if (
-        not separator
-        or not re.fullmatch(r"TestCuj\w*::test_cuj_\w+(?:\[.*\])?", selector)
-        or path.parent != PurePosixPath("tests")
-        or not path.name.startswith("test_cuj_")
-        or path.suffix != ".py"
-        or filename != path.as_posix()
-        or "\\" in nodeid
-        or "\n" in nodeid
-        or "\r" in nodeid
-    ):
-        raise ValueError("--cuj-nodeid must be an exact collected tests/test_cuj_*.py::... node.")
-    return f"{SUITES['e2e-integration'] / filename}::{selector}"
-
-
-def workspace_auth_inputs(suite: str, environment: Mapping[str, str]) -> tuple[str, str, str]:
-    """Select scoped credentials without mutating the environment or recording secrets.
-
-    Explicit --profile selection is handled by main and overrides these inputs.
-    CUJ service-principal credentials take precedence over a shared bearer.
-    """
-    id_env, secret_env = SERVICE_PRINCIPAL_ENV[suite]
-    client_id = environment.get(id_env, "").strip()
-    client_secret = environment.get(secret_env, "").strip()
-    if suite == "e2e-integration" and bool(client_id) != bool(client_secret):
-        raise ValueError(f"Set both {id_env} and {secret_env} for CUJ authentication.")
-    bearer = environment.get("DATABRICKS_BEARER", "").strip()
-    if suite == "e2e-integration" and client_id and client_secret:
-        bearer = ""
-    return bearer, client_id, client_secret
-
-
 def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
     """Mint a short-lived workspace token for a service principal via OAuth client credentials.
 
@@ -323,15 +279,6 @@ def arguments(
     platform_name = os.name if platform_name is None else platform_name
     environment = os.environ if environment is None else environment
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--suite",
-        choices=SUITES,
-        default="integration",
-        help="Test suite to run; e2e-integration contains only full, unstubbed CUJs.",
-    )
-    parser.add_argument(
-        "--cuj-nodeid", help="Run exactly one collected node from --suite e2e-integration."
-    )
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--ug-version", default="checkout", help="Exact ug release, or checkout.")
     source.add_argument(
@@ -426,15 +373,6 @@ def arguments(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
     )
     args = parser.parse_args(argv)
-    if args.cuj_nodeid:
-        if args.suite != "e2e-integration":
-            parser.error("--cuj-nodeid requires --suite e2e-integration.")
-        try:
-            cuj_test_target(args.cuj_nodeid)
-        except ValueError as error:
-            parser.error(str(error))
-    if args.suite == "e2e-integration" and (args.installation_only or args.headless_only):
-        parser.error("--installation-only and --headless-only belong to --suite integration.")
     if platform_name != "posix" and not (args.installation_only or args.headless_only):
         parser.error(
             "Live agent/TUI integration requires POSIX PTY, managed-settings, and signal "
@@ -476,15 +414,16 @@ def arguments(
             parser.error(
                 "Set UCODE_TEST_WORKSPACE to the existing e2e workspace, or use --workspace."
             )
-        try:
-            bearer, client_id, client_secret = workspace_auth_inputs(args.suite, environment)
-        except ValueError as error:
-            parser.error(str(error))
-        if not (args.profile or bearer or (client_id and client_secret)):
-            id_env, secret_env = SERVICE_PRINCIPAL_ENV[args.suite]
+        has_client_creds = bool(
+            environment.get("DATABRICKS_CLIENT_ID", "").strip()
+            and environment.get("DATABRICKS_CLIENT_SECRET", "").strip()
+        )
+        if not (
+            args.profile or environment.get("DATABRICKS_BEARER", "").strip() or has_client_creds
+        ):
             parser.error(
                 "Provide the e2e DATABRICKS_BEARER, service-principal "
-                f"{id_env}/{secret_env}, or select --profile explicitly."
+                "DATABRICKS_CLIENT_ID/DATABRICKS_CLIENT_SECRET, or select --profile explicitly."
             )
     return args
 
@@ -578,17 +517,11 @@ def main() -> int:
     python_install_env = installer_environment(base_env, os.environ, UV_INDEX_CREDENTIAL_ENV)
     npm_install_env = installer_environment(base_env, os.environ, (NPM_TOKEN_ENV,), npm_config)
     installer_secrets = tuple(os.environ.get(key, "") for key in INSTALLER_CREDENTIAL_ENV)
-    bearer, workspace_client_id, workspace_client_secret = workspace_auth_inputs(
-        args.suite, os.environ
-    )
+    bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
     second_bearer = os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     target_bearers: dict[str, str] = {}
     client_secrets = (
-        workspace_client_id,
-        workspace_client_secret,
-        os.environ.get("UG_CUJ_SP_CLIENT_ID", ""),
-        os.environ.get("UG_CUJ_SP_CLIENT_SECRET", ""),
         os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
         os.environ.get("UG_MPS_DEFAULTS_CLIENT_SECRET", ""),
         os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", ""),
@@ -654,14 +587,12 @@ def main() -> int:
             "codex_parent_model": args.codex_parent_model,
             "dependencies": args.dependency,
             "workspace": args.workspace,
-            "cuj_nodeid": args.cuj_nodeid,
             "second_workspace": args.second_workspace,
             "warehouse_id": args.warehouse_id,
         },
         "platform": platform.platform(),
         "installation_only": args.installation_only,
         "headless_only": args.headless_only,
-        "suite": args.suite,
     }
     manifest = output / "versions.json"
     exitcode = 1
@@ -895,12 +826,12 @@ def main() -> int:
                 raise RuntimeError("Selected profile returned no access token.")
 
         if not bearer and not args.profile and not args.installation_only:
-            if workspace_client_id and workspace_client_secret:
-                bearer = mint_m2m_token(
-                    args.workspace, workspace_client_id, workspace_client_secret
-                )
+            client_id = os.environ.get("DATABRICKS_CLIENT_ID", "").strip()
+            client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
+            if client_id and client_secret:
+                bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
-        if not args.installation_only and args.suite == "integration":
+        if not args.installation_only:
             for bearer_env, target_workspace, client_id, secret_env in MANAGED_DEFAULTS_TARGETS:
                 secret = os.environ.get(secret_env, "").strip()
                 if args.workspace.rstrip("/") == target_workspace:
@@ -958,14 +889,9 @@ def main() -> int:
             runtime_env[f"UG_INTEGRATION_{agent.upper()}_MODEL"] = (
                 getattr(args, f"{agent}_model") or ""
             )
-        suite = SUITES[args.suite]
+        suite = ROOT / "tests/integration"
         suite_hash = hashlib.sha256()
-        for path in [
-            Path(__file__),
-            *sorted(suite.rglob("*.py")),
-            *sorted((ROOT / "tests/e2e_helpers").rglob("*.py")),
-            suite / "pytest.ini",
-        ]:
+        for path in [Path(__file__), *sorted(suite.rglob("*.py")), suite / "pytest.ini"]:
             suite_hash.update(str(path.relative_to(ROOT)).encode() + b"\0" + path.read_bytes())
         report["suite_sha256"] = suite_hash.hexdigest()
         extra = args.pytest_args
@@ -979,8 +905,6 @@ def main() -> int:
             installation_only=args.installation_only,
             headless_only=args.headless_only,
         )
-        if args.cuj_nodeid:
-            test_targets = [cuj_test_target(args.cuj_nodeid)]
         with managed_process(
             [
                 test_python,
@@ -1011,10 +935,6 @@ def main() -> int:
                 for key in totals:
                     totals[key] += int(suite_result.get(key, "0"))
             report["results"] = totals
-            if args.cuj_nodeid and totals["tests"] != 1:
-                raise RuntimeError(
-                    f"Expected exactly one CUJ for --cuj-nodeid, but {totals['tests']} executed."
-                )
             if totals["skipped"]:
                 raise RuntimeError("Requested integration tests were skipped; see junit.xml.")
             if not totals["tests"] and not exitcode:

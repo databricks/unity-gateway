@@ -21,15 +21,6 @@ def pytest_collection_modifyitems(config, items):
     agents = os.environ.get("UG_INTEGRATION_AGENTS", "claude,codex").split(",")
     selected, deselected = [], []
     for item in items:
-        if not item.get_closest_marker("installation"):
-            config_kind = (
-                "fixture_config" if item.get_closest_marker("managed_fixture") else "real_config"
-            )
-            item.add_marker(pytest.mark.shared_workspace)
-            item.add_marker(getattr(pytest.mark, config_kind))
-            item.user_properties.extend(
-                [("workspace_ownership", "shared"), ("configuration", config_kind)]
-            )
         # Fail if someone accidentally invokes this under the unit-test fixtures.
         if "monkeypatch" in item.fixturenames:
             raise pytest.UsageError("Use the integration runner; unit fixtures were inherited.")

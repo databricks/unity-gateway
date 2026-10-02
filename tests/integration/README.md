@@ -1,22 +1,5 @@
 # Integration tests
 
-For new CUJs requiring an exclusively owned workspace, see the separate
-[`tests/e2e_integration/` scaffold](../e2e_integration/AGENTS.md), selected with
-`--suite e2e-integration`. It has no executable journeys yet. This existing suite
-retains its current tests, including `managed_fixture` cases, and remains the
-runner's default (`--suite integration`). No existing coverage has moved.
-The new suite has a separate, manual-only **Full E2E CUJs** Actions workflow with
-automatically discovered **Dedicated workspace · test_cuj_…** jobs. This suite's
-cases still use shared workspaces. Its CI labels distinguish **Shared workspace /
-real config** from **Fixture-backed config**; the latter inject admin config but
-still run real agents and gateway requests. Existing required gates and credentials
-are unchanged. Neutral process/terminal mechanics live in `tests/e2e_helpers/`;
-configuration, agent-specific evidence, and fixture helpers remain in `utils/`.
-
-Collection adds `shared_workspace` and either `real_config` or `fixture_config`
-markers, plus corresponding JUnit properties. These describe workspace ownership
-and configuration provenance, not whether a test uses pytest fixtures at all.
-
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
 patch application functions, substitute agent executables, run a fake gateway,
@@ -201,7 +184,7 @@ test_ug_configure_managed_mcp.py        # injected managed MCP list
 test_ug_configure_managed_skills.py     # injected managed skills: download, coexist, reconcile away
 test_ug_configure_managed_lifecycle.py  # none -> A -> B -> MPS -> none: reconcile, clear on MPS/no-config
 test_installation.py                   # fresh installed package
-utils/                                # suite-specific wrappers, evidence/config helpers, Docker files
+utils/                                # process/terminal/evidence helpers and Docker files
 ```
 
 `conftest.py`, `pytest.ini`, and this README stay at the suite root for pytest
@@ -324,16 +307,16 @@ startup banners and footer text cannot satisfy discovery assertions. Cases 7–1
 they only configure, list models, and open/close the picker. Other live CUJs perform
 real model tasks.
 
-There are **60 real-config live cases** and **7 installation
+There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
-A further **27 `managed_fixture`
+A further **25 `managed_fixture`
 cases** use `UCODE_MANAGED_CONFIG_STUB`. Twelve explicit configured/fresh Claude and Codex
 discovery and source-override journeys fetch the published config once per agent, replace that
-agent's static source with its dedicated MPS, and reuse the result. Fifteen other collected cases
-cover focused model, MCP, skills, lifecycle, and routing shapes, including per-agent model reconciliation
+agent's static source with its dedicated MPS, and reuse the result. Thirteen other collected cases
+cover focused model, MCP, skills, and lifecycle shapes, including per-agent model reconciliation
 and managed skill cleanup. The two Claude default-model cases read published MPS and Unity
 Catalog sources directly from `eng-ml-inference-batch-inference-us-west-2` and
 `eng-ml-inference-ap-northeast-2`, respectively, then verify both generated settings files retain
@@ -405,7 +388,7 @@ python3.12 scripts/run_integration.py \
 Missing credentials or equal workspace hosts fail the selected test. The runner
 records both URLs in `versions.json`, redacts both bearers in evidence, and passes
 only the active workspace's bearer to each tested command. CI runs the case in
-the **Shared workspace / real config · Managed · Claude** lane: the first host uses
+the existing **Managed config · Claude** lane: the first host uses
 `E2E_ADMIN_WORKSPACE` and its service-principal credentials; the second uses the
 existing `UCODE_TEST_WORKSPACE` / `DATABRICKS_BEARER` secrets. That lane is
 required for full/live runs. Collection or lint success is not a live pass.
@@ -489,16 +472,16 @@ separate CI model-selection job; the full agent lanes include scoped model
 discovery. Real `ug configure` performs its normal workspace discovery inside
 each test; only explicit-model scenarios choose and record a discovered
 `system.ai` model as a test argument.
-Every same-repository PR and push to `main` runs **Shared workspace / real config · Smoke**, followed by
-**Shared workspace / real config · Full** even if smoke fails. Smoke runs the Hosted configure/TUI,
+Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
+**Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 60 real-config live cases, including those smoke cases, in two
+two agent jobs). Full runs all 62 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and not managed_fixture and claude` | 27 |
-| Codex | `live and not managed_fixture and codex` | 33 |
+| Claude | `live and claude` | 28 |
+| Codex | `live and codex` | 34 |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
 `continue-on-error` and is not part of the required `cujs` gate until it is stable.
@@ -515,7 +498,7 @@ No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, workspace validation, smoke,
-both full lanes, and all four managed lanes (agent × real/fixture config) to pass for full/live runs. Each tracing
+both full lanes, and both **Managed config** lanes to pass for full/live runs. Each tracing
 journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
 a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
 and installation subsets do not select managed tests and do not require them.
@@ -525,14 +508,8 @@ cannot still be running when that gate passes. Full coverage on PRs needs no lab
 
 ### Managed-workspace journeys
 
-CI splits the managed matrix by agent and configuration provenance: real-config
-jobs select `(managed or workspace_switch) and not managed_fixture`; fixture-config
-jobs select `managed_fixture`. Their union preserves existing managed coverage.
-Both use shared workspaces and have separate artifacts. Two subagent-routing cases
-also carry `live`; the real-config lanes exclude them and the fixture lanes retain them.
-
 `test_ug_configure_managed.py` (marker `managed`, not `live`) runs in its own per-agent
-**Shared workspace / real config · Managed** jobs against a second workspace that publishes an admin CodingAgentConfig,
+**Managed config** jobs against a second workspace that publishes an admin CodingAgentConfig,
 whereas unmanaged live cases require a workspace without one. `ug configure` applies the admin config
 with no agent selector, and each agent's generated config exposes exactly the admin's static
 `model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog). The managed

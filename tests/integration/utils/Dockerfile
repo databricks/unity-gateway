@@ -20,8 +20,6 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 WORKDIR /opt/ug-integration
 COPY scripts/run_integration.py scripts/run_integration.py
 COPY tests/integration tests/integration
-COPY tests/__init__.py tests/__init__.py
-COPY tests/e2e_helpers tests/e2e_helpers
 RUN mkdir /results && chown integration:integration /results
 USER integration
 ENV HOME=/home/integration

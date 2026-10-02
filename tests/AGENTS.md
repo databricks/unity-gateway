@@ -5,16 +5,6 @@ tests. Keep work scoped to the behavior requested by the user.
 
 ## Categories
 
-- `e2e_integration/` is the independent full E2E CUJ suite. Name all journey
-  modules and functions `test_cuj_*`; keep journeys in that suite's `tests/` and
-  suite-specific code in `helpers/`. Follow its `AGENTS.md`. No
-  two test invocations may share an assigned Databricks workspace, including
-  across concurrent runs; per-test workspace allocation is required. No
-  stubbing exception applies there, and do not import application internals or
-  fixture helpers from the existing E2E/integration suites. Both suites may use
-  neutral process/terminal mechanics from `tests/e2e_helpers/`. Run it with
-  `scripts/run_integration.py --suite e2e-integration`. The current scaffold
-  contains no executable journeys; do not add passing or skipped placeholders.
 - Existing unit/component tests may use focused mocks. Do not move their global
   fixtures into integration or rewrite them all as part of a narrow fix.
 - `integration/` tests installed ug with real agents and the real
@@ -95,8 +85,7 @@ exercise.
   config file, echoed prompt, or tool output alone does not prove completion.
 - Keep all CUJs as descriptive top-level `integration/test_*.py` files. Do not
   create a separate regressions category. Shared process/terminal/evidence helpers
-  and Docker build files belong in `integration/utils/`; neutral process/terminal
-  mechanics shared across suites belong in `tests/e2e_helpers/`. Keep pytest entry points
+  and Docker build files belong in `integration/utils/`; keep pytest entry points
   and run documentation at the suite root.
 - Current scope is basic Claude/Codex configuration, routing, script usage,
   command forwarding, and configure/revert CUJs. Do not add MCP/skills functionality,

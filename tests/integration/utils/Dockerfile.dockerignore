@@ -2,9 +2,6 @@
 !scripts/
 !scripts/run_integration.py
 !tests/
-!tests/__init__.py
-!tests/e2e_helpers/
-!tests/e2e_helpers/**
 !tests/integration/
 !tests/integration/**
 tests/integration/__pycache__/
