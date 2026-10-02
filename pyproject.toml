@@ -84,6 +84,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011", "TID251"]  # tests may exercise subprocess directly
+"scripts/run_integration.py" = ["TID251"]  # standalone runner runs before the application is installed
 "src/ucode/os_compatibility/file_lock_cross_os.py" = ["TID251"]
 "src/ucode/os_compatibility/subprocess_cross_os.py" = ["TID251"]
 

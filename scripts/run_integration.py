@@ -45,6 +45,7 @@ MANAGED_DEFAULTS_TARGETS = (
         "UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET",
     ),
 )
+
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
 UV_INDEX_CREDENTIAL_ENV = (
     "UV_INDEX_DATABRICKS_PYPI_USERNAME",
@@ -196,7 +197,7 @@ def npm_executable(bin_dir: Path, name: str) -> Path:
 
 
 def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
-    """Mint a short-lived workspace token for a service principal via OAuth client credentials.
+    """Mint a short-lived workspace token via OAuth client credentials.
 
     Managed-workspace M2M tokens expire hourly, so the runner mints them from client credentials
     rather than storing long-lived bearers for the base or Claude defaults workspaces.
@@ -206,7 +207,7 @@ def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
         {"grant_type": "client_credentials", "scope": "all-apis"}
     ).encode()
     request = urllib.request.Request(
-        f"{workspace.rstrip('/')}/oidc/v1/token",
+        workspace.rstrip("/") + "/oidc/v1/token",
         data=body,
         headers={
             "Authorization": f"Basic {basic}",
@@ -220,9 +221,34 @@ def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
     return token
 
 
+def mint_account_m2m_token(
+    account_host: str, client_id: str, client_secret: str, *, account_id: str
+) -> str:
+    """Mint a short-lived account token for the account-scoped budget API."""
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    body = urllib.parse.urlencode(
+        {"grant_type": "client_credentials", "scope": "all-apis"}
+    ).encode()
+    request = urllib.request.Request(
+        account_host.rstrip("/")
+        + f"/oidc/accounts/{urllib.parse.quote(account_id, safe='')}/v1/token",
+        data=body,
+        headers={
+            "Authorization": f"Basic {basic}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 (https account URL)
+        token = json.load(response).get("access_token", "")
+    if not token:
+        raise RuntimeError("Service-principal client credentials returned no access token.")
+    return token
+
+
 @contextlib.contextmanager
-def managed_process(command, *, interrupt=False, **kwargs):
+def managed_process(command, *, interrupt=False, interrupt_grace=15, **kwargs):
     """Bound child lifetimes, including descendants that outlive their parent."""
+    # The black-box installer runs before the application is available to import.
     proc = subprocess.Popen(command, **process_group_options(), **kwargs)
     try:
         yield proc
@@ -234,7 +260,7 @@ def managed_process(command, *, interrupt=False, **kwargs):
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(proc.pid, first_signal)
             try:
-                proc.wait(timeout=15 if interrupt else 5)
+                proc.wait(timeout=interrupt_grace if interrupt else 5)
             except subprocess.TimeoutExpired:
                 pass
             with contextlib.suppress(ProcessLookupError):
@@ -521,10 +547,17 @@ def main() -> int:
     second_bearer = os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     target_bearers: dict[str, str] = {}
+    budget_environment = {
+        key: value.strip()
+        for key, value in os.environ.items()
+        if key.startswith("UG_BUDGET_")
+        and not key.endswith(("_TOKEN", "_SECRET"))
+        and value.strip()
+    }
     client_secrets = (
-        os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
-        os.environ.get("UG_MPS_DEFAULTS_CLIENT_SECRET", ""),
-        os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", ""),
+        os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip(),
+        os.environ.get("UG_MPS_DEFAULTS_CLIENT_SECRET", "").strip(),
+        os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", "").strip(),
     )
 
     def redact(value: str) -> str:
@@ -535,6 +568,7 @@ def main() -> int:
                 second_bearer,
                 oauth_token,
                 *target_bearers.values(),
+                budget_environment.get("UG_BUDGET_ACCOUNT_TOKEN", ""),
                 *client_secrets,
                 *installer_secrets,
             ),
@@ -825,13 +859,22 @@ def main() -> int:
             if not bearer:
                 raise RuntimeError("Selected profile returned no access token.")
 
-        if not bearer and not args.profile and not args.installation_only:
+        if not args.installation_only:
             client_id = os.environ.get("DATABRICKS_CLIENT_ID", "").strip()
             client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
-            if client_id and client_secret:
+            if not bearer and not args.profile and client_id and client_secret:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
-        if not args.installation_only:
+            if budget_environment:
+                account_host = budget_environment.get("UG_BUDGET_ACCOUNT_HOST", "")
+                account_id = budget_environment.get("UG_BUDGET_ACCOUNT_ID", "")
+                if account_host and account_id and client_id and client_secret:
+                    budget_environment["UG_BUDGET_ACCOUNT_TOKEN"] = mint_account_m2m_token(
+                        account_host,
+                        client_id,
+                        client_secret,
+                        account_id=account_id,
+                    )
             for bearer_env, target_workspace, client_id, secret_env in MANAGED_DEFAULTS_TARGETS:
                 secret = os.environ.get(secret_env, "").strip()
                 if args.workspace.rstrip("/") == target_workspace:
@@ -889,6 +932,9 @@ def main() -> int:
             runtime_env[f"UG_INTEGRATION_{agent.upper()}_MODEL"] = (
                 getattr(args, f"{agent}_model") or ""
             )
+        # The workflow target metadata and account token are needed by the CUJ5
+        # fixture, but must never reach native agent/version processes.
+        test_env = {**runtime_env, **budget_environment}
         suite = ROOT / "tests/integration"
         suite_hash = hashlib.sha256()
         for path in [Path(__file__), *sorted(suite.rglob("*.py")), suite / "pytest.ini"]:
@@ -920,12 +966,17 @@ def main() -> int:
                 f"--junitxml={output / 'junit.xml'}",
                 *extra,
             ],
-            env=runtime_env,
+            env=test_env,
             cwd=output,
             stdin=subprocess.DEVNULL,
             interrupt=True,
+            # Budget cleanup can require several bounded account API calls. Give
+            # its finally block time to restore before killing the process group.
+            interrupt_grace=180 if budget_environment else 15,
         ) as result:
-            result.wait(timeout=3600)
+            # Fresh workspace and account M2M tokens expire hourly. Reserve time
+            # for budget restoration while those tokens are still valid.
+            result.wait(timeout=2400 if budget_environment else 3600)
         exitcode = result.returncode
         junit = output / "junit.xml"
         if junit.is_file():
