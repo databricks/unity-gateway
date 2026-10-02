@@ -16,6 +16,8 @@ The dedicated CUJ reuses `integration/utils` session/terminal mechanics and file
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model
 correlation and exclusive workspace restoration remain CUJ-specific.
 CUJ helper tests also verify that unsupported agent names fail rather than defaulting to Codex.
+They cover Claude/Codex helper dispatch and rejection of routing decisions without
+the agent-specific prompt-submission evidence.
 
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.

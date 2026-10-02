@@ -2,6 +2,7 @@
 
 import json
 import re
+from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 
 from tests.integration.utils.evidence import read_jsonl
@@ -34,9 +35,59 @@ class CompletedTurn:
     answer: str
 
 
-def completed_turn(agent, records, task):
-    """Match one exact user prompt in one parent session, then its completed answer."""
-    if agent == CLAUDE:
+class BaseCujHelper(ABC):
+    session_directory: str
+    routing_log: str
+    route_pattern: str
+
+    @staticmethod
+    @abstractmethod
+    def _completed_turn(records, task):
+        """Match the exact prompt to a completed native parent turn."""
+        raise NotImplementedError
+
+    @staticmethod
+    @abstractmethod
+    def _assert_applied(route_log, task, expected):
+        """Check the agent-specific link between routing and prompt submission."""
+        raise NotImplementedError
+
+    @classmethod
+    def assert_applied(cls, turn, task, route_log, supported, *, routed, expected=None):
+        assert supported and all(model.startswith("system.ai.") for model in supported)
+        supported = {canonical_model(model) for model in supported}
+        if routed:
+            decisions = re.findall(cls.route_pattern, route_log)
+            assert len(decisions) == 1, "Require one fresh successful router decision, not a banner"
+            expected = canonical_model(decisions[0])
+            assert expected in supported, (
+                f"Router selected a target absent from the live catalog: {expected}"
+            )
+            cls._assert_applied(route_log, task, expected)
+        else:
+            assert not route_log.strip(), "Bypassed/disabled session emitted new routing activity"
+            assert expected is not None
+            expected = canonical_model(expected)
+            assert expected in supported
+        assert {canonical_model(model) for model in turn.models} == {expected}, (
+            f"Inference models {turn.models} do not match selected model {expected}"
+        )
+        return {
+            **asdict(turn),
+            "prompt": task.prompt,
+            "selected_model": expected,
+            "routing_log": route_log,
+            "routed": routed,
+        }
+
+
+class ClaudeCujHelper(BaseCujHelper):
+    session_directory = ".claude/projects"
+    routing_log = "claude-v2-pty.log"
+    route_pattern = r"\[ROUTE\] first prompt -> '([^']+)'"
+
+    @staticmethod
+    def _completed_turn(records, task):
         if any(row.get("isSidechain") for row in records):
             return None
         prompts = [
@@ -72,7 +123,18 @@ def completed_turn(agent, records, task):
         assert all(msg.get("model") for msg in responses), "Missing inference model metadata"
         return CompletedTurn(session_id, last["id"], [msg["model"] for msg in responses], answer)
 
-    elif agent == CODEX:
+    @staticmethod
+    def _assert_applied(route_log, task, expected):
+        assert "[DONE] first prompt confirmed submitted" in route_log
+
+
+class CodexCujHelper(BaseCujHelper):
+    session_directory = ".codex/sessions"
+    routing_log = "codex-v2-interposer.log"
+    route_pattern = r"\[ROUTE\] selected '([^']+)'; rationale="
+
+    @staticmethod
+    def _completed_turn(records, task):
         meta = [row["payload"] for row in records if row.get("type") == "session_meta"]
         if len(meta) != 1 or isinstance(meta[0].get("source"), dict):
             return None
@@ -106,28 +168,40 @@ def completed_turn(agent, records, task):
                     assert all(contexts[turn_id]), "Missing native turn model metadata"
                     return CompletedTurn(meta[0]["id"], turn_id, contexts[turn_id], answer)
         return None
+
+    @staticmethod
+    def _assert_applied(route_log, task, expected):
+        requests = re.findall(r"\[ROUTE\] request POST ([^ ]+): (\{.*\})", route_log)
+        assert len(requests) == 1, "Missing/duplicate live router request"
+        url, body = requests[0]
+        request = json.loads(body)
+        assert url.endswith("/ai-gateway/routing/v1/routes:select")
+        assert request["task"]["prompt"] == task.prompt
+        assert request["route_selector"]["router_name"]
+        options = request["route_options"]
+        assert all(option["harness"] == CODEX for option in options)
+        assert expected in {canonical_model(option["model"]) for option in options}
+
+
+def get_cuj_helper(agent):
+    if agent == CLAUDE:
+        return ClaudeCujHelper
+    elif agent == CODEX:
+        return CodexCujHelper
     else:
         raise ValueError(f"Unsupported agent: {agent!r}")
 
 
+def completed_turn(agent, records, task):
+    return get_cuj_helper(agent)._completed_turn(records, task)
+
+
 class SessionEvidence:
     def __init__(self, home, agent):
-        self.agent = agent
-        if agent == CLAUDE:
-            self.directory = home / ".claude/projects"
-            log_name = "claude-v2-pty.log"
-            self.route_pattern = r"\[ROUTE\] first prompt -> '([^']+)'"
-        elif agent == CODEX:
-            self.directory = home / ".codex/sessions"
-            log_name = "codex-v2-interposer.log"
-            self.route_pattern = r"\[ROUTE\] selected '([^']+)'; rationale="
-        else:
-            raise ValueError(f"Unsupported agent: {agent!r}")
+        self.helper = get_cuj_helper(agent)
+        self.directory = home / self.helper.session_directory
         self.existing = set(self.directory.rglob("*.jsonl"))
-        names = [
-            log_name,
-            f"{agent}-smart-routing-decisions.jsonl",
-        ]
+        names = [self.helper.routing_log, f"{agent}-smart-routing-decisions.jsonl"]
         self.boundaries = {
             home / ".ucode" / name: (home / ".ucode" / name).read_bytes()
             if (home / ".ucode" / name).exists()
@@ -153,7 +227,7 @@ class SessionEvidence:
         for path in sorted(set(self.directory.rglob("*.jsonl")) - self.existing):
             if "subagents" in path.parts:
                 continue
-            turn = completed_turn(self.agent, read_jsonl(path), task)
+            turn = self.helper._completed_turn(read_jsonl(path), task)
             if turn:
                 found.append(turn)
         assert len(found) <= 1, "Task matched multiple sessions"
@@ -176,42 +250,6 @@ class SessionEvidence:
         assert turn, "No completed native inference correlated to the exact prompt"
         route_log, children = self.new_logs()
         assert not children.strip(), "File task unexpectedly routed a subagent"
-        assert supported and all(model.startswith("system.ai.") for model in supported)
-        supported = {canonical_model(model) for model in supported}
-        if routed:
-            decisions = re.findall(self.route_pattern, route_log)
-            assert len(decisions) == 1, "Require one fresh successful router decision, not a banner"
-            expected = canonical_model(decisions[0])
-            assert expected in supported, (
-                f"Router selected a target absent from the live catalog: {expected}"
-            )
-            if self.agent == CLAUDE:
-                assert "[DONE] first prompt confirmed submitted" in route_log
-            elif self.agent == CODEX:
-                requests = re.findall(r"\[ROUTE\] request POST ([^ ]+): (\{.*\})", route_log)
-                assert len(requests) == 1, "Missing/duplicate live router request"
-                url, body = requests[0]
-                request = json.loads(body)
-                assert url.endswith("/ai-gateway/routing/v1/routes:select")
-                assert request["task"]["prompt"] == task.prompt
-                assert request["route_selector"]["router_name"]
-                options = request["route_options"]
-                assert all(option["harness"] == CODEX for option in options)
-                assert expected in {canonical_model(option["model"]) for option in options}
-            else:
-                raise ValueError(f"Unsupported agent: {self.agent!r}")
-        else:
-            assert not route_log.strip(), "Bypassed/disabled session emitted new routing activity"
-            assert expected is not None
-            expected = canonical_model(expected)
-            assert expected in supported
-        assert {canonical_model(model) for model in turn.models} == {expected}, (
-            f"Inference models {turn.models} do not match selected model {expected}"
+        return self.helper.assert_applied(
+            turn, task, route_log, supported, routed=routed, expected=expected
         )
-        return {
-            **asdict(turn),
-            "prompt": task.prompt,
-            "selected_model": expected,
-            "routing_log": route_log,
-            "routed": routed,
-        }

@@ -8,9 +8,13 @@ import pytest
 
 from tests.e2e_cuj.helpers.constants import CLAUDE, CODEX
 from tests.e2e_cuj.helpers.evidence import (
+    BaseCujHelper,
+    ClaudeCujHelper,
+    CodexCujHelper,
     SessionEvidence,
     canonical_model,
     completed_turn,
+    get_cuj_helper,
 )
 from tests.integration.utils.evidence import FileTask, read_jsonl
 
@@ -64,6 +68,21 @@ def test_cuj_evidence_rejects_unknown_agents(tmp_path, agent):
         completed_turn(agent, [], task)
     with pytest.raises(ValueError, match="Unsupported agent"):
         SessionEvidence(tmp_path, agent)
+    with pytest.raises(ValueError, match="Unsupported agent"):
+        get_cuj_helper(agent)
+
+
+@pytest.mark.parametrize("agent, helper", [(CLAUDE, ClaudeCujHelper), (CODEX, CodexCujHelper)])
+def test_cuj_evidence_dispatches_to_agent_helper(tmp_path, agent, helper):
+    task = SimpleNamespace(prompt="prompt", value="answer")
+    native = records(agent, task, "model")
+    assert issubclass(helper, BaseCujHelper)
+    assert get_cuj_helper(agent) is helper
+    assert completed_turn(agent, native, task) == helper._completed_turn(native, task)
+    boundary = SessionEvidence(tmp_path, agent)
+    assert boundary.helper is helper
+    assert boundary.directory == tmp_path / helper.session_directory
+    assert tmp_path / ".ucode" / helper.routing_log in boundary.boundaries
 
 
 def log(agent, task, model):
@@ -111,6 +130,7 @@ def test_cuj_evidence_completed_native_turn_and_model(tmp_path, agent, routed):
         "incomplete",
         "child",
         "duplicate",
+        "missing_submission_link",
     ],
 )
 def test_cuj_evidence_rejects_false_positives(tmp_path, agent, failure):
@@ -145,6 +165,12 @@ def test_cuj_evidence_rejects_false_positives(tmp_path, agent, failure):
             if failure == "banner"
             else log(agent, task, model)
         )
+        if failure == "missing_submission_link":
+            text = "\n".join(
+                line
+                for line in text.splitlines()
+                if "[DONE]" not in line and "[ROUTE] request POST" not in line
+            )
         path.write_text(text * (2 if failure == "duplicate" else 1))
     with pytest.raises(AssertionError):
         boundary.assert_applied(
