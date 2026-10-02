@@ -265,9 +265,15 @@ def managed_process(command, *, interrupt=False, **kwargs):
 def exact_npm_version(value: str) -> str:
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", value):
         raise argparse.ArgumentTypeError(
-            "Use an exact version, for example 2.1.268; not latest/^/~."
+            "Use an exact version, for example 0.154.0; not latest/^/~."
         )
     return value
+
+
+def claude_npm_version(value: str) -> str:
+    if value == "latest":
+        return value
+    return exact_npm_version(value)
 
 
 def arguments(
@@ -285,7 +291,9 @@ def arguments(
         "--ug-wheel", type=Path, help="Previously built wheel to reproduce a release."
     )
     parser.add_argument("--entry-point", choices=["ug", "ucode"], default="ug")
-    parser.add_argument("--claude-version", type=exact_npm_version)
+    parser.add_argument(
+        "--claude-version", type=claude_npm_version, help="Exact version or latest."
+    )
     parser.add_argument("--codex-version", type=exact_npm_version)
     parser.add_argument("--opencode-version", type=exact_npm_version)
     parser.add_argument("--claude-model", default=environment.get("UG_INTEGRATION_CLAUDE_MODEL"))
@@ -792,7 +800,11 @@ def main() -> int:
         for agent in agents:
             agent_command = npm_executable(agent_bin, agent)
             version = run([agent_command, "--version"], env=runtime_env, timeout=30)
-            expected = getattr(args, f"{agent}_version")
+            requested = getattr(args, f"{agent}_version")
+            installed = report["npm_packages"][AGENT_PACKAGES[agent]]["version"]
+            if requested != "latest" and installed != requested:
+                raise RuntimeError(f"Expected npm to install {agent} {requested}, got {installed}")
+            expected = installed
             if not re.search(rf"(?<![\w.]){re.escape(expected)}(?![\w.])", version):
                 raise RuntimeError(f"Expected {agent} {expected}, got {version!r}")
             report["agents"][agent] = version

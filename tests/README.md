@@ -1,7 +1,7 @@
 # Test suites and user journeys
 
-Integration runs a freshly installed ug wheel/release, exact real Claude/Codex
-(and optionally OpenCode) versions, and the existing real e2e workspace. It has no application imports,
+Integration runs a freshly installed ug wheel/release, the current real Claude Code,
+exact real Codex (and optionally OpenCode) versions, and the existing real e2e workspace. It has no application imports,
 mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 
 | Category | Location | What it proves |
@@ -210,7 +210,7 @@ version-floor journeys are outside this Windows subset. It uploads separate evid
 non-blocking while initial native Windows issues are diagnosed.
 An advisory Windows headless job reuses the Claude prompt-argument journey:
 public configure, real launch, and a completed gateway-backed file task.
-It installs the shared CI Claude version and uploads independent evidence. Codex's Windows CI
+It installs the latest Claude Code and uploads independent evidence. Codex's Windows CI
 journey is deferred while its npm proxy access is blocked. Native TUI
 and managed-settings coverage remain deferred; a green installation check alone
 does not establish a successful live task.

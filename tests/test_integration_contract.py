@@ -54,12 +54,16 @@ def test_managed_integration_ci_is_blocking():
     ) in gate
 
 
-def test_windows_integration_ci_uses_shared_claude_version():
+def test_integration_ci_uses_latest_claude_version():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     contents = workflow.read_text()
 
-    assert "  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.280' }}" in contents
+    assert "  CLAUDE_VERSION: ${{ inputs.claude_version || 'latest' }}" in contents
     assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
+
+    ci_workflow = (Path(__file__).parent.parent / ".github/workflows/ci.yml").read_text()
+    assert "package: '@anthropic-ai/claude-code'" in ci_workflow
+    assert "package: '@anthropic-ai/claude-code@" not in ci_workflow
 
 
 @pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])

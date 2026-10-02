@@ -79,7 +79,7 @@ export UCODE_TEST_WORKSPACE=https://your-existing-e2e-workspace
 
 python3.12 scripts/run_integration.py \
   --ug-version checkout \
-  --claude-version 2.1.268 \
+  --claude-version latest \
   --codex-version 0.154.0 \
   --profile YOUR_PROFILE
 ```
@@ -94,8 +94,10 @@ legacy `ucode` distribution. Use
 for an npm mirror if public npm is unavailable. Older releases that only
 provide the `ucode` command require `--entry-point ucode`.
 
-Select one agent by providing only its version. Exact agent versions are
-required; floating `latest`, caret, and tilde versions are rejected. Hosted provider CUJs use the workspace's configuration and need no model input. Cases that
+Select one agent by providing only its version. Claude Code defaults to the npm
+`latest` release in CI and may also be given an exact version for reproduction.
+Codex and OpenCode require exact versions; caret and tilde versions are rejected.
+Hosted provider CUJs use the workspace's configuration and need no model input. Cases that
 exercise explicit model arguments use a real `system.ai` model already discovered
 by `ug configure`, recorded in that case's `model.json`. Optional `--claude-model`
 `--codex-model` and `--opencode-model` overrides reproduce a particular model-related failure.
@@ -104,7 +106,7 @@ OpenCode is opt-in: pass `--opencode-version` (for example `1.18.31`) to install
 ```bash
 # Constrain the suspected dependency while keeping the real CLI and gateway.
 python3.12 scripts/run_integration.py \
-  --ug-version checkout --claude-version 2.1.268 --codex-version 0.154.0 \
+  --ug-version checkout --claude-version latest --codex-version 0.154.0 \
   --claude-model YOUR_CLAUDE_MODEL --codex-model YOUR_CODEX_MODEL \
   --opencode-version 1.18.31 --opencode-model YOUR_OPENCODE_MODEL \
   --profile YOUR_PROFILE --dependency tomlkit==0.14.0 \
@@ -119,7 +121,7 @@ For package-only validation without credentials:
 
 ```bash
 python3.12 scripts/run_integration.py \
-  --ug-version checkout --claude-version 2.1.268 --installation-only
+  --ug-version checkout --claude-version latest --installation-only
 ```
 
 This explicitly selects only the installation checks; it does not claim a live
@@ -135,7 +137,7 @@ just as for a POSIX live run. This is not TUI coverage. Windows live PTY/TUI
 journeys, managed settings, and signal behavior remain outside this subset.
 
 ```powershell
-python scripts/run_integration.py --ug-version checkout --claude-version 2.1.268 --headless-only
+python scripts/run_integration.py --ug-version checkout --claude-version latest --headless-only
 ```
 
 Use `--codex-version 0.154.0` instead of or alongside the Claude version to test
@@ -151,7 +153,7 @@ The Claude journey also opens `/model` after a plain `ug claude` launch, require
 its native gateway cache to contain `system.ai` models, and checks that a discovered
 model appears in the picker. No managed config, provider, model location, discovery
 flag, or inherited discovery environment variable enables this path. This runs with
-the pinned Claude version (currently 2.1.280 in CI).
+the latest Claude Code release available from npm at install time.
 
 ## Test layout and format
 
@@ -375,7 +377,7 @@ enables both. Supply the second workspace and its bearer explicitly:
 ```bash
 # DATABRICKS_SECOND_BEARER must already contain a token for SECOND_WORKSPACE_URL.
 python3.12 scripts/run_integration.py \
-  --ug-version checkout --claude-version 2.1.268 --codex-version 0.154.0 \
+  --ug-version checkout --claude-version latest --codex-version 0.154.0 \
   --workspace FIRST_WORKSPACE_URL --profile FIRST_WORKSPACE_PROFILE \
   --second-workspace SECOND_WORKSPACE_URL -- -m workspace_switch
 ```
@@ -444,8 +446,7 @@ recorded in `versions.json`; the organization can update the image behind the
 runner label. The two POSIX version-floor journeys are outside this Windows subset.
 It installs only Claude as the runner prerequisite; the five selected checks
 exercise ug and its local helpers, not either agent's inference path.
-An advisory **Windows headless journey · Claude** job installs the temporary Windows-pinned
-Claude version (currently 2.1.278)
+An advisory **Windows headless journey · Claude** job installs the latest Claude Code
 on a native Windows runner using the same authenticated package proxies,
 reuses the existing e2e workspace/bearer,
 and requires the unpredictable file value in the agent's structured final answer.
@@ -586,7 +587,7 @@ secrets, and select the tests by name:
 
 ```bash
 python3.12 scripts/run_integration.py \
-  --ug-version checkout --claude-version 2.1.268 --codex-version 0.154.0 \
+  --ug-version checkout --claude-version latest --codex-version 0.154.0 \
   -- -k 'test_managed_claude_mps_defaults_accompany_discovery or test_managed_claude_parent_schema_defaults_accompany_discovery'
 ```
 
@@ -622,7 +623,7 @@ checks always run. Set the ug/agent versions. From the CLI:
 ```bash
 gh workflow run integration.yml -R databricks/unity-gateway --ref YOUR_BRANCH \
   -f suite=full -f ug_version=checkout \
-  -f claude_version=2.1.268 -f codex_version=0.154.0
+  -f claude_version=latest -f codex_version=0.154.0
 gh run list -R databricks/unity-gateway --workflow integration.yml
 gh run watch RUN_ID -R databricks/unity-gateway --exit-status
 ```
@@ -725,7 +726,7 @@ docker run --rm --init \
   -v ug-integration-results:/results \
   ug-integration \
   --ug-version YOUR_RELEASE_VERSION \
-  --claude-version 2.1.268 --codex-version 0.154.0 \
+  --claude-version latest --codex-version 0.154.0 \
   --installation-only
 ```
 
@@ -785,7 +786,7 @@ DATABRICKS_BEARER=$(databricks auth token --host "$integration_workspace" \
 uv run --no-project --python 3.12 python scripts/run_integration.py \
   --python 3.12 --ug-version checkout --workspace "$integration_workspace" \
   --default-index "$integration_index" --npm-registry "$integration_registry" \
-  --claude-version 2.1.268 --codex-version 0.154.0 -- -m live
+  --claude-version latest --codex-version 0.154.0 -- -m live
 unset DATABRICKS_BEARER
 ```
 

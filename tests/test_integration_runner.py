@@ -82,7 +82,7 @@ def test_headless_only_is_mutually_exclusive_with_installation_only():
         runner.arguments(
             [
                 "--claude-version",
-                "2.1.268",
+                "latest",
                 "--installation-only",
                 "--headless-only",
             ],
@@ -101,7 +101,7 @@ def test_headless_only_is_mutually_exclusive_with_installation_only():
 def test_headless_only_requires_live_workspace_and_auth(arguments, environment):
     with pytest.raises(SystemExit):
         runner.arguments(
-            ["--claude-version", "2.1.268", *arguments],
+            ["--claude-version", "latest", *arguments],
             platform_name="nt",
             environment=environment,
         )
@@ -111,7 +111,7 @@ def test_headless_only_is_allowed_on_windows_with_live_workspace_and_auth():
     args = runner.arguments(
         [
             "--claude-version",
-            "2.1.268",
+            "latest",
             "--headless-only",
             "--workspace",
             "https://example.test",
@@ -122,6 +122,7 @@ def test_headless_only_is_allowed_on_windows_with_live_workspace_and_auth():
 
     assert args.headless_only is True
     assert args.installation_only is False
+    assert args.claude_version == "latest"
     assert args.pytest_args == ["-m", "live"]
 
 
