@@ -21,17 +21,6 @@ def claude_discovery_model_id(model_id: str) -> str:
     return f"anthropic-aigw-{checksum}-{model_id}"
 
 
-def claude_model_service_id(model_id: str) -> str:
-    """Recover service identity only from the gateway's checksum-valid discovery alias."""
-    alias = re.fullmatch(r"anthropic-aigw-([0-9a-f]{8})-(.+)", model_id)
-    if alias is None:
-        return model_id
-    checksum, original = alias.groups()
-    if hashlib.sha256(original.encode("utf-8")).hexdigest()[:8] != checksum:
-        return model_id
-    return original
-
-
 def claude_model_in_picker(screen: str, model_id: str, display_name: str | None) -> bool:
     """Return whether a Claude model appears in a numbered picker row.
 

@@ -6,7 +6,6 @@ from tests.integration.utils.model_discovery import (
     assert_picker_inventory,
     claude_discovery_model_id,
     claude_model_in_picker,
-    claude_model_service_id,
     claude_system_model_ids,
     codex_model_in_picker,
 )
@@ -145,34 +144,6 @@ def test_claude_system_model_ids_rejects_invalid_or_out_of_scope_ids(model_id):
 def test_claude_system_model_ids_rejects_empty_missing_and_duplicate_ids(models):
     with pytest.raises(AssertionError):
         claude_system_model_ids(models)
-
-
-@pytest.mark.parametrize(
-    ("wire_id", "expected"),
-    [
-        ("catalog.models.kimi", "catalog.models.kimi"),
-        ("anthropic-aigw-69e2a9a0-catalog.models.kimi", "catalog.models.kimi"),
-        ("catalog.models.claude_sonnet", "catalog.models.claude_sonnet"),
-        (
-            "anthropic-aigw-00000000-catalog.models.kimi",
-            "anthropic-aigw-00000000-catalog.models.kimi",
-        ),
-        (
-            "anthropic-aigw-69e2a9a0-catalog.models.kimi_v2",
-            "anthropic-aigw-69e2a9a0-catalog.models.kimi_v2",
-        ),
-        (
-            "anthropic-aigw-69e2a9a0-catalog.other_models.kimi",
-            "anthropic-aigw-69e2a9a0-catalog.other_models.kimi",
-        ),
-        (
-            "anthropic-aigw-69E2A9A0-catalog.models.kimi",
-            "anthropic-aigw-69E2A9A0-catalog.models.kimi",
-        ),
-    ],
-)
-def test_claude_service_identity_requires_exact_gateway_alias_checksum(wire_id, expected):
-    assert claude_model_service_id(wire_id) == expected
 
 
 def test_claude_discovery_requires_exact_gateway_wire_ids():
