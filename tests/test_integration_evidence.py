@@ -19,14 +19,19 @@ class _Session:
         pass
 
 
-def _write_answer(home, agent, *, child, value):
+def _write_answer(home, agent, *, child, value, handback=False):
     if agent == "claude":
         directory = home / ".claude/projects/project"
         if child:
             directory /= "subagents"
+        content = (
+            [{"type": "tool_use", "name": "SubagentHandback", "input": {"message": value}}]
+            if handback
+            else [{"type": "text", "text": value}]
+        )
         record = {
             "type": "assistant",
-            "message": {"role": "assistant", "content": [{"type": "text", "text": value}]},
+            "message": {"role": "assistant", "content": content},
         }
     else:
         directory = home / ".codex/sessions"
@@ -89,3 +94,34 @@ def test_tagged_calculation_requires_the_native_child_answer(tmp_path, agent):
     assert task.marker in task.prompt
     assert f'task name "{task.marker}"' in task.prompt
     assert "1+1" in task.prompt
+
+
+def test_claude_subagent_handback_is_the_native_child_answer(tmp_path):
+    session = _Session(tmp_path)
+    task = SubagentCalculation("1+1", "2")
+    _write_answer(tmp_path, "claude", child=True, value=task.value, handback=True)
+
+    assert task.completed(session, "claude", child=True)
+
+
+def test_claude_ordinary_tool_input_is_not_an_answer(tmp_path):
+    session = _Session(tmp_path)
+    task = SubagentCalculation("1+1", "2")
+    directory = tmp_path / ".claude/projects/project/subagents"
+    directory.mkdir(parents=True)
+    record = {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "Agent",
+                    "input": {"prompt": task.value},
+                }
+            ],
+        },
+    }
+    (directory / "child.jsonl").write_text(json.dumps(record) + "\n")
+
+    assert not task.completed(session, "claude", child=True)

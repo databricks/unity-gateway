@@ -49,11 +49,16 @@ def assistant_answers(agent: str, records: list[dict]) -> list[str]:
         if agent == "claude" and record.get("type") == "assistant":
             message = record.get("message", {})
             if message.get("role") == "assistant":
-                answers.extend(
-                    part["text"]
-                    for part in message.get("content", [])
-                    if part.get("type") == "text" and isinstance(part.get("text"), str)
-                )
+                for part in message.get("content", []):
+                    if part.get("type") == "text" and isinstance(part.get("text"), str):
+                        answers.append(part["text"])
+                    # Claude Code 2.1.287+ requires children to deliver their result through
+                    # this dedicated tool. Its message is the child's structured final answer,
+                    # unlike ordinary tool inputs that may merely echo a prompt.
+                    if part.get("type") == "tool_use" and part.get("name") == "SubagentHandback":
+                        handback = part.get("input", {}).get("message")
+                        if isinstance(handback, str):
+                            answers.append(handback)
         if agent == "codex" and record.get("type") == "event_msg":
             payload = record.get("payload", {})
             if payload.get("type") == "task_complete" and payload.get("last_agent_message"):
@@ -104,7 +109,7 @@ class FileTask:
         session.record("agent-sessions.json", sessions)
         assert self.completed(session, agent, child=child), (
             f"No {'child' if child else 'parent'} assistant answer contained the file's value; "
-            "echoed prompts and tool results do not count as completed answers."
+            "echoed prompts and ordinary tool results do not count as completed answers."
         )
 
     def assert_headless_answer(self, agent: str, result) -> None:
@@ -178,7 +183,7 @@ class SubagentCalculation:
         session.record(f"agent-sessions-{self.marker}.json", sessions)
         assert self.completed(session, agent, child=child), (
             f"No {'child' if child else 'parent'} assistant answer contained {self.value!r}; "
-            "echoed prompts and tool inputs do not count as completed answers."
+            "echoed prompts and ordinary tool inputs do not count as completed answers."
         )
 
 
