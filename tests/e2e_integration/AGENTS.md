@@ -7,6 +7,24 @@ This suite contains full journeys against real workspaces and installed agents,
 without stubbed configuration. The existing `tests/integration/` suite remains
 separate, including its `managed_fixture` cases. No existing tests have moved.
 
+## Primary requirement: one Databricks workspace per test
+
+Every test invocation must have its own exclusively assigned Databricks workspace.
+This means a distinct workspace identity, not just a different local directory,
+schema, config name, or session. Claude and Codex tests get separate workspaces;
+parallel workers, developers, and CI runs must not share an assigned workspace.
+
+Use function-scoped allocation and hold ownership through setup, all phases of
+the journey, and verified cleanup. Each test sets up its required real configuration
+in its own workspace and must run independently, without relying on another test's
+state or execution order. A pooled workspace may be reassigned only after cleanup
+is verified; quarantine it on cleanup failure and report recovery information.
+
+A lock serializing tests against one shared workspace does not meet this requirement.
+Do not fall back to a shared workspace when allocation is unavailable: fail before
+configuration or inference. Record each test's workspace identity in its artifacts,
+without credentials. Implement allocation before adding executable journeys.
+
 The current suite is scaffolding only: `test_cuj_smart_routing.py` specifies future
 journeys and collects no tests. Do not add passing or skipped placeholders, or
 convert empty collection into a successful E2E run. Process, terminal, evidence,
@@ -32,13 +50,9 @@ workspace-lifecycle, and agent-selection helpers are not implemented yet.
   must drive the real TUI and first-prompt path.
 - Use unique homes, projects, prompts, and artifacts; bounded process lifetimes;
   and cleanup on failure. Isolate machine-wide settings on a disposable runner.
-  Coordinate workspace-wide mutations across machines and verify restoration;
-  never overwrite unexpected admin edits or steal a live lock.
-- For singleton workspace policy, hold one cross-machine lock through setup,
-  tasks, and verified restoration. Retain the lock and recovery guidance if
-  restoration fails. Unrelated clients do not honor the lock, so use a workspace
-  reserved for publication tests.
-- Poll observable conditions with deadlines; retry lock contention and publication
+  Verify workspace ownership before mutation and cleanup; never overwrite
+  unexpected admin edits or release an allocation with unverified cleanup.
+- Poll observable conditions with deadlines; retry allocation waits and publication
   visibility only. Exclude stale records with per-launch evidence boundaries.
   Smart-routing assertions must not require a particular winning model. State
   the limits of native model evidence rather than claiming server-side verification.
@@ -59,20 +73,13 @@ Expect pytest exit code 5 until executable journeys are added. Always use the
 suite's own pytest configuration and fixture boundary; never inherit the unit
 suite's autouse mocks. Ordinary `uv run pytest` excludes this directory.
 
-Once journeys are implemented, run them through the existing installer:
-
-```bash
-python scripts/run_integration.py --suite e2e-integration \
-  --ug-version checkout --claude-version 2.1.280 --codex-version 0.154.0 \
-  --workspace https://dbc-1a9622fc-2e91.cloud.databricks.com \
-  --profile YOUR_PROFILE -- -k test_cuj_smart_routing
-```
-
-Use a clean disposable POSIX runner, exact versions, and explicit authentication
-via a selected profile, `DATABRICKS_BEARER`, or the runner's supported service-principal
-credentials. Never select a developer profile automatically. The workspace above
-is the planned fixture, not an implicit default. `--installation-only` and
-`--headless-only` belong to the existing `integration` suite.
+Once allocation and journeys are implemented, run them through
+`scripts/run_integration.py --suite e2e-integration` on a clean disposable POSIX
+runner with exact versions and explicit authentication. Never select a developer
+profile automatically. The runner's current single `--workspace` input is not a
+per-test allocator and must not be used to share a workspace across this suite.
+Wire per-test allocation and matching credentials before enabling live execution.
+`--installation-only` and `--headless-only` belong to the existing `integration` suite.
 
 The runner records the selected suite, versions, dependencies, JUnit results,
 and artifacts. Missing prerequisites and empty selections fail honestly. Add no

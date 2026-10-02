@@ -2,7 +2,10 @@
 
 Planned tests: test_cuj_smart_routing_claude and test_cuj_smart_routing_codex.
 
-Scenario: both agents use the workspace's published CodingAgentConfig with
+Scenario: each test gets its own exclusively assigned Databricks workspace,
+including across concurrent runs. Each publishes the same both-agent fixture
+there; the Claude and Codex tests never share a workspace. Both agents use that
+workspace's published CodingAgentConfig with
 smart routing enabled over supported system.ai models. No MPS or active budget
 tier participates, and tracing is disabled. Configure using the public ug CLI,
 launch interactively without an override, and submit a unique file task through
@@ -29,10 +32,10 @@ Claude evidence uses assistant response model metadata. Codex evidence links
 the completed rollout turn to its model context; this establishes client
 execution, not independent downstream provider identity.
 
-Lifecycle requirements: isolate machine-wide settings on a disposable runner,
-coordinate all participating publishers through one cross-machine workspace
-lock, and restore and verify the original policy even on failure. Never retry a
-failed task, steal a live lock, or overwrite unexpected concurrent admin edits.
-Leave actionable recovery evidence if restoration fails. These mechanisms will
-be implemented with the live tests, not as part of this scaffold.
+Lifecycle requirements: allocate the workspace per test, isolate machine-wide
+settings on a disposable runner, and verify cleanup even on failure. Keep the
+workspace exclusively assigned through all phases and cleanup; quarantine it if
+cleanup fails. Never retry a failed task, fall back to a shared workspace, or
+overwrite unexpected admin edits. Leave actionable recovery evidence on failure.
+These mechanisms will be implemented with the live tests, not this scaffold.
 """
