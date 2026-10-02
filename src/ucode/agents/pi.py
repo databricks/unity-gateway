@@ -42,6 +42,7 @@ from ucode.config_io import (
     read_json_safe,
     write_json_file,
 )
+from ucode.constants import AI_GATEWAY_REQUEST_TAGS_HEADER
 from ucode.databricks import (
     ANTHROPIC_FAMILIES,
     build_auth_token_argv,
@@ -54,6 +55,7 @@ from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions
+from .request_tags import request_tags_header_value
 
 PI_UCODE_HOME = APP_DIR / "pi-home"
 PI_CONFIG_DIR = PI_UCODE_HOME / ".pi" / "agent"
@@ -119,6 +121,9 @@ def render_overlay(
     # Pi expands header values that match an env var name. Our UA contains
     # `/` and a space so it can never collide — safe to pass as a literal.
     ua_headers = {"User-Agent": f"ucode/{ug_version()} pi/{agent_version('pi')}"}
+    request_tags = request_tags_header_value()
+    if request_tags:
+        ua_headers[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
 
     claude_ids = sorted(set(claude_models.values()))
     if claude_ids:

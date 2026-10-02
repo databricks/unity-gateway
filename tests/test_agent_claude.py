@@ -237,6 +237,22 @@ class TestRenderOverlay:
         overlay, _ = claude.render_overlay(WS, "s4")
         assert "x-databricks-use-coding-agent-mode" in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
+    def test_request_tags_header_added_when_env_set(self, monkeypatch):
+        # A JSON value (commas + colons) must survive intact: ANTHROPIC_CUSTOM_HEADERS
+        # is newline-delimited and split on the first colon, so the value is preserved.
+        tags = '{"team":"infra","env":"prod"}'
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", tags)
+        overlay, _ = claude.render_overlay(WS, "s4")
+        headers = overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert f"Databricks-Ai-Gateway-Request-Tags: {tags}" in headers.splitlines()
+
+    def test_request_tags_header_absent_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
+        overlay, _ = claude.render_overlay(WS, "s4")
+        assert (
+            "Databricks-Ai-Gateway-Request-Tags" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        )
+
     def test_does_not_disable_experimental_betas(self):
         # Would suppress the beta header 1h prompt caching needs.
         overlay, _ = claude.render_overlay(WS, "s4")
