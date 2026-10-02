@@ -12,7 +12,7 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Full E2E CUJs (scaffold) | `e2e_integration/test_cuj_*.py` | Reserved for entirely unstubbed journeys; no executable cases yet |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
-The independent [full E2E CUJ suite](e2e_integration/README.md) uses `test_cuj_`
+The independent [full E2E CUJ suite](e2e_integration/AGENTS.md) uses `test_cuj_`
 module/function names and its own `helpers/`. Select it with
 `scripts/run_integration.py --suite e2e-integration`; the existing runner default
 is unchanged. Its smart-routing module currently documents acceptance criteria

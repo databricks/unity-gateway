@@ -7,7 +7,7 @@ tests. Keep work scoped to the behavior requested by the user.
 
 - `e2e_integration/` is the independent full E2E CUJ suite. Name all journey
   modules and functions `test_cuj_*`; keep journeys at that suite's root and
-  independently written shared code in `helpers/`. Follow its README. No
+  independently written shared code in `helpers/`. Follow its `AGENTS.md`. No
   stubbing exception applies there, and do not import application internals or
   helpers from the existing E2E/integration suites. Run it with
   `scripts/run_integration.py --suite e2e-integration`. The current scaffold

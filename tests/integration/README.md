@@ -1,7 +1,7 @@
 # Integration tests
 
 For new entirely unstubbed CUJs, see the separate
-[`tests/e2e_integration/` scaffold](../e2e_integration/README.md), selected with
+[`tests/e2e_integration/` scaffold](../e2e_integration/AGENTS.md), selected with
 `--suite e2e-integration`. It has no executable journeys yet. This existing suite
 retains its current tests, including `managed_fixture` cases, and remains the
 runner's default (`--suite integration`). No existing coverage has moved.
