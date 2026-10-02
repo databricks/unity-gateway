@@ -1,49 +1,141 @@
-"""Future smart-routing CUJ specification; no executable tests yet.
+"""One cross-agent CUJ, one dedicated workspace, six fresh interactive sessions."""
 
-Planned tests: test_cuj_smart_routing_claude and test_cuj_smart_routing_codex.
-
-Scenario: each test gets its own exclusively assigned Databricks workspace,
-including across concurrent runs. Each publishes the same both-agent fixture
-there; the Claude and Codex tests never share a workspace. Both agents use that
-workspace's published CodingAgentConfig with
-smart routing enabled over supported system.ai models. No MPS or active budget
-tier participates, and tracing is disabled. Configure using the public ug CLI,
-launch interactively without an override, and submit a unique file task through
-the real first-prompt path. Repeat in a fresh session with an explicit supported
-non-default model. Republish with BOTH smart_routing.enabled flags false,
-reconfigure the existing isolated home, and launch a fresh default session.
-
-Published fixture: Claude offers system.ai.claude-opus-4-8,
-system.ai.claude-sonnet-4-6 (default), and system.ai.claude-haiku-4-5.
-Codex offers system.ai.gpt-5-6-sol (default) and system.ai.gpt-5-6-luna.
-The workspace default agent is CODING_AGENT_CLAUDE_CODE, with spec_version 1.
-
-Expected: correlate a successful live routing decision to the submitted prompt
-and session, match the selected model to the completed native inference turn,
-and require the final assistant answer to contain an unpredictable file value
-absent from the prompt. The selected model must be a supported system.ai target
-under the live router contract; do not require a particular winner or different
-choices for different prompts. A banner alone never proves applied routing.
-Explicit models must be honored without new routing decisions. After disabling
-routing, tasks must complete on ordinary configured defaults without new
-decisions. Snapshot evidence per session to exclude stale routing records.
-
-Claude evidence uses assistant response model metadata. Codex evidence links
-the completed rollout turn to its model context; this establishes client
-execution, not independent downstream provider identity.
-
-Lifecycle requirements: allocate the workspace per test, isolate machine-wide
-settings on a disposable runner, and verify cleanup even on failure. Keep the
-workspace exclusively assigned through all phases and cleanup; quarantine it if
-cleanup fails. Never retry a failed task, fall back to a shared workspace, or
-overwrite unexpected admin edits. Leave actionable recovery evidence on failure.
-These mechanisms will be implemented with the live tests, not this scaffold.
-"""
-
+import pytest
 from helpers.base import BaseCujTest
+from helpers.evidence import FileTask, SessionEvidence
+from helpers.terminal import Terminal
 
 
+@pytest.mark.live
+@pytest.mark.tui
+@pytest.mark.claude
+@pytest.mark.codex
 class TestCujSmartRouting(BaseCujTest):
-    """Workspace declaration for this CUJ; no executable journey methods yet."""
-
     WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
+
+    def test_cuj_smart_routing(self, cuj):
+        """Scenario: route both agents' real first prompts, override, then disable routing.
+
+        Expected: each successful live decision is tied to the sole submitted
+        prompt and the completed native turn's model; a banner is insufficient.
+        Explicit supported non-default models bypass routing. Republish BOTH
+        flags false, reconfigure the same home, and require ordinary defaults
+        without fresh routing activity. Each final answer includes an unpredictable
+        file value absent from its prompt, and each TUI exits normally.
+
+        No fixed winner/different-picks assertion. Claude uses response metadata;
+        Codex uses completed-turn model context (client execution evidence, not
+        independent gateway-side verification). Fixture teardown restores the
+        original workspace policy even when an assertion or process fails.
+        """
+        session, workspace = cuj
+        assert workspace.url == self.workspace_url
+        published = workspace.original
+        assert published["spec_version"] == 1
+        assert published["default_agent"] == "CODING_AGENT_CLAUDE_CODE"
+        entries = published["enabled_agents"]
+        assert len(entries) == 2
+        configs = {entry["agent"]: entry["config"] for entry in entries}
+        assert set(configs) == {"CODING_AGENT_CLAUDE_CODE", "CODING_AGENT_CODEX"}
+        agents = {
+            "claude": configs["CODING_AGENT_CLAUDE_CODE"],
+            "codex": configs["CODING_AGENT_CODEX"],
+        }
+        supported, defaults, overrides = {}, {}, {}
+        for agent, config in agents.items():
+            assert config["smart_routing"]["enabled"] is True
+            assert config.get("tracing", {}).get("enabled", False) is False
+            assert not config.get("smart_defaults") and not config.get("spend_tiers")
+            assert set(config["models"]) == {"model_services"}, (
+                "No MPS or schema source in this CUJ"
+            )
+            offered = config["models"]["model_services"]
+            assert len(set(offered)) >= 2 and all(
+                model.startswith("system.ai.") for model in offered
+            )
+            supported[agent] = workspace.model_ids(agent)
+            assert set(offered) <= supported[agent], (
+                "Published targets are absent from the live catalog"
+            )
+            defaults[agent] = config["default_models"]["default_model"]
+            assert defaults[agent] in offered
+            overrides[agent] = next(model for model in offered if model != defaults[agent])
+        session.record(
+            "scenario",
+            {
+                "workspace": self.workspace_url,
+                "defaults": defaults,
+                "overrides": overrides,
+                "live_supported": {a: sorted(m) for a, m in supported.items()},
+            },
+        )
+
+        # Configure once through the public CLI. Every launch is a fresh native
+        # session, but reuse the home to catch stale settings after reconfigure.
+        session.command(
+            "configure-enabled",
+            ["configure", "--workspace", self.workspace_url, "--disable-databricks-ai-tools"],
+        )
+        session_ids = set()
+        for agent in ("claude", "codex"):
+            workspace.assert_unchanged()
+            task = FileTask.create(session.project)
+            evidence = SessionEvidence(session.home, agent)
+            with Terminal(session, f"{agent}-routed", [agent], evidence=evidence) as tui:
+                tui.boot(agent)
+                tui.submit(task.prompt)
+                tui.task(evidence, task)
+                tui.exit_normally()
+            result = evidence.assert_applied(task, supported[agent], routed=True)
+            session.record(f"{agent}-routed-evidence", result)
+            assert (agent, result["session_id"]) not in session_ids
+            session_ids.add((agent, result["session_id"]))
+
+            # Explicit non-default model: new session, no router activity.
+            workspace.assert_unchanged()
+            task = FileTask.create(session.project)
+            evidence = SessionEvidence(session.home, agent)
+            with Terminal(
+                session,
+                f"{agent}-explicit",
+                [agent, "--model", overrides[agent]],
+                evidence=evidence,
+            ) as tui:
+                tui.boot(agent)
+                tui.submit(task.prompt)
+                tui.task(evidence, task)
+                tui.exit_normally()
+            result = evidence.assert_applied(
+                task, supported[agent], routed=False, expected=overrides[agent]
+            )
+            session.record(f"{agent}-explicit-evidence", result)
+            assert (agent, result["session_id"]) not in session_ids
+            session_ids.add((agent, result["session_id"]))
+
+        # Publish BOTH flags together, verify visibility, and reconfigure this home.
+        workspace.disable_routing()
+        assert all(
+            entry["config"]["smart_routing"]["enabled"] is False
+            for entry in workspace.config()["enabled_agents"]
+        )
+        session.command(
+            "configure-disabled",
+            ["configure", "--workspace", self.workspace_url, "--disable-databricks-ai-tools"],
+        )
+        for agent in ("claude", "codex"):
+            workspace.assert_unchanged()
+            task = FileTask.create(session.project)
+            evidence = SessionEvidence(session.home, agent)
+            with Terminal(session, f"{agent}-disabled", [agent], evidence=evidence) as tui:
+                tui.boot(agent)
+                tui.submit(task.prompt)
+                tui.task(evidence, task)
+                tui.exit_normally()
+            result = evidence.assert_applied(
+                task, supported[agent], routed=False, expected=defaults[agent]
+            )
+            session.record(f"{agent}-disabled-evidence", result)
+            assert (agent, result["session_id"]) not in session_ids
+            session_ids.add((agent, result["session_id"]))
+        workspace.assert_unchanged()
+        assert len(session_ids) == 6

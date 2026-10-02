@@ -7,8 +7,8 @@ from urllib.parse import urlsplit
 class BaseCujTest:
     """Declare WORKSPACE_URL on each concrete CUJ class; use self.workspace_url.
 
-    This validates configuration only. Workspace provisioning, exclusive ownership
-    across runs, and cleanup must be supplied before implementing live journeys.
+    This validates configuration only. The function-scoped cuj fixture separately
+    reserves the dedicated workspace and verifies cleanup across runs.
     """
 
     WORKSPACE_URL: ClassVar[str] = ""

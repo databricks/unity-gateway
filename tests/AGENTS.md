@@ -12,8 +12,9 @@ tests. Keep work scoped to the behavior requested by the user.
   across concurrent runs; per-test workspace allocation is required. No
   stubbing exception applies there, and do not import application internals or
   helpers from the existing E2E/integration suites. Run it with
-  `scripts/run_integration.py --suite e2e-integration`. The current scaffold
-  contains no executable journeys; do not add passing or skipped placeholders.
+  `scripts/run_integration.py --suite e2e-integration`. Smart routing is one
+  cross-agent CUJ with a dedicated, exclusively reserved workspace. Do not add
+  passing or skipped placeholders.
 - Existing unit/component tests may use focused mocks. Do not move their global
   fixtures into integration or rewrite them all as part of a narrow fix.
 - `integration/` tests installed ug with real agents and the real

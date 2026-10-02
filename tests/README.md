@@ -9,14 +9,15 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Unit/component | Existing `test_*.py` files | Individual behavior; dependencies may be mocked |
 | Existing e2e | `test_e2e*.py` | Real workspace behavior with some patched setup/internal calls |
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
-| Full E2E CUJs (scaffold) | `e2e_integration/tests/test_cuj_*.py` | Reserved for entirely unstubbed journeys; no executable cases yet |
+| Full E2E CUJs | `e2e_integration/tests/test_cuj_*.py` | Unstubbed cross-agent smart routing, explicit bypass, and disabled-routing defaults in one exclusively reserved workspace |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
 The independent [full E2E CUJ suite](e2e_integration/AGENTS.md) uses `test_cuj_`
 module/function names and its own `helpers/`. Select it with
 `scripts/run_integration.py --suite e2e-integration`; the existing runner default
-is unchanged. Its smart-routing module currently documents acceptance criteria
-only, and empty collection is not a passing E2E result. Existing integration
+is unchanged. Its smart-routing CUJ runs six fresh interactive sessions and
+restores the workspace publication; see its AGENTS.md for prerequisites and
+the limits of client-side model evidence. Empty collection is not a passing E2E result. Existing integration
 cases, including `managed_fixture` cases, remain in their current suite.
 
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
@@ -287,7 +288,7 @@ These are unit/component checks; they do not establish live sudo password-prompt
 | Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
-| Claude/Codex interactive smart routing | First-prompt routing is covered by the `managed_fixture` banner journeys. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing on -> off -> on within one Claude/Codex session. Plugin-refresh survival, native daemon/background dispatch, interactive explicit-model bypass, and dedicated routing CI shards remain deferred. |
+| Claude/Codex interactive smart routing | Independent `e2e_integration/tests/test_cuj_smart_routing.py` asserts real first-prompt routing applied to a completed native turn, explicit-model bypass, and defaults after republishing both routing flags off. Six sessions share one CUJ's exclusively assigned workspace. Full live validation needs a clean runner; no new CI lane is enabled. Existing `managed_fixture` banner and live subagent-toggle cases remain separate. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
 | Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests |
 | Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, local helpers, and the Claude headless gateway journey are advisory; Codex Windows CI is blocked on npm proxy access. Live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |

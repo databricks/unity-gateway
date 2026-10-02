@@ -78,12 +78,8 @@ def test_cuj_e2e_collection_requires_its_own_fixture_boundary(tmp_path, isolated
         env=env,
     )
     if isolated:
-        # The documentation-only scaffold is deliberately an empty selection,
-        # not a successful live run. Update this when real journeys are added.
-        assert result.returncode == pytest.ExitCode.NO_TESTS_COLLECTED, (
-            result.stdout + result.stderr
-        )
-        assert "no tests collected" in result.stdout
+        assert result.returncode == pytest.ExitCode.OK, result.stdout + result.stderr
+        assert "1 test collected" in result.stdout
         assert str(SUITE / "conftest.py") in result.stdout
         assert str(SUITE.parent / "conftest.py") not in result.stdout
         assert str(SUITE.parent / "integration/conftest.py") not in result.stdout
