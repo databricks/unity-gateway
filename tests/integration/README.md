@@ -388,9 +388,9 @@ constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-
 `UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET` for northeast-2. As with the base workspace, the runner
 mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
 `ug configure` and Claude. The client secrets do not enter the pytest process.
-The 14 retained numbered scenarios comprise 22 explicit journeys: 8 managed-fixture,
-2 catalog discovery, and 12 unmanaged executions. Four provider-override journeys retain their
-assertions under descriptive names; the complete integration suite collects 103 executions. See the named coverage and gaps matrix in
+The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed-fixture
+and 12 unmanaged executions. Two additional catalog discovery journeys bring the
+complete integration suite to 103 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -577,11 +577,11 @@ fixture expectations. Register its package/version and marker in the runner/coll
 setup, implement any native terminal support, and add it to the CI matrix. Existing
 journeys need no renaming or generic agent branches.
 
-Catalog discovery covers Claude/Codex models only. An authorized admin provisions both
-schemas with `fixtures/cuj/models/provision.py` and separately reviews/publishes
-`fixtures/cuj-3/managed-config.json` in the dedicated workspace. Follow the fixture
-README's prerequisites, explicit auth, and preflight-before-write rules. Tests
-do not provision resources or policy; Apps, connections, MCP, and skills are not required.
+The dedicated workspace must already contain the services listed below and publish
+a CodingAgentConfig enabling both agents with `ug_e2e.models` as their model source.
+Its default agent is Claude; defaults are Claude Sonnet (including the Sonnet family
+default) and Codex GPT Luna, with smart routing and tracing disabled. Tests do not
+provision resources or policy; Apps, connections, MCP, and skills are not required.
 
 Model-service fixtures are trusted prerequisites; journeys do not revalidate their
 backing destinations. Each journey runs real `ug configure`, checks persisted

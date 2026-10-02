@@ -207,8 +207,9 @@ With Claude and Codex selected there are **62 live cases** (12 marked TUI cases)
 publish a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
 **25 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected), and **7 installation checks**. The 14 retained numbered scenarios
-comprise **22 explicit journeys**: 8 managed-fixture configured/fresh executions, 2 catalog discovery journeys, and 12 unmanaged
-executions. Four provider-override journeys retain their assertions under descriptive names. Thirteen additional managed-fixture cases cover focused model, MCP, skills,
+comprise **24 explicit journeys**: 12 managed-fixture configured/fresh executions and 12 unmanaged
+executions. Two additional catalog discovery journeys cover the preconfigured dedicated workspace.
+Thirteen additional managed-fixture cases cover focused model, MCP, skills,
 and lifecycle shapes; two published-config cases cover Claude defaults. Parametrization varies
 argument spelling or routing mode, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
