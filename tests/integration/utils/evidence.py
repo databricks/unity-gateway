@@ -72,6 +72,16 @@ def is_child_session(agent: str, path: str, records: list[dict]) -> bool:
     )
 
 
+def assistant_answer_contains(session, agent: str, value: str, *, child: bool = False) -> bool:
+    """Whether a native parent or child assistant answer contains ``value``."""
+    return any(
+        value in answer
+        for path, records in agent_sessions(session, agent).items()
+        if is_child_session(agent, path, records) == child
+        for answer in assistant_answers(agent, records)
+    )
+
+
 class FileTask:
     """Ordinary project input; the expected answer is never included in the prompt."""
 
@@ -87,12 +97,7 @@ class FileTask:
         )
 
     def completed(self, session, agent: str, *, child: bool = False) -> bool:
-        for path, records in agent_sessions(session, agent).items():
-            if is_child_session(agent, path, records) != child:
-                continue
-            if any(self.value in text for text in assistant_answers(agent, records)):
-                return True
-        return False
+        return assistant_answer_contains(session, agent, self.value, child=child)
 
     def assert_completed(self, session, agent: str, *, child: bool = False) -> None:
         sessions = agent_sessions(session, agent)
@@ -150,12 +155,50 @@ class FileTask:
             raise AssertionError(f"Unknown agent: {agent}")
 
 
-def assert_subagent_routed(session, agent: str, task: FileTask) -> None:
+class SubagentCalculation:
+    """A uniquely tagged calculation that must be delegated to a real child."""
+
+    def __init__(self, expression: str, expected: str):
+        # Codex exposes task_name, rather than the child message, to its routing hook.
+        # Keep the correlation marker valid as a native task name for both agents.
+        self.marker = "ug_subagent_" + uuid.uuid4().hex[:12]
+        self.value = f"{self.marker}={expected}"
+        self.prompt = (
+            f'Please spawn exactly one subagent with task name "{self.marker}" '
+            f"to calculate {expression}. "
+            f'Tell the subagent to reply exactly "{self.value}". '
+            "Do not calculate it yourself. Wait for the subagent and then reply with its result."
+        )
+
+    def completed(self, session, agent: str, *, child: bool = False) -> bool:
+        return assistant_answer_contains(session, agent, self.value, child=child)
+
+    def assert_completed(self, session, agent: str, *, child: bool = False) -> None:
+        sessions = agent_sessions(session, agent)
+        session.record(f"agent-sessions-{self.marker}.json", sessions)
+        assert self.completed(session, agent, child=child), (
+            f"No {'child' if child else 'parent'} assistant answer contained {self.value!r}; "
+            "echoed prompts and tool inputs do not count as completed answers."
+        )
+
+
+def assert_subagent_routed(
+    session,
+    agent: str,
+    task: FileTask | SubagentCalculation,
+    *,
+    decision_ids: set[str] | None = None,
+) -> None:
     """Require a real gateway decision correlated with an actual child start."""
     root = session.home / ".ucode"
     decisions = read_jsonl(root / f"{agent}-smart-routing-decisions.jsonl")
+    if decision_ids is not None:
+        decisions = [row for row in decisions if row.get("decision_id") in decision_ids]
     audit = read_jsonl(root / f"{agent}-smart-routing-audit.jsonl")
-    session.record("subagent-routing.json", {"decisions": decisions, "starts": audit})
+    artifact = "subagent-routing"
+    if isinstance(task, SubagentCalculation):
+        artifact += f"-{task.marker}"
+    session.record(f"{artifact}.json", {"decisions": decisions, "starts": audit})
     assert decisions, "No real subagent routing decision was recorded"
     for decision in decisions:
         assert decision.get("requested_model") and decision.get("router_model"), decision
@@ -217,8 +260,8 @@ def assert_subagent_routed(session, agent: str, task: FileTask) -> None:
                                 "model": decision["requested_model"],
                             }
                         )
-        session.record("subagent-routing.json", {"decisions": decisions, "native_children": linked})
-        assert linked, "No routed native child turn completed the delegated file task"
+        session.record(f"{artifact}.json", {"decisions": decisions, "native_children": linked})
+        assert linked, "No routed native child turn completed the delegated task"
         assert {row["decision_id"] for row in linked} == {
             row["decision_id"] for row in decisions
         }, "A routing decision had no matching completed child turn"

@@ -14,6 +14,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
+from ucode import config_io
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
@@ -26,7 +27,12 @@ from ucode.config_io import (
     write_json_file,
     write_text_file,
 )
-from ucode.constants import LOOPBACK_HOST
+from ucode.constants import (
+    ENABLE_SMART_ROUTING_ENV_VAR,
+    ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+    LOOPBACK_HOST,
+    SMART_ROUTING_ENV_KEYS,
+)
 from ucode.custom_oauth import custom_oauth_cli_enabled, get_custom_client_token
 from ucode.databricks import (
     AnthropicModelCatalog,
@@ -37,6 +43,11 @@ from ucode.databricks import (
 )
 from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility.file_lock_cross_os import (
+    acquire_exclusive_file_lock,
+    release_file_lock,
+)
+from ucode.skills import SMART_ROUTER_SKILL, install_skill
 from ucode.smart_routing import claude_routing, codex_interposer, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -44,13 +55,10 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
+from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_warning
 
-ENABLE_SMART_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_V2"
-ENABLE_SUBAGENT_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"
 LEGACY_STATE_KEY = "smart_routing_enabled"
-
-_SMART_ROUTING_ENV_VARS = (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
 
 CODEX_INTERPOSER_LOG = APP_DIR / "codex-v2-interposer.log"
 
@@ -73,6 +81,14 @@ CLAUDE_ROUTED_AGENT_PROMPT = (
 
 class ClaudeRoutingSetupError(RuntimeError):
     """Routing files could not be written; the caller can launch Claude normally."""
+
+
+def _prepare_smart_router_session(agent: str) -> Path:
+    try:
+        install_skill(SMART_ROUTER_SKILL, agent, config_io.APP_DIR.parent)
+    except (OSError, RuntimeError) as exc:
+        print_warning(f"Could not install the Smart Router skill: {exc}")
+    return start_session()
 
 
 def _launch_token(state: dict, workspace: str) -> str:
@@ -129,9 +145,16 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
     return None
 
 
-def smart_routing_enabled(env: MutableMapping[str, str] | None = None) -> bool:
+def smart_routing_enabled(
+    env: MutableMapping[str, str] | None = None, *, default: bool = False
+) -> bool:
     source = os.environ if env is None else env
-    return any(source.get(var) == "1" for var in _SMART_ROUTING_ENV_VARS)
+    values = [source.get(var) for var in SMART_ROUTING_ENV_KEYS]
+    if "1" in values:
+        return True
+    if "0" in values:
+        return False
+    return default
 
 
 def first_prompt_routing_enabled(env: MutableMapping[str, str] | None = None) -> bool:
@@ -148,8 +171,22 @@ def enable_smart_routing(
 ) -> dict[str, str | None]:
     """Set the full smart-routing env var and return the prior value of every routing var."""
     target = os.environ if env is None else env
-    previous = {var: target.get(var) for var in _SMART_ROUTING_ENV_VARS}
+    previous = {var: target.get(var) for var in SMART_ROUTING_ENV_KEYS}
     target[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
+    return previous
+
+
+def override_smart_routing(
+    enabled: bool,
+    env: MutableMapping[str, str] | None = None,
+) -> dict[str, str | None]:
+    """Set an explicit launch-scoped routing choice and return the prior values."""
+    target = os.environ if env is None else env
+    previous = {var: target.get(var) for var in SMART_ROUTING_ENV_KEYS}
+    if enabled:
+        target[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
+    else:
+        target.update(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
     return previous
 
 
@@ -170,7 +207,7 @@ def disable_smart_routing(
 ) -> dict[str, str | None]:
     """Temporarily remove the smart-routing env vars and return their prior values."""
     target = os.environ if env is None else env
-    return {var: target.pop(var, None) for var in _SMART_ROUTING_ENV_VARS}
+    return {var: target.pop(var, None) for var in SMART_ROUTING_ENV_KEYS}
 
 
 def _loopback_websocket_url(port: int) -> str:
@@ -402,11 +439,9 @@ class _ClaudeModelSettingGuard:
         self._lock: TextIO | None = None
 
     def begin(self, routed_model: str) -> None:
-        import fcntl
-
         APP_DIR.mkdir(parents=True, exist_ok=True)
         self._lock = open(APP_DIR / "claude-v2-model.lock", "a+", encoding="utf-8")
-        fcntl.flock(self._lock, fcntl.LOCK_EX)
+        acquire_exclusive_file_lock(self._lock)
         self._before = read_json_safe(self.settings_path)
         self._routed_model = routed_model
 
@@ -415,8 +450,6 @@ class _ClaudeModelSettingGuard:
         return isinstance(value, str) and value == self._routed_model
 
     def restore(self) -> None:
-        import fcntl
-
         if self._before is None:
             return
         try:
@@ -430,7 +463,7 @@ class _ClaudeModelSettingGuard:
             self._routed_model = None
         finally:
             if self._lock is not None:
-                fcntl.flock(self._lock, fcntl.LOCK_UN)
+                release_file_lock(self._lock)
                 self._lock.close()
                 self._lock = None
 
@@ -448,7 +481,9 @@ def launch_claude(
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
-    from ucode.smart_routing import claude_pty
+
+    if os.name != "nt":
+        from ucode.smart_routing import claude_pty
 
     workspace = state.get("workspace")
     if not workspace:
@@ -472,6 +507,14 @@ def launch_claude(
     model_ids = catalog.model_ids
 
     route_first_prompt = first_prompt_routing_enabled()
+    # TODO: Restore first-prompt routing on Windows after replacing the Unix-only PTY wrapper:
+    # https://databricks.atlassian.net/browse/AIGTWY-4385
+    if route_first_prompt and os.name == "nt":
+        print_warning(
+            "Claude first-prompt smart routing is unavailable on Windows; using subagent-only "
+            "routing."
+        )
+        route_first_prompt = False
     settings, remaining = compose_settings(tool_args)
     hook_executable = build_auth_token_argv(
         workspace, state.get("profile"), use_pat=bool(state.get("use_pat"))
@@ -514,6 +557,9 @@ def launch_claude(
             plugin_dir = launch_dir / "plugin"
             if route_first_prompt:
                 env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
+            session_path = _prepare_smart_router_session("claude")
+            env[SESSION_ENV_VAR] = str(session_path)
+            env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             try:
                 write_json_file(settings_path, settings)
                 _write_routed_claude_plugin(plugin_dir, model_ids)
@@ -616,6 +662,13 @@ def launch_codex(
     overlay["hooks"] = {
         "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
     }
+    session_env_path = _prepare_smart_router_session("codex")
+    # Codex constructs tool subprocess environments through its shell policy.
+    # Pass both the session marker and its launching interpreter through that policy.
+    overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
+    overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
+        SESSION_PYTHON_ENV_VAR
+    ]
     config_args = codex_config_args(overlay)
     if not first_prompt_routing_enabled():
         # Subagent-only routing needs neither the app-server nor the interposer:
@@ -649,8 +702,18 @@ def launch_codex(
             log_path=CODEX_INTERPOSER_LOG,
         )
         tui_url = _loopback_websocket_url(tui_port)
+        provider_args = []
+        if os.name == "nt":
+            # Windows has no machine-wide Codex config for the remote TUI to inherit.
+            provider_args = codex_config_args(
+                {
+                    key: overlay[key]
+                    for key in ("model_provider", "model_providers")
+                    if key in overlay
+                }
+            )
         tui = subprocess_cross_os.popen(
-            [binary, "--remote", tui_url, "--model", start_model, *tool_args]
+            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
         )
         try:
             returncode = tui.wait()

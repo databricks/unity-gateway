@@ -16,6 +16,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -51,9 +52,7 @@ from ucode.ui import (
 UNIX_DATABRICKS_INSTALL_URL = (
     "https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh"
 )
-WINDOWS_DATABRICKS_INSTALL_URL = (
-    "https://raw.githubusercontent.com/databricks/setup-cli/main/install.ps1"
-)
+WINDOWS_DATABRICKS_WINGET_PACKAGE = "Databricks.DatabricksCLI"
 AI_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-beta"
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 # v1.0.0 is the release that ships `databricks aitools`.
@@ -199,7 +198,7 @@ def _log_auth_diagnostics() -> None:
 
     try:
         version_result = subprocess_cross_os.run(
-            ["databricks", "--version"],
+            [databricks_cli_path(), "--version"],
             check=False,
             capture_output=True,
             text=True,
@@ -212,7 +211,7 @@ def _log_auth_diagnostics() -> None:
 
     try:
         profiles_result = subprocess_cross_os.run(
-            ["databricks", "auth", "profiles", "--output", "json"],
+            [databricks_cli_path(), "auth", "profiles", "--output", "json"],
             check=False,
             capture_output=True,
             text=True,
@@ -683,14 +682,203 @@ def _parse_databricks_cli_version(output: str) -> tuple[int, int, int] | None:
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
+def _iter_databricks_executables() -> list[str]:
+    """Scan every directory on PATH for a `databricks` executable, in PATH order.
+
+    A machine can have more than one `databricks` on PATH (e.g. a stale
+    ``~/.local/bin/databricks`` shadowing a newer Homebrew install); this is the
+    first step of discovering all of them so the caller can pick the best one
+    instead of `shutil.which`'s first match. Returns absolute paths and does NOT
+    dedupe — the same real binary can be reachable via more than one PATH entry
+    (e.g. a symlink), and deduping by realpath is `_discover_databricks_clis`'s
+    job. On POSIX a candidate must have the execute bit; on Windows PATHEXT is
+    honored (a matching filename is runnable — there's no execute bit to test).
+    """
+    if os.name == "nt":
+        exts = tuple(e for e in os.environ.get("PATHEXT", "").split(os.pathsep) if e) or (
+            ".exe",
+            ".bat",
+            ".cmd",
+        )
+
+        def perms_ok(_path: str) -> bool:
+            return True
+    else:
+        exts = ("",)
+
+        def perms_ok(path: str) -> bool:
+            return os.access(path, os.X_OK)
+
+    found: list[str] = []
+    seen_dirs: set[str] = {""}  # seed with "" so empty PATH entries are skipped
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if directory in seen_dirs:
+            continue
+        seen_dirs.add(directory)
+        for ext in exts:
+            candidate = os.path.join(directory, f"databricks{ext}")
+            if os.path.isfile(candidate) and perms_ok(candidate):
+                found.append(os.path.abspath(candidate))
+    return found
+
+
+def _read_databricks_cli_version(path: str) -> tuple[int, int, int] | None:
+    """Run ``<path> --version`` and parse it. None on any subprocess or parse failure.
+
+    Used only by discovery, which is what establishes ``path`` in the first
+    place — every other caller reads a version through ``databricks_cli_path()``.
+    """
+    try:
+        result = run([path, "--version"], check=False, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    raw = result.stdout or result.stderr or ""
+    output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
+    return _parse_databricks_cli_version(output)
+
+
+# Process-lifetime cache of discovered `databricks` binaries as an ordered list,
+# best-first: highest parseable version first, unparseable ones last, with PATH order
+# preserved among equals. `databricks_cli_path` just reads the front. None means
+# "not yet scanned" — distinct from an empty list, a cached "found nothing".
+_DISCOVERED_DATABRICKS_CLIS_ORDERED: list[tuple[str, tuple[int, int, int] | None]] | None = None
+
+
+def _discover_databricks_clis(
+    *, use_cache: bool = True
+) -> list[tuple[str, tuple[int, int, int] | None]]:
+    """Find every distinct `databricks` binary on PATH, ordered best-first.
+
+    Dedupes by ``os.path.realpath`` (first PATH-order occurrence wins), so the
+    same binary reachable via more than one PATH entry is only probed once.
+    Version is None when the candidate's ``--version`` errors or its output can't
+    be parsed. The result is sorted newest-version-first (unparseable last, PATH
+    order kept among ties), so the front entry is the one to run. Cached for the
+    life of the process; pass ``use_cache=False`` to force a fresh scan (which
+    also refreshes the cache).
+    """
+    global _DISCOVERED_DATABRICKS_CLIS_ORDERED
+    if use_cache and _DISCOVERED_DATABRICKS_CLIS_ORDERED is not None:
+        return _DISCOVERED_DATABRICKS_CLIS_ORDERED
+
+    seen_real: set[str] = set()
+    discovered: list[tuple[str, tuple[int, int, int] | None]] = []
+    for path in _iter_databricks_executables():
+        real = os.path.realpath(path)
+        if real in seen_real:
+            continue
+        seen_real.add(real)
+        discovered.append((path, _read_databricks_cli_version(path)))
+
+    # Best-first: highest version wins. A stable sort keeps PATH order among equal
+    # versions, and the None-version sentinel (unparseable) sinks below every real one.
+    discovered.sort(key=lambda pv: pv[1] or (-1, -1, -1), reverse=True)
+    _DISCOVERED_DATABRICKS_CLIS_ORDERED = discovered
+    return _DISCOVERED_DATABRICKS_CLIS_ORDERED
+
+
+def _select_databricks_cli(
+    minimum: tuple[int, int, int],
+) -> tuple[str, tuple[int, int, int]] | tuple[None, None]:
+    """The newest discovered CLI whose version is >= ``minimum``, or ``(None, None)``.
+
+    Discovery is already ordered newest-first, so the first match is the newest
+    one meeting ``minimum`` (ties resolve to the earliest on PATH).
+    """
+    for path, version in _discover_databricks_clis():
+        if version is not None and version >= minimum:
+            return path, version
+    return None, None
+
+
+def databricks_cli_path() -> str:
+    """Absolute path to the `databricks` binary every subprocess call must use.
+
+    A machine can have more than one `databricks` on PATH (e.g. a stale
+    ``~/.local/bin/databricks`` shadowing a newer Homebrew install), and
+    `shutil.which` only ever returns the first match — which may be the wrong
+    one. Discovery instead orders every binary newest-first, so the front entry
+    is the one to run; its absolute path means a shadowing install or a
+    minimal-PATH launcher (e.g. a desktop GUI) can't cause the wrong binary to
+    run. Falls back to the bare name only when nothing is discovered at all —
+    running it then raises FileNotFoundError, which callers surface as "CLI not
+    installed". Cached via discovery — call ``clear_databricks_cli_cache()`` to
+    force re-resolution (e.g. after installing/upgrading the CLI).
+    """
+    clis = _discover_databricks_clis()
+    return clis[0][0] if clis else "databricks"
+
+
+def clear_databricks_cli_cache() -> None:
+    """Forget cached CLI discovery/resolution (used by tests, and after an install/upgrade)."""
+    global _DISCOVERED_DATABRICKS_CLIS_ORDERED
+    _DISCOVERED_DATABRICKS_CLIS_ORDERED = None
+
+
+def databricks_cli_installed() -> bool:
+    """Whether any `databricks` binary was found on PATH."""
+    return bool(_discover_databricks_clis())
+
+
+def _windows_user_path() -> str | None:
+    if sys.platform != "win32":
+        return None
+
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, "Path")
+    except OSError:
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _refresh_windows_path() -> None:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    path = os.environ.get("PATH", "")
+    entries = path.split(os.pathsep) if path else []
+    persisted_path = _windows_user_path()
+    candidates = persisted_path.split(os.pathsep) if persisted_path else []
+    if local_app_data:
+        candidates.insert(0, str(Path(local_app_data) / "Microsoft" / "WinGet" / "Links"))
+
+    known = {os.path.normcase(entry) for entry in entries}
+    new_entries = []
+    for entry in candidates:
+        expanded = os.path.expandvars(entry)
+        normalized = os.path.normcase(expanded)
+        if expanded and normalized not in known:
+            new_entries.append(expanded)
+            known.add(normalized)
+    os.environ["PATH"] = os.pathsep.join([*new_entries, *entries])
+
+
 def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
     system = platform.system()
     try:
         if system == "Windows":
+            winget = shutil.which("winget")
+            if winget is None:
+                raise RuntimeError(
+                    "WinGet is required on Windows. Install App Installer, then run "
+                    f"`winget install --exact --id {WINDOWS_DATABRICKS_WINGET_PACKAGE}`."
+                )
             run(
-                ["powershell", "-Command", f"irm {WINDOWS_DATABRICKS_INSTALL_URL} | iex"],
+                [
+                    winget,
+                    brew_subcommand,
+                    "--exact",
+                    "--id",
+                    WINDOWS_DATABRICKS_WINGET_PACKAGE,
+                    "--source",
+                    "winget",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ],
                 timeout=240,
             )
+            _refresh_windows_path()
         elif system == "Darwin" and shutil.which("brew"):
             run(["brew", brew_subcommand, "databricks/tap/databricks"], timeout=240)
         elif shutil.which("curl"):
@@ -701,69 +889,67 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
             raise RuntimeError("Neither curl nor wget is available.")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
         message = "Failed to install/upgrade Databricks CLI automatically."
-        # The official installer only tells you to remove /usr/local/bin/databricks,
-        # but a stale copy in ~/.local/bin can shadow it and break the install. Point
-        # at it explicitly so users know to delete that one too.
-        local_bin = Path("~/.local/bin/databricks").expanduser()
-        if local_bin.exists():
-            message += (
-                f"\nIf you have an existing Databricks CLI installation, please first "
-                f"remove it using\n  rm '{local_bin}'"
-            )
+        if system == "Windows" and isinstance(exc, RuntimeError):
+            message += f"\n{exc}"
         raise RuntimeError(message) from exc
+    # A binary may have just been installed/upgraded at a new (or the same) path;
+    # drop any stale discovery/resolution so the next lookup re-scans PATH.
+    clear_databricks_cli_cache()
 
 
 def ensure_databricks_cli_version(
     minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
 ) -> None:
-    try:
-        result = run(
-            ["databricks", "--version"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError("Failed to read Databricks CLI version.") from exc
+    clis = _discover_databricks_clis(use_cache=False)
+    if not clis:
+        raise RuntimeError("Failed to read Databricks CLI version.")
 
-    raw = result.stdout or result.stderr or ""
-    output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
-    version = _parse_databricks_cli_version(output)
-    if version is None:
+    parsed = [(path, version) for path, version in clis if version is not None]
+    if not parsed:
+        # Best-effort sample for the error message: the binary we'd run's raw
+        # `--version` output (already known unparseable, but worth showing why).
+        try:
+            result = run(
+                [databricks_cli_path(), "--version"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            raw = result.stdout or result.stderr or ""
+            output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            output = f"<error reading version: {exc}>"
         raise RuntimeError(
             f"Could not parse Databricks CLI version from `databricks --version` output: {output!r}"
         )
-    if version < minimum:
-        current = ".".join(str(n) for n in version)
+
+    newest_path, newest_version = max(parsed, key=lambda item: item[1])
+    if newest_version < minimum:
+        current = ".".join(str(n) for n in newest_version)
         required = ".".join(str(n) for n in minimum)
         print_warning(
             f"Databricks CLI v{current} is too old (need v{required} or newer). Upgrading..."
         )
         _run_databricks_cli_installer(brew_subcommand="upgrade")
         ensure_databricks_cli_version(minimum)
+        return
+
+    # A discovered CLI already meets the floor: drop the cached resolution so
+    # `databricks_cli_path()` re-resolves to it (it may differ from whatever was
+    # cached before this call, e.g. right after an install).
+    clear_databricks_cli_cache()
 
 
 def databricks_cli_version() -> tuple[int, int, int] | None:
-    """Return the installed Databricks CLI's (major, minor, patch), or None if
-    the CLI is absent or its version can't be read/parsed. Unlike
-    ``ensure_databricks_cli_version`` this only reports — it never upgrades — so
-    ``ucode doctor`` can decide what to recommend."""
-    if not shutil.which("databricks"):
-        return None
-    try:
-        result = run(
-            ["databricks", "--version"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    raw = result.stdout or result.stderr or ""
-    output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
-    return _parse_databricks_cli_version(output)
+    """Return the version of the Databricks CLI that ``databricks_cli_path()``
+    would run, or None if none was discovered / its version can't be
+    read/parsed. Unlike ``ensure_databricks_cli_version`` this only reports —
+    it never upgrades — so ``ucode doctor`` can decide what to recommend."""
+    # Discovery is ordered best-first, so the front entry's version is the one
+    # `databricks_cli_path()` would run.
+    clis = _discover_databricks_clis()
+    return clis[0][1] if clis else None
 
 
 def upgrade_databricks_cli() -> bool:
@@ -788,7 +974,10 @@ def install_databricks_cli(
     ``databricks aitools`` floor (v1.0.0) rejects a perfectly usable public-preview
     build (e.g. v0.299.2) as a false positive. A missing CLI is still installed —
     only the version *check* is bypassed."""
-    if shutil.which("databricks"):
+    if platform.system() == "Windows":
+        _refresh_windows_path()
+
+    if databricks_cli_installed():
         if not skip_version_check:
             ensure_databricks_cli_version(minimum)
         return
@@ -797,7 +986,7 @@ def install_databricks_cli(
     print_warning("`databricks` was not found. Installing Databricks CLI...")
     _run_databricks_cli_installer(brew_subcommand="install")
 
-    if not shutil.which("databricks"):
+    if not _discover_databricks_clis(use_cache=False):
         raise RuntimeError(
             "Databricks CLI install completed, but `databricks` is still not on PATH."
         )
@@ -819,7 +1008,15 @@ def install_ai_tools(agent_tokens: list[str], profile: str | None = None) -> Non
     try:
         with spinner(f"Installing Databricks AI Tools for {agents_arg}..."):
             run(
-                ["databricks", "aitools", "install", "--agents", agents_arg, "--scope", "global"]
+                [
+                    databricks_cli_path(),
+                    "aitools",
+                    "install",
+                    "--agents",
+                    agents_arg,
+                    "--scope",
+                    "global",
+                ]
                 + _profile_args(profile),
                 check=True,
                 capture_output=True,
@@ -898,7 +1095,7 @@ def has_valid_databricks_auth(workspace: str, profile: str | None = None) -> boo
         env = build_databricks_cli_env(workspace, profile)
         result = run(
             [
-                "databricks",
+                databricks_cli_path(),
                 "auth",
                 "token",
                 "--host",
@@ -942,7 +1139,7 @@ def list_profile_entries() -> list[dict]:
     """
     try:
         result = run(
-            ["databricks", "auth", "profiles", "--output", "json"],
+            [databricks_cli_path(), "auth", "profiles", "--output", "json"],
             check=False,
             capture_output=True,
             text=True,
@@ -1081,7 +1278,7 @@ def run_databricks_login(workspace: str, profile: str | None = None) -> None:
     try:
         profile_name = profile or find_profile_name_for_host(workspace)
         cmd = [
-            "databricks",
+            databricks_cli_path(),
             "auth",
             "login",
             "--host",
@@ -1185,7 +1382,7 @@ def get_databricks_token(
     profile = profile or find_profile_name_for_host(workspace)
     env = build_databricks_cli_env(workspace, profile)
     cmd = [
-        "databricks",
+        databricks_cli_path(),
         "auth",
         "token",
         "--host",
@@ -1249,7 +1446,7 @@ def get_databricks_token(
         try:
             reauth = run(
                 [
-                    "databricks",
+                    databricks_cli_path(),
                     "auth",
                     "login",
                     "--host",
@@ -1322,17 +1519,9 @@ class AuthTokenError(RuntimeError):
 
 
 def raise_for_invalid_access_token(workspace: str, reason: str | None) -> None:
-    """Raise :class:`AuthTokenError` with re-auth guidance when ``reason`` shows the
-    workspace rejected the token itself. No-op for any other failure (permission,
-    transient) so a best-effort discovery caller can still skip a source quietly."""
+    """Raise a concise auth error for a rejected token; ignore other failures."""
     if reason and _looks_like_definitive_auth_failure(reason):
-        raise AuthTokenError(
-            f"Databricks rejected the access token for {workspace} — it is expired or "
-            f"invalid ({reason}). Re-authenticate:\n"
-            f"  databricks auth login --host {workspace}\n"
-            "If this profile uses a personal access token (PAT), generate a new token "
-            "and update it in ~/.databrickscfg."
-        )
+        raise AuthTokenError("Your access token is expired or invalid.")
 
 
 def _looks_like_cli_permission_error(stderr: str | None) -> bool:
@@ -1353,7 +1542,7 @@ def list_databricks_apps(workspace: str, profile: str | None = None) -> list[dic
     try:
         result = run(
             [
-                "databricks",
+                databricks_cli_path(),
                 "apps",
                 "list",
                 *_profile_args(profile),

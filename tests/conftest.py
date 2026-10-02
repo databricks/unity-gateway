@@ -66,6 +66,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(managed_files_mod, "_sudo_replace", reject_privileged_write)
     monkeypatch.delenv("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
+    monkeypatch.delenv("UCODE_SESSION_ENV_FILE", raising=False)
+    monkeypatch.delenv("UCODE_SMART_ROUTER_PYTHON", raising=False)
     # On Windows, resolve_command swaps a bare program name for whatever `shutil.which`
     # finds on the developer's PATH (e.g. a real `codex.CMD`). Rebind only the compatibility
     # helper's `shutil` so argv stays host-independent; helper tests patch `which` explicitly.
@@ -78,6 +80,10 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # result would leak into the next test and make a stubbed listing look like it was never called.
     databricks_mod.clear_model_services_cache()
     databricks_mod.clear_workspace_org_id_cache()
+    # The resolved Databricks CLI path/discovery is cached for the life of the
+    # process; a real resolution (or a prior test's patched one) must not leak
+    # into a test that assumes a bare "databricks" or a specific fake CLI.
+    databricks_mod.clear_databricks_cli_cache()
 
 
 def _workspace() -> str:
