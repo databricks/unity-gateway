@@ -102,7 +102,7 @@ class TestAgentCliChecks:
         state = {"available_tools": ["claude"]}
         with (
             patch.object(doctor_mod, "load_state", return_value=state),
-            patch.object(doctor_mod, "tool_binary_installed", return_value=False),
+            patch.object(doctor_mod, "tool_binary_status", return_value=(False, None)),
         ):
             checks = _check_agent_clis()
         assert len(checks) == 1
@@ -113,7 +113,7 @@ class TestAgentCliChecks:
         state = {"available_tools": ["claude", "codex", "opencode", "gemini", "pi", "copilot"]}
         with (
             patch.object(doctor_mod, "load_state", return_value=state),
-            patch.object(doctor_mod, "tool_binary_installed", return_value=True),
+            patch.object(doctor_mod, "tool_binary_status", return_value=(True, None)),
             patch.object(doctor_mod, "tool_version_error", return_value=None),
             patch("subprocess.run", side_effect=AssertionError("must not query npm")),
         ):
@@ -125,7 +125,7 @@ class TestAgentCliChecks:
         state = {"available_tools": ["claude", "opencode"]}
         with (
             patch.object(doctor_mod, "load_state", return_value=state),
-            patch.object(doctor_mod, "tool_binary_installed", return_value=True),
+            patch.object(doctor_mod, "tool_binary_status", return_value=(True, None)),
             patch.object(doctor_mod, "tool_version_error", side_effect=[None, "version too old"]),
             patch.object(doctor_mod, "update_tool_binary", return_value=True) as update,
         ):
@@ -136,6 +136,21 @@ class TestAgentCliChecks:
             assert checks[1].suggestion.prompt == "Upgrade OpenCode to meet the required version?"
             assert checks[1].suggestion.apply() is True
         update.assert_called_once_with("opencode")
+
+    def test_copilot_name_collision_has_no_broken_install_suggestion(self):
+        state = {"available_tools": ["copilot"]}
+        conflict = "AWS Copilot uses the same command name; install GitHub Copilot CLI"
+        with (
+            patch.object(doctor_mod, "load_state", return_value=state),
+            patch.object(doctor_mod, "tool_binary_status", return_value=(False, conflict)),
+            patch.object(doctor_mod, "update_tool_binary") as update,
+        ):
+            check = _check_agent_clis()[0]
+
+        assert check.status == "warn"
+        assert check.detail == conflict
+        assert check.suggestion is None
+        update.assert_not_called()
 
     def test_unknown_tool_is_skipped(self):
         state = {"available_tools": ["not-a-real-tool"]}

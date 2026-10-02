@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from ucode.agents import (
     TOOL_SPECS,
-    tool_binary_installed,
+    tool_binary_status,
     tool_version_error,
     update_tool_binary,
 )
@@ -154,7 +154,11 @@ def _check_agent_clis() -> list[Check]:
             continue
         spec = TOOL_SPECS[tool]
         display = spec["display"]
-        if not tool_binary_installed(tool):
+        installed, conflict = tool_binary_status(tool)
+        if conflict:
+            checks.append(Check(display, "warn", conflict))
+            continue
+        if not installed:
             checks.append(
                 Check(
                     display,

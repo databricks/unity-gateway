@@ -63,6 +63,10 @@ because it overrides the model sent to the gateway. Restart Copilot through `ug`
 to change the wire model or API; in-session model selection does not rebuild its
 provider configuration.
 
+`ug copilot` requires the GitHub Copilot CLI. AWS Copilot uses the same `copilot`
+command name; ug checks the CLI's version branding across `PATH` and reports the
+conflict instead of launching or replacing the wrong executable.
+
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`

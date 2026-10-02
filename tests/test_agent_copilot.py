@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +26,121 @@ class TestCopilotSpec:
 
     def test_config_path_is_ucode_env_file(self):
         assert copilot.SPEC["config_path"].name == "ucode.env"
+
+
+class TestResolveBinary:
+    @staticmethod
+    def _patch_candidates(monkeypatch, paths):
+        monkeypatch.setenv("PATH", os.pathsep.join(str(path) for path in paths))
+        candidates = {str(path): str(path / "copilot") for path in paths}
+
+        def fake_candidate(path_entry):
+            return candidates.get(path_entry)
+
+        monkeypatch.setattr(copilot, "_copilot_path_candidate", fake_candidate)
+        return candidates
+
+    def test_rejects_only_aws_copilot_with_actionable_error(self, monkeypatch, tmp_path):
+        candidates = self._patch_candidates(monkeypatch, [tmp_path / "aws"])
+        probes = []
+
+        def probe(argv, **_kwargs):
+            probes.append(argv)
+            return SimpleNamespace(stdout="copilot version 1.34.0", stderr="")
+
+        monkeypatch.setattr(copilot.subprocess_cross_os, "run", probe)
+
+        with pytest.raises(RuntimeError, match="AWS Copilot"):
+            copilot.resolve_binary()
+
+        assert probes == [[os.path.abspath(candidates[str(tmp_path / "aws")]), "--version"]]
+
+    def test_accepts_branded_github_copilot(self, monkeypatch, tmp_path):
+        candidates = self._patch_candidates(monkeypatch, [tmp_path / "github"])
+        monkeypatch.setattr(
+            copilot.subprocess_cross_os,
+            "run",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                stdout="GitHub Copilot CLI 1.0.42-0.", stderr=""
+            ),
+        )
+
+        assert copilot.resolve_binary() == os.path.abspath(candidates[str(tmp_path / "github")])
+
+    def test_skips_aws_candidate_and_selects_later_github_cli(self, monkeypatch, tmp_path):
+        paths = [tmp_path / "aws", tmp_path / "github"]
+        candidates = self._patch_candidates(monkeypatch, paths)
+        probes = []
+
+        def probe(argv, **_kwargs):
+            probes.append(argv)
+            branded = argv[0] == os.path.abspath(candidates[str(paths[1])])
+            return SimpleNamespace(
+                stdout="GitHub Copilot CLI 1.0.42-0." if branded else "AWS Copilot 1.34.0",
+                stderr="",
+            )
+
+        monkeypatch.setattr(copilot.subprocess_cross_os, "run", probe)
+
+        assert copilot.resolve_binary() == os.path.abspath(candidates[str(paths[1])])
+        assert probes == [
+            [os.path.abspath(candidates[str(paths[0])]), "--version"],
+            [os.path.abspath(candidates[str(paths[1])]), "--version"],
+        ]
+
+    def test_accepts_windows_npm_cmd_shim_candidate(self, monkeypatch, tmp_path):
+        shim = tmp_path / "copilot.CMD"
+        shim.touch()
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setenv("PATHEXT", ".CMD")
+        monkeypatch.setattr(
+            copilot, "_copilot_path_candidate", copilot._windows_copilot_path_candidate
+        )
+        monkeypatch.setattr(
+            copilot.subprocess_cross_os,
+            "run",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                stdout="GitHub Copilot CLI 1.0.42-0.", stderr=""
+            ),
+        )
+
+        assert copilot.resolve_binary() == os.path.abspath(shim)
+
+    def test_windows_path_lookup_does_not_use_conflicting_copilot_from_cwd(
+        self, monkeypatch, tmp_path
+    ):
+        cwd = tmp_path / "cwd"
+        github = tmp_path / "github"
+        cwd.mkdir()
+        github.mkdir()
+        (cwd / "copilot.CMD").touch()
+        github_shim = github / "copilot.CMD"
+        github_shim.touch()
+        monkeypatch.chdir(cwd)
+        monkeypatch.setenv("PATH", str(github))
+        monkeypatch.setenv("PATHEXT", ".CMD")
+        monkeypatch.setattr(
+            copilot, "_copilot_path_candidate", copilot._windows_copilot_path_candidate
+        )
+        monkeypatch.setattr(
+            copilot.subprocess_cross_os,
+            "run",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                stdout="GitHub Copilot CLI 1.0.42-0.", stderr=""
+            ),
+        )
+
+        assert copilot.resolve_binary() == os.path.abspath(github_shim)
+
+    def test_ignores_empty_path_entries(self, monkeypatch):
+        monkeypatch.setenv("PATH", os.pathsep)
+        monkeypatch.setattr(
+            copilot.shutil,
+            "which",
+            lambda *_args, **_kwargs: pytest.fail("must not search the current directory"),
+        )
+
+        assert copilot.resolve_binary() is None
 
 
 class TestRenderEnvOverlay:
@@ -305,6 +422,7 @@ class TestLaunch:
         monkeypatch.delenv("COPILOT_PROVIDER_WIRE_MODEL", raising=False)
         monkeypatch.setattr(copilot, "get_databricks_token", lambda *args, **kwargs: "tok")
         monkeypatch.setattr(copilot, "TOKEN_REFRESH_INTERVAL_SECONDS", 3600)
+        monkeypatch.setattr(copilot, "resolve_binary", lambda: "/opt/github/copilot")
         calls = []
 
         class Process:
@@ -327,7 +445,7 @@ class TestLaunch:
 
         assert exit_info.value.code == 0
         argv, env = calls[0]
-        assert argv == ["copilot", *tool_args]
+        assert argv == ["/opt/github/copilot", *tool_args]
         assert env["COPILOT_MODEL"] == expected_model
         assert env["COPILOT_PROVIDER_WIRE_API"] == expected_api
         assert state["copilot_default_model"] == default
