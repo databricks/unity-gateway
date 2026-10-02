@@ -17,6 +17,7 @@ the reconcile logic under test runs for real.
 from __future__ import annotations
 
 import json
+import types
 from pathlib import Path
 
 import pytest
@@ -238,6 +239,11 @@ def test_claude_model_lifecycle(harness):
     assert managed["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] == CLAUDE_A[0] + "[1m]", managed
     assert managed["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == CLAUDE_A[1] + "[1m]", managed
     assert managed["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == CLAUDE_A[2], managed
+    # A static allow-list (model_services) enforces availableModels, under which Claude Code ignores
+    # ANTHROPIC_DEFAULT_MODEL, so ug does not write it here; the launch-time ANTHROPIC_MODEL pin
+    # carries the admin default for a static list instead.
+    assert "ANTHROPIC_DEFAULT_MODEL" not in managed["env"], managed
+    assert "ANTHROPIC_DEFAULT_MODEL" not in private["env"], private
     assert managed["env"]["MY_OWN"] == "keep"
 
     # State 2: managed config B -> the picker reconciles to B; opus is pruned from the list.
@@ -250,16 +256,124 @@ def test_claude_model_lifecycle(harness):
     assert "ANTHROPIC_DEFAULT_OPUS_MODEL" not in managed["env"], managed
     assert managed["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == CLAUDE_B[0] + "[1m]", managed
     assert managed["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == CLAUDE_B[1], managed
+    assert "ANTHROPIC_DEFAULT_MODEL" not in managed["env"], managed
     assert managed["env"]["MY_OWN"] == "keep"
 
     # State 3: managed config gone -> the picker is cleared, so an unmanaged workspace never enforces
-    # a stale list. The user-owned key still survives.
+    # a stale list. The user-owned key still survives. The static-list configs never wrote
+    # ANTHROPIC_DEFAULT_MODEL, so there is none to carry over.
     harness.apply_claude(None)
     private, managed = harness.claude_files()
     for key in PICKER_KEYS:
         assert key not in private, private
         assert key not in managed, managed
+    assert "ANTHROPIC_DEFAULT_MODEL" not in managed["env"], managed
     assert managed["env"]["MY_OWN"] == "keep"
+
+
+def test_claude_default_model_without_family_slots(harness):
+    # A config naming only an overall default_model (no per-family slots, no static list): persist it
+    # as the bare ANTHROPIC_DEFAULT_MODEL (the /model Default row) in both files without forcing
+    # ANTHROPIC_MODEL, and retire it on a later unmanaged configure. Family aliases stay on discovery.
+    config = _config(
+        {
+            "agent": "CODING_AGENT_CLAUDE_CODE",
+            "config": {"default_models": {"default_model": "system.ai.claude-opus-4-8"}},
+        }
+    )
+    harness.apply_claude(config)
+    private, managed = harness.claude_files()
+    assert private["env"]["ANTHROPIC_DEFAULT_MODEL"] == "system.ai.claude-opus-4-8", private
+    assert managed["env"]["ANTHROPIC_DEFAULT_MODEL"] == "system.ai.claude-opus-4-8", managed
+    assert "ANTHROPIC_MODEL" not in private["env"], private
+    assert "ANTHROPIC_MODEL" not in managed["env"], managed
+    for key in PICKER_KEYS:
+        assert key not in managed, managed
+
+    # A later managed config that names no overall default_model retires it from both files: under a
+    # managed config #928 preservation does not run, so the retirement prune drops the unwritten key.
+    slots_only = _config(
+        {
+            "agent": "CODING_AGENT_CLAUDE_CODE",
+            "config": {"default_models": {"default_sonnet_model": "system.ai.claude-sonnet-4-6"}},
+        }
+    )
+    harness.apply_claude(slots_only)
+    private, managed = harness.claude_files()
+    assert "ANTHROPIC_DEFAULT_MODEL" not in private["env"], private
+    assert "ANTHROPIC_DEFAULT_MODEL" not in managed["env"], managed
+
+
+def test_claude_default_model_retired_when_config_drops_it(harness, monkeypatch):
+    # Production retire path: with a managed config PRESENT that names no overall default (here an
+    # MPS source), #928 preservation is disabled (managed_config_present is True) so the retirement
+    # prune drops a previously-written ANTHROPIC_DEFAULT_MODEL rather than keeping it. The offline
+    # harness can't reach a live config, so stub the presence check that write_tool_config reads.
+    monkeypatch.setattr(
+        claude, "refresh_managed_config", lambda _state: types.SimpleNamespace(manifest={})
+    )
+    default_only = _config(
+        {
+            "agent": "CODING_AGENT_CLAUDE_CODE",
+            "config": {"default_models": {"default_model": "system.ai.claude-opus-4-8"}},
+        }
+    )
+    harness.apply_claude(default_only)
+    _, managed = harness.claude_files()
+    assert managed["env"]["ANTHROPIC_DEFAULT_MODEL"] == "system.ai.claude-opus-4-8", managed
+
+    harness.apply_claude(CLAUDE_CONFIG_MPS)
+    _, managed = harness.claude_files()
+    assert "ANTHROPIC_DEFAULT_MODEL" not in managed["env"], managed
+
+
+def test_claude_unity_catalog_persists_default_and_family(harness):
+    # A unity_catalog_location source routes gateway ids, so `ug configure` persists the overall
+    # default (ANTHROPIC_DEFAULT_MODEL) and the authored family slots to BOTH settings files without
+    # force-pinning ANTHROPIC_MODEL -- mirroring _configure_one's parent-schema call.
+    cfg = _config(
+        {
+            "agent": "CODING_AGENT_CLAUDE_CODE",
+            "config": {
+                "models": {"unity_catalog_location": "system.ai"},
+                "default_models": {
+                    "default_model": "system.ai.claude-sonnet-5-5",
+                    "default_opus_model": "system.ai.claude-opus-5-5",
+                    "default_sonnet_model": "system.ai.claude-sonnet-5-5",
+                    "default_haiku_model": "system.ai.claude-haiku-4-5",
+                },
+            },
+        }
+    )
+    managed = normalize_managed_config(cfg)
+    base = {"workspace": WS, "codex_models": [], "claude_models": dict(DISCOVERED_CLAUDE)}
+    state = resolve_state(managed, base, "claude")
+    claude.write_tool_config(
+        state,
+        None,
+        parent_schema="system.ai",
+        coding_agent_config_defaults=managed_claude_family_models(managed) or {},
+    )
+    private, managed_file = harness.claude_files()
+    for settings in (private, managed_file):
+        env = settings["env"]
+        assert env["ANTHROPIC_DEFAULT_MODEL"] == "system.ai.claude-sonnet-5-5", settings
+        assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "system.ai.claude-opus-5-5[1m]", settings
+        assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "system.ai.claude-sonnet-5-5[1m]", settings
+        assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "system.ai.claude-haiku-4-5", settings
+        assert "ANTHROPIC_MODEL" not in env, settings
+
+
+def test_unmanaged_preserves_developer_default_model(harness):
+    # Symmetric with #928's family-default preservation: with no managed config, a developer's own
+    # ANTHROPIC_DEFAULT_MODEL in the OS-managed file must survive the retirement prune its new tuple
+    # membership would otherwise trigger.
+    harness.claude_managed.write_text(
+        json.dumps({"env": {"ANTHROPIC_DEFAULT_MODEL": "system.ai.claude-opus-4-8"}})
+    )
+    harness.apply_claude(None)
+    _private, managed = harness.claude_files()
+    assert managed["env"]["ANTHROPIC_DEFAULT_MODEL"] == "system.ai.claude-opus-4-8", managed
 
 
 def test_codex_model_lifecycle(harness):

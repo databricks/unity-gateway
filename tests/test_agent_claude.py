@@ -99,6 +99,84 @@ class TestRenderOverlay:
         )
         assert "ANTHROPIC_MODEL" not in overlay["env"]
 
+    def test_sets_anthropic_default_model_from_managed_default(self):
+        # The managed overall default is the /model "Default" row: persisted so a plain launch
+        # starts on it without force-pinning ANTHROPIC_MODEL. Written verbatim (no 1m suffix) so it
+        # routes exactly as the admin authored it.
+        overlay, keys = claude.render_overlay(
+            WS, None, claude_models={}, default_model="system.ai.claude-opus-4-8"
+        )
+        assert overlay["env"]["ANTHROPIC_DEFAULT_MODEL"] == "system.ai.claude-opus-4-8"
+        assert "ANTHROPIC_MODEL" not in overlay["env"]
+        assert ["env", "ANTHROPIC_DEFAULT_MODEL"] in keys
+
+    def test_does_not_set_anthropic_default_model_without_managed_default(self):
+        overlay, _ = claude.render_overlay(
+            WS, "s4", claude_models={"opus": "databricks-claude-opus-4-7"}
+        )
+        assert "ANTHROPIC_DEFAULT_MODEL" not in overlay["env"]
+
+    def test_default_model_not_set_under_provider(self):
+        # A Model Provider Service sends foreign-namespace ids (Anthropic canonical names, Bedrock
+        # shortcut rows), so a bare Databricks default would be unroutable / mislabel the picker.
+        overlay, _ = claude.render_overlay(
+            WS,
+            None,
+            claude_models={},
+            default_model="system.ai.claude-opus-4-8",
+            provider="main.default.anthropic-mps",
+        )
+        assert "ANTHROPIC_DEFAULT_MODEL" not in overlay["env"]
+
+    def test_default_model_set_under_parent_schema(self):
+        # A Unity Catalog location routes the same gateway ids, which are routable, so the Default
+        # row is persisted there just like the gateway source.
+        overlay, _ = claude.render_overlay(
+            WS,
+            None,
+            claude_models={},
+            default_model="system.ai.claude-opus-4-8",
+            parent_schema="main.default",
+        )
+        assert overlay["env"]["ANTHROPIC_DEFAULT_MODEL"] == "system.ai.claude-opus-4-8"
+
+    def test_default_model_not_set_with_static_models(self):
+        # A static allow-list sets enforceAvailableModels, under which Claude Code ignores
+        # ANTHROPIC_DEFAULT_MODEL, so ug does not write it (the launch ANTHROPIC_MODEL pin carries
+        # the admin default for a static list instead).
+        overlay, _ = claude.render_overlay(
+            WS,
+            None,
+            claude_models={},
+            default_model="system.ai.claude-opus-4-8",
+            static_models=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
+        )
+        assert "ANTHROPIC_DEFAULT_MODEL" not in overlay["env"]
+
+    def test_default_model_not_set_when_relayed(self):
+        overlay, _ = claude.render_overlay(
+            WS,
+            None,
+            claude_models={},
+            default_model="system.ai.claude-opus-4-8",
+            relayed=True,
+            relayed_base_url="http://127.0.0.1:9999",
+        )
+        assert "ANTHROPIC_DEFAULT_MODEL" not in overlay["env"]
+
+    def test_default_model_and_route_root_model_coexist(self):
+        # A smart-default recommendation pins ANTHROPIC_MODEL for the session while the managed
+        # default still seeds the Default row for /model switching; the two are independent.
+        overlay, _ = claude.render_overlay(
+            WS,
+            None,
+            claude_models={},
+            default_model="system.ai.claude-opus-4-8",
+            route_root_model="system.ai.claude-haiku-4-5",
+        )
+        assert overlay["env"]["ANTHROPIC_MODEL"] == "system.ai.claude-haiku-4-5"
+        assert overlay["env"]["ANTHROPIC_DEFAULT_MODEL"] == "system.ai.claude-opus-4-8"
+
     def test_adds_1m_suffix_for_opus_4_6_and_later(self):
         overlay, _ = claude.render_overlay(
             WS, "s4", claude_models={"opus": "databricks-claude-opus-4-7"}

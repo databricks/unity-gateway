@@ -194,6 +194,7 @@ def _otel_trace_env(workspace: str) -> dict[str, str]:
 # are preserved unless Coding Agent Config explicitly supplies that family.
 CLAUDE_MANAGED_MODEL_ENV_KEYS = (
     "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_MODEL",
     "ANTHROPIC_DEFAULT_FABLE_MODEL",
     "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
@@ -393,6 +394,7 @@ def render_overlay(
     otel_tracing: bool = False,
     picker_catalog: AnthropicModelCatalog | None = None,
     managed_http_headers: dict[str, str] | None = None,
+    default_model: str | None = None,
 ) -> tuple[dict, list[list[str]]]:
     """Return (overlay, managed_key_paths) for Claude settings.json.
 
@@ -488,6 +490,14 @@ def render_overlay(
                     if family in ("opus", "sonnet")
                     else family_model
                 )
+    # The managed config's overall default is Claude Code's /model "Default" row: it starts the
+    # session on the admin's model without force-pinning ANTHROPIC_MODEL, so the user can still
+    # switch via /model. Written only for gateway and Unity Catalog sources (both route Databricks
+    # ids). A Model Provider Service sends a foreign-namespace id, and a static allow-list sets
+    # enforceAvailableModels (under which Claude Code ignores ANTHROPIC_DEFAULT_MODEL) -- both keep
+    # the forced ANTHROPIC_MODEL pin instead.
+    if default_model and not provider and not relayed and not static_models:
+        env["ANTHROPIC_DEFAULT_MODEL"] = default_model
     # Relayed omits apiKeyHelper so Claude Code's subscription OAuth stays the
     # Authorization credential; every other path uses it as the gateway auth.
     overlay: dict = {"env": env}
@@ -1293,6 +1303,7 @@ def write_tool_config(
         otel_tracing=should_write_tracing_settings,
         picker_catalog=picker_catalog,
         managed_http_headers=state.get("claude_http_headers"),
+        default_model=state.get("claude_default_model"),
     )
     source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
     # Native discovery must not inherit UG's prior static allow-list. Keep a replacement picker
@@ -1396,6 +1407,18 @@ def write_tool_config(
                 existing_default = base_env.get(key)
                 if isinstance(existing_default, str):
                     target_env[key] = existing_default
+            # The bare ANTHROPIC_DEFAULT_MODEL is managed-only; without a config it too is the
+            # developer's, so keep it from the retirement prune its tuple membership triggers -- but
+            # only for the gateway/UC sources that write it, so a stale value is not preserved into a
+            # provider, relayed, or enforced static-list launch where it would be unroutable.
+            existing_overall_default = base_env.get("ANTHROPIC_DEFAULT_MODEL")
+            if (
+                isinstance(existing_overall_default, str)
+                and not provider
+                and not relayed
+                and not state.get("claude_static_models")
+            ):
+                target_env["ANTHROPIC_DEFAULT_MODEL"] = existing_overall_default
         merged = deep_merge_dict(base, overlay_for_merge)
         for key in stale_picker_keys:
             merged.pop(key, None)
