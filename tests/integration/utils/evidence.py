@@ -5,6 +5,10 @@ import re
 import uuid
 from pathlib import Path
 
+from .agents import claude, codex
+
+_AGENT_HELPERS = {"claude": claude, "codex": codex}
+
 
 def assert_no_terminal_api_error(screen: str) -> None:
     """Fail on definitive client errors, not an in-progress transient retry."""
@@ -37,39 +41,19 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def agent_sessions(session, agent: str) -> dict[str, list[dict]]:
-    directory = session.home / (".claude/projects" if agent == "claude" else ".codex/sessions")
+    directory = session.home / _AGENT_HELPERS.get(agent, codex).SESSION_DIRECTORY
     return {
         str(path.relative_to(directory)): read_jsonl(path) for path in directory.rglob("*.jsonl")
     }
 
 
 def assistant_answers(agent: str, records: list[dict]) -> list[str]:
-    answers = []
-    for record in records:
-        if agent == "claude" and record.get("type") == "assistant":
-            message = record.get("message", {})
-            if message.get("role") == "assistant":
-                answers.extend(
-                    part["text"]
-                    for part in message.get("content", [])
-                    if part.get("type") == "text" and isinstance(part.get("text"), str)
-                )
-        if agent == "codex" and record.get("type") == "event_msg":
-            payload = record.get("payload", {})
-            if payload.get("type") == "task_complete" and payload.get("last_agent_message"):
-                answers.append(payload["last_agent_message"])
-    return answers
+    helper = _AGENT_HELPERS.get(agent)
+    return helper.assistant_answers(records) if helper is not None else []
 
 
 def is_child_session(agent: str, path: str, records: list[dict]) -> bool:
-    if agent == "claude":
-        return "/subagents/" in path
-    return any(
-        record.get("type") == "session_meta"
-        and isinstance(record.get("payload", {}).get("source"), dict)
-        and "subagent" in record["payload"]["source"]
-        for record in records
-    )
+    return _AGENT_HELPERS.get(agent, codex).is_child_session(path, records)
 
 
 def assistant_answer_contains(session, agent: str, value: str, *, child: bool = False) -> bool:

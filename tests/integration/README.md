@@ -54,6 +54,12 @@ when an explicit model is supplied. The only live OpenCode journey is the headle
 prompt case in `test_ug_opencode_headless.py`; there is no dedicated live OpenCode
 model-selection journey.
 
+## Shared agent helpers
+
+`utils/agents/claude.py` and `utils/agents/codex.py` own the existing native answer
+parsing, session paths, and child-session detection. `utils/evidence.py` dispatches
+through them without changing existing journey commands or completion assertions.
+
 ## Run a specific combination
 
 Prerequisites: Python 3.12+, uv, and Node/npm. Live runs also require Databricks
