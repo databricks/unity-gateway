@@ -13,16 +13,6 @@ from pathlib import Path
 MANAGED_CONFIGS_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 
 
-def read_persisted_managed_config(session, workspace: str) -> dict:
-    """Read the configure result without imposing a journey-specific policy."""
-    path = session.home / ".ucode" / "managed-config.json"
-    assert path.is_file(), path
-    persisted = json.loads(path.read_text())
-    assert isinstance(persisted, dict) and persisted.get("workspace") == workspace, persisted
-    assert isinstance(persisted.get("config"), dict), persisted
-    return persisted
-
-
 def assert_no_managed_config(payload: object) -> None:
     """Validate the real List response before claiming unmanaged-workspace coverage."""
     configs = payload.get("coding_agent_configs", []) if isinstance(payload, dict) else payload
