@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import urllib.parse
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import NoReturn
 
 from .http import safe_https_json_get
@@ -41,7 +41,6 @@ class CodexProviderCatalog:
 
     model_ids: tuple[str, ...]
     payloads: tuple[dict, ...] = ()
-    display_names: dict[str, str | None] = field(default_factory=dict)
 
 
 def _fail(message: str) -> NoReturn:
@@ -199,14 +198,7 @@ def _fetch_codex_catalog(
     payload = safe_https_json_get(workspace, token, _CODEX_MODELS_PATH, headers=scope_headers)
     model_ids = parse_codex_provider_catalog(payload)
     assert isinstance(payload, dict), "Expected a Codex catalog object"
-    display_names: dict[str, str | None] = {}
-    for entry in payload["models"]:
-        if entry.get("visibility") == "list" and entry.get("slug") in model_ids:
-            label = entry.get("display_name")
-            if label is not None and (not isinstance(label, str) or not label.strip()):
-                _fail("Invalid Codex catalog display name")
-            display_names[entry["slug"]] = label
-    return CodexProviderCatalog(model_ids, (payload,), display_names)
+    return CodexProviderCatalog(model_ids, (payload,))
 
 
 def fetch_codex_parent_catalog(

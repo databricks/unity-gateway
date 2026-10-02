@@ -62,19 +62,17 @@ def is_child_session(agent: str, path: str, records: list[dict]) -> bool:
     return _evidence_adapter(agent).is_child_session(path, records)
 
 
-claude_completed_task_models = claude.completed_task_models
-codex_completed_task_models = codex.completed_task_models
-
-
 def completed_task_models(session, agent: str, answer_value: str) -> set[str]:
     """Read parent task model evidence, not proof of the gateway's destination."""
     adapter = _evidence_adapter(agent)
     assert isinstance(answer_value, str) and answer_value.strip(), (
         "Expected a nonempty answer value"
     )
+    sessions = agent_sessions(session, agent)
+    session.record("agent-sessions.json", sessions)
     return {
         model
-        for path, records in agent_sessions(session, agent).items()
+        for path, records in sessions.items()
         if not is_child_session(agent, path, records)
         for model in adapter.completed_task_models(records, answer_value)
     }

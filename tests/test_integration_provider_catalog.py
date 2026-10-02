@@ -284,23 +284,11 @@ def test_codex_parent_catalog_retains_unfiltered_payload_and_validates_duplicate
     )
     assert result.payloads == (payload,)
     assert result.model_ids == ("catalog.models.gpt_luna",)
-    assert result.display_names == {"catalog.models.gpt_luna": "Luna"}
     payload["models"].append(payload["models"][0])
     with pytest.raises(AssertionError, match="repeated"):
         catalog.fetch_codex_parent_catalog(
             "https://workspace.invalid", "test-bearer", "catalog.models"
         )
-
-
-def test_provider_catalog_constructors_preserve_existing_arguments_and_isolate_defaults():
-    anthropic = catalog.AnthropicProviderCatalog(("claude-a",), {"claude-a": None})
-    codex = catalog.CodexProviderCatalog(("gpt-a",))
-    other_codex = catalog.CodexProviderCatalog(("gpt-b",))
-    assert anthropic.payloads == ()
-    assert codex.payloads == ()
-    assert codex.display_names == {}
-    codex.display_names["gpt-a"] = "Model A"
-    assert other_codex.display_names == {}
 
 
 @pytest.mark.parametrize(
@@ -327,7 +315,7 @@ def test_anthropic_catalog_preserves_raw_pages_and_optional_labels(monkeypatch, 
 @pytest.mark.parametrize(
     "fetcher", [catalog.fetch_codex_provider_catalog, catalog.fetch_codex_parent_catalog]
 )
-def test_codex_catalog_preserves_hidden_entries_order_and_optional_labels(monkeypatch, fetcher):
+def test_codex_catalog_preserves_hidden_entries_and_order(monkeypatch, fetcher):
     payload = {
         "models": [
             {"slug": "b", "visibility": "list"},
@@ -341,18 +329,6 @@ def test_codex_catalog_preserves_hidden_entries_order_and_optional_labels(monkey
     result = fetcher("https://workspace", "token", "catalog.models")
     assert result.payloads == (payload,)
     assert result.model_ids == ("b", "a")
-    assert result.display_names == {"b": None, "a": "Model A"}
-
-
-@pytest.mark.parametrize(
-    "fetcher", [catalog.fetch_codex_provider_catalog, catalog.fetch_codex_parent_catalog]
-)
-@pytest.mark.parametrize("display_name", ["", " ", 7, [], {}])
-def test_codex_catalog_rejects_invalid_optional_display_names(monkeypatch, fetcher, display_name):
-    payload = {"models": [{"slug": "a", "visibility": "list", "display_name": display_name}]}
-    _mock_json_boundary(monkeypatch, lambda *args: payload)
-    with pytest.raises(AssertionError, match="display name"):
-        fetcher("https://workspace", "token", "catalog.models")
 
 
 @pytest.mark.parametrize(

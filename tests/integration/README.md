@@ -520,36 +520,12 @@ cannot still be running when that gate passes. Full coverage on PRs needs no lab
 
 ### Catalog discovery
 
-Agent selection follows the rest of the suite: explicit `test_catalog_discovery_<agent>`
-journeys carry agent markers; `UG_INTEGRATION_AGENTS` filters collection, and CI runs an
-agent matrix. Launch commands, TUI tasks, defaults, and expected model sets stay visible
-in each journey. Shared per-agent discovery and transcript helpers live in `utils/agents/`;
-process, terminal, and task orchestration stay in the common harness.
+The dedicated workspace must already publish a CodingAgentConfig enabling both agents
+with `ug_e2e.models` as their model source. Claude is the default agent; its default and
+Sonnet-family model are `claude_sonnet`, and Codex defaults to `gpt_luna`. Smart routing
+and tracing are disabled. Tests neither provision nor validate fixture definitions.
 
-For another agent, add its helper module and evidence adapter, explicit journey and
-fixture expectations. Register its package/version and marker in the runner/collection
-setup, implement any native terminal support, and add it to the CI matrix. Existing
-journeys need no renaming or generic agent branches.
-
-The dedicated workspace must already contain the services listed below and publish
-a CodingAgentConfig enabling both agents with `ug_e2e.models` as their model source.
-Its default agent is Claude; defaults are Claude Sonnet (including the Sonnet family
-default) and Codex GPT Luna, with smart routing and tracing disabled. Tests do not
-provision resources or policy; Apps, connections, MCP, and skills are not required.
-
-Model-service fixtures are trusted prerequisites; journeys do not revalidate their
-backing destinations. Each journey runs real `ug configure`, checks persisted
-schema/defaults, and independently fetches scoped and compatible-decoy catalogs.
-Generated settings/catalogs, native caches/model lists, and exact numbered picker
-rows must agree: no unmatched, ambiguous, duplicate, or excluded entries hidden
-by labels. Defaults and every extra compatible model must complete file tasks
-with values withheld from prompts. Claude checks the response-reported model;
-Codex checks the client-selected model. Neither proves the executed gateway backing
-destination; discovery or startup alone cannot pass.
-
-The version-agnostic services under `ug_e2e.models` and expected discovery sets are:
-
-| Service | Claude Code | Codex |
+| Service under `ug_e2e.models` | Claude Code | Codex |
 | --- | --- | --- |
 | `gpt_luna` | Excluded | Included; default |
 | `claude_haiku` | Included | Excluded |
@@ -557,27 +533,21 @@ The version-agnostic services under `ug_e2e.models` and expected discovery sets 
 | `kimi` | Included | Included |
 | `gemini_flash` | Excluded | Excluded |
 
-In-schema Gemini tests compatibility; accessible `ug_e2e.other_models.claude_decoy`
-and `ug_e2e.other_models.codex_decoy` test scope exclusion. Provisioning takes explicit
-backing `system.ai` versions. These sets require live verification of gateway API-type
-metadata, feature flags, and harness compatibility; unexpected Gemini visibility
-fails without local filtering. Offline checks are not a live pass.
+Independent catalogs, native caches/model lists, and exact picker inventories must agree.
+Compatible `ug_e2e.other_models.claude_decoy` and `codex_decoy` must be discoverable in their
+own schema but absent from the scoped picker. Claude discovery aliases must be enabled;
+Kimi uses `anthropic-aigw-<8-character SHA-256 prefix>-<service FQN>`.
 
-The dedicated workspace must enable Claude discovery aliases, including Kimi's
-`anthropic-aigw-<8-character SHA-256 prefix>-<service FQN>` form. The journey checks
-checksums, exact service/wire inventories, and the coding-agent-mode header needed
-to reverse aliases for inference. Settings, cache, picker, tasks, and response-reported
-models retain returned wire IDs; Codex keeps raw FQNs. No entries are dropped.
+Bare `ug` and `ug claude` each complete a Sonnet TUI file task; `ug claude -p "task"`
+completes a print task. Codex completes TUI and `ug codex -- exec --json "task"` tasks on
+GPT Luna. Defaults omit model overrides; every additional compatible model completes a
+headless file task. Expected answers are withheld from prompts. Claude model evidence is
+response-reported; Codex evidence joins the completed answer to its client-selected turn
+model. Neither proves the gateway's backing destination. Only live passes establish coverage.
 
-Bare `ug` and explicit `ug claude` each complete a separate Claude/Sonnet TUI task
-and exit normally; `ug claude -p "task"` completes a Sonnet print task. Codex completes
-both TUI and `ug codex -- exec --skip-git-repo-check --json "task"` tasks on `gpt_luna`.
-All default tasks omit model overrides; routing stays off.
-
-CI runs `managed and catalog_discovery and workspace_isolated` in a two-agent matrix using
-`UG_CUJ3_WORKSPACE` and the shared CUJ SP secrets. The shared managed lanes exclude
-`workspace_isolated`; both catalog discovery legs are required for full/live runs. Local runs
-must provide an explicit workspace and authenticated profile or bearer:
+CI runs explicit agent journeys in a two-agent matrix using `UG_CUJ3_WORKSPACE` and shared
+CUJ SP secrets. Both lanes block full/live runs; shared managed lanes exclude
+`workspace_isolated`. Run locally with an explicit workspace and authenticated profile:
 
 ```bash
 python3.12 scripts/run_integration.py \
@@ -586,7 +556,7 @@ python3.12 scripts/run_integration.py \
   -- -m 'managed and catalog_discovery and workspace_isolated'
 ```
 
-MCP/skills remain separate layers; this model suite does not depend on CUJ7.
+MCP/skills discovery remains separate.
 
 ### Managed-workspace journeys
 

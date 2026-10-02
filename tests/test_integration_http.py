@@ -6,21 +6,9 @@ import urllib.response
 
 import pytest
 
-from tests.integration.utils import http, provider_catalog
-
-FETCHERS = [
-    provider_catalog.fetch_anthropic_parent_catalog,
-    provider_catalog.fetch_codex_parent_catalog,
-    provider_catalog.fetch_anthropic_provider_catalog,
-    provider_catalog.fetch_codex_provider_catalog,
-]
+from tests.integration.utils import http
 
 
-def fetch_inventory(fetcher, workspace="https://workspace.invalid", token="test-bearer"):
-    return fetcher(workspace, token, "catalog.models")
-
-
-@pytest.mark.parametrize("fetcher", FETCHERS)
 @pytest.mark.parametrize(
     "workspace",
     [
@@ -40,30 +28,28 @@ def fetch_inventory(fetcher, workspace="https://workspace.invalid", token="test-
         "https://workspace.invalid\\@other.invalid",
     ],
 )
-def test_catalog_gets_reject_invalid_workspace_origins(monkeypatch, fetcher, workspace):
+def test_workspace_json_get_rejects_invalid_origins(monkeypatch, workspace):
     def unexpected_open(*args, **kwargs):
         pytest.fail("Invalid workspace must not reach the HTTP boundary")
 
     monkeypatch.setattr(http.urllib.request, "build_opener", unexpected_open)
     with pytest.raises(AssertionError, match="HTTPS workspace origin") as failure:
-        fetch_inventory(fetcher, workspace)
+        http.safe_https_json_get(workspace, "test-bearer", "/api/models")
     assert "secret" not in str(failure.value)
 
 
-@pytest.mark.parametrize("fetcher", FETCHERS)
 @pytest.mark.parametrize("token", [None, "", " ", "bearer\nsecret", "bearer\rsecret"])
-def test_catalog_gets_require_explicit_valid_bearers(monkeypatch, fetcher, token):
+def test_workspace_json_get_requires_an_explicit_valid_bearer(monkeypatch, token):
     def unexpected_open(*args, **kwargs):
         pytest.fail("Invalid bearer must not reach the HTTP boundary")
 
     monkeypatch.setattr(http.urllib.request, "build_opener", unexpected_open)
     with pytest.raises(AssertionError, match="explicit workspace bearer"):
-        fetch_inventory(fetcher, token=token)
+        http.safe_https_json_get("https://workspace.invalid", token, "/api/models")
 
 
-@pytest.mark.parametrize("fetcher", FETCHERS)
 @pytest.mark.parametrize("failure_kind", ["http", "url", "os", "json", "encoding"])
-def test_catalog_get_errors_are_sanitized(monkeypatch, fetcher, failure_kind):
+def test_workspace_json_get_errors_are_sanitized(monkeypatch, failure_kind):
     secret = "private-bearer-and-response-secret"
 
     class FailedOpener:
@@ -81,16 +67,15 @@ def test_catalog_get_errors_are_sanitized(monkeypatch, fetcher, failure_kind):
 
     monkeypatch.setattr(http.urllib.request, "build_opener", lambda *_: FailedOpener())
     with pytest.raises(AssertionError, match="Workspace JSON GET") as failure:
-        fetch_inventory(fetcher, token=secret)
+        http.safe_https_json_get("https://workspace.invalid", secret, "/api/models")
     assert secret not in str(failure.value)
     assert "workspace.invalid" not in str(failure.value)
     assert failure.value.__suppress_context__
 
 
-@pytest.mark.parametrize("fetcher", FETCHERS)
 @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
 @pytest.mark.parametrize("destination", ["https://other.invalid/secret", "/redirected"])
-def test_catalog_gets_deny_redirects(monkeypatch, fetcher, status, destination):
+def test_workspace_json_get_denies_redirects(monkeypatch, status, destination):
     requests = []
     build_opener = http.urllib.request.build_opener
 
@@ -109,7 +94,7 @@ def test_catalog_gets_deny_redirects(monkeypatch, fetcher, status, destination):
         lambda handler: build_opener(handler, BoundaryHTTPS()),
     )
     with pytest.raises(AssertionError, match=f"HTTP {status}") as failure:
-        fetch_inventory(fetcher)
+        http.safe_https_json_get("https://workspace.invalid", "test-bearer", "/api/models")
     assert len(requests) == 1
     assert requests[0].get_header("Authorization") == "Bearer test-bearer"
     assert destination not in str(failure.value)

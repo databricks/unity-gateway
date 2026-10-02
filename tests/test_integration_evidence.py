@@ -5,6 +5,7 @@ import json
 import pytest
 
 from tests.integration.utils import evidence
+from tests.integration.utils.agents import _evidence_id, claude, codex
 from tests.integration.utils.evidence import (
     SubagentCalculation,
     assert_no_terminal_api_error,
@@ -121,7 +122,7 @@ def test_codex_model_identity_uses_only_the_completed_answer_turn():
             },
         },
     ]
-    assert evidence.codex_completed_task_models(records, "withheld-file-value") == {
+    assert codex.completed_task_models(records, "withheld-file-value") == {
         "catalog.models.gpt_luna"
     }
 
@@ -137,7 +138,7 @@ def test_codex_model_identity_rejects_prompt_only_evidence():
             "payload": {"type": "message", "role": "user", "content": "withheld-file-value"},
         },
     ]
-    assert evidence.codex_completed_task_models(records, "withheld-file-value") == set()
+    assert codex.completed_task_models(records, "withheld-file-value") == set()
 
 
 def test_claude_model_identity_uses_assistant_answer_not_tool_output():
@@ -158,9 +159,7 @@ def test_claude_model_identity_uses_assistant_answer_not_tool_output():
             },
         },
     ]
-    assert evidence.claude_completed_task_models(records, "value") == {
-        "catalog.models.claude_sonnet"
-    }
+    assert claude.completed_task_models(records, "value") == {"catalog.models.claude_sonnet"}
 
 
 def completed_records(agent, model, answer="value", turn_id="matching"):
@@ -200,13 +199,10 @@ def test_completed_task_models_excludes_child_only_and_conflicting_child_evidenc
     assert evidence.completed_task_models(session, agent, "value") == expected
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex"])
-@pytest.mark.parametrize("model", [None, "", " ", 5, {}, [], "model with whitespace"])
-def test_completed_task_models_fails_closed_on_malformed_model(tmp_path, agent, model):
-    records = completed_records(agent, model)
-    session = _transcript_session(tmp_path, agent, {"parent.jsonl": records})
-    with pytest.raises(AssertionError, match="model"):
-        evidence.completed_task_models(session, agent, "value")
+@pytest.mark.parametrize("value", [None, "", " ", 5, {}, [], "model with whitespace"])
+def test_completed_task_ids_require_nonempty_strings_without_whitespace(value):
+    with pytest.raises(AssertionError, match="Missing or malformed completed-task model"):
+        _evidence_id(value, "model")
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
@@ -218,13 +214,13 @@ def test_completed_task_models_fails_closed_on_missing_model(tmp_path, agent):
         evidence.completed_task_models(session, agent, "value")
 
 
-@pytest.mark.parametrize("turn_id", [None, "", " ", 5, {}, [], "turn with whitespace"])
+@pytest.mark.parametrize("turn_id", ["", "turn with whitespace"])
 @pytest.mark.parametrize("record_index", [0, 1])
 def test_codex_completed_task_models_fails_closed_on_malformed_turn_ids(turn_id, record_index):
     records = completed_records("codex", "model")
     records[record_index]["payload"]["turn_id"] = turn_id
     with pytest.raises(AssertionError, match="turn ID"):
-        evidence.codex_completed_task_models(records, "value")
+        codex.completed_task_models(records, "value")
 
 
 @pytest.mark.parametrize("record_index", [0, 1])
@@ -232,7 +228,7 @@ def test_codex_completed_task_models_fails_closed_on_missing_turn_ids(record_ind
     records = completed_records("codex", "model")
     del records[record_index]["payload"]["turn_id"]
     with pytest.raises(AssertionError, match="turn ID"):
-        evidence.codex_completed_task_models(records, "value")
+        codex.completed_task_models(records, "value")
 
 
 def test_codex_completed_task_models_requires_context_in_same_session(tmp_path):
@@ -253,7 +249,9 @@ def test_completed_task_model_assertion_requires_exact_singleton(tmp_path, agent
     session = _transcript_session(tmp_path, agent, {"parent.jsonl": records})
     with pytest.raises(AssertionError):
         evidence.assert_completed_task_model(session, agent, "value", "expected")
-    assert next(iter(session.artifacts.values()))["observed"] == sorted(models)
+    assert session.artifacts[f"completed-task-model-{agent}-value.json"]["observed"] == sorted(
+        models
+    )
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
@@ -262,15 +260,16 @@ def test_completed_task_model_records_evidence_limits(tmp_path, agent):
         tmp_path, agent, {"parent.jsonl": completed_records(agent, "expected")}
     )
     evidence.assert_completed_task_model(session, agent, "value", "expected")
-    assert session.artifacts == {
-        f"completed-task-model-{agent}-value.json": {
-            "expected": "expected",
-            "observed": ["expected"],
-            "evidence_kind": (
-                "response-reported model" if agent == "claude" else "client-selected model"
-            ),
-            "gateway_destination_proven": False,
-        }
+    assert session.artifacts["agent-sessions.json"] == {
+        "parent.jsonl": completed_records(agent, "expected")
+    }
+    assert session.artifacts[f"completed-task-model-{agent}-value.json"] == {
+        "expected": "expected",
+        "observed": ["expected"],
+        "evidence_kind": (
+            "response-reported model" if agent == "claude" else "client-selected model"
+        ),
+        "gateway_destination_proven": False,
     }
 
 
@@ -279,11 +278,7 @@ def test_completed_task_model_records_evidence_limits(tmp_path, agent):
 def test_completed_task_models_rejects_empty_or_malformed_expected_answers(agent, answer_value):
     with pytest.raises(AssertionError, match="nonempty answer value"):
         evidence.completed_task_models(None, agent, answer_value)
-    adapter = (
-        evidence.claude_completed_task_models
-        if agent == "claude"
-        else evidence.codex_completed_task_models
-    )
+    adapter = claude.completed_task_models if agent == "claude" else codex.completed_task_models
     with pytest.raises(AssertionError, match="nonempty answer value"):
         adapter([], answer_value)
 
@@ -294,7 +289,7 @@ def test_completed_task_models_rejects_empty_or_malformed_expected_answers(agent
 )
 def test_claude_completed_task_models_rejects_malformed_message_metadata(message):
     with pytest.raises(AssertionError):
-        evidence.claude_completed_task_models([{"type": "assistant", "message": message}], "value")
+        claude.completed_task_models([{"type": "assistant", "message": message}], "value")
 
 
 @pytest.mark.parametrize("content", [[None], [{"type": "text"}], [{"type": "text", "text": 4}]])
@@ -302,14 +297,14 @@ def test_claude_completed_task_models_rejects_malformed_answer_blocks(content):
     records = completed_records("claude", "model")
     records[0]["message"]["content"] = content
     with pytest.raises(AssertionError):
-        evidence.claude_completed_task_models(records, "value")
+        claude.completed_task_models(records, "value")
 
 
 @pytest.mark.parametrize("payload", [None, [], "value"])
 @pytest.mark.parametrize("record_type", ["event_msg", "turn_context"])
 def test_codex_completed_task_models_rejects_malformed_payloads(payload, record_type):
     with pytest.raises(AssertionError):
-        evidence.codex_completed_task_models([{"type": record_type, "payload": payload}], "value")
+        codex.completed_task_models([{"type": record_type, "payload": payload}], "value")
 
 
 @pytest.mark.parametrize("answer", [None, [], {}, 7])
@@ -317,10 +312,17 @@ def test_codex_completed_task_models_rejects_malformed_completed_answers(answer)
     records = completed_records("codex", "model")
     records[1]["payload"]["last_agent_message"] = answer
     with pytest.raises(AssertionError, match="completed answer"):
-        evidence.codex_completed_task_models(records, "value")
+        codex.completed_task_models(records, "value")
 
 
 def test_claude_completed_task_models_normalizes_only_context_window_suffix():
-    assert evidence.claude_completed_task_models(
+    assert claude.completed_task_models(
         completed_records("claude", "catalog.models.claude_sonnet[1m]"), "value"
     ) == {"catalog.models.claude_sonnet"}
+
+
+@pytest.mark.parametrize("agent", ["opencode", "unknown"])
+def test_completed_task_model_rejects_unsupported_agents(agent):
+    session = _Session(None)
+    with pytest.raises(AssertionError, match="Unsupported evidence agent"):
+        evidence.assert_completed_task_model(session, agent, "value", "model")

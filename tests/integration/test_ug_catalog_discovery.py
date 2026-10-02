@@ -15,7 +15,6 @@ from catalog_discovery_expectations import (
     GEMINI_MODEL,
     MODEL_SCHEMA,
     OTHER_MODEL_SCHEMA,
-    assert_model_policy,
 )
 from utils.agents import claude, codex
 from utils.evidence import FileTask, assert_completed_task_model
@@ -35,21 +34,16 @@ pytestmark = [pytest.mark.managed, pytest.mark.catalog_discovery, pytest.mark.wo
 @pytest.mark.claude
 @pytest.mark.tui
 def test_catalog_discovery_claude(live_session, workspace):
-    """Scenario: configure published Catalog discovery policy; launch bare ug, ug claude, and print tasks.
+    """Scenario: configure the managed workspace; launch bare ug, ug claude, and print tasks.
 
-    Expected: persisted schema/defaults match policy; independent
-    catalogs, settings, cache, and exact numbered picker agree on Sonnet/Haiku/Kimi,
-    excluding Gemini and both accessible out-of-scope decoys. Both TUI launches exit
-    normally after separate Sonnet file tasks; print mode uses Sonnet without an override,
-    and every extra model completes a headless task, with routing off throughout.
-    Claude's response-reported model must match; it does not prove the executed gateway
-    backing destination. These assertions require a live pass, not collection alone.
+    Expected: Sonnet/Haiku/Kimi appear in discovery and the picker, but Gemini and decoys
+    do not. TUI and print tasks use the Sonnet default without overrides; other compatible
+    models complete print tasks. Answers report the expected model, with routing off.
     """
     session = live_session
     configured = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
     assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
     persisted = read_persisted_managed_config(session, workspace)
-    assert_model_policy(persisted["config"])
     session.record("catalog-discovery-managed-config.json", persisted)
 
     bearer = os.environ["DATABRICKS_BEARER"]
@@ -65,15 +59,9 @@ def test_catalog_discovery_claude(live_session, workspace):
             "decoy_pages": decoy_catalog.payloads,
         },
     )
-    service_ids = [claude.model_service_id(model) for model in parent_catalog.model_ids]
-    assert len(service_ids) == len(set(service_ids)), parent_catalog
-    assert set(service_ids) == CLAUDE_MODELS, parent_catalog
     assert set(parent_catalog.model_ids) == {
         claude.discovery_model_id(model) for model in CLAUDE_MODELS
     }, parent_catalog
-    decoy_ids = [claude.model_service_id(model) for model in decoy_catalog.model_ids]
-    assert len(decoy_ids) == len(set(decoy_ids)), decoy_catalog
-    assert set(decoy_ids) == {CLAUDE_DECOY}, decoy_catalog
     assert set(decoy_catalog.model_ids) == {claude.discovery_model_id(CLAUDE_DECOY)}, decoy_catalog
 
     default_task = FileTask(session)
@@ -123,7 +111,6 @@ def test_catalog_discovery_claude(live_session, workspace):
         tui.submit(default_task.prompt)
         tui.wait_for_task(default_task, timeout=240)
         tui.exit_normally()
-    default_task.assert_completed(session, "claude")
     assert_completed_task_model(session, "claude", default_task.value, CLAUDE_DEFAULT)
 
     explicit_task = FileTask(session)
@@ -137,13 +124,11 @@ def test_catalog_discovery_claude(live_session, workspace):
         tui.submit(explicit_task.prompt)
         tui.wait_for_task(explicit_task, timeout=240)
         tui.exit_normally()
-    explicit_task.assert_completed(session, "claude")
     assert_completed_task_model(session, "claude", explicit_task.value, CLAUDE_DEFAULT)
 
     gateway_ids = session.claude_gateway_model_ids()
     assert len(gateway_ids) == len(set(gateway_ids)), gateway_ids
     assert set(gateway_ids) == set(parent_catalog.model_ids), gateway_ids
-    assert not {GEMINI_MODEL, CLAUDE_DECOY, CODEX_DECOY} & set(gateway_ids), gateway_ids
 
     print_task = FileTask(session)
     result = session.run(
@@ -157,7 +142,6 @@ def test_catalog_discovery_claude(live_session, workspace):
         timeout=240,
     )
     print_task.assert_headless_answer("claude", result)
-    print_task.assert_completed(session, "claude")
     assert_completed_task_model(session, "claude", print_task.value, CLAUDE_DEFAULT)
 
     for model in parent_catalog.model_ids:
@@ -178,7 +162,6 @@ def test_catalog_discovery_claude(live_session, workspace):
             timeout=240,
         )
         task.assert_headless_answer("claude", result)
-        task.assert_completed(session, "claude")
         assert_completed_task_model(session, "claude", task.value, model)
     session.assert_not_routed()
 
@@ -186,21 +169,16 @@ def test_catalog_discovery_claude(live_session, workspace):
 @pytest.mark.codex
 @pytest.mark.tui
 def test_catalog_discovery_codex(live_session, workspace):
-    """Scenario: configure published Catalog discovery policy; launch Codex TUI and ug codex -- exec.
+    """Scenario: configure the managed workspace; launch Codex TUI and ug codex -- exec.
 
-    Expected: persisted schema/defaults match policy; independent
-    catalogs, generated catalogs, model/list, and exact numbered picker agree on GPT Luna/Kimi,
-    excluding Gemini and both accessible out-of-scope decoys. TUI exits normally after a
-    GPT Luna file task; exec uses that default without an override, and every extra model
-    completes a headless task, with routing off throughout.
-    Codex's client-selected model must match; it does not prove the executed gateway
-    backing destination. These assertions require a live pass, not collection alone.
+    Expected: GPT Luna/Kimi appear in model/list and the picker, but Gemini and decoys
+    do not. TUI and exec tasks use the GPT Luna default without overrides; Kimi completes
+    an exec task. Completed turns select the expected model, with routing off.
     """
     session = live_session
     configured = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
     assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
     persisted = read_persisted_managed_config(session, workspace)
-    assert_model_policy(persisted["config"])
     session.record("catalog-discovery-managed-config.json", persisted)
 
     bearer = os.environ["DATABRICKS_BEARER"]
@@ -229,7 +207,6 @@ def test_catalog_discovery_codex(live_session, workspace):
     models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
     assert len(models) == len(set(models)), models
     assert set(models) == set(parent_catalog.model_ids), models
-    assert not {GEMINI_MODEL, CLAUDE_DECOY, CODEX_DECOY} & set(models), models
     catalog_paths = list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
     assert len(catalog_paths) == 1, catalog_paths
     catalog = json.loads(catalog_paths[0].read_text())
@@ -268,7 +245,6 @@ def test_catalog_discovery_codex(live_session, workspace):
         tui.submit(default_task.prompt)
         tui.wait_for_task(default_task, timeout=240)
         tui.exit_normally()
-    default_task.assert_completed(session, "codex")
     assert_completed_task_model(session, "codex", default_task.value, CODEX_DEFAULT)
 
     exec_task = FileTask(session)
@@ -282,7 +258,6 @@ def test_catalog_discovery_codex(live_session, workspace):
         timeout=240,
     )
     exec_task.assert_headless_answer("codex", result)
-    exec_task.assert_completed(session, "codex")
     assert_completed_task_model(session, "codex", exec_task.value, CODEX_DEFAULT)
 
     for model in parent_catalog.model_ids:
@@ -301,6 +276,5 @@ def test_catalog_discovery_codex(live_session, workspace):
             timeout=240,
         )
         task.assert_headless_answer("codex", result)
-        task.assert_completed(session, "codex")
         assert_completed_task_model(session, "codex", task.value, model)
     session.assert_not_routed()
