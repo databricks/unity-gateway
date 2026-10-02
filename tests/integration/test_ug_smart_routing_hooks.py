@@ -73,7 +73,9 @@ def _routing_banner_for_task(screen: str, marker: str) -> bool:
             panel.append(panel_line)
             if "└" in panel_line:
                 break
-        if marker in "\n".join(panel):
+        # Rich can wrap the marker between any two characters in a narrow TUI.
+        # Compare without rendered whitespace so the banner remains attributable.
+        if marker in "".join("\n".join(panel).split()):
             return True
     return False
 
