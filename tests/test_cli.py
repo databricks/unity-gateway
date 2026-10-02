@@ -2881,19 +2881,17 @@ class TestAutoConfigureOnFirstRun:
                 return_value=(MINIMAL_STATE["workspace"], None),
             ),
             patch("ucode.cli.configure_shared_state", return_value=configured_state),
-            patch(
-                "ucode.cli.configure_single_tool", return_value=configured_state
-            ) as mock_configure,
+            patch("ucode.cli.configure_tool", return_value=configured_state) as mock_configure,
             patch("ucode.cli.ensure_provider_state", return_value=configured_state),
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
-            patch("ucode.cli.configure_tool", return_value=configured_state),
             patch("ucode.cli.restore_file") as mock_restore,
             patch("ucode.cli.launch_agent") as mock_launch,
         ):
             result = runner.invoke(app, [tool])
 
         assert result.exit_code == 0, result.output
-        mock_configure.assert_called_once_with(tool, configured_state)
+        mock_configure.assert_called_once()
+        assert mock_configure.call_args.args[:2] == (tool, configured_state)
         mock_restore.assert_not_called()
         mock_launch.assert_called_once()
         assert mock_launch.call_args.args[:2] == (tool, configured_state)
@@ -2905,7 +2903,7 @@ class TestAutoConfigureOnFirstRun:
         with (
             patch("ucode.cli.ensure_bootstrap_dependencies") as mock_bootstrap,
             patch("ucode.cli.load_state", return_value=empty_state),
-            patch("ucode.cli._auto_configure_tool") as mock_auto,
+            patch("ucode.cli._auto_configure_tool", return_value=configured_state) as mock_auto,
             patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
             patch(
                 "ucode.cli.ensure_provider_state",
@@ -2930,7 +2928,7 @@ class TestAutoConfigureOnFirstRun:
         with (
             patch("ucode.cli.ensure_bootstrap_dependencies") as mock_bootstrap,
             patch("ucode.cli.load_state", return_value=state_without_tool),
-            patch("ucode.cli._auto_configure_tool") as mock_auto,
+            patch("ucode.cli._auto_configure_tool", return_value=MINIMAL_STATE) as mock_auto,
             patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
             patch(
                 "ucode.cli.ensure_provider_state",

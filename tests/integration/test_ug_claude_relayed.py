@@ -2,16 +2,76 @@
 via the hybrid re-route, Databricks-hosted models."""
 
 import json
+import sys
 import urllib.request
+from pathlib import Path
 
 import pytest
 from utils.evidence import FileTask
+from utils.terminal import AgentTerminal, TerminalProcess
 
 pytestmark = [pytest.mark.live, pytest.mark.claude]
 
 # Anthropic gateway model catalog; a Databricks-hosted id here is namespace-qualified, which is
 # what the relayed proxy re-routes to gateway auth (bare Anthropic ids stay on the relay path).
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
+
+
+@pytest.mark.tui
+def test_ug_claude_relayed_fresh_launch_and_revert(
+    live_session, unmanaged_workspace, claude_relayed_provider, claude_oauth_token
+):
+    """Scenario: launch subscription relay interactively from fresh ug state, revert, and repeat.
+
+    Expected: both launches complete a real subscription-backed file task without creating
+    OS-managed settings. Revert removes ug configuration so the next launch bootstraps again.
+    """
+    session = live_session
+    managed_path = Path(
+        "/Library/Application Support/ClaudeCode/managed-settings.json"
+        if sys.platform == "darwin"
+        else "/etc/claude-code/managed-settings.json"
+    )
+    assert not managed_path.exists(), "Relay journey requires no existing OS-managed settings"
+    assert "Not Configured" in session.run("status").stdout
+    session.env["CLAUDE_CODE_OAUTH_TOKEN"] = claude_oauth_token
+    session.env["UCODE_RELAYED_PROXY_DIAGNOSTICS"] = "1"
+    session.record("model.json", {"model": "haiku", "source": "explicit subscription tier"})
+
+    for phase in ("fresh", "after-revert"):
+        task = FileTask(session)
+        command = [
+            str(session.binary),
+            "claude",
+            "--workspace",
+            unmanaged_workspace,
+            "--provider",
+            claude_relayed_provider,
+            "--model",
+            "haiku",
+            "--",
+            "--allowedTools",
+            "Read",
+        ]
+        with AgentTerminal(session, "claude", command, f"relay-{phase}") as tui:
+            tui.boot(timeout=240)
+            assert not managed_path.exists(), "Relay bootstrap created OS-managed settings"
+            state = session.workspace_state()
+            assert state["claude_relayed"] is True
+            assert "claude" in state["available_tools"]
+            tui.submit(task.prompt)
+            tui.wait_for_task(task, timeout=240)
+            tui.exit_normally()
+            transcript = session.redact("".join(tui.output))
+            assert '"route":"relay"' in transcript, transcript
+
+        with TerminalProcess(
+            session, "ug", [str(session.binary), "revert"], f"relay-{phase}-revert"
+        ) as terminal:
+            terminal.finish()
+        assert "Not Configured" in session.run("status").stdout
+        assert not (session.home / ".claude/ucode-settings.json").exists()
+        assert not managed_path.exists()
 
 
 def _databricks_hosted_model(workspace: str, token: str) -> str:

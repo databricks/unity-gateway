@@ -177,6 +177,10 @@ enterprise settings, but blocks these higher-precedence conflicts:
 - `env.ANTHROPIC_BASE_URL`;
 - `env.ANTHROPIC_CUSTOM_HEADERS`.
 
+Fresh launches bootstrap the workspace, then resolve the provider before configuring the agent.
+An explicit subscription-relay provider must not first write standard gateway authentication
+settings, including when launching again after `ucode revert`.
+
 If ucode wrote those values during an earlier standard configuration, the user runs `ucode revert`
 interactively before switching to relay. External conflicting values require administrator action or
 standard Databricks authentication.

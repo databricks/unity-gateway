@@ -7,7 +7,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from enum import StrEnum
 from importlib import metadata
 from typing import Annotated, Any
@@ -23,6 +23,7 @@ from ucode import custom_oauth
 from ucode.agents import (
     TOOL_SPECS,
     LaunchOptions,
+    _availability_failure_detail,
     check_gateway_endpoint,
     configure_selected_tools,
     configure_single_tool,
@@ -91,7 +92,7 @@ from ucode.managed_config import (
     normalize_managed_config,
     refresh_managed_config,
 )
-from ucode.managed_files import managed_write_session
+from ucode.managed_files import managed_write_batch, managed_write_session
 from ucode.managed_resolve import (
     managed_claude_family_models,
     managed_default_model,
@@ -729,11 +730,11 @@ def _configure_shared_workspace_states(
     return states
 
 
-def _provider_summary(tool: str, state: dict) -> str:
+def _provider_summary(tool: str, state: dict, provider: str | None = None) -> str:
     """Short label for the Configuration Complete box: 'Databricks' when no
     Model Provider Service is configured, otherwise the external provider type
     backing this tool (claude routes to Anthropic, codex to OpenAI)."""
-    if not get_provider_service(state, tool):
+    if not (provider or get_provider_service(state, tool)):
         return "Databricks"
     return {"claude": "Anthropic", "codex": "OpenAI"}.get(tool, "Model Provider Service")
 
@@ -2259,33 +2260,34 @@ def claude_router_hook_cmd(
         sys.stdout.write(json.dumps(output))
 
 
-def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = None) -> None:
-    """Configure a tool for launch without sending a separate validation prompt.
-
-    The real agent session follows immediately; explicit configure retains the
-    test-prompt validation.
-    """
+def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = None) -> dict:
+    """Bootstrap workspace state without writing agent settings."""
     existing = load_state()
     workspace = existing.get("workspace")
     profile = existing.get("profile")
     if not workspace:
         workspace, profile = _prompt_for_configuration(tool)
     configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
-    state = configure_shared_state(workspace, profile=profile, tools=[tool], **configure_kwargs)
+    return configure_shared_state(workspace, profile=profile, tools=[tool], **configure_kwargs)
 
-    state = configure_single_tool(tool, state)
+
+def _finish_auto_configure_tool(tool: str, state: dict, *, provider: str | None = None) -> dict:
+    available_tools = list(set((state.get("available_tools") or []) + [tool]))
+    state["available_tools"] = available_tools
+    save_state(state)
 
     spec = TOOL_SPECS[tool]
     console.print(
         Panel(
             f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]\n"
             f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
-            f"[dim](Provider: {_provider_summary(tool, state)})[/dim]",
+            f"[dim](Provider: {_provider_summary(tool, state, provider)})[/dim]",
             title="Configuration Complete",
             style="green",
             expand=False,
         )
     )
+    return state
 
 
 CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
@@ -2630,10 +2632,11 @@ def _launch_tool(
         )
         if needs_auto_configure:
             if custom_oauth is None:
-                _auto_configure_tool(tool)
+                state = _auto_configure_tool(tool)
             else:
-                _auto_configure_tool(tool, custom_oauth=custom_oauth)
-        state = ensure_provider_state(tool)
+                state = _auto_configure_tool(tool, custom_oauth=custom_oauth)
+        else:
+            state = ensure_provider_state(tool)
         # Remembered before the fallback below collapses the two cases: a managed config may not
         # silently override a provider the user typed on the command line (it errors instead).
         explicit_provider = provider
@@ -2721,6 +2724,14 @@ def _launch_tool(
             print_note("No managed coding agent config found; using your own settings")
         if provider and parent_schema is not None:
             raise RuntimeError("--provider and --model-location cannot be used together.")
+        if needs_auto_configure and not provider and not parent_schema:
+            with spinner(f"Checking {TOOL_SPECS[tool]['display']} availability..."):
+                available = check_gateway_endpoint(state, tool)
+            if not available:
+                detail = _availability_failure_detail(tool, state)
+                raise RuntimeError(
+                    f"{TOOL_SPECS[tool]['display']} is not available on this workspace.{detail}"
+                )
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
         # guard too, or routing would be persisted as on while a provider is active.
         if tool in CAN_USE_CACHED_CONFIG_AGENTS and smart_routing_enabled and provider:
@@ -2869,20 +2880,28 @@ def _launch_tool(
                 launch_model=model or forwarded_model or route_root_model,
                 discovered_catalog=picker_catalog,
             )
-        state = configure_tool(
-            tool,
-            state,
-            resolved_model,
-            provider=provider,
-            provider_models=provider_models,
-            picker_catalog=picker_catalog,
-            relayed=relayed,
-            route_root_model=route_root_model,
-            # Claude's explicit model is launch-scoped and is passed through LaunchOptions below.
-            custom_model=None,
-            coding_agent_config_defaults=coding_agent_config_defaults,
-            parent_schema=parent_schema,
+        configuration_batch = (
+            managed_write_batch([TOOL_SPECS[tool]["display"]])
+            if needs_auto_configure and tool in {"claude", "codex"}
+            else nullcontext()
         )
+        with configuration_batch:
+            state = configure_tool(
+                tool,
+                state,
+                resolved_model,
+                provider=provider,
+                provider_models=provider_models,
+                picker_catalog=picker_catalog,
+                relayed=relayed,
+                route_root_model=route_root_model,
+                # Claude's explicit model is launch-scoped and is passed through LaunchOptions below.
+                custom_model=None,
+                coding_agent_config_defaults=coding_agent_config_defaults,
+                parent_schema=parent_schema,
+            )
+        if needs_auto_configure:
+            state = _finish_auto_configure_tool(tool, state, provider=provider)
         if picker_catalog and picker_catalog.model_ids:
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
             # replaced. Keep the catalog launch-scoped and leave the user's settings alone.

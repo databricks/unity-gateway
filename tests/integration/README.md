@@ -163,7 +163,7 @@ test_ug_configure_codex.py              # Databricks Hosted and OpenAI MPS
 test_ug_claude_custom_oauth.py           # CLI custom-OAuth launch, profile, and managed helper
 test_ug_codex_custom_oauth.py            # CLI custom-OAuth launch and profile
 test_ug_claude_headless.py              # script prompts, models, caller settings
-test_ug_claude_relayed.py               # relayed session: subscription + Databricks-hosted models
+test_ug_claude_relayed.py               # fresh/reverted relay bootstrap and hybrid model routing
 test_ug_claude_tracing.py               # Claude OTLP export reaches the configured trace table
 test_ug_codex_headless.py               # script prompts and model arguments
 test_ug_codex_tracing.py                # Codex OTLP export reaches the configured trace table
@@ -237,6 +237,18 @@ re-routes to gateway auth (`route=databricks`) — one relayed session reaching 
 It needs a subscription OAuth token (see below). Interactive model-picker selection
 remains uncovered.
 
+`test_ug_claude_relayed_fresh_launch_and_revert` starts with no ug configuration and
+uses a real TUI to exercise interactive auto-configuration. It completes a file task
+through the subscription relay, runs public `ug revert`, and repeats the fresh launch.
+Both launches must leave OS-managed settings absent. This covers the startup ordering
+failure reported on `0.2.0+49.g28ec3b1`; the headless hybrid journey preconfigures ug
+and does not exercise that path. The test requires the same subscription OAuth token
+and an unmanaged workspace, and uses no injected application configuration.
+
+`../test_claude_relay_bootstrap.py` provides component coverage of the same ordering with
+real workspace state and Claude settings writers on temporary paths. Its external dependencies
+are mocked; passing it does not establish live subscription or native macOS coverage.
+
 MPS CUJs select the existing services already used by e2e:
 
 - Claude: `main.ucode.ci_e2e_anthropic_nonrelay_mps`.
@@ -307,7 +319,7 @@ startup banners and footer text cannot satisfy discovery assertions. Cases 7–1
 they only configure, list models, and open/close the picker. Other live CUJs perform
 real model tasks.
 
-There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
+There are **63 live cases** (including 13 marked TUI journeys) and **7 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
@@ -332,14 +344,14 @@ constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-
 mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
 `ug configure` and Claude. The client secrets do not enter the pytest process.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 101 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 103 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
 # Append one of these selections to the runner command:
 -- -m live         # default: all live user journeys
 -- -m smoke        # six Hosted, custom OAuth CLI TUI, and headless journeys
--- -m 'live and tui'  # twelve interactive live configuration/model-discovery journeys
+-- -m 'live and tui'  # thirteen interactive live configuration/model-discovery journeys
 -- -m 'live and claude' -k trace  # installed Claude -> gateway -> configured trace table
 -- -m 'live and codex' -k trace  # installed Codex -> gateway -> configured trace table
 -- -k test_ug_codex_app_server_client_initializes  # one named journey and its variants
@@ -475,12 +487,12 @@ each test; only explicit-model scenarios choose and record a discovered
 Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
-two agent jobs). Full runs all 62 live cases, including those smoke cases, in two
+two agent jobs). Full runs all 63 live cases, including those smoke cases, in two
 disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
-| Claude | `live and claude` | 28 |
+| Claude | `live and claude` | 29 |
 | Codex | `live and codex` | 34 |
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
@@ -620,7 +632,7 @@ comment removes the label and reruns the gate; manually adding the label does no
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
 and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
 alias for `full`. Manual subsets are explicit: `smoke` runs just the six smoke
-cases; `tui` adds `and tui` to each agent lane's marker and runs all 12 live TUI cases. Installation
+cases; `tui` adds `and tui` to each agent lane's marker and runs all 13 live TUI cases. Installation
 checks always run. Set the ug/agent versions. From the CLI:
 
 ```bash
@@ -683,7 +695,7 @@ use the same OS/architecture as the original run; add `--platform linux/amd64`
 to both `docker build` and `docker run` on an ARM Mac to match GitHub's Ubuntu runner. Changing platforms or
 resolving a fresh npm lock is a new comparison, not an exact dependency replay.
 
-Use `-- -m tui` for the six interactive journeys or
+Use `-- -m 'live and tui'` for the 13 interactive live journeys or
 `-- -k test_ug_configure_codex_databricks` to narrow a failure. Each rerun needs a new output directory. Inspect:
 
 - `junit.xml` for the failing case and assertion.
@@ -793,7 +805,7 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 unset DATABRICKS_BEARER
 ```
 
-This runs all 62 live cases. For the seven installation checks, run the same
+This runs all 63 live cases. For the seven installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.
