@@ -18,7 +18,7 @@ from ucode.config_io import (
     write_json_file,
     write_text_file,
 )
-from ucode.constants import AI_GATEWAY_REQUEST_TAGS_HEADER, request_tags_header_value
+from ucode.constants import AI_GATEWAY_REQUEST_TAGS_HEADER
 from ucode.databricks import (
     build_auth_token_argv,
     build_opencode_base_urls,
@@ -29,6 +29,7 @@ from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
+from .request_tags import request_tags_header_value
 
 OPENCODE_XDG_CONFIG_HOME = APP_DIR / "opencode-xdg"
 OPENCODE_CONFIG_DIR = OPENCODE_XDG_CONFIG_HOME / "opencode"

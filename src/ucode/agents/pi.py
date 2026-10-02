@@ -42,7 +42,7 @@ from ucode.config_io import (
     read_json_safe,
     write_json_file,
 )
-from ucode.constants import AI_GATEWAY_REQUEST_TAGS_HEADER, request_tags_header_value
+from ucode.constants import AI_GATEWAY_REQUEST_TAGS_HEADER
 from ucode.databricks import (
     ANTHROPIC_FAMILIES,
     build_auth_shell_command,
@@ -54,6 +54,7 @@ from ucode.state import mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions
+from .request_tags import request_tags_header_value
 
 PI_UCODE_HOME = APP_DIR / "pi-home"
 PI_CONFIG_DIR = PI_UCODE_HOME / ".pi" / "agent"

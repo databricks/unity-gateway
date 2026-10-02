@@ -42,7 +42,6 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
-    request_tags_header_value,
 )
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_TIMEOUT_MS,
@@ -86,6 +85,7 @@ from ucode.ui import print_warning_err
 
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
+from .request_tags import request_tags_header_value
 
 CODEX_CONFIG_DIR = Path.home() / ".codex"
 CODEX_PROFILE_NAME = "ucode"
