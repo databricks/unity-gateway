@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from databricks.sdk.errors import NotFound
 
 from tests.cuj3_fixture_data import INVALID_DESTINATIONS, model_readback
 
@@ -25,23 +26,27 @@ def model_sources(provisioner):
     return {leaf: f"system.ai.{leaf}" for leaf in provisioner.MODEL_LEAVES}
 
 
-class RecordingClient:
+class RecordingApiClient:
     def __init__(self, inventory):
         self.inventory = inventory
         self.requests = []
+        self.auth_requests = []
 
-    def get_optional(self, path):
-        self.requests.append(("GET", path, None, None))
-        return self.inventory.get(path)
-
-    def request(self, method, path, *, params=None, body=None):
-        self.requests.append((method, path, params, body))
+    def do(self, method, path, *, query=None, headers=None, body=None, auth=None):
+        self.requests.append((method, path, query, body))
+        self.auth_requests.append((method, path, auth is not None))
         if method == "GET":
+            if path not in self.inventory:
+                raise NotFound("not found")
             return self.inventory[path]
         if path.endswith("model-services"):
-            schema = params["parent"].removeprefix("schemas/")
-            self.inventory[f"{path}/{schema}.{params['model_service_id']}"] = body
+            schema = query["parent"].removeprefix("schemas/")
+            self.inventory[f"{path}/{schema}.{query['model_service_id']}"] = body
         return body
+
+
+def run_provision(provisioner, client, sources, *, apply):
+    return provisioner.provision(client, sources, apply=apply, bearer="component-token")
 
 
 def source_inventory(provisioner, sources=None):
@@ -102,9 +107,9 @@ def test_model_fixture_rejects_invalid_readback_before_writes(provisioner, desti
     sources = model_sources(provisioner)
     sources["gpt_luna"] = "system.ai.databricks-gpt-6-luna"
     inventory.update(source_inventory(provisioner, sources))
-    client = RecordingClient(inventory)
+    client = RecordingApiClient(inventory)
     with pytest.raises(RuntimeError, match="refusing to overwrite"):
-        provisioner.provision(client, sources, apply=True)
+        run_provision(provisioner, client, sources, apply=True)
     assert all(method == "GET" for method, *_ in client.requests)
 
 
@@ -120,9 +125,9 @@ def test_model_fixture_rejects_multiple_sources_before_writes(provisioner, fallb
     else:
         routing["destinations"].extend(extra)
     inventory[f"{provisioner.UC}/model-services/ug_e2e.models.gpt_luna"] = payload
-    client = RecordingClient(inventory)
+    client = RecordingApiClient(inventory)
     with pytest.raises(RuntimeError, match="refusing to overwrite"):
-        provisioner.provision(client, model_sources(provisioner), apply=True)
+        run_provision(provisioner, client, model_sources(provisioner), apply=True)
     assert all(method == "GET" for method, *_ in client.requests)
 
 
@@ -151,6 +156,56 @@ def test_model_fixture_dry_plan_requires_no_credentials_or_network():
     assert "skills" not in result.stdout
 
 
+def test_model_fixture_auth_callback_sets_bearer_and_rejects_redirects(provisioner):
+    class PreparedRequest:
+        def __init__(self):
+            self.headers = {}
+            self.hooks = {}
+
+        def register_hook(self, event, hook):
+            self.hooks.setdefault(event, []).append(hook)
+
+    callback = provisioner.bearer_auth("component-token")
+    request = PreparedRequest()
+    assert callback(request) is request
+    assert request.headers == {"Authorization": "Bearer component-token"}
+    redirect_hook = request.hooks["response"][0]
+    response = SimpleNamespace(
+        status_code=200,
+        request=SimpleNamespace(method="GET"),
+        json=lambda: {"config": {}},
+        close=lambda: None,
+    )
+    assert redirect_hook(response) is response
+    closed = []
+    with pytest.raises(AssertionError, match="redirected") as error:
+        redirect_hook(SimpleNamespace(status_code=307, close=lambda: closed.append(True)))
+    assert "component-token" not in str(error.value)
+    assert closed == [True]
+    with pytest.raises(AssertionError, match="non-object"):
+        redirect_hook(
+            SimpleNamespace(
+                status_code=200,
+                request=SimpleNamespace(method="GET"),
+                json=lambda: None,
+            )
+        )
+
+
+def test_model_fixture_sanitizes_required_not_found_errors(provisioner):
+    class ErrorApiClient:
+        def do(self, method, path, *, query=None, headers=None, body=None, auth=None):
+            raise NotFound("secret response body")
+
+    client = ErrorApiClient()
+    auth = provisioner.bearer_auth("component-token")
+    assert provisioner._get_optional(client, auth, "/optional") is None
+    for method in ("GET", "POST"):
+        with pytest.raises(RuntimeError, match="^Workspace API request failed$") as error:
+            provisioner._request(client, auth, method, "/required")
+        assert "secret response body" not in str(error.value)
+
+
 def test_model_fixture_config_is_model_only():
     config = json.loads((ROOT / "fixtures/cuj-3/managed-config.json").read_text())
     assert "mcp_servers" not in config
@@ -172,9 +227,9 @@ def test_model_fixture_config_is_model_only():
 
 
 def test_model_fixture_validate_missing_inventory_performs_no_writes(provisioner):
-    client = RecordingClient(source_inventory(provisioner))
+    client = RecordingApiClient(source_inventory(provisioner))
     with pytest.raises(RuntimeError, match="Inventory is incomplete"):
-        provisioner.provision(client, model_sources(provisioner), apply=False)
+        run_provision(provisioner, client, model_sources(provisioner), apply=False)
     assert len(client.requests) == 17
     assert all(method == "GET" for method, *_ in client.requests)
 
@@ -188,9 +243,9 @@ def test_model_fixture_source_preflight_failure_performs_no_writes(
     inventory = source_inventory(provisioner)
     source = sorted(sources.values())[-1]
     inventory[f"{provisioner.UC}/models/{source}"] = registered_model
-    client = RecordingClient(inventory)
+    client = RecordingApiClient(inventory)
     with pytest.raises(RuntimeError, match="canonical registered-model FQN.*model-service alias"):
-        provisioner.provision(client, sources, apply=apply)
+        run_provision(provisioner, client, sources, apply=apply)
     assert len(client.requests) == len(set(sources.values()))
     assert all(method == "GET" and "/models/" in path for method, path, *_ in client.requests)
 
@@ -205,17 +260,17 @@ def test_model_fixture_source_preflight_rejects_friendly_alias_without_resolving
     inventory[f"{provisioner.UC}/model-services/system.ai.gpt-6-luna"] = model_readback(
         server_defaults=True
     )
-    client = RecordingClient(inventory)
+    client = RecordingApiClient(inventory)
     with pytest.raises(RuntimeError, match="system.ai.gpt-6-luna.*model-service alias"):
-        provisioner.provision(client, sources, apply=True)
+        run_provision(provisioner, client, sources, apply=True)
     assert all(method == "GET" and "/models/" in path for method, path, *_ in client.requests)
     assert not any("databricks-gpt-6-luna" in path for _, path, *_ in client.requests)
 
 
 def test_model_fixture_source_preflight_checks_each_unique_source_once(provisioner):
     sources = dict.fromkeys(provisioner.MODEL_LEAVES, "system.ai.databricks-gpt-6-luna")
-    client = RecordingClient(source_inventory(provisioner, sources))
-    provisioner.provision(client, sources, apply=True)
+    client = RecordingApiClient(source_inventory(provisioner, sources))
+    run_provision(provisioner, client, sources, apply=True)
     source_reads = [request for request in client.requests if "/models/" in request[1]]
     assert source_reads == [
         ("GET", f"{provisioner.UC}/models/system.ai.databricks-gpt-6-luna", None, None)
@@ -229,8 +284,8 @@ def test_model_fixture_existing_inventory_is_not_rewritten(provisioner, apply):
     for path, payload in inventory.items():
         if "/model-services/" in path:
             payload["config"]["routing"]["destinations"][0]["is_deleted"] = False
-    client = RecordingClient(inventory)
-    provisioner.provision(client, model_sources(provisioner), apply=apply)
+    client = RecordingApiClient(inventory)
+    run_provision(provisioner, client, model_sources(provisioner), apply=apply)
     assert all(method == "GET" for method, *_ in client.requests)
 
 
@@ -240,15 +295,15 @@ def test_model_fixture_mismatch_aborts_before_any_creation(provisioner):
     inventory[f"{provisioner.UC}/model-services/ug_e2e.other_models.codex_decoy"] = (
         provisioner.model_body("system.ai.wrong_model")
     )
-    client = RecordingClient(inventory)
+    client = RecordingApiClient(inventory)
     with pytest.raises(RuntimeError, match="refusing to overwrite"):
-        provisioner.provision(client, model_sources(provisioner), apply=True)
+        run_provision(provisioner, client, model_sources(provisioner), apply=True)
     assert all(method == "GET" for method, *_ in client.requests)
 
 
 def test_model_fixture_apply_only_creates_models_in_dependency_order(provisioner):
-    client = RecordingClient(source_inventory(provisioner))
-    provisioner.provision(client, model_sources(provisioner), apply=True)
+    client = RecordingApiClient(source_inventory(provisioner))
+    run_provision(provisioner, client, model_sources(provisioner), apply=True)
     writes = [request for request in client.requests if request[0] != "GET"]
     assert [request[1] for request in writes] == [
         f"{provisioner.UC}/catalogs",
