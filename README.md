@@ -219,6 +219,9 @@ ug skills remove --location main.default --via mcp
 | `ug mcp add` | Add MCP servers without removing existing registrations |
 | `ug mcp remove` | Unregister configured MCP servers |
 | `ug mcp list` | List configured MCP servers and connection status |
+| `ug agents add <agent>` | Allow a non-admin-enabled agent to run self-managed |
+| `ug agents remove <agent>` | Remove an agent from your self-managed list |
+| `ug agents list` | Show each agent's status (admin-managed, self-managed, or not enabled) |
 | `ug skills` | Set up the Databricks skills MCP so agents can create and manage skills |
 | `ug skills list` | List configured skills and how each was configured |
 | `ug skills add` | Add skill MCP scopes or download skills |
