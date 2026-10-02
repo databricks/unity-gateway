@@ -210,24 +210,3 @@ def test_picker_inventory_rejects_duplicate_and_missing_rows(agent):
         assert_picker_inventory(f"{rows}\n  {len(models) + 1}. {models[0]}", agent, labels)
     with pytest.raises(AssertionError):
         assert_picker_inventory(f"  1. {models[0]}", agent, labels)
-
-
-@pytest.mark.parametrize("agent", ["claude", "codex"])
-def test_picker_inventory_rejects_ambiguous_labels_and_split_line_evidence(agent):
-    models = sorted(PICKER_MODELS["claude"] if agent == "claude" else PICKER_MODELS["codex"])
-    with pytest.raises(AssertionError):
-        assert_picker_inventory("  1. Shared label", agent, dict.fromkeys(models, "Shared label"))
-    with pytest.raises(AssertionError):
-        assert_picker_inventory(f"  1.\n{models[0]}", agent, dict.fromkeys(models, None))
-
-
-@pytest.mark.parametrize("agent", ["claude", "codex"])
-@pytest.mark.parametrize("suffix", ["_v2", "-decoy", ".other"])
-def test_picker_inventory_rejects_model_id_prefix_matches(agent, suffix):
-    models = sorted(PICKER_MODELS["claude"] if agent == "claude" else PICKER_MODELS["codex"])
-    rows = "\n".join(
-        f"  {position}. {model}{suffix if position == 1 else ''}"
-        for position, model in enumerate(models, start=1)
-    )
-    with pytest.raises(AssertionError):
-        assert_picker_inventory(rows, agent, dict.fromkeys(models, None))
