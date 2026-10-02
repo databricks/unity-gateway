@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 
 from ucode import cli, config_io, skills
 from ucode.skills import SMART_ROUTER_SKILL
-from ucode.smart_routing import session_env, v2
+from ucode.smart_routing import claude_routing, codex_routing, session_env, v2
 
 runner = CliRunner()
 
@@ -102,3 +102,43 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch):
     assert runner.invoke(cli.app, ["codex", "--enable-smart-routing"], env=env).exit_code == 0
     assert runner.invoke(cli.app, hook_args, input=payload, env=env).exit_code == 0
     route.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("agent", "hook_command", "routing_module"),
+    [
+        ("claude", "claude-router-hook", claude_routing),
+        ("codex", "codex-router-hook", codex_routing),
+    ],
+)
+def test_clear_restores_launch_routing_default(
+    tmp_path, monkeypatch, agent, hook_command, routing_module
+):
+    # The session-start hook writes a canary under APP_DIR, bound at import; keep it in tmp.
+    monkeypatch.setattr(routing_module, "CANARY_PATH", tmp_path / "canary.json")
+    session_file = tmp_path / "env.json"
+    session_file.write_text("{}")
+    # The launch leaves routing on via the process environment; the session file starts empty.
+    env = {
+        session_env.SESSION_ENV_VAR: str(session_file),
+        v2.ENABLE_SMART_ROUTING_ENV_VAR: "1",
+    }
+    disabled = dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
+
+    assert runner.invoke(cli.app, [agent, "--disable-smart-routing"], env=env).exit_code == 0
+    assert json.loads(session_file.read_text()) == disabled
+
+    # A non-clear lifecycle event leaves the session disable in place.
+    resume = json.dumps({"source": "resume", "session_id": "s1"})
+    assert (
+        runner.invoke(cli.app, [hook_command, "session-start"], input=resume, env=env).exit_code
+        == 0
+    )
+    assert json.loads(session_file.read_text()) == disabled
+
+    # Clearing the conversation drops the session override, restoring the launch default.
+    clear = json.dumps({"source": "clear", "session_id": "s1"})
+    assert (
+        runner.invoke(cli.app, [hook_command, "session-start"], input=clear, env=env).exit_code == 0
+    )
+    assert json.loads(session_file.read_text()) == {}

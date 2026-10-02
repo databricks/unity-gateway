@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import StrEnum
@@ -139,6 +141,7 @@ from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
 from ucode.smart_routing.session_env import (
     effective_environment,
+    reset_session_environment,
     session_env_path,
     set_session_environment,
 )
@@ -2083,6 +2086,26 @@ def _oauth_token_is_fresh(token: str, buffer_seconds: float = 120) -> bool:
     return time.time() < expires_at - buffer_seconds
 
 
+def _hook_payload_or_reset_on_clear(event: str) -> dict | None:
+    """Read a lifecycle hook payload, resetting session routing on ``clear``.
+
+    A session-local ``/smart-router off`` lives only in this session's override
+    file; ``clear`` restarts the conversation in the same process, so restore the
+    launch default here -- ahead of each hook's enabled gate, which that override
+    would otherwise short-circuit. Returns the parsed payload, or ``None`` when it
+    is unreadable.
+    """
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if event == "session-start" and payload.get("source") == "clear":
+        reset_session_environment()
+    return payload
+
+
 @app.command("codex-router-hook", hidden=True)
 def codex_router_hook_cmd(
     event: str,
@@ -2092,9 +2115,9 @@ def codex_router_hook_cmd(
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
 ) -> None:
     """Run a Codex smart-routing lifecycle hook."""
-    import json
-    import sys
-
+    payload = _hook_payload_or_reset_on_clear(event)
+    if payload is None:
+        return
     if not smart_routing_v2.smart_routing_enabled(effective_environment()):
         return
 
@@ -2104,12 +2127,6 @@ def codex_router_hook_cmd(
         route_pre_tool_use,
     )
 
-    try:
-        payload = json.loads(sys.stdin.read() or "{}")
-    except ValueError:
-        return
-    if not isinstance(payload, dict):
-        return
     if event == "session-start":
         record_session_start(payload)
         return
@@ -2171,9 +2188,9 @@ def claude_router_hook_cmd(
     socket_path: Annotated[str | None, typer.Option("--socket")] = None,
 ) -> None:
     """Run a Claude Code smart-routing lifecycle hook."""
-    import json
-    import sys
-
+    payload = _hook_payload_or_reset_on_clear(event)
+    if payload is None:
+        return
     if not smart_routing_v2.smart_routing_enabled(effective_environment()):
         return
 
@@ -2182,12 +2199,6 @@ def claude_router_hook_cmd(
         record_subagent_start,
     )
 
-    try:
-        payload = json.loads(sys.stdin.read() or "{}")
-    except ValueError:
-        return
-    if not isinstance(payload, dict):
-        return
     if event == ROUTE_FIRST_PROMPT_EVENT:
         if not socket_path:
             socket_path = os.environ.get(FIRST_PROMPT_SOCKET_ENV)

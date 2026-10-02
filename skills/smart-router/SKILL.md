@@ -23,4 +23,5 @@ to restart through an updated Unity Gateway with smart routing enabled.
 
 With no argument, explain that only `on` and `off` are accepted. Do not edit the state file.
 This affects subsequent subagent model selection in the current session, not the root model or
-first prompt. Return the command's result.
+first prompt. Clearing the conversation (`/clear`) drops an `off` set this way and restores the
+launch default; re-run `off` afterward to keep it disabled. Return the command's result.

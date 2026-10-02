@@ -77,3 +77,18 @@ def set_session_environment(values: Mapping[str, str]) -> None:
     except (OSError, UnicodeError, ValueError) as exc:
         raise RuntimeError(f"Smart Router session controls at {path} are invalid.") from exc
     atomic_write_json(path, _validate(dict(values)))
+
+
+def reset_session_environment() -> bool:
+    """Drop this session's overrides, restoring the launch default.
+
+    Unlike ``set_session_environment`` this does not read the current file, so a
+    corrupt override is still cleared. Returns whether a session override file
+    was in scope to reset.
+    """
+    try:
+        path = session_env_path()
+    except RuntimeError:
+        return False
+    atomic_write_json(path, {})
+    return True
