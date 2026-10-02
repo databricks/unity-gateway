@@ -37,10 +37,10 @@ def test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch(
     session = live_session
     task = FileTask(session)
 
-    # The primary workspace is managed, so configure with a bare `ug configure` (which applies the
-    # managed config to every enabled agent); hand-picking with `--agents` is rejected there.
     session.run(
         "configure",
+        "--agents",
+        "claude",
         "--workspace",
         workspace,
         "--skip-upgrade",
@@ -62,7 +62,6 @@ def test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch(
 
     second_url = second_workspace
     session.env["DATABRICKS_BEARER"] = os.environ["DATABRICKS_SECOND_BEARER"]
-    # The second workspace is unmanaged, so name the agent explicitly to stay off the picker.
     switched = session.run(
         "configure",
         "--agents",
