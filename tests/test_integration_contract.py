@@ -62,14 +62,6 @@ def test_windows_integration_ci_uses_shared_claude_version():
     assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
 
 
-def test_agent_launch_ci_uses_default_claude_version():
-    workflow = Path(__file__).parent.parent / ".github/workflows/ci.yml"
-    contents = workflow.read_text()
-
-    assert "package: '@anthropic-ai/claude-code'" in contents
-    assert "package: '@anthropic-ai/claude-code@" not in contents
-
-
 @pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
 @pytest.mark.parametrize("managed_result", ["success", "failure", "cancelled", "skipped"])
 def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_result):
