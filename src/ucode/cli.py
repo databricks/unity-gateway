@@ -739,6 +739,59 @@ def _configure_shared_workspace_states(
     return states
 
 
+def _setup_single_agent(
+    workspace_entries: list[tuple[str, str | None]],
+    tool: str,
+    *,
+    apply_managed: bool,
+    use_pat: bool = False,
+    databricks_ai_tools_enabled: bool | None = None,
+    custom_oauth: CustomOAuthConfig | None = None,
+) -> dict:
+    """Log in, discover the agent's models, and write its config, then print the summary.
+
+    With ``apply_managed`` the workspace's managed config governs claude/codex (the
+    ``ug configure --agent`` path: admin-enabled applies the admin config, a disabled agent is
+    rejected). ``ug agents add`` passes ``apply_managed=False`` to set up a self-managed agent
+    standalone, independent of the managed config.
+    """
+    states = _configure_shared_workspace_states(
+        workspace_entries,
+        [tool],
+        force_login=True,
+        use_pat=use_pat,
+        databricks_ai_tools_enabled=databricks_ai_tools_enabled,
+        custom_oauth=custom_oauth,
+        clear_custom_oauth=custom_oauth is None,
+    )
+    state = states[0]
+    parent_schema = None
+    if apply_managed and tool in ("claude", "codex"):
+        managed, _ = refresh_managed_config(state, force_refresh=True)
+        _reject_disabled_agent(managed, tool)
+        if managed is not None:
+            state = resolve_state(managed, state, tool)
+            if not managed_provider_service(managed, tool):
+                parent_schema = managed_unity_catalog_location(managed, tool)
+    state = configure_single_tool(tool, state, parent_schema=parent_schema)
+    install_databricks_ai_tools_for_agents(
+        [tool], state, force_refresh=tool not in ("claude", "codex")
+    )
+    spec = TOOL_SPECS[tool]
+    provider_summary = "Databricks" if parent_schema else _provider_summary(tool, state)
+    console.print(
+        Panel(
+            f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]\n"
+            f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
+            f"[dim](Provider: {provider_summary})[/dim]",
+            title="Configuration Complete",
+            style="green",
+            expand=False,
+        )
+    )
+    return state
+
+
 def _provider_summary(tool: str, state: dict) -> str:
     """Short label for the Configuration Complete box: 'Databricks' when no
     Model Provider Service is configured, otherwise the external provider type
@@ -854,42 +907,13 @@ def _configure_workspace_command(
     workspace_entries = workspaces or [_prompt_for_configuration(tool)]
 
     if tool is not None:
-        states = _configure_shared_workspace_states(
+        _setup_single_agent(
             workspace_entries,
-            [tool],
-            force_login=True,
+            tool,
+            apply_managed=True,
             use_pat=use_pat,
             databricks_ai_tools_enabled=databricks_ai_tools_enabled,
             custom_oauth=custom_oauth,
-            clear_custom_oauth=custom_oauth is None,
-        )
-        state = states[0]
-        parent_schema = None
-        # A named agent reuses the cached managed read within its TTL; only bare `ug configure`
-        # forces a fresh fetch. Keeps `--agent` off the control plane on repeat runs.
-        managed, _ = refresh_managed_config(state, force_refresh=False)
-        if _launches_self_managed(managed, state, tool):
-            managed = None
-        _reject_disabled_agent(managed, tool)
-        if managed is not None:
-            state = resolve_state(managed, state, tool)
-            if tool in ("claude", "codex") and not managed_provider_service(managed, tool):
-                parent_schema = managed_unity_catalog_location(managed, tool)
-        state = configure_single_tool(tool, state, parent_schema=parent_schema)
-        install_databricks_ai_tools_for_agents(
-            [tool], state, force_refresh=tool not in ("claude", "codex")
-        )
-        spec = TOOL_SPECS[tool]
-        provider_summary = "Databricks" if parent_schema else _provider_summary(tool, state)
-        console.print(
-            Panel(
-                f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]\n"
-                f"[bold]{spec['display']}:[/bold] [green]configured[/green] "
-                f"[dim](Provider: {provider_summary})[/dim]",
-                title="Configuration Complete",
-                style="green",
-                expand=False,
-            )
         )
         return 0
 
@@ -906,51 +930,10 @@ def _configure_workspace_command(
     save_state(state)
 
     # A published managed config means the admin dictates the setup: apply it to every enabled agent
-    # now rather than prompting the developer to pick. Bare `ug configure` reads fresh so it never
-    # applies a config the admin has since changed; a named-agent (`--agents`) run reuses the cached
-    # read within its TTL to stay off the control plane.
-    managed, _ = refresh_managed_config(state, force_refresh=selected_tools is None)
+    # now rather than prompting the developer to pick. Configure always reads fresh so it never
+    # applies a config the admin has since changed.
+    managed, _ = refresh_managed_config(state, force_refresh=True)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
-    # Named agents (`--agents X,Y`) on a managed workspace: configure each per the soft default
-    # — admin-enabled applies the admin config, self-managed runs standalone, anything the admin
-    # neither enabled nor the developer added is rejected. Bare `ug configure` (selected_tools
-    # is None) still applies the whole enabled set + managed MCP/skills below.
-    if selected_tools is not None and managed is not None and managed_tools:
-        configured_tools: list[str] = []
-        for tool_name in selected_tools:
-            tool_managed = None if _launches_self_managed(managed, state, tool_name) else managed
-            _reject_disabled_agent(tool_managed, tool_name)
-            if tool_managed is not None:
-                resolved = resolve_state(tool_managed, state, tool_name)
-                parent_schema = (
-                    managed_unity_catalog_location(tool_managed, tool_name)
-                    if tool_name in ("claude", "codex")
-                    and not managed_provider_service(tool_managed, tool_name)
-                    else None
-                )
-            else:
-                resolved = state
-                parent_schema = None
-            if not install_tool_binary(tool_name, strict=False):
-                continue
-            configured = configure_selected_tools(
-                resolved,
-                [tool_name],
-                install_ai_tools=not is_dry_run(),
-                parent_schemas={tool_name: parent_schema} if parent_schema else None,
-            )
-            state["available_tools"] = configured.get("available_tools") or state.get(
-                "available_tools"
-            )
-            last = configured.get("last_configured_tools")
-            if last is None or tool_name in last:
-                configured_tools.append(tool_name)
-        if not configured_tools:
-            raise RuntimeError(
-                "None of the requested coding agents are available on this workspace."
-            )
-        _summarize_managed_config(managed, configured_tools, [])
-        return 0
     if managed is not None and managed_tools:
         configured_tools: list[str] = []
         for tool_name in managed_tools:
@@ -1497,15 +1480,18 @@ def _valid_agent_or_raise(agent: str) -> str:
 def agents_add(
     agent: Annotated[str, typer.Argument(help="Agent to self-manage (e.g. opencode).")],
 ) -> None:
-    """Add an agent to your self-managed list for the current workspace.
+    """Set up an agent your workspace's managed config doesn't enable, and self-manage it.
 
-    A self-managed agent can be launched with ``ug <agent>`` even when your workspace's managed
-    config doesn't enable it. Admin-enabled agents are unaffected.
+    Runs the normal agent setup — logging in, discovering its models, and writing its config — so
+    you can launch it with ``ug <agent>`` even when the managed config doesn't enable it. There is
+    no reconfigure flow yet; re-running is a no-op once the agent is self-managed. Admin-enabled
+    agents are set up by ``ug configure`` and left untouched.
     """
     try:
         tool = _valid_agent_or_raise(agent)
         state = load_state()
-        if not state.get("workspace"):
+        workspace = state.get("workspace")
+        if not workspace:
             raise RuntimeError("No workspace configured. Run `ug configure` first.")
         managed, _ = _fetch_managed_config(state)
         enabled = managed_enabled_tools(managed or {})
@@ -1518,11 +1504,10 @@ def agents_add(
         if is_self_managed(state, tool):
             print_note(f"{TOOL_SPECS[tool]['display']} is already in your self-managed list.")
             return
-        if not enabled:
-            print_note(
-                "Your workspace has no managed config; all agents are already available. "
-                f"Recording {TOOL_SPECS[tool]['display']} as self-managed anyway."
-            )
+        with managed_write_session():
+            _setup_single_agent([(workspace, state.get("profile"))], tool, apply_managed=False)
+        # Record the opt-in only after setup succeeds, on top of the state setup just persisted.
+        state = load_state()
         add_self_managed_agent(state, tool)
         save_state(state)
         print_success(

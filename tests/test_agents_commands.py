@@ -108,16 +108,20 @@ class TestAgentsAdd:
         with (
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
+            patch("ucode.cli.managed_write_session"),
+            patch("ucode.cli._setup_single_agent") as setup_spy,
             patch("ucode.cli.add_self_managed_agent", wraps=add_self_managed_agent) as add_spy,
             patch("ucode.cli.save_state") as save_spy,
         ):
             result = runner.invoke(app, ["agents", "add", *args])
-        return result, add_spy, save_spy
+        return result, setup_spy, add_spy, save_spy
 
-    def test_records_and_prints_success(self):
+    def test_sets_up_and_records(self):
         managed = {"enabled_agents": {"claude": {}}}
-        result, add_spy, save_spy = self._run(["opencode"], managed=managed)
+        result, setup_spy, add_spy, save_spy = self._run(["opencode"], managed=managed)
         assert result.exit_code == 0, result.output
+        assert setup_spy.called  # runs the agent setup flow at add time
+        assert setup_spy.call_args.kwargs["apply_managed"] is False  # standalone, not admin config
         assert add_spy.called
         assert save_spy.called
         assert "self-managed" in result.output.lower() or "Added" in result.output
@@ -125,41 +129,44 @@ class TestAgentsAdd:
     def test_idempotent_when_already_self_managed(self):
         state = {**BASE_STATE, SELF_MANAGED_AGENTS_KEY: ["opencode"]}
         managed = {"enabled_agents": {"claude": {}}}
-        result, add_spy, save_spy = self._run(["opencode"], managed=managed, state=state)
+        result, setup_spy, add_spy, _ = self._run(["opencode"], managed=managed, state=state)
         assert result.exit_code == 0
+        assert not setup_spy.called  # no reconfigure flow yet
         assert not add_spy.called
-        assert not save_spy.called
         assert "already" in result.output
 
     def test_noop_when_admin_managed(self):
         managed = {"enabled_agents": {"opencode": {}}}
-        result, add_spy, save_spy = self._run(["opencode"], managed=managed)
+        result, setup_spy, add_spy, _ = self._run(["opencode"], managed=managed)
         assert result.exit_code == 0
+        assert not setup_spy.called
         assert not add_spy.called
-        assert not save_spy.called
         assert "admin" in result.output.lower()
 
-    def test_still_records_when_no_managed_config(self):
-        result, add_spy, save_spy = self._run(["opencode"], managed=None)
+    def test_sets_up_and_records_when_no_managed_config(self):
+        result, setup_spy, add_spy, save_spy = self._run(["opencode"], managed=None)
         assert result.exit_code == 0
+        assert setup_spy.called
         assert add_spy.called
         assert save_spy.called
 
     def test_unknown_agent_exits_1(self):
-        result, _, _ = self._run(["notanagent"])
+        result, *_ = self._run(["notanagent"])
         assert result.exit_code == 1
         assert "Unknown agent" in result.output
 
     def test_no_workspace_exits_1(self):
-        result, _, _ = self._run(["opencode"], state={})
+        result, setup_spy, *_ = self._run(["opencode"], state={})
         assert result.exit_code == 1
         assert "ug configure" in result.output
+        assert not setup_spy.called
 
     def test_all_valid_agent_names_accepted(self):
         managed = {"enabled_agents": {"claude": {}}}
         for tool in ("codex", "gemini", "copilot", "pi", "opencode"):
-            result, add_spy, _ = self._run([tool], managed=managed)
+            result, setup_spy, add_spy, _ = self._run([tool], managed=managed)
             assert result.exit_code == 0, f"{tool}: {result.output}"
+            assert setup_spy.called
             assert add_spy.called
 
 
@@ -394,145 +401,6 @@ class TestSelfManagedLaunchGate:
         assert result.exit_code == 0, result.output
         # resolve_state called proves managed config was applied.
         resolve_spy.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# `ug configure --agents`: self-managed tools are not rejected
-# ---------------------------------------------------------------------------
-
-
-class TestConfigureSingleSelfManagedAgent:
-    """ug configure --agent <tool> (singular) must not reject a self-managed, non-admin tool."""
-
-    def test_self_managed_claude_not_rejected(self, monkeypatch):
-        state = {
-            "workspace": WORKSPACE,
-            "managed_configs": {},
-            "available_tools": ["claude"],
-            "claude_models": {"sonnet": "databricks-claude-sonnet-4"},
-            SELF_MANAGED_AGENTS_KEY: ["claude"],
-        }
-        # Claude is not admin-enabled; codex is.
-        managed = {"enabled_agents": {"codex": {}}}
-        monkeypatch.setattr("ucode.cli._prompt_for_configuration", lambda *a: (WORKSPACE, None))
-        monkeypatch.setattr(
-            "ucode.cli._configure_shared_workspace_states", lambda *a, **kw: [state]
-        )
-        monkeypatch.setattr("ucode.cli.refresh_managed_config", lambda s, **kw: (managed, False))
-        monkeypatch.setattr("ucode.cli.configure_single_tool", lambda *a, **kw: state)
-        monkeypatch.setattr(
-            "ucode.cli.install_databricks_ai_tools_for_agents", lambda *a, **kw: None
-        )
-        resolve_calls: list = []
-        monkeypatch.setattr(
-            "ucode.cli.resolve_state", lambda *a: (resolve_calls.append(a), state)[1]
-        )
-
-        with (
-            patch("ucode.cli.managed_write_session"),
-            patch("ucode.cli.install_databricks_cli"),
-            patch("ucode.cli.install_tool_binary", return_value=True),
-        ):
-            result = runner.invoke(app, ["configure", "--agent", "claude"])
-
-        assert result.exit_code == 0, result.output
-        assert not resolve_calls  # managed config not applied to a self-managed tool
-
-
-class TestConfigureNamedAgentsManagedRule:
-    """ug configure --agent(s) X: enabled -> admin config, self-managed -> standalone, else reject."""
-
-    @staticmethod
-    def _run(argv, managed, state):
-        configure_calls: list = []
-        resolve_calls: list = []
-        with (
-            patch("ucode.cli.managed_write_session"),
-            patch("ucode.cli.install_databricks_cli"),
-            patch("ucode.cli.install_tool_binary", return_value=True),
-            patch("ucode.cli._prompt_for_configuration", return_value=(WORKSPACE, None)),
-            patch("ucode.cli._configure_shared_workspace_states", return_value=[state]),
-            patch("ucode.cli.save_state"),
-            patch("ucode.cli.refresh_managed_config", return_value=(managed, False)),
-            patch(
-                "ucode.cli.resolve_state",
-                side_effect=lambda m, s, t: (resolve_calls.append(t), s)[1],
-            ),
-            patch("ucode.cli.managed_provider_service", return_value=None),
-            patch("ucode.cli.managed_unity_catalog_location", return_value=None),
-            patch("ucode.cli._summarize_managed_config"),
-            patch("ucode.cli.configure_single_tool", side_effect=lambda t, s, **kw: s),
-            patch("ucode.cli.install_databricks_ai_tools_for_agents"),
-            patch(
-                "ucode.cli.configure_selected_tools",
-                side_effect=lambda s, *a, **kw: (configure_calls.append(a), s)[1],
-            ),
-        ):
-            result = runner.invoke(app, argv)
-        return result, configure_calls, resolve_calls
-
-    def test_rejected_when_agent_not_enabled_or_added(self):
-        managed = {"enabled_agents": {"claude": {}}}
-        result, configure_calls, _ = self._run(
-            ["configure", "--agents", "opencode", "--workspace", WORKSPACE],
-            managed=managed,
-            state=dict(BASE_STATE),
-        )
-        assert result.exit_code == 1, result.output
-        assert "ug agents add" in result.output
-        assert not configure_calls  # no agent configuration written
-
-    def test_self_managed_agent_configures_standalone(self):
-        managed = {"enabled_agents": {"claude": {}}}
-        state = {**BASE_STATE, SELF_MANAGED_AGENTS_KEY: ["opencode"]}
-        result, configure_calls, resolve_calls = self._run(
-            ["configure", "--agents", "opencode", "--workspace", WORKSPACE],
-            managed=managed,
-            state=state,
-        )
-        assert result.exit_code == 0, result.output
-        assert "ug agents add" not in result.output
-        assert configure_calls
-        assert not resolve_calls  # admin config not applied to a self-managed agent
-
-    def test_admin_enabled_agent_applies_admin_config(self):
-        managed = {"enabled_agents": {"claude": {}}}
-        result, configure_calls, resolve_calls = self._run(
-            ["configure", "--agents", "claude", "--workspace", WORKSPACE],
-            managed=managed,
-            state=dict(BASE_STATE),
-        )
-        assert result.exit_code == 0, result.output
-        assert configure_calls
-        assert resolve_calls == ["claude"]
-
-    def test_not_rejected_without_managed_config(self):
-        result, _, _ = self._run(
-            ["configure", "--agents", "opencode", "--workspace", WORKSPACE],
-            managed=None,
-            state=dict(BASE_STATE),
-        )
-        assert "ug agents add" not in result.output
-
-    def test_singular_agent_not_rejected_without_managed_config(self):
-        result, _, resolve_calls = self._run(
-            ["configure", "--agent", "opencode", "--workspace", WORKSPACE],
-            managed=None,
-            state=dict(BASE_STATE),
-        )
-        assert result.exit_code == 0, result.output
-        assert "ug agents add" not in result.output
-        assert not resolve_calls
-
-    def test_singular_non_claude_agent_rejected_when_not_added(self):
-        managed = {"enabled_agents": {"claude": {}}}
-        result, _, _ = self._run(
-            ["configure", "--agent", "opencode", "--workspace", WORKSPACE],
-            managed=managed,
-            state=dict(BASE_STATE),
-        )
-        assert result.exit_code == 1, result.output
-        assert "ug agents add" in result.output
 
 
 class TestConfigureSharedStateWorkspaceIsolation:
