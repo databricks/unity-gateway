@@ -565,6 +565,19 @@ def _configure_one(
         provider_models, error, relayed = resolve_provider_models(tool, state, provider)
         if error:
             raise RuntimeError(error)
+        if tool == "copilot":
+            # Like gemini, Copilot's config writer needs a concrete model, so resolve the service's
+            # target now (the managed default when it names one, else the launch-tier preference).
+            model = copilot.resolve_provider_model(
+                state.get("copilot_default_model"), provider_models or {}
+            )
+            if not model:
+                raise RuntimeError(
+                    f"Model provider service '{provider}' declares no Claude models, so "
+                    f"{TOOL_SPECS[tool]['display']} has no model to start on. Add targets to "
+                    "the service or set a default model in the managed config."
+                )
+            return configure_tool(tool, state, model, provider=provider)
         return configure_tool(
             tool, state, None, provider=provider, provider_models=provider_models, relayed=relayed
         )

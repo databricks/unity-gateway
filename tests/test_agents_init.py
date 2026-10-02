@@ -565,8 +565,58 @@ class TestConfigureOneGeminiProvider:
             agents_mod._configure_one("gemini", self._STATE, "c.s.g")
 
 
-class TestResolveGeminiProviderModel:
+class TestConfigureOneCopilotProvider:
     _STATE = {"workspace": "https://ws.databricks.com", "profile": None}
+    _BEDROCK = {
+        "sonnet": "us.anthropic.claude-sonnet-4-6",
+        "opus": "us.anthropic.claude-opus-4-6-v1",
+    }
+
+    def _patch(self, monkeypatch, provider_models, error=None):
+        monkeypatch.setattr(
+            agents_mod,
+            "resolve_provider_models",
+            lambda tool, state, provider: (provider_models, error, False),
+        )
+        captured = {}
+
+        def _fake_configure_tool(tool, state, model=None, **kwargs):
+            captured.update(tool=tool, model=model, provider=kwargs.get("provider"))
+            return state
+
+        monkeypatch.setattr(agents_mod, "configure_tool", _fake_configure_tool)
+        return captured
+
+    def test_resolves_launch_tier_target_before_configure(self, monkeypatch):
+        # Regression: configure_tool's copilot branch requires a model, so the provider path must
+        # hand it the service's target rather than model=None.
+        captured = self._patch(monkeypatch, self._BEDROCK)
+        agents_mod._configure_one("copilot", self._STATE, "c.s.bedrock")
+        assert captured == {
+            "tool": "copilot",
+            "model": "us.anthropic.claude-sonnet-4-6",
+            "provider": "c.s.bedrock",
+        }
+
+    def test_managed_default_maps_to_the_service_slug(self, monkeypatch):
+        captured = self._patch(monkeypatch, self._BEDROCK)
+        state = {**self._STATE, "copilot_default_model": "claude-opus-4-6"}
+        agents_mod._configure_one("copilot", state, "c.s.bedrock")
+        assert captured["model"] == "us.anthropic.claude-opus-4-6-v1"
+
+    def test_service_without_claude_targets_raises(self, monkeypatch):
+        self._patch(monkeypatch, None)
+        with pytest.raises(RuntimeError, match="declares no Claude models"):
+            agents_mod._configure_one("copilot", self._STATE, "c.s.bedrock")
+
+    def test_resolution_error_raises(self, monkeypatch):
+        self._patch(monkeypatch, None, error="not routable")
+        with pytest.raises(RuntimeError, match="not routable"):
+            agents_mod._configure_one("copilot", self._STATE, "c.s.bedrock")
+
+
+class TestResolveGeminiProviderModel:
+    _STATE ={"workspace": "https://ws.databricks.com", "profile": None}
 
     def _patch(self, monkeypatch, service, error=None, persisted=None):
         monkeypatch.setattr(agents_mod, "get_databricks_token", lambda w, p: "token")
