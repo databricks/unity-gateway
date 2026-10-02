@@ -5,6 +5,8 @@ For new entirely unstubbed CUJs, see the separate
 `--suite e2e-integration`. It has no executable journeys yet. This existing suite
 retains its current tests, including `managed_fixture` cases, and remains the
 runner's default (`--suite integration`). No existing coverage has moved.
+The new suite has a separate, manual-only **Full E2E CUJs** Actions workflow;
+it does not change this workflow's jobs, credentials, or required checks.
 
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,

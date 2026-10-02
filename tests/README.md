@@ -19,6 +19,12 @@ is unchanged. Its smart-routing module currently documents acceptance criteria
 only, and empty collection is not a passing E2E result. Existing integration
 cases, including `managed_fixture` cases, remain in their current suite.
 
+The separate **Full E2E CUJs** GitHub Actions workflow is manual-only. Its
+**Full E2E CUJs · Smart routing** job uses CUJ-specific SP secrets, a dedicated
+workspace concurrency group, and independent result artifacts. Scaffold-only
+branches fail its collection preflight; this is not yet an automatic or required
+live check. See the suite's AGENTS.md for dispatch and setup requirements.
+
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.
 `TestUpgrade` in `test_cli.py` covers both command names before, during, and after

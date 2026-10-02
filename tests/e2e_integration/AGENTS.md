@@ -122,11 +122,34 @@ remains an override. The existing integration suite continues to use
 `DATABRICKS_CLIENT_ID` / `DATABRICKS_CLIENT_SECRET` and does not consume CUJ credentials.
 
 The runner records the selected suite, versions, dependencies, JUnit results,
-and artifacts. Missing prerequisites and empty selections fail honestly. Add no
-live CI lane until there is an executable journey.
+and artifacts. Missing prerequisites and empty selections fail honestly.
+
+## GitHub Actions
+
+`.github/workflows/e2e-integration.yml` provides the manual **Full E2E CUJs**
+workflow and **Full E2E CUJs · Smart routing** job. It is separate from the
+existing integration workflow and is not a required or automatic PR check.
+Once the workflow is on the default branch, use **Actions → Full E2E CUJs → Run
+workflow**, selecting a branch that includes the executable CUJ. Running the
+scaffold-only branch fails collection before accessing workspace credentials;
+it never reports an empty selection as a successful E2E run.
+
+Configure GitHub Actions secrets `UG_CUJ_SP_CLIENT_ID` and
+`UG_CUJ_SP_CLIENT_SECRET`; local shell variables do not populate GitHub secrets.
+The job installs both pinned agents on a clean Ubuntu runner, verifies the native
+sandbox, and invokes the independent suite. JUnit, versions, logs, and redacted
+session evidence are uploaded even after failures, when those files exist.
+Early collection/setup failures appear in the step logs without a test artifact.
+
+The fixed concurrency group coordinates this CUJ's dedicated workspace across
+branches and runs with `cancel-in-progress: false`, allowing active cleanup to
+finish. It is not workspace allocation and does not coordinate local invocations;
+the executable CUJ still needs its remote ownership guard. Give future CUJs their
+own workspaces and groups. Do not enable automatic PR runs or make this a required
+check until the executable journey and its cleanup have been validated.
 
 Keep local helper/contract tests in the ordinary unit suite. Current checks live
-in `tests/test_cuj_e2e_contract.py` and
+in `tests/test_cuj_e2e_contract.py`, `tests/test_cuj_workflow.py`, and
 `tests/test_integration_runner.py`. Update
 this file and coverage documentation when implemented coverage changes. Report
 local checks, live results, and unexecuted scenarios separately.
