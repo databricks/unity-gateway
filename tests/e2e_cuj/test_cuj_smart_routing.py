@@ -1,16 +1,11 @@
 """One cross-agent CUJ, one dedicated workspace, six fresh interactive sessions."""
 
-import pytest
-from helpers.base import BaseCujTest
+from base import BaseCujTest
 from helpers.constants import CodingAgent
 from helpers.evidence import FileTask, SessionEvidence
 from helpers.terminal import Terminal
 
 
-@pytest.mark.live
-@pytest.mark.tui
-@pytest.mark.claude
-@pytest.mark.codex
 class TestCujSmartRouting(BaseCujTest):
     WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
 
@@ -30,7 +25,7 @@ class TestCujSmartRouting(BaseCujTest):
         original workspace policy even when an assertion or process fails.
         """
         session, workspace = cuj
-        assert workspace.url == self.workspace_url.rstrip("/")
+        assert workspace.url == self.WORKSPACE_URL.rstrip("/")
         published = workspace.original
         assert published["spec_version"] == 1
         assert published["default_agent"] == CodingAgent.CLAUDE_CODE
@@ -64,7 +59,7 @@ class TestCujSmartRouting(BaseCujTest):
         session.record(
             "scenario",
             {
-                "workspace": self.workspace_url,
+                "workspace": self.WORKSPACE_URL,
                 "defaults": defaults,
                 "overrides": overrides,
                 "live_supported": {a: sorted(m) for a, m in supported.items()},
@@ -75,7 +70,7 @@ class TestCujSmartRouting(BaseCujTest):
         # session, but reuse the home to catch stale settings after reconfigure.
         session.command(
             "configure-enabled",
-            ["configure", "--workspace", self.workspace_url, "--disable-databricks-ai-tools"],
+            ["configure", "--workspace", self.WORKSPACE_URL, "--disable-databricks-ai-tools"],
         )
         session_ids = set()
         for agent in ("claude", "codex"):
@@ -121,7 +116,7 @@ class TestCujSmartRouting(BaseCujTest):
         )
         session.command(
             "configure-disabled",
-            ["configure", "--workspace", self.workspace_url, "--disable-databricks-ai-tools"],
+            ["configure", "--workspace", self.WORKSPACE_URL, "--disable-databricks-ai-tools"],
         )
         for agent in ("claude", "codex"):
             workspace.assert_unchanged()

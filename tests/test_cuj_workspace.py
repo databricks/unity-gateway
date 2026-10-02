@@ -5,8 +5,8 @@ import copy
 
 import pytest
 
-from tests.e2e_integration.helpers.constants import CodingAgent
-from tests.e2e_integration.helpers.workspace import ApiError, Workspace
+from tests.e2e_cuj.helpers.constants import CodingAgent
+from tests.e2e_cuj.helpers.workspace import ApiError, Workspace
 
 
 @pytest.fixture

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from tests.e2e_integration.helpers.session import UserSession
+from tests.e2e_cuj.helpers.session import UserSession
 
 
 def test_cuj_session_does_not_inherit_agent_credentials_or_configuration(tmp_path, monkeypatch):
@@ -14,6 +14,8 @@ def test_cuj_session_does_not_inherit_agent_credentials_or_configuration(tmp_pat
         "DATABRICKS_CONFIG_PROFILE",
         "UCODE_MANAGED_CONFIG_STUB",
         "CODEX_HOME",
+        "UG_CUJ_SP_CLIENT_ID",
+        "UG_CUJ_SP_CLIENT_SECRET",
     ):
         monkeypatch.setenv(name, "developer-value")
     session = UserSession(tmp_path, Path("/installed/ug"), tmp_path / "artifacts", "test-token")
@@ -23,6 +25,8 @@ def test_cuj_session_does_not_inherit_agent_credentials_or_configuration(tmp_pat
     assert "PYTHONPATH" not in session.env
     assert "DATABRICKS_CONFIG_PROFILE" not in session.env
     assert "UCODE_MANAGED_CONFIG_STUB" not in session.env
+    assert "UG_CUJ_SP_CLIENT_ID" not in session.env
+    assert "UG_CUJ_SP_CLIENT_SECRET" not in session.env
     assert session.env["CODEX_HOME"] == str(session.home / ".codex")
     assert not list(session.home.iterdir()), "Fixtures must not manufacture ug/agent state"
 

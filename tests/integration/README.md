@@ -1,14 +1,7 @@
 # Integration tests
 
-For new entirely unstubbed CUJs, see the separate
-[`tests/e2e_integration/` suite](../e2e_integration/AGENTS.md), selected with
-`--suite e2e-integration`. It implements one cross-agent smart-routing CUJ with
-six interactive sessions, applied-model evidence, explicit-model bypass, and
-defaults after disabling routing through real publication/reconfiguration. It
-requires an exclusively assigned workspace and clean disposable runner; local
-checks are not a live pass. This existing suite
-retains its current tests, including `managed_fixture` cases, and remains the
-runner's default (`--suite integration`). No existing coverage has moved.
+The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
+and runs directly with pytest. It does not use this suite's runner or config fixtures.
 
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,

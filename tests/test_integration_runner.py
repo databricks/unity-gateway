@@ -9,35 +9,6 @@ def windows_live_environment():
     return {"DATABRICKS_BEARER": "bearer"}
 
 
-@pytest.mark.parametrize("suite", [None, "integration", "e2e-integration"])
-def test_cuj_runner_suite_selection_preserves_the_default(suite):
-    args = runner.arguments(
-        [
-            "--claude-version",
-            "2.1.280",
-            "--workspace",
-            "https://example.test",
-            *(["--suite", suite] if suite else []),
-        ],
-        platform_name="posix",
-        environment={"DATABRICKS_BEARER": "bearer"},
-    )
-    assert args.suite == (suite or "integration")
-    assert args.pytest_args == ["-m", "live"]
-
-
-@pytest.mark.parametrize("mode", ["--installation-only", "--headless-only"])
-def test_cuj_runner_rejects_legacy_subsets_for_full_e2e(mode, capsys):
-    with pytest.raises(SystemExit) as error:
-        runner.arguments(
-            ["--suite", "e2e-integration", "--claude-version", "2.1.280", mode],
-            platform_name="posix",
-            environment={},
-        )
-    assert error.value.code == 2
-    assert "belong to --suite integration" in capsys.readouterr().err
-
-
 def test_installer_environment_scopes_registry_credentials():
     base = {"PATH": "tools", "UV_DEFAULT_INDEX": "databricks-pypi=https://example/simple"}
     source = {

@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from tests.e2e_integration.helpers.evidence import (
+from tests.e2e_cuj.helpers.evidence import (
     FileTask,
     SessionEvidence,
     canonical_model,
