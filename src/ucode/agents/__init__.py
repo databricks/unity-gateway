@@ -88,6 +88,23 @@ AITOOLS_AGENT_TOKENS = {
 }
 
 
+def resolve_tool_binary(tool: str) -> str | None:
+    """Return the verified executable path for ``tool`` when it defines a resolver."""
+    module = _MODULES[tool]
+    resolver = getattr(module, "resolve_binary", None)
+    if callable(resolver):
+        return resolver()
+    return shutil.which(str(TOOL_SPECS[tool]["binary"]))
+
+
+def tool_binary_status(tool: str) -> tuple[bool, str | None]:
+    """Return whether a tool is installed and any executable-name conflict."""
+    try:
+        return bool(resolve_tool_binary(tool)), None
+    except copilot.CopilotBinaryConflictError as exc:
+        return False, str(exc)
+
+
 def install_databricks_ai_tools_for_agents(
     tools: list[str], state: dict, *, force_refresh: bool = False
 ) -> None:
@@ -122,11 +139,11 @@ def normalize_tool(tool: str) -> str:
 
 def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool:
     spec = TOOL_SPECS[tool]
-    binary = spec["binary"]
     package = spec["package"]
     target = f"{package}@{version}" if version else package
 
-    if tool in _NATIVE_UPGRADE_COMMANDS and version is None and shutil.which(binary):
+    installed_binary = resolve_tool_binary(tool)
+    if tool in _NATIVE_UPGRADE_COMMANDS and version is None and installed_binary:
         command = _NATIVE_UPGRADE_COMMANDS[tool]
     else:
         if not shutil.which("npm"):
@@ -146,7 +163,7 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
 
     print_success(f"{spec['display']} is up to date")
     agent_version.cache_clear()
-    return bool(shutil.which(binary))
+    return bool(resolve_tool_binary(tool))
 
 
 def _minimum_version_error(tool: str) -> str | None:
@@ -197,7 +214,7 @@ def install_tool_binary(
     binary = spec["binary"]
     package = spec["package"]
 
-    if shutil.which(binary):
+    if resolve_tool_binary(tool):
         # A too-new build is a correctness blocker (the tool runs but misbehaves
         # against the gateway), so check it on every launch — not just when
         # auto-configuring — mirroring the minimum-version gate below.
@@ -239,7 +256,7 @@ def install_tool_binary(
         print_warning(f"{message} Continuing without it.")
         return False
 
-    if not shutil.which(binary):
+    if not resolve_tool_binary(tool):
         message = f"{spec['display']} install completed, but `{binary}` is still not on PATH."
         if strict:
             raise RuntimeError(message)
@@ -252,7 +269,7 @@ def install_tool_binary(
 def ensure_tool_binary_available(tool: str) -> None:
     spec = TOOL_SPECS[tool]
     binary = spec["binary"]
-    if shutil.which(binary):
+    if resolve_tool_binary(tool):
         return
     raise RuntimeError(
         f"{spec['display']} is not installed (`{binary}` was not found on PATH). "
@@ -263,7 +280,8 @@ def ensure_tool_binary_available(tool: str) -> None:
 
 def tool_binary_installed(tool: str) -> bool:
     """True when the agent's CLI binary is on PATH. Read-only — for ``ucode doctor``."""
-    return bool(shutil.which(TOOL_SPECS[tool]["binary"]))
+    installed, _conflict = tool_binary_status(tool)
+    return installed
 
 
 def update_tool_binary(tool: str) -> bool:
