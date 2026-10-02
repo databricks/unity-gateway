@@ -10,7 +10,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
-from .evidence import agent_sessions, assistant_answers
+from .evidence import agent_sessions, is_child_session
 from .provider_catalog import parse_anthropic_provider_page, parse_codex_provider_catalog
 
 MODEL_SCHEMA = "ug_e2e.models"
@@ -50,9 +50,16 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def fetch_model_service_inventory(workspace: str, token: str) -> dict[str, tuple[str, ...]]:
-    """Prove every fixture exists independently of agent-compatible model lists."""
-    origin = urllib.parse.urlsplit(workspace)
+def safe_https_json_get(
+    workspace: str, token: str, path: str, *, headers: dict[str, str] | None = None
+) -> object:
+    """GET JSON from an explicit workspace origin without redirects or secret diagnostics."""
+    assert isinstance(workspace, str), "Expected an HTTPS workspace origin"
+    try:
+        origin = urllib.parse.urlsplit(workspace)
+        port = origin.port
+    except ValueError:
+        raise AssertionError("Expected a valid HTTPS workspace origin") from None
     assert (
         origin.scheme == "https"
         and origin.hostname
@@ -61,26 +68,38 @@ def fetch_model_service_inventory(workspace: str, token: str) -> dict[str, tuple
         and origin.path in {"", "/"}
         and not origin.query
         and not origin.fragment
+        and (port is None or 0 < port <= 65535)
+        and not re.search(r"[\s\\]", workspace)
     ), "Expected an HTTPS workspace origin without credentials"
-    assert token, "Expected an explicit workspace bearer"
-    opener = urllib.request.build_opener(NoRedirect())
+    assert isinstance(token, str) and token.strip() and not re.search(r"[\r\n]", token), (
+        "Expected an explicit workspace bearer"
+    )
+    assert path.startswith("/") and not path.startswith("//"), "Expected a workspace API path"
+    request = urllib.request.Request(
+        f"https://{origin.netloc}{path}",
+        headers={
+            **(headers or {}),
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.build_opener(NoRedirect()).open(request, timeout=30) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        raise AssertionError(f"Workspace JSON GET returned HTTP {error.code}") from None
+    except (urllib.error.URLError, OSError, ValueError):
+        raise AssertionError("Workspace JSON GET failed or returned invalid JSON") from None
+
+
+def fetch_model_service_inventory(workspace: str, token: str) -> dict[str, tuple[str, ...]]:
+    """Prove every fixture exists independently of agent-compatible model lists."""
     inventory: dict[str, tuple[str, ...]] = {}
     for model in sorted(MODEL_SERVICES | {CLAUDE_DECOY, CODEX_DECOY}):
-        url = f"https://{origin.netloc}/api/2.1/unity-catalog/model-services/{model}"
-        request = urllib.request.Request(
-            url,
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-            method="GET",
+        payload = safe_https_json_get(
+            workspace, token, f"/api/2.1/unity-catalog/model-services/{model}"
         )
-        try:
-            with opener.open(request, timeout=30) as response:
-                payload = json.load(response)
-        except urllib.error.HTTPError as error:
-            raise AssertionError(f"Model service GET {model} returned HTTP {error.code}") from None
-        except (urllib.error.URLError, OSError, ValueError):
-            raise AssertionError(
-                f"Model service GET {model} failed or returned invalid JSON"
-            ) from None
         assert isinstance(payload, dict), f"Model service {model} must be an object"
         config = payload.get("config")
         assert isinstance(config, dict), f"Model service {model} must have a config"
@@ -171,24 +190,12 @@ class ParentCatalog:
 
 def fetch_codex_parent_catalog(workspace: str, token: str, parent_schema: str) -> ParentCatalog:
     """Keep the raw Codex catalog so hidden entries cannot conceal exclusions."""
-    assert workspace.startswith("https://") and token and parent_schema
-    url = f"{workspace.rstrip('/')}/ai-gateway/codex/v1/models"
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-            MODEL_HEADER: parent_schema,
-        },
+    assert parent_schema, "Expected an explicit parent schema"
+    payload = safe_https_json_get(
+        workspace, token, "/ai-gateway/codex/v1/models", headers={MODEL_HEADER: parent_schema}
     )
-    try:
-        with urllib.request.build_opener(NoRedirect()).open(request, timeout=30) as response:
-            payload = json.load(response)
-    except urllib.error.HTTPError as error:
-        raise AssertionError(f"Codex catalog GET returned HTTP {error.code}") from None
-    except (urllib.error.URLError, OSError, ValueError):
-        raise AssertionError("Codex catalog GET failed or returned invalid JSON") from None
     model_ids = parse_codex_provider_catalog(payload)
+    assert isinstance(payload, dict), "Expected a Codex catalog object"
     display_names = {}
     for entry in payload["models"]:
         if entry.get("slug") in model_ids:
@@ -200,7 +207,7 @@ def fetch_codex_parent_catalog(workspace: str, token: str, parent_schema: str) -
 
 def fetch_claude_parent_catalog(workspace: str, token: str, parent_schema: str) -> ParentCatalog:
     """Read the real parent-scoped Anthropic catalog with bounded pagination."""
-    assert workspace.startswith("https://") and token and parent_schema
+    assert parent_schema, "Expected an explicit parent schema"
     model_ids: list[str] = []
     display_names: dict[str, str | None] = {}
     pages: list[dict] = []
@@ -210,27 +217,17 @@ def fetch_claude_parent_catalog(workspace: str, token: str, parent_schema: str) 
         query = {"limit": "1000"}
         if cursor is not None:
             query["after_id"] = cursor
-        url = (
-            f"{workspace.rstrip('/')}/ai-gateway/anthropic/v1/models?"
-            f"{urllib.parse.urlencode(query)}"
-        )
-        request = urllib.request.Request(
-            url,
+        payload = safe_https_json_get(
+            workspace,
+            token,
+            f"/ai-gateway/anthropic/v1/models?{urllib.parse.urlencode(query)}",
             headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json",
                 "Anthropic-Version": "2023-06-01",
                 MODEL_HEADER: parent_schema,
             },
         )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                payload = json.load(response)
-        except urllib.error.HTTPError as error:
-            raise AssertionError(f"GET {url} returned HTTP {error.code}: {error.reason}") from error
-        except (urllib.error.URLError, OSError) as error:
-            raise AssertionError(f"GET {url} failed: {error}") from error
         page = parse_anthropic_provider_page(payload)
+        assert isinstance(payload, dict), "Expected an Anthropic catalog object"
         pages.append(payload)
         for model_id, display_name in page.models:
             assert model_id not in display_names, f"duplicate Claude model id: {model_id}"
@@ -283,41 +280,96 @@ def assert_persisted_config(session, workspace: str) -> dict:
     return config
 
 
-def native_model_ids(session, agent: str, answer_value: str) -> set[str]:
-    """Correlate a completed file answer with its native transcript model identity."""
-    assert agent in {"claude", "codex"}, agent
+def _evidence_id(value: object, field: str) -> str:
+    assert isinstance(value, str) and re.fullmatch(r"\S+", value), (
+        f"Missing or malformed completed-task {field}"
+    )
+    return value
+
+
+def claude_completed_task_models(records: list[dict], answer_value: str) -> set[str]:
+    """Parse Claude's response-reported model on the assistant's matching answer."""
+    assert isinstance(answer_value, str) and answer_value.strip(), (
+        "Expected a nonempty answer value"
+    )
     found: set[str] = set()
-    for records in agent_sessions(session, agent).values():
-        if agent == "claude":
-            for record in records:
-                if not any(answer_value in answer for answer in assistant_answers(agent, [record])):
-                    continue
-                message = record.get("message") or {}
-                model = message.get("model")
-                if isinstance(model, str) and model:
-                    found.add(model.removesuffix("[1m]"))
-        else:
-            completed = {
-                (record.get("payload") or {}).get("turn_id")
-                for record in records
-                if record.get("type") == "event_msg"
-                and (record.get("payload") or {}).get("type") == "task_complete"
-                and answer_value in ((record.get("payload") or {}).get("last_agent_message") or "")
-            }
-            assert all(isinstance(turn_id, str) and turn_id for turn_id in completed), completed
-            for record in records:
-                if record.get("type") != "turn_context":
-                    continue
-                payload = record.get("payload") or {}
-                if payload.get("turn_id") in completed and isinstance(payload.get("model"), str):
-                    found.add(payload["model"])
+    for record in records:
+        if record.get("type") != "assistant":
+            continue
+        message = record.get("message")
+        assert isinstance(message, dict), "Malformed Claude assistant message"
+        assert message.get("role") == "assistant", "Missing Claude assistant role"
+        content = message.get("content")
+        assert isinstance(content, list), "Malformed Claude assistant content"
+        for part in content:
+            assert isinstance(part, dict), "Malformed Claude assistant content block"
+            if part.get("type") != "text":
+                continue
+            text = part.get("text")
+            assert isinstance(text, str), "Malformed Claude assistant text"
+            if answer_value in text:
+                model = _evidence_id(message.get("model"), "model")
+                found.add(_evidence_id(model.removesuffix("[1m]"), "model"))
     return found
 
 
-def assert_native_model_identity(session, agent: str, answer_value: str, expected: str) -> None:
-    observed = native_model_ids(session, agent, answer_value)
+def codex_completed_task_models(records: list[dict], answer_value: str) -> set[str]:
+    """Join Codex's completed answer turn to its client-selected context model."""
+    assert isinstance(answer_value, str) and answer_value.strip(), (
+        "Expected a nonempty answer value"
+    )
+    completed: set[str] = set()
+    for record in records:
+        if record.get("type") != "event_msg":
+            continue
+        payload = record.get("payload")
+        assert isinstance(payload, dict), "Malformed Codex event payload"
+        if payload.get("type") != "task_complete":
+            continue
+        answer = payload.get("last_agent_message")
+        assert isinstance(answer, str), "Missing or malformed Codex completed answer"
+        if answer_value in answer:
+            completed.add(_evidence_id(payload.get("turn_id"), "turn ID"))
+    models: dict[str, set[str]] = {turn_id: set() for turn_id in completed}
+    for record in records:
+        if record.get("type") != "turn_context":
+            continue
+        payload = record.get("payload")
+        assert isinstance(payload, dict), "Malformed Codex turn context"
+        turn_id = _evidence_id(payload.get("turn_id"), "turn ID")
+        if turn_id in completed:
+            models[turn_id].add(_evidence_id(payload.get("model"), "model"))
+    assert all(models.values()), "Missing Codex model context for completed answer turn"
+    return {model for turn_models in models.values() for model in turn_models}
+
+
+def completed_task_models(session, agent: str, answer_value: str) -> set[str]:
+    """Read parent task model evidence, not proof of the gateway's destination."""
+    assert agent in {"claude", "codex"}, agent
+    assert isinstance(answer_value, str) and answer_value.strip(), (
+        "Expected a nonempty answer value"
+    )
+    adapter = claude_completed_task_models if agent == "claude" else codex_completed_task_models
+    return {
+        model
+        for path, records in agent_sessions(session, agent).items()
+        if not is_child_session(agent, path, records)
+        for model in adapter(records, answer_value)
+    }
+
+
+def assert_completed_task_model(session, agent: str, answer_value: str, expected: str) -> None:
+    expected = _evidence_id(expected, "expected model")
+    observed = completed_task_models(session, agent, answer_value)
     session.record(
-        f"native-model-{agent}-{answer_value[:12]}.json",
-        {"expected": expected, "observed": sorted(observed)},
+        f"completed-task-model-{agent}-{answer_value[:12]}.json",
+        {
+            "expected": expected,
+            "observed": sorted(observed),
+            "evidence_kind": (
+                "response-reported model" if agent == "claude" else "client-selected model"
+            ),
+            "gateway_destination_proven": False,
+        },
     )
     assert observed == {expected}, {"expected": expected, "observed": sorted(observed)}

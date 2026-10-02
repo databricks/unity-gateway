@@ -148,7 +148,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure against a workspace that publishes a managed CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch. The Codex case also checks the shared catalog pointer, restart guidance, and a fresh bare app-server's visible model list |
 | `test_case_01_*` | Launch managed Claude without defaults after configure and from fresh state | Claude receives the admin MPS header; its gateway cache and replacement picker match the independently fetched provider model IDs; catalog labels are preserved and a model appears in a numbered picker row |
-| CUJ3 model discovery (`test_case_03_*`, `test_case_04_*`) | Configure both agents in the dedicated workspace using the published `ug_e2e.models` schema pointer | Claude exposes Sonnet/Haiku/Kimi, Codex exposes GPT Luna/Kimi, and Gemini plus all other-schema entries are absent from exact native picker inventories. Bare `ug` and explicit `ug claude` select Claude/Sonnet for separate TUI tasks; Claude print mode, Codex TUI, and Codex exec retain their configured defaults. Every additional compatible model completes a headless task with native model identity. Native picker and task coverage still require a live journey pass; MCP and skills are deferred |
+| CUJ3 model discovery (`test_case_03_*`, `test_case_04_*`) | Configure published `ug_e2e.models` policy in the dedicated workspace | Exact Claude Sonnet/Haiku/Kimi and Codex GPT Luna/Kimi catalogs/pickers; Gemini and other-schema decoys excluded. Bare `ug` and `ug claude` complete separate Sonnet TUI tasks; Claude print and Codex TUI/exec tasks use configured defaults without overrides. Every extra compatible model completes a headless task; routing stays off. Model evidence is limited as described below; MCP/skills are deferred |
 | `test_managed_fixture_claude_rejects_provider_override`, `test_managed_fixture_fresh_claude_rejects_provider_override`, `test_case_05_*` | Pass a provider or model-location override to managed Claude after configure and from fresh state | ug rejects the override before Claude starts and preserves agent-owned state |
 | `test_case_02_*` | Launch managed Codex after configure and from fresh state | The scoped and stable catalogs, ug-launched app server, and fresh bare app server match the independently fetched admin MPS model IDs. The configured case uses real `ug revert` to remove ug's shared pointer and stable file while preserving a user setting |
 | `test_managed_fixture_codex_rejects_provider_override_after_configure`, `test_managed_fixture_codex_rejects_provider_override_from_fresh_state`, `test_case_06_*` | Pass a provider or model-location override to managed Codex after configure and from fresh state | ug rejects the override before Codex starts and preserves agent-owned state |
@@ -191,7 +191,10 @@ Claude discovery assertions match numbered picker rows, not startup banners or
 footers. Offline regressions cover that distinction, native Haiku/Opus/Sonnet
 deduplication, and raw catalog ID/display-name rows for scoped pickers.
 Managed discovery expectations come from separate read-only, provider-scoped
-model-list requests; they do not rely solely on ug's generated catalog.
+model-list requests; they do not rely solely on ug's generated catalog. CUJ3 tasks
+check Claude's response-reported model and Codex's client-selected model; neither
+proves the executed gateway backing destination. Native picker/task coverage
+requires a live journey pass, not collection or lint success.
 
 ug no longer runs a post-configure agent probe; the deprecated `--skip-validate`
 flag is accepted as a no-op where older journeys still pass it. Tests retain

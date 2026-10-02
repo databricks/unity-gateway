@@ -160,7 +160,7 @@ def test_cuj3_launches_defaults_without_model_overrides_and_checks_both_pickers(
         ]
         assert any(
             isinstance(node.func, ast.Name)
-            and node.func.id == "assert_native_model_identity"
+            and node.func.id == "assert_completed_task_model"
             and len(node.args) == 4
             and isinstance(node.args[2], ast.Attribute)
             and isinstance(node.args[2].value, ast.Name)
@@ -168,7 +168,7 @@ def test_cuj3_launches_defaults_without_model_overrides_and_checks_both_pickers(
             and isinstance(node.args[3], ast.Name)
             and node.args[3].id == default
             for node in calls
-        ), (agent, "Missing native default-model evidence")
+        ), (agent, "Missing completed-task default-model evidence")
         assert any(
             isinstance(node.func, ast.Attribute) and node.func.attr == picker for node in calls
         ), (agent, "Missing native picker")
@@ -238,9 +238,9 @@ def test_cuj3_launches_defaults_without_model_overrides_and_checks_both_pickers(
             "Missing completed native assistant answer",
         )
         assert (
-            f"assert_native_model_identity(session, {agent!r}, {task_name}.value, {default})"
+            f"assert_completed_task_model(session, {agent!r}, {task_name}.value, {default})"
             in evidence
-        ), (agent, command, "Missing exact native default-model evidence")
+        ), (agent, command, "Missing exact completed-task default-model evidence")
 
 
 @pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
