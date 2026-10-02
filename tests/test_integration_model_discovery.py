@@ -2,7 +2,20 @@
 
 import pytest
 
-from tests.integration.utils.model_discovery import claude_model_in_picker, claude_system_model_ids
+from tests.integration.utils.model_discovery import (
+    assert_picker_inventory,
+    claude_discovery_model_id,
+    claude_model_in_picker,
+    claude_system_model_ids,
+    codex_model_in_picker,
+)
+
+PICKER_MODELS = {
+    "claude": frozenset(
+        {"catalog.models.claude_sonnet", "catalog.models.claude_haiku", "catalog.models.kimi"}
+    ),
+    "codex": frozenset({"catalog.models.gpt_luna", "catalog.models.kimi"}),
+}
 
 
 @pytest.mark.parametrize("cursor", ["", "❯ ", "› ", "> "])
@@ -131,3 +144,69 @@ def test_claude_system_model_ids_rejects_invalid_or_out_of_scope_ids(model_id):
 def test_claude_system_model_ids_rejects_empty_missing_and_duplicate_ids(models):
     with pytest.raises(AssertionError):
         claude_system_model_ids(models)
+
+
+def test_claude_discovery_requires_exact_gateway_wire_ids():
+    assert {claude_discovery_model_id(model) for model in PICKER_MODELS["claude"]} == {
+        "catalog.models.claude_haiku",
+        "catalog.models.claude_sonnet",
+        "anthropic-aigw-69e2a9a0-catalog.models.kimi",
+    }
+    assert (
+        claude_discovery_model_id("catalog.other_models.claude_decoy")
+        == "catalog.other_models.claude_decoy"
+    )
+
+
+@pytest.mark.parametrize("cursor", ["", "❯ ", "› ", "> "])
+@pytest.mark.parametrize("label", ["catalog.models.gpt_luna", "GPT Luna"])
+def test_codex_picker_matches_model_only_in_numbered_rows(cursor, label):
+    screen = f"Select Model and Effort\n  {cursor}1. {label} (current)\nEnter to confirm"
+    assert codex_model_in_picker(screen, "catalog.models.gpt_luna", "GPT Luna")
+
+
+@pytest.mark.parametrize(
+    "screen",
+    [
+        "GPT Luna\nSelect Model and Effort\n  1. Other model",
+        "Select Model and Effort\n  1. Other model\nCurrent model: GPT Luna",
+        "  1. catalog.models.gpt_luna_v2",
+        "  1.\nGPT Luna",
+        "",
+    ],
+)
+def test_codex_picker_rejects_nonrows_and_different_model_ids(screen):
+    assert not codex_model_in_picker(screen, "catalog.models.gpt_luna", "GPT Luna")
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_picker_inventory_accepts_exact_rows_and_ignores_banner_text(agent):
+    models = PICKER_MODELS["claude"] if agent == "claude" else PICKER_MODELS["codex"]
+    labels = {model: model.rsplit(".", 1)[-1].replace("_", " ").title() for model in models}
+    rows = "\n".join(
+        f"  {position}. {label}" for position, label in enumerate(labels.values(), start=1)
+    )
+    screen = f"Banner: Gemini Flash\nSelect model\n{rows}\nEnter to confirm"
+    assert_picker_inventory(screen, agent, labels)
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize("excluded_label", ["Gemini Flash", "Friendly out-of-scope model"])
+def test_picker_inventory_rejects_extra_friendly_label_rows(agent, excluded_label):
+    models = PICKER_MODELS["claude"] if agent == "claude" else PICKER_MODELS["codex"]
+    labels = dict.fromkeys(models, None)
+    rows = "\n".join(f"  {position}. {model}" for position, model in enumerate(models, start=1))
+    screen = f"Select model\n{rows}\n  {len(models) + 1}. {excluded_label}"
+    with pytest.raises(AssertionError):
+        assert_picker_inventory(screen, agent, labels)
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_picker_inventory_rejects_duplicate_and_missing_rows(agent):
+    models = sorted(PICKER_MODELS["claude"] if agent == "claude" else PICKER_MODELS["codex"])
+    labels = dict.fromkeys(models, None)
+    rows = "\n".join(f"  {position}. {model}" for position, model in enumerate(models, start=1))
+    with pytest.raises(AssertionError):
+        assert_picker_inventory(f"{rows}\n  {len(models) + 1}. {models[0]}", agent, labels)
+    with pytest.raises(AssertionError):
+        assert_picker_inventory(f"  1. {models[0]}", agent, labels)

@@ -45,9 +45,10 @@ def test_managed_integration_ci_is_blocking():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     managed, gate = workflow.read_text().split("\n  managed:\n", 1)[1].split("\n  cujs:\n", 1)
     assert "continue-on-error:" not in managed
+    assert "not workspace_isolated" in managed
     needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", gate)
     assert needs is not None
-    assert "managed" in {job.strip() for job in needs.group(1).split(",")}
+    assert {"catalog_discovery", "managed"} <= {job.strip() for job in needs.group(1).split(",")}
     assert (
         "if: ${{ always() && (github.event_name != 'pull_request' || "
         "github.event.pull_request.head.repo.full_name == github.repository) }}"
@@ -62,6 +63,37 @@ def test_windows_integration_ci_uses_shared_claude_version():
     assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
 
 
+def test_catalog_discovery_integration_ci_uses_the_dedicated_managed_workspace():
+    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+    contents = workflow.read_text()
+    catalog_discovery = contents.split("\n  catalog_discovery:\n", 1)[1].split(
+        "\n  opencode:\n", 1
+    )[0]
+
+    assert "agent: [claude, codex]" in catalog_discovery
+    assert 'name: "Catalog discovery' in catalog_discovery
+    assert "secrets.UG_CUJ3_WORKSPACE" in catalog_discovery
+    assert "secrets.UG_CUJ_SP_CLIENT_ID" in catalog_discovery
+    assert "secrets.UG_CUJ_SP_CLIENT_SECRET" in catalog_discovery
+    assert (
+        "TEST_MARKER: managed and catalog_discovery and workspace_isolated and ${{ matrix.agent }}"
+        in catalog_discovery
+    )
+    assert "inputs.suite != 'tui'" in catalog_discovery
+    assert "inputs.suite != 'smoke'" in catalog_discovery
+    assert "inputs.suite != 'installation'" in catalog_discovery
+    assert "continue-on-error:" not in catalog_discovery
+    assert "fail-fast: false" in catalog_discovery
+    assert "steps: *live-steps" not in catalog_discovery
+    assert "INSTALL_BOTH_AGENTS" not in contents
+    assert (
+        'args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION")'
+        in catalog_discovery
+    )
+    assert "scripts/run_integration.py" in catalog_discovery
+    assert '"${args[@]}" -- -m "$TEST_MARKER"' in catalog_discovery
+
+
 @pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
 @pytest.mark.parametrize("managed_result", ["success", "failure", "cancelled", "skipped"])
 def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_result):
@@ -71,13 +103,13 @@ def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_resul
     assert script is not None
     results = {
         job: {"result": "success"}
-        for job in ("installation", "workspace", "smoke", "full", "managed")
+        for job in ("installation", "workspace", "smoke", "full", "catalog_discovery", "managed")
     }
     results["managed"]["result"] = managed_result
     for job in {
-        "installation": ("workspace", "smoke", "full"),
-        "smoke": ("full",),
-        "tui": ("smoke",),
+        "installation": ("workspace", "smoke", "full", "catalog_discovery"),
+        "smoke": ("full", "catalog_discovery"),
+        "tui": ("smoke", "catalog_discovery"),
     }.get(suite, ()):
         results[job]["result"] = "skipped"
     result = subprocess.run(
@@ -90,6 +122,41 @@ def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_resul
     if suite in {"full", "live"} and managed_result != "success":
         assert result.returncode != 0
         assert "Integration jobs did not pass: managed" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "All selected integration jobs passed:" in result.stdout
+
+
+@pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
+@pytest.mark.parametrize("catalog_discovery_result", ["success", "failure", "cancelled", "skipped"])
+def test_integration_ci_gate_requires_selected_catalog_discovery_jobs(
+    suite, catalog_discovery_result
+):
+    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+    gate = workflow.read_text().split("\n  cujs:\n", 1)[1]
+    script = re.search(r"          python3 - <<'PY'\n(.*?)          PY", gate, re.DOTALL)
+    assert script is not None
+    results = {
+        job: {"result": "success"}
+        for job in ("installation", "workspace", "smoke", "full", "catalog_discovery", "managed")
+    }
+    results["catalog_discovery"]["result"] = catalog_discovery_result
+    for job in {
+        "installation": ("workspace", "smoke", "full", "catalog_discovery"),
+        "smoke": ("full", "catalog_discovery"),
+        "tui": ("smoke", "catalog_discovery"),
+    }.get(suite, ()):
+        results[job]["result"] = "skipped"
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script.group(1))],
+        env={"RESULTS": json.dumps(results), "SUITE": suite},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if suite in {"full", "live"} and catalog_discovery_result != "success":
+        assert result.returncode != 0
+        assert "Integration jobs did not pass: catalog_discovery" in result.stderr
     else:
         assert result.returncode == 0, result.stderr
         assert "All selected integration jobs passed:" in result.stdout

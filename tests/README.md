@@ -152,6 +152,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure against a workspace that publishes a managed CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch. The Codex case also checks the shared catalog pointer, restart guidance, and a fresh bare app-server's visible model list |
 | `test_case_01_*` | Launch managed Claude without defaults after configure and from fresh state | Claude receives the admin MPS header; its gateway cache and replacement picker match the independently fetched provider model IDs; catalog labels are preserved and a model appears in a numbered picker row |
+| Catalog discovery (`test_catalog_discovery_*`) | Independently configure and exercise picker discovery, default TUI/headless launches, and explicit models | Ten cases assert compatible picker sets, Gemini/decoy exclusion, default preservation after dismissing the picker, first-task defaults, and extra-model inference. No generated-config assertions; runtime model evidence is limited as described below |
 | `test_case_03_*`, `test_case_05_*` | Pass a provider or model-location override to managed Claude after configure and from fresh state | ug rejects the override before Claude starts and preserves agent-owned state |
 | `test_case_02_*` | Launch managed Codex after configure and from fresh state | The scoped and stable catalogs, ug-launched app server, and fresh bare app server match the independently fetched admin MPS model IDs. The configured case uses real `ug revert` to remove ug's shared pointer and stable file while preserving a user setting |
 | `test_case_04_*`, `test_case_06_*` | Pass a provider or model-location override to managed Codex after configure and from fresh state | ug rejects the override before Codex starts and preserves agent-owned state |
@@ -167,12 +168,13 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
 With Claude and Codex selected there are **62 live cases** (12 marked TUI cases),
-**6 managed-workspace cases** (marker `managed`, run against workspaces that
+**16 managed-workspace cases** (marker `managed`, including ten dedicated catalog discovery cases, run against workspaces that
 publish a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
 **25 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected), and **7 installation checks**. The 14 retained numbered scenarios
-comprise **24 explicit journeys**: 12 managed configured/fresh executions and 12 unmanaged
-executions. Thirteen additional managed-fixture cases cover focused model, MCP, skills,
+comprise **24 explicit journeys**: 12 managed-fixture configured/fresh executions and 12 unmanaged
+executions. Ten additional catalog discovery cases cover the preconfigured dedicated workspace.
+Thirteen additional managed-fixture cases cover focused model, MCP, skills,
 and lifecycle shapes; two published-config cases cover Claude defaults. Parametrization varies
 argument spelling or routing mode, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
@@ -194,7 +196,10 @@ Claude discovery assertions match numbered picker rows, not startup banners or
 footers. Offline regressions cover that distinction, native Haiku/Opus/Sonnet
 deduplication, and raw catalog ID/display-name rows for scoped pickers.
 Managed discovery expectations come from separate read-only, provider-scoped
-model-list requests; they do not rely solely on ug's generated catalog.
+model-list requests; they do not rely solely on ug's generated catalog. Catalog discovery checks native behavior, not generated settings/cache files. Tasks
+check Claude's headless `modelUsage` service key or TUI default banner plus a completed answer,
+and Codex's client-selected model; none proves the executed gateway backing destination. Native picker/task coverage
+requires a live journey pass, not collection or lint success.
 
 ug no longer runs a post-configure agent probe; the deprecated `--skip-validate`
 flag is accepted as a no-op where older journeys still pass it. Tests retain
