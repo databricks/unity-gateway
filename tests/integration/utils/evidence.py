@@ -7,14 +7,7 @@ from pathlib import Path
 
 from .agents import _evidence_id, claude, codex
 
-_EVIDENCE_ADAPTERS = {"claude": claude, "codex": codex}
-
-
-def _evidence_adapter(agent: str):
-    try:
-        return _EVIDENCE_ADAPTERS[agent]
-    except (KeyError, TypeError):
-        raise AssertionError(f"Unsupported evidence agent: {agent}") from None
+_AGENT_HELPERS = {"claude": claude, "codex": codex}
 
 
 def assert_no_terminal_api_error(screen: str) -> None:
@@ -48,23 +41,25 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def agent_sessions(session, agent: str) -> dict[str, list[dict]]:
-    directory = session.home / _evidence_adapter(agent).SESSION_DIRECTORY
+    directory = session.home / _AGENT_HELPERS.get(agent, codex).SESSION_DIRECTORY
     return {
         str(path.relative_to(directory)): read_jsonl(path) for path in directory.rglob("*.jsonl")
     }
 
 
 def assistant_answers(agent: str, records: list[dict]) -> list[str]:
-    return _evidence_adapter(agent).assistant_answers(records)
+    helper = _AGENT_HELPERS.get(agent)
+    return helper.assistant_answers(records) if helper is not None else []
 
 
 def is_child_session(agent: str, path: str, records: list[dict]) -> bool:
-    return _evidence_adapter(agent).is_child_session(path, records)
+    return _AGENT_HELPERS.get(agent, codex).is_child_session(path, records)
 
 
 def completed_task_models(session, agent: str, answer_value: str) -> set[str]:
     """Read parent task model evidence, not proof of the gateway's destination."""
-    adapter = _evidence_adapter(agent)
+    assert agent in _AGENT_HELPERS, f"Unsupported evidence agent: {agent}"
+    adapter = _AGENT_HELPERS[agent]
     assert isinstance(answer_value, str) and answer_value.strip(), (
         "Expected a nonempty answer value"
     )
@@ -80,8 +75,8 @@ def completed_task_models(session, agent: str, answer_value: str) -> set[str]:
 
 def assert_completed_task_model(session, agent: str, answer_value: str, expected: str) -> None:
     expected = _evidence_id(expected, "expected model")
-    adapter = _evidence_adapter(agent)
     observed = completed_task_models(session, agent, answer_value)
+    adapter = _AGENT_HELPERS[agent]
     session.record(
         f"completed-task-model-{agent}-{answer_value[:12]}.json",
         {

@@ -319,8 +319,8 @@ they only configure, list models, and open/close the picker. Other live CUJs per
 real model tasks.
 
 There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **8 managed-workspace cases** (one per agent, an idempotent
-re-configure, a cache-TTL journey, two Claude defaults cases, and two catalog discovery journeys; marker `managed`) run against
+checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **16 managed-workspace cases** (one per agent, an idempotent
+re-configure, a cache-TTL journey, two Claude defaults cases, and ten catalog discovery cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
 A further **25 `managed_fixture`
@@ -343,8 +343,8 @@ constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-
 mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
 `ug configure` and Claude. The client secrets do not enter the pytest process.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed-fixture
-and 12 unmanaged executions. Two additional catalog discovery journeys bring the
-complete integration suite to 103 executions. See the named coverage and gaps matrix in
+and 12 unmanaged executions. Ten additional catalog discovery cases bring the
+complete integration suite to 111 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -533,15 +533,17 @@ and tracing are disabled. Tests neither provision nor validate fixture definitio
 | `kimi` | Included | Included |
 | `gemini_flash` | Excluded | Excluded |
 
-Independent catalogs, native caches/model lists, and exact picker inventories must agree.
+Independent gateway catalogs, Codex's native model/list, and exact TUI picker inventories must agree.
 Compatible `ug_e2e.other_models.claude_decoy` and `codex_decoy` must be discoverable in their
 own schema but absent from the scoped picker. Claude discovery aliases must be enabled;
 Kimi uses `anthropic-aigw-<8-character SHA-256 prefix>-<service FQN>`.
 
-Bare `ug` and `ug claude` each complete a Sonnet TUI file task; `ug claude -p "task"`
-completes a print task. Codex completes TUI and `ug codex -- exec --json "task"` tasks on
-GPT Luna. Defaults omit model overrides; every additional compatible model completes a
-headless file task. Expected answers are withheld from prompts. Claude model evidence is
+Ten independently configured cases cover picker discovery, default launches, and explicit models.
+Picker cases dismiss the menu without changing selection, then complete a task on the default.
+Separate cases cover bare `ug`, `ug claude`, and `ug codex` TUI first tasks and Claude print/Codex
+exec defaults. Each additional compatible model gets its own headless task case.
+Success depends on native behavior, not generated settings, managed-config JSON, or catalog caches.
+Defaults omit model overrides; expected answers are withheld from prompts. Claude model evidence is
 response-reported; Codex evidence joins the completed answer to its client-selected turn
 model. Neither proves the gateway's backing destination. Only live passes establish coverage.
 

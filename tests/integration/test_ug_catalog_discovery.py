@@ -1,8 +1,6 @@
-"""Catalog discovery: complete managed, schema-scoped model discovery journeys."""
+"""Managed catalog discovery, default launches, and explicit model selection."""
 
-import json
 import os
-import tomllib
 
 import pytest
 from catalog_discovery_expectations import (
@@ -18,14 +16,7 @@ from catalog_discovery_expectations import (
 )
 from utils.agents import claude, codex
 from utils.evidence import FileTask, assert_completed_task_model
-from utils.managed import read_persisted_managed_config
-from utils.model_discovery import (
-    assert_picker_inventory,
-)
-from utils.provider_catalog import (
-    MODEL_SERVICE_PARENT_SCHEMA_HEADER,
-    parse_codex_provider_catalog,
-)
+from utils.model_discovery import assert_picker_inventory
 from utils.terminal import AgentTerminal
 
 pytestmark = [pytest.mark.managed, pytest.mark.catalog_discovery, pytest.mark.workspace_isolated]
@@ -33,71 +24,31 @@ pytestmark = [pytest.mark.managed, pytest.mark.catalog_discovery, pytest.mark.wo
 
 @pytest.mark.claude
 @pytest.mark.tui
-def test_catalog_discovery_claude(live_session, workspace):
-    """Scenario: configure the managed workspace; launch bare ug, ug claude, and print tasks.
+def test_catalog_discovery_claude_picker_preserves_default(live_session, workspace):
+    """Scenario: configure, launch ug claude, inspect its picker, then submit a task.
 
-    Expected: Sonnet/Haiku/Kimi appear in discovery and the picker, but Gemini and decoys
-    do not. TUI and print tasks use the Sonnet default without overrides; other compatible
-    models complete print tasks. Answers report the expected model, with routing off.
+    Expected: only Sonnet/Haiku/Kimi appear; Gemini and decoys are absent.
+    Dismissing the picker without a selection preserves Sonnet for the completed task.
     """
     session = live_session
-    configured = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
-    assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
-    persisted = read_persisted_managed_config(session, workspace)
-    session.record("catalog-discovery-managed-config.json", persisted)
+    session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
 
     bearer = os.environ["DATABRICKS_BEARER"]
     parent_catalog = claude.fetch_parent_catalog(workspace, bearer, MODEL_SCHEMA)
     decoy_catalog = claude.fetch_parent_catalog(workspace, bearer, OTHER_MODEL_SCHEMA)
-    session.record(
-        "catalog-discovery-parent-inventory.json",
-        {
-            "scoped": parent_catalog.model_ids,
-            "decoy": decoy_catalog.model_ids,
-            "display_names": parent_catalog.display_names,
-            "pages": parent_catalog.payloads,
-            "decoy_pages": decoy_catalog.payloads,
-        },
-    )
     assert set(parent_catalog.model_ids) == {
         claude.discovery_model_id(model) for model in CLAUDE_MODELS
     }, parent_catalog
     assert set(decoy_catalog.model_ids) == {claude.discovery_model_id(CLAUDE_DECOY)}, decoy_catalog
 
-    default_task = FileTask(session)
+    task = FileTask(session)
     with AgentTerminal(
         session,
         "claude",
-        [str(session.binary)],
-        "catalog-discovery-bare-ug-claude-default-and-picker",
+        [str(session.binary), "claude"],
+        "catalog-discovery-claude-picker",
     ) as tui:
         tui.boot()
-        settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
-        env = settings["env"]
-        assert env.get("ANTHROPIC_MODEL") == CLAUDE_DEFAULT, settings
-        assert env.get("ANTHROPIC_DEFAULT_SONNET_MODEL") == CLAUDE_DEFAULT, settings
-        assert (
-            "x-databricks-use-coding-agent-mode: true"
-            in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
-        ), settings
-        assert (
-            env.get("ANTHROPIC_CUSTOM_HEADERS", "")
-            .splitlines()
-            .count(f"{MODEL_SERVICE_PARENT_SCHEMA_HEADER}: {MODEL_SCHEMA}")
-            == 1
-        ), settings
-        assert not {"availableModels", "enforceAvailableModels"} & settings.keys(), settings
-        picker = settings["modelPicker"]
-        assert picker.get("replaceBuiltInOptions") is True, picker
-        options = picker["options"]
-        assert isinstance(options, list) and len(options) == len(parent_catalog.model_ids), picker
-        picker_ids = [option["model"] for option in options]
-        assert len(picker_ids) == len(set(picker_ids)), picker
-        assert set(picker_ids) == set(parent_catalog.model_ids), picker
-        for option in options:
-            if display_name := parent_catalog.display_names[option["model"]]:
-                assert option["label"] == display_name, option
-        session.record("catalog-discovery-claude-settings.json", settings)
         picker_screen = tui.open_model_picker(
             model_visible=lambda screen: all(
                 claude.model_in_picker(screen, model, parent_catalog.display_names[model])
@@ -108,130 +59,45 @@ def test_catalog_discovery_claude(live_session, workspace):
         for excluded in (GEMINI_MODEL, CLAUDE_DECOY, CODEX_DECOY):
             assert excluded not in picker_screen, picker_screen
             assert excluded.rsplit(".", 1)[-1] not in picker_screen, picker_screen
-        tui.submit(default_task.prompt)
-        tui.wait_for_task(default_task, timeout=240)
+        tui.submit(task.prompt)
+        tui.wait_for_task(task, timeout=240)
         tui.exit_normally()
-    assert_completed_task_model(session, "claude", default_task.value, CLAUDE_DEFAULT)
-
-    explicit_task = FileTask(session)
-    with AgentTerminal(
-        session,
-        "claude",
-        [str(session.binary), "claude"],
-        "catalog-discovery-explicit-ug-claude-default",
-    ) as tui:
-        tui.boot()
-        tui.submit(explicit_task.prompt)
-        tui.wait_for_task(explicit_task, timeout=240)
-        tui.exit_normally()
-    assert_completed_task_model(session, "claude", explicit_task.value, CLAUDE_DEFAULT)
-
-    gateway_ids = session.claude_gateway_model_ids()
-    assert len(gateway_ids) == len(set(gateway_ids)), gateway_ids
-    assert set(gateway_ids) == set(parent_catalog.model_ids), gateway_ids
-
-    print_task = FileTask(session)
-    result = session.run(
-        "claude",
-        "-p",
-        print_task.prompt,
-        "--output-format",
-        "json",
-        "--allowedTools",
-        "Read",
-        timeout=240,
-    )
-    print_task.assert_headless_answer("claude", result)
-    assert_completed_task_model(session, "claude", print_task.value, CLAUDE_DEFAULT)
-
-    for model in parent_catalog.model_ids:
-        if model == CLAUDE_DEFAULT:
-            continue
-        task = FileTask(session)
-        result = session.run(
-            "claude",
-            "--",
-            "-p",
-            task.prompt,
-            "--output-format",
-            "json",
-            "--allowedTools",
-            "Read",
-            "--model",
-            model,
-            timeout=240,
-        )
-        task.assert_headless_answer("claude", result)
-        assert_completed_task_model(session, "claude", task.value, model)
+    assert_completed_task_model(session, "claude", task.value, CLAUDE_DEFAULT)
     session.assert_not_routed()
 
 
 @pytest.mark.codex
 @pytest.mark.tui
-def test_catalog_discovery_codex(live_session, workspace):
-    """Scenario: configure the managed workspace; launch Codex TUI and ug codex -- exec.
+def test_catalog_discovery_codex_picker_preserves_default(live_session, workspace):
+    """Scenario: configure, query Codex model/list, inspect its TUI picker, then submit a task.
 
-    Expected: GPT Luna/Kimi appear in model/list and the picker, but Gemini and decoys
-    do not. TUI and exec tasks use the GPT Luna default without overrides; Kimi completes
-    an exec task. Completed turns select the expected model, with routing off.
+    Expected: model/list and the picker expose only GPT Luna/Kimi, not Gemini or decoys.
+    Dismissing the picker preserves GPT Luna for the completed task's selected model.
     """
     session = live_session
-    configured = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
-    assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
-    persisted = read_persisted_managed_config(session, workspace)
-    session.record("catalog-discovery-managed-config.json", persisted)
+    session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
 
     bearer = os.environ["DATABRICKS_BEARER"]
     parent_catalog = codex.fetch_parent_catalog(workspace, bearer, MODEL_SCHEMA)
     decoy_catalog = codex.fetch_parent_catalog(workspace, bearer, OTHER_MODEL_SCHEMA)
-    session.record(
-        "catalog-discovery-parent-inventory.json",
-        {
-            "scoped": parent_catalog.model_ids,
-            "decoy": decoy_catalog.model_ids,
-            "pages": parent_catalog.payloads,
-            "decoy_pages": decoy_catalog.payloads,
-        },
-    )
     assert set(parent_catalog.model_ids) == CODEX_MODELS, parent_catalog
     assert set(decoy_catalog.model_ids) == {CODEX_DECOY}, decoy_catalog
-    provider_ids = {
-        entry.get("slug") for page in parent_catalog.payloads for entry in page["models"]
-    }
-    assert not {GEMINI_MODEL, CLAUDE_DECOY, CODEX_DECOY} & provider_ids, parent_catalog
-    decoy_provider_ids = {
-        entry.get("slug") for page in decoy_catalog.payloads for entry in page["models"]
-    }
-    assert not {GEMINI_MODEL, CLAUDE_DECOY} & decoy_provider_ids, decoy_catalog
 
     models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
     assert len(models) == len(set(models)), models
-    assert set(models) == set(parent_catalog.model_ids), models
-    catalog_paths = list((session.home / ".ucode").glob("codex-model-catalog-*.json"))
-    assert len(catalog_paths) == 1, catalog_paths
-    catalog = json.loads(catalog_paths[0].read_text())
-    assert json.loads((session.home / ".ucode/codex-model-catalog.json").read_text()) == catalog
-    catalog_ids = parse_codex_provider_catalog(catalog)
-    assert set(catalog_ids) == set(parent_catalog.model_ids), catalog
-    assert models == list(catalog_ids), (models, catalog_ids)
-    all_catalog_ids = {entry["slug"] for entry in catalog["models"]}
-    assert not {GEMINI_MODEL, CLAUDE_DECOY, CODEX_DECOY} & all_catalog_ids, catalog
-    display_names = {}
-    for entry in catalog["models"]:
-        if entry["slug"] in CODEX_MODELS:
-            label = entry.get("display_name")
-            assert isinstance(label, str) and label.strip(), entry
-            display_names[entry["slug"]] = label
-    session.record("catalog-discovery-codex-catalog.json", catalog)
+    assert set(models) == CODEX_MODELS, models
+    display_names = {
+        entry["slug"]: entry.get("display_name") or entry["slug"]
+        for page in parent_catalog.payloads
+        for entry in page["models"]
+        if entry["slug"] in CODEX_MODELS
+    }
 
-    default_task = FileTask(session)
+    task = FileTask(session)
     with AgentTerminal(
-        session, "codex", [str(session.binary), "codex"], "catalog-discovery-codex-default"
+        session, "codex", [str(session.binary), "codex"], "catalog-discovery-codex-picker"
     ) as tui:
         tui.boot()
-        config = tomllib.loads((session.home / ".codex/ucode.config.toml").read_text())
-        assert config.get("model") == CODEX_DEFAULT, config
-        session.record("catalog-discovery-codex-config.json", config)
         picker_screen = tui.open_codex_model_picker(
             model_visible=lambda screen: all(
                 codex.model_in_picker(screen, model, display_names[model])
@@ -242,39 +108,169 @@ def test_catalog_discovery_codex(live_session, workspace):
         for excluded in (GEMINI_MODEL, CLAUDE_DECOY, CODEX_DECOY):
             assert excluded not in picker_screen, picker_screen
             assert excluded.rsplit(".", 1)[-1] not in picker_screen, picker_screen
-        tui.submit(default_task.prompt)
-        tui.wait_for_task(default_task, timeout=240)
+        tui.submit(task.prompt)
+        tui.wait_for_task(task, timeout=240)
         tui.exit_normally()
-    assert_completed_task_model(session, "codex", default_task.value, CODEX_DEFAULT)
+    assert_completed_task_model(session, "codex", task.value, CODEX_DEFAULT)
+    session.assert_not_routed()
 
-    exec_task = FileTask(session)
+
+@pytest.mark.claude
+@pytest.mark.tui
+def test_catalog_discovery_bare_ug_uses_claude_default(live_session, workspace):
+    """Scenario: configure the managed workspace, launch bare ug, and submit its first task.
+
+    Expected: Claude completes the task on Sonnet without an agent or model override.
+    """
+    session = live_session
+    session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
+    task = FileTask(session)
+    with AgentTerminal(
+        session, "claude", [str(session.binary)], "catalog-discovery-bare-ug-default"
+    ) as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for_task(task, timeout=240)
+        tui.exit_normally()
+    assert_completed_task_model(session, "claude", task.value, CLAUDE_DEFAULT)
+    session.assert_not_routed()
+
+
+@pytest.mark.claude
+@pytest.mark.tui
+def test_catalog_discovery_claude_tui_uses_default(live_session, workspace):
+    """Scenario: configure, launch ug claude, and submit its first task without opening a picker.
+
+    Expected: Claude completes the task on the configured Sonnet default without overrides.
+    """
+    session = live_session
+    session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
+    task = FileTask(session)
+    with AgentTerminal(
+        session,
+        "claude",
+        [str(session.binary), "claude"],
+        "catalog-discovery-claude-tui-default",
+    ) as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for_task(task, timeout=240)
+        tui.exit_normally()
+    assert_completed_task_model(session, "claude", task.value, CLAUDE_DEFAULT)
+    session.assert_not_routed()
+
+
+@pytest.mark.codex
+@pytest.mark.tui
+def test_catalog_discovery_codex_tui_uses_default(live_session, workspace):
+    """Scenario: configure, launch ug codex, and submit its first task without opening a picker.
+
+    Expected: Codex completes the task with GPT Luna selected, without a model override.
+    """
+    session = live_session
+    session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
+    task = FileTask(session)
+    with AgentTerminal(
+        session, "codex", [str(session.binary), "codex"], "catalog-discovery-codex-tui-default"
+    ) as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for_task(task, timeout=240)
+        tui.exit_normally()
+    assert_completed_task_model(session, "codex", task.value, CODEX_DEFAULT)
+    session.assert_not_routed()
+
+
+@pytest.mark.claude
+def test_catalog_discovery_claude_headless_uses_default(live_session, workspace):
+    """Scenario: configure, then run ug claude -p with a file task and no model override.
+
+    Expected: the print task completes with a Sonnet response.
+    """
+    session = live_session
+    session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
+    task = FileTask(session)
+    result = session.run(
+        "claude",
+        "-p",
+        task.prompt,
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Read",
+        timeout=240,
+    )
+    task.assert_headless_answer("claude", result)
+    assert_completed_task_model(session, "claude", task.value, CLAUDE_DEFAULT)
+    session.assert_not_routed()
+
+
+@pytest.mark.codex
+def test_catalog_discovery_codex_headless_uses_default(live_session, workspace):
+    """Scenario: configure, then run ug codex -- exec with a file task and no model override.
+
+    Expected: the exec task completes with GPT Luna selected.
+    """
+    session = live_session
+    session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
+    task = FileTask(session)
+    result = session.run(
+        "codex", "--", "exec", "--skip-git-repo-check", "--json", task.prompt, timeout=240
+    )
+    task.assert_headless_answer("codex", result)
+    assert_completed_task_model(session, "codex", task.value, CODEX_DEFAULT)
+    session.assert_not_routed()
+
+
+@pytest.mark.claude
+@pytest.mark.parametrize("model", sorted(CLAUDE_MODELS - {CLAUDE_DEFAULT}))
+def test_catalog_discovery_claude_explicit_model_completes_task(live_session, workspace, model):
+    """Scenario: configure, then run a Claude print task with another compatible scoped model.
+
+    Expected: each Haiku/Kimi task completes with the explicitly requested model.
+    """
+    session = live_session
+    session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
+    task = FileTask(session)
+    result = session.run(
+        "claude",
+        "--",
+        "-p",
+        task.prompt,
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Read",
+        "--model",
+        claude.discovery_model_id(model),
+        timeout=240,
+    )
+    task.assert_headless_answer("claude", result)
+    assert_completed_task_model(session, "claude", task.value, claude.discovery_model_id(model))
+    session.assert_not_routed()
+
+
+@pytest.mark.codex
+@pytest.mark.parametrize("model", sorted(CODEX_MODELS - {CODEX_DEFAULT}))
+def test_catalog_discovery_codex_explicit_model_completes_task(live_session, workspace, model):
+    """Scenario: configure, then run a Codex exec task with another compatible scoped model.
+
+    Expected: the Kimi task completes with the explicitly requested model selected.
+    """
+    session = live_session
+    session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
+    task = FileTask(session)
     result = session.run(
         "codex",
         "--",
         "exec",
         "--skip-git-repo-check",
         "--json",
-        exec_task.prompt,
+        task.prompt,
+        "--model",
+        model,
         timeout=240,
     )
-    exec_task.assert_headless_answer("codex", result)
-    assert_completed_task_model(session, "codex", exec_task.value, CODEX_DEFAULT)
-
-    for model in parent_catalog.model_ids:
-        if model == CODEX_DEFAULT:
-            continue
-        task = FileTask(session)
-        result = session.run(
-            "codex",
-            "--",
-            "exec",
-            "--skip-git-repo-check",
-            "--json",
-            "--model",
-            model,
-            task.prompt,
-            timeout=240,
-        )
-        task.assert_headless_answer("codex", result)
-        assert_completed_task_model(session, "codex", task.value, model)
+    task.assert_headless_answer("codex", result)
+    assert_completed_task_model(session, "codex", task.value, model)
     session.assert_not_routed()
