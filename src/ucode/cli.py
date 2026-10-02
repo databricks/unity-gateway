@@ -131,6 +131,7 @@ from ucode.skills_download import (
     configure_selected_skills_download_command,
     configure_skills_download_picker_command,
     reconcile_managed_skills,
+    refresh_downloaded_skills_on_launch,
     remove_downloaded_skills_command,
 )
 from ucode.skills_list import configured_skill_counts_by_agent, list_configured_skills_command
@@ -2894,6 +2895,8 @@ def _launch_tool(
                     )
                     or picker_catalog.model_ids[0]
                 )
+        if not skip_preflight:
+            refresh_downloaded_skills_on_launch(state)
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
             tool == "claude"
