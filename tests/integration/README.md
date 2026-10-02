@@ -13,6 +13,42 @@ The `smart_defaults` wire schema, legacy `spend_tiers` cache reads, and recommen
 request gating are covered by unit/component tests listed in `../README.md`. This suite
 does not yet assert live `recommendModel` request counts for configs with and without tiers.
 
+## CUJ5: Budget-driven smart defaults (AIGTWY-4880)
+
+`test_ug_budget_defaults.py` contains six live journeys:
+
+| Launch | Budget usage | Expected agent / model |
+| --- | --- | --- |
+| Bare `ug` | 40% | Claude / `system.ai.claude-sonnet-4-6` |
+| Bare `ug` | Exactly 50% and 62.5% | Codex / `system.ai.gpt-5-6-sol` |
+| Bare `ug` | Exactly 80% and approximately 88.9% | Codex / `system.ai.gpt-5-6-luna` |
+| Explicit `ug claude` | Exactly 80% | Claude / Sonnet; display the Codex Luna recommendation |
+
+Each case verifies the real budget and recommendation, runs `ug usage`, checks the native
+process and displayed spend/threshold/recommendation, and completes a unique file task on
+the expected model. Model evidence comes from native session logs, not HTTP capture.
+The fixture changes the dedicated budget's per-user BLOCK_USAGE threshold relative to existing
+positive spend and restores it on exit. Setup uses no mocks or generated spend. Detected
+instability at an exact boundary fails as "unverified"; usage is sampled, not locked.
+
+The CUJ5 job in `.github/workflows/integration.yml` owns all workspace/account/budget/model
+values. It uses `UG_CUJ5_WORKSPACE` and shared `UG_CUJ_SP_CLIENT_ID` /
+`UG_CUJ_SP_CLIENT_SECRET` secrets. The principal needs workspace/model access and account
+budget read/update permission. CI runs both agents serially and serializes CUJ5 jobs because
+they share one budget. The job is required for `full`, `live`, and `tui` suites.
+
+For a local run, export the job's `UCODE_TEST_WORKSPACE`, `DATABRICKS_CLIENT_ID`,
+`DATABRICKS_CLIENT_SECRET`, and `UG_BUDGET_*` values, then run on a clean POSIX runner:
+
+```bash
+python3.12 scripts/run_integration.py \
+  --ug-version checkout --claude-version 2.1.280 --codex-version 0.154.0 \
+  -- -m cuj5
+```
+
+Do not overlap local and CI budget runs. A killed process or forced cancellation can prevent
+restoration; verify the budget against its recorded original threshold before rerunning.
+
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
 for every agent; the Windows journeys below validate their explicitly selected paths.
@@ -179,6 +215,7 @@ test_ug_codex_managed_model_discovery.py  # fetched/reused Codex MPS policy case
 test_ug_claude_model_discovery.py       # unmanaged scenarios 7, 9, 11, 13
 test_ug_codex_model_discovery.py        # unmanaged scenarios 8, 10, 12, 14
 test_ug_configure_managed.py            # managed workspace: static model list/catalog pointer, no agent selector
+test_ug_budget_defaults.py             # live budget tiers, agent/model choice, explicit-agent override, usage
 test_ug_configure_managed_models.py     # injected model sources, smart-routing banner, Codex fallback metadata
 test_ug_configure_managed_mcp.py        # injected managed MCP list
 test_ug_configure_managed_skills.py     # injected managed skills: download, coexist, reconcile away
@@ -308,7 +345,9 @@ they only configure, list models, and open/close the picker. Other live CUJs per
 real model tasks.
 
 There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
+checks** with Claude and Codex; six CUJ5 budget cases are selected by `cuj5`
+and run in their dedicated job.
+Selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
@@ -332,7 +371,7 @@ constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-
 mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
 `ug configure` and Claude. The client secrets do not enter the pytest process.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 101 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 108 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -476,7 +515,8 @@ Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
 two agent jobs). Full runs all 62 live cases, including those smoke cases, in two
-disjoint agent lanes:
+disjoint agent lanes. The dedicated CUJ5 job runs its six budget cases with
+both agent binaries on one runner:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
@@ -498,10 +538,11 @@ No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, workspace validation, smoke,
-both full lanes, and both **Managed config** lanes to pass for full/live runs. Each tracing
-journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
-a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
-and installation subsets do not select managed tests and do not require them.
+both full lanes, both managed lanes, and CUJ5 to pass for full/live runs. TUI runs also require
+CUJ5; managed jobs are intentionally not selected for TUI. Each tracing journey is
+included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
+a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke
+and installation subsets do not select CUJ5 or managed tests.
 The advisory Windows installation and headless lanes are not yet included in that aggregate check.
 The existing required `e2e` context also waits for the complete integration workflow, so integration
 cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
@@ -620,8 +661,9 @@ comment removes the label and reruns the gate; manually adding the label does no
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
 and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
 alias for `full`. Manual subsets are explicit: `smoke` runs just the six smoke
-cases; `tui` adds `and tui` to each agent lane's marker and runs all 12 live TUI cases. Installation
-checks always run. Set the ug/agent versions. From the CLI:
+cases; `tui` adds `and tui` to each agent lane's marker and runs all 12 live TUI cases,
+and also runs the dedicated CUJ5 job. Installation checks always run. Set the ug/agent
+versions. From the CLI:
 
 ```bash
 gh workflow run integration.yml -R databricks/unity-gateway --ref YOUR_BRANCH \
@@ -649,7 +691,7 @@ gh run download RUN_ID -R databricks/unity-gateway \
 ```
 
 Use `integration-full-AGENT` for a full lane, `integration-smoke-AGENT` for
-smoke, `integration-installation` for Linux package failures, or
+smoke, or `integration-cuj5` for the budget journeys. Use `integration-installation` for Linux package failures, or
 `integration-installation-windows` for native Windows package failures, or
 `integration-headless-windows-claude` for the Windows gateway journey. Older runs used
 `integration-full-AGENT-GROUP`, `integration-cujs`, or numbered `integration-live-*`

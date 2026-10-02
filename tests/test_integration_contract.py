@@ -71,7 +71,7 @@ def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_resul
     assert script is not None
     results = {
         job: {"result": "success"}
-        for job in ("installation", "workspace", "smoke", "full", "managed")
+        for job in ("installation", "workspace", "smoke", "full", "cuj5", "managed")
     }
     results["managed"]["result"] = managed_result
     for job in {
