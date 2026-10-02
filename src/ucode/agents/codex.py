@@ -9,13 +9,13 @@ import re
 import signal
 import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, MutableMapping
 from pathlib import Path
 
 import tomlkit
 from tomlkit.exceptions import ParseError
 
-from ucode import gateway_proxy
+from ucode import config_io, gateway_proxy, vscode
 from ucode.codex_config import (
     catalog_slugs,
     codex_config_args,
@@ -80,7 +80,7 @@ from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.smart_routing.routing import configured_router_name
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ug_version
-from ucode.ui import print_warning_err
+from ucode.ui import print_note, print_success, print_warning, print_warning_err
 
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
@@ -496,6 +496,15 @@ def write_tool_config(
         _set_provider_header(base, None)
         return base
 
+    extension_gateway = None
+    if _is_windows():
+        extension_gateway = copy.deepcopy(overlay)
+        extension_provider = _gateway_provider(extension_gateway)
+        if extension_provider is not None:
+            headers = extension_provider.get("http_headers")
+            if isinstance(headers, dict):
+                headers.pop(SMART_ROUTER_RECIPE_HEADER, None)
+
     if catalog is not None:
         sync_app_model_catalog(catalog)
     elif not is_dry_run():
@@ -512,6 +521,8 @@ def write_tool_config(
     )
     write_toml_file(CODEX_CONFIG_PATH, doc)
     _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
+    if extension_gateway is not None:
+        configure_vscode_extension(extension_gateway)
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     return state
@@ -894,8 +905,8 @@ def _is_ucode_catalog_reference(value: object) -> bool:
     return isinstance(value, str) and Path(value).expanduser() == CODEX_MODEL_CATALOG_PATH
 
 
-def _read_app_config() -> tomlkit.TOMLDocument:
-    path = _legacy_config_path()
+def _read_app_config(path: Path | None = None) -> tomlkit.TOMLDocument:
+    path = path or _legacy_config_path()
     try:
         return tomlkit.parse(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -969,6 +980,361 @@ def sync_app_model_catalog(catalog: dict) -> None:
         write_toml_file(_legacy_config_path(), doc)
     if reference_changed or (catalog_path is not None and catalog_changed):
         _print_app_catalog_restart_notice()
+
+
+# The Codex VS Code extension runs its own bundled Codex, which reads only Codex's config files and
+# never the ucode.config.toml layer that `ug codex` passes on the command line. On Windows, ug copies
+# the gateway settings into the user's config.toml.
+_VSCODE_RECORD_NAME = "vscode-codex-extension.json"
+# The extension's Codex runs `ug auth-token` while it is itself starting; on Windows that took
+# 8-9 s, past the usual 5 s wait, so every request failed. The copy for it waits longer.
+_VSCODE_AUTH_TIMEOUT_MS = 30_000
+_MISSING = object()
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _vscode_record_path() -> Path:
+    return config_io.APP_DIR / _VSCODE_RECORD_NAME
+
+
+def _read_vscode_record() -> dict:
+    data = read_json_safe(_vscode_record_path())
+    return data if isinstance(data, dict) else {}
+
+
+def _write_vscode_record(record: dict) -> None:
+    if is_dry_run():
+        return
+    path = _vscode_record_path()
+    if record.get("set"):
+        config_io.atomic_write_json(path, record)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _plain(value: object) -> object:
+    unwrap = getattr(value, "unwrap", None)
+    if callable(unwrap):
+        return _plain(unwrap())
+    if isinstance(value, Mapping):
+        return {key: _plain(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_plain(child) for child in value]
+    return value
+
+
+def _gateway_provider(doc: dict) -> dict | None:
+    providers = _plain(doc.get("model_providers"))
+    provider = providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, dict) else None
+    provider = _plain(provider)
+    return provider if isinstance(provider, dict) else None
+
+
+def _read_path(doc: Mapping, path: tuple[str, ...]) -> object:
+    current: object = doc
+    for key in path:
+        if not isinstance(current, Mapping) or key not in current:
+            return _MISSING
+        current = current[key]
+    return _plain(current)
+
+
+def _set_path(doc: MutableMapping, path: tuple[str, ...], value: object) -> None:
+    current: MutableMapping = doc
+    for key in path[:-1]:
+        child = current.get(key)
+        if not isinstance(child, Mapping):
+            child = tomlkit.table()
+            current[key] = child
+        current = child  # type: ignore[assignment]
+    current[path[-1]] = copy.deepcopy(value)
+
+
+def _delete_path(doc: MutableMapping, path: tuple[str, ...]) -> bool:
+    current: MutableMapping = doc
+    parents: list[tuple[MutableMapping, str]] = []
+    for key in path[:-1]:
+        child = current.get(key)
+        if not isinstance(child, Mapping) or key not in current:
+            return False
+        parents.append((current, key))
+        current = child  # type: ignore[assignment]
+    if path[-1] not in current:
+        return False
+    del current[path[-1]]
+    for parent, key in reversed(parents):
+        child = parent.get(key)
+        if isinstance(child, Mapping) and not child:
+            del parent[key]
+    return True
+
+
+def _record_get(record: Mapping, path: tuple[str, ...]) -> object:
+    current: object = record
+    for key in path:
+        if not isinstance(current, Mapping) or key not in current:
+            return _MISSING
+        current = current[key]
+    return current
+
+
+def _record_set(record: dict, path: tuple[str, ...], value: object) -> None:
+    current = record
+    for key in path[:-1]:
+        child = current.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            current[key] = child
+        current = child
+    current[path[-1]] = copy.deepcopy(value)
+
+
+def _record_delete(record: dict, path: tuple[str, ...]) -> None:
+    current = record
+    parents: list[tuple[dict, str]] = []
+    for key in path[:-1]:
+        child = current.get(key)
+        if not isinstance(child, dict) or key not in current:
+            return
+        parents.append((current, key))
+        current = child
+    if path[-1] not in current:
+        return
+    del current[path[-1]]
+    for parent, key in reversed(parents):
+        child = parent.get(key)
+        if isinstance(child, dict) and not child:
+            del parent[key]
+
+
+def _record_leaf_paths(value: Mapping, prefix: tuple[str, ...] = ()):
+    for key, child in value.items():
+        path = (*prefix, str(key))
+        if isinstance(child, Mapping):
+            yield from _record_leaf_paths(child, path)
+        else:
+            yield path, child
+
+
+def _record_change(record: dict, path: tuple[str, ...], current: object, desired: object) -> None:
+    set_values = record.setdefault("set", {})
+    previous_values = record.setdefault("previous", {})
+    if not isinstance(set_values, dict) or not isinstance(previous_values, dict):
+        set_values = {}
+        previous_values = {}
+        record["set"] = set_values
+        record["previous"] = previous_values
+
+    previous_set = _record_get(set_values, path)
+    previous_value = _record_get(previous_values, path)
+    # A second configure after a user edit takes ownership of the newly written value, but
+    # revert must restore that edit rather than the value from an older configure.
+    if previous_set is not _MISSING and current is not _MISSING and current != previous_set:
+        _record_set(previous_values, path, current)
+    elif previous_set is _MISSING and previous_value is _MISSING and current is not _MISSING:
+        _record_set(previous_values, path, current)
+    _record_set(set_values, path, desired)
+
+
+def _record_drop(record: dict, doc: MutableMapping, path: tuple[str, ...]) -> bool:
+    set_values = record.get("set")
+    if not isinstance(set_values, dict):
+        return False
+    desired = _record_get(set_values, path)
+    if desired is _MISSING:
+        return False
+    current = _read_path(doc, path)
+    previous_values = record.get("previous")
+    previous = _record_get(previous_values, path) if isinstance(previous_values, dict) else _MISSING
+    if current == desired:
+        if previous is _MISSING:
+            changed = _delete_path(doc, path)
+        else:
+            _set_path(doc, path, previous)
+            changed = True
+    else:
+        changed = False
+    _record_delete(set_values, path)
+    if isinstance(previous_values, dict):
+        _record_delete(previous_values, path)
+    return changed
+
+
+def _restore_vscode_record(doc: MutableMapping, record: Mapping) -> bool:
+    set_values = record.get("set")
+    if not isinstance(set_values, Mapping):
+        return False
+    previous_values = record.get("previous")
+    previous_values = previous_values if isinstance(previous_values, Mapping) else {}
+
+    # If the user selected another provider, leave the complete file alone. This also protects
+    # a pre-existing Databricks block when only part of it was owned by ug.
+    model_provider_path = ("model_provider",)
+    recorded_provider = _record_get(set_values, model_provider_path)
+    current_provider = _read_path(doc, model_provider_path)
+    provider_paths = any(
+        path[:1] == ("model_providers",) for path, _ in _record_leaf_paths(set_values)
+    )
+    if recorded_provider is not _MISSING and current_provider != recorded_provider:
+        return False
+    if (
+        recorded_provider is _MISSING
+        and provider_paths
+        and current_provider
+        not in (
+            _MISSING,
+            CODEX_MODEL_PROVIDER_NAME,
+        )
+    ):
+        return False
+
+    changed = False
+    for path, desired in _record_leaf_paths(set_values):
+        current = _read_path(doc, path)
+        if current is _MISSING or current != desired:
+            continue  # The user changed or removed this value; leave it alone.
+        previous = _record_get(previous_values, path)
+        if previous is _MISSING:
+            changed = _delete_path(doc, path) or changed
+        else:
+            _set_path(doc, path, previous)
+            changed = True
+    return changed
+
+
+def configure_vscode_extension(gateway: dict) -> None:
+    """Point the Codex VS Code extension at Unity Gateway.
+
+    ``gateway`` holds ``model_provider``, the admin's default ``model`` if any, and
+    ``[model_providers.Databricks]``. Silent outside Windows or when VS Code has no Codex extension.
+    """
+    if not _is_windows() or not vscode.has_codex_extension():
+        return
+    provider = _gateway_provider(gateway)
+    if gateway.get("model_provider") != CODEX_MODEL_PROVIDER_NAME or provider is None:
+        return
+    auth = provider.get("auth")
+    if isinstance(auth, dict) and auth.get("timeout_ms", 0) < _VSCODE_AUTH_TIMEOUT_MS:
+        provider = copy.deepcopy(provider)
+        provider["auth"] = {**auth, "timeout_ms": _VSCODE_AUTH_TIMEOUT_MS}
+    path = LEGACY_CODEX_CONFIG_PATH
+    try:
+        doc = _read_app_config(path)
+    except RuntimeError as exc:
+        print_warning(
+            f"{exc}. Fix it and re-run `ug configure` to use the Codex VS Code extension."
+        )
+        return
+    current_provider = _read_path(doc, ("model_provider",))
+    if current_provider not in (_MISSING, None, CODEX_MODEL_PROVIDER_NAME):
+        print_warning(
+            f"{path} already uses the model provider {current_provider}; ug left it alone, so the "
+            "Codex VS Code extension won't use Unity Gateway. To use it, remove model_provider "
+            "from that file and re-run `ug configure`."
+        )
+        return
+
+    providers = doc.get("model_providers")
+    if providers is not None and not isinstance(providers, Mapping):
+        print_warning(
+            f"{path} has a non-table model_providers value; ug left it alone, so the Codex VS Code "
+            "extension won't use Unity Gateway. Fix it and re-run `ug configure`."
+        )
+        return
+    existing_provider = (
+        providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, Mapping) else None
+    )
+    if existing_provider is not None and not isinstance(existing_provider, Mapping):
+        print_warning(
+            f"{path} has a non-table model_providers.{CODEX_MODEL_PROVIDER_NAME} value; ug left it "
+            "alone, so the Codex VS Code extension won't use Unity Gateway. Fix it and re-run "
+            "`ug configure`."
+        )
+        return
+    for nested_key in ("auth", "http_headers"):
+        nested = (
+            existing_provider.get(nested_key) if isinstance(existing_provider, Mapping) else None
+        )
+        if (
+            isinstance(provider.get(nested_key), Mapping)
+            and nested is not None
+            and not isinstance(nested, Mapping)
+        ):
+            print_warning(
+                f"{path} has a non-table model_providers.{CODEX_MODEL_PROVIDER_NAME}."
+                f"{nested_key} value; ug left it alone, so the Codex VS Code extension "
+                "won't use Unity Gateway. Fix it and re-run `ug configure`."
+            )
+            return
+
+    record = _read_vscode_record()
+    if record.get("path") != str(path) or not isinstance(record.get("set"), dict):
+        record = {}
+    record["path"] = str(path)
+    changed = False
+    if current_provider != CODEX_MODEL_PROVIDER_NAME:
+        _record_change(record, ("model_provider",), current_provider, CODEX_MODEL_PROVIDER_NAME)
+        _set_path(doc, ("model_provider",), CODEX_MODEL_PROVIDER_NAME)
+        changed = True
+
+    # Merge only gateway-owned provider leaves. A user may keep custom Codex provider options,
+    # headers, and auth fields alongside the values needed by the extension.
+    for provider_path, desired in _record_leaf_paths(
+        provider, ("model_providers", CODEX_MODEL_PROVIDER_NAME)
+    ):
+        current = _read_path(doc, provider_path)
+        if current == desired:
+            continue
+        _record_change(record, provider_path, current, desired)
+        _set_path(doc, provider_path, desired)
+        changed = True
+
+    # Without a pinned model Codex boots on its catalog's first entry, which the gateway may
+    # reject; ug pins the admin's default exactly as it does for `ug codex`.
+    model = _plain(gateway.get("model"))
+    if isinstance(model, str) and model:
+        current_model = _read_path(doc, ("model",))
+        if current_model != model:
+            _record_change(record, ("model",), current_model, model)
+            _set_path(doc, ("model",), model)
+            changed = True
+    else:
+        changed = _record_drop(record, doc, ("model",)) or changed
+
+    if is_dry_run():
+        return
+    _write_vscode_record(record)
+    if changed:
+        write_toml_file(path, doc)
+    if changed:
+        print_success(
+            f"VS Code: Codex extension set to use Unity Gateway ({path}; plain `codex` uses it "
+            "too). Reload VS Code to apply."
+        )
+    else:
+        print_note("VS Code: the Codex extension already uses Unity Gateway.")
+
+
+def revert_vscode_extension() -> str:
+    """Remove the gateway keys ug added for the Codex VS Code extension. Returns a summary."""
+    record = _read_vscode_record()
+    if not record:
+        return "unchanged"
+    path = Path(record.get("path") or LEGACY_CODEX_CONFIG_PATH)
+    try:
+        doc = _read_app_config(path)
+    except RuntimeError as exc:
+        print_warning_err(str(exc))
+        return "unchanged"
+    changed = _restore_vscode_record(doc, record)
+    if changed:
+        write_toml_file(path, doc)
+    if not is_dry_run():
+        _vscode_record_path().unlink(missing_ok=True)
+    return "restored" if changed else "unchanged"
 
 
 def _launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:

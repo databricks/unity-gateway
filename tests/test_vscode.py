@@ -137,6 +137,41 @@ class TestDetection:
         assert vscode.has_claude_extension(install) is False
 
 
+class TestCodexDetection:
+    CODEX = vscode.CODEX_EXTENSION_ID
+
+    def _has(self, install):
+        return vscode.has_codex_extension(installs=lambda: [install])
+
+    def test_default_profile_lists_it(self, tmp_path):
+        install = _install(tmp_path, extension=None, listed=(self.CODEX,))
+        assert self._has(install) is True
+
+    def test_only_a_named_profile_has_it(self, tmp_path):
+        install = _install(
+            tmp_path,
+            extension=None,
+            listed=(vscode.CLAUDE_EXTENSION_ID,),
+            profiles=[{"name": "Dev", "location": "-16c12516"}],
+        )
+        _extensions_json(
+            install.user_dir / "profiles" / "-16c12516" / "extensions.json", self.CODEX
+        )
+        assert self._has(install) is True
+
+    def test_claude_alone_is_not_codex(self, tmp_path):
+        install = _install(tmp_path, listed=(vscode.CLAUDE_EXTENSION_ID,))
+        assert self._has(install) is False
+
+    def test_folder_check_when_there_is_no_extensions_json(self, tmp_path):
+        install = _install(tmp_path, extension="openai.chatgpt-26.917.62051-win32-x64")
+        assert self._has(install) is True
+
+    def test_no_vscode(self):
+        # The autouse fixture leaves no VS Code installs to find.
+        assert vscode.has_codex_extension() is False
+
+
 class TestProfiles:
     CLAUDE = vscode.CLAUDE_EXTENSION_ID
 

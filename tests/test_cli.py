@@ -2792,6 +2792,25 @@ class TestRevert:
         assert order == ["vscode", "clear"]
         assert "VS Code Claude Code extension: restored" in _strip_ansi(result.output)
 
+    def test_reverts_the_codex_extension_settings_before_clearing_state(self):
+        order: list[str] = []
+
+        with (
+            patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+            patch("ucode.cli.restore_file", return_value=False),
+            patch("ucode.cli.revert_mcp_configs", return_value={}),
+            patch(
+                "ucode.cli.codex_agent.revert_vscode_extension",
+                side_effect=lambda: order.append("codex vscode") or "restored",
+            ),
+            patch("ucode.cli.clear_state", side_effect=lambda: order.append("clear")),
+        ):
+            result = runner.invoke(app, ["revert"])
+
+        assert result.exit_code == 0, result.output
+        assert order == ["codex vscode", "clear"]
+        assert "VS Code Codex extension: restored" in _strip_ansi(result.output)
+
 
 class TestVSCodeExtensionHook:
     @pytest.mark.parametrize(
