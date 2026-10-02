@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import json
-import urllib.error
 import urllib.parse
-import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import NoReturn
+
+from .http import safe_https_json_get
 
 _ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 _CODEX_MODELS_PATH = "/ai-gateway/codex/v1/models"
 _PROVIDER_HEADER = "Databricks-Model-Provider-Service"
+MODEL_SERVICE_PARENT_SCHEMA_HEADER = "Databricks-Model-Service-Parent-Schema"
 _ANTHROPIC_VERSION = "2023-06-01"
 _ANTHROPIC_PAGE_SIZE = 1000
 _ANTHROPIC_MAX_PAGES = 20
@@ -32,6 +32,7 @@ class AnthropicProviderCatalog:
 
     model_ids: tuple[str, ...]
     display_names: dict[str, str | None]
+    payloads: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,8 @@ class CodexProviderCatalog:
     """The list-visible model slugs from a Codex provider catalog."""
 
     model_ids: tuple[str, ...]
+    payloads: tuple[dict, ...] = ()
+    display_names: dict[str, str | None] = field(default_factory=dict)
 
 
 def _fail(message: str) -> NoReturn:
@@ -109,8 +112,6 @@ def parse_codex_provider_catalog(payload: object) -> tuple[str, ...]:
         if not isinstance(visibility, str):
             _fail(f"Codex provider model {index} had an invalid visibility")
         if visibility != "list":
-            # Hidden/native aliases are part of the provider response but are not exposed by
-            # Codex's model/list request used as the observable catalog below.
             continue
         slug = raw_model.get("slug")
         if not isinstance(slug, str) or not slug.strip():
@@ -125,65 +126,48 @@ def parse_codex_provider_catalog(payload: object) -> tuple[str, ...]:
     return tuple(model_ids)
 
 
-def _get_json(url: str, headers: dict[str, str]) -> object:
-    request = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            getcode = getattr(response, "getcode", None)
-            status = getcode() if callable(getcode) else getattr(response, "status", None)
-            if status is not None and not 200 <= status < 300:
-                _fail(f"GET {url} returned HTTP {status}")
-            raw_body = response.read()
-    except urllib.error.HTTPError as error:
-        raise AssertionError(f"GET {url} returned HTTP {error.code} {error.reason}") from error
-    except (urllib.error.URLError, OSError) as error:
-        raise AssertionError(f"GET {url} failed: {error}") from error
-
-    if isinstance(raw_body, bytes):
-        try:
-            raw_body = raw_body.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise AssertionError(f"GET {url} returned non-UTF-8 JSON") from error
-    if not isinstance(raw_body, str):
-        _fail(f"GET {url} returned a non-text response body")
-    try:
-        return json.loads(raw_body)
-    except json.JSONDecodeError as error:
-        raise AssertionError(f"GET {url} returned invalid JSON: {error.msg}") from error
-
-
-def _validate_request_inputs(workspace: str, token: str, provider_service: str) -> str:
-    if not isinstance(workspace, str) or not workspace.rstrip("/"):
-        _fail("provider catalog request requires a workspace URL")
-    if not isinstance(token, str) or not token:
-        _fail("provider catalog request requires an explicit bearer token")
-    if not isinstance(provider_service, str) or not provider_service.strip():
-        _fail("provider catalog request requires a provider service")
-    return workspace.rstrip("/")
+def _validate_scope(scope: str) -> None:
+    if not isinstance(scope, str) or not scope.strip():
+        _fail("provider catalog request requires an explicit catalog scope")
 
 
 def fetch_anthropic_provider_catalog(
     workspace: str, token: str, provider_service: str
 ) -> AnthropicProviderCatalog:
     """Fetch and validate the complete Anthropic provider catalog with bounded pagination."""
-    base_url = _validate_request_inputs(workspace, token, provider_service)
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "Anthropic-Version": _ANTHROPIC_VERSION,
-        _PROVIDER_HEADER: provider_service,
-    }
+    _validate_scope(provider_service)
+    return _fetch_anthropic_catalog(workspace, token, {_PROVIDER_HEADER: provider_service})
+
+
+def fetch_anthropic_parent_catalog(
+    workspace: str, token: str, parent_schema: str
+) -> AnthropicProviderCatalog:
+    """Fetch the complete Anthropic catalog scoped to a Unity Catalog parent schema."""
+    _validate_scope(parent_schema)
+    return _fetch_anthropic_catalog(
+        workspace, token, {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema}
+    )
+
+
+def _fetch_anthropic_catalog(
+    workspace: str, token: str, scope_headers: dict[str, str]
+) -> AnthropicProviderCatalog:
+    headers = {"Anthropic-Version": _ANTHROPIC_VERSION, **scope_headers}
 
     model_ids: list[str] = []
     display_names: dict[str, str | None] = {}
+    payloads: list[dict] = []
     cursor: str | None = None
     cursors: set[str] = set()
     for _page_number in range(_ANTHROPIC_MAX_PAGES):
         query = {"limit": str(_ANTHROPIC_PAGE_SIZE)}
         if cursor is not None:
             query["after_id"] = cursor
-        url = f"{base_url}{_ANTHROPIC_MODELS_PATH}?{urllib.parse.urlencode(query)}"
-        page = parse_anthropic_provider_page(_get_json(url, headers))
+        path = f"{_ANTHROPIC_MODELS_PATH}?{urllib.parse.urlencode(query)}"
+        payload = safe_https_json_get(workspace, token, path, headers=headers)
+        page = parse_anthropic_provider_page(payload)
+        assert isinstance(payload, dict), "Expected an Anthropic catalog object"
+        payloads.append(payload)
         for model_id, display_name in page.models:
             if model_id in display_names:
                 _fail(f"Anthropic provider catalog repeated model id {model_id!r}")
@@ -191,8 +175,8 @@ def fetch_anthropic_provider_catalog(
             display_names[model_id] = display_name
 
         if not page.has_more:
-            return AnthropicProviderCatalog(tuple(model_ids), display_names)
-        assert page.last_id is not None  # checked by parse_anthropic_provider_page
+            return AnthropicProviderCatalog(tuple(model_ids), display_names, tuple(payloads))
+        assert page.last_id is not None
         if page.last_id in cursors:
             _fail(f"Anthropic provider catalog repeated pagination cursor {page.last_id!r}")
         cursors.add(page.last_id)
@@ -205,29 +189,31 @@ def fetch_codex_provider_catalog(
     workspace: str, token: str, provider_service: str
 ) -> CodexProviderCatalog:
     """Fetch and validate the list-visible Codex provider catalog."""
-    base_url = _validate_request_inputs(workspace, token, provider_service)
-    payload = _get_json(
-        f"{base_url}{_CODEX_MODELS_PATH}",
-        {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-            _PROVIDER_HEADER: provider_service,
-        },
-    )
-    return CodexProviderCatalog(parse_codex_provider_catalog(payload))
+    _validate_scope(provider_service)
+    return _fetch_codex_catalog(workspace, token, {_PROVIDER_HEADER: provider_service})
+
+
+def _fetch_codex_catalog(
+    workspace: str, token: str, scope_headers: dict[str, str]
+) -> CodexProviderCatalog:
+    payload = safe_https_json_get(workspace, token, _CODEX_MODELS_PATH, headers=scope_headers)
+    model_ids = parse_codex_provider_catalog(payload)
+    assert isinstance(payload, dict), "Expected a Codex catalog object"
+    display_names: dict[str, str | None] = {}
+    for entry in payload["models"]:
+        if entry.get("visibility") == "list" and entry.get("slug") in model_ids:
+            label = entry.get("display_name")
+            if label is not None and (not isinstance(label, str) or not label.strip()):
+                _fail("Invalid Codex catalog display name")
+            display_names[entry["slug"]] = label
+    return CodexProviderCatalog(model_ids, (payload,), display_names)
 
 
 def fetch_codex_parent_catalog(
     workspace: str, token: str, parent_schema: str
 ) -> CodexProviderCatalog:
     """Fetch the API-compatible models advertised for a Unity Catalog parent schema."""
-    base_url = _validate_request_inputs(workspace, token, parent_schema)
-    payload = _get_json(
-        f"{base_url}{_CODEX_MODELS_PATH}",
-        {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-            "Databricks-Model-Service-Parent-Schema": parent_schema,
-        },
+    _validate_scope(parent_schema)
+    return _fetch_codex_catalog(
+        workspace, token, {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema}
     )
-    return CodexProviderCatalog(parse_codex_provider_catalog(payload))

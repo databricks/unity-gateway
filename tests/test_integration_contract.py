@@ -48,7 +48,7 @@ def test_managed_integration_ci_is_blocking():
     assert "not workspace_isolated" in managed
     needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", gate)
     assert needs is not None
-    assert {"cuj3", "managed"} <= {job.strip() for job in needs.group(1).split(",")}
+    assert {"catalog_discovery", "managed"} <= {job.strip() for job in needs.group(1).split(",")}
     assert (
         "if: ${{ always() && (github.event_name != 'pull_request' || "
         "github.event.pull_request.head.repo.full_name == github.repository) }}"
@@ -63,36 +63,41 @@ def test_windows_integration_ci_uses_shared_claude_version():
     assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
 
 
-def test_cuj3_integration_ci_uses_the_dedicated_managed_workspace():
+def test_catalog_discovery_integration_ci_uses_the_dedicated_managed_workspace():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     contents = workflow.read_text()
-    cuj3 = contents.split("\n  cuj3:\n", 1)[1].split("\n  opencode:\n", 1)[0]
+    catalog_discovery = contents.split("\n  catalog_discovery:\n", 1)[1].split(
+        "\n  opencode:\n", 1
+    )[0]
 
-    assert "agent: [claude, codex]" in cuj3
-    assert 'name: "CUJ3: model discovery' in cuj3
-    assert "secrets.UG_CUJ3_WORKSPACE" in cuj3
-    assert "secrets.UG_CUJ_SP_CLIENT_ID" in cuj3
-    assert "secrets.UG_CUJ_SP_CLIENT_SECRET" in cuj3
-    assert 'INSTALL_BOTH_AGENTS: "true"' in cuj3
-    assert "TEST_MARKER: managed and cuj3 and workspace_isolated and ${{ matrix.agent }}" in cuj3
-    assert "inputs.suite != 'tui'" in cuj3
-    assert "inputs.suite != 'smoke'" in cuj3
-    assert "inputs.suite != 'installation'" in cuj3
-    assert "continue-on-error:" not in cuj3
-    assert "fail-fast: false" in cuj3
-    assert "steps: *live-steps" in cuj3
+    assert "agent: [claude, codex]" in catalog_discovery
+    assert 'name: "Catalog discovery' in catalog_discovery
+    assert "secrets.UG_CUJ3_WORKSPACE" in catalog_discovery
+    assert "secrets.UG_CUJ_SP_CLIENT_ID" in catalog_discovery
+    assert "secrets.UG_CUJ_SP_CLIENT_SECRET" in catalog_discovery
+    assert 'INSTALL_BOTH_AGENTS: "true"' in catalog_discovery
+    assert (
+        "TEST_MARKER: managed and catalog_discovery and workspace_isolated and ${{ matrix.agent }}"
+        in catalog_discovery
+    )
+    assert "inputs.suite != 'tui'" in catalog_discovery
+    assert "inputs.suite != 'smoke'" in catalog_discovery
+    assert "inputs.suite != 'installation'" in catalog_discovery
+    assert "continue-on-error:" not in catalog_discovery
+    assert "fail-fast: false" in catalog_discovery
+    assert "steps: *live-steps" in catalog_discovery
     assert 'if [[ "${INSTALL_BOTH_AGENTS:-}" == "true" ]]; then' in contents
     assert 'args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION")' in contents
 
 
-def test_cuj3_model_layer_configures_before_reading_persisted_policy():
-    source = (Path(__file__).parent / "integration/test_ug_cuj3_model_discovery.py").read_text()
+def test_catalog_discovery_model_layer_configures_before_reading_persisted_policy():
+    source = (Path(__file__).parent / "integration/test_ug_catalog_discovery.py").read_text()
     assert "fetch_published_managed_config" not in source
     tree = ast.parse(source)
     journeys = [
         node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_case_")
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_catalog_discovery_")
     ]
     assert len(journeys) == 2
     for journey in journeys:
@@ -111,22 +116,53 @@ def test_cuj3_model_layer_configures_before_reading_persisted_policy():
             for node in ast.walk(journey)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
-            and node.func.id == "assert_persisted_config"
+            and node.func.id == "read_persisted_managed_config"
         ]
         assert configure_lines and persisted_lines, journey.name
         assert max(configure_lines) < min(persisted_lines), journey.name
 
 
-def test_cuj3_launches_defaults_without_model_overrides_and_checks_both_pickers():
-    source = (Path(__file__).parent / "integration/test_ug_cuj3_model_discovery.py").read_text()
+def test_catalog_discovery_keeps_agent_specific_journeys_and_shared_helpers():
+    source = (Path(__file__).parent / "integration/test_ug_catalog_discovery.py").read_text()
+    tree = ast.parse(source)
+    module_marks = _markers(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "pytestmark" for target in node.targets
+        )
+    )
+    assert {"managed", "catalog_discovery", "workspace_isolated"} <= module_marks
+    journeys = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_catalog_discovery_")
+    }
+    for agent in ("claude", "codex"):
+        journey = journeys[f"test_catalog_discovery_{agent}"]
+        assert {agent, "tui"} <= _markers(journey.decorator_list)
+        helper_calls = {
+            node.func.attr
+            for node in ast.walk(journey)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == agent
+        }
+        assert {"fetch_parent_catalog", "model_in_picker"} <= helper_calls
+
+
+def test_catalog_discovery_launches_defaults_without_model_overrides_and_checks_both_pickers():
+    source = (Path(__file__).parent / "integration/test_ug_catalog_discovery.py").read_text()
     tree = ast.parse(source)
     journeys = {
         node.name: node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_case_")
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_catalog_discovery_")
     }
-    claude = journeys["test_case_03_managed_schema_pointers_claude"]
-    codex = journeys["test_case_04_managed_schema_pointers_codex"]
+    claude = journeys["test_catalog_discovery_claude"]
+    codex = journeys["test_catalog_discovery_codex"]
     for journey, agent, task_name, default, prefix, picker in (
         (claude, "claude", "print_task", "CLAUDE_DEFAULT", ["claude", "-p"], "open_model_picker"),
         (
@@ -172,10 +208,6 @@ def test_cuj3_launches_defaults_without_model_overrides_and_checks_both_pickers(
         assert any(
             isinstance(node.func, ast.Attribute) and node.func.attr == picker for node in calls
         ), (agent, "Missing native picker")
-        assert any(
-            isinstance(node.func, ast.Name) and node.func.id == "fetch_model_service_inventory"
-            for node in calls
-        ), (agent, "Missing independent fixture inventory")
         assert any(
             isinstance(node.func, ast.Name) and node.func.id == "assert_picker_inventory"
             for node in calls
@@ -252,13 +284,13 @@ def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_resul
     assert script is not None
     results = {
         job: {"result": "success"}
-        for job in ("installation", "workspace", "smoke", "full", "cuj3", "managed")
+        for job in ("installation", "workspace", "smoke", "full", "catalog_discovery", "managed")
     }
     results["managed"]["result"] = managed_result
     for job in {
-        "installation": ("workspace", "smoke", "full", "cuj3"),
-        "smoke": ("full", "cuj3"),
-        "tui": ("smoke", "cuj3"),
+        "installation": ("workspace", "smoke", "full", "catalog_discovery"),
+        "smoke": ("full", "catalog_discovery"),
+        "tui": ("smoke", "catalog_discovery"),
     }.get(suite, ()):
         results[job]["result"] = "skipped"
     result = subprocess.run(
@@ -277,21 +309,23 @@ def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_resul
 
 
 @pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
-@pytest.mark.parametrize("cuj3_result", ["success", "failure", "cancelled", "skipped"])
-def test_integration_ci_gate_requires_selected_cuj3_jobs(suite, cuj3_result):
+@pytest.mark.parametrize("catalog_discovery_result", ["success", "failure", "cancelled", "skipped"])
+def test_integration_ci_gate_requires_selected_catalog_discovery_jobs(
+    suite, catalog_discovery_result
+):
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     gate = workflow.read_text().split("\n  cujs:\n", 1)[1]
     script = re.search(r"          python3 - <<'PY'\n(.*?)          PY", gate, re.DOTALL)
     assert script is not None
     results = {
         job: {"result": "success"}
-        for job in ("installation", "workspace", "smoke", "full", "cuj3", "managed")
+        for job in ("installation", "workspace", "smoke", "full", "catalog_discovery", "managed")
     }
-    results["cuj3"]["result"] = cuj3_result
+    results["catalog_discovery"]["result"] = catalog_discovery_result
     for job in {
-        "installation": ("workspace", "smoke", "full", "cuj3"),
-        "smoke": ("full", "cuj3"),
-        "tui": ("smoke", "cuj3"),
+        "installation": ("workspace", "smoke", "full", "catalog_discovery"),
+        "smoke": ("full", "catalog_discovery"),
+        "tui": ("smoke", "catalog_discovery"),
     }.get(suite, ()):
         results[job]["result"] = "skipped"
     result = subprocess.run(
@@ -301,9 +335,9 @@ def test_integration_ci_gate_requires_selected_cuj3_jobs(suite, cuj3_result):
         text=True,
         timeout=10,
     )
-    if suite in {"full", "live"} and cuj3_result != "success":
+    if suite in {"full", "live"} and catalog_discovery_result != "success":
         assert result.returncode != 0
-        assert "Integration jobs did not pass: cuj3" in result.stderr
+        assert "Integration jobs did not pass: catalog_discovery" in result.stderr
     else:
         assert result.returncode == 0, result.stderr
         assert "All selected integration jobs passed:" in result.stdout
@@ -395,12 +429,8 @@ def test_model_discovery_cases_match_current_launch_contract():
             case = int(match.group(1))
             seen.append(case)
             marks = module_marks | _markers(node.decorator_list)
-            expected = (
-                {"managed"} if case in {3, 4} else ({"managed_fixture"} if case <= 6 else {"live"})
-            )
+            expected = {"managed_fixture"} if case <= 6 else {"live"}
             assert marks & {"managed_fixture", "managed", "live"} == expected, node.name
-            if case in {3, 4}:
-                assert {"managed", "cuj3", "workspace_isolated"} <= marks, node.name
             assert marks & {"claude", "codex"} == ({"claude"} if case % 2 else {"codex"}), node.name
             assert not any(arg.arg == "configured" for arg in node.args.args), node.name
             for value in ast.walk(node):
@@ -412,9 +442,9 @@ def test_model_discovery_cases_match_current_launch_contract():
     # design document. Configured/fresh variants share their scenario number.
     expected_cases = set(range(1, 15))
     assert set(seen) == expected_cases
-    assert len(seen) == 22
+    assert len(seen) == 24
     for case in expected_cases:
-        assert seen.count(case) == (1 if case in {3, 4} or 7 <= case <= 10 else 2), case
+        assert seen.count(case) == (1 if 7 <= case <= 10 else 2), case
 
 
 @pytest.mark.parametrize("payload", [{}, {"coding_agent_configs": []}, []])

@@ -350,8 +350,8 @@ jobs:
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}
     steps: *live-steps
 
-  cuj3:
-    name: "CUJ3: model discovery · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}"
+  catalog_discovery:
+    name: "Catalog discovery · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}"
     if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && inputs.suite != 'tui' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -366,8 +366,8 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       INSTALL_BOTH_AGENTS: "true"
-      TEST_MARKER: managed and cuj3 and workspace_isolated and ${{ matrix.agent }}
-      ARTIFACT_NAME: integration-cuj3-${{ matrix.agent }}
+      TEST_MARKER: managed and catalog_discovery and workspace_isolated and ${{ matrix.agent }}
+      ARTIFACT_NAME: integration-catalog_discovery-${{ matrix.agent }}
     steps: *live-steps
 
   # Non-blocking: continue-on-error and absent from the cujs `needs`, so a flaky OpenCode
@@ -456,7 +456,7 @@ jobs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     # installation-windows remains advisory until its initial platform issues are fixed.
-    needs: [installation, workspace, smoke, full, cuj3, managed]
+    needs: [installation, workspace, smoke, full, catalog_discovery, managed]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -478,7 +478,7 @@ jobs:
               if suite != "smoke":
                   required.append("full")
           if suite in {"full", "live"}:
-              required.append("cuj3")
+              required.append("catalog_discovery")
               required.append("managed")
           failed = [job for job in required if results[job]["result"] != "success"]
           if failed:
