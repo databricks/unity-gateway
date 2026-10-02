@@ -220,6 +220,27 @@ def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
     return token
 
 
+def mint_account_m2m_token(
+    account_host: str, client_id: str, client_secret: str, *, account_id: str
+) -> str:
+    """Mint a short-lived account token for the account-scoped budget API."""
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    body = urllib.parse.urlencode(
+        {"grant_type": "client_credentials", "scope": "all-apis"}
+    ).encode()
+    request = urllib.request.Request(
+        account_host.rstrip("/")
+        + f"/oidc/accounts/{urllib.parse.quote(account_id, safe='')}/v1/token",
+        data=body,
+        headers={
+            "Authorization": f"Basic {basic}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 (https account URL)
+        return json.load(response)["access_token"]
+
+
 @contextlib.contextmanager
 def managed_process(command, *, interrupt=False, **kwargs):
     """Bound child lifetimes, including descendants that outlive their parent."""
@@ -521,6 +542,9 @@ def main() -> int:
     second_bearer = os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     target_bearers: dict[str, str] = {}
+    budget_environment = {
+        key: value for key, value in os.environ.items() if key.startswith("UG_BUDGET_")
+    }
     client_secrets = (
         os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
         os.environ.get("UG_MPS_DEFAULTS_CLIENT_SECRET", ""),
@@ -535,6 +559,7 @@ def main() -> int:
                 second_bearer,
                 oauth_token,
                 *target_bearers.values(),
+                budget_environment.get("UG_BUDGET_ACCOUNT_TOKEN", ""),
                 *client_secrets,
                 *installer_secrets,
             ),
@@ -825,13 +850,19 @@ def main() -> int:
             if not bearer:
                 raise RuntimeError("Selected profile returned no access token.")
 
-        if not bearer and not args.profile and not args.installation_only:
+        if not args.installation_only:
             client_id = os.environ.get("DATABRICKS_CLIENT_ID", "").strip()
             client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
-            if client_id and client_secret:
+            if not bearer and not args.profile and client_id and client_secret:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
-        if not args.installation_only:
+            if budget_environment:
+                budget_environment["UG_BUDGET_ACCOUNT_TOKEN"] = mint_account_m2m_token(
+                    budget_environment["UG_BUDGET_ACCOUNT_HOST"],
+                    client_id,
+                    client_secret,
+                    account_id=budget_environment["UG_BUDGET_ACCOUNT_ID"],
+                )
             for bearer_env, target_workspace, client_id, secret_env in MANAGED_DEFAULTS_TARGETS:
                 secret = os.environ.get(secret_env, "").strip()
                 if args.workspace.rstrip("/") == target_workspace:
@@ -920,7 +951,7 @@ def main() -> int:
                 f"--junitxml={output / 'junit.xml'}",
                 *extra,
             ],
-            env=runtime_env,
+            env={**runtime_env, **budget_environment},
             cwd=output,
             stdin=subprocess.DEVNULL,
             interrupt=True,
