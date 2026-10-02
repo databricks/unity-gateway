@@ -39,6 +39,7 @@ from ucode.agents import (
 )
 from ucode.agents import claude as claude_agent
 from ucode.agents import codex as codex_agent
+from ucode.agents import copilot as copilot_agent
 from ucode.agents import (
     launch as launch_agent,
 )
@@ -2553,7 +2554,7 @@ def _launch_options(
 ) -> LaunchOptions:
     return LaunchOptions(
         # Pinned models for providers are resolved above through the provider-specific launch path.
-        user_pinned_model=user_pinned_model if provider is None else None,
+        user_pinned_model=user_pinned_model if provider is None or tool == "copilot" else None,
         launch_smart_routing=(
             # Smart routing is enabled globally.
             smart_routing_enabled
@@ -2833,6 +2834,19 @@ def _launch_tool(
                     route_root_model = resolve_provider_launch_model(
                         provider_launch_model, provider_models or {}
                     )
+            if provider and tool == "copilot":
+                # Copilot reaches the service through its Anthropic route, which needs a concrete
+                # target id: the admin's default model, else the service's best tier.
+                resolved_model = copilot_agent.resolve_provider_model(
+                    managed_launch_model(managed or {}, recommendation, tool),
+                    provider_models or {},
+                )
+                if not resolved_model:
+                    raise RuntimeError(
+                        f"Model provider service '{provider}' declares no Claude models, so "
+                        f"{TOOL_SPECS[tool]['display']} has no model to start on. Add targets to "
+                        "the service or set a default model in the managed config."
+                    )
             if provider and tool == "gemini":
                 # Gemini is the exception: the request still names a concrete model
                 # in the URL, so pin one of the service's targets (--model or default).
@@ -2925,6 +2939,9 @@ def _launch_tool(
         if tool == "claude":
             if provider:
                 state["_claude_launch_provider"] = provider
+        elif tool == "copilot":
+            if provider:
+                state["_copilot_launch_provider"] = provider
         elif tool == "codex":
             if provider:
                 state["_codex_launch_provider"] = provider
@@ -2937,7 +2954,9 @@ def _launch_tool(
             explicit_prompt=explicit_prompt,
             # Only a developer's explicit model disables routing. A managed default is the
             # initial/fallback model and still participates in a routed session.
-            user_pinned_model=model or forwarded_model,
+            user_pinned_model=(resolved_model if tool == "copilot" and provider else None)
+            or model
+            or forwarded_model,
             provider=provider,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
@@ -3338,10 +3357,19 @@ def opencode_cmd(
 )
 def copilot_cmd(
     ctx: typer.Context,
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help="Route through a Unity Catalog Model Provider Service "
+            "(<catalog>.<schema>.<name>) backed by Anthropic or Amazon Bedrock. Pass "
+            "before any `--` separator.",
+        ),
+    ] = None,
     skip_preflight: SkipPreflightOption = False,
 ) -> None:
     """Launch GitHub Copilot CLI via Databricks."""
-    _launch_tool("copilot", ctx, skip_preflight=skip_preflight)
+    _launch_tool("copilot", ctx, provider=provider, skip_preflight=skip_preflight)
 
 
 @app.command(

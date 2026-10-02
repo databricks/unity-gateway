@@ -335,10 +335,15 @@ def resolve_provider_models(
     relayed = bool(service.get("relayed"))
     # Relayed services enforce their declared targets too, so map them like any Anthropic service
     # (allow_all declares none). relayed gates auth, not model reconciliation.
-    # Only Claude pins per-family model ids. Codex ignores this map, and gemini resolves
-    # its target through resolve_gemini_provider_model instead — so mapping their targets
-    # through Claude-family logic would be meaningless (see docstring).
-    if tool != "claude":
+    if tool == "copilot" and relayed:
+        return None, (
+            f"Model provider service '{provider}' is a relayed Anthropic subscription, "
+            f"which {tool} can't use."
+        ), relayed
+    # Only Claude and Copilot (via its Anthropic route) pin per-family model ids. Codex ignores this
+    # map, and gemini resolves its target through resolve_gemini_provider_model instead — so mapping
+    # their targets through Claude-family logic would be meaningless (see docstring).
+    if tool not in ("claude", "copilot"):
         return None, None, relayed
     return map_claude_family_models(service.get("targets") or []) or None, None, relayed
 
@@ -435,7 +440,7 @@ def configure_tool(
         if tool == "gemini":
             result = gemini.write_tool_config(state, model, provider=provider)
         elif tool == "copilot":
-            result = copilot.write_tool_config(state, model)
+            result = copilot.write_tool_config(state, model, provider=provider)
         elif tool == "pi":
             result = pi.write_tool_config(state, model)
         else:

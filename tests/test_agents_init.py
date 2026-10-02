@@ -474,6 +474,36 @@ class TestResolveProviderModels:
         assert error == "boom"
         assert relayed is False
 
+    def test_copilot_bedrock_pins_family_targets(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {
+                "provider_type": "amazon_bedrock",
+                "targets": ["us.anthropic.claude-sonnet-4-6", "global.anthropic.claude-opus-4-8"],
+            },
+            None,
+        )
+        models, error, relayed = agents_mod.resolve_provider_models(
+            "copilot", self._STATE, "main.b.svc"
+        )
+        assert error is None
+        assert relayed is False
+        assert models == {
+            "sonnet": "us.anthropic.claude-sonnet-4-6",
+            "opus": "global.anthropic.claude-opus-4-8",
+        }
+
+    def test_copilot_rejects_relayed_service(self, monkeypatch):
+        self._patch(
+            monkeypatch, {"provider_type": "anthropic", "targets": [], "relayed": True}, None
+        )
+        models, error, relayed = agents_mod.resolve_provider_models(
+            "copilot", self._STATE, "main.a.relayed"
+        )
+        assert models is None
+        assert error is not None and "relayed" in error
+        assert relayed is True
+
     @pytest.mark.parametrize("tool", ["gemini", "codex"])
     def test_non_claude_pins_no_family_map(self, monkeypatch, tool):
         # Only claude pins a per-family map; codex ignores it and gemini resolves its own

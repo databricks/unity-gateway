@@ -33,10 +33,13 @@ from ucode.config_io import (
     write_dotenv,
     write_json_file,
 )
+from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER
 from ucode.databricks import (
     TOKEN_REFRESH_INTERVAL_SECONDS,
     build_copilot_base_url,
+    build_tool_base_url,
     get_databricks_token,
+    resolve_provider_launch_model,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
@@ -63,6 +66,7 @@ MANAGED_KEYS: list[str] = [
     "COPILOT_PROVIDER_WIRE_API",
     "COPILOT_MODEL",
     "COPILOT_PROVIDER_BEARER_TOKEN",
+    "COPILOT_PROVIDER_HEADERS",
     "COPILOT_OFFLINE",
     "OAUTH_TOKEN",
 ]
@@ -71,6 +75,7 @@ LEGACY_ENV_KEYS = [
     "OPENAI_API_KEY",
     "COPILOT_PROVIDER_API_KEY",
 ]
+_CLAUDE_MODEL_PATTERN = re.compile(r"claude-(opus|sonnet|haiku)-(\d+)(?:-(\d{1,2})(?!\d))?")
 _GPT_MODEL_MAJOR_PATTERN = re.compile(r"^(?:system\.ai\.)?(?:databricks-)?gpt-(\d+)(?=$|[.-])")
 
 
@@ -78,6 +83,33 @@ def model_uses_responses_api(model: str) -> bool:
     """Whether a supported GPT model id uses the Responses API."""
     match = _GPT_MODEL_MAJOR_PATTERN.match(model)
     return match is not None and int(match.group(1)) >= 6
+
+
+def canonical_claude_model_id(model: str) -> str | None:
+    """Copilot's well-known id (``claude-sonnet-4.6``) for a Claude model id, if it names one.
+
+    Accepts canonical and Bedrock-style ids (``us.anthropic.claude-sonnet-4-6``). Copilot uses the
+    canonical form for token counting and limits, which it can't derive from a provider slug.
+    """
+    match = _CLAUDE_MODEL_PATTERN.search(model)
+    if match is None:
+        return None
+    family, major, minor = match.groups()
+    return f"claude-{family}-{major}.{minor}" if minor else f"claude-{family}-{major}"
+
+
+def resolve_provider_model(requested: str | None, provider_models: dict[str, str]) -> str | None:
+    """Pick the provider target a Copilot launch starts on.
+
+    Like Claude's resolution, but a requested canonical id (e.g. a managed ``default_model`` of
+    ``claude-sonnet-4-6``) is matched to the service's own slug for that model when it has one.
+    """
+    if requested and requested not in provider_models:
+        wanted = canonical_claude_model_id(requested)
+        for target in provider_models.values():
+            if wanted and canonical_claude_model_id(target) == wanted:
+                return target
+    return resolve_provider_launch_model(requested, provider_models)
 
 
 def default_model(state: dict) -> str | None:
@@ -107,7 +139,24 @@ def render_env_overlay(
     token: str,
     *,
     override_model: str | None = None,
+    provider: str | None = None,
 ) -> dict[str, str]:
+    if provider:
+        # A Model Provider Service (e.g. Bedrock-backed) is only reachable through the gateway's
+        # Anthropic endpoint; the OpenAI-style MLflow route rejects it.
+        overlay = {
+            "COPILOT_PROVIDER_TYPE": "anthropic",
+            "COPILOT_PROVIDER_BASE_URL": build_tool_base_url("claude", workspace),
+            "COPILOT_PROVIDER_HEADERS": f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}",
+            "COPILOT_MODEL": selected_model,
+            "COPILOT_PROVIDER_BEARER_TOKEN": token,
+            "COPILOT_OFFLINE": "true",
+            "OAUTH_TOKEN": token,
+        }
+        model_id = canonical_claude_model_id(selected_model)
+        if model_id:
+            overlay["COPILOT_PROVIDER_MODEL_ID"] = model_id
+        return overlay
     request_model = override_model or selected_model
     wire_api = "responses" if model_uses_responses_api(request_model) else "completions"
     return {
@@ -121,10 +170,18 @@ def render_env_overlay(
     }
 
 
-def build_runtime_env(workspace: str, model: str, token: str) -> dict[str, str]:
+def build_runtime_env(
+    workspace: str, model: str, token: str, *, provider: str | None = None
+) -> dict[str, str]:
     env = os.environ.copy()
     override_model = env.get("COPILOT_PROVIDER_WIRE_MODEL")
-    env.update(render_env_overlay(workspace, model, token, override_model=override_model))
+    env.update(
+        render_env_overlay(
+            workspace, model, token, override_model=override_model, provider=provider
+        )
+    )
+    if provider:
+        env.pop("COPILOT_PROVIDER_WIRE_API", None)
     return env
 
 
@@ -178,6 +235,7 @@ def write_tool_config(
     token: str | None = None,
     *,
     force_refresh: bool = False,
+    provider: str | None = None,
 ) -> tuple[dict, str]:
     backup_existing_file(COPILOT_ENV_PATH, COPILOT_BACKUP_PATH)
     if token is None:
@@ -187,9 +245,15 @@ def write_tool_config(
     existing = parse_dotenv(COPILOT_ENV_PATH)
     # Keep the inspectable file self-consistent without treating it as launch input.
     override_model = existing.get("COPILOT_PROVIDER_WIRE_MODEL")
-    overlay = render_env_overlay(state["workspace"], model, token, override_model=override_model)
+    overlay = render_env_overlay(
+        state["workspace"], model, token, override_model=override_model, provider=provider
+    )
     for key in LEGACY_ENV_KEYS:
         existing.pop(key, None)
+    if provider:
+        existing.pop("COPILOT_PROVIDER_WIRE_API", None)
+    else:
+        existing.pop("COPILOT_PROVIDER_HEADERS", None)
     existing.update(overlay)
     write_dotenv(COPILOT_ENV_PATH, existing)
     state = mark_tool_managed(state, "copilot", MANAGED_KEYS)
@@ -202,31 +266,35 @@ def _refresh_token_once(
     model: str | None = None,
     *,
     force_refresh: bool = False,
+    provider: str | None = None,
 ) -> tuple[str, str]:
     model = model or default_model(state)
     if not model:
         raise RuntimeError("No Copilot model is available on this workspace.")
-    _, token = write_tool_config(state, model, force_refresh=force_refresh)
+    _, token = write_tool_config(state, model, force_refresh=force_refresh, provider=provider)
     return model, token
 
 
-def _refresh_forever(state: dict, model: str, stop_event: threading.Event) -> None:
+def _refresh_forever(
+    state: dict, model: str, stop_event: threading.Event, provider: str | None = None
+) -> None:
     while not stop_event.wait(TOKEN_REFRESH_INTERVAL_SECONDS):
         try:
-            _refresh_token_once(state, model, force_refresh=True)
+            _refresh_token_once(state, model, force_refresh=True, provider=provider)
         except RuntimeError:
             continue
 
 
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
     model = explicit_model_arg_value(tool_args) or options.user_pinned_model or default_model(state)
-    model, token = _refresh_token_once(state, model)
-    env = build_runtime_env(state["workspace"], model, token)
+    provider = state.get("_copilot_launch_provider")
+    model, token = _refresh_token_once(state, model, provider=provider)
+    env = build_runtime_env(state["workspace"], model, token, provider=provider)
 
     stop_event = threading.Event()
     refresher = threading.Thread(
         target=_refresh_forever,
-        args=(state, model, stop_event),
+        args=(state, model, stop_event, provider),
         daemon=True,
     )
     refresher.start()
