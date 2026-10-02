@@ -711,6 +711,34 @@ class TestMergeAnthropicCustomHeaders:
         ]
 
 
+class TestPreserveIsaacRequestTagsHeader:
+    @pytest.mark.parametrize(
+        "invalid_line",
+        [
+            "databricks-ai-gateway-request-tags : source=invalid-name",
+            "databricks-ai-gateway-request-tags: source=invalid\x01value",
+        ],
+        ids=["whitespace-in-name", "control-character-in-value"],
+    )
+    def test_rejects_invalid_request_tags_lines(self, invalid_line):
+        ucode_headers = "x-databricks-use-coding-agent-mode: true"
+
+        merged = claude._preserve_isaac_request_tags_header(invalid_line, ucode_headers, None)
+
+        assert merged == ucode_headers
+
+    def test_uses_first_valid_request_tags_line_after_invalid_duplicate(self):
+        invalid_line = "databricks-ai-gateway-request-tags : source=invalid-name"
+        valid_line = "Databricks-AI-Gateway-Request-Tags: source=isaac-cli"
+        ucode_headers = "x-databricks-use-coding-agent-mode: true"
+
+        merged = claude._preserve_isaac_request_tags_header(
+            "\n".join([invalid_line, valid_line]), ucode_headers, None
+        )
+
+        assert merged == f"{ucode_headers}\n{valid_line}"
+
+
 class TestRenderOverlayWebSearchDisable:
     def test_settings_overlay_never_includes_mcp_servers(self):
         # MCP servers belong in ~/.claude.json, not settings.json.
@@ -1131,19 +1159,50 @@ class TestWriteToolConfigManagedSettings:
         assert "x-databricks-workspace: eng-ml-inference" not in lines  # dropped on removal
         assert "x-databricks-use-coding-agent-mode: true" in lines  # ucode's own header kept
 
-    def test_managed_file_overwrites_dropping_foreign_and_removed_headers(self, monkeypatch):
-        # Wholesale overwrite: the written value is exactly ucode's static headers plus the admin's
-        # CURRENT http_headers manifest, nothing else. A header that only exists directly in the
-        # managed file's ANTHROPIC_CUSTOM_HEADERS -- not in ucode's static set and not in the
-        # manifest -- is dropped just like a stale ucode-written one; a manifest header is present,
-        # and removing it from the manifest on a later run drops it too.
+    def test_managed_private_file_preserves_isaac_request_tags(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []
+        request_tags = "dAtAbRiCkS-Ai-Gateway-Request-Tags: source=isaac-cli"
+        existing = {
+            str(claude.CLAUDE_SETTINGS_PATH): {
+                "env": {
+                    "ANTHROPIC_CUSTOM_HEADERS": (
+                        f"{request_tags}\nX-Foreign-Header: should-not-survive"
+                    )
+                }
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+
+        lines = private_writes[0][1]["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+        assert request_tags in lines
+        assert "X-Foreign-Header: should-not-survive" not in lines
+        assert (
+            sum(
+                line.partition(":")[0].strip().casefold() == claude.ISAAC_REQUEST_TAGS_HEADER_NAME
+                for line in lines
+            )
+            == 1
+        )
+
+    def test_managed_file_preserves_isaac_request_tags_dropping_other_foreign_headers(
+        self, monkeypatch
+    ):
+        # Wholesale overwrite: the written value is exactly ucode's static headers plus the admin's
+        # CURRENT http_headers manifest, except the named Isaac request-tags interoperability
+        # header. Other foreign header lines are still dropped by the existing rewrite.
+        private_writes: list = []
+        managed_writes: list = []
+        request_tags = "Databricks-AI-Gateway-Request-Tags: source=isaac-cli"
         existing = {
             str(FAKE_MANAGED_PATH): {
                 "env": {
                     "ANTHROPIC_CUSTOM_HEADERS": (
                         "X-Foreign-Header: keep-me\n"
+                        f"{request_tags}\n"
+                        "Databricks-Model-Provider-Service: stale-provider\n"
                         "x-databricks-use-coding-agent-mode: true\n"
                         "x-team: stale-team"
                     )
@@ -1163,6 +1222,12 @@ class TestWriteToolConfigManagedSettings:
 
         lines = json.loads(managed_writes[0][1])["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
         assert "X-Foreign-Header: keep-me" not in lines  # not ucode's, not in the manifest
+        assert request_tags in lines  # Isaac's metadata is preserved across the rewrite
+        assert not any(
+            line.partition(":")[0].strip().casefold()
+            == claude.MODEL_PROVIDER_SERVICE_HEADER.casefold()
+            for line in lines
+        )
         assert "x-team: eng-ml" in lines  # current manifest header -> present
 
         # A later run without the manifest header drops it too.
@@ -1174,6 +1239,115 @@ class TestWriteToolConfigManagedSettings:
 
         lines = json.loads(managed_writes[0][1])["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
         assert not any(line.startswith("x-team:") for line in lines)
+        assert request_tags in lines
+
+    def test_explicit_admin_request_tags_header_overrides_isaac_in_private_and_managed_files(
+        self, monkeypatch
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(claude.CLAUDE_SETTINGS_PATH): {
+                "env": {
+                    "ANTHROPIC_CUSTOM_HEADERS": (
+                        "databricks-ai-gateway-request-tags: source=isaac-private"
+                    )
+                }
+            },
+            str(FAKE_MANAGED_PATH): {
+                "env": {
+                    "ANTHROPIC_CUSTOM_HEADERS": (
+                        "DATaBRICKS-ai-GATEWAY-request-TAGS: source=isaac-managed"
+                    )
+                }
+            },
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        admin_header = "DaTaBrIcKs-AI-Gateway-Request-Tags"
+        winning_admin_header = "databricks-ai-gateway-request-tags"
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_http_headers": {
+                admin_header: "source=admin-first",
+                winning_admin_header: "source=admin",
+            },
+        }
+
+        claude.write_tool_config(state, None)
+
+        private_lines = private_writes[0][1]["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+        managed_lines = json.loads(managed_writes[0][1])["env"][
+            "ANTHROPIC_CUSTOM_HEADERS"
+        ].splitlines()
+        for lines in (private_lines, managed_lines):
+            assert f"{winning_admin_header}: source=admin" in lines
+            assert not any("source=isaac" in line for line in lines)
+            assert (
+                sum(
+                    line.partition(":")[0].strip().casefold()
+                    == claude.ISAAC_REQUEST_TAGS_HEADER_NAME
+                    for line in lines
+                )
+                == 1
+            )
+
+    def test_managed_request_tags_casing_and_duplicates_converge_on_rerun(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        first_request_tags = "Databricks-AI-Gateway-Request-Tags: source=isaac-first"
+        existing = {
+            str(claude.CLAUDE_SETTINGS_PATH): {
+                "env": {
+                    "ANTHROPIC_CUSTOM_HEADERS": "\n".join(
+                        [
+                            first_request_tags,
+                            "databricks-ai-gateway-request-tags: source=isaac-duplicate",
+                        ]
+                    )
+                }
+            },
+            str(FAKE_MANAGED_PATH): {
+                "env": {
+                    "ANTHROPIC_CUSTOM_HEADERS": "\n".join(
+                        [
+                            first_request_tags,
+                            "DATABRICKS-AI-GATEWAY-REQUEST-TAGS: source=isaac-duplicate",
+                        ]
+                    )
+                }
+            },
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(state, None)
+
+        first_private = private_writes[0][1]["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        first_managed = json.loads(managed_writes[0][1])["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert first_request_tags in first_private.splitlines()
+        assert first_request_tags in first_managed.splitlines()
+        for headers in (first_private, first_managed):
+            assert (
+                sum(
+                    line.partition(":")[0].strip().casefold()
+                    == claude.ISAAC_REQUEST_TAGS_HEADER_NAME
+                    for line in headers.splitlines()
+                )
+                == 1
+            )
+
+        existing[str(claude.CLAUDE_SETTINGS_PATH)] = {
+            "env": {"ANTHROPIC_CUSTOM_HEADERS": first_private}
+        }
+        existing[str(FAKE_MANAGED_PATH)] = {"env": {"ANTHROPIC_CUSTOM_HEADERS": first_managed}}
+        private_writes.clear()
+        managed_writes.clear()
+
+        claude.write_tool_config(state, None)
+
+        assert private_writes[0][1]["env"]["ANTHROPIC_CUSTOM_HEADERS"] == first_private
+        assert json.loads(managed_writes[0][1])["env"]["ANTHROPIC_CUSTOM_HEADERS"] == first_managed
 
     def test_unmanaged_preserves_foreign_header_and_replaces_ucode_headers_in_place(
         self, monkeypatch
@@ -1243,13 +1417,12 @@ class TestWriteToolConfigManagedSettings:
         assert managed_env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "developer-managed-sonnet"
         assert managed_env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "system.ai.claude-haiku-4-5"
 
-    def test_managed_file_wholesale_overwrite_survives_real_reconcile_round_trip(
+    def test_managed_file_request_tags_survive_real_reconcile_round_trip(
         self, tmp_path, monkeypatch
     ):
         # Drives the REAL managed_files snapshot/reconcile flow (not a hand-mocked snapshot) across
-        # three launches: a header hand-placed directly in the managed file -- never ucode's, never
-        # in the admin manifest -- never survives a write; a manifest header is stable across a
-        # no-op re-run; and removing it from the manifest drops it on the next run.
+        # three launches. Isaac's interoperable request-tags header survives and reaches a fixed
+        # point; unrelated hand edits still do not; an admin header is still removed when withdrawn.
         managed_path = tmp_path / "managed-settings.json"
         backup_dir = tmp_path / "managed-backups"
         monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
@@ -1270,16 +1443,26 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
-        # Managed variant: an admin CodingAgentConfig is present, so ug owns the value wholesale.
+        # Managed variant: ug owns the value wholesale except its named Isaac interoperability
+        # exception.
         monkeypatch.setattr(
             claude,
             "refresh_managed_config",
             lambda *a, **kw: _managed_config_result({"claude": {}}),
         )
 
-        # A hand edit directly in the managed file, bypassing both ucode and the admin manifest.
+        request_tags = "Databricks-AI-Gateway-Request-Tags: source=isaac-cli"
+        # Both headers are direct edits, but only the named interoperable metadata header survives.
         managed_path.write_text(
-            json.dumps({"env": {"ANTHROPIC_CUSTOM_HEADERS": "X-Direct-Edit: should-not-survive"}}),
+            json.dumps(
+                {
+                    "env": {
+                        "ANTHROPIC_CUSTOM_HEADERS": (
+                            f"X-Direct-Edit: should-not-survive\n{request_tags}"
+                        )
+                    }
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -1296,6 +1479,7 @@ class TestWriteToolConfigManagedSettings:
 
         first = custom_headers()
         assert "X-Direct-Edit: should-not-survive" not in first  # hand edit -> dropped
+        assert request_tags in first
         assert "x-team: eng-ml" in first  # current manifest header -> present
 
         # A no-op re-run (same manifest) leaves the value stable.
@@ -1306,6 +1490,7 @@ class TestWriteToolConfigManagedSettings:
         state["claude_http_headers"] = {}
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
         assert not any(line.startswith("x-team:") for line in custom_headers())
+        assert request_tags in custom_headers()
 
     def _sudo_counting_env(self, tmp_path, monkeypatch):
         """Real reconcile flow with privileged writes counted instead of actually run."""
@@ -1343,9 +1528,16 @@ class TestWriteToolConfigManagedSettings:
         # Repeated `ug claude` launches with an unchanged config and an intact managed file must
         # reach a fixed point: exactly one privileged write, then none.
         managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        request_tags = "databricks-ai-gateway-request-tags: source=isaac-cli"
+        managed_path.write_text(
+            json.dumps({"env": {"ANTHROPIC_CUSTOM_HEADERS": request_tags}}), encoding="utf-8"
+        )
         state = {"workspace": WS, "codex_models": [], "claude_http_headers": {"x-team": "eng-ml"}}
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
         assert len(sudo_writes) == 1
+        assert (
+            request_tags in json.loads(managed_path.read_text())["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        )
         first_bytes = managed_path.read_bytes()
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
