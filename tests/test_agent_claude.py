@@ -923,6 +923,108 @@ class TestWriteToolConfigStripsRemovedEnvKeys:
 FAKE_MANAGED_PATH = Path("/tmp/ucode-test/managed-settings.json")
 
 
+class TestOptionalManagedAttribution:
+    @staticmethod
+    def _settings(headers: object) -> dict:
+        return {
+            "apiKeyHelper": "gateway-helper",
+            "env": {"ANTHROPIC_CUSTOM_HEADERS": headers},
+            "permissions": {"deny": ["WebSearch"]},
+        }
+
+    @pytest.mark.parametrize(
+        ("existing_attribution", "desired_attribution"),
+        [
+            ("User-Agent: ucode/1.0 claude/2.1.287", "User-Agent: ucode/1.0 claude/unknown"),
+            ("User-Agent: ucode/1.0 claude/2.1.287", "User-Agent: ucode/1.0 claude/2.1.288"),
+            ("User-Agent: ucode/1.0 claude/2.1.288", "User-Agent: ucode/1.1 claude/2.1.288"),
+            (
+                f"{claude.SMART_ROUTER_RECIPE_HEADER}: old-router",
+                f"{claude.SMART_ROUTER_RECIPE_HEADER}: new-router",
+            ),
+            ("User-Agent: old-agent", ""),
+            ("", "User-Agent: new-agent"),
+        ],
+    )
+    def test_optional_attribution_only(self, existing_attribution, desired_attribution):
+        required = "x-databricks-use-coding-agent-mode: true\n"
+        existing = self._settings(required + existing_attribution)
+        desired = self._settings(required + desired_attribution)
+        original = json.loads(json.dumps(desired))
+
+        assert claude._only_optional_attribution_changed(existing, desired)
+        assert desired == original
+
+    @pytest.mark.parametrize(
+        "changed_field",
+        ["auth", "gateway", "model", "permissions", "unrelated-policy", "required-header"],
+    )
+    def test_does_not_ignore_any_non_attribution_change(self, changed_field):
+        headers = "x-databricks-use-coding-agent-mode: true\nUser-Agent: old-agent"
+        existing = self._settings(headers)
+        desired = self._settings(headers.replace("old-agent", "new-agent"))
+        if changed_field == "auth":
+            desired["apiKeyHelper"] = "new-helper"
+        elif changed_field == "gateway":
+            desired["env"]["ANTHROPIC_BASE_URL"] = "https://new-gateway.example"
+        elif changed_field == "model":
+            desired["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = "new-model"
+        elif changed_field == "permissions":
+            desired["permissions"]["deny"].append("Bash")
+        elif changed_field == "unrelated-policy":
+            desired["enterprisePolicy"] = True
+        else:
+            desired["env"]["ANTHROPIC_CUSTOM_HEADERS"] += "\nDatabricks-Model-Provider-Service: new"
+
+        assert not claude._only_optional_attribution_changed(existing, desired)
+
+    @pytest.mark.parametrize(
+        "invalid_headers",
+        [
+            None,
+            [],
+            "not a header",
+            "User-Agent: old-agent\nuser-agent: duplicate",
+            "x-databricks-use-coding-agent-mode: true\nUser-Agent: bad\x00value",
+        ],
+    )
+    def test_missing_or_malformed_headers_are_not_ignored(self, invalid_headers):
+        existing = self._settings(invalid_headers)
+        desired = self._settings("x-databricks-use-coding-agent-mode: true\nUser-Agent: new")
+
+        assert not claude._only_optional_attribution_changed(existing, desired)
+
+    def test_missing_managed_settings_are_not_ignored(self):
+        desired = self._settings("User-Agent: new-agent")
+
+        assert not claude._only_optional_attribution_changed({}, desired)
+
+    def test_identical_settings_are_left_to_the_normal_noop_check(self):
+        settings = self._settings("User-Agent: same-agent")
+
+        assert not claude._only_optional_attribution_changed(settings, settings)
+
+    def test_concurrent_managed_change_is_not_stamped_as_verified(self, monkeypatch):
+        existing = self._settings("User-Agent: old-agent")
+        desired = self._settings("User-Agent: new-agent")
+        newer = self._settings("User-Agent: old-agent")
+        newer["apiKeyHelper"] = "new-enterprise-helper"
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: FAKE_MANAGED_PATH)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(
+            claude, "read_managed_file", Mock(side_effect=[json.dumps(existing), json.dumps(newer)])
+        )
+        monkeypatch.setattr(
+            claude, "reconcile_managed_file", lambda *a, **kw: pytest.fail("must not overwrite")
+        )
+        monkeypatch.setattr(
+            claude, "mark_managed_file_verified", lambda *a, **kw: pytest.fail("must not verify")
+        )
+
+        with pytest.raises(RuntimeError, match="preserved the newer file"):
+            claude._reconcile_managed_settings({}, lambda base: desired, [["apiKeyHelper"]], False)
+
+
 class TestWriteToolConfigManagedSettings:
     """Every normal configuration also writes Claude Code's OS-managed settings."""
 
@@ -1351,6 +1453,41 @@ class TestWriteToolConfigManagedSettings:
         claude.write_tool_config(state, "databricks-claude-sonnet-4")
         assert len(sudo_writes) == 1  # no further privileged writes
         assert managed_path.read_bytes() == first_bytes  # exact bytes preserved
+
+    def test_version_changes_preserve_managed_bytes_and_verified_fingerprint(
+        self, tmp_path, monkeypatch
+    ):
+        managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(claude.smart_routing_v2, "smart_routing_enabled", lambda: False)
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.287")
+        state = {"workspace": WS, "codex_models": [], "claude_http_headers": {"x-team": "eng-ml"}}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert len(sudo_writes) == 1
+        first_bytes = managed_path.read_bytes()
+
+        for version in ("unknown", "unknown", "2.1.288", "2.1.288"):
+            monkeypatch.setattr(claude, "agent_version", lambda _binary, _version=version: _version)
+            claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+            assert len(sudo_writes) == 1
+            assert managed_path.read_bytes() == first_bytes
+            assert managed_files.managed_file_is_verified(
+                state, "claude", managed_path, required_scope="managed"
+            )
+            private_settings = json.loads(claude.CLAUDE_SETTINGS_PATH.read_text())
+            assert (
+                f"User-Agent: ucode/1.0 claude/{version}"
+                in private_settings["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+            )
+
+        # A required header change must still take the real privileged-write path.
+        state["claude_http_headers"] = {"x-team": "new-team"}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert len(sudo_writes) == 2
+        headers = json.loads(managed_path.read_text())["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        assert "x-team: new-team" in headers
+        assert "User-Agent: ucode/1.0 claude/2.1.288" in headers
 
     def test_admin_unrelated_edit_invokes_no_sudo(self, tmp_path, monkeypatch):
         # An admin's unrelated edit (a new policy key, keys reordered) is preserved and does not
@@ -1855,6 +1992,54 @@ class TestWriteToolConfigManagedSettings:
         claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
 
         assert managed_writes == []
+
+    @pytest.mark.parametrize("detected_version", ["unknown", "2.1.288"])
+    def test_interactive_version_changes_update_private_settings_without_sudo(
+        self, monkeypatch, detected_version
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        verified: list[dict] = []
+        monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.287")
+        monkeypatch.setattr(claude.smart_routing_v2, "smart_routing_enabled", lambda: False)
+        managed, _ = claude.render_overlay(WS, None)
+        existing = {str(FAKE_MANAGED_PATH): managed}
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: detected_version)
+        monkeypatch.setattr(
+            claude, "mark_managed_file_verified", lambda *args, **kwargs: verified.append(kwargs)
+        )
+
+        for _ in range(2):
+            claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+
+        assert managed_writes == []
+        assert len(private_writes) == 2
+        assert all(
+            f"User-Agent: ucode/1.0 claude/{detected_version}"
+            in payload["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+            for _path, payload in private_writes
+        )
+        assert "claude/2.1.287" in managed["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        # The entire managed object matches except allowed attribution, so its fingerprint is valid.
+        assert verified == [{}, {}]
+
+    def test_interactive_required_change_still_writes_with_unknown_version(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.287")
+        monkeypatch.setattr(claude.smart_routing_v2, "smart_routing_enabled", lambda: False)
+        managed, _ = claude.render_overlay(WS, None)
+        managed["apiKeyHelper"] = "outdated-helper"
+        self._patch(monkeypatch, private_writes, managed_writes, {str(FAKE_MANAGED_PATH): managed})
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "unknown")
+
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+
+        assert len(managed_writes) == 1
+        updated = json.loads(managed_writes[0][1])
+        assert updated["apiKeyHelper"] != "outdated-helper"
 
     def test_disabled_tracing_preserves_managed_telemetry(self, monkeypatch):
         private_writes: list = []
