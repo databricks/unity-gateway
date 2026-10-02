@@ -113,6 +113,14 @@ per-test allocator and must not be used to share a workspace across this suite.
 Wire per-test allocation and matching credentials before enabling live execution.
 `--installation-only` and `--headless-only` belong to the existing `integration` suite.
 
+For service-principal authentication, set `UG_CUJ_SP_CLIENT_ID` and
+`UG_CUJ_SP_CLIENT_SECRET` in the runner's environment. Supply both together.
+The runner exchanges them for a short-lived workspace OAuth bearer; neither
+value is persisted or forwarded to pytest, agents, or installers. CUJ credentials
+take precedence over an inherited `DATABRICKS_BEARER`; an explicit `--profile`
+remains an override. The existing integration suite continues to use
+`DATABRICKS_CLIENT_ID` / `DATABRICKS_CLIENT_SECRET` and does not consume CUJ credentials.
+
 The runner records the selected suite, versions, dependencies, JUnit results,
 and artifacts. Missing prerequisites and empty selections fail honestly. Add no
 live CI lane until there is an executable journey.

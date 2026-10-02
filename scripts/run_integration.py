@@ -30,6 +30,10 @@ SUITES = {
     "integration": ROOT / "tests/integration",
     "e2e-integration": ROOT / "tests/e2e_integration",
 }
+SERVICE_PRINCIPAL_ENV = {
+    "integration": ("DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET"),
+    "e2e-integration": ("UG_CUJ_SP_CLIENT_ID", "UG_CUJ_SP_CLIENT_SECRET"),
+}
 AGENT_PACKAGES = {
     "claude": "@anthropic-ai/claude-code",
     "codex": "@openai/codex",
@@ -197,6 +201,23 @@ def venv_executable(environment: Path, name: str) -> Path:
 
 def npm_executable(bin_dir: Path, name: str) -> Path:
     return bin_dir / (f"{name}.cmd" if os.name == "nt" else name)
+
+
+def workspace_auth_inputs(suite: str, environment: Mapping[str, str]) -> tuple[str, str, str]:
+    """Select scoped credentials without mutating the environment or recording secrets.
+
+    Explicit --profile selection is handled by main and overrides these inputs.
+    CUJ service-principal credentials take precedence over a shared bearer.
+    """
+    id_env, secret_env = SERVICE_PRINCIPAL_ENV[suite]
+    client_id = environment.get(id_env, "").strip()
+    client_secret = environment.get(secret_env, "").strip()
+    if suite == "e2e-integration" and bool(client_id) != bool(client_secret):
+        raise ValueError(f"Set both {id_env} and {secret_env} for CUJ authentication.")
+    bearer = environment.get("DATABRICKS_BEARER", "").strip()
+    if suite == "e2e-integration" and client_id and client_secret:
+        bearer = ""
+    return bearer, client_id, client_secret
 
 
 def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
@@ -426,16 +447,15 @@ def arguments(
             parser.error(
                 "Set UCODE_TEST_WORKSPACE to the existing e2e workspace, or use --workspace."
             )
-        has_client_creds = bool(
-            environment.get("DATABRICKS_CLIENT_ID", "").strip()
-            and environment.get("DATABRICKS_CLIENT_SECRET", "").strip()
-        )
-        if not (
-            args.profile or environment.get("DATABRICKS_BEARER", "").strip() or has_client_creds
-        ):
+        try:
+            bearer, client_id, client_secret = workspace_auth_inputs(args.suite, environment)
+        except ValueError as error:
+            parser.error(str(error))
+        if not (args.profile or bearer or (client_id and client_secret)):
+            id_env, secret_env = SERVICE_PRINCIPAL_ENV[args.suite]
             parser.error(
                 "Provide the e2e DATABRICKS_BEARER, service-principal "
-                "DATABRICKS_CLIENT_ID/DATABRICKS_CLIENT_SECRET, or select --profile explicitly."
+                f"{id_env}/{secret_env}, or select --profile explicitly."
             )
     return args
 
@@ -529,11 +549,17 @@ def main() -> int:
     python_install_env = installer_environment(base_env, os.environ, UV_INDEX_CREDENTIAL_ENV)
     npm_install_env = installer_environment(base_env, os.environ, (NPM_TOKEN_ENV,), npm_config)
     installer_secrets = tuple(os.environ.get(key, "") for key in INSTALLER_CREDENTIAL_ENV)
-    bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
+    bearer, workspace_client_id, workspace_client_secret = workspace_auth_inputs(
+        args.suite, os.environ
+    )
     second_bearer = os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     target_bearers: dict[str, str] = {}
     client_secrets = (
+        workspace_client_id,
+        workspace_client_secret,
+        os.environ.get("UG_CUJ_SP_CLIENT_ID", ""),
+        os.environ.get("UG_CUJ_SP_CLIENT_SECRET", ""),
         os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
         os.environ.get("UG_MPS_DEFAULTS_CLIENT_SECRET", ""),
         os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", ""),
@@ -839,12 +865,12 @@ def main() -> int:
                 raise RuntimeError("Selected profile returned no access token.")
 
         if not bearer and not args.profile and not args.installation_only:
-            client_id = os.environ.get("DATABRICKS_CLIENT_ID", "").strip()
-            client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
-            if client_id and client_secret:
-                bearer = mint_m2m_token(args.workspace, client_id, client_secret)
+            if workspace_client_id and workspace_client_secret:
+                bearer = mint_m2m_token(
+                    args.workspace, workspace_client_id, workspace_client_secret
+                )
 
-        if not args.installation_only:
+        if not args.installation_only and args.suite == "integration":
             for bearer_env, target_workspace, client_id, secret_env in MANAGED_DEFAULTS_TARGETS:
                 secret = os.environ.get(secret_env, "").strip()
                 if args.workspace.rstrip("/") == target_workspace:
