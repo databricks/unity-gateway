@@ -193,7 +193,7 @@ def test_case_02_managed_codex_uses_admin_discovery_from_fresh_state(
     assert app_models == models, (app_models, models)
 
 
-def test_case_04_managed_codex_rejects_provider_override_after_configure(
+def test_managed_fixture_codex_rejects_provider_override_after_configure(
     live_session, workspace, codex_provider
 ):
     """Scenario: configure managed Codex, then pass a --provider override.
@@ -225,7 +225,7 @@ def test_case_04_managed_codex_rejects_provider_override_after_configure(
     _assert_rejected_before_codex_started(session, result, before)
 
 
-def test_case_04_managed_codex_rejects_provider_override_from_fresh_state(
+def test_managed_fixture_codex_rejects_provider_override_from_fresh_state(
     live_session, workspace, codex_provider
 ):
     """Scenario: pass --workspace and a --provider override from fresh state.

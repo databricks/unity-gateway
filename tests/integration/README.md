@@ -10,7 +10,8 @@ CUJ2 adds three separately collected cases for exact MPS/MCP configuration, Code
 and Claude inference.
 
 This suite runs the **installed product** through subprocesses, against the same
-`UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
+`UCODE_TEST_WORKSPACE` used by the existing e2e tests; CUJ3 uses a separate managed
+workspace selected explicitly for its model-only journeys. It does not import `ucode`,
 patch application functions, substitute agent executables, run a fake gateway,
 or construct ug state files. The normal test suite checks these boundaries.
 
@@ -359,8 +360,8 @@ they only configure, list models, and open/close the picker. Other live CUJs per
 real model tasks.
 
 There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
-re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
+checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **8 managed-workspace cases** (one per agent, an idempotent
+re-configure, a cache-TTL journey, two Claude defaults cases, and two CUJ3 model journeys; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
 A further **25 `managed_fixture`
@@ -383,8 +384,9 @@ constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-
 `UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET` for northeast-2. As with the base workspace, the runner
 mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
 `ug configure` and Claude. The client secrets do not enter the pytest process.
-The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 101 executions. See the named coverage and gaps matrix in
+The 14 retained numbered scenarios comprise 22 explicit journeys: 8 managed-fixture,
+2 CUJ3 model, and 12 unmanaged executions. Four provider-override journeys retain their
+assertions under descriptive names; the complete integration suite collects 103 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -550,13 +552,86 @@ No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, workspace validation, smoke,
-both full lanes, and both **Managed config** lanes to pass for full/live runs. Each tracing
+both full lanes, both CUJ3 model-discovery lanes, and both **Managed config** lanes to pass for full/live runs. Each tracing
 journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
 a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
 and installation subsets do not select managed tests and do not require them.
 The advisory Windows installation and headless lanes are not yet included in that aggregate check.
 The existing required `e2e` context also waits for the complete integration workflow, so integration
 cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
+
+### CUJ3 model-discovery stack
+
+The first CUJ3 layer covers only models, for both Claude and Codex. Provision
+`ug_e2e.models` and `ug_e2e.other_models` using `fixtures/cuj/models/provision.py`,
+then review and publish `fixtures/cuj/models/cuj3-managed-config.json` in the
+dedicated workspace. The model-only fixtures do not require an App, UC connection,
+MCP service, or skill bundle. Resource provisioning and config publication are
+explicit admin setup, not work performed by the integration tests.
+
+Each journey calls the real `ug configure` before checking its persisted schema
+pointer and defaults. A separate UC inventory check proves that all five in-scope
+services exist, including Gemini. It independently requests each agent's scoped catalog,
+proves the compatible decoy is accessible in another schema, and compares the
+generated catalog and native picker/model-list with that oracle. Native
+pickers must contain exactly the expected numbered model rows, with no unmatched,
+ambiguous, or duplicate entries; friendly labels cannot hide an excluded service.
+The configured default and every additional in-scope compatible model must complete a file task
+whose contents are withheld from the prompt, with native model identity evidence.
+Discovery or startup alone cannot pass.
+
+The version-agnostic services under `ug_e2e.models` and expected discovery sets are:
+
+| Service | Claude Code | Codex |
+| --- | --- | --- |
+| `gpt_luna` | Excluded | Included; default |
+| `claude_haiku` | Included | Excluded |
+| `claude_sonnet` | Included; default | Excluded |
+| `kimi` | Included | Included |
+| `gemini_flash` | Excluded | Excluded |
+
+Gemini is inside the managed schema: its exclusion tests agent compatibility,
+not schema scoping. The accessible compatible services
+`ug_e2e.other_models.claude_decoy` and `ug_e2e.other_models.codex_decoy` separately
+test schema exclusion. Exact backing `system.ai` source versions are supplied
+explicitly during provisioning. These expected subsets are an intended contract,
+not a claim of a live pass: gateway API-type metadata, feature flags, and harness
+compatibility must be verified in the dedicated workspace. Unexpected Gemini
+visibility fails the tests; no local filtering hides it.
+
+When the gateway's Claude discovery-alias feature is enabled, non-Claude IDs such
+as Kimi are returned as `anthropic-aigw-<8-character SHA-256 prefix>-<service FQN>`.
+The journey verifies the checksum and exact service inventory without dropping
+entries. Generated settings, the native cache, picker, explicit tasks, and native
+transcript identity must retain the actual returned wire ID; Codex keeps raw FQNs.
+The dedicated workspace enables this feature: its Claude journey requires the
+exact encoded wire inventory as well as service identities and the coding-agent
+mode header needed for inference to reverse the alias.
+
+With the published policy selecting Claude as the default agent, both bare `ug`
+and explicit `ug claude` must launch Claude/Sonnet and complete separate real TUI
+tasks. `ug claude -p "task"` must
+complete a print-mode task on Sonnet without a model override. Codex's default
+must complete both a TUI task and `ug codex -- exec --skip-git-repo-check --json "task"`
+on `gpt_luna`, also without a model override. Native Codex `-p` selects a profile,
+not a headless prompt; `ug codex -p "task"` is not the supported task command.
+
+CI runs `managed and cuj3 and workspace_isolated` in a two-agent matrix using
+`UG_CUJ3_WORKSPACE` and the shared CUJ SP secrets. The shared managed lanes exclude
+`workspace_isolated`; both CUJ3 legs are required for full/live runs. Local runs
+must provide an explicit workspace and authenticated profile or bearer:
+
+```bash
+python3.12 scripts/run_integration.py \
+  --ug-version checkout --claude-version 2.1.280 --codex-version 0.154.0 \
+  --workspace "$CUJ3_WORKSPACE" --profile YOUR_CUJ3_PROFILE \
+  -- -m 'managed and cuj3 and workspace_isolated'
+```
+
+MCP discovery/execution and skills discovery/invocation remain separate later
+layers. The existing full CUJ3 and fixture branches are retained until those
+layers are extracted and restacked. The model-only fixture PR is based directly
+on main; the discovery-test PR is stacked only on that fixture PR, not CUJ7.
 
 ### Managed-workspace journeys
 
