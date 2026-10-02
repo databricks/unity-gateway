@@ -16,8 +16,8 @@ def pytest_configure(config):
 
 @pytest.fixture
 def cuj(request, setup_workspace, tmp_path):
-    from helpers.session import MANAGED_PATHS, UserSession
-    from helpers.workspace import Workspace
+    from .helpers.session import MANAGED_PATHS, UserSession
+    from .helpers.workspace import Workspace
 
     assert os.name == "posix", "Full TUI CUJs require a disposable POSIX runner"
     assert not any(path.exists() for path in MANAGED_PATHS), (

@@ -1,9 +1,10 @@
 """One cross-agent CUJ, one dedicated workspace, six fresh interactive sessions."""
 
-from base import BaseCujTest
-from helpers.constants import CodingAgent
-from helpers.evidence import FileTask, SessionEvidence
-from helpers.terminal import Terminal
+from tests.integration.utils.evidence import FileTask
+
+from .base import BaseCujTest
+from .helpers.constants import CodingAgent
+from .helpers.evidence import SessionEvidence
 
 
 class TestCujSmartRouting(BaseCujTest):
@@ -24,6 +25,9 @@ class TestCujSmartRouting(BaseCujTest):
         independent gateway-side verification). Fixture teardown restores the
         original workspace policy even when an assertion or process fails.
         """
+        # Terminal dependencies are needed for execution, not offline collection.
+        from .helpers.terminal import Terminal
+
         session, workspace = cuj
         assert workspace.url == self.WORKSPACE_URL.rstrip("/")
         published = workspace.original
@@ -75,10 +79,11 @@ class TestCujSmartRouting(BaseCujTest):
         session_ids = set()
         for agent in ("claude", "codex"):
             workspace.assert_unchanged()
-            task = FileTask.create(session.project)
+            task = FileTask(session)
+            task.prompt += " Do not delegate."
             evidence = SessionEvidence(session.home, agent)
             with Terminal(session, f"{agent}-routed", [agent], evidence=evidence) as tui:
-                tui.boot(agent)
+                tui.boot(timeout=150)
                 tui.submit(task.prompt)
                 tui.task(evidence, task)
                 tui.exit_normally()
@@ -89,7 +94,8 @@ class TestCujSmartRouting(BaseCujTest):
 
             # Explicit non-default model: new session, no router activity.
             workspace.assert_unchanged()
-            task = FileTask.create(session.project)
+            task = FileTask(session)
+            task.prompt += " Do not delegate."
             evidence = SessionEvidence(session.home, agent)
             with Terminal(
                 session,
@@ -97,7 +103,7 @@ class TestCujSmartRouting(BaseCujTest):
                 [agent, "--model", overrides[agent]],
                 evidence=evidence,
             ) as tui:
-                tui.boot(agent)
+                tui.boot(timeout=150)
                 tui.submit(task.prompt)
                 tui.task(evidence, task)
                 tui.exit_normally()
@@ -120,10 +126,11 @@ class TestCujSmartRouting(BaseCujTest):
         )
         for agent in ("claude", "codex"):
             workspace.assert_unchanged()
-            task = FileTask.create(session.project)
+            task = FileTask(session)
+            task.prompt += " Do not delegate."
             evidence = SessionEvidence(session.home, agent)
             with Terminal(session, f"{agent}-disabled", [agent], evidence=evidence) as tui:
-                tui.boot(agent)
+                tui.boot(timeout=150)
                 tui.submit(task.prompt)
                 tui.task(evidence, task)
                 tui.exit_normally()

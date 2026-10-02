@@ -2,16 +2,16 @@
 
 import copy
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from tests.e2e_cuj.helpers.evidence import (
-    FileTask,
     SessionEvidence,
     canonical_model,
     completed_turn,
-    jsonl,
 )
+from tests.integration.utils.evidence import FileTask, read_jsonl
 
 
 def records(agent, task, model):
@@ -68,7 +68,7 @@ def log(agent, task, model):
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 @pytest.mark.parametrize("routed", [True, False])
 def test_cuj_evidence_completed_native_turn_and_model(tmp_path, agent, routed):
-    task = FileTask.create(tmp_path)
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
     model = "system.ai.claude-opus-4-8" if agent == "claude" else "system.ai.gpt-6-luna"
     boundary = SessionEvidence(tmp_path, agent)
     write_rows(boundary.directory / "new.jsonl", records(agent, task, model))
@@ -95,7 +95,7 @@ def test_cuj_evidence_completed_native_turn_and_model(tmp_path, agent, routed):
     ],
 )
 def test_cuj_evidence_rejects_false_positives(tmp_path, agent, failure):
-    task = FileTask.create(tmp_path)
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
     model = "system.ai.claude-opus-4-8" if agent == "claude" else "system.ai.gpt-6-sol"
     baseline = SessionEvidence(tmp_path, agent)
     path = next(iter(baseline.boundaries))
@@ -133,7 +133,7 @@ def test_cuj_evidence_rejects_false_positives(tmp_path, agent, failure):
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_cuj_evidence_disabled_rejects_new_routing(tmp_path, agent):
-    task = FileTask.create(tmp_path)
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
     boundary = SessionEvidence(tmp_path, agent)
     model = "system.ai.gpt-6-sol"
     write_rows(boundary.directory / "new.jsonl", records(agent, task, model))
@@ -145,7 +145,7 @@ def test_cuj_evidence_disabled_rejects_new_routing(tmp_path, agent):
 
 
 def test_cuj_evidence_codex_rejects_wrong_turn_and_router_prompt(tmp_path):
-    task = FileTask.create(tmp_path)
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
     rows = records("codex", task, "gpt-6-sol")
     wrong_turn = copy.deepcopy(rows)
     wrong_turn[-1]["payload"]["turn_id"] = "different-turn"
@@ -154,15 +154,13 @@ def test_cuj_evidence_codex_rejects_wrong_turn_and_router_prompt(tmp_path):
     write_rows(boundary.directory / "new.jsonl", rows)
     path = next(iter(boundary.boundaries))
     path.parent.mkdir(exist_ok=True)
-    path.write_text(
-        log("codex", FileTask("different.txt", "different", "different prompt"), "gpt-6-sol")
-    )
+    path.write_text(log("codex", SimpleNamespace(prompt="different prompt"), "gpt-6-sol"))
     with pytest.raises(AssertionError):
         boundary.assert_applied(task, {"system.ai.gpt-6-sol"}, routed=True)
 
 
 def test_cuj_evidence_ignores_existing_session_and_detects_truncated_log(tmp_path):
-    task = FileTask.create(tmp_path)
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
     first = SessionEvidence(tmp_path, "claude")
     write_rows(first.directory / "old.jsonl", records("claude", task, "system.ai.claude-opus-4-8"))
     path = next(iter(first.boundaries))
@@ -191,10 +189,20 @@ def test_cuj_evidence_only_normalizes_known_aliases(raw, expected):
     assert canonical_model(raw) == expected
 
 
-def test_cuj_evidence_jsonl_tolerates_only_in_progress_last_line(tmp_path):
+def test_cuj_evidence_shared_jsonl_reader_handles_partial_and_complete_final_lines(tmp_path):
     path = tmp_path / "events.jsonl"
     path.write_text('{"a": 1}\n{"partial":')
-    assert jsonl(path) == [{"a": 1}]
+    assert read_jsonl(path) == [{"a": 1}]
+    path.write_text('{"a": 1}\n{"b": 2}')
+    assert read_jsonl(path) == [{"a": 1}, {"b": 2}]
     path.write_text("not json\n")
     with pytest.raises(json.JSONDecodeError):
-        jsonl(path)
+        read_jsonl(path)
+
+
+def test_cuj_uses_shared_file_task_without_exposing_answer(tmp_path):
+    task = FileTask(SimpleNamespace(cwd=tmp_path))
+    task.prompt += " Do not delegate."
+    assert (tmp_path / task.filename).read_text().strip() == task.value
+    assert task.value not in task.prompt
+    assert "Do not delegate." in task.prompt

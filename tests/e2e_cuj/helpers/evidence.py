@@ -3,7 +3,8 @@
 import json
 import re
 from dataclasses import asdict, dataclass
-from uuid import uuid4
+
+from tests.integration.utils.evidence import read_jsonl
 
 
 def canonical_model(value):
@@ -13,33 +14,6 @@ def canonical_model(value):
     value = value.removeprefix("system.ai.")
     value = re.sub(r"^(gpt-\d+)\.(\d+)", r"\1-\2", value)
     return "system.ai." + value
-
-
-@dataclass
-class FileTask:
-    filename: str
-    value: str
-    prompt: str
-
-    @classmethod
-    def create(cls, project):
-        filename = f"cuj-{uuid4().hex[:12]}.txt"
-        value = uuid4().hex
-        (project / filename).write_text(value + "\n")
-        return cls(
-            filename,
-            value,
-            f"Read {filename} in this directory and reply with its exact contents. Do not delegate.",
-        )
-
-
-def jsonl(path):
-    records = []
-    for line in path.read_text().splitlines(keepends=True):
-        if not line.endswith("\n"):
-            break  # Polling may catch an in-progress final write.
-        records.append(json.loads(line))
-    return records
 
 
 def message_text(content):
@@ -165,7 +139,7 @@ class SessionEvidence:
         for path in sorted(set(self.directory.rglob("*.jsonl")) - self.existing):
             if "subagents" in path.parts:
                 continue
-            turn = completed_turn(self.agent, jsonl(path), task)
+            turn = completed_turn(self.agent, read_jsonl(path), task)
             if turn:
                 found.append(turn)
         assert len(found) <= 1, "Task matched multiple sessions"
@@ -178,7 +152,7 @@ class SessionEvidence:
             },
             "log_offsets": {path.name: len(before) for path, before in self.boundaries.items()},
             "sessions": {
-                str(path.relative_to(self.directory)): jsonl(path)
+                str(path.relative_to(self.directory)): read_jsonl(path)
                 for path in sorted(set(self.directory.rglob("*.jsonl")) - self.existing)
             },
         }

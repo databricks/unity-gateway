@@ -9,6 +9,11 @@ Run from the repository root:
 `uv run pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj`.
 This keeps the parent suite's mocked fixtures out of CUJs.
 
+Reuse `tests/integration/utils` session, terminal, file-task, and transcript helpers
+directly. Importing helpers does not load that suite's conftest. Never use its
+managed-config stub helpers. CUJ adapters retain strict routing/model correlation,
+reject unexpected permission prompts, and preserve workspace ownership/cleanup.
+
 `test_cuj_smart_routing.py` runs six fresh interactive sessions: routed, explicit
 model, and routing disabled, for both Claude and Codex. It uses the published
 models/defaults and restores the original config on teardown. Model evidence is

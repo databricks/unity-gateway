@@ -12,6 +12,10 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
+The dedicated CUJ reuses `integration/utils` session/terminal mechanics and file-task
+and transcript readers, not its config stubs or pytest fixtures. Prompt/model
+correlation and exclusive workspace restoration remain CUJ-specific.
+
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.
 `TestUpgrade` in `test_cli.py` covers both command names before, during, and after
