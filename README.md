@@ -143,6 +143,16 @@ profile as its harness, when configured. It stores the profile name, not an
 access token, and refreshes credentials for search requests. This does not
 change search permissions.
 
+The built-in search server runs up to four searches concurrently. A slow search
+does not block tool discovery or another search's result. Additional searches
+wait for a worker. Cancelling a queued search prevents it from running; an
+active search retains its worker until its blocking request finishes, and its
+response is discarded. Closing the input stream drains accepted searches, so
+shutdown can wait for the existing authentication and HTTP timeouts. Input
+failure or interruption cancels queued searches and waits for active requests
+to finish. This removes local serialization without changing the backend model
+or speeding up an individual backend request.
+
 Launchers that supply their own search server can first query
 `ug mcp web-search --capabilities`. Contract version 1 supports setting
 `UCODE_CLAUDE_WEB_SEARCH_PROVIDER=external-if-safe` on the ug child process only
@@ -230,6 +240,11 @@ alongside `--settings`, without persistent plugin registration. One temporary
 directory holds the settings, socket, and plugin and is removed when the launch
 finishes or fails. Existing hook configuration and disable/revert behavior are
 unchanged. Native daemon/background propagation of the plugin remains unverified.
+
+On Windows, Claude smart routing uses subagent hooks only. If first-prompt routing
+is enabled, ug warns and falls back to subagent routing because the first-prompt
+wrapper requires a Unix terminal.
+The generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
 
 ## Managed Files
 

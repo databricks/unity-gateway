@@ -481,7 +481,9 @@ def launch_claude(
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
-    from ucode.smart_routing import claude_pty
+
+    if os.name != "nt":
+        from ucode.smart_routing import claude_pty
 
     workspace = state.get("workspace")
     if not workspace:
@@ -505,6 +507,14 @@ def launch_claude(
     model_ids = catalog.model_ids
 
     route_first_prompt = first_prompt_routing_enabled()
+    # TODO: Restore first-prompt routing on Windows after replacing the Unix-only PTY wrapper:
+    # https://databricks.atlassian.net/browse/AIGTWY-4385
+    if route_first_prompt and os.name == "nt":
+        print_warning(
+            "Claude first-prompt smart routing is unavailable on Windows; using subagent-only "
+            "routing."
+        )
+        route_first_prompt = False
     settings, remaining = compose_settings(tool_args)
     hook_executable = build_auth_token_argv(
         workspace, state.get("profile"), use_pat=bool(state.get("use_pat"))
@@ -692,8 +702,18 @@ def launch_codex(
             log_path=CODEX_INTERPOSER_LOG,
         )
         tui_url = _loopback_websocket_url(tui_port)
+        provider_args = []
+        if os.name == "nt":
+            # Windows has no machine-wide Codex config for the remote TUI to inherit.
+            provider_args = codex_config_args(
+                {
+                    key: overlay[key]
+                    for key in ("model_provider", "model_providers")
+                    if key in overlay
+                }
+            )
         tui = subprocess_cross_os.popen(
-            [binary, "--remote", tui_url, "--model", start_model, *tool_args]
+            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
         )
         try:
             returncode = tui.wait()

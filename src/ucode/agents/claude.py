@@ -2038,12 +2038,8 @@ def launch(
     launch_default_model = state.get("_claude_launch_default_model")
     if isinstance(launch_default_model, str) and launch_default_model:
         os.environ["ANTHROPIC_DEFAULT_MODEL"] = launch_default_model
-    # Smart routing needs Unix PTY support, which Windows does not provide.
-    if options.launch_smart_routing and os.name == "nt":
-        raise RuntimeError(
-            "Smart routing in Claude Code is currently not supported on Windows. "
-            "Please use Codex or launch without --enable-smart-routing."
-        )
+    # Smart routing also spawns Claude directly, so it needs the native executable.
+    binary = _resolve_launch_binary(binary)
     routing_setup_failed = False
     if options.launch_smart_routing:
         try:
@@ -2063,7 +2059,6 @@ def launch(
             routing_setup_failed = True
         else:
             return
-    binary = _resolve_launch_binary(binary)
     if workspace and not custom_oauth_cli_enabled(state.get("custom_oauth")):
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None

@@ -33,6 +33,12 @@ selection, and errors without browser consent through the MCP handler. These
 component checks replace external auth/network boundaries; they do not establish
 live search, parent/child discovery, or classifier permission behavior.
 
+`test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
+HTTP and authentication boundaries. It covers concurrent results and catalog requests,
+the four-worker limit, active and queued cancellation, isolated worker errors, and
+draining pending searches on EOF. Input failure and interruption cancel queued work.
+These component checks make no live gateway requests.
+
 `test_claude_search_provider.py` covers external-provider setup and launch using
 real temporary config files and local helper JSON-RPC subprocesses. It checks
 legacy ownership, copied marked helpers, custom/disabled entry preservation, config conflicts, caller
@@ -55,6 +61,11 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 `smart_defaults` wire field, reading older `spend_tiers` caches, skipping recommendations
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
+
+`test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
+gateway provider on Windows while Unix launch arguments stay unchanged and routing
+hooks stay with the app-server. This is component coverage, not a live Windows
+sign-in or TUI test.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
@@ -88,6 +99,14 @@ must update the session controls through the launching installation. Launch test
 that Claude settings and Codex's shell policy carry the interpreter and session marker.
 These are component checks; they do not establish native skill permission matching or
 PowerShell execution.
+
+The portable Windows routing test checks native executable forwarding, generated
+hooks/plugins, caller arguments, and cleanup without Unix imports. It does not
+establish live Windows hook execution or interactive routing.
+
+Pi's token-command tests in `test_agent_pi.py` exercise Windows executable paths
+through POSIX parsing, including spaces, apostrophes, profile names, and PAT mode.
+They do not launch Pi or Git Bash on Windows.
 
 ## CUJ coverage matrix
 

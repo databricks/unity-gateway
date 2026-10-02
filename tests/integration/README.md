@@ -226,6 +226,10 @@ PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `ug` first in PATH. The live journeys above do not inject a second installation or
 establish PowerShell command execution.
 
+The portable `../test_claude_windows_smart_routing.py` checks the Windows
+subagent-only fallback without Unix imports. Native Windows TUI and hook execution
+remain outside this integration suite.
+
 The relayed CUJ launches Claude through a relayed (subscription-relay) MPS and
 completes a file task on two models: a bare Anthropic id the subscription serves
 directly (`route=relay`) and a Databricks-hosted `system.ai` id the loopback proxy
@@ -351,6 +355,10 @@ agents are outside this focused revision.
 Custom OAuth search dispatch and refresh are covered by component tests in
 `../test_mcp_web_search.py`; no live search request, delegated search, or classifier
 permission decision is asserted by those tests or this integration suite.
+`../test_mcp_web_search_concurrency.py` separately covers stdio search concurrency,
+the four-worker limit, cancellation, worker errors, EOF draining, and interrupted
+input cleanup with controlled auth/HTTP boundaries. It does not establish live
+gateway concurrency or latency.
 External-provider ownership has local configuration/subprocess coverage in
 `../test_claude_search_provider.py`. Live Isaac provider discovery and search,
 including both parent and child catalogs, remain separate acceptance work.
