@@ -7,7 +7,6 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from tests.integration.utils import http
 from tests.integration.utils import provider_catalog as catalog
 
 
@@ -30,7 +29,7 @@ def _mock_json_boundary(monkeypatch, get_json):
             }
             return io.BytesIO(json.dumps(get_json(request.full_url, headers)).encode())
 
-    monkeypatch.setattr(http.urllib.request, "build_opener", lambda *_: CatalogOpener())
+    monkeypatch.setattr(catalog.urllib.request, "urlopen", CatalogOpener().open)
 
 
 def _page(*ids, has_more=False, last_id=None):
@@ -156,11 +155,7 @@ def test_codex_provider_fetch_is_a_scoped_bounded_metadata_get(monkeypatch):
         assert timeout == 30
         return Response(json.dumps(payload).encode())
 
-    monkeypatch.setattr(
-        http.urllib.request,
-        "build_opener",
-        lambda *_: type("CatalogOpener", (), {"open": staticmethod(urlopen)})(),
-    )
+    monkeypatch.setattr(catalog.urllib.request, "urlopen", urlopen)
     result = catalog.fetch_codex_provider_catalog("https://workspace/", "token", "c.s.mps")
     assert result.model_ids == ("gpt-a",)
 
@@ -184,11 +179,7 @@ def test_provider_fetch_does_not_hide_http_failures(monkeypatch, status):
     def urlopen(request, timeout):
         raise urllib.error.HTTPError(request.full_url, status, "failure", {}, None)
 
-    monkeypatch.setattr(
-        http.urllib.request,
-        "build_opener",
-        lambda *_: type("CatalogOpener", (), {"open": staticmethod(urlopen)})(),
-    )
+    monkeypatch.setattr(catalog.urllib.request, "urlopen", urlopen)
     with pytest.raises(AssertionError, match=f"HTTP {status}"):
         catalog.fetch_codex_provider_catalog("https://workspace", "token", "c.s.mps")
 
@@ -220,14 +211,14 @@ def test_anthropic_parent_catalog_retains_pages_labels_and_scoped_requests(monke
             assert not request.has_header("Databricks-model-provider-service")
             return io.BytesIO(json.dumps(pages[len(requests) - 1]).encode())
 
-    monkeypatch.setattr(http.urllib.request, "build_opener", lambda *_: CatalogOpener())
+    monkeypatch.setattr(catalog.urllib.request, "urlopen", CatalogOpener().open)
     result = catalog.fetch_anthropic_parent_catalog(
         "https://workspace.invalid/", "test-bearer", "catalog.models"
     )
     assert result.payloads == tuple(pages)
     assert result.model_ids == (pages[0]["data"][0]["id"], pages[1]["data"][0]["id"])
     assert result.display_names == {result.model_ids[0]: "Sonnet", result.model_ids[1]: None}
-    assert http.urllib.parse.parse_qs(http.urllib.parse.urlsplit(requests[1].full_url).query) == {
+    assert parse_qs(urlparse(requests[1].full_url).query) == {
         "limit": ["1000"],
         "after_id": ["cursor with / and ?"],
     }
@@ -252,7 +243,7 @@ def test_anthropic_parent_catalog_rejects_duplicate_or_unbounded_pagination(
             }
             return io.BytesIO(json.dumps(payload).encode())
 
-    monkeypatch.setattr(http.urllib.request, "build_opener", lambda *_: CatalogOpener())
+    monkeypatch.setattr(catalog.urllib.request, "urlopen", CatalogOpener().open)
     with pytest.raises(AssertionError):
         catalog.fetch_anthropic_parent_catalog(
             "https://workspace.invalid", "test-bearer", "catalog.models"
@@ -278,7 +269,7 @@ def test_codex_parent_catalog_retains_unfiltered_payload_and_validates_duplicate
             assert not request.has_header("Databricks-model-provider-service")
             return io.BytesIO(json.dumps(payload).encode())
 
-    monkeypatch.setattr(http.urllib.request, "build_opener", lambda *_: CatalogOpener())
+    monkeypatch.setattr(catalog.urllib.request, "urlopen", CatalogOpener().open)
     result = catalog.fetch_codex_parent_catalog(
         "https://workspace.invalid", "test-bearer", "catalog.models"
     )
@@ -345,6 +336,6 @@ def test_provider_catalog_requests_require_an_explicit_scope(monkeypatch, fetche
     def unexpected_open(*args, **kwargs):
         pytest.fail("Invalid catalog scope must not reach the HTTP boundary")
 
-    monkeypatch.setattr(http.urllib.request, "build_opener", unexpected_open)
+    monkeypatch.setattr(catalog.urllib.request, "urlopen", unexpected_open)
     with pytest.raises(AssertionError, match="explicit catalog scope"):
         fetcher("https://workspace", "token", scope)
