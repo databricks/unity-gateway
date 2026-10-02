@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import shlex
@@ -13,7 +14,7 @@ from unittest.mock import MagicMock, Mock
 import pytest
 
 from ucode import databricks as db_mod
-from ucode import managed_files
+from ucode import managed_files, provenance
 from ucode.agents import LaunchOptions, claude
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
@@ -34,6 +35,32 @@ def _managed_config_result(manifest: dict | None) -> SimpleNamespace:
     """A stand-in for `ManagedConfigResult` exposing only the `.manifest` attribute
     `write_tool_config` reads."""
     return SimpleNamespace(manifest=manifest)
+
+
+# Keeps the private-settings baseline deterministic: a developer's real backup file must never
+# become the restore source for a test's stale value.
+_NO_BACKUP_PATH = Path("/nonexistent/ucode-test/claude-settings.backup.json")
+
+
+def _state_owning(*key_paths: list[str], **extra) -> dict:
+    """State whose previous-run key list makes ucode the recorded author of *key_paths*."""
+    return {
+        "workspace": WS,
+        "codex_models": [],
+        "managed_configs": {"claude": {"keys": [list(path) for path in key_paths]}},
+        **extra,
+    }
+
+
+def _patch_snapshots(monkeypatch, baseline=None, last_applied=None, owned_paths=None) -> None:
+    """Stub the managed file's pre-ucode baseline, ucode's last write, and its owned paths."""
+    monkeypatch.setattr(
+        claude,
+        "managed_file_snapshots",
+        lambda tool, parser: managed_files.ManagedFileSnapshots(
+            baseline, last_applied, owned_paths
+        ),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -856,6 +883,7 @@ class TestWriteToolConfigStripsRemovedEnvKeys:
 
     def _patch(self, monkeypatch, existing, written):
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", _NO_BACKUP_PATH)
         monkeypatch.setattr(claude, "read_json_safe", lambda path: existing)
         monkeypatch.setattr(
             claude, "write_json_file", lambda path, payload: written.append(payload)
@@ -910,10 +938,11 @@ class TestWriteToolConfigStripsRemovedEnvKeys:
         }
         written: list = []
         self._patch(monkeypatch, existing, written)
-
-        claude.write_tool_config(
-            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        state = _state_owning(
+            *[["env", key] for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS], ["otelHeadersHelper"]
         )
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
 
         assert "otelHeadersHelper" not in written[0]
         for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS:
@@ -923,49 +952,55 @@ class TestWriteToolConfigStripsRemovedEnvKeys:
 FAKE_MANAGED_PATH = Path("/tmp/ucode-test/managed-settings.json")
 
 
+def _patch_both_files(monkeypatch, private_writes, managed_writes, existing_by_path=None):
+    """Stub both destination files: ucode's private settings and the OS-managed settings."""
+    existing_by_path = existing_by_path or {}
+    monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+    monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", _NO_BACKUP_PATH)
+    # Deep-copy the seeded existing content so the compose step can't mutate the fixture.
+    monkeypatch.setattr(
+        claude,
+        "read_json_safe",
+        lambda path: json.loads(json.dumps(existing_by_path.get(str(path), {}))),
+    )
+    monkeypatch.setattr(
+        claude,
+        "write_json_file",
+        lambda path, payload: private_writes.append((str(path), payload)),
+    )
+    monkeypatch.setattr(claude, "save_state", lambda state: None)
+    monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: True)
+    monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+    # By default ucode has no baseline/last-applied snapshot, so an admin's managed-file picker
+    # is kept (nothing to revert against).
+    monkeypatch.setattr(
+        claude,
+        "managed_file_snapshots",
+        lambda tool, parser: managed_files.ManagedFileSnapshots(None, None),
+    )
+    # Deterministic managed path, and a mocked sudo writer so NO real sudo/`/etc` write happens.
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: FAKE_MANAGED_PATH)
+    monkeypatch.setattr(
+        claude,
+        "read_managed_file",
+        lambda path: (
+            json.dumps(existing_by_path[str(path)]) if str(path) in existing_by_path else None
+        ),
+    )
+    monkeypatch.setattr(claude, "mark_managed_file_verified", lambda *a, **kw: None)
+
+    def fake_write_managed(path, text, **kwargs):
+        managed_writes.append((str(path), text))
+        return "written"
+
+    monkeypatch.setattr(claude, "reconcile_managed_file", fake_write_managed)
+
+
 class TestWriteToolConfigManagedSettings:
     """Every normal configuration also writes Claude Code's OS-managed settings."""
 
     def _patch(self, monkeypatch, private_writes, managed_writes, existing_by_path=None):
-        existing_by_path = existing_by_path or {}
-        monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
-        # Deep-copy the seeded existing content so the compose step can't mutate the fixture.
-        monkeypatch.setattr(
-            claude,
-            "read_json_safe",
-            lambda path: json.loads(json.dumps(existing_by_path.get(str(path), {}))),
-        )
-        monkeypatch.setattr(
-            claude,
-            "write_json_file",
-            lambda path, payload: private_writes.append((str(path), payload)),
-        )
-        monkeypatch.setattr(claude, "save_state", lambda state: None)
-        monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: True)
-        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
-        # By default ucode has no baseline/last-applied snapshot, so an admin's managed-file picker
-        # is kept (nothing to revert against).
-        monkeypatch.setattr(
-            claude,
-            "managed_file_snapshots",
-            lambda tool, parser: managed_files.ManagedFileSnapshots(None, None),
-        )
-        # Deterministic managed path, and a mocked sudo writer so NO real sudo/`/etc` write happens.
-        monkeypatch.setattr(claude, "_managed_settings_path", lambda: FAKE_MANAGED_PATH)
-        monkeypatch.setattr(
-            claude,
-            "read_managed_file",
-            lambda path: (
-                json.dumps(existing_by_path[str(path)]) if str(path) in existing_by_path else None
-            ),
-        )
-        monkeypatch.setattr(claude, "mark_managed_file_verified", lambda *a, **kw: None)
-
-        def fake_write_managed(path, text, **kwargs):
-            managed_writes.append((str(path), text))
-            return "written"
-
-        monkeypatch.setattr(claude, "reconcile_managed_file", fake_write_managed)
+        _patch_both_files(monkeypatch, private_writes, managed_writes, existing_by_path)
 
     def _write_managed_model_defaults(
         self,
@@ -1072,6 +1107,7 @@ class TestWriteToolConfigManagedSettings:
             str(FAKE_MANAGED_PATH): stale,
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing)
+        _patch_snapshots(monkeypatch, last_applied=stale)
 
         state = {"workspace": WS, "codex_models": []}
 
@@ -1400,8 +1436,11 @@ class TestWriteToolConfigManagedSettings:
             }
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing)
+        # ucode wrote the workspace default on an earlier run, so it is ucode's to retire.
+        _patch_snapshots(monkeypatch, last_applied=existing[str(FAKE_MANAGED_PATH)])
         state = {
             "workspace": WS,
+            "codex_models": [],
             "claude_models": {
                 "opus": "system.ai.claude-opus-4-8",
                 "haiku": "system.ai.claude-haiku-4-6",
@@ -1422,8 +1461,11 @@ class TestWriteToolConfigManagedSettings:
             }
         }
         self._patch(monkeypatch, private_writes, managed_writes, existing)
+        # ucode wrote the workspace default on an earlier run, so it is ucode's to retire.
+        _patch_snapshots(monkeypatch, last_applied=existing[str(FAKE_MANAGED_PATH)])
         state = {
             "workspace": WS,
+            "codex_models": [],
             "claude_models": {"opus": "system.ai.claude-opus-4-8"},
         }
 
@@ -1697,13 +1739,7 @@ class TestWriteToolConfigManagedSettings:
         stale_fable = {"ANTHROPIC_DEFAULT_FABLE_MODEL": "system.ai.claude-fable-5"}
         existing = {str(FAKE_MANAGED_PATH): {"env": dict(stale_fable)}}
         self._patch(monkeypatch, private_writes, managed_writes, existing)
-        monkeypatch.setattr(
-            claude,
-            "managed_file_snapshots",
-            lambda tool, parser: managed_files.ManagedFileSnapshots(
-                None, {"env": dict(stale_fable)}
-            ),
-        )
+        _patch_snapshots(monkeypatch, last_applied={"env": dict(stale_fable)})
         static = [
             "system.ai.claude-opus-4-8",
             "system.ai.claude-sonnet-4-6",
@@ -1869,7 +1905,7 @@ class TestWriteToolConfigManagedSettings:
         assert {key: written["env"][key] for key in telemetry_env} == telemetry_env
         assert written["otelHeadersHelper"] == admin["otelHeadersHelper"]
 
-    def test_no_managed_config_removes_private_and_preserves_managed_telemetry(self, monkeypatch):
+    def test_no_managed_config_preserves_unowned_telemetry_in_both_files(self, monkeypatch):
         private_writes: list = []
         managed_writes: list = []
         admin = {
@@ -1893,12 +1929,9 @@ class TestWriteToolConfigManagedSettings:
             {"workspace": WS, "codex_models": [], "claude_otel_tracing": True}, None
         )
 
-        written = json.loads(managed_writes[0][1])
-        assert {key: written["env"][key] for key in admin["env"]} == admin["env"]
-        assert written["otelHeadersHelper"] == admin["otelHeadersHelper"]
-        private = private_writes[0][1]
-        assert not any(key in private["env"] for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS)
-        assert "otelHeadersHelper" not in private
+        for written in (json.loads(managed_writes[0][1]), private_writes[0][1]):
+            assert {key: written["env"][key] for key in admin["env"]} == admin["env"]
+            assert written["otelHeadersHelper"] == admin["otelHeadersHelper"]
 
     def test_explicit_ug_tracing_still_rejects_conflicting_managed_telemetry(self, monkeypatch):
         private_writes: list = []
@@ -2003,6 +2036,412 @@ class TestWriteToolConfigManagedSettings:
         managed_content = json.loads(managed_writes[0][1])
         assert "availableModels" not in managed_content
         assert "modelPicker" not in managed_content
+
+
+def _patch_round_trip(monkeypatch, files, managed_writes):
+    """Stub both files so a second `write_tool_config` run reads what the first one wrote.
+
+    Deliberately leaves `managed_file_snapshots` unstubbed (no manifest exists under the test's
+    backup dir), so only the provenance record can justify a removal from the managed file.
+    """
+    monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: False)
+    monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", _NO_BACKUP_PATH)
+    monkeypatch.setattr(
+        claude, "read_json_safe", lambda path: json.loads(json.dumps(files.get(str(path), {})))
+    )
+    monkeypatch.setattr(
+        claude,
+        "write_json_file",
+        lambda path, payload: files.__setitem__(str(path), json.loads(json.dumps(payload))),
+    )
+    monkeypatch.setattr(claude, "save_state", lambda state: None)
+    monkeypatch.setattr(claude, "_register_web_search_mcp", lambda *a, **kw: True)
+    monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: FAKE_MANAGED_PATH)
+    monkeypatch.setattr(claude, "mark_managed_file_verified", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        claude,
+        "read_managed_file",
+        lambda path: json.dumps(files[str(path)]) if str(path) in files else None,
+    )
+
+    def fake_write_managed(path, text, **kwargs):
+        files[str(path)] = json.loads(text)
+        managed_writes.append(json.loads(text))
+        return "written"
+
+    monkeypatch.setattr(claude, "reconcile_managed_file", fake_write_managed)
+
+
+def _telemetry_doc(marker: str) -> dict:
+    """A complete telemetry block: all seven OTLP env keys plus the headers helper."""
+    return {
+        "env": dict.fromkeys(claude.CLAUDE_OTEL_TRACE_ENV_KEYS, marker),
+        "otelHeadersHelper": f"{marker} otel-headers",
+    }
+
+
+_BOTH_FILES = (str(claude.CLAUDE_SETTINGS_PATH), str(FAKE_MANAGED_PATH))
+
+
+class TestWriteToolConfigProvenanceGatedCleanup:
+    """ucode removes a setting only when its per-file record proves ucode wrote the live value."""
+
+    def test_foreign_telemetry_survives_a_launch_without_tracing(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {path: _telemetry_doc("isaac") for path in _BOTH_FILES}
+        _patch_both_files(monkeypatch, private_writes, managed_writes, existing)
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        for written in (private_writes[0][1], json.loads(managed_writes[0][1])):
+            assert written["otelHeadersHelper"] == "isaac otel-headers"
+            for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS:
+                assert written["env"][key] == "isaac", written
+
+    def test_ucode_tracing_is_retired_on_a_later_configure_without_tracing(self, monkeypatch):
+        files: dict = {}
+        managed_writes: list = []
+        _patch_round_trip(monkeypatch, files, managed_writes)
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": [], "claude_otel_tracing": True},
+            "databricks-claude-sonnet-4",
+        )
+        assert "otelHeadersHelper" in files[str(FAKE_MANAGED_PATH)]
+
+        # A fresh state dict: only the record, not the previous run's key list, can justify this.
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        for path in _BOTH_FILES:
+            assert "otelHeadersHelper" not in files[path], files[path]
+            assert not set(claude.CLAUDE_OTEL_TRACE_ENV_KEYS) & files[path]["env"].keys()
+
+    def test_retired_tracing_falls_back_to_the_pre_ucode_endpoint(self, monkeypatch):
+        files: dict = {}
+        managed_writes: list = []
+        _patch_round_trip(monkeypatch, files, managed_writes)
+        baseline = {"env": {"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "https://admin.example/otel"}}
+        monkeypatch.setattr(claude, "_private_baseline", lambda: baseline)
+        _patch_snapshots(monkeypatch, baseline=baseline)
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": [], "claude_otel_tracing": True},
+            "databricks-claude-sonnet-4",
+        )
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        for path in _BOTH_FILES:
+            env = files[path]["env"]
+            assert env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == "https://admin.example/otel"
+            assert "CLAUDE_CODE_ENABLE_TELEMETRY" not in env, env
+            assert "otelHeadersHelper" not in files[path], files[path]
+
+    def test_externally_edited_telemetry_member_keeps_the_whole_group(self, monkeypatch):
+        files: dict = {}
+        managed_writes: list = []
+        _patch_round_trip(monkeypatch, files, managed_writes)
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": [], "claude_otel_tracing": True},
+            "databricks-claude-sonnet-4",
+        )
+        for path in _BOTH_FILES:
+            files[path]["env"]["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = "https://edited.example"
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        for path in _BOTH_FILES:
+            env = files[path]["env"]
+            assert env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == "https://edited.example"
+            assert env["CLAUDE_CODE_ENABLE_TELEMETRY"] == "1", env
+            assert "otelHeadersHelper" in files[path], files[path]
+
+    def test_foreign_model_default_survives_while_ucode_s_own_is_retired(self, monkeypatch):
+        files: dict = {}
+        managed_writes: list = []
+        _patch_round_trip(monkeypatch, files, managed_writes)
+        for path in _BOTH_FILES:
+            files[path] = {"env": {"ANTHROPIC_DEFAULT_HAIKU_MODEL": "admin-haiku"}}
+        provenance.save_provenance("claude", claude.CLAUDE_SETTINGS_PATH, {})
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_models": [],
+                "claude_models": {"sonnet": "system.ai.claude-sonnet-4-6"},
+            },
+            None,
+        )
+        assert files[str(FAKE_MANAGED_PATH)]["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"]
+
+        # Switching to a provider keeps ucode out of the family-default hierarchy, so the stale
+        # sonnet pin can only go through the record.
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, None, provider="main.default.anthropic"
+        )
+
+        for path in _BOTH_FILES:
+            env = files[path]["env"]
+            assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "admin-haiku"
+            assert "ANTHROPIC_DEFAULT_SONNET_MODEL" not in env, env
+
+    def test_matching_default_added_after_ucode_is_not_adopted(self, monkeypatch):
+        state = {"workspace": WS, "codex_models": [], "claude_models": {"sonnet": "s"}}
+        scratch: dict = {}
+        _patch_round_trip(monkeypatch, scratch, [])
+        claude.write_tool_config(dict(state), None)
+        ucode_value = scratch[str(FAKE_MANAGED_PATH)]["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"]
+        provenance.clear_provenance()
+
+        files: dict = {}
+        _patch_round_trip(monkeypatch, files, [])
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+        for path in _BOTH_FILES:
+            files[path]["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = ucode_value
+
+        claude.write_tool_config(dict(state), None)
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, None, provider="main.default.anthropic"
+        )
+
+        for path in _BOTH_FILES:
+            assert files[path]["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == ucode_value
+
+    def test_legacy_bootstrap_retires_tracing_on_the_first_recorded_run(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        telemetry = _telemetry_doc("ucode")
+        existing = {path: dict(telemetry) for path in _BOTH_FILES}
+        _patch_both_files(monkeypatch, private_writes, managed_writes, existing)
+        # No record yet: the previous run's key list plus a matching last-applied snapshot are what
+        # prove these values are ucode's.
+        _patch_snapshots(monkeypatch, last_applied=dict(telemetry))
+        state = _state_owning(
+            *[["env", key] for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS], ["otelHeadersHelper"]
+        )
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        for written in (private_writes[0][1], json.loads(managed_writes[0][1])):
+            assert "otelHeadersHelper" not in written, written
+            assert not set(claude.CLAUDE_OTEL_TRACE_ENV_KEYS) & written["env"].keys()
+
+    def test_upgrade_without_state_retires_removed_keys_but_keeps_carried_telemetry(
+        self, monkeypatch
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        carried = _telemetry_doc("isaac")
+        carried["env"]["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
+        existing = {path: copy.deepcopy(carried) for path in _BOTH_FILES}
+        _patch_both_files(monkeypatch, private_writes, managed_writes, existing)
+        # ucode's last write carried another tool's telemetry, so the snapshot alone can't prove
+        # ucode wrote it; only the previous run's key list can.
+        _patch_snapshots(monkeypatch, last_applied=copy.deepcopy(carried))
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        written = json.loads(managed_writes[0][1])
+        assert written["otelHeadersHelper"] == "isaac otel-headers", written
+        for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS:
+            assert written["env"][key] == "isaac", written
+        assert "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS" not in written["env"]
+
+    def test_legacy_source_scoped_default_is_retired_once_the_managed_default_is_gone(
+        self, monkeypatch
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        key = "ANTHROPIC_DEFAULT_SONNET_MODEL"
+        written_by_main = {"env": {key: "system.ai.claude-sonnet-4-6"}}
+        existing = {path: copy.deepcopy(written_by_main) for path in _BOTH_FILES}
+        _patch_both_files(monkeypatch, private_writes, managed_writes, existing)
+        _patch_snapshots(monkeypatch, last_applied=copy.deepcopy(written_by_main))
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, None, provider="main.default.anthropic"
+        )
+
+        assert key not in json.loads(managed_writes[0][1])["env"]
+
+    def test_legacy_bootstrap_leaves_a_value_absent_from_last_applied_alone(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        admin = _telemetry_doc("admin")
+        admin["env"]["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "admin"
+        existing = {str(FAKE_MANAGED_PATH): copy.deepcopy(admin)}
+        _patch_both_files(monkeypatch, private_writes, managed_writes, existing)
+        _patch_snapshots(monkeypatch, last_applied={"env": {}})
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        written = json.loads(managed_writes[0][1])
+        assert written["otelHeadersHelper"] == "admin otel-headers"
+        assert written["env"]["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == "admin"
+        assert written["env"]["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] == "admin"
+
+    def test_non_interactive_run_records_nothing_for_the_managed_file(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        _patch_both_files(monkeypatch, private_writes, managed_writes)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        assert managed_writes == []
+        assert provenance.load_provenance("claude", FAKE_MANAGED_PATH) is None
+        assert provenance.load_provenance("claude", claude.CLAUDE_SETTINGS_PATH) is not None
+
+    def test_unchanged_managed_reconcile_does_not_adopt_an_admin_value(self, monkeypatch):
+        files: dict = {}
+        managed_writes: list = []
+        _patch_round_trip(monkeypatch, files, managed_writes)
+        admin_opus = "system.ai.claude-opus-4-8[1m]"
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_models": {"opus": "system.ai.claude-opus-4-8"},
+        }
+        claude.write_tool_config(state, None)
+        files[str(FAKE_MANAGED_PATH)]["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] = admin_opus
+        provenance.save_provenance("claude", FAKE_MANAGED_PATH, {})
+
+        def unchanged(path, text, **kwargs):
+            assert json.loads(text) == files[str(path)]
+            return "unchanged"
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", unchanged)
+        claude.write_tool_config(state, None)
+
+        _patch_round_trip(monkeypatch, files, managed_writes)
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, None, provider="main.default.anthropic"
+        )
+
+        env = files[str(FAKE_MANAGED_PATH)]["env"]
+        assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == admin_opus, env
+
+    def test_source_scoped_default_is_recorded_and_retired_when_the_default_is_removed(
+        self, monkeypatch
+    ):
+        files: dict = {}
+        managed_writes: list = []
+        _patch_round_trip(monkeypatch, files, managed_writes)
+        for path in _BOTH_FILES:
+            files[path] = {"env": {"ANTHROPIC_DEFAULT_HAIKU_MODEL": "admin-haiku"}}
+        provenance.save_provenance("claude", claude.CLAUDE_SETTINGS_PATH, {})
+        key = "ANTHROPIC_DEFAULT_SONNET_MODEL"
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []},
+            None,
+            parent_schema="main.default",
+            coding_agent_config_defaults={"sonnet": "system.ai.claude-sonnet-4-6"},
+        )
+        for path in _BOTH_FILES:
+            assert files[path]["env"][key], files[path]
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, None, parent_schema="main.default"
+        )
+
+        for path in _BOTH_FILES:
+            env = files[path]["env"]
+            assert key not in env, env
+            assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "admin-haiku"
+        assert ("env", "ANTHROPIC_DEFAULT_HAIKU_MODEL") not in provenance.load_provenance(
+            "claude", claude.CLAUDE_SETTINGS_PATH
+        )
+
+    @pytest.mark.parametrize("runs", [1, 2])
+    def test_externally_edited_telemetry_survives_repeated_runs_without_tracing(
+        self, monkeypatch, runs
+    ):
+        files: dict = {}
+        managed_writes: list = []
+        _patch_round_trip(monkeypatch, files, managed_writes)
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": [], "claude_otel_tracing": True},
+            "databricks-claude-sonnet-4",
+        )
+        for path in _BOTH_FILES:
+            files[path]["env"]["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = "https://edited.example"
+
+        for _ in range(runs):
+            claude.write_tool_config(
+                {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+            )
+
+        for path in _BOTH_FILES:
+            assert "otelHeadersHelper" in files[path], files[path]
+            assert set(claude.CLAUDE_OTEL_TRACE_ENV_KEYS) <= files[path]["env"].keys()
+
+    def test_telemetry_group_with_a_foreign_endpoint_is_kept_whole(self, monkeypatch):
+        files: dict = {}
+        managed_writes: list = []
+        _patch_round_trip(monkeypatch, files, managed_writes)
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": [], "claude_otel_tracing": True},
+            "databricks-claude-sonnet-4",
+        )
+        for path in _BOTH_FILES:
+            files[path]["env"]["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = "https://other-tool.example"
+            files[path]["env"].pop("OTEL_EXPORTER_OTLP_TRACES_HEADERS", None)
+
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+
+        for path in _BOTH_FILES:
+            assert files[path]["otelHeadersHelper"], files[path]
+            assert (
+                files[path]["env"]["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]
+                == "https://other-tool.example"
+            )
+
+    def test_fresh_workspace_does_not_snapshot_ucode_s_own_private_file(
+        self, monkeypatch, tmp_path
+    ):
+        files: dict = {}
+        managed_writes: list = []
+        _patch_round_trip(monkeypatch, files, managed_writes)
+        backup_path = tmp_path / "claude-settings.backup.json"
+        monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", backup_path)
+
+        def fake_backup(path, dest):
+            if str(path) not in files:
+                return False
+            dest.write_text("{}", encoding="utf-8")
+            files[str(dest)] = json.loads(json.dumps(files[str(path)]))
+            return True
+
+        monkeypatch.setattr(claude, "backup_existing_file", fake_backup)
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": [], "claude_otel_tracing": True},
+            "databricks-claude-sonnet-4",
+        )
+
+        # A never-configured second workspace: ucode's own file must not become the baseline.
+        claude.write_tool_config(
+            {"workspace": "https://other.databricks.com", "codex_models": []},
+            "databricks-claude-sonnet-4",
+        )
+
+        private = files[str(claude.CLAUDE_SETTINGS_PATH)]
+        assert "otelHeadersHelper" not in private, private
+        assert not set(claude.CLAUDE_OTEL_TRACE_ENV_KEYS) & private["env"].keys()
 
 
 class TestAddClaudeMcpServer:
@@ -2696,6 +3135,7 @@ class TestWriteToolConfigPrunesStaleModelEnv:
 
     def _patch(self, monkeypatch, existing_settings):
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)
+        monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", _NO_BACKUP_PATH)
         monkeypatch.setattr(claude, "read_json_safe", lambda path: existing_settings)
         written: dict = {}
 
@@ -2718,6 +3158,7 @@ class TestWriteToolConfigPrunesStaleModelEnv:
         written = self._patch(monkeypatch, existing)
         state = {
             "workspace": WS,
+            "codex_models": [],
             "claude_models": {"opus": "system.ai.claude-opus-4-8"},
         }
         claude.write_tool_config(state, "system.ai.claude-opus-4-8")
@@ -2735,7 +3176,11 @@ class TestWriteToolConfigPrunesStaleModelEnv:
             }
         }
         written = self._patch(monkeypatch, existing)
-        state = {"workspace": WS, "claude_models": {"opus": "system.ai.claude-opus-4-8"}}
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_models": {"opus": "system.ai.claude-opus-4-8"},
+        }
         claude.write_tool_config(state, "system.ai.claude-opus-4-8")
         env = written["payload"]["env"]
         assert "ANTHROPIC_DEFAULT_SONNET_MODEL" not in env
@@ -2755,7 +3200,11 @@ class TestWriteToolConfigPrunesStaleModelEnv:
             }
         }
         written = self._patch(monkeypatch, existing)
-        state = {"workspace": WS, "claude_models": {"opus": "system.ai.claude-opus-4-8"}}
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            "claude_models": {"opus": "system.ai.claude-opus-4-8"},
+        }
         claude.write_tool_config(state, "system.ai.claude-opus-4-8")
         env = written["payload"]["env"]
         assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "system.ai.claude-opus-4-8[1m]"
