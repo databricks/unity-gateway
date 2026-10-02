@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.claude, pytest.mark.usefixtures("unmanaged_workspace")
 def _scoped_models_visible(session, expected_ids):
     """Wait predicate: scoped discovery has cached the expected ids and rendered them.
 
-    Claude Code populates the gateway cache and the picker rows
+    Claude Code v2.1.280 populates the gateway cache and the picker rows
     asynchronously after the picker shell first renders, so capturing the screen
     or reading the cache too early races discovery.  Gate on the cache landing
     (covers the post-exit cache read) and every expected id showing a picker row

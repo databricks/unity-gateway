@@ -34,10 +34,9 @@ tests. Keep work scoped to the behavior requested by the user.
    agent binaries, ug internals, and ug state stay real; the config fetch/wire contract stays
    covered by the un-stubbed `managed` tests; and the hook must never be used to disable
    validation or conceal a failure.
-5. **Real responses and binaries.** Pin requested ug and non-Claude agent versions;
-   use the latest Claude Code unless a scenario explicitly tests historical version
-   behavior. Never substitute a missing binary/service. Reuse explicit e2e
-   workspace/auth settings; never pick a developer's Databricks profile automatically.
+5. **Real responses and binaries.** Pin requested ug and agent versions. Never
+   substitute a missing binary/service. Reuse explicit e2e workspace/auth settings;
+   never pick a developer's Databricks profile automatically.
 6. **Fail honestly.** Missing prerequisites/capabilities, timeouts, protocol errors,
    and unexpected nonzero exits fail. Do not add skips, xfails, broad exception
    suppression, task retries, or weaker assertions to make CI green. Report
