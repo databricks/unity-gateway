@@ -144,7 +144,7 @@ def render_env_overlay(
     if provider:
         # A Model Provider Service (e.g. Bedrock-backed) is only reachable through the gateway's
         # Anthropic endpoint; the OpenAI-style MLflow route rejects it.
-        overlay = {
+        return {
             "COPILOT_PROVIDER_TYPE": "anthropic",
             "COPILOT_PROVIDER_BASE_URL": build_tool_base_url("claude", workspace),
             "COPILOT_PROVIDER_HEADERS": f"{MODEL_PROVIDER_SERVICE_HEADER}: {provider}",
@@ -153,10 +153,6 @@ def render_env_overlay(
             "COPILOT_OFFLINE": "true",
             "OAUTH_TOKEN": token,
         }
-        model_id = canonical_claude_model_id(selected_model)
-        if model_id:
-            overlay["COPILOT_PROVIDER_MODEL_ID"] = model_id
-        return overlay
     request_model = override_model or selected_model
     wire_api = "responses" if model_uses_responses_api(request_model) else "completions"
     return {
@@ -182,6 +178,11 @@ def build_runtime_env(
     )
     if provider:
         env.pop("COPILOT_PROVIDER_WIRE_API", None)
+        # Runtime-only and never written to ucode.env: COPILOT_PROVIDER_MODEL_ID is user-owned, so
+        # a value the user already set wins and nothing generated persists across route changes.
+        model_id = canonical_claude_model_id(model)
+        if model_id:
+            env.setdefault("COPILOT_PROVIDER_MODEL_ID", model_id)
     return env
 
 

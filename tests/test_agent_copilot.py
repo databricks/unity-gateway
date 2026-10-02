@@ -270,17 +270,37 @@ class TestProviderRouting:
         assert env["COPILOT_PROVIDER_BASE_URL"] == f"{WS}/ai-gateway/anthropic"
         assert env["COPILOT_PROVIDER_HEADERS"] == f"Databricks-Model-Provider-Service: {SERVICE}"
         assert env["COPILOT_MODEL"] == BEDROCK_SONNET
-        assert env["COPILOT_PROVIDER_MODEL_ID"] == "claude-sonnet-4.6"
+        assert "COPILOT_PROVIDER_MODEL_ID" not in env
         assert "COPILOT_PROVIDER_WIRE_API" not in env
+
+    def test_runtime_env_sets_canonical_model_id(self, monkeypatch):
+        monkeypatch.delenv("COPILOT_PROVIDER_MODEL_ID", raising=False)
+        env = copilot.build_runtime_env(WS, BEDROCK_SONNET, "tok", provider=SERVICE)
+        assert env["COPILOT_PROVIDER_MODEL_ID"] == "claude-sonnet-4.6"
+
+    def test_runtime_env_keeps_user_model_id(self, monkeypatch):
+        monkeypatch.setenv("COPILOT_PROVIDER_MODEL_ID", "user-model-id")
+        env = copilot.build_runtime_env(WS, BEDROCK_SONNET, "tok", provider=SERVICE)
+        assert env["COPILOT_PROVIDER_MODEL_ID"] == "user-model-id"
+
+    def test_unrecognised_model_runtime_env_sets_no_canonical_id(self, monkeypatch):
+        monkeypatch.delenv("COPILOT_PROVIDER_MODEL_ID", raising=False)
+        env = copilot.build_runtime_env(WS, "openai.gpt-oss-120b-1:0", "tok", provider=SERVICE)
+        assert "COPILOT_PROVIDER_MODEL_ID" not in env
+
+    def test_provider_write_leaves_user_model_id_in_env_file(self, tmp_path, monkeypatch):
+        env_path = isolate_copilot_config_paths(monkeypatch, tmp_path)
+        env_path.parent.mkdir(parents=True)
+        env_path.write_text("COPILOT_PROVIDER_MODEL_ID=user-model-id\n", encoding="utf-8")
+        copilot.write_tool_config({"workspace": WS}, BEDROCK_SONNET, token="tok", provider=SERVICE)
+        assert copilot.parse_dotenv(env_path)["COPILOT_PROVIDER_MODEL_ID"] == "user-model-id"
+        copilot.write_tool_config({"workspace": WS}, "system.ai.gpt-5-6-sol", token="tok")
+        assert copilot.parse_dotenv(env_path)["COPILOT_PROVIDER_MODEL_ID"] == "user-model-id"
 
     def test_overlay_without_provider_is_unchanged(self):
         env = copilot.render_env_overlay(WS, "claude-sonnet-4-6", "tok")
         assert env["COPILOT_PROVIDER_TYPE"] == "openai"
         assert "COPILOT_PROVIDER_HEADERS" not in env
-
-    def test_unrecognised_model_sets_no_canonical_id(self):
-        env = copilot.render_env_overlay(WS, "openai.gpt-oss-120b-1:0", "tok", provider=SERVICE)
-        assert "COPILOT_PROVIDER_MODEL_ID" not in env
 
     @pytest.mark.parametrize(
         ("model", "expected"),
