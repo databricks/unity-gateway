@@ -21,10 +21,9 @@ def pytest_collection_modifyitems(items):
     for item in items:
         if item.cls is None or not issubclass(item.cls, BaseCujTest):
             raise pytest.UsageError(f"{item.nodeid} must belong to a BaseCujTest subclass.")
-        try:
-            workspace = item.cls.validated_workspace_url()
-        except ValueError as error:
-            raise pytest.UsageError(str(error)) from None
+        workspace = item.cls.WORKSPACE_URL
+        if not workspace:
+            raise pytest.UsageError(f"{item.cls.__name__} must declare WORKSPACE_URL.")
         if workspace in workspaces:
             raise pytest.UsageError(
                 f"{item.nodeid} and {workspaces[workspace]} share a Databricks workspace. "
@@ -43,7 +42,7 @@ def cuj(request):
     from helpers.session import MANAGED_PATHS, UserSession
     from helpers.workspace import Workspace
 
-    workspace_url = request.instance.workspace_url
+    workspace_url = request.instance.workspace_url.rstrip("/")
     credential_url = os.environ.get("UCODE_TEST_WORKSPACE", "").rstrip("/").lower()
     assert credential_url == workspace_url, (
         "Runner --workspace must match this CUJ's WORKSPACE_URL; no global workspace fallback"

@@ -29,7 +29,7 @@ class TestCujSmartRouting(BaseCujTest):
         original workspace policy even when an assertion or process fails.
         """
         session, workspace = cuj
-        assert workspace.url == self.workspace_url
+        assert workspace.url == self.workspace_url.rstrip("/")
         published = workspace.original
         assert published["spec_version"] == 1
         assert published["default_agent"] == "CODING_AGENT_CLAUDE_CODE"
