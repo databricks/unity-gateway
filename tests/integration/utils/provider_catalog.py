@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import urllib.error
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from typing import NoReturn
-
-from .http import safe_https_json_get
 
 _ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 _CODEX_MODELS_PATH = "/ai-gateway/codex/v1/models"
@@ -125,6 +126,41 @@ def parse_codex_provider_catalog(payload: object) -> tuple[str, ...]:
     return tuple(model_ids)
 
 
+def _get_json(url: str, headers: dict[str, str]) -> object:
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            getcode = getattr(response, "getcode", None)
+            status = getcode() if callable(getcode) else getattr(response, "status", None)
+            if status is not None and not 200 <= status < 300:
+                _fail(f"GET {url} returned HTTP {status}")
+            raw_body = response.read()
+    except urllib.error.HTTPError as error:
+        raise AssertionError(f"GET {url} returned HTTP {error.code} {error.reason}") from error
+    except (urllib.error.URLError, OSError) as error:
+        raise AssertionError(f"GET {url} failed: {error}") from error
+
+    if isinstance(raw_body, bytes):
+        try:
+            raw_body = raw_body.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise AssertionError(f"GET {url} returned non-UTF-8 JSON") from error
+    if not isinstance(raw_body, str):
+        _fail(f"GET {url} returned a non-text response body")
+    try:
+        return json.loads(raw_body)
+    except json.JSONDecodeError as error:
+        raise AssertionError(f"GET {url} returned invalid JSON: {error.msg}") from error
+
+
+def _validate_request_inputs(workspace: str, token: str) -> str:
+    if not isinstance(workspace, str) or not workspace.rstrip("/"):
+        _fail("provider catalog request requires a workspace URL")
+    if not isinstance(token, str) or not token:
+        _fail("provider catalog request requires an explicit bearer token")
+    return workspace.rstrip("/")
+
+
 def _validate_scope(scope: str) -> None:
     if not isinstance(scope, str) or not scope.strip():
         _fail("provider catalog request requires an explicit catalog scope")
@@ -151,7 +187,13 @@ def fetch_anthropic_parent_catalog(
 def _fetch_anthropic_catalog(
     workspace: str, token: str, scope_headers: dict[str, str]
 ) -> AnthropicProviderCatalog:
-    headers = {"Anthropic-Version": _ANTHROPIC_VERSION, **scope_headers}
+    base_url = _validate_request_inputs(workspace, token)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "Anthropic-Version": _ANTHROPIC_VERSION,
+        **scope_headers,
+    }
 
     model_ids: list[str] = []
     display_names: dict[str, str | None] = {}
@@ -163,7 +205,7 @@ def _fetch_anthropic_catalog(
         if cursor is not None:
             query["after_id"] = cursor
         path = f"{_ANTHROPIC_MODELS_PATH}?{urllib.parse.urlencode(query)}"
-        payload = safe_https_json_get(workspace, token, path, headers=headers)
+        payload = _get_json(f"{base_url}{path}", headers)
         page = parse_anthropic_provider_page(payload)
         assert isinstance(payload, dict), "Expected an Anthropic catalog object"
         payloads.append(payload)
@@ -195,7 +237,11 @@ def fetch_codex_provider_catalog(
 def _fetch_codex_catalog(
     workspace: str, token: str, scope_headers: dict[str, str]
 ) -> CodexProviderCatalog:
-    payload = safe_https_json_get(workspace, token, _CODEX_MODELS_PATH, headers=scope_headers)
+    base_url = _validate_request_inputs(workspace, token)
+    payload = _get_json(
+        f"{base_url}{_CODEX_MODELS_PATH}",
+        {"Authorization": f"Bearer {token}", "Accept": "application/json", **scope_headers},
+    )
     model_ids = parse_codex_provider_catalog(payload)
     assert isinstance(payload, dict), "Expected a Codex catalog object"
     return CodexProviderCatalog(model_ids, (payload,))
