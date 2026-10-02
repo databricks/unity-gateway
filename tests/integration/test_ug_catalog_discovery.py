@@ -1,11 +1,11 @@
-"""CUJ3: complete managed, schema-scoped model discovery journeys."""
+"""Catalog discovery: complete managed, schema-scoped model discovery journeys."""
 
 import json
 import os
 import tomllib
 
 import pytest
-from utils.cuj3 import (
+from catalog_discovery_expectations import (
     CLAUDE_DECOY,
     CLAUDE_DEFAULT,
     CLAUDE_MODELS,
@@ -13,34 +13,31 @@ from utils.cuj3 import (
     CODEX_DEFAULT,
     CODEX_MODELS,
     GEMINI_MODEL,
-    MODEL_HEADER,
     MODEL_SCHEMA,
-    MODEL_SERVICES,
     OTHER_MODEL_SCHEMA,
-    assert_completed_task_model,
-    assert_persisted_config,
-    assert_picker_inventory,
-    claude_discovery_model_id,
-    claude_model_service_id,
-    codex_model_in_picker,
-    fetch_claude_parent_catalog,
-    fetch_codex_parent_catalog,
-    fetch_model_service_inventory,
+    assert_model_policy,
 )
-from utils.evidence import FileTask
-from utils.model_discovery import claude_model_in_picker
-from utils.provider_catalog import parse_codex_provider_catalog
+from utils.agents import claude, codex
+from utils.evidence import FileTask, assert_completed_task_model
+from utils.managed import read_persisted_managed_config
+from utils.model_discovery import (
+    assert_picker_inventory,
+)
+from utils.provider_catalog import (
+    MODEL_SERVICE_PARENT_SCHEMA_HEADER,
+    parse_codex_provider_catalog,
+)
 from utils.terminal import AgentTerminal
 
-pytestmark = [pytest.mark.managed, pytest.mark.cuj3, pytest.mark.workspace_isolated]
+pytestmark = [pytest.mark.managed, pytest.mark.catalog_discovery, pytest.mark.workspace_isolated]
 
 
 @pytest.mark.claude
 @pytest.mark.tui
-def test_case_03_managed_schema_pointers_claude(live_session, workspace):
-    """Scenario: configure published CUJ3 policy; launch bare ug, ug claude, and print tasks.
+def test_catalog_discovery_claude(live_session, workspace):
+    """Scenario: configure published Catalog discovery policy; launch bare ug, ug claude, and print tasks.
 
-    Expected: persisted schema/defaults and all seven UC services match policy; independent
+    Expected: persisted schema/defaults match policy; independent
     catalogs, settings, cache, and exact numbered picker agree on Sonnet/Haiku/Kimi,
     excluding Gemini and both accessible out-of-scope decoys. Both TUI launches exit
     normally after separate Sonnet file tasks; print mode uses Sonnet without an override,
@@ -51,16 +48,15 @@ def test_case_03_managed_schema_pointers_claude(live_session, workspace):
     session = live_session
     configured = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
     assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
-    assert_persisted_config(session, workspace)
+    persisted = read_persisted_managed_config(session, workspace)
+    assert_model_policy(persisted["config"])
+    session.record("catalog-discovery-managed-config.json", persisted)
 
     bearer = os.environ["DATABRICKS_BEARER"]
-    inventory = fetch_model_service_inventory(workspace, bearer)
-    session.record("cuj3-model-service-sources.json", inventory)
-    assert set(inventory) == MODEL_SERVICES | {CLAUDE_DECOY, CODEX_DECOY}, inventory
-    parent_catalog = fetch_claude_parent_catalog(workspace, bearer, MODEL_SCHEMA)
-    decoy_catalog = fetch_claude_parent_catalog(workspace, bearer, OTHER_MODEL_SCHEMA)
+    parent_catalog = claude.fetch_parent_catalog(workspace, bearer, MODEL_SCHEMA)
+    decoy_catalog = claude.fetch_parent_catalog(workspace, bearer, OTHER_MODEL_SCHEMA)
     session.record(
-        "cuj3-parent-inventory.json",
+        "catalog-discovery-parent-inventory.json",
         {
             "scoped": parent_catalog.model_ids,
             "decoy": decoy_catalog.model_ids,
@@ -69,20 +65,23 @@ def test_case_03_managed_schema_pointers_claude(live_session, workspace):
             "decoy_pages": decoy_catalog.payloads,
         },
     )
-    service_ids = [claude_model_service_id(model) for model in parent_catalog.model_ids]
+    service_ids = [claude.model_service_id(model) for model in parent_catalog.model_ids]
     assert len(service_ids) == len(set(service_ids)), parent_catalog
     assert set(service_ids) == CLAUDE_MODELS, parent_catalog
     assert set(parent_catalog.model_ids) == {
-        claude_discovery_model_id(model) for model in CLAUDE_MODELS
+        claude.discovery_model_id(model) for model in CLAUDE_MODELS
     }, parent_catalog
-    decoy_ids = [claude_model_service_id(model) for model in decoy_catalog.model_ids]
+    decoy_ids = [claude.model_service_id(model) for model in decoy_catalog.model_ids]
     assert len(decoy_ids) == len(set(decoy_ids)), decoy_catalog
     assert set(decoy_ids) == {CLAUDE_DECOY}, decoy_catalog
-    assert set(decoy_catalog.model_ids) == {claude_discovery_model_id(CLAUDE_DECOY)}, decoy_catalog
+    assert set(decoy_catalog.model_ids) == {claude.discovery_model_id(CLAUDE_DECOY)}, decoy_catalog
 
     default_task = FileTask(session)
     with AgentTerminal(
-        session, "claude", [str(session.binary)], "cuj3-bare-ug-claude-default-and-picker"
+        session,
+        "claude",
+        [str(session.binary)],
+        "catalog-discovery-bare-ug-claude-default-and-picker",
     ) as tui:
         tui.boot()
         settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
@@ -96,7 +95,7 @@ def test_case_03_managed_schema_pointers_claude(live_session, workspace):
         assert (
             env.get("ANTHROPIC_CUSTOM_HEADERS", "")
             .splitlines()
-            .count(f"{MODEL_HEADER}: {MODEL_SCHEMA}")
+            .count(f"{MODEL_SERVICE_PARENT_SCHEMA_HEADER}: {MODEL_SCHEMA}")
             == 1
         ), settings
         assert not {"availableModels", "enforceAvailableModels"} & settings.keys(), settings
@@ -110,10 +109,10 @@ def test_case_03_managed_schema_pointers_claude(live_session, workspace):
         for option in options:
             if display_name := parent_catalog.display_names[option["model"]]:
                 assert option["label"] == display_name, option
-        session.record("cuj3-claude-settings.json", settings)
+        session.record("catalog-discovery-claude-settings.json", settings)
         picker_screen = tui.open_model_picker(
             model_visible=lambda screen: all(
-                claude_model_in_picker(screen, model, parent_catalog.display_names[model])
+                claude.model_in_picker(screen, model, parent_catalog.display_names[model])
                 for model in parent_catalog.model_ids
             )
         )
@@ -129,7 +128,10 @@ def test_case_03_managed_schema_pointers_claude(live_session, workspace):
 
     explicit_task = FileTask(session)
     with AgentTerminal(
-        session, "claude", [str(session.binary), "claude"], "cuj3-explicit-ug-claude-default"
+        session,
+        "claude",
+        [str(session.binary), "claude"],
+        "catalog-discovery-explicit-ug-claude-default",
     ) as tui:
         tui.boot()
         tui.submit(explicit_task.prompt)
@@ -183,30 +185,29 @@ def test_case_03_managed_schema_pointers_claude(live_session, workspace):
 
 @pytest.mark.codex
 @pytest.mark.tui
-def test_case_04_managed_schema_pointers_codex(live_session, workspace):
-    """Scenario: configure published CUJ3 policy; launch Codex TUI and ug codex -- exec.
+def test_catalog_discovery_codex(live_session, workspace):
+    """Scenario: configure published Catalog discovery policy; launch Codex TUI and ug codex -- exec.
 
-    Expected: persisted schema/defaults and all seven UC services match policy; independent
+    Expected: persisted schema/defaults match policy; independent
     catalogs, generated catalogs, model/list, and exact numbered picker agree on GPT Luna/Kimi,
     excluding Gemini and both accessible out-of-scope decoys. TUI exits normally after a
     GPT Luna file task; exec uses that default without an override, and every extra model
-    completes a headless task, with routing off throughout. Native -p selects a profile.
+    completes a headless task, with routing off throughout.
     Codex's client-selected model must match; it does not prove the executed gateway
     backing destination. These assertions require a live pass, not collection alone.
     """
     session = live_session
     configured = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
     assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
-    assert_persisted_config(session, workspace)
+    persisted = read_persisted_managed_config(session, workspace)
+    assert_model_policy(persisted["config"])
+    session.record("catalog-discovery-managed-config.json", persisted)
 
     bearer = os.environ["DATABRICKS_BEARER"]
-    inventory = fetch_model_service_inventory(workspace, bearer)
-    session.record("cuj3-model-service-sources.json", inventory)
-    assert set(inventory) == MODEL_SERVICES | {CLAUDE_DECOY, CODEX_DECOY}, inventory
-    parent_catalog = fetch_codex_parent_catalog(workspace, bearer, MODEL_SCHEMA)
-    decoy_catalog = fetch_codex_parent_catalog(workspace, bearer, OTHER_MODEL_SCHEMA)
+    parent_catalog = codex.fetch_parent_catalog(workspace, bearer, MODEL_SCHEMA)
+    decoy_catalog = codex.fetch_parent_catalog(workspace, bearer, OTHER_MODEL_SCHEMA)
     session.record(
-        "cuj3-parent-inventory.json",
+        "catalog-discovery-parent-inventory.json",
         {
             "scoped": parent_catalog.model_ids,
             "decoy": decoy_catalog.model_ids,
@@ -244,19 +245,19 @@ def test_case_04_managed_schema_pointers_codex(live_session, workspace):
             label = entry.get("display_name")
             assert isinstance(label, str) and label.strip(), entry
             display_names[entry["slug"]] = label
-    session.record("cuj3-codex-catalog.json", catalog)
+    session.record("catalog-discovery-codex-catalog.json", catalog)
 
     default_task = FileTask(session)
     with AgentTerminal(
-        session, "codex", [str(session.binary), "codex"], "cuj3-codex-default"
+        session, "codex", [str(session.binary), "codex"], "catalog-discovery-codex-default"
     ) as tui:
         tui.boot()
         config = tomllib.loads((session.home / ".codex/ucode.config.toml").read_text())
         assert config.get("model") == CODEX_DEFAULT, config
-        session.record("cuj3-codex-config.json", config)
+        session.record("catalog-discovery-codex-config.json", config)
         picker_screen = tui.open_codex_model_picker(
             model_visible=lambda screen: all(
-                codex_model_in_picker(screen, model, display_names[model])
+                codex.model_in_picker(screen, model, display_names[model])
                 for model in parent_catalog.model_ids
             )
         )

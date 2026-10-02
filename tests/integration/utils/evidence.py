@@ -5,7 +5,7 @@ import re
 import uuid
 from pathlib import Path
 
-from .agents import claude, codex
+from .agents import _evidence_id, claude, codex
 
 _AGENT_HELPERS = {"claude": claude, "codex": codex}
 
@@ -54,6 +54,39 @@ def assistant_answers(agent: str, records: list[dict]) -> list[str]:
 
 def is_child_session(agent: str, path: str, records: list[dict]) -> bool:
     return _AGENT_HELPERS.get(agent, codex).is_child_session(path, records)
+
+
+def completed_task_models(session, agent: str, answer_value: str) -> set[str]:
+    """Read parent task model evidence, not proof of the gateway's destination."""
+    assert agent in _AGENT_HELPERS, f"Unsupported evidence agent: {agent}"
+    adapter = _AGENT_HELPERS[agent]
+    assert isinstance(answer_value, str) and answer_value.strip(), (
+        "Expected a nonempty answer value"
+    )
+    sessions = agent_sessions(session, agent)
+    session.record("agent-sessions.json", sessions)
+    return {
+        model
+        for path, records in sessions.items()
+        if not is_child_session(agent, path, records)
+        for model in adapter.completed_task_models(records, answer_value)
+    }
+
+
+def assert_completed_task_model(session, agent: str, answer_value: str, expected: str) -> None:
+    expected = _evidence_id(expected, "expected model")
+    observed = completed_task_models(session, agent, answer_value)
+    adapter = _AGENT_HELPERS[agent]
+    session.record(
+        f"completed-task-model-{agent}-{answer_value[:12]}.json",
+        {
+            "expected": expected,
+            "observed": sorted(observed),
+            "evidence_kind": adapter.EVIDENCE_KIND,
+            "gateway_destination_proven": False,
+        },
+    )
+    assert observed == {expected}, {"expected": expected, "observed": sorted(observed)}
 
 
 def assistant_answer_contains(session, agent: str, value: str, *, child: bool = False) -> bool:
