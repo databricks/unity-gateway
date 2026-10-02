@@ -56,6 +56,7 @@ from ucode.managed_files import (
     ManagedFileSnapshots,
     ManagedFileWriteUnavailable,
     current_os,
+    is_semantically_equal,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -1602,6 +1603,28 @@ def _managed_settings_conflicts(
     return conflicts
 
 
+def _only_optional_attribution_changed(existing: dict, desired: dict) -> bool:
+    """Check the entire settings object, ignoring only optional header attribution.
+
+    Missing or malformed headers are not safe to ignore. In particular, checking only owned-path
+    conflicts would also ignore missing required settings and unrelated policy changes.
+    """
+    existing_env = existing.get("env")
+    desired_env = desired.get("env")
+    if not isinstance(existing_env, dict) or not isinstance(desired_env, dict):
+        return False
+    existing_value = existing_env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY)
+    existing_headers = _required_custom_headers(existing_value)
+    desired_headers = _required_custom_headers(desired_env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY))
+    if existing_headers is None or existing_headers != desired_headers:
+        return False
+    comparison = copy.deepcopy(desired)
+    comparison["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = existing_value
+    return not is_semantically_equal(existing, desired) and is_semantically_equal(
+        existing, comparison
+    )
+
+
 def _reconcile_managed_settings(
     state: dict,
     compose: Callable[[dict], dict],
@@ -1666,6 +1689,16 @@ def _reconcile_managed_settings(
                 "your administrator."
             )
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
+        return
+    if _only_optional_attribution_changed(managed_before, desired_settings):
+        # Private settings still receive this launch's metadata. An attribution-only change must
+        # not require administrator authentication; the managed metadata can wait for a real update.
+        if read_managed_file(path) != current_text:
+            raise RuntimeError(
+                "Claude Code managed settings changed while ucode was checking attribution; "
+                "ucode preserved the newer file. Run the command again."
+            )
+        mark_managed_file_verified(state, "claude", path)
         return
     try:
         reconcile_managed_file(
