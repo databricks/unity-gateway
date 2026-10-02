@@ -187,7 +187,6 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure against a workspace that publishes a managed CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch. The Codex case also checks the shared catalog pointer, restart guidance, and a fresh bare app-server's visible model list |
 | `e2e_cuj/test_ug_budget_defaults.py` | Launch bare `ug` with separate low-spend and above-tier principals against the fixed 1% tier (`spending_percentage=0.01`); explicitly launch `ug claude` above the tier | Bare launches check Claude/Sonnet below the tier and the Codex/Luna recommendation above it; `ug usage` agrees with backend spend, threshold, and percentage. Explicit `ug claude` displays the backend's Codex/Luna recommendation while its generated model setting and native header select Sonnet. No budget writes or inference tasks. Run in the shared `E2E CUJs` job with both credential pairs documented in `integration/README.md`. |
 | `test_case_01_*` | Launch managed Claude without defaults after configure and from fresh state | Claude receives the admin MPS header; its gateway cache and replacement picker match the independently fetched provider model IDs; catalog labels are preserved and a model appears in a numbered picker row |
-| Catalog discovery (`test_catalog_discovery_claude`, `test_catalog_discovery_codex`) | Agent-specific journeys using shared discovery/evidence helpers; configure published `ug_e2e.models` policy in the dedicated workspace | Exact Claude Sonnet/Haiku/Kimi and Codex GPT Luna/Kimi catalogs/pickers; Gemini and other-schema decoys excluded. Bare `ug` and `ug claude` complete separate Sonnet TUI tasks; Claude print and Codex TUI/exec tasks use configured defaults without overrides. Every extra compatible model completes a headless task; routing stays off. Model evidence is limited as described below; MCP/skills are deferred |
 | `test_case_03_*`, `test_case_05_*` | Pass a provider or model-location override to managed Claude after configure and from fresh state | ug rejects the override before Claude starts and preserves agent-owned state |
 | `test_case_02_*` | Launch managed Codex after configure and from fresh state | The scoped and stable catalogs, ug-launched app server, and fresh bare app server match the independently fetched admin MPS model IDs. The configured case uses real `ug revert` to remove ug's shared pointer and stable file while preserving a user setting |
 | `test_case_04_*`, `test_case_06_*` | Pass a provider or model-location override to managed Codex after configure and from fresh state | ug rejects the override before Codex starts and preserves agent-owned state |
@@ -203,13 +202,12 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_and_ucode_web_search_helpers_preserve_mcp_stdio` | Initialize and list tools through both web-search helper commands | Exactly the MCP JSON-RPC responses; no text/ANSI contamination; existing server/tool identities preserved; no model request |
 
 With Claude and Codex selected there are **62 live cases** (12 marked TUI cases),
-**8 managed-workspace cases** (marker `managed`, including two dedicated catalog discovery journeys, run against workspaces that
+**6 managed-workspace cases** (marker `managed`, run against workspaces that
 publish a CodingAgentConfig), **1 two-workspace case** (marker `workspace_switch`),
 **25 managed-fixture cases** (marker `managed_fixture`, with only
 the CodingAgentConfig input injected), and **7 installation checks**. The 14 retained numbered scenarios
-comprise **24 explicit journeys**: 12 managed-fixture configured/fresh executions and 12 unmanaged
-executions. Two additional catalog discovery journeys cover the preconfigured dedicated workspace.
-Thirteen additional managed-fixture cases cover focused model, MCP, skills,
+comprise **24 explicit journeys**: 12 managed configured/fresh executions and 12 unmanaged
+executions. Thirteen additional managed-fixture cases cover focused model, MCP, skills,
 and lifecycle shapes; two published-config cases cover Claude defaults. Parametrization varies
 argument spelling or routing mode, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
@@ -231,10 +229,7 @@ Claude discovery assertions match numbered picker rows, not startup banners or
 footers. Offline regressions cover that distinction, native Haiku/Opus/Sonnet
 deduplication, and raw catalog ID/display-name rows for scoped pickers.
 Managed discovery expectations come from separate read-only, provider-scoped
-model-list requests; they do not rely solely on ug's generated catalog. Catalog discovery tasks
-check Claude's response-reported model and Codex's client-selected model; neither
-proves the executed gateway backing destination. Native picker/task coverage
-requires a live journey pass, not collection or lint success.
+model-list requests; they do not rely solely on ug's generated catalog.
 
 The dedicated-workspace CUJ suite adds three independently runnable CUJ2 MPS+MCP cases:
 one configuration case and separate Codex and Claude TUI task cases. The workspace is
