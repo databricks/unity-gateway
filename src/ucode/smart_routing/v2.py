@@ -28,6 +28,7 @@ from ucode.config_io import (
     write_text_file,
 )
 from ucode.constants import (
+    ENABLE_CLAUDE_CODE_MODS_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     LOOPBACK_HOST,
@@ -419,15 +420,26 @@ def route_claude_pre_tool_use(
             route.decision,
             route.routed_model,
         )
+    updated_input = {
+        **{key: value for key, value in route.tool_input.items() if key != "model"},
+        "subagent_type": _routed_claude_agent_name(route.routed_model),
+    }
+    # Under mods, the subagent-routing mod renders the routing in the TUI, so drop
+    # the plain-text notice entirely and hand the mod the model + rationale by task.
+    if claude_code_mods_enabled():
+        _record_mod_routing(route.task, route.routed_model, route.decision.rationale)
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "updatedInput": updated_input,
+            }
+        }
     routing_message = claude_routing.SUBAGENT_NOTICE_CONFIG.message(
         route.decision,
         route.routed_model,
         route.tool_input,
     )
-    updated_input = {
-        **{key: value for key, value in route.tool_input.items() if key != "model"},
-        "subagent_type": _routed_claude_agent_name(route.routed_model),
-    }
     hook_output = {
         "hookEventName": "PreToolUse",
         "permissionDecision": "allow",
@@ -435,6 +447,25 @@ def route_claude_pre_tool_use(
         "permissionDecisionReason": routing_message,
     }
     return {"systemMessage": routing_message, "hookSpecificOutput": hook_output}
+
+
+def _record_mod_routing(task: str, model: str, rationale: str) -> None:
+    """Write a routing record the subagent-routing mod reads (keyed by task).
+
+    Lives next to the session env file so the mod can find it from
+    UCODE_SESSION_ENV_FILE; best-effort, never blocks routing.
+    """
+    session_file = os.environ.get(SESSION_ENV_VAR)
+    if not session_file:
+        return
+    path = Path(session_file).with_name("mod-routing.json")
+    try:
+        existing = read_json_safe(path)
+        records = existing if isinstance(existing, dict) else {}
+        records[task] = {"model": model, "rationale": rationale}
+        config_io.atomic_write_json(path, records)
+    except OSError:
+        pass
 
 
 def _is_claude_target_model(value: object) -> bool:
@@ -539,6 +570,11 @@ def launch_claude(
         env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
     else:
         env[ENABLE_SUBAGENT_ROUTING_ENV_VAR] = "1"
+    # Propagate the mods flag into the hook subprocesses' environment so the
+    # subagent routing hook knows to stay silent (the mod renders instead).
+    mods_enabled = claude_code_mods_enabled()
+    if mods_enabled:
+        env[ENABLE_CLAUDE_CODE_MODS_ENV_VAR] = "1"
     model_overrides = settings.setdefault("modelOverrides", {})
     if not isinstance(model_overrides, dict):
         raise RuntimeError("Claude settings 'modelOverrides' must be an object for smart routing.")
@@ -547,7 +583,13 @@ def launch_claude(
         **state,
         "claude_models": {str(index): model for index, model in enumerate(model_ids)},
     }
-    sync_smart_routing_hooks(settings, routing_state, enabled=True)
+    # The spinner notice is redundant when the mod renders the routing itself.
+    sync_smart_routing_hooks(
+        settings,
+        routing_state,
+        enabled=True,
+        subagent_status=None if mods_enabled else "Routing subagent model",
+    )
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)
     model_setting = _ClaudeModelSettingGuard(user_settings_path)

@@ -622,6 +622,7 @@ class TestSubagentRouting:
     def test_routes_agent_prompt_with_initialized_model_menu(self, tmp_path, monkeypatch):
         captured = {}
         decisions_path = tmp_path / "decisions.jsonl"
+        monkeypatch.delenv("ENABLE_CLAUDE_CODE_MODS", raising=False)  # plain-text notice path
         monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", decisions_path)
 
         def fake_select(workspace, token, task, route_options, resolve, **kwargs):
@@ -684,6 +685,63 @@ class TestSubagentRouting:
         decision_record = json.loads(decisions_path.read_text())
         assert decision_record["requested_model"] == "system.ai.claude-opus-4-8"
 
+    def test_mods_suppress_notice_and_record_routing_for_the_mod(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ENABLE_CLAUDE_CODE_MODS", "1")
+        monkeypatch.setenv(v2.SESSION_ENV_VAR, str(tmp_path / "env.json"))
+        monkeypatch.setattr(
+            routing,
+            "select_route",
+            lambda *a, **k: (
+                routing.RoutingDecision(
+                    model="system.ai.claude-opus-4-8",
+                    raw_model="claude-opus-4-8",
+                    rationale="Routed to Low because its task-only profile is low",
+                ),
+                None,
+            ),
+        )
+
+        output = v2.route_claude_pre_tool_use(
+            {
+                "tool_name": "Agent",
+                "tool_input": {"prompt": "inspect the parser", "model": "sonnet"},
+            },
+            workspace="https://example.com",
+            token="token",
+            available_models=["system.ai.claude-opus-4-8", "databricks-claude-sonnet-5"],
+        )
+
+        # The mod renders the routing, so no plain-text notice is shown...
+        assert "systemMessage" not in output
+        assert "permissionDecisionReason" not in output["hookSpecificOutput"]
+        # ...but the model rewrite still happens...
+        assert "model" not in output["hookSpecificOutput"]["updatedInput"]
+        # ...and the model + rationale are handed to the mod, keyed by task.
+        records = json.loads((tmp_path / "mod-routing.json").read_text())
+        assert records["inspect the parser"] == {
+            "model": "system.ai.claude-opus-4-8",
+            "rationale": "Routed to Low because its task-only profile is low",
+        }
+
+    def test_subagent_hook_status_label_is_omittable(self):
+        with_label: dict = {}
+        claude_hooks.sync_smart_routing_hooks(
+            with_label,
+            {"workspace": "https://x"},
+            enabled=True,
+            subagent_status="Routing subagent model",
+        )
+        silent: dict = {}
+        claude_hooks.sync_smart_routing_hooks(
+            silent, {"workspace": "https://x"}, enabled=True, subagent_status=None
+        )
+
+        def pretooluse_hook(doc: dict) -> dict:
+            return doc["hooks"]["PreToolUse"][0]["hooks"][0]
+
+        assert pretooluse_hook(with_label)["statusMessage"] == "Routing subagent model"
+        assert "statusMessage" not in pretooluse_hook(silent)
+
     def test_writes_routed_agents_as_launch_scoped_plugin(self, tmp_path):
         plugin_dir = tmp_path / "routing-plugin"
         models = ["databricks-claude-opus-4-8", "system.ai.glm-5-3"]
@@ -716,7 +774,8 @@ class TestSubagentRouting:
         assert hooks == {"modules": ["./register.ts"]}
         for name in (mod.source, *mod.extra):
             assert (hooks_dir / name).is_file()
-        assert "registerStatusBand" in (hooks_dir / "register.ts").read_text()
+        entry = (hooks_dir / "register.ts").read_text()
+        assert "registerStatusBand" in entry and "registerSubagentRouting" in entry
 
         status = (hooks_dir / "smart-routing-status.ts").read_text()
         assert "unity gateway smart router" in status
@@ -725,6 +784,9 @@ class TestSubagentRouting:
         assert v2.ENABLE_SMART_ROUTING_ENV_VAR in status
         assert v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR in status
         assert v2.SESSION_ENV_VAR in status
+
+        subagents = (hooks_dir / "subagent-routing.ts").read_text()
+        assert "ui.render" in subagents and "ToolUse" in subagents
 
     def test_leaves_non_claude_custom_agent_model_unchanged(self):
         definitions = v2._routed_claude_agent_definitions(["catalog.schema.gpt-5"])
