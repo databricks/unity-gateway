@@ -16,7 +16,7 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-from ucode import gateway_proxy
+from ucode import gateway_proxy, mods
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -27,12 +27,14 @@ from ucode.config_io import (
     write_json_file,
 )
 from ucode.constants import (
+    ENABLE_CLAUDE_CODE_MODS_ENV_VAR,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     SMART_ROUTER_RECIPE_HEADER,
+    claude_code_mods_enabled,
 )
 from ucode.custom_oauth import (
     CustomOAuthConfig,
@@ -131,10 +133,19 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
 def minimum_version_error() -> str | None:
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
-    if parsed is None or parsed >= MINIMUM_CLAUDE_VERSION:
+    if parsed is None:
+        return None
+    floor = MINIMUM_CLAUDE_VERSION
+    floor_text = MINIMUM_CLAUDE_VERSION_TEXT
+    suffix = ""
+    if claude_code_mods_enabled() and parsed < mods.MINIMUM_CLAUDE_VERSION_FOR_MODS:
+        floor = mods.MINIMUM_CLAUDE_VERSION_FOR_MODS
+        floor_text = mods.MINIMUM_CLAUDE_VERSION_FOR_MODS_TEXT
+        suffix = f" when {ENABLE_CLAUDE_CODE_MODS_ENV_VAR} is set"
+    if parsed >= floor:
         return None
     return (
-        f"ug requires Claude Code {MINIMUM_CLAUDE_VERSION_TEXT} or newer. "
+        f"ug requires Claude Code {floor_text} or newer{suffix}. "
         f"Your current version is Claude Code {version}."
     )
 
