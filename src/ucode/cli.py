@@ -19,7 +19,7 @@ from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
-from ucode import custom_oauth
+from ucode import custom_oauth, vscode
 from ucode.agents import (
     TOOL_SPECS,
     LaunchOptions,
@@ -795,6 +795,12 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     return state
 
 
+def _configure_vscode_claude_extension(configured_tools: list[str]) -> None:
+    """Point VS Code's Claude Code extension at Unity Gateway once Claude Code is configured."""
+    if "claude" in configured_tools:
+        vscode.configure_claude_extension()
+
+
 def configure_workspace_command(
     tool: str | None = None,
     selected_tools: list[str] | None = None,
@@ -863,6 +869,7 @@ def _configure_workspace_command(
                 if not managed_provider_service(managed, tool):
                     parent_schema = managed_unity_catalog_location(managed, tool)
         state = configure_single_tool(tool, state, parent_schema=parent_schema)
+        _configure_vscode_claude_extension([tool])
         install_databricks_ai_tools_for_agents(
             [tool], state, force_refresh=tool not in ("claude", "codex")
         )
@@ -941,6 +948,7 @@ def _configure_workspace_command(
         if not is_dry_run():
             registered_mcps = _configure_managed_mcp_servers(managed)
             _configure_managed_skills(managed)
+        _configure_vscode_claude_extension(configured_tools)
         _summarize_managed_config(managed, configured_tools, registered_mcps)
         return 0
 
@@ -1002,6 +1010,9 @@ def _configure_workspace_command(
     last_configured = state.get("last_configured_tools")
     configured_set = set(
         last_configured if last_configured is not None else state.get("available_tools") or []
+    )
+    _configure_vscode_claude_extension(
+        [tool_name for tool_name in picked if tool_name in configured_set]
     )
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
@@ -1285,6 +1296,7 @@ def revert() -> int:
     # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
     # place; restoring the per-profile file above does not undo that.
     legacy_codex_stripped = revert_legacy_shared_config()
+    vscode_result = vscode.revert_claude_extension()
     clear_state()
 
     print_heading("Revert")
@@ -1296,6 +1308,7 @@ def revert() -> int:
     print_kv("Claude Code OS-managed settings", claude_managed_result)
     print_kv("Codex OS-managed settings", codex_managed_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
+    print_kv("VS Code Claude Code extension", vscode_result)
     for client, spec in MCP_CLIENTS.items():
         print_kv(
             f"{spec['display']} MCP config",
