@@ -20,9 +20,15 @@ FIRST_PROMPT_HOOK_MARKER = f"{ROUTING_HOOK_COMMAND_MARKER} {ROUTE_FIRST_PROMPT_E
 FIRST_PROMPT_SOCKET_ENV = "UCODE_CLAUDE_V2_SOCKET"
 
 
-def sync_smart_routing_hooks(doc: dict, state: dict, *, enabled: bool) -> None:
-    """Synchronize ucode-managed routing hooks in a Claude settings document."""
-    groups = _routing_hook_groups(state) if enabled else {}
+def sync_smart_routing_hooks(
+    doc: dict, state: dict, *, enabled: bool, subagent_status: str | None = "Routing subagent model"
+) -> None:
+    """Synchronize ucode-managed routing hooks in a Claude settings document.
+
+    ``subagent_status`` is the spinner label shown while the subagent-spawn hook
+    runs; pass ``None`` to show no label (e.g. when a mod renders the routing).
+    """
+    groups = _routing_hook_groups(state, subagent_status=subagent_status) if enabled else {}
     hooks.sync_managed_hooks(doc, ROUTING_HOOK_COMMAND_MARKER, groups)
 
 
@@ -48,7 +54,7 @@ def sync_first_prompt_hook(doc: dict, executable: str) -> None:
     hooks.sync_managed_hooks(doc, FIRST_PROMPT_HOOK_MARKER, groups)
 
 
-def _routing_hook_groups(state: dict) -> dict[str, list[dict]]:
+def _routing_hook_groups(state: dict, *, subagent_status: str | None) -> dict[str, list[dict]]:
     route_argv = _routing_hook_argv(state, "route-subagent")
     session_argv = _routing_hook_argv(state, "session-start")
     subagent_argv = _routing_hook_argv(state, "record-subagent")
@@ -56,7 +62,7 @@ def _routing_hook_groups(state: dict) -> dict[str, list[dict]]:
         "PreToolUse": [
             {
                 "matcher": "Agent|Task",
-                "hooks": [_routing_command_hook(route_argv, status="Routing subagent model")],
+                "hooks": [_routing_command_hook(route_argv, status=subagent_status)],
             }
         ],
         "SessionStart": [
