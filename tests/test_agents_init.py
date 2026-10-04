@@ -199,7 +199,9 @@ class TestConfigureWiresAiToolsInstall:
             agents_mod.configure_single_tool("claude", state, parent_schema="main.default") is state
         )
 
-        configure.assert_called_once_with("claude", state, parent_schema="main.default")
+        configure.assert_called_once_with(
+            "claude", state, parent_schema="main.default", coding_agent_config_defaults=None
+        )
 
     def test_configure_selected_tools_triggers_install(self, monkeypatch):
         captured = self._stub_configure(monkeypatch)
@@ -922,7 +924,9 @@ class TestConfigureSelectedTools:
         assert set(result["available_tools"]) == {"codex", "claude"}
 
     def test_adds_new_tool_to_available_tools(self, monkeypatch):
-        monkeypatch.setattr("ucode.agents.configure_tool", lambda tool, state, model=None: state)
+        monkeypatch.setattr(
+            "ucode.agents.configure_tool", lambda tool, state, model=None, **kwargs: state
+        )
         monkeypatch.setattr("ucode.agents.save_state", lambda s: None)
 
         state = {
