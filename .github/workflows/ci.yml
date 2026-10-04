@@ -49,6 +49,8 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     needs: lint
+    # The merge queue runs only lint and unit tests; e2e already ran on the PR.
+    if: ${{ github.event_name != 'merge_group' }}
     strategy:
       fail-fast: false
       matrix:
@@ -60,7 +62,7 @@ jobs:
           - group: claude
             name: Agent launch tests · Claude
             keyword: TestClaudeLaunch or TestConfigureSubset or (TestModelProviderLaunch and not codex)
-            package: '@anthropic-ai/claude-code@2.1.274'
+            package: '@anthropic-ai/claude-code'
           - group: codex
             name: Agent launch tests · Codex
             keyword: TestCodexLaunch
@@ -116,7 +118,7 @@ jobs:
 
   e2e:
     name: All agent tests
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'merge_group' }}
     needs: e2e-shards
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -129,8 +131,8 @@ jobs:
   integration:
     name: Integration
     needs: lint
-    # The condition ensures integration tests if lint passes and the overal workflow is not cancelled
-    if: ${{ needs.lint.result == 'success' && !cancelled() }}
+    # The condition runs integration tests only if lint passes and the overall workflow is not cancelled.
+    if: ${{ github.event_name != 'merge_group' && needs.lint.result == 'success' && !cancelled() }}
     permissions:
       contents: read
       id-token: write
@@ -160,6 +162,7 @@ jobs:
     steps:
       - name: Require all agent and integration tests to pass
         env:
+          EVENT_NAME: ${{ github.event_name }}
           RESULT: ${{ needs.e2e.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
-        run: test "$RESULT" = success && test "$INTEGRATION_RESULT" = success
+        run: test "$EVENT_NAME" = merge_group || { test "$RESULT" = success && test "$INTEGRATION_RESULT" = success; }

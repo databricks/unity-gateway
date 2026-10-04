@@ -292,6 +292,92 @@ def test_standalone_refresh_preserves_custom_user_entry(search_config, monkeypat
     assert claude.claude_mcp_config_path().read_bytes() == before
 
 
+def test_standalone_without_search_model_preserves_ownership_for_external_launch(
+    search_config, monkeypatch, capsys
+):
+    """Scenario: a standalone refresh finds no search model before an Isaac-style launch.
+
+    Expected: the installed entry and ownership survive, allowing a verified launch override.
+    """
+    monkeypatch.setenv(PROVIDER_ENV, "ucode")
+    # The workspace service and OS-managed writer are external to this component journey.
+    monkeypatch.setattr(
+        claude, "refresh_managed_config", lambda state: SimpleNamespace(manifest=None)
+    )
+    monkeypatch.setattr(claude, "_reconcile_managed_settings", lambda *a: None)
+    monkeypatch.setattr(
+        claude, "remove_claude_mcp_server", lambda *a: pytest.fail("removed installed search")
+    )
+    monkeypatch.setattr(
+        claude, "add_claude_mcp_server", lambda *a: pytest.fail("replaced installed search")
+    )
+    before = claude.claude_mcp_config_path().read_bytes()
+    ownership = copy.deepcopy(search_config.state[claude.WEB_SEARCH_MCP_STATE_KEY])
+    save_state({**search_config.state, "codex_models": []})
+
+    claude.write_tool_config(load_state(), "claude-model")
+    state = load_state()
+    assert claude.claude_mcp_config_path().read_bytes() == before
+    assert state.get(claude.WEB_SEARCH_MCP_STATE_KEY) == ownership
+
+    monkeypatch.setenv(PROVIDER_ENV, AUTOMATIC_PROVIDER)
+    args = claude._external_web_search_args(state, ["-p", "hello"])
+    assert _override(args)["env"][PROVIDER_ENV] == "external"
+    assert args[:2] == ["-p", "hello"]
+    assert claude.claude_mcp_config_path().read_bytes() == before
+    assert load_state()[claude.WEB_SEARCH_MCP_STATE_KEY] == ownership
+    output = capsys.readouterr().out
+    assert "Cannot safely select external web search" not in output
+    assert "Preserving web_search" not in output
+
+
+def test_standalone_refresh_recovers_after_search_models_return(search_config, monkeypatch, capsys):
+    """Scenario: a known generated registration outlives temporary missing search models.
+
+    Expected: a later standalone refresh updates it and its ownership without a warning.
+    """
+    monkeypatch.setenv(PROVIDER_ENV, "ucode")
+    monkeypatch.setattr(
+        claude, "refresh_managed_config", lambda state: SimpleNamespace(manifest=None)
+    )
+    monkeypatch.setattr(claude, "_reconcile_managed_settings", lambda *a: None)
+    calls = []
+
+    # Model only Claude's external CLI writes; ownership checks and persistence stay real.
+    def remove_server(name, scope):
+        calls.append(("remove", name, scope))
+        config = json.loads(claude.claude_mcp_config_path().read_text())
+        del config["mcpServers"][name]
+        write_json_file(claude.claude_mcp_config_path(), config)
+
+    def add_server(name, entry):
+        calls.append(("add", name))
+        config = json.loads(claude.claude_mcp_config_path().read_text())
+        config["mcpServers"][name] = entry
+        write_json_file(claude.claude_mcp_config_path(), config)
+
+    monkeypatch.setattr(claude, "remove_claude_mcp_server", remove_server)
+    monkeypatch.setattr(claude, "add_claude_mcp_server", add_server)
+    before = claude.claude_mcp_config_path().read_bytes()
+    save_state({**search_config.state, "codex_models": []})
+
+    claude.write_tool_config(load_state(), "claude-model")
+    assert claude.claude_mcp_config_path().read_bytes() == before
+    assert calls == []
+
+    state = load_state()
+    state["codex_models"] = ["restored-search-model"]
+    claude.write_tool_config(state, "claude-model")
+    assert calls == [("remove", "web_search", "user"), ("add", "web_search")]
+    config = json.loads(claude.claude_mcp_config_path().read_text())
+    installed = config["mcpServers"]["web_search"]
+    assert installed["env"]["UCODE_WEB_SEARCH_MODEL"] == "restored-search-model"
+    assert installed["args"] == ["mcp", "web-search", MANAGED_ENTRY_FLAG]
+    assert load_state()[claude.WEB_SEARCH_MCP_STATE_KEY] == installed
+    assert config["mcpServers"]["my_search"] == search_config.config["mcpServers"]["my_search"]
+    assert "Preserving web_search" not in capsys.readouterr().out
+
+
 def test_stale_shared_state_preserves_new_registration_and_falls_back(
     search_config, monkeypatch, capsys
 ):

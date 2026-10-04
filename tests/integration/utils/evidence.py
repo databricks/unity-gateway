@@ -159,10 +159,13 @@ class SubagentCalculation:
     """A uniquely tagged calculation that must be delegated to a real child."""
 
     def __init__(self, expression: str, expected: str):
-        self.marker = "ug-subagent-" + uuid.uuid4().hex[:12]
+        # Codex exposes task_name, rather than the child message, to its routing hook.
+        # Keep the correlation marker valid as a native task name for both agents.
+        self.marker = "ug_subagent_" + uuid.uuid4().hex[:12]
         self.value = f"{self.marker}={expected}"
         self.prompt = (
-            f"Please spawn exactly one subagent to calculate {expression}. "
+            f'Please spawn exactly one subagent with task name "{self.marker}" '
+            f"to calculate {expression}. "
             f'Tell the subagent to reply exactly "{self.value}". '
             "Do not calculate it yourself. Wait for the subagent and then reply with its result."
         )

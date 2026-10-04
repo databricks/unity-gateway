@@ -87,4 +87,5 @@ def test_tagged_calculation_requires_the_native_child_answer(tmp_path, agent):
     assert task.completed(session, agent, child=True)
     assert assistant_answer_contains(session, agent, task.value, child=True)
     assert task.marker in task.prompt
+    assert f'task name "{task.marker}"' in task.prompt
     assert "1+1" in task.prompt
