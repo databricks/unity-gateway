@@ -7,8 +7,7 @@ server bridges the gap: it advertises a single MCP tool, and on call it
 forwards the query to the workspace's Responses API with
 `tools: [{"type": "web_search"}]`, returning the model's text output.
 
-Speaks MCP JSON-RPC 2.0 over stdio (newline-delimited JSON). Implemented by
-hand to avoid pulling in the `mcp` SDK — keeps `ucode`'s dep footprint lean.
+Speaks MCP JSON-RPC 2.0 over stdio (newline-delimited JSON).
 """
 
 from __future__ import annotations
@@ -16,6 +15,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -29,6 +30,7 @@ PROVIDER_ENV = "UCODE_CLAUDE_WEB_SEARCH_PROVIDER"
 MANAGED_ENTRY_FLAG = "--managed-by-ucode"
 EXTERNAL_PROVIDER_OVERRIDE_FLAG = "--external-provider-override"
 AUTOMATIC_PROVIDER = "external-if-safe"
+_MAX_CONCURRENT_SEARCHES = 4
 
 
 def external_provider_selected() -> bool:
@@ -89,6 +91,11 @@ def _tool_error(text: str) -> dict[str, Any]:
     tool-level failures should be returned as results so the model can see and
     react to them, not as protocol errors that abort the call."""
     return {"content": [{"type": "text", "text": text}], "isError": True}
+
+
+def _valid_request_id(value: Any) -> bool:
+    # Booleans alias integer dictionary keys but are not JSON-RPC request IDs.
+    return value is None or (isinstance(value, (str, int, float)) and not isinstance(value, bool))
 
 
 def _extract_response_text(payload: dict[str, Any]) -> str:
@@ -223,7 +230,7 @@ def serve(
     external_provider_override: bool = False,
 ) -> None:
     """Read newline-delimited JSON-RPC requests from stdin, write responses to
-    stdout. Loops until EOF. Injectable streams for testing."""
+    stdout. Drain accepted searches at EOF. Injectable streams for testing."""
     in_stream = stdin if stdin is not None else sys.stdin
     out_stream = stdout if stdout is not None else sys.stdout
     # A copied registration retains its marker. Only a verified launch override
@@ -232,20 +239,97 @@ def serve(
         managed_by_ucode and external_provider_override and external_provider_selected()
     )
 
-    for line in in_stream:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            req = json.loads(line)
-        except json.JSONDecodeError:
-            response = _error(None, -32700, "Parse error")
+    response_lock = threading.Lock()
+    pending: dict[Any, Future[dict[str, Any] | None]] = {}
+    output_failure: BaseException | None = None
+
+    def write_response(response: dict[str, Any] | None) -> None:
+        if response is not None:
             out_stream.write(json.dumps(response) + "\n")
             out_stream.flush()
-            continue
 
-        response = _handle_request(req, search_enabled=search_enabled)
-        if response is None:
-            continue
-        out_stream.write(json.dumps(response) + "\n")
-        out_stream.flush()
+    def finish_request(req_id: Any, future: Future[dict[str, Any] | None]) -> None:
+        nonlocal output_failure
+        try:
+            response = future.result()
+        except Exception:
+            response = _error(req_id, -32603, "Internal error")
+        to_cancel: list[Future[dict[str, Any] | None]] = []
+        with response_lock:
+            # Cancellation or ID reuse must not deliver an old worker's response.
+            if pending.get(req_id) is future:
+                del pending[req_id]
+                try:
+                    write_response(response)
+                except BaseException as exc:
+                    if output_failure is None:
+                        output_failure = exc
+                        to_cancel = list(pending.values())
+                        pending.clear()
+        # cancel() invokes callbacks synchronously, so do not hold response_lock.
+        for pending_future in to_cancel:
+            pending_future.cancel()
+
+    # Keep blocking auth/HTTP off the input loop, including while all workers are busy.
+    executor = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_SEARCHES)
+    try:
+        for line in in_stream:
+            with response_lock:
+                if output_failure is not None:
+                    raise output_failure
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                req = json.loads(line)
+            except json.JSONDecodeError:
+                with response_lock:
+                    write_response(_error(None, -32700, "Parse error"))
+                continue
+
+            if not isinstance(req, dict) or ("id" in req and not _valid_request_id(req["id"])):
+                with response_lock:
+                    write_response(_error(None, -32600, "Invalid Request"))
+                continue
+
+            if "id" not in req:
+                if req.get("method") == "notifications/cancelled":
+                    params = req.get("params")
+                    if (
+                        isinstance(params, dict)
+                        and "requestId" in params
+                        and _valid_request_id(params["requestId"])
+                    ):
+                        with response_lock:
+                            future = pending.pop(params["requestId"], None)
+                        if future is not None:
+                            # Running calls retain their worker until HTTP returns.
+                            # cancel() invokes callbacks synchronously, outside our lock.
+                            future.cancel()
+                continue
+
+            if req.get("method") == "tools/call":
+                req_id = req["id"]
+                with response_lock:
+                    if output_failure is not None:
+                        raise output_failure
+                    future = executor.submit(_handle_request, req, search_enabled=search_enabled)
+                    pending[req_id] = future
+                future.add_done_callback(lambda done, req_id=req_id: finish_request(req_id, done))
+            else:
+                response = _handle_request(req, search_enabled=search_enabled)
+                with response_lock:
+                    if output_failure is not None:
+                        raise output_failure
+                    write_response(response)
+        executor.shutdown(wait=True)
+        with response_lock:
+            if output_failure is not None:
+                raise output_failure
+    except BaseException:
+        with response_lock:
+            pending.clear()
+        # Cancelling queued futures runs their callbacks; do not hold the lock.
+        executor.shutdown(wait=False, cancel_futures=True)
+        executor.shutdown(wait=True)
+        raise

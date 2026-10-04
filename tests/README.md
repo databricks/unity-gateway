@@ -33,11 +33,25 @@ selection, and errors without browser consent through the MCP handler. These
 component checks replace external auth/network boundaries; they do not establish
 live search, parent/child discovery, or classifier permission behavior.
 
+`test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
+HTTP and authentication boundaries. It covers concurrent results and catalog requests,
+the four-worker limit, active and queued cancellation, isolated worker errors, and
+draining pending searches on EOF. Input failure and interruption cancel queued work.
+These component checks make no live gateway requests.
+
 `test_claude_search_provider.py` covers external-provider setup and launch using
 real temporary config files and local helper JSON-RPC subprocesses. It checks
 legacy ownership, copied marked helpers, custom/disabled entry preservation, config conflicts, caller
 arguments, routing/direct/relayed paths, and concurrent standalone/custom helper
-catalogs. These are component checks, not a live Isaac or gateway journey.
+catalogs. It also checks that an empty search-model catalog preserves registration
+ownership for later external handoff or standalone refresh. These are component
+checks, not a live Isaac or gateway journey.
+
+`test_claude_search_discovery.py` covers fresh Claude-only setup through model
+discovery, saved state, and search registration, with both UC and legacy model
+catalogs. It also checks explicit search-model precedence and preservation of an
+existing Isaac server when no GPT model is available. These component tests mock
+external discovery and the Claude CLI; they do not establish live search coverage.
 
 `test_agent_claude.py` covers OS-managed telemetry ownership and headless configuration. These are
 unit/component regressions, not automated Isaac or live telemetry-export coverage.
@@ -48,6 +62,11 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
 
+`test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
+gateway provider on Windows while Unix launch arguments stay unchanged and routing
+hooks stay with the app-server. This is component coverage, not a live Windows
+sign-in or TUI test.
+
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
 `TestBuildClaudeArgv` also checks that caller permission denies survive ug's technical
@@ -56,7 +75,9 @@ inputs, repeated settings, and empty launch overrides retain restrictions and le
 source files unchanged. These are actual argv/configuration assertions, not native
 classifier or parent/child acceptance coverage.
 `test_databricks.py` checks bounded Anthropic catalog requests with `limit=1000`, including
-scoped routing headers and model display metadata. Its subprocess regression checks force a
+scoped routing headers and model display metadata. It also verifies that Windows CLI install
+and upgrade use WinGet and report an actionable error when WinGet is unavailable. Its
+subprocess regression checks force a
 cp1252 default at the dependency seam, then verify UTF-8 text decoding and unchanged binary
 output. `test_codex_catalog.py` covers the same forced-locale failure at Codex catalog validation.
 The managed-default and discovery integration journeys below check the generated settings
@@ -71,6 +92,21 @@ the selected and empty checkboxes. These are local component checks, not live ga
 definitions, and temporary plugin loading in both routing modes. Existing launch
 tests cover caller argument preservation and file removal after exit. These checks
 do not cover plugin-write/process-start failures, native plugin refresh, or daemon behavior.
+
+`test_smart_router.py` executes the installed skill's shell commands with another `ug`
+first in PATH and a launching interpreter path containing spaces. Both agents' toggles
+must update the session controls through the launching installation. Launch tests check
+that Claude settings and Codex's shell policy carry the interpreter and session marker.
+These are component checks; they do not establish native skill permission matching or
+PowerShell execution.
+
+The portable Windows routing test checks native executable forwarding, generated
+hooks/plugins, caller arguments, and cleanup without Unix imports. It does not
+establish live Windows hook execution or interactive routing.
+
+Pi's token-command tests in `test_agent_pi.py` exercise Windows executable paths
+through POSIX parsing, including spaces, apostrophes, profile names, and PAT mode.
+They do not launch Pi or Git Bash on Windows.
 
 ## CUJ coverage matrix
 

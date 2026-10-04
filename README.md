@@ -134,10 +134,24 @@ profile. V2 AI Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
 
+Claude-only setup also discovers GPT models for its generated `web_search`
+server; installing or configuring Codex is not required. Search registration
+requires an available Responses-capable model.
+
 Claude's generated `web_search` server uses the same saved custom OAuth CLI
 profile as its harness, when configured. It stores the profile name, not an
 access token, and refreshes credentials for search requests. This does not
 change search permissions.
+
+The built-in search server runs up to four searches concurrently. A slow search
+does not block tool discovery or another search's result. Additional searches
+wait for a worker. Cancelling a queued search prevents it from running; an
+active search retains its worker until its blocking request finishes, and its
+response is discarded. Closing the input stream drains accepted searches, so
+shutdown can wait for the existing authentication and HTTP timeouts. Input
+failure or interruption cancels queued searches and waits for active requests
+to finish. This removes local serialization without changing the backend model
+or speeding up an individual backend request.
 
 Launchers that supply their own search server can first query
 `ug mcp web-search --capabilities`. Contract version 1 supports setting
@@ -157,6 +171,8 @@ an override. Unknown ownership, overlapping config scopes, or command-based
 MCP policies produce a warning and retain the existing provider; duplicate
 providers may remain. Explicit `external` selection instead fails on a conflict.
 Standalone refreshes preserve edited user entries and project/local servers.
+If no search model is available, they retain ownership of the installed entry so a
+later refresh or external-provider launch can still verify it.
 The selection does not authorize search or remove any permission denial.
 Concurrent setup still uses ug's existing whole-workspace state writes. A stale
 ownership fingerprint safely preserves the server and prevents automatic handoff;
@@ -224,6 +240,11 @@ alongside `--settings`, without persistent plugin registration. One temporary
 directory holds the settings, socket, and plugin and is removed when the launch
 finishes or fails. Existing hook configuration and disable/revert behavior are
 unchanged. Native daemon/background propagation of the plugin remains unverified.
+
+On Windows, Claude smart routing uses subagent hooks only. If first-prompt routing
+is enabled, ug warns and falls back to subagent routing because the first-prompt
+wrapper requires a Unix terminal.
+The generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
 
 ## Managed Files
 

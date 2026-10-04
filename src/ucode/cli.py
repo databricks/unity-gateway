@@ -131,6 +131,7 @@ from ucode.skills_download import (
     configure_selected_skills_download_command,
     configure_skills_download_picker_command,
     reconcile_managed_skills,
+    refresh_downloaded_skills_on_launch,
     remove_downloaded_skills_command,
 )
 from ucode.skills_list import configured_skill_counts_by_agent, list_configured_skills_command
@@ -605,7 +606,10 @@ def configure_shared_state(
         fetch_all or "claude" in tools or "opencode" in tools or "copilot" in tools or "pi" in tools
     )
     want_gemini = fetch_all or "gemini" in tools or "opencode" in tools or "pi" in tools
-    want_codex = fetch_all or "codex" in tools or "copilot" in tools or "pi" in tools
+    # Claude's web-search server also needs a Responses-capable model.
+    want_codex = (
+        fetch_all or "codex" in tools or "claude" in tools or "copilot" in tools or "pi" in tools
+    )
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
     # configure must persist that discovered family too.
     want_oss = fetch_all or "opencode" in tools or "codex" in tools
@@ -2891,6 +2895,8 @@ def _launch_tool(
                     )
                     or picker_catalog.model_ids[0]
                 )
+        if not skip_preflight:
+            refresh_downloaded_skills_on_launch(state)
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
             tool == "claude"

@@ -2402,19 +2402,27 @@ class TestClaudeLaunch:
         )
         assert calls[-3:] == [("stop",), ("shutdown",), ("close",)]
 
-    def test_smart_routing_on_windows_is_not_supported(self, monkeypatch):
+    def test_smart_routing_on_windows_uses_native_binary(self, monkeypatch, tmp_path):
+        npm_dir = tmp_path / "npm prefix with spaces"
+        shim = npm_dir / "claude.cmd"
+        native_binary = (
+            npm_dir / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+        )
+        native_binary.parent.mkdir(parents=True)
+        native_binary.touch()
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(claude.os, "name", "nt")
+        monkeypatch.setattr(claude.shutil, "which", lambda _binary: str(shim))
+        launch_v2 = Mock()
+        monkeypatch.setattr(claude.smart_routing_v2, "launch_claude", launch_v2)
 
-        with pytest.raises(
-            RuntimeError,
-            match="Smart routing in Claude Code is currently not supported on Windows",
-        ):
-            claude.launch(
-                {"workspace": WS, "profile": "test"},
-                ["--debug"],
-                options=LaunchOptions(launch_smart_routing=True),
-            )
+        claude.launch(
+            {"workspace": WS, "profile": "test"},
+            ["--debug"],
+            options=LaunchOptions(launch_smart_routing=True),
+        )
+
+        assert launch_v2.call_args.kwargs["binary"] == str(native_binary)
 
     def test_default_launch_keeps_existing_auth_path(self, monkeypatch):
         calls: list[list[str]] = []
