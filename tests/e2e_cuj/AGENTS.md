@@ -13,5 +13,6 @@ Use `helpers/tui_request_recorder.py` when a CUJ must assert the real HTTP reque
 made by an interactive agent. Start one recorder per test, configure the test's
 isolated `ug` session with the recorder URL, and keep the CUJ's workspace URL as
 the recorder's upstream. Use sequence checkpoints to separate fresh TUI sessions.
-Assert JSON bodies through `RecordedRequest.payload`; raw bytes remain available
+Assert individual JSON fields through `RecordedRequest.payload`, for example
+`request.payload["task"]["prompt"] == expected_prompt`. Raw bytes remain available
 as `RecordedRequest.body`. Authorization, cookie, and token headers are redacted.

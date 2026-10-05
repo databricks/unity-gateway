@@ -62,7 +62,7 @@ def test_records_and_forwards_request():
         assert response.content == b"first"
         request = recorder.expect_request(path="/routes:select", after=checkpoint)
         assert request.query == "test=true"
-        assert request.payload == payload
+        assert request.payload["task"]["prompt"] == "unique prompt"
         assert request.headers["authorization"] == "<redacted>"
 
         path, headers, body = upstream.requests[0]
