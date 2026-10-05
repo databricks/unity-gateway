@@ -279,6 +279,7 @@ def arguments(
     platform_name = os.name if platform_name is None else platform_name
     environment = os.environ if environment is None else environment
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--suite", choices=["integration", "e2e-cuj"], default="integration")
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--ug-version", default="checkout", help="Exact ug release, or checkout.")
     source.add_argument(
@@ -373,6 +374,14 @@ def arguments(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
     )
     args = parser.parse_args(argv)
+    if args.suite == "e2e-cuj":
+        if args.installation_only or args.headless_only or args.profile:
+            parser.error("--suite e2e-cuj uses CUJ service-principal auth and journey filters.")
+        if not all(
+            environment.get(key, "").strip()
+            for key in ("UG_CUJ_SP_CLIENT_ID", "UG_CUJ_SP_CLIENT_SECRET")
+        ):
+            parser.error("Set UG_CUJ_SP_CLIENT_ID and UG_CUJ_SP_CLIENT_SECRET for e2e-cuj.")
     if platform_name != "posix" and not (args.installation_only or args.headless_only):
         parser.error(
             "Live agent/TUI integration requires POSIX PTY, managed-settings, and signal "
@@ -387,7 +396,7 @@ def arguments(
     filters.add_argument("--maxfail", type=int)
     extra = args.pytest_args[1:] if args.pytest_args[:1] == ["--"] else args.pytest_args
     selected = filters.parse_args(extra)
-    marker = selected.m or "live"
+    marker = selected.m or ("live" if args.suite == "integration" else None)
     if args.installation_only:
         marker = f"installation and ({selected.m})" if selected.m else "installation"
     args.pytest_args = []
@@ -418,7 +427,7 @@ def arguments(
             environment.get("DATABRICKS_CLIENT_ID", "").strip()
             and environment.get("DATABRICKS_CLIENT_SECRET", "").strip()
         )
-        if not (
+        if args.suite == "integration" and not (
             args.profile or environment.get("DATABRICKS_BEARER", "").strip() or has_client_creds
         ):
             parser.error(
@@ -523,6 +532,7 @@ def main() -> int:
     target_bearers: dict[str, str] = {}
     client_secrets = (
         os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
+        os.environ.get("UG_CUJ_SP_CLIENT_SECRET", ""),
         os.environ.get("UG_MPS_DEFAULTS_CLIENT_SECRET", ""),
         os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", ""),
     )
@@ -825,13 +835,18 @@ def main() -> int:
             if not bearer:
                 raise RuntimeError("Selected profile returned no access token.")
 
-        if not bearer and not args.profile and not args.installation_only:
+        if (
+            not bearer
+            and not args.profile
+            and not args.installation_only
+            and args.suite == "integration"
+        ):
             client_id = os.environ.get("DATABRICKS_CLIENT_ID", "").strip()
             client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
             if client_id and client_secret:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
-        if not args.installation_only:
+        if not args.installation_only and args.suite == "integration":
             for bearer_env, target_workspace, client_id, secret_env in MANAGED_DEFAULTS_TARGETS:
                 secret = os.environ.get(secret_env, "").strip()
                 if args.workspace.rstrip("/") == target_workspace:
@@ -840,6 +855,10 @@ def main() -> int:
                     target_bearers[bearer_env] = mint_m2m_token(target_workspace, client_id, secret)
 
         test_dependencies = ["pytest==9.0.3"]
+        if args.suite == "e2e-cuj":
+            test_dependencies.append(
+                next(line for line in freeze.splitlines() if line.startswith("databricks-sdk=="))
+            )
         if os.name == "posix":
             test_dependencies.extend(["pexpect==4.9.0", "pyte==0.8.2"])
         run(
@@ -889,9 +908,17 @@ def main() -> int:
             runtime_env[f"UG_INTEGRATION_{agent.upper()}_MODEL"] = (
                 getattr(args, f"{agent}_model") or ""
             )
-        suite = ROOT / "tests/integration"
+        if args.suite == "e2e-cuj":
+            for key in ("UG_CUJ_SP_CLIENT_ID", "UG_CUJ_SP_CLIENT_SECRET"):
+                runtime_env[key] = os.environ[key]
+        suite = ROOT / "tests" / ("e2e_cuj" if args.suite == "e2e-cuj" else "integration")
+        report["suite"] = args.suite
         suite_hash = hashlib.sha256()
-        for path in [Path(__file__), *sorted(suite.rglob("*.py")), suite / "pytest.ini"]:
+        suite_files = set(suite.rglob("*.py"))
+        if args.suite == "e2e-cuj":
+            suite_files.update((ROOT / "tests/integration/utils").rglob("*.py"))
+            suite_files.add(ROOT / "tests/integration/conftest.py")
+        for path in [Path(__file__), *sorted(suite_files), suite / "pytest.ini"]:
             suite_hash.update(str(path.relative_to(ROOT)).encode() + b"\0" + path.read_bytes())
         report["suite_sha256"] = suite_hash.hexdigest()
         extra = args.pytest_args

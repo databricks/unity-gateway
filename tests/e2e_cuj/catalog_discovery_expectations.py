@@ -1,4 +1,4 @@
-"""Fixture expectations owned by the catalog discovery journey, not shared utilities."""
+"""Model fixtures owned by the catalog discovery journey."""
 
 MODEL_SCHEMA = "ug_e2e.models"
 OTHER_MODEL_SCHEMA = "ug_e2e.other_models"
