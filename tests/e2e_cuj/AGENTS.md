@@ -12,9 +12,11 @@ Run from the repository root through the isolated integration runner:
 ```bash
 uv run --no-project --python 3.12 python scripts/run_integration.py \
   --suite e2e-cuj --ug-version checkout \
-  --claude-version 2.1.280 --codex-version 0.154.0 -- -m cuj
+  --claude-version 2.1.280 --codex-version 0.154.0 -- -m 'cuj and not cuj5_below_tier'
 ```
 
 The runner installs the pinned Databricks SDK and both agent CLIs, then invokes
-pytest with this directory as its `--confcutdir`. The default marker for this
-suite is `cuj`; keep the explicit `-m cuj` when reproducing CI.
+pytest with this directory as its `--confcutdir`. CUJ5's low-spend principal runs
+separately with `-m cuj5_below_tier`; CI maps its `UG_BUDGET_CUJ_SP_CLIENT_ID` and
+`UG_BUDGET_CUJ_SP_CLIENT_SECRET` secrets into the standard fixture variables.
+Keep the credential-specific marker when reproducing CI.

@@ -62,16 +62,23 @@ def test_windows_integration_ci_uses_shared_claude_version():
     assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
 
 
-def test_dedicated_cuj_job_uses_shared_credentials_without_serialization():
+def test_dedicated_cuj_job_selects_credentials_without_serialization():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     contents = workflow.read_text()
     cuj = contents.split("\n  cuj:\n", 1)[1].split("\n  # Non-blocking:", 1)[0]
 
     assert "concurrency:" not in cuj
     assert "TEST_SUITE: e2e-cuj" in cuj
-    assert "TEST_MARKER: cuj" in cuj
-    assert "UG_CUJ_SP_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}" in cuj
-    assert "UG_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}" in cuj
+    assert "test_marker: cuj and not cuj5_below_tier" in cuj
+    assert "test_marker: cuj5_below_tier" in cuj
+    assert "client_id_secret: UG_CUJ_SP_CLIENT_ID" in cuj
+    assert "client_secret_secret: UG_CUJ_SP_CLIENT_SECRET" in cuj
+    assert "client_id_secret: UG_BUDGET_CUJ_SP_CLIENT_ID" in cuj
+    assert "client_secret_secret: UG_BUDGET_CUJ_SP_CLIENT_SECRET" in cuj
+    assert "UG_CUJ_SP_CLIENT_ID: ${{ secrets[matrix.client_id_secret] }}" in cuj
+    assert "UG_CUJ_SP_CLIENT_SECRET: ${{ secrets[matrix.client_secret_secret] }}" in cuj
+    assert "TEST_MARKER: ${{ matrix.test_marker }}" in cuj
+    assert "ARTIFACT_NAME: ${{ matrix.artifact_name }}" in cuj
 
 
 @pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])

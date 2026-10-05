@@ -349,18 +349,32 @@ jobs:
     steps: *live-steps
 
   cuj:
-    name: "Dedicated CUJs · Claude and Codex"
+    name: ${{ matrix.name }}
     if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "Dedicated CUJs · shared principal"
+            test_marker: cuj and not cuj5_below_tier
+            client_id_secret: UG_CUJ_SP_CLIENT_ID
+            client_secret_secret: UG_CUJ_SP_CLIENT_SECRET
+            artifact_name: integration-e2e-cuj
+          - name: "CUJ5: below-tier default · Claude"
+            test_marker: cuj5_below_tier
+            client_id_secret: UG_BUDGET_CUJ_SP_CLIENT_ID
+            client_secret_secret: UG_BUDGET_CUJ_SP_CLIENT_SECRET
+            artifact_name: integration-cuj5-below-tier
     env:
-      UG_CUJ_SP_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
-      UG_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
+      UG_CUJ_SP_CLIENT_ID: ${{ secrets[matrix.client_id_secret] }}
+      UG_CUJ_SP_CLIENT_SECRET: ${{ secrets[matrix.client_secret_secret] }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: both
       TEST_SUITE: e2e-cuj
-      TEST_MARKER: cuj
-      ARTIFACT_NAME: integration-e2e-cuj
+      TEST_MARKER: ${{ matrix.test_marker }}
+      ARTIFACT_NAME: ${{ matrix.artifact_name }}
     steps: *live-steps
 
   # Non-blocking: continue-on-error and absent from the cujs `needs`, so a flaky OpenCode

@@ -15,20 +15,26 @@ does not yet assert live `recommendModel` request counts for configs with and wi
 
 ## Dedicated-workspace CUJs
 
-The budget usage and model-selection test lives in
+The budget usage and model-selection tests live in
 [`../e2e_cuj/test_ug_budget_defaults.py`](../e2e_cuj/test_ug_budget_defaults.py),
-outside this existing-workspace integration suite. The test owns its workspace,
-budget and model identifiers, while CI forwards only the shared
-`UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET` secrets.
+outside this existing-workspace integration suite. The tests own their workspace,
+budget and model identifiers. CI runs them on separate runners: the above-tier case
+uses the shared `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET` secrets, while the
+below-tier case uses `UG_BUDGET_CUJ_SP_CLIENT_ID` and `UG_BUDGET_CUJ_SP_CLIENT_SECRET`.
+Both pairs map to the fixture's existing `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET`
+environment variables; each runner receives only its selected identity.
 
-Run the case through the dedicated suite from a clean POSIX runner:
+Run the above-tier case through the dedicated suite from a clean POSIX runner:
 
 ```bash
 UG_CUJ_SP_CLIENT_ID=... UG_CUJ_SP_CLIENT_SECRET=... \
 python3.12 scripts/run_integration.py \
   --suite e2e-cuj --ug-version checkout \
-  --claude-version 2.1.280 --codex-version 0.154.0 -- -m cuj
+  --claude-version 2.1.280 --codex-version 0.154.0 -- -m 'cuj and not cuj5_below_tier'
 ```
+
+For the below-tier case, use the same command with `-m cuj5_below_tier` and set the
+two environment variables to the dedicated low-spend principal's credentials.
 
 The runner installs `databricks-sdk==0.135.0` in the isolated test environment.
 The workspace client reads the published config and real recommendation using
@@ -39,6 +45,11 @@ It then launches bare `ug` and verifies Codex selects
 Luna over its managed Sol default; it submits no inference task. It neither writes
 the budget nor requires account-level authentication. Independent runners can
 overlap; each still needs isolated machine-level agent settings.
+
+The below-tier case verifies the real default recommendation and bare `ug` selecting
+Claude Code on `system.ai.claude-sonnet-4-6`, without submitting a prompt. A fresh
+principal may have no spend counter, so this case establishes default model selection;
+numeric spend reporting remains covered by the above-tier case.
 
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
@@ -335,8 +346,8 @@ they only configure, list models, and open/close the picker. Other live CUJs per
 real model tasks.
 
 There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with Claude and Codex. The separate dedicated-workspace suite adds one
-budget model-selection case selected by `-m cuj` and run by the `cuj` job.
+checks** with Claude and Codex. The separate dedicated-workspace suite adds two
+budget model-selection cases run by the `cuj` matrix with separate credentials and markers.
 Selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
@@ -505,8 +516,8 @@ Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
 two agent jobs). Full runs all 62 live cases, including those smoke cases, in two
-disjoint agent lanes. The dedicated `cuj` job runs one budget model-selection case
-with both agent binaries installed and no cross-run concurrency lock. The parent
+disjoint agent lanes. The dedicated `cuj` matrix runs the above-tier and below-tier
+budget cases on separate runners with both agent binaries installed and no cross-run concurrency lock. The parent
 workflows retain their normal cancellation of superseded runs.
 
 The full-suite agent lanes are:
@@ -684,7 +695,8 @@ gh run download RUN_ID -R databricks/unity-gateway \
 ```
 
 Use `integration-full-AGENT` for a full lane, `integration-smoke-AGENT` for
-smoke, or `integration-e2e-cuj` for the budget model-selection test. Use `integration-installation` for Linux package failures, or
+smoke, `integration-e2e-cuj` for the above-tier budget test, or `integration-cuj5-below-tier`
+for the below-tier case. Use `integration-installation` for Linux package failures, or
 `integration-installation-windows` for native Windows package failures, or
 `integration-headless-windows-claude` for the Windows gateway journey. Older runs used
 `integration-full-AGENT-GROUP`, `integration-cujs`, or numbered `integration-live-*`
