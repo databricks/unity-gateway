@@ -1,50 +1,23 @@
-"""Small live fixture for the CUJ5 budget smart-default journeys."""
+"""Small live fixture for the CUJ budget smart-default journeys."""
 
 from __future__ import annotations
 
-import json
-import os
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from decimal import Decimal, localcontext
 from typing import Any
+
+from databricks.sdk import AccountClient, WorkspaceClient
+from databricks.sdk.core import Config
 
 _CONFIG_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 _RECOMMEND_PATH = _CONFIG_PATH + ":recommendModel"
 _BUDGET_PATH = "/api/2.1/accounts/{account_id}/budgets/{budget_id}"
 _PER_USER = "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER"
 _BLOCK = "BLOCK_USAGE"
-_TIMEOUT = 30.0
+_TIMEOUT = 30
 _POLL = 0.5
-
-
-@dataclass(frozen=True, slots=True)
-class BudgetTarget:
-    workspace_id: str
-    account_host: str
-    account_id: str
-    budget_id: str
-    sonnet_model: str
-    sol_model: str
-    luna_model: str
-    account_token: str = field(repr=False)
-
-    @classmethod
-    def from_environment(cls) -> BudgetTarget:
-        return cls(
-            os.environ["UG_BUDGET_WORKSPACE_ID"].strip(),
-            os.environ["UG_BUDGET_ACCOUNT_HOST"].strip(),
-            os.environ["UG_BUDGET_ACCOUNT_ID"].strip(),
-            os.environ["UG_BUDGET_ID"].strip(),
-            os.environ["UG_BUDGET_SONNET_MODEL"].strip(),
-            os.environ["UG_BUDGET_SOL_MODEL"].strip(),
-            os.environ["UG_BUDGET_LUNA_MODEL"].strip(),
-            os.environ["UG_BUDGET_ACCOUNT_TOKEN"].strip(),
-        )
 
 
 def _budget_update(budget: Mapping[str, Any]) -> dict[str, Any]:
@@ -81,36 +54,43 @@ def _budget_update(budget: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _request_json(
-    method: str,
-    url: str,
-    token: str,
-    body: Mapping[str, Any] | None,
-    operation: str,
-) -> Any:
-    encoded = json.dumps(body).encode("utf-8") if body is not None else None
-    headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
-    if encoded is not None:
-        headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(url, data=encoded, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
-            raw = response.read()
-    except urllib.error.HTTPError as error:
-        raise AssertionError(f"{operation} failed: HTTP {error.code}") from None
-    return json.loads(raw) if raw else {}
-
-
 class BudgetDefaults:
     """Temporarily move one existing per-user hard-block threshold."""
 
-    def __init__(self, session: Any, workspace: str, target: BudgetTarget):
+    def __init__(
+        self,
+        session: Any,
+        workspace: WorkspaceClient,
+        *,
+        workspace_id: str,
+        account_host: str,
+        account_id: str,
+        budget_id: str,
+        sonnet_model: str,
+        sol_model: str,
+        luna_model: str,
+    ):
         self.session = session
-        self.workspace = workspace.rstrip("/")
-        self.target = target
-        self.sonnet_model = target.sonnet_model
-        self.sol_model = target.sol_model
-        self.luna_model = target.luna_model
+        self.workspace_client = workspace
+        self.workspace = workspace.config.host.rstrip("/")
+        self.workspace_id = workspace_id
+        self.account_host = account_host.rstrip("/")
+        self.account_id = account_id
+        self.budget_id = budget_id
+        self.sonnet_model = sonnet_model
+        self.sol_model = sol_model
+        self.luna_model = luna_model
+        self.account = AccountClient(
+            config=Config(
+                host=self.account_host,
+                account_id=self.account_id,
+                client_id=workspace.config.client_id,
+                client_secret=workspace.config.client_secret,
+                auth_type="oauth-m2m",
+                http_timeout_seconds=_TIMEOUT,
+                retry_timeout_seconds=_TIMEOUT,
+            )
+        )
         self._original_threshold: str | None = None
         self._dirty = False
         self._evidence = 0
@@ -119,11 +99,11 @@ class BudgetDefaults:
     def __enter__(self) -> BudgetDefaults:
         self._validate_config()
         current = self._account_budget()
-        assert current["budget_configuration_id"] == self.target.budget_id
-        assert str(current["account_id"]) == self.target.account_id
+        assert current["budget_configuration_id"] == self.budget_id
+        assert str(current["account_id"]) == self.account_id
         workspace_filter = current["filter"]["workspace_id"]
         assert workspace_filter["operator"] in ("IN", "BUDGET_CONFIGURATION_FILTER_OPERATOR_IN")
-        assert [str(value) for value in workspace_filter["values"]] == [self.target.workspace_id]
+        assert [str(value) for value in workspace_filter["values"]] == [self.workspace_id]
         _, self._original_threshold = self._alert(current)
         self._record("setup", threshold=self._original_threshold, status="captured")
         return self
@@ -134,7 +114,7 @@ class BudgetDefaults:
         return False
 
     def _validate_config(self) -> None:
-        payload = self._workspace_request("GET", _CONFIG_PATH, None, "managed config")
+        payload: Any = self.workspace_client.api_client.do("GET", path=_CONFIG_PATH)
         config = payload["coding_agent_configs"][0]
         assert config["default_agent"] == "CODING_AGENT_CLAUDE_CODE"
 
@@ -147,7 +127,7 @@ class BudgetDefaults:
         assert codex["default_models"]["default_model"] == self.sol_model
 
         smart_defaults = config["smart_defaults"]
-        assert smart_defaults["budget_id"] == self.target.budget_id
+        assert smart_defaults["budget_id"] == self.budget_id
         tiers = smart_defaults["tiers"]
         assert [Decimal(str(tier["spending_percentage"])) for tier in tiers] == [
             Decimal("0.5"),
@@ -159,7 +139,7 @@ class BudgetDefaults:
         ]
 
     def recommendation(self, label: str = "recommendation") -> dict[str, Any]:
-        payload = self._workspace_request("POST", _RECOMMEND_PATH, {}, "recommendModel")
+        payload: Any = self.workspace_client.api_client.do("POST", path=_RECOMMEND_PATH, body={})
         self._record(
             "recommendation",
             label=label,
@@ -233,9 +213,7 @@ class BudgetDefaults:
             time.sleep(min(_POLL, remaining))
 
     def _account_budget(self) -> dict[str, Any]:
-        payload = _request_json(
-            "GET", self._account_url(), self.target.account_token, None, "account budget GET"
-        )
+        payload = self._account_request("GET", None)
         return payload.get("budget", payload)
 
     def _alert(self, budget: Mapping[str, Any]) -> tuple[int, str]:
@@ -253,25 +231,22 @@ class BudgetDefaults:
     def _put(self, budget: Mapping[str, Any], label: str, threshold: str) -> None:
         self._dirty = True
         self._record("mutation", label=label, threshold=threshold, status="write_started")
-        _request_json(
-            "PUT",
-            self._account_url(),
-            self.target.account_token,
-            {"budget": _budget_update(budget)},
-            "account budget PUT",
+        self._account_request("PUT", {"budget": _budget_update(budget)})
+
+    def _account_request(self, method: str, body: dict[str, Any] | None) -> Any:
+        # AccountClient's ApiClient calls Config.authenticate for each request, allowing the
+        # restoration path to refresh an expired service-principal token.
+        return self.account.api_client.do(
+            method,
+            path=self._account_path(),
+            body=body,
         )
 
-    def _account_url(self) -> str:
-        return self.target.account_host.rstrip("/") + _BUDGET_PATH.format(
-            account_id=urllib.parse.quote(self.target.account_id, safe=""),
-            budget_id=urllib.parse.quote(self.target.budget_id, safe=""),
+    def _account_path(self) -> str:
+        return _BUDGET_PATH.format(
+            account_id=urllib.parse.quote(self.account_id, safe=""),
+            budget_id=urllib.parse.quote(self.budget_id, safe=""),
         )
-
-    def _workspace_request(
-        self, method: str, path: str, body: Mapping[str, Any] | None, operation: str
-    ) -> Any:
-        token = self.session.env["DATABRICKS_BEARER"]
-        return _request_json(method, self.workspace + path, token, body, operation)
 
     def _record(self, kind: str, **fields: object) -> None:
         self._evidence += 1

@@ -112,7 +112,7 @@ class UserSession:
             "DATABRICKS_BEARER",
             "DATABRICKS_SECOND_BEARER",
             "CLAUDE_CODE_OAUTH_TOKEN",
-            "UG_BUDGET_ACCOUNT_TOKEN",
+            "UG_CUJ_SP_CLIENT_SECRET",
         ):
             for token in (os.environ.get(name), self.env.get(name)):
                 if token:
