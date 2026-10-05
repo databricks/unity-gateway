@@ -24,6 +24,12 @@ Claude's native resolver tests remain in
 `test_agent_claude.py`; installation failures are covered in `test_agents_init.py`.
 These are component checks, not live Windows coverage for every agent.
 
+`test_agent_interface.py` covers the `Agent` contract in `agents/interface.py` for every agent in
+the `AGENTS` registry: protocol conformance, install metadata, model inventories that never mutate
+state, the status semantics of the pinned starting model, and revert row shape. It also checks that
+an unknown agent name raises instead of configuring OpenCode. These are component checks over the
+shared dispatch; per-agent config writing stays in each `test_agent_<name>.py`.
+
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 

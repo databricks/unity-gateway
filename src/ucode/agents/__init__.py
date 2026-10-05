@@ -4,9 +4,11 @@ Each `agents.<tool>` module owns its own config layout, overlay rendering,
 config-file writer, default-model selection, and launch logic. This `__init__`
 aggregates the registry and exposes uniform dispatchers for the rest of the codebase.
 
-Adding a new agent: create `agents/<name>.py` exposing `SPEC`, `write_tool_config`,
-`default_model`, `launch`, `validate_cmd`. Then add an entry to `_MODULES`
-below and to `TOOL_ALIASES` if needed.
+Adding a new agent: implement the `Agent` protocol in `agents/interface.py` — read it first,
+it is the contract — and add the one instance to `AGENTS` below (plus `TOOL_ALIASES` if the
+CLI needs extra spellings). `AGENTS` is the single place an agent is listed; the dispatchers
+here go through it instead of branching on the agent's name. Agents written before the
+interface existed are adapted by `LegacyAgent` (see `agents/legacy.py`).
 """
 
 from __future__ import annotations
@@ -40,10 +42,31 @@ from ucode.ui import (
     spinner,
 )
 
-from . import claude, codex, copilot, gemini, opencode, pi
+from . import claude as claude
+from . import codex as codex
+from . import copilot as copilot
+from . import gemini
+from . import opencode as opencode
+from . import pi as pi
 from .args import LaunchOptions as LaunchOptions
 from .args import explicit_model_arg_value as explicit_model_arg_value
+from .interface import Agent as Agent
+from .interface import ConfigureRequest as ConfigureRequest
+from .legacy import LEGACY_AGENTS
 
+# The agents ug drives, in the order ug lists them. One entry per agent, and the only place
+# an agent is listed: every dispatcher below resolves through it rather than branching on a name.
+AGENTS: dict[str, Agent] = {
+    "codex": LEGACY_AGENTS["codex"],
+    "claude": LEGACY_AGENTS["claude"],
+    "gemini": LEGACY_AGENTS["gemini"],
+    "opencode": LEGACY_AGENTS["opencode"],
+    "copilot": LEGACY_AGENTS["copilot"],
+    "pi": LEGACY_AGENTS["pi"],
+}
+
+# Direct module access for the few things that are deliberately not in the Agent interface
+# (side-effecting default-model selection and the configured-paths summary).
 _MODULES = {
     "codex": codex,
     "claude": claude,
@@ -53,6 +76,7 @@ _MODULES = {
     "pi": pi,
 }
 
+# Config-file locations and labels, kept for modules that still read specs directly.
 TOOL_SPECS: dict[str, ToolSpec] = {name: module.SPEC for name, module in _MODULES.items()}
 
 
@@ -74,10 +98,6 @@ TOOL_ALIASES = {
 DEFAULT_TOOL = "codex"
 BUNDLE_VERSION = 1
 _MANAGED_SETTINGS_TOOLS = {"claude", "codex"}
-_NATIVE_UPGRADE_COMMANDS = {
-    "claude": ["claude", "upgrade"],
-    "codex": ["codex", "update"],
-}
 
 # ucode tool -> `databricks aitools` agent id. gemini/pi aren't supported.
 AITOOLS_AGENT_TOKENS = {
@@ -114,55 +134,50 @@ def install_databricks_ai_tools_for_agents(
 def normalize_tool(tool: str) -> str:
     normalized = TOOL_ALIASES.get(tool.strip().lower())
     if not normalized:
-        raise RuntimeError(
-            f"Unsupported tool '{tool}'. Use one of: codex, claude, gemini, opencode, copilot, pi."
-        )
+        raise RuntimeError(f"Unsupported tool '{tool}'. Use one of: {', '.join(AGENTS)}.")
     return normalized
 
 
 def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool:
-    spec = TOOL_SPECS[tool]
-    binary = spec["binary"]
-    package = spec["package"]
-    target = f"{package}@{version}" if version else package
+    agent = AGENTS[tool]
+    install = agent.install
+    target = f"{install.package}@{version}" if version else install.package
 
-    if tool in _NATIVE_UPGRADE_COMMANDS and version is None and shutil.which(binary):
-        command = _NATIVE_UPGRADE_COMMANDS[tool]
+    if install.upgrade_argv and version is None and shutil.which(install.binary):
+        command = list(install.upgrade_argv)
     else:
         if not shutil.which("npm"):
-            print_warning(f"`npm` is not available to update {spec['display']}; continuing.")
+            print_warning(f"`npm` is not available to update {agent.display}; continuing.")
             return False
         command = ["npm", "install", "-g", target]
 
-    print_note(f"Upgrading {spec['display']}...")
-    if tool == "codex":
+    print_note(f"Upgrading {agent.display}...")
+    if install.before_install is not None:
         # Detach potentially incompatible metadata until the next validated refresh.
-        codex.detach_app_model_catalog()
+        install.before_install()
     try:
         subprocess_cross_os.run(command, check=True, timeout=300)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        print_warning(f"Could not update {spec['display']}; continuing.")
+        print_warning(f"Could not update {agent.display}; continuing.")
         return False
 
-    print_success(f"{spec['display']} is up to date")
+    print_success(f"{agent.display} is up to date")
     agent_version.cache_clear()
-    return bool(shutil.which(binary))
+    return bool(shutil.which(install.binary))
 
 
 def _minimum_version_error(tool: str) -> str | None:
-    checker = getattr(_MODULES[tool], "minimum_version_error", None)
-    if not callable(checker):
-        return None
-    return checker()
+    """Return a blocking message when the installed tool is too old to drive, or None.
+    Agents opt in with `Install.version_error`."""
+    checker = AGENTS[tool].install.version_error
+    return checker() if checker is not None else None
 
 
 def _too_new_downgrade(tool: str) -> tuple[str, str] | None:
     """Return (installed_version, downgrade_target) when the installed tool is
-    too new to work, or None. Agents opt in by defining `too_new_downgrade`."""
-    checker = getattr(_MODULES[tool], "too_new_downgrade", None)
-    if not callable(checker):
-        return None
-    return checker()
+    too new to work, or None. Agents opt in with `Install.too_new`."""
+    checker = AGENTS[tool].install.too_new
+    return checker() if checker is not None else None
 
 
 def _maybe_downgrade_too_new_tool(tool: str) -> bool:
@@ -177,13 +192,13 @@ def _maybe_downgrade_too_new_tool(tool: str) -> bool:
     downgrade = _too_new_downgrade(tool)
     if not downgrade:
         return False
-    spec = TOOL_SPECS[tool]
+    display = AGENTS[tool].display
     installed, target = downgrade
     print_warning(
-        f"{spec['display']} {installed} is newer than the latest version known to work "
+        f"{display} {installed} is newer than the latest version known to work "
         f"with the Databricks AI Gateway ({target})."
     )
-    if prompt_yes_no(f"Downgrade {spec['display']} from {installed} to {target}?"):
+    if prompt_yes_no(f"Downgrade {display} from {installed} to {target}?"):
         _update_installed_tool_binary(tool, version=target)
     return True
 
@@ -193,9 +208,10 @@ def install_tool_binary(
     *,
     strict: bool = True,
 ) -> bool:
-    spec = TOOL_SPECS[tool]
-    binary = spec["binary"]
-    package = spec["package"]
+    agent = AGENTS[tool]
+    install = agent.install
+    binary = install.binary
+    package = install.package
 
     if shutil.which(binary):
         # A too-new build is a correctness blocker (the tool runs but misbehaves
@@ -208,8 +224,8 @@ def install_tool_binary(
             print_warning(version_error)
             # Native upgraders run in place, so confirm before mutating the install;
             # EOF/piped runs take the default and upgrade (a required fix must not stall).
-            if tool in _NATIVE_UPGRADE_COMMANDS and not prompt_yes_no_default(
-                f"Upgrade {spec['display']} if available?", default=True
+            if install.upgrade_argv and not prompt_yes_no_default(
+                f"Upgrade {agent.display} if available?", default=True
             ):
                 raise RuntimeError(version_error)
             if not _update_installed_tool_binary(tool):
@@ -227,20 +243,20 @@ def install_tool_binary(
         return False
 
     print_section("Bootstrap")
-    print_warning(f"`{binary}` was not found. Installing {spec['display']}...")
-    if tool == "codex":
-        codex.detach_app_model_catalog()
+    print_warning(f"`{binary}` was not found. Installing {agent.display}...")
+    if install.before_install is not None:
+        install.before_install()
     try:
         subprocess_cross_os.run(["npm", "install", "-g", package], check=True, timeout=300)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        message = f"Failed to install {spec['display']} automatically."
+        message = f"Failed to install {agent.display} automatically."
         if strict:
             raise RuntimeError(message) from exc
         print_warning(f"{message} Continuing without it.")
         return False
 
     if not shutil.which(binary):
-        message = f"{spec['display']} install completed, but `{binary}` is still not on PATH."
+        message = f"{agent.display} install completed, but `{binary}` is still not on PATH."
         if strict:
             raise RuntimeError(message)
         print_warning(f"{message} Continuing without it.")
@@ -250,20 +266,20 @@ def install_tool_binary(
 
 
 def ensure_tool_binary_available(tool: str) -> None:
-    spec = TOOL_SPECS[tool]
-    binary = spec["binary"]
+    agent = AGENTS[tool]
+    binary = agent.install.binary
     if shutil.which(binary):
         return
     raise RuntimeError(
-        f"{spec['display']} is not installed (`{binary}` was not found on PATH). "
-        f"Install it with `npm install -g {spec['package']}` or run "
+        f"{agent.display} is not installed (`{binary}` was not found on PATH). "
+        f"Install it with `npm install -g {agent.install.package}` or run "
         f"`ucode configure` to try automatic installation."
     )
 
 
 def tool_binary_installed(tool: str) -> bool:
     """True when the agent's CLI binary is on PATH. Read-only — for ``ucode doctor``."""
-    return bool(shutil.which(TOOL_SPECS[tool]["binary"]))
+    return bool(shutil.which(AGENTS[tool].install.binary))
 
 
 def update_tool_binary(tool: str) -> bool:
@@ -405,45 +421,21 @@ def configure_tool(
     parent_schema: str | None = None,
     picker_catalog: AnthropicModelCatalog | None = None,
 ) -> dict:
-    result: dict | tuple[dict, str]
-    if tool == "codex":
-        result = codex.write_tool_config(
-            state, model, provider=provider, parent_schema=parent_schema
-        )
-    elif tool == "claude":
-        # A Model Provider Service or parent schema routes by header and discovers models natively,
-        # so the usual "model required" guard doesn't apply to either Claude source.
-        if not model and not provider and not parent_schema:
-            raise RuntimeError(f"A {tool} model must be selected before configuration.")
-        result = claude.write_tool_config(
-            state,
-            model,
-            provider=provider,
-            provider_models=provider_models,
-            relayed=relayed,
-            route_root_model=route_root_model,
-            custom_model=custom_model,
-            coding_agent_config_defaults=coding_agent_config_defaults,
-            parent_schema=parent_schema,
-            picker_catalog=picker_catalog,
-        )
-    else:
-        # Every tool in this branch needs a model — including gemini under a provider,
-        # which still pins the service's target model in the URL.
-        if not model:
-            raise RuntimeError(f"A {tool} model must be selected before configuration.")
-        if tool == "gemini":
-            result = gemini.write_tool_config(state, model, provider=provider)
-        elif tool == "copilot":
-            result = copilot.write_tool_config(state, model)
-        elif tool == "pi":
-            result = pi.write_tool_config(state, model)
-        else:
-            result = opencode.write_tool_config(state, model)
-    # gemini/opencode/copilot/pi return (state, token); codex/claude return state
-    if isinstance(result, tuple):
-        return result[0]
-    return result
+    request = ConfigureRequest(
+        model=model,
+        provider=provider,
+        parent_schema=parent_schema,
+        # Launch-time inputs only Claude reads today; see ConfigureRequest.extras.
+        extras={
+            "provider_models": provider_models,
+            "relayed": relayed,
+            "route_root_model": route_root_model,
+            "custom_model": custom_model,
+            "coding_agent_config_defaults": coding_agent_config_defaults,
+            "picker_catalog": picker_catalog,
+        },
+    )
+    return AGENTS[tool].configure(state, request)
 
 
 def configured_paths(tool: str, state: dict) -> list[str]:
@@ -472,11 +464,18 @@ def launch(
     *,
     options: LaunchOptions,
 ) -> None:
-    _MODULES[tool].launch(state, tool_args, options=options)
+    AGENTS[tool].launch(state, tool_args, options=options)
 
 
 def check_gateway_endpoint(state: dict, tool: str) -> bool:
-    """V2-only: a tool is available iff we discovered models for it."""
+    """V2-only: a tool is available iff we discovered models for it.
+
+    Deliberately not ``AGENTS[tool].models(state).available``: this gate asks only whether
+    *workspace discovery* found anything, so an admin's managed allow list (``copilot_models``,
+    ``pi_models``, ``{tool}_static_models``) must not make an agent look available when the
+    workspace serves none of the families behind it. The managed configure path calls this with
+    a managed-resolved state, where those keys are set.
+    """
     if tool == "claude":
         return bool(state.get("claude_models"))
     if tool == "opencode":

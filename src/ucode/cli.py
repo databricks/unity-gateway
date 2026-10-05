@@ -21,6 +21,7 @@ from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
 from ucode import custom_oauth
 from ucode.agents import (
+    AGENTS,
     TOOL_SPECS,
     LaunchOptions,
     check_gateway_endpoint,
@@ -43,9 +44,7 @@ from ucode.agents import (
     launch as launch_agent,
 )
 from ucode.agents.args import has_explicit_model_arg
-from ucode.agents.codex import revert_legacy_shared_config
-from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
-from ucode.config_io import is_dry_run, restore_file, set_dry_run
+from ucode.config_io import is_dry_run, set_dry_run
 from ucode.constants import SMART_ROUTING_ENV_KEYS
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_CLI_ENV_VAR,
@@ -1046,45 +1045,18 @@ def _print_status_panel(title: str, rows: list[tuple[str, str]]) -> None:
     )
 
 
-def _model_values(value: object) -> list[str]:
-    if isinstance(value, str):
-        return [value] if value else []
-    if isinstance(value, list):
-        return [item for item in value if isinstance(item, str) and item]
-    if isinstance(value, dict):
-        return [model for models in value.values() for model in _model_values(models)]
-    return []
-
-
 def _status_models(tool: str, state: dict) -> list[str]:
     """Return the effective model allow-list for one configured agent."""
-    static_models = _model_values(state.get(f"{tool}_static_models"))
-    if static_models:
-        models = static_models
-    elif tool in ("claude", "codex", "gemini", "opencode"):
-        models = _model_values(state.get(f"{tool}_models"))
-    elif tool == "copilot":
-        models = _model_values(state.get("copilot_models")) or (
-            _model_values(state.get("claude_models")) + _model_values(state.get("codex_models"))
-        )
-    elif tool == "pi":
-        models = _model_values(state.get("pi_models")) or (
-            _model_values(state.get("claude_models"))
-            + _model_values(state.get("codex_models"))
-            + _model_values(state.get("gemini_models"))
-        )
-    else:
-        models = []
-    return list(dict.fromkeys(models))
+    return list(AGENTS[tool].models(state).available)
 
 
 def _status_default_model(tool: str, state: dict, models: list[str]) -> str | None:
     explicit = state.get(f"{tool}_default_model")
     if isinstance(explicit, str) and explicit:
         return explicit
-    # Claude and Codex deliberately leave the starting model to the agent unless a managed
-    # config pins one. The other clients write the first resolved model into their ug config.
-    return models[0] if models and tool in ("gemini", "opencode", "copilot", "pi") else None
+    # `models` is blanked above for a provider service, which names its own models — so there
+    # is no starting model to report even for an agent that would pin one.
+    return AGENTS[tool].models(state).default if models else None
 
 
 def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
@@ -1268,34 +1240,15 @@ def status() -> int:
 
 def revert() -> int:
     state = load_state()
-    managed_configs = state.get("managed_configs") or {}
     mcp_results = revert_mcp_configs(state)
-    claude_managed_result = claude_agent.revert_managed_settings()
-    codex_managed_result = codex_agent.revert_managed_config()
-
-    results: dict[str, bool] = {
-        tool: restore_file(
-            spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool))
-        )
-        for tool, spec in TOOL_SPECS.items()
-    }
-    pi_settings_restored = restore_file(
-        PI_SETTINGS_PATH, PI_SETTINGS_BACKUP_PATH, bool(managed_configs.get("pi"))
-    )
-    # Older Codex (< 0.134.0) had ucode edit the shared ~/.codex/config.toml in
-    # place; restoring the per-profile file above does not undo that.
-    legacy_codex_stripped = revert_legacy_shared_config()
+    # Each agent undoes its own files and reports the rows to print for them.
+    agent_rows = [row for agent in AGENTS.values() for row in agent.revert(state)]
     clear_state()
 
     print_heading("Revert")
     print_kv("Workspace", state.get("workspace") or "none")
-    for tool, spec in TOOL_SPECS.items():
-        print_kv(f"{spec['display']} config", "restored" if results[tool] else "unchanged")
-    if legacy_codex_stripped:
-        print_kv("Codex shared config", "ucode entries removed")
-    print_kv("Claude Code OS-managed settings", claude_managed_result)
-    print_kv("Codex OS-managed settings", codex_managed_result)
-    print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
+    for label, outcome in agent_rows:
+        print_kv(label, outcome)
     for client, spec in MCP_CLIENTS.items():
         print_kv(
             f"{spec['display']} MCP config",
