@@ -65,13 +65,13 @@ def test_windows_integration_ci_uses_shared_claude_version():
 def test_dedicated_cuj_job_uses_shared_credentials_and_queued_suite():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     contents = workflow.read_text()
-    cuj = contents.split("\n  cuj5:\n", 1)[1].split("\n  # Non-blocking:", 1)[0]
+    cuj = contents.split("\n  cuj:\n", 1)[1].split("\n  # Non-blocking:", 1)[0]
 
-    assert "group: e2e-cuj5" in cuj
+    assert "group: e2e-cuj" in cuj
     assert "queue: max" in cuj
     assert "cancel-in-progress: false" in cuj
     assert "TEST_SUITE: e2e-cuj" in cuj
-    assert "TEST_MARKER: cuj5" in cuj
+    assert "TEST_MARKER: cuj" in cuj
     assert "UG_CUJ_SP_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}" in cuj
     assert "UG_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}" in cuj
     for legacy in (
@@ -83,15 +83,16 @@ def test_dedicated_cuj_job_uses_shared_credentials_and_queued_suite():
         assert legacy not in cuj
 
 
-def test_integration_workflows_do_not_define_workflow_level_concurrency():
+def test_cuj_workflow_ancestors_do_not_cancel_active_runs():
     root = Path(__file__).parent.parent
     for path in (root / ".github/workflows/integration.yml", root / ".github/workflows/ci.yml"):
         header = path.read_text().split("\njobs:\n", 1)[0]
-        assert "\nconcurrency:" not in header, path
+        assert "queue: max" in header, path
+        assert "cancel-in-progress: false" in header, path
 
 
 @pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
-@pytest.mark.parametrize("required_job", ["managed", "cuj5"])
+@pytest.mark.parametrize("required_job", ["managed", "cuj"])
 @pytest.mark.parametrize("job_result", ["success", "failure", "cancelled", "skipped"])
 def test_integration_ci_gate_requires_selected_jobs(suite, required_job, job_result):
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
@@ -100,7 +101,7 @@ def test_integration_ci_gate_requires_selected_jobs(suite, required_job, job_res
     assert script is not None
     results = {
         job: {"result": "success"}
-        for job in ("installation", "workspace", "smoke", "full", "cuj5", "managed")
+        for job in ("installation", "workspace", "smoke", "full", "cuj", "managed")
     }
     results[required_job]["result"] = job_result
     for job in {
@@ -116,7 +117,7 @@ def test_integration_ci_gate_requires_selected_jobs(suite, required_job, job_res
         text=True,
         timeout=10,
     )
-    selected = suite in {"full", "live"} or (required_job == "cuj5" and suite == "tui")
+    selected = suite in {"full", "live"} or (required_job == "cuj" and suite == "tui")
     if selected and job_result != "success":
         assert result.returncode != 0
         assert f"Integration jobs did not pass: {required_job}" in result.stderr

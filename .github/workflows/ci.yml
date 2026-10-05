@@ -10,6 +10,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  # Integration includes a serialized CUJ that mutates a shared target; keep
+  # the enclosing workflow queued so cancellation cannot interrupt cleanup.
+  queue: max
+  cancel-in-progress: false
+
 jobs:
   lint:
     name: Lint

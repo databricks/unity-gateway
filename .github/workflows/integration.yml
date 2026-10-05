@@ -42,6 +42,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: integration-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  # Dedicated CUJs mutate shared targets. Keep runs queued so a newer
+  # commit cannot interrupt an active mutation before its cleanup runs.
+  queue: max
+  cancel-in-progress: false
+
 env:
   EXPECTED_WORKSPACE: https://eng-ml-inference-team-us-east-1.cloud.databricks.com
   UG_VERSION: ${{ inputs.ug_version || 'checkout' }}
@@ -344,13 +351,13 @@ jobs:
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}
     steps: *live-steps
 
-  cuj5:
-    name: "CUJ5: budget defaults · Claude and Codex"
+  cuj:
+    name: "Dedicated CUJs · Claude and Codex"
     if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 70
     concurrency:
-      group: e2e-cuj5
+      group: e2e-cuj
       queue: max
       cancel-in-progress: false
     env:
@@ -359,8 +366,8 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: both
       TEST_SUITE: e2e-cuj
-      TEST_MARKER: cuj5
-      ARTIFACT_NAME: integration-cuj5
+      TEST_MARKER: cuj
+      ARTIFACT_NAME: integration-e2e-cuj
     steps: *live-steps
 
   # Non-blocking: continue-on-error and absent from the cujs `needs`, so a flaky OpenCode
@@ -449,7 +456,7 @@ jobs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     # installation-windows remains advisory until its initial platform issues are fixed.
-    needs: [installation, workspace, smoke, full, cuj5, managed]
+    needs: [installation, workspace, smoke, full, cuj, managed]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -470,7 +477,7 @@ jobs:
                   required.append("smoke")
               if suite != "smoke":
                   required.append("full")
-                  required.append("cuj5")
+                  required.append("cuj")
           if suite in {"full", "live"}:
               required.append("managed")
           failed = [job for job in required if results[job]["result"] != "success"]

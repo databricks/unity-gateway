@@ -27,7 +27,7 @@ Run the six cases through the dedicated suite from a clean POSIX runner:
 UG_CUJ_SP_CLIENT_ID=... UG_CUJ_SP_CLIENT_SECRET=... \
 python3.12 scripts/run_integration.py \
   --suite e2e-cuj --ug-version checkout \
-  --claude-version 2.1.280 --codex-version 0.154.0 -- -m cuj5
+  --claude-version 2.1.280 --codex-version 0.154.0 -- -m cuj
 ```
 
 The runner installs `databricks-sdk==0.135.0` in the isolated test environment.
@@ -332,7 +332,7 @@ real model tasks.
 
 There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
 checks** with Claude and Codex. The separate dedicated-workspace suite adds six
-budget cases selected by `-m cuj5` and run by the `cuj5` job.
+budget cases selected by `-m cuj` and run by the `cuj` job.
 Selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
@@ -501,12 +501,8 @@ Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
 two agent jobs). Full runs all 62 live cases, including those smoke cases, in two
-disjoint agent lanes. The dedicated `cuj5` job runs its six budget cases with
-both agent binaries on one runner. Its `e2e-cuj5` concurrency group serializes only
-CUJ5 across runs. The parent workflows have no concurrency group, so other jobs
-can overlap across runs and newer commits do not automatically cancel older runs.
-
-The full-suite agent lanes are:
+disjoint agent lanes. The dedicated `cuj` job runs its six budget cases with
+both agent binaries on one runner:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
@@ -528,11 +524,11 @@ No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, workspace validation, smoke,
-both full lanes, both managed lanes, and `cuj5` to pass for full/live runs. TUI runs also require
-`cuj5`; managed jobs are intentionally not selected for TUI. Each tracing journey is
+both full lanes, both managed lanes, and `cuj` to pass for full/live runs. TUI runs also require
+`cuj`; managed jobs are intentionally not selected for TUI. Each tracing journey is
 included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
 a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke
-and installation subsets do not select `cuj5` or managed tests.
+and installation subsets do not select `cuj` or managed tests.
 The advisory Windows installation and headless lanes are not yet included in that aggregate check.
 The existing required `e2e` context also waits for the complete integration workflow, so integration
 cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
@@ -652,7 +648,7 @@ For a manual run, use **Actions → Integration → Run workflow**, select the b
 and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
 alias for `full`. Manual subsets are explicit: `smoke` runs just the six smoke
 cases; `tui` adds `and tui` to each agent lane's marker and runs all 12 live TUI cases,
-and also runs the dedicated `cuj5` job. Installation checks always run. Set the ug/agent
+and also runs the dedicated `cuj` job. Installation checks always run. Set the ug/agent
 versions. From the CLI:
 
 ```bash
@@ -681,7 +677,7 @@ gh run download RUN_ID -R databricks/unity-gateway \
 ```
 
 Use `integration-full-AGENT` for a full lane, `integration-smoke-AGENT` for
-smoke, or `integration-cuj5` for the budget journeys. Use `integration-installation` for Linux package failures, or
+smoke, or `integration-e2e-cuj` for the budget journeys. Use `integration-installation` for Linux package failures, or
 `integration-installation-windows` for native Windows package failures, or
 `integration-headless-windows-claude` for the Windows gateway journey. Older runs used
 `integration-full-AGENT-GROUP`, `integration-cujs`, or numbered `integration-live-*`
