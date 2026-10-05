@@ -15,13 +15,13 @@ does not yet assert live `recommendModel` request counts for configs with and wi
 
 ## Dedicated-workspace CUJs
 
-The budget-default journeys live in
+The budget model-selection test lives in
 [`../e2e_cuj/test_ug_budget_defaults.py`](../e2e_cuj/test_ug_budget_defaults.py),
 outside this existing-workspace integration suite. The test owns its workspace,
-account, budget, and model identifiers, while CI forwards only the shared
+budget and model identifiers, while CI forwards only the shared
 `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET` secrets.
 
-Run the six cases through the dedicated suite from a clean POSIX runner:
+Run the case through the dedicated suite from a clean POSIX runner:
 
 ```bash
 UG_CUJ_SP_CLIENT_ID=... UG_CUJ_SP_CLIENT_SECRET=... \
@@ -31,10 +31,12 @@ python3.12 scripts/run_integration.py \
 ```
 
 The runner installs `databricks-sdk==0.135.0` in the isolated test environment.
-Workspace and account clients refresh OAuth M2M tokens for backend calls, including
-budget restoration. Do not overlap a local run with
-CI: the cases mutate a shared budget threshold and restore it during cleanup. If a
-run is interrupted, verify the recorded original threshold before rerunning.
+The workspace client reads the published config and real recommendation using
+OAuth M2M. The single 2% tier must recommend Codex on `system.ai.gpt-5-6-luna`
+for the test principal. The test launches bare `ug` and verifies Codex selects
+Luna over its managed Sol default; it submits no inference task. It neither writes
+the budget nor requires account-level authentication. Independent runners can
+overlap; each still needs isolated machine-level agent settings.
 
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
@@ -331,8 +333,8 @@ they only configure, list models, and open/close the picker. Other live CUJs per
 real model tasks.
 
 There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with Claude and Codex. The separate dedicated-workspace suite adds six
-budget cases selected by `-m cuj` and run by the `cuj` job.
+checks** with Claude and Codex. The separate dedicated-workspace suite adds one
+budget model-selection case selected by `-m cuj` and run by the `cuj` job.
 Selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
@@ -501,8 +503,11 @@ Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
 two agent jobs). Full runs all 62 live cases, including those smoke cases, in two
-disjoint agent lanes. The dedicated `cuj` job runs its six budget cases with
-both agent binaries on one runner:
+disjoint agent lanes. The dedicated `cuj` job runs one budget model-selection case
+with both agent binaries installed and no cross-run concurrency lock. The parent
+workflows retain their normal cancellation of superseded runs.
+
+The full-suite agent lanes are:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
@@ -677,7 +682,7 @@ gh run download RUN_ID -R databricks/unity-gateway \
 ```
 
 Use `integration-full-AGENT` for a full lane, `integration-smoke-AGENT` for
-smoke, or `integration-e2e-cuj` for the budget journeys. Use `integration-installation` for Linux package failures, or
+smoke, or `integration-e2e-cuj` for the budget model-selection test. Use `integration-installation` for Linux package failures, or
 `integration-installation-windows` for native Windows package failures, or
 `integration-headless-windows-claude` for the Windows gateway journey. Older runs used
 `integration-full-AGENT-GROUP`, `integration-cujs`, or numbered `integration-live-*`

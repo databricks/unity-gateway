@@ -2,7 +2,6 @@
 
 import json
 import re
-import subprocess
 import uuid
 from pathlib import Path
 
@@ -274,98 +273,3 @@ def assert_subagent_routed(
     # Some agent versions omit the child's model from SubagentStart. The report
     # preserves that unknown value; this test claims decision + spawn + task,
     # not model-identity verification when the agent did not expose it.
-
-
-def assert_task_model(session, agent: str, task, expected_model: str, label: str) -> str:
-    """Require the unique task's native completion to use the expected model."""
-
-    def normalize(model):
-        model = model.removeprefix("system.ai.").removesuffix("[1m]").removesuffix("[200k]")
-        return re.sub(r"^(gpt-\d+)-(\d+)", r"\1.\2", model) if agent == "codex" else model
-
-    observed = []
-    for path, records in agent_sessions(session, agent).items():
-        if is_child_session(agent, path, records):
-            continue
-        contexts = {}
-        for record in records:
-            if agent == "claude":
-                if record.get("type") != "assistant":
-                    continue
-                message = record.get("message", {})
-                if message.get("role") != "assistant":
-                    continue
-                content = message.get("content")
-                answer = (
-                    content
-                    if isinstance(content, str)
-                    else "\n".join(assistant_answers(agent, [record]))
-                )
-                if task.value not in answer:
-                    continue
-                model = message.get("model")
-                assert isinstance(model, str) and model, f"Claude task answer has no model: {path}"
-            else:
-                payload = record.get("payload", {})
-                if record.get("type") == "turn_context" and payload.get("turn_id"):
-                    contexts[payload["turn_id"]] = payload.get("model")
-                    continue
-                if record.get("type") != "event_msg" or payload.get("type") != "task_complete":
-                    continue
-                answer = payload.get("last_agent_message")
-                if not isinstance(answer, str) or task.value not in answer:
-                    continue
-                model = contexts.get(payload.get("turn_id"))
-                assert isinstance(model, str) and model, (
-                    f"Codex task completion has no preceding model context: {path}"
-                )
-            observed.append(model)
-
-    assert observed, f"{label}: completed {agent} task exposed no native request model"
-    models = {normalize(model) for model in observed}
-    expected = normalize(expected_model)
-    session.record(f"{label}-task-model.json", {"agent": agent, "models": sorted(models)})
-    assert models == {expected}, (
-        f"{label}: completed {agent} task used models {sorted(models)!r}, expected {expected!r}"
-    )
-    return observed[-1]
-
-
-def assert_native_process(terminal, agent: str, label: str, session) -> None:
-    """Require a real Claude/Codex executable or its installed npm package in the PTY tree."""
-    root_pid = int(terminal.child.pid)
-    result = subprocess.run(
-        ["ps", "-axo", "pid=,ppid=,comm=,args="],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-    rows = {}
-    for line in result.stdout.splitlines():
-        match = re.match(r"\s*(\d+)\s+(\d+)\s+(\S+)(?:\s+(.*))?$", line)
-        if match:
-            rows[int(match.group(1))] = {
-                "pid": int(match.group(1)),
-                "ppid": int(match.group(2)),
-                "executable": match.group(3),
-                "command": (match.group(4) or "").strip(),
-            }
-    descendants = {root_pid}
-    while True:
-        new = {row["pid"] for row in rows.values() if row["ppid"] in descendants} - descendants
-        if not new:
-            break
-        descendants.update(new)
-    package = {
-        "claude": "/node_modules/@anthropic-ai/claude-code/",
-        "codex": "/node_modules/@openai/codex/",
-    }[agent]
-    native = [
-        row
-        for pid, row in rows.items()
-        if pid in descendants
-        and (Path(row["executable"]).name == agent or package in row["command"])
-    ]
-    assert native, f"{label}: no native {agent} process in PTY descendants"
-    session.record(f"{label}-process.json", {"root_pid": root_pid, "native": native})

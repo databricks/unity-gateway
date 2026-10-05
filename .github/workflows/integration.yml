@@ -44,10 +44,7 @@ permissions:
 
 concurrency:
   group: integration-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
-  # Dedicated CUJs mutate shared targets. Keep runs queued so a newer
-  # commit cannot interrupt an active mutation before its cleanup runs.
-  queue: max
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   EXPECTED_WORKSPACE: https://eng-ml-inference-team-us-east-1.cloud.databricks.com
@@ -356,10 +353,6 @@ jobs:
     if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 70
-    concurrency:
-      group: e2e-cuj
-      queue: max
-      cancel-in-progress: false
     env:
       UG_CUJ_SP_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
       UG_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}

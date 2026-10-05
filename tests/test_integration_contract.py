@@ -62,33 +62,16 @@ def test_windows_integration_ci_uses_shared_claude_version():
     assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
 
 
-def test_dedicated_cuj_job_uses_shared_credentials_and_queued_suite():
+def test_dedicated_cuj_job_uses_shared_credentials_without_serialization():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     contents = workflow.read_text()
     cuj = contents.split("\n  cuj:\n", 1)[1].split("\n  # Non-blocking:", 1)[0]
 
-    assert "group: e2e-cuj" in cuj
-    assert "queue: max" in cuj
-    assert "cancel-in-progress: false" in cuj
+    assert "concurrency:" not in cuj
     assert "TEST_SUITE: e2e-cuj" in cuj
     assert "TEST_MARKER: cuj" in cuj
     assert "UG_CUJ_SP_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}" in cuj
     assert "UG_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}" in cuj
-    for legacy in (
-        "UG_CUJ5_WORKSPACE",
-        "DATABRICKS_CLIENT_ID",
-        "DATABRICKS_CLIENT_SECRET",
-        "UG_BUDGET_",
-    ):
-        assert legacy not in cuj
-
-
-def test_cuj_workflow_ancestors_do_not_cancel_active_runs():
-    root = Path(__file__).parent.parent
-    for path in (root / ".github/workflows/integration.yml", root / ".github/workflows/ci.yml"):
-        header = path.read_text().split("\njobs:\n", 1)[0]
-        assert "queue: max" in header, path
-        assert "cancel-in-progress: false" in header, path
 
 
 @pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
