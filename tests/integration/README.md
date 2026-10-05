@@ -15,7 +15,7 @@ does not yet assert live `recommendModel` request counts for configs with and wi
 
 ## Dedicated-workspace CUJs
 
-The budget model-selection test lives in
+The budget usage and model-selection test lives in
 [`../e2e_cuj/test_ug_budget_defaults.py`](../e2e_cuj/test_ug_budget_defaults.py),
 outside this existing-workspace integration suite. The test owns its workspace,
 budget and model identifiers, while CI forwards only the shared
@@ -33,7 +33,9 @@ python3.12 scripts/run_integration.py \
 The runner installs `databricks-sdk==0.135.0` in the isolated test environment.
 The workspace client reads the published config and real recommendation using
 OAuth M2M. The single 2% tier must recommend Codex on `system.ai.gpt-5-6-luna`
-for the test principal. The test launches bare `ug` and verifies Codex selects
+for the test principal. The test checks `ug usage` spend, threshold, and percentage
+against backend reads, allowing spend to increase while the command runs.
+It then launches bare `ug` and verifies Codex selects
 Luna over its managed Sol default; it submits no inference task. It neither writes
 the budget nor requires account-level authentication. Independent runners can
 overlap; each still needs isolated machine-level agent settings.
