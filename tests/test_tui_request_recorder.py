@@ -5,11 +5,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pytest
 
-from tests.e2e_cuj.helpers.tui_request_recorder import TuiRequestRecorder
+from tests.e2e_cuj.helpers.tui_request_recorder import (
+    RecordedRequest,
+    RecordedResponse,
+    TuiRequestRecorder,
+)
 
 
 @pytest.fixture
-def local_endpoint_url():
+def recorder():
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):
             pass
@@ -26,23 +30,26 @@ def local_endpoint_url():
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        yield f"http://127.0.0.1:{server.server_address[1]}"
+        endpoint = f"http://127.0.0.1:{server.server_address[1]}"
+        with TuiRequestRecorder(endpoint) as recorder:
+            yield recorder
         server.shutdown()
         thread.join()
 
 
-def test_records_request_payload(local_endpoint_url):
-    with TuiRequestRecorder(local_endpoint_url) as recorder:
-        httpx.post(
-            f"{recorder.url}/ai-gateway/routing/v1/routes:select",
-            json={"task": {"prompt": "hello"}},
-        )
+def assert_request(request: RecordedRequest):
+    assert request.payload["task"]["prompt"] == "hello"
 
-        request = recorder.expect_request(
-            method="POST", path="/ai-gateway/routing/v1/routes:select"
-        )
-        assert request.payload["task"]["prompt"] == "hello"
 
-        response = recorder.expect_response(request)
-        assert response.status_code == 200
-        assert response.payload["selected_model"] == "system.ai.test"
+def assert_response(response: RecordedResponse):
+    assert response.status_code == 200
+    assert response.payload["selected_model"] == "system.ai.test"
+
+
+def test_records_request_and_response(recorder):
+    path = "/ai-gateway/routing/v1/routes:select"
+    httpx.post(f"{recorder.url}{path}", json={"task": {"prompt": "hello"}})
+
+    request = recorder.expect_request(method="POST", path=path)
+    assert_request(request)
+    assert_response(recorder.expect_response(request))
