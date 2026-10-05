@@ -324,8 +324,8 @@ all admin-authored family defaults. Their replacement pickers contain those mapp
 the independently fetched MPS or UC schema catalog. MPS family shortcut rows remain separate
 from catalog rows for the same target; UC model IDs are deduplicated and catalog labels are retained.
 Direct renderer tests cover default/catalog composition, while focused CLI regressions verify UC
-catalog discovery with overall defaults, family defaults, both, or neither, along with explicit
-model selection and preservation of static model lists. Neither case injects
+catalog discovery with overall defaults, family defaults, or both, along with explicit model
+selection and preservation of static model lists. Neither case injects
 a config. Each obtains a token for its
 target workspace using OAuth client credentials. The two target service-principal client IDs are
 constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-2 and

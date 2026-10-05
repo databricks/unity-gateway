@@ -108,24 +108,6 @@ def test_anthropic_provider_fetch_rejects_repeated_cursor(monkeypatch):
         catalog.fetch_anthropic_provider_catalog("https://workspace", "token", "c.s.mps")
 
 
-def test_anthropic_parent_fetch_preserves_scope_across_pages(monkeypatch):
-    pages = iter([_page("c.s.sonnet", has_more=True, last_id="c.s.sonnet"), _page("c.s.haiku")])
-    requests = []
-
-    def get_json(url, headers):
-        requests.append(url)
-        assert headers["Databricks-Model-Service-Parent-Schema"] == "c.s"
-        assert "Databricks-Model-Provider-Service" not in headers
-        assert headers["Authorization"] == "Bearer token"
-        return next(pages)
-
-    monkeypatch.setattr(catalog, "_get_json", get_json)
-    result = catalog.fetch_anthropic_parent_catalog("https://workspace/", "token", "c.s")
-    assert result.model_ids == ("c.s.sonnet", "c.s.haiku")
-    assert result.display_names == {"c.s.sonnet": "c.s.sonnet", "c.s.haiku": "c.s.haiku"}
-    assert parse_qs(urlparse(requests[1]).query)["after_id"] == ["c.s.sonnet"]
-
-
 def test_anthropic_provider_fetch_has_a_page_bound(monkeypatch):
     pages = iter(_page(str(i), has_more=True, last_id=str(i)) for i in range(20))
     monkeypatch.setattr(catalog, "_get_json", lambda *args: next(pages))

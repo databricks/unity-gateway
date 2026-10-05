@@ -69,8 +69,8 @@ sign-in or TUI test.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
-Managed UC schema cases in `test_cli.py` retain the full discovered catalog with no defaults,
-an overall default, family defaults, or both, while preserving startup selection and family mappings.
+Managed UC schema regressions in `test_cli.py` retain non-default catalog models with an overall
+default, a family default, or both, while preserving startup selection and family mappings.
 `TestBuildClaudeArgv` also checks that caller permission denies survive ug's technical
 native-search deny in direct, relayed, and routing settings composition. Inline/file
 inputs, repeated settings, and empty launch overrides retain restrictions and leave
