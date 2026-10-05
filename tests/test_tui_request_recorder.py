@@ -62,9 +62,8 @@ def test_records_and_forwards_request():
         assert response.content == b"first"
         request = recorder.expect_request(path="/routes:select", after=checkpoint)
         assert request.query == "test=true"
-        assert request.json() == payload
+        assert request.payload == payload
         assert request.headers["authorization"] == "<redacted>"
-        recorder.assert_no_request(path="/missing", after=checkpoint)
 
         path, headers, body = upstream.requests[0]
         assert path == "/routes:select?test=true"

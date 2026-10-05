@@ -41,7 +41,9 @@ class RecordedRequest:
     headers: dict[str, str]
     body: bytes
 
-    def json(self) -> Any:
+    @property
+    def payload(self) -> Any:
+        """The JSON request payload."""
         return json.loads(self.body)
 
 
@@ -133,12 +135,6 @@ class TuiRequestRecorder:
                 if (remaining := deadline - time.monotonic()) <= 0:
                     raise AssertionError(f"Timed out waiting for TUI request: {method} {path}")
                 self._condition.wait(remaining)
-
-    def assert_no_request(
-        self, *, method: str | None = None, path: str | None = None, after: int = 0
-    ) -> None:
-        matches = self.requests(method=method, path=path, after=after)
-        assert not matches, f"Unexpected TUI request: {matches[0].method} {matches[0].path}"
 
     def _forward(self, handler: BaseHTTPRequestHandler) -> None:
         assert self._client
