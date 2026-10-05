@@ -56,6 +56,7 @@ from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
     apply_pat_environment,
     build_shared_base_urls,
+    databricks_cli_installed,
     discover_claude_models,
     discover_codex_models,
     discover_gemini_models,
@@ -2828,6 +2829,19 @@ def _launch_tool(
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []
         )
+        # Refuse an agent the managed config doesn't enable before installing or configuring it, so
+        # a blocked launch never downloads the agent first. Reading the config needs a known
+        # workspace and credentials; a first run without them is gated after setup instead.
+        early_managed: ManagedConfigResult | None = None
+        if (
+            managed is None
+            and existing.get("workspace")
+            and (databricks_cli_installed() or external_bearer_configured())
+        ):
+            early_managed = _fetch_managed_config(existing)
+        gate_managed = managed if managed is not None else (early_managed or (None, False))[0]
+        if not _launches_self_managed(gate_managed, existing, tool):
+            _reject_disabled_agent(gate_managed, tool)
         ensure_bootstrap_dependencies(
             tool,
             skip_cli_version_check=skip_preflight,
@@ -2852,7 +2866,12 @@ def _launch_tool(
         coding_agent_config_feature_disabled = False
         self_managed_launch = False
         if managed is None:
-            managed, coding_agent_config_feature_disabled = _fetch_managed_config(state)
+            # Reuse the pre-install read unless auto-configure just logged in, which may have
+            # replaced the credentials that read used.
+            if early_managed is not None and not needs_auto_configure:
+                managed, coding_agent_config_feature_disabled = early_managed
+            else:
+                managed, coding_agent_config_feature_disabled = _fetch_managed_config(state)
         # Must precede both managed-config rejections, which would otherwise block the launch.
         if _launches_self_managed(managed, state, tool):
             managed = None

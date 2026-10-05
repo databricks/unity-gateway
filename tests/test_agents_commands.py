@@ -518,3 +518,42 @@ class TestUnmanagedConfigureRecordsSelfManaged:
         with patch("ucode.cli.managed_write_session"):
             cli_mod.configure_workspace_command(workspaces=[(WORKSPACE, None)])
         assert not self_managed_agents(state)
+
+
+class TestBlockedLaunchSkipsInstall:
+    """A launch the managed config blocks is refused before the agent is installed or configured."""
+
+    @staticmethod
+    def _run(state, managed, *, cli_installed=True):
+        with (
+            patch("ucode.cli.load_state", return_value=state),
+            patch("ucode.cli.apply_pat_environment"),
+            patch("ucode.cli.databricks_cli_installed", return_value=cli_installed),
+            patch("ucode.cli.external_bearer_configured", return_value=False),
+            patch("ucode.cli._fetch_managed_config", return_value=(managed, False)) as fetch,
+            patch("ucode.cli.ensure_bootstrap_dependencies") as bootstrap,
+            patch("ucode.cli._auto_configure_tool") as auto_configure,
+        ):
+            result = runner.invoke(app, ["pi"])
+        return result, fetch, bootstrap, auto_configure
+
+    def test_blocked_agent_rejected_before_install(self):
+        state = {**BASE_STATE, "available_tools": ["claude"]}
+        result, _, bootstrap, auto_configure = self._run(state, {"enabled_agents": {"claude": {}}})
+        assert result.exit_code == 1, result.output
+        assert "ug agents add pi" in result.output
+        bootstrap.assert_not_called()  # pi is never downloaded
+        auto_configure.assert_not_called()
+
+    def test_self_managed_agent_still_installs(self):
+        state = {**BASE_STATE, "available_tools": ["claude"], SELF_MANAGED_AGENTS_KEY: ["pi"]}
+        _, _, bootstrap, _ = self._run(state, {"enabled_agents": {"claude": {}}})
+        bootstrap.assert_called_once()
+
+    def test_no_early_read_without_cli_or_bearer(self):
+        # Credentials can't be read yet, so the early check is skipped and setup proceeds.
+        state = {**BASE_STATE, "available_tools": ["claude"]}
+        _, _, bootstrap, _ = self._run(
+            state, {"enabled_agents": {"claude": {}}}, cli_installed=False
+        )
+        bootstrap.assert_called_once()
