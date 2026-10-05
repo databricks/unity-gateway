@@ -8,7 +8,7 @@ from tests.e2e_cuj.helpers.tui_request_recorder import TuiRequestRecorder
 
 
 @pytest.fixture
-def upstream_url():
+def local_endpoint_url():
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):
             pass
@@ -26,8 +26,8 @@ def upstream_url():
         thread.join()
 
 
-def test_records_request_payload(upstream_url):
-    with TuiRequestRecorder(upstream_url) as recorder:
+def test_records_request_payload(local_endpoint_url):
+    with TuiRequestRecorder(local_endpoint_url) as recorder:
         httpx.post(
             f"{recorder.url}/ai-gateway/routing/v1/routes:select",
             json={"task": {"prompt": "hello"}},
