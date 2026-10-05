@@ -277,10 +277,21 @@ class TestAgentsList:
         without_opencode = self._run(managed=managed, state=dict(BASE_STATE))
         assert "OpenCode" not in without_opencode.output
 
-    def test_no_managed_config_says_all_available(self):
+    def test_no_managed_config_shows_only_self_managed(self):
+        # Same shape as a managed workspace: no "available" rows, only agents set up as self-managed.
+        state = {**BASE_STATE, SELF_MANAGED_AGENTS_KEY: ["codex"]}
+        result = self._run(managed=None, state=state)
+        assert result.exit_code == 0, result.output
+        assert "No managed config" in result.output
+        assert "available" not in result.output.lower()
+        assert "Codex" in result.output and "self-managed" in result.output
+        assert "OpenCode" not in result.output
+
+    def test_no_managed_config_and_nothing_set_up(self):
         result = self._run(managed=None)
-        assert result.exit_code == 0
-        assert "available" in result.output.lower() or "No managed config" in result.output
+        assert result.exit_code == 0, result.output
+        assert "No agents set up" in result.output
+        assert "ug agents add" in result.output
 
     def test_no_workspace_exits_1(self):
         result = self._run(state={})

@@ -1567,9 +1567,9 @@ def agents_remove(
 def agents_list_cmd() -> None:
     """List the agents you can launch in the current workspace.
 
-    Shows admin-managed agents (enabled by your workspace admin) and self-managed agents (added by
-    you via ``ug agents add``). In a managed workspace, an agent the admin didn't enable is omitted
-    until you add it; with no managed config, every agent is available.
+    Shows admin-managed agents (enabled by your workspace admin) and self-managed agents (set up by
+    you via ``ug agents add``, or by ``ug configure`` when there's no managed config). Any other
+    agent is omitted until you add it.
     """
     try:
         state = load_state()
@@ -1584,9 +1584,7 @@ def agents_list_cmd() -> None:
         self_managed_list = self_managed_agents(state)
 
         if managed is None:
-            print_note(
-                "No managed config is published for this workspace; all agents are available."
-            )
+            print_note("No managed config is published for this workspace.")
 
         table = Table(box=None, pad_edge=False, header_style="bold")
         table.add_column("AGENT", no_wrap=True)
@@ -1599,16 +1597,14 @@ def agents_list_cmd() -> None:
                 badge = status_badge("admin-managed", "ok")
             elif tool in self_managed_list:
                 badge = status_badge("self-managed", "info")
-            elif enabled:
-                # A managed config that doesn't enable this agent hides it; `ug agents add` surfaces
-                # it as self-managed.
-                continue
             else:
-                badge = status_badge("available", "ok")
+                continue
             table.add_row(display, badge)
-        console.print(table)
-        if enabled:
-            print_note("Add another agent to run it self-managed with `ug agents add <agent>`.")
+        if table.row_count:
+            console.print(table)
+        else:
+            print_note("No agents set up for this workspace yet.")
+        print_note("Add another agent to run it self-managed with `ug agents add <agent>`.")
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
