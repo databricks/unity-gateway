@@ -308,19 +308,21 @@ class AgentTerminal(TerminalProcess):
     def open_model_picker(self, *, model_visible=None):
         """Open Claude's real model picker, record it, then return to the prompt."""
         self.submit("/model")
-        self.wait_for(
-            lambda text: "Select model" in text and "Switch between Claude models." in text,
-            "the model picker",
-            timeout=60,
-        )
-        if model_visible is not None:
-            # Native discovery can finish after the picker shell first renders.
+        if model_visible is None:
+            self.wait_for(
+                lambda text: "Select model" in text and "Switch between Claude models." in text,
+                "the model picker",
+                timeout=60,
+            )
+        else:
             self.wait_for(model_visible, "a discovered model in the picker", timeout=60)
         screen = self.visible
         self.actions.append({"reason": "model-picker-visible", "screen": screen})
         self.send("\x1b", "close the model picker")
         self.wait_for(
-            lambda text: "Select model" not in text,
+            lambda text: (
+                not model_visible(text) if model_visible is not None else "Select model" not in text
+            ),
             "the prompt after closing the model picker",
         )
         return screen

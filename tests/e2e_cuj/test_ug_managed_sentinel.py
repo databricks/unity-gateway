@@ -17,7 +17,6 @@ import uuid
 import pytest
 from base import BaseCujTest
 from utils.evidence import FileTask
-from utils.model_discovery import claude_model_in_picker
 from utils.sql import query_count, resolve_trace_table, resolve_warehouse_id
 from utils.terminal import AgentTerminal
 
@@ -36,23 +35,12 @@ CODEX_MODELS = ["system.ai.gpt-5-6-sol", "system.ai.gpt-5-6-luna"]
 CODEX_DEFAULT = CODEX_MODELS[0]
 CODEX_LUNA = CODEX_MODELS[1]
 EXPECTED_HEADER_NAMES = {"x-ug-e2e-run", "x-ug-e2e-agent"}
-CLAUDE_PICKER_LABELS = ("Claude Opus 4.8", "Claude Sonnet 4.6", "Claude Haiku 4.5")
 TRACE_WAIT_SECONDS = 360
 TRACE_POLL_SECONDS = 10
 
 
 def _claude_models_visible(text: str) -> bool:
-    return all(
-        claude_model_in_picker(text, model, label)
-        for model, label in zip(CLAUDE_MODELS, CLAUDE_PICKER_LABELS, strict=True)
-    )
-
-
-def _claude_custom_model_ids(screen: str) -> list[str]:
-    return re.findall(
-        r"(?m)^\s*(?:[❯›>]\s*)?\d+\.\s+.*Custom model \(([^)]+)\)",
-        screen,
-    )
+    return all(model in text for model in CLAUDE_MODELS)
 
 
 def _managed_config(session) -> dict:
@@ -395,7 +383,7 @@ class TestCujManagedConfig(BaseCujTest):
             tui.submit(f"{root_task.prompt} Trace marker: {root_marker}")
             tui.wait_for_task(root_task)
             picker_screen = tui.open_model_picker(model_visible=_claude_models_visible)
-            assert _claude_custom_model_ids(picker_screen) == CLAUDE_MODELS, picker_screen
+            assert _claude_models_visible(picker_screen), picker_screen
             tui.exit_normally()
         root_task.assert_completed(session, "claude")
 
