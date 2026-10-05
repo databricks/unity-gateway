@@ -12,6 +12,7 @@ from typing import NoReturn
 _ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 _CODEX_MODELS_PATH = "/ai-gateway/codex/v1/models"
 _PROVIDER_HEADER = "Databricks-Model-Provider-Service"
+_PARENT_SCHEMA_HEADER = "Databricks-Model-Service-Parent-Schema"
 _ANTHROPIC_VERSION = "2023-06-01"
 _ANTHROPIC_PAGE_SIZE = 1000
 _ANTHROPIC_MAX_PAGES = 20
@@ -173,9 +174,7 @@ def fetch_anthropic_parent_catalog(
     workspace: str, token: str, parent_schema: str
 ) -> AnthropicProviderCatalog:
     """Fetch the Anthropic-compatible models advertised for a Unity Catalog parent schema."""
-    return _fetch_anthropic_catalog(
-        workspace, token, parent_schema, "Databricks-Model-Service-Parent-Schema"
-    )
+    return _fetch_anthropic_catalog(workspace, token, parent_schema, _PARENT_SCHEMA_HEADER)
 
 
 def _fetch_anthropic_catalog(
@@ -242,7 +241,7 @@ def fetch_codex_parent_catalog(
         {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
-            "Databricks-Model-Service-Parent-Schema": parent_schema,
+            _PARENT_SCHEMA_HEADER: parent_schema,
         },
     )
     return CodexProviderCatalog(parse_codex_provider_catalog(payload))
