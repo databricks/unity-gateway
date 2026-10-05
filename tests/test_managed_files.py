@@ -748,10 +748,6 @@ class TestManagedFileLifecycle:
         snapshots = managed_files.managed_file_snapshots("claude", json.loads)
         assert snapshots.original_before_ug == {"enterprise": True}
         assert snapshots.last_applied_by_ug == {"enterprise": True, "ucode": True}
-        assert snapshots.owned_paths == [["ucode"]]
-
-    def test_snapshots_without_a_record_report_no_owned_paths(self, backup_dir):
-        assert managed_files.managed_file_snapshots("claude", json.loads).owned_paths is None
 
     def test_batch_messages_name_all_agents_once(self, tmp_path, backup_dir, monkeypatch):
         notes: list[str] = []
