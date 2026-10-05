@@ -8,7 +8,8 @@ import json
 import os
 import subprocess
 import sys
-import threading
+import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,20 @@ from ucode.skills_api import SkillRef
 WS = "https://example.databricks.com"
 TOKEN = "secret-token"
 SKILL_ID = "6f1c4b7a-2d0e-4a8b-9c3f-5e7d1a2b3c4d"
+UNREACHABLE_WORKSPACE = "https://127.0.0.1"
+UNREACHABLE_REPORT_POST = "POST https://127.0.0.1/ai-gateway/skills:reportSkillUsage"
+
+_REPORT_THEN_EXIT = f"""
+import sys
+from ucode.skills_api import SkillRef
+from ucode.skills_usage import report_skill_usage_in_background
+
+refs = [
+    SkillRef("main", "default", f"skill-{{i}}", f"skill-{{i}}", skill_id={SKILL_ID!r})
+    for i in range(int(sys.argv[1]))
+]
+report_skill_usage_in_background({UNREACHABLE_WORKSPACE!r}, {TOKEN!r}, refs)
+"""
 
 
 def ref(securable_name: str, skill_id: str | None = SKILL_ID) -> SkillRef:
@@ -32,22 +47,14 @@ def ref(securable_name: str, skill_id: str | None = SKILL_ID) -> SkillRef:
 
 
 class _ReporterStdin(io.StringIO):
-    """A reporter's stdin that keeps what ug wrote, optionally blocking writes until released."""
+    """A reporter's stdin that keeps what ug wrote once ug closes it."""
 
-    def __init__(self, release: threading.Event | None = None):
+    def __init__(self):
         super().__init__()
-        self.release = release
-        self.request: str | None = None
-        self.closed_by_ug = threading.Event()
-
-    def write(self, text: str) -> int:
-        if self.release is not None:
-            self.release.wait(timeout=5)
-        return super().write(text)
+        self.received: str | None = None
 
     def close(self) -> None:
-        self.request = self.getvalue()
-        self.closed_by_ug.set()
+        self.received = self.getvalue()
         super().close()
 
 
@@ -65,12 +72,33 @@ def reporters(monkeypatch) -> list[SimpleNamespace]:
     return started
 
 
+def isolated_debug_log(monkeypatch, home: Path) -> Path:
+    """Point reporters started by this test at ``home`` with debug logging on."""
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("UCODE_DEBUG", "1")
+    return home / ".ucode" / "debug.log"
+
+
+def wait_for_report_posts(debug_log: Path, expected: int) -> int:
+    deadline = time.monotonic() + 30
+    posts = 0
+    while time.monotonic() < deadline:
+        if debug_log.exists():
+            posts = debug_log.read_text(encoding="utf-8").count(UNREACHABLE_REPORT_POST)
+        if posts >= expected:
+            break
+        time.sleep(0.1)
+    return posts
+
+
 class TestReportSkillUsageInBackground:
-    def test_hands_the_request_to_a_detached_reporter_over_stdin(self, reporters):
+    def test_hands_skills_in_the_environment_and_the_token_on_stdin(self, reporters):
         su.report_skill_usage_in_background(WS, TOKEN, [ref("triage")])
 
         [reporter] = reporters
-        assert reporter.args == [sys.executable, "-m", "ucode.skills_usage"]
+        env = reporter.kwargs.pop("env")
+        assert reporter.args == [sys.executable, "-P", "-m", "ucode.skills_usage"]
         assert reporter.kwargs == {
             "stdin": subprocess.PIPE,
             "stdout": subprocess.DEVNULL,
@@ -78,25 +106,12 @@ class TestReportSkillUsageInBackground:
             "text": True,
             **su._DETACHED_POPEN_OPTIONS,
         }
-        assert reporter.stdin.closed_by_ug.wait(timeout=5)
-        assert json.loads(reporter.stdin.request) == {
+        assert json.loads(env.pop(su._REPORT_REQUEST_ENV_VAR)) == {
             "workspace": WS,
-            "token": TOKEN,
             "skills": [{"full_name": "main.default.triage", "id": SKILL_ID}],
         }
-
-    def test_returns_before_the_reporter_reads_the_request(self, monkeypatch):
-        release = threading.Event()
-        stdin = _ReporterStdin(release)
-        monkeypatch.setattr(
-            su.subprocess_cross_os, "popen", lambda args, **kwargs: SimpleNamespace(stdin=stdin)
-        )
-
-        su.report_skill_usage_in_background(WS, TOKEN, [ref("triage")])
-
-        assert not stdin.closed_by_ug.is_set()
-        release.set()
-        assert stdin.closed_by_ug.wait(timeout=5)
+        assert env == dict(os.environ)
+        assert reporter.stdin.received == TOKEN
 
     def test_skills_without_an_id_start_no_reporter(self, reporters):
         su.report_skill_usage_in_background(WS, TOKEN, [ref("triage", skill_id=None)])
@@ -111,12 +126,49 @@ class TestReportSkillUsageInBackground:
 
         su.report_skill_usage_in_background(WS, TOKEN, [ref("triage")])
 
-    def test_a_reporter_that_exits_before_reading_is_ignored(self):
+    def test_a_reporter_that_exits_before_reading_its_token_is_ignored(self, monkeypatch):
         class ClosedPipe(io.StringIO):
             def write(self, text: str) -> int:
                 raise BrokenPipeError
 
-        su._write_request(ClosedPipe(), "{}")
+        monkeypatch.setattr(
+            su.subprocess_cross_os,
+            "popen",
+            lambda args, **kwargs: SimpleNamespace(stdin=ClosedPipe()),
+        )
+
+        su.report_skill_usage_in_background(WS, TOKEN, [ref("triage")])
+
+
+class TestDetachedReporter:
+    def test_a_large_request_arrives_after_ug_exits_right_away(self, monkeypatch, tmp_path):
+        debug_log = isolated_debug_log(monkeypatch, tmp_path)
+        skill_count = 1000
+
+        subprocess.run(
+            [sys.executable, "-c", _REPORT_THEN_EXIT, str(skill_count)],
+            cwd=tmp_path,
+            timeout=60,
+            check=True,
+        )
+
+        assert wait_for_report_posts(debug_log, skill_count // 50) == skill_count // 50
+
+    def test_a_ucode_package_in_the_working_directory_is_not_run(self, monkeypatch, tmp_path):
+        debug_log = isolated_debug_log(monkeypatch, tmp_path / "home")
+        stolen = tmp_path / "stolen-token"
+        shadowing_package = tmp_path / "project" / "ucode"
+        shadowing_package.mkdir(parents=True)
+        (shadowing_package / "__init__.py").write_text("")
+        (shadowing_package / "skills_usage.py").write_text(
+            f"import sys\nopen({str(stolen)!r}, 'w').write(sys.stdin.read())\n"
+        )
+        monkeypatch.chdir(shadowing_package.parent)
+
+        su.report_skill_usage_in_background(UNREACHABLE_WORKSPACE, TOKEN, [ref("triage")])
+
+        assert wait_for_report_posts(debug_log, 1) == 1
+        assert not stolen.exists()
 
 
 def capture_failing_posts(monkeypatch) -> list[dict]:
@@ -131,8 +183,9 @@ def capture_failing_posts(monkeypatch) -> list[dict]:
 
 
 def run_reporter(monkeypatch, skills: list[dict]) -> None:
-    request = {"workspace": WS, "token": TOKEN, "skills": skills}
-    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(request)))
+    request = json.dumps({"workspace": WS, "skills": skills})
+    monkeypatch.setenv(su._REPORT_REQUEST_ENV_VAR, request)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(TOKEN))
     su.main()
 
 
@@ -163,25 +216,3 @@ class TestReporterMain:
         )
 
         assert [len(post["payload"]["skills"]) for post in posts] == [50, 1]
-
-    def test_runs_as_a_module_sending_the_request_from_its_stdin(self, tmp_path):
-        request = {
-            "workspace": "https://127.0.0.1",
-            "token": TOKEN,
-            "skills": [{"full_name": "main.default.triage", "id": SKILL_ID}],
-        }
-        home = {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
-
-        result = subprocess.run(
-            [sys.executable, "-m", "ucode.skills_usage"],
-            input=json.dumps(request),
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-            env={**os.environ, **home, "UCODE_DEBUG": "1"},
-        )
-
-        assert result.returncode == 0
-        debug_log = (tmp_path / ".ucode" / "debug.log").read_text(encoding="utf-8")
-        assert "POST https://127.0.0.1/ai-gateway/skills:reportSkillUsage" in debug_log
