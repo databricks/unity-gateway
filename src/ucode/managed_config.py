@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -59,6 +60,28 @@ AGENT_ENUM_TO_TOOL: dict[str, str] = {
     "CODING_AGENT_OPENCODE": "opencode",
 }
 
+
+class FileConfig(NamedTuple):
+    raw: dict
+    manifest: dict
+    path: str
+
+
+_FILE_CONFIG: FileConfig | None = None
+
+
+@contextmanager
+def file_config_override(file_config: FileConfig):
+    """Make every refresh_managed_config in this invocation return the file, cached as sticky."""
+    global _FILE_CONFIG
+    previous = _FILE_CONFIG
+    _FILE_CONFIG = file_config
+    try:
+        yield
+    finally:
+        _FILE_CONFIG = previous
+
+
 _AGENT_ENUM_PREFIX = "CODING_AGENT_"
 AGENT_NAME_TO_TOOL: dict[str, str] = {
     enum[len(_AGENT_ENUM_PREFIX) :].lower(): tool for enum, tool in AGENT_ENUM_TO_TOOL.items()
@@ -76,7 +99,8 @@ MANAGED_CONFIG_TTL = timedelta(minutes=5)
 _OUTCOME_PUBLISHED = "published"
 _OUTCOME_NONE = "none"
 _OUTCOME_FEATURE_DISABLED = "feature_disabled"
-
+# A `ug configure --file` config; launches replay it with no TTL until a plain `ug configure`.
+_OUTCOME_FILE = "file"
 # A per-family default-model key in the `default_models` map, e.g. `default_opus_model`. Matches the
 # server's `default_.+_model` validation so a new Claude family needs no ucode change. The bare
 # `default_model` overall default does not match (no family segment) and is read on its own.
@@ -593,6 +617,26 @@ def _gate_config(raw: dict) -> FetchedManagedConfig:
     return FetchedManagedConfig(raw, None)
 
 
+def load_file_config(path: str) -> FileConfig:
+    """Read a local CodingAgentConfig, gated and normalized exactly as a fetched config would be."""
+    try:
+        raw = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise RuntimeError("Cannot read --file; supply a readable JSON file.") from exc
+    except ValueError as exc:
+        raise RuntimeError("Invalid --file: expected valid JSON.") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError("Invalid --file: expected a JSON object.")
+    reason = _gate_config(raw).reason
+    if reason is not None:
+        raise RuntimeError(f"Invalid --file: {reason}")
+    try:
+        manifest = normalize_managed_config(raw)
+    except Exception as exc:
+        raise RuntimeError(f"Invalid --file: not a valid CodingAgentConfig ({exc}).") from exc
+    return FileConfig(raw, manifest, str(Path(path).expanduser().resolve()))
+
+
 def _is_not_found(reason: str) -> bool:
     """True when a read failure reason means the workspace definitively has no managed config.
 
@@ -627,7 +671,9 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def save_managed_state(workspace: str, config: dict, *, outcome: str | None = None) -> None:
+def save_managed_state(
+    workspace: str, config: dict, *, outcome: str | None = None, source_file: str | None = None
+) -> None:
     """Persist the raw managed config to ``~/.ucode/managed-config.json`` at mode 0600.
 
     ``config`` is stored verbatim as the gateway returned it (byte-identical to the GET), so the file
@@ -639,14 +685,17 @@ def save_managed_state(workspace: str, config: dict, *, outcome: str | None = No
     file doubles as the fallback when a later read fails: without it, removing a config server-side
     would leave the old one on disk to be reapplied after a transient outage.
 
-    ``outcome``, when set, stamps the read time and its result (published / none / feature_disabled)
-    so a later launch can reuse this read within :data:`MANAGED_CONFIG_TTL` without a GET. Only an
-    authoritative read passes it; a failed refresh persists nothing and so never advances the stamp.
+    ``outcome``, when set, stamps the read time and its result (published / none / feature_disabled
+    / file) so a later launch can reuse this read without a GET: within :data:`MANAGED_CONFIG_TTL`,
+    or indefinitely for ``file``. Only an authoritative read or a validated ``--file`` passes it; a
+    failed refresh persists nothing and so never advances the stamp.
     """
     payload: dict = {"workspace": workspace, "config": config}
     if outcome is not None:
         payload["retrieved_at"] = _utcnow().isoformat()
         payload["outcome"] = outcome
+    if source_file is not None:
+        payload["source_file"] = source_file
     if config_io.is_dry_run():
         # Print rather than write, matching how the agent config writers behave under --dry-run.
         console.print(
@@ -716,11 +765,13 @@ def _cached_result_if_fresh(workspace: str) -> ManagedConfigResult | None:
 
     Returns None (forcing a fresh fetch) when the wrapper is for another workspace, predates this
     cache format (no ``outcome`` / ``retrieved_at``), or its stamp is missing, unparseable, in the
-    future, or at least :data:`MANAGED_CONFIG_TTL` old.
+    future, or at least :data:`MANAGED_CONFIG_TTL` old. A ``file`` outcome never expires.
     """
     data = config_io.read_json_safe(MANAGED_CONFIG_PATH)
     if data.get("workspace") != workspace:
         return None
+    if data.get("outcome") == _OUTCOME_FILE and isinstance(data.get("config"), dict):
+        return ManagedConfigResult(normalize_managed_config(data["config"]), False)
     # Reuses the RFC-3339 parser the update-time watermark uses; None (missing/unparseable) is stale.
     retrieved_at = parse_update_time(_str(data.get("retrieved_at")))
     if retrieved_at is None:
@@ -738,8 +789,21 @@ def _cached_result_if_fresh(workspace: str) -> ManagedConfigResult | None:
     return None
 
 
+def cached_source_file(workspace: str | None) -> str | None:
+    """The ``ug configure --file`` path the cached config for ``workspace`` came from, or None."""
+    if not workspace or _FILE_CONFIG is not None:
+        return None
+    data = config_io.read_json_safe(MANAGED_CONFIG_PATH)
+    if data.get("workspace") != workspace or data.get("outcome") != _OUTCOME_FILE:
+        return None
+    source_file = data.get("source_file")
+    return source_file if isinstance(source_file, str) and source_file else None
+
+
 def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> ManagedConfigResult:
     """Fetch the workspace's managed config and persist it as a :class:`ManagedConfigResult`.
+
+    Inside :func:`file_config_override` it returns the file and caches it with outcome ``file``.
 
     Runs on every launch so a developer picks up an admin's edits without re-running
     ``ucode configure``. A launch reuses the last read when it is younger than
@@ -763,6 +827,15 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     case (returned manifest is None), so a launch doesn't re-apply a policy the workspace has turned
     off and ``ug configure`` doesn't route into a managed-setup flow that would dead-end.
     """
+    if _FILE_CONFIG is not None:
+        if state.get("workspace"):
+            save_managed_state(
+                state["workspace"],
+                _FILE_CONFIG.raw,
+                outcome=_OUTCOME_FILE,
+                source_file=_FILE_CONFIG.path,
+            )
+        return ManagedConfigResult(_FILE_CONFIG.manifest, False)
     workspace = state.get("workspace")
     if not workspace:
         return ManagedConfigResult(None, False)

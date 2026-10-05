@@ -6,6 +6,7 @@ import json
 import os
 import stat
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +15,7 @@ import ucode.databricks as db_mod
 import ucode.managed_config as mc_mod
 from ucode.managed_config import (
     get_managed_config,
+    load_file_config,
     load_managed_configuration,
     load_managed_state,
     managed_config_is_newer,
@@ -23,6 +25,7 @@ from ucode.managed_config import (
     refresh_managed_config,
     save_managed_state,
 )
+from ucode.managed_resolve import managed_enabled_tools
 from ucode.managed_setup import serialize_managed_config
 
 # A CodingAgentConfig in the current agent-config wire shape as emitted by ai-gateway-api.
@@ -1036,3 +1039,74 @@ class TestGetModelRecommendation:
         )
         rec, _ = mc_mod.get_model_recommendation("https://w", "tok")
         assert rec is not None and rec["current_spend"] is None
+
+
+class TestFileConfigOverride:
+    FILE = mc_mod.FileConfig({"enabled_agents": []}, {"enabled_agents": {"claude": {}}}, "/f.json")
+
+    def test_refresh_returns_the_file_and_caches_it_as_sticky(self, monkeypatch):
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda *a: pytest.fail("fetched"))
+        saved = []
+        monkeypatch.setattr(mc_mod, "save_managed_state", lambda *a, **k: saved.append((a, k)))
+
+        with mc_mod.file_config_override(self.FILE):
+            result = refresh_managed_config({"workspace": "https://w"}, force_refresh=True)
+
+        assert result == (self.FILE.manifest, False)
+        assert saved == [
+            (("https://w", self.FILE.raw), {"outcome": "file", "source_file": "/f.json"})
+        ]
+        assert mc_mod._FILE_CONFIG is None
+
+    def test_override_is_cleared_when_the_body_raises(self):
+        with pytest.raises(ValueError), mc_mod.file_config_override(self.FILE):
+            raise ValueError
+
+        assert mc_mod._FILE_CONFIG is None
+
+
+FIXTURES = Path(__file__).parent / "fixtures" / "managed_config"
+AGENT = (
+    '{"agent": "CODING_AGENT_CLAUDE_CODE",'
+    ' "config": {"models": {"model_services": ["system.ai.claude-opus-4-8"]}}}'
+)
+
+
+def test_file_config_is_normalized_like_a_fetch_and_keeps_selectors():
+    manifest = load_file_config(str(FIXTURES / "claude_with_mcp_and_skills.json")).manifest
+
+    assert managed_enabled_tools(manifest) == ["claude"]
+    assert manifest["mcp_servers"] == {"names": ["system.ai.github"]}
+    assert manifest["skills"] == {"names": ["system.ai.pdf"]}
+
+
+def test_missing_file_is_actionable(tmp_path):
+    with pytest.raises(RuntimeError, match="Cannot read --file"):
+        load_file_config(str(tmp_path / "absent.json"))
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        ("{not json", "expected valid JSON"),
+        ("[1, 2]", "expected a JSON object"),
+        ('{"spec_version": 999, "enabled_agents": [' + AGENT + "]}", "spec_version"),
+        (
+            '{"spec_version": 1, "enabled_agents": [' + AGENT + "],"
+            ' "spend_tiers": {"tiers": [{"spending_percentage": ' + "9" * 400 + "}]}}",
+            "not a valid CodingAgentConfig",
+        ),
+    ],
+    ids=[
+        "malformed",
+        "not-object",
+        "newer-spec",
+        "normalization-overflow",
+    ],
+)
+def test_invalid_file_is_rejected(tmp_path, content, message):
+    path = tmp_path / "config.json"
+    path.write_text(content)
+
+    with pytest.raises(RuntimeError, match=message):
+        load_file_config(str(path))
