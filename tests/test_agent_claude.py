@@ -1370,6 +1370,55 @@ class TestWriteToolConfigManagedSettings:
         assert managed_path.read_bytes() == before
         assert json.loads(managed_path.read_text())["adminPolicy"] == {"z": 1, "a": 2}
 
+    @pytest.mark.parametrize(
+        ("ug_version", "agent_version"),
+        [("1.0", "2.1.289"), ("1.0", "unknown"), ("1.1", "2.1.288")],
+    )
+    def test_version_only_user_agent_change_invokes_no_sudo(
+        self, tmp_path, monkeypatch, ug_version, agent_version
+    ):
+        # A ug/Claude upgrade or a timed-out version probe only changes ug's User-Agent tokens. The
+        # managed file keeps its older value (accepted telemetry lag); the private file refreshes.
+        managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.288")
+        state = {"workspace": WS, "codex_models": [], "claude_http_headers": {"x-team": "eng-ml"}}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert len(sudo_writes) == 1
+        before = managed_path.read_bytes()
+        monkeypatch.setattr(claude, "ug_version", lambda: ug_version)
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: agent_version)
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert len(sudo_writes) == 1
+        assert managed_path.read_bytes() == before
+        private = json.loads((tmp_path / "ucode-settings.json").read_text())
+        private_headers = private["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+        assert f"User-Agent: ucode/{ug_version} claude/{agent_version}" in private_headers
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            lambda state: state.update(claude_http_headers={"x-team": "other"}),
+            lambda state: state.update(profile="other-profile"),
+        ],
+        ids=["header", "api-key-helper"],
+    )
+    def test_user_agent_change_with_real_change_writes(self, tmp_path, monkeypatch, change):
+        managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        state = {"workspace": WS, "codex_models": [], "claude_http_headers": {"x-team": "eng-ml"}}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert len(sudo_writes) == 1
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1")
+        change(state)
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert len(sudo_writes) == 2
+        written = json.loads(managed_path.read_text())
+        headers = written["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+        assert "User-Agent: ucode/1.0 claude/2.1" in headers
+
     def test_managed_file_applies_model_default_precedence(self, monkeypatch):
         managed_defaults = self._write_managed_model_defaults(
             monkeypatch,
