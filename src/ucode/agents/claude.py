@@ -275,6 +275,28 @@ def _parse_managed_settings(text: str) -> dict:
     return settings
 
 
+def managed_user_agent() -> str | None:
+    """The User-Agent value in Claude Code's OS-managed custom headers, if one is there."""
+    path = _managed_settings_path()
+    try:
+        text = read_managed_file(path) if path else None
+        settings = _parse_managed_settings(text) if text else {}
+    except (RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
+        return None
+    env = settings.get("env")
+    headers = env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(env, dict) else None
+    if not isinstance(headers, str):
+        return None
+    values = (_user_agent_header_value(line) for line in headers.split("\n"))
+    return next((value for value in values if value is not None), None)
+
+
+def _user_agent_header_value(line: str) -> str | None:
+    """The value of a ``User-Agent`` line in ANTHROPIC_CUSTOM_HEADERS (any name casing), else None."""
+    name, separator, value = line.partition(":")
+    return value.strip() if separator and name.strip().casefold() == "user-agent" else None
+
+
 def _dump_managed_settings(settings: dict) -> str:
     return json.dumps(settings, indent=2, sort_keys=True) + "\n"
 

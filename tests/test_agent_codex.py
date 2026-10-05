@@ -2195,3 +2195,29 @@ class TestWriteUserMcpServers:
             "args": ["x"],
         }
         assert not default_path.exists()
+
+
+class TestManagedUserAgent:
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            (
+                '[model_providers.Databricks.http_headers]\n"User-Agent" = "ucode/1.0 codex/0.154.0"\n',
+                "ucode/1.0 codex/0.154.0",
+            ),
+            ("[model_providers.Databricks]\nname = 'x'\n", None),
+            ("model_providers = 1\n", None),
+            ("not = = toml", None),
+            (b"\xff\xfe not utf-8", None),
+            (None, None),
+        ],
+    )
+    def test_reads_user_agent_from_managed_config(self, tmp_path, monkeypatch, content, expected):
+        path = tmp_path / "managed_config.toml"
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        elif content is not None:
+            path.write_text(content)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: path)
+
+        assert codex.managed_user_agent() == expected

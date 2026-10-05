@@ -532,6 +532,33 @@ def _parse_managed_config(text: str) -> dict:
         raise RuntimeError(f"invalid TOML: {exc}") from exc
 
 
+def managed_user_agent() -> str | None:
+    """The User-Agent value in Codex's OS-managed Databricks provider headers, if one is there."""
+    path = codex_managed_config_path()
+    try:
+        text = read_managed_file(path) if path else None
+        doc = _parse_managed_config(text) if text else {}
+    except (RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
+        return None
+    headers = _managed_provider_headers(doc)
+    key = _user_agent_key(headers)
+    value = headers[key] if headers is not None and key is not None else None
+    return value if isinstance(value, str) else None
+
+
+def _managed_provider_headers(doc: dict) -> dict | None:
+    """The Databricks provider's ``http_headers`` table in a Codex config document, if present."""
+    providers = doc.get("model_providers")
+    provider = providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, dict) else None
+    headers = provider.get("http_headers") if isinstance(provider, dict) else None
+    return headers if isinstance(headers, dict) else None
+
+
+def _user_agent_key(headers: dict | None) -> str | None:
+    """The ``User-Agent`` key in ``headers`` under any casing, else None."""
+    return next((key for key in headers or {} if str(key).casefold() == "user-agent"), None)
+
+
 def managed_config_is_current(state: dict) -> bool:
     path = codex_managed_config_path()
     if path is None:

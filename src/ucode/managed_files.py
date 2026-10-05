@@ -319,6 +319,12 @@ def _unwrap(value: object) -> object:
 _VERSION = r"[0-9A-Za-z.+_-]+"
 
 
+def ug_agent_token(user_agent: str, agent: str) -> str | None:
+    """The ``<agent>/<v>`` token of ug's exact ``ucode/<v> <agent>/<v>`` User-Agent, else None."""
+    match = re.fullmatch(rf"ucode/{_VERSION} ({re.escape(agent)}/{_VERSION})", user_agent)
+    return match.group(1) if match else None
+
+
 _UG_USER_AGENT = re.compile(rf"ucode/{_VERSION} ([a-z][a-z0-9-]*)/{_VERSION}")
 
 

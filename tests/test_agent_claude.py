@@ -3434,3 +3434,29 @@ class TestWriteUserMcpServers:
         written = config_dir / ".claude.json"
         assert json.loads(written.read_text())["mcpServers"]["svc"] == {"type": "http", "url": "u"}
         assert not default_path.exists()  # the default location is untouched
+
+
+class TestManagedUserAgent:
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            (
+                {"env": {"ANTHROPIC_CUSTOM_HEADERS": "a: 1\nUser-Agent: ucode/1.0 claude/2.1.289"}},
+                "ucode/1.0 claude/2.1.289",
+            ),
+            ({"env": {"ANTHROPIC_CUSTOM_HEADERS": "a: 1"}}, None),
+            ({"env": []}, None),
+            ("not json", None),
+            (b"\xff\xfe not utf-8", None),
+            (None, None),
+        ],
+    )
+    def test_reads_user_agent_from_managed_settings(self, tmp_path, monkeypatch, content, expected):
+        path = tmp_path / "managed-settings.json"
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        elif content is not None:
+            path.write_text(content if isinstance(content, str) else json.dumps(content))
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: path)
+
+        assert claude.managed_user_agent() == expected

@@ -2015,12 +2015,31 @@ def discover_model_services(
 _CODING_AGENT_CONFIGS_API_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 
 
+def _managed_config_user_agent() -> str:
+    """``ucode/<v>`` plus each ``<agent>/<v>`` ug already wrote into the OS-managed files.
+
+    The fetch serves every agent, so it reports what ug configured on this machine; reading the
+    managed files avoids probing each agent's ``--version`` on every fetch."""
+    from ucode.agents import claude, codex  # the agent modules import this one
+    from ucode.managed_files import ug_agent_token
+
+    tokens = [f"ucode/{ug_version()}"]
+    for agent, user_agent in (
+        ("claude", claude.managed_user_agent()),
+        ("codex", codex.managed_user_agent()),
+    ):
+        token = ug_agent_token(user_agent or "", agent)
+        if token:
+            tokens.append(token)
+    return " ".join(tokens)
+
+
 def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list[dict], str | None]:
     """List the workspace's managed CodingAgentConfig(s) via the AI Gateway."""
     hostname = workspace_hostname(workspace)
     url = f"https://{hostname}{_CODING_AGENT_CONFIGS_API_PATH}"
     payload, reason = _http_get_json(
-        url, token, timeout=30, headers={"User-Agent": f"ucode/{ug_version()}"}
+        url, token, timeout=30, headers={"User-Agent": _managed_config_user_agent()}
     )
     if reason is not None:
         return [], reason
