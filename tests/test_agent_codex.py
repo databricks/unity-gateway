@@ -166,6 +166,20 @@ class TestRenderOverlay:
         headers = overlay["model_providers"]["Databricks"]["http_headers"]
         assert "Databricks-Model-Provider-Service" not in headers
 
+    def test_request_tags_header_added_when_env_set(self, monkeypatch):
+        # A JSON value stored as a TOML http_headers string is preserved verbatim.
+        tags = '{"team":"infra","env":"prod"}'
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", tags)
+        overlay = codex.render_overlay(WS)
+        headers = overlay["model_providers"]["Databricks"]["http_headers"]
+        assert headers["Databricks-Ai-Gateway-Request-Tags"] == tags
+
+    def test_request_tags_header_absent_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
+        overlay = codex.render_overlay(WS)
+        headers = overlay["model_providers"]["Databricks"]["http_headers"]
+        assert "Databricks-Ai-Gateway-Request-Tags" not in headers
+
     def test_parent_adds_discovery_header(self):
         overlay = codex.render_overlay(WS, parent_schema="main.default")
         headers = overlay["model_providers"]["Databricks"]["http_headers"]

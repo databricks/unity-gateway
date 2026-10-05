@@ -111,6 +111,25 @@ class TestRenderOverlayUserAgent:
         for name in ("databricks-claude", "databricks-openai", "databricks-gemini"):
             assert overlay["providers"][name]["headers"]["User-Agent"] == expected
 
+    def test_request_tags_header_on_all_providers_when_env_set(self, monkeypatch):
+        tags = '{"team":"infra","env":"prod"}'
+        monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", tags)
+        overlay, _ = _overlay(
+            "claude-sonnet",
+            claude_models={"sonnet": "claude-sonnet"},
+            codex_models=["gpt-5"],
+            gemini_models=["gemini-2"],
+        )
+        for name in ("databricks-claude", "databricks-openai", "databricks-gemini"):
+            headers = overlay["providers"][name]["headers"]
+            assert headers["Databricks-Ai-Gateway-Request-Tags"] == tags
+
+    def test_request_tags_header_absent_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("AI_GATEWAY_REQUEST_TAGS", raising=False)
+        overlay, _ = _overlay("claude-sonnet", claude_models={"sonnet": "claude-sonnet"})
+        headers = overlay["providers"]["databricks-claude"]["headers"]
+        assert "Databricks-Ai-Gateway-Request-Tags" not in headers
+
 
 class TestRenderOverlayCompatFlags:
     def test_claude_disables_eager_tool_input_streaming(self):
