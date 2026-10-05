@@ -25,7 +25,7 @@ from ucode.managed_resolve import (
     recommended_agent,
     resolve_state,
 )
-from ucode.state import MANAGED_OVERLAY_KEY
+from ucode.state import MANAGED_OVERLAY_KEY, get_provider_service
 
 WORKSPACE = "https://ws.example.com"
 
@@ -282,6 +282,124 @@ class TestResolveState:
             "claude": "main.default.keep",
             "codex": "main.default.managed",
         }
+
+
+class TestResolveStateClearsStaleProvider:
+    """AIGTWY-4858: managed config pinning models with no provider drops a stale local provider."""
+
+    STALE_MPS = "uaigw_fe.uaigw_schema.gwdemo-foundry-mps"
+
+    def _codex_model_services(self) -> dict:
+        return normalize_managed_config(
+            {
+                "enabled_agents": [
+                    {
+                        "agent": "codex",
+                        "config": {"models": {"model_services": ["system.ai.gpt-5-3-codex"]}},
+                    }
+                ]
+            }
+        )
+
+    def test_model_services_config_drops_stale_provider(self):
+        resolved = resolve_state(
+            self._codex_model_services(),
+            _state(provider_services={"codex": self.STALE_MPS}),
+            "codex",
+        )
+        assert "codex" not in (resolved.get("provider_services") or {})
+        assert resolved[MANAGED_OVERLAY_KEY]["provider_services"] == {"codex": self.STALE_MPS}
+
+    def test_default_model_config_drops_stale_provider(self):
+        managed = normalize_managed_config(
+            {
+                "enabled_agents": [
+                    {
+                        "agent": "codex",
+                        "config": {"default_models": {"default_model": "system.ai.gpt-5-3-codex"}},
+                    }
+                ]
+            }
+        )
+        resolved = resolve_state(
+            managed, _state(provider_services={"codex": self.STALE_MPS}), "codex"
+        )
+        assert "codex" not in (resolved.get("provider_services") or {})
+        assert resolved[MANAGED_OVERLAY_KEY]["provider_services"] == {"codex": self.STALE_MPS}
+
+    def test_keeps_other_tools_when_dropping_stale_provider(self):
+        state = _state(provider_services={"codex": self.STALE_MPS, "claude": "main.default.keep"})
+        resolved = resolve_state(self._codex_model_services(), state, "codex")
+        assert resolved["provider_services"] == {"claude": "main.default.keep"}
+
+    def test_config_without_model_pin_leaves_provider_untouched(self):
+        managed = normalize_managed_config(
+            {"enabled_agents": [{"agent": "codex", "config": {"http_headers": {"X-Team": "gw"}}}]}
+        )
+        resolved = resolve_state(
+            managed, _state(provider_services={"codex": self.STALE_MPS}), "codex"
+        )
+        assert resolved["provider_services"] == {"codex": self.STALE_MPS}
+        assert "provider_services" not in resolved.get(MANAGED_OVERLAY_KEY, {})
+
+    def test_unity_catalog_config_keeps_provider_for_parent_schema_mask(self):
+        managed = normalize_managed_config(
+            {
+                "enabled_agents": [
+                    {"agent": "codex", "config": {"models": {"unity_catalog_location": "main.uc"}}}
+                ]
+            }
+        )
+        resolved = resolve_state(
+            managed, _state(provider_services={"codex": self.STALE_MPS}), "codex"
+        )
+        assert resolved["provider_services"] == {"codex": self.STALE_MPS}
+        assert "provider_services" not in resolved.get(MANAGED_OVERLAY_KEY, {})
+
+    def test_unity_catalog_with_default_model_keeps_provider(self):
+        managed = normalize_managed_config(
+            {
+                "enabled_agents": [
+                    {
+                        "agent": "codex",
+                        "config": {
+                            "models": {"unity_catalog_location": "main.uc"},
+                            "default_models": {"default_model": "system.ai.gpt-5-3-codex"},
+                        },
+                    }
+                ]
+            }
+        )
+        resolved = resolve_state(
+            managed, _state(provider_services={"codex": self.STALE_MPS}), "codex"
+        )
+        assert resolved["provider_services"] == {"codex": self.STALE_MPS}
+        assert "provider_services" not in resolved.get(MANAGED_OVERLAY_KEY, {})
+
+    def test_switching_to_a_different_provider_replaces_stale_one(self):
+        managed = normalize_managed_config(
+            {
+                "enabled_agents": [
+                    {
+                        "agent": "codex",
+                        "config": {"models": {"model_provider_service": "main.new.mps"}},
+                    }
+                ]
+            }
+        )
+        resolved = resolve_state(
+            managed, _state(provider_services={"codex": self.STALE_MPS}), "codex"
+        )
+        assert resolved["provider_services"] == {"codex": "main.new.mps"}
+        assert resolved[MANAGED_OVERLAY_KEY]["provider_services"] == {"codex": self.STALE_MPS}
+
+    def test_configure_path_no_longer_resolves_stale_provider(self):
+        resolved = resolve_state(
+            self._codex_model_services(),
+            _state(provider_services={"codex": self.STALE_MPS}),
+            "codex",
+        )
+        assert get_provider_service(resolved, "codex") is None
 
 
 class TestStateFileIsNotRewritten:
