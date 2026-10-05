@@ -166,12 +166,27 @@ def fetch_anthropic_provider_catalog(
     workspace: str, token: str, provider_service: str
 ) -> AnthropicProviderCatalog:
     """Fetch and validate the complete Anthropic provider catalog with bounded pagination."""
-    base_url = _validate_request_inputs(workspace, token, provider_service)
+    return _fetch_anthropic_catalog(workspace, token, provider_service, _PROVIDER_HEADER)
+
+
+def fetch_anthropic_parent_catalog(
+    workspace: str, token: str, parent_schema: str
+) -> AnthropicProviderCatalog:
+    """Fetch the Anthropic-compatible models advertised for a Unity Catalog parent schema."""
+    return _fetch_anthropic_catalog(
+        workspace, token, parent_schema, "Databricks-Model-Service-Parent-Schema"
+    )
+
+
+def _fetch_anthropic_catalog(
+    workspace: str, token: str, source: str, source_header: str
+) -> AnthropicProviderCatalog:
+    base_url = _validate_request_inputs(workspace, token, source)
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
         "Anthropic-Version": _ANTHROPIC_VERSION,
-        _PROVIDER_HEADER: provider_service,
+        source_header: source,
     }
 
     model_ids: list[str] = []

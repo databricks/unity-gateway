@@ -1289,22 +1289,21 @@ class TestManagedClaudeModelDiscovery:
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
     @pytest.mark.parametrize(
-        ("source", "model_args", "default_model"),
+        ("model_args", "default_model"),
         [
-            ({}, [], None),
-            ({}, ["--model", "system.ai.claude-sonnet-5"], None),
-            ({"unity_catalog_location": "system.ai"}, [], "system.ai.claude-sonnet-5"),
+            ([], None),
+            (["--model", "system.ai.claude-sonnet-5"], None),
+            ([], "system.ai.claude-sonnet-5"),
         ],
-        ids=["family-default", "explicit-model", "managed-location"],
+        ids=["family-default", "explicit-model", "overall-and-family-default"],
     )
-    def test_managed_partial_defaults_replace_unmapped_families(
-        self, source, model_args, default_model
+    def test_managed_partial_defaults_without_source_replace_unmapped_families(
+        self, model_args, default_model
     ):
         managed = {
             "enabled_agents": {
                 "claude": {
                     "model_config": {
-                        **source,
                         "default_model": default_model,
                         "default_models_by_model_family": {
                             "default_sonnet_model": "system.ai.claude-sonnet-5"
@@ -1328,6 +1327,68 @@ class TestManagedClaudeModelDiscovery:
         assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == picker.model_ids
         assert calls["launch"].call_args.kwargs["options"].user_pinned_model == explicit_model
 
+    @pytest.mark.parametrize(
+        ("parent_schema", "family_suffix"), [("system.ai", "[1m]"), ("ug_e2e.models", "")]
+    )
+    @pytest.mark.parametrize(
+        ("with_overall_default", "with_family_default"),
+        [(False, False), (True, False), (False, True), (True, True)],
+        ids=["no-defaults", "overall-default", "family-default", "overall-and-family-default"],
+    )
+    def test_managed_uc_defaults_preserve_discovered_catalog(
+        self, parent_schema, family_suffix, with_overall_default, with_family_default
+    ):
+        sonnet = f"{parent_schema}.claude-sonnet-5"
+        haiku = f"{parent_schema}.claude-haiku-4-5"
+        kimi = f"{parent_schema}.kimi-k2-7"
+        discovered = db_mod.AnthropicModelCatalog(
+            model_ids=[haiku, sonnet, kimi],
+            model_id_to_display_name={
+                haiku: "Claude Haiku 4.5",
+                sonnet: "Claude Sonnet 5",
+                kimi: "Kimi K2.7",
+            },
+            model_id_to_description={kimi: "Available through the Claude API"},
+        )
+        model_config = {"unity_catalog_location": parent_schema}
+        if with_overall_default:
+            model_config["default_model"] = sonnet
+        if with_family_default:
+            model_config["default_models_by_model_family"] = {"default_sonnet_model": sonnet}
+        managed = {"enabled_agents": {"claude": {"model_config": model_config}}}
+
+        with _launch_policy_patches(managed, picker_catalog=discovered) as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        calls["list_catalog"].assert_called_once_with(
+            MINIMAL_STATE["workspace"], "token", parent_schema=parent_schema
+        )
+        calls["resolve_provider"].assert_not_called()
+        calls["resolve_model"].assert_not_called()
+        configured = calls["configure"].call_args.kwargs
+        assert configured["provider"] is None
+        assert configured["parent_schema"] == parent_schema
+        assert configured["route_root_model"] == (sonnet if with_overall_default else None)
+        assert configured["coding_agent_config_defaults"] == (
+            {"sonnet": sonnet} if with_family_default else {}
+        )
+        picker = configured["picker_catalog"]
+        if with_family_default:
+            expected_default = sonnet if with_overall_default else f"{sonnet}{family_suffix}"
+            expected_models = [expected_default] + [
+                model for model in discovered.model_ids if model != expected_default
+            ]
+        else:
+            expected_models = discovered.model_ids
+        assert picker.model_ids == expected_models
+        for model in discovered.model_ids:
+            assert (
+                picker.model_id_to_display_name[model] == discovered.model_id_to_display_name[model]
+            )
+        assert picker.model_id_to_description == discovered.model_id_to_description
+        assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == expected_models
+
     def test_relayed_managed_defaults_keep_native_picker(self, monkeypatch):
         calls = self._invoke(monkeypatch, self.MPS_CONFIG, relayed=True)
 
@@ -1336,8 +1397,25 @@ class TestManagedClaudeModelDiscovery:
         assert calls["configure"].call_args.kwargs["picker_catalog"] is None
         assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
 
-    @pytest.mark.parametrize("managed", [MPS_WITHOUT_DEFAULTS_CONFIG, MPS_CONFIG])
-    def test_managed_mps_catalog_error_blocks_launch(self, monkeypatch, managed):
+    @pytest.mark.parametrize("with_defaults", [False, True])
+    @pytest.mark.parametrize(
+        ("source_field", "source_value", "source_label"),
+        [
+            ("model_provider_service", "main.default.anthropic-mps", "Model Provider Service"),
+            ("unity_catalog_location", "ug_e2e.models", "Unity Catalog location"),
+        ],
+        ids=["mps", "uc-parent"],
+    )
+    def test_managed_catalog_error_blocks_launch(
+        self, monkeypatch, source_field, source_value, source_label, with_defaults
+    ):
+        model_config = {source_field: source_value}
+        if with_defaults:
+            model_config["default_model"] = "system.ai.claude-sonnet-5"
+            model_config["default_models_by_model_family"] = {
+                "default_sonnet_model": "system.ai.claude-sonnet-5"
+            }
+        managed = {"enabled_agents": {"claude": {"model_config": model_config}}}
         calls = self._invoke(
             monkeypatch,
             managed,
@@ -1346,8 +1424,8 @@ class TestManagedClaudeModelDiscovery:
 
         assert calls["result"].exit_code == 1
         output = _strip_ansi(calls["result"].output)
-        assert "Could not discover Claude models for Model Provider Service" in output
-        assert "main.default.anthropic-mps" in output
+        assert f"Could not discover Claude models for {source_label}" in output
+        assert source_value in output
         assert "AI Gateway returned no Anthropic model ids" in output
         calls["configure"].assert_not_called()
         calls["launch"].assert_not_called()

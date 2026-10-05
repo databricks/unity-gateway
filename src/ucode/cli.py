@@ -2741,13 +2741,6 @@ def _launch_tool(
             if tool == "claude" and managed is not None
             else {}
         )
-        is_managed_claude_source_without_defaults = (
-            tool == "claude"
-            and managed is not None
-            and bool(managed_parent_schema or managed_provider)
-            and managed_default_model(managed, tool) is None
-            and not coding_agent_config_defaults
-        )
         if provider and tool != "gemini":
             provider_models, error, relayed = resolve_provider_models(tool, state, provider)
             if error:
@@ -2772,12 +2765,12 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        # Managed defaults choose models without limiting the selected source's catalog.
         should_fetch_claude_picker_catalog = (
             tool == "claude"
             and not relayed
             and (
-                is_managed_claude_source_without_defaults
-                or bool(managed_provider)
+                bool(managed_parent_schema or managed_provider)
                 or (managed is None and bool(explicit_provider or parent_schema))
             )
         )
