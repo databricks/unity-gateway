@@ -2,20 +2,43 @@
 
 import re
 
+import pyte
 
-def open_claude_mcp_inventory(tui, services: dict[str, str]) -> None:
+
+def open_claude_mcp_inventory(tui, services: dict[str, str]) -> str:
     tui.submit("/mcp")
     tui.wait_for(
-        lambda screen: "Manage MCP servers" in screen,
+        lambda screen: "Manage MCP servers" in screen and tui.selected_line(),
         "Claude's MCP menu",
         timeout=120,
     )
+    tui.wait_for(
+        lambda screen: "connecting" not in screen.casefold(),
+        "Claude's MCP startup checks to finish before opening server details",
+        timeout=120,
+    )
+    first = tui.selected_line()
+    screens = []
+    for _ in range(100):
+        screens.append(tui.visible)
+        current = tui.selected_line()
+        tui.send("\x1b[B", "inspect the next MCP inventory row")
+        tui.wait_for(
+            lambda screen, current=current: tui.selected_line() != current,
+            "the next MCP inventory row",
+        )
+        if tui.selected_line() == first:
+            break
+    else:
+        raise AssertionError("Claude's MCP inventory did not wrap within 100 rows")
+    inventory = "\n".join(screens)
+    tui.actions.append({"reason": "claude-mcp-inventory", "screen": inventory})
     for service, tool in services.items():
         name = service.replace(".", "-")
         tui.choose("Manage MCP servers", name)
         tui.wait_for(
             lambda screen, name=name: (
-                name in screen
+                name in screen.casefold()
                 and re.search(r"(?m)^\s*Status:\s*(?:[✓✔]\s*)?connected\s*$", screen)
                 and "View tools" in screen
                 and "tools fetch failed" not in screen
@@ -48,9 +71,11 @@ def open_claude_mcp_inventory(tui, services: dict[str, str]) -> None:
         ),
         "Claude's prompt after closing the MCP menu",
     )
+    return inventory
 
 
-def open_codex_mcp_inventory(tui, services: dict[str, str]) -> None:
+def open_codex_mcp_inventory(tui, services: dict[str, str]) -> str:
+    output_start = len(tui.output)
     tui.submit("/mcp verbose")
     for service, tool in services.items():
         name = re.escape(service.replace(".", "-"))
@@ -64,4 +89,14 @@ def open_codex_mcp_inventory(tui, services: dict[str, str]) -> None:
             f"{service} connected with {tool} loaded in Codex's MCP inventory",
             timeout=120,
         )
-    tui.actions.append({"reason": "codex-mcp-inventory", "screen": tui.visible})
+    screen = pyte.HistoryScreen(140, 60, history=1000)
+    pyte.Stream(screen).feed("".join(tui.output[output_start:]))
+    assert len(screen.history.top) < screen.history.size, "Codex's MCP inventory was truncated"
+    history = [
+        "".join(line[column].data for column in range(screen.columns))
+        for line in screen.history.top
+    ]
+    inventory = "\n".join([*history, *screen.display])
+    assert "MCP Tools" in inventory, inventory
+    tui.actions.append({"reason": "codex-mcp-inventory", "screen": inventory})
+    return inventory

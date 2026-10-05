@@ -82,6 +82,7 @@ class TestMcpRegistration(BaseCujTest):
         """Scenario: configure UG, inspect Claude's MCP menu, then call both fixture tools.
 
         Expected: both scoped servers are registered, connected, and expose their tools;
+        no ug_e2e.other_tools server or decoy tool appears in the complete inventory;
         a parent assistant answer contains the correct receipts for a fresh run ID.
         """
         session = live_session
@@ -97,7 +98,9 @@ class TestMcpRegistration(BaseCujTest):
             "mcp-registration-claude",
         ) as tui:
             tui.boot()
-            open_claude_mcp_inventory(tui, SERVICES)
+            inventory = open_claude_mcp_inventory(tui, SERVICES)
+            assert "ug_e2e-other_tools" not in inventory, inventory
+            assert "decoy_status" not in inventory, inventory
             tui.submit(task.prompt)
             _wait_for_mcp_task(tui, task)
             tui.exit_normally()
@@ -110,6 +113,7 @@ class TestMcpRegistration(BaseCujTest):
         """Scenario: configure UG, inspect Codex's MCP inventory, then call both fixture tools.
 
         Expected: both scoped servers are registered, connected, and expose their tools;
+        no ug_e2e.other_tools server or decoy tool appears in the complete inventory;
         a completed parent turn returns the correct receipts for a fresh run ID.
         """
         session = live_session
@@ -119,7 +123,9 @@ class TestMcpRegistration(BaseCujTest):
             session, "codex", [str(session.binary), "codex"], "mcp-registration-codex"
         ) as tui:
             tui.boot()
-            open_codex_mcp_inventory(tui, SERVICES)
+            inventory = open_codex_mcp_inventory(tui, SERVICES)
+            assert "ug_e2e-other_tools" not in inventory, inventory
+            assert "decoy_status" not in inventory, inventory
             tui.submit(task.prompt)
             _wait_for_mcp_task(tui, task)
             tui.exit_normally()

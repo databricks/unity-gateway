@@ -14,6 +14,10 @@ view; Codex uses `/mcp verbose`. Both then call the two tools with a fresh run I
 their receipts. Expected receipts are computed locally and withheld from the prompt.
 Terminal actions, rendered screens, and native transcripts are recorded by the harness.
 
+Both inventories must omit `ug_e2e.other_tools`, including the accessible
+`fixture_decoy` service and its `decoy_status` tool. Claude traverses the server menu
+until it wraps; Codex includes rendered scrollback from `/mcp verbose`.
+
 CI runs one lane per agent using the existing `UG_CUJ3_WORKSPACE` and CUJ SP secrets.
 The lanes run after catalog discovery, even if it fails, and share its workspace
 concurrency lock. Each lane uploads terminal and native-transcript evidence.
@@ -27,5 +31,5 @@ python3.12 scripts/run_integration.py --suite e2e-cuj \
   -- -m 'managed and mcp_registration and workspace_isolated'
 ```
 
-Only live passes establish coverage. Out-of-scope exclusion and UG status/list checks
-remain separate follow-ups. Skill storage and provisioning are not part of this suite.
+Only live passes establish coverage. UG status/list checks remain a separate follow-up.
+Skill storage and provisioning are not part of this suite.
