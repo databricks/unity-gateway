@@ -233,6 +233,13 @@ class AgentTerminal(TerminalProcess):
             # onboarding state. Only the test's disposable project is trusted.
             dialogs = [
                 (
+                    "external-imports",
+                    "Allow external CLAUDE.md file imports?" in text
+                    and "No, disable external imports" in text
+                    and "Yes, allow external imports" in text,
+                    "\r",
+                ),
+                (
                     "theme",
                     "Choose the text style" in text and "Dark mode" in text,
                     "\r",
