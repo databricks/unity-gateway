@@ -162,13 +162,13 @@ def _assert_generated_configs(session, claude_headers: dict[str, str]) -> None:
 
     codex_profile_path = session.home / ".codex" / "ucode.config.toml"
     codex_profile = tomllib.loads(codex_profile_path.read_text())
-    assert codex_profile["model"] == CODEX_DEFAULT, codex_profile
     codex_provider = codex_profile["model_providers"]["Databricks"]
     assert _managed_header_subset(codex_provider["http_headers"]) == {
         "x-ug-e2e-run": claude_headers["x-ug-e2e-run"],
         "x-ug-e2e-agent": "codex",
     }, codex_profile
     codex_catalog_path = session.home / ".ucode" / "codex-model-catalog.json"
+    assert codex_profile["model_catalog_json"] == str(codex_catalog_path), codex_profile
     codex_catalog = json.loads(codex_catalog_path.read_text())
     assert [
         model["slug"] for model in codex_catalog["models"] if model.get("visibility") == "list"
