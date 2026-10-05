@@ -37,6 +37,7 @@ from ucode.skills_state import (
     remove_downloads,
     set_last_update_check,
 )
+from ucode.skills_usage import report_skill_usage, report_skill_usage_in_background
 from ucode.state import load_state
 from ucode.time_utils import parse_update_time
 from ucode.ui import (
@@ -311,6 +312,7 @@ def download_skills_from_schema_locations(
     """
     roots = skill_dir_roots(path)
     roots_display = " and ".join(str(root) for root in roots)
+    downloaded: list[SkillRef] = []
     for location in locations:
         catalog, schema = location.split(".")
         refs, reason = list_schema_skills(workspace, token, catalog, schema)
@@ -324,11 +326,13 @@ def download_skills_from_schema_locations(
             workspace, token, refs, roots, label=f"Fetching skills from {location}"
         )
         record_downloads(_skill_installs(written, roots, path, workspace))
+        downloaded.extend(written)
         count = len(written)
         skipped = f"; {total - count} skipped" if count < total else ""
         print_success(
             f"Downloaded {count}/{total} skill(s){skipped} from `{location}` in {roots_display}."
         )
+    report_skill_usage_in_background(workspace, token, downloaded)
 
 
 def download_selected_skills(workspace: str, token: str, fqns: list[str], path: str | None) -> None:
@@ -350,6 +354,7 @@ def download_selected_skills(workspace: str, token: str, fqns: list[str], path: 
         refs.append(ref)
     written, total = _download_refs(workspace, token, refs, roots, label="Fetching selected skills")
     record_downloads(_skill_installs(written, roots, path, workspace))
+    report_skill_usage_in_background(workspace, token, written)
     count = len(written)
     skipped = f"; {total - count} skipped" if count < total else ""
     print_success(f"Downloaded {count}/{total} skill(s){skipped} in {roots_display}.")
@@ -446,6 +451,7 @@ def reconcile_managed_skills(managed: dict) -> tuple[list[str], list[str]]:
         workspace, token, missing, roots, label="Fetching workspace skills"
     )
     record_downloads(_skill_installs(installed, roots, None, workspace, scope="managed"))
+    report_skill_usage_in_background(workspace, token, installed)
     return [ref.bundle_name for ref in installed], removed
 
 
@@ -538,14 +544,15 @@ def _update_stale_skills(
     but never replaces a different skill: one renamed onto a name already on disk, or onto the
     same new name as another update, is skipped. Returns how many skills were rewritten.
     Stops fetching once ``deadline`` passes; a skill is only ever fully written or left
-    untouched, never interrupted mid-write.
+    untouched, never interrupted mid-write. Reports usage synchronously, since the launch
+    that follows replaces this process and would kill a background report.
     """
     home = os.path.normpath(str(Path.home()))
     pairs_by_base: dict[str, list[tuple[dict, SkillRef]]] = {}
     for record, ref in pairs:
         pairs_by_base.setdefault(os.path.normpath(record["base"]), []).append((record, ref))
 
-    updated = 0
+    updated: list[SkillRef] = []
     for base, base_pairs in pairs_by_base.items():
         if time.monotonic() >= deadline:
             break
@@ -558,8 +565,9 @@ def _update_stale_skills(
             workspace, token, refs, roots, label="Updating skills", deadline=deadline
         )
         record_downloads(_skill_installs(written, roots, path, workspace))
-        updated += len(written)
-    return updated
+        updated.extend(written)
+    report_skill_usage(workspace, token, updated)
+    return len(updated)
 
 
 def refresh_downloaded_skills_on_launch(state: dict) -> None:

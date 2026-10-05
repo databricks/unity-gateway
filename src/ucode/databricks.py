@@ -396,6 +396,7 @@ def _http_send_json(
     *,
     timeout: int = 10,
     allow_empty_body: bool = False,
+    headers: dict[str, str] | None = None,
 ) -> tuple[dict | list | None, str | None]:
     """Send a request that may carry a JSON body, and decode a JSON response.
 
@@ -407,10 +408,11 @@ def _http_send_json(
     empty body there is the expected result, not a decode failure.
     """
     body_bytes = json.dumps(payload).encode("utf-8") if payload is not None else None
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    request_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     if body_bytes is not None:
-        headers["Content-Type"] = "application/json"
-    request = urllib_request.Request(url, data=body_bytes, method=method, headers=headers)
+        request_headers["Content-Type"] = "application/json"
+    request_headers.update(headers or {})
+    request = urllib_request.Request(url, data=body_bytes, method=method, headers=request_headers)
     try:
         with urllib_request.urlopen(request, timeout=timeout) as response:
             body = response.read().decode("utf-8")
@@ -448,11 +450,16 @@ def _http_send_json(
 
 
 def _http_post_json(
-    url: str, token: str, payload: dict, *, timeout: int = 10
+    url: str,
+    token: str,
+    payload: dict,
+    *,
+    timeout: int = 10,
+    headers: dict[str, str] | None = None,
 ) -> tuple[dict | list | None, str | None]:
     """POST a JSON body to an endpoint. Returns (payload, None) on success,
     (None, reason) on failure. Mirrors `_http_get_json`."""
-    return _http_send_json("POST", url, token, payload, timeout=timeout)
+    return _http_send_json("POST", url, token, payload, timeout=timeout, headers=headers)
 
 
 def _http_patch_json(
