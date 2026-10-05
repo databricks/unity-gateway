@@ -15,4 +15,4 @@ uv run --no-project --python 3.12 python scripts/run_integration.py \
 
 The runner installs the pinned Databricks SDK and both agent CLIs, then invokes
 pytest with this directory as its `--confcutdir`. The default marker for this
-suite is `cuj`; keep the explicit `-m cuj` when reproducing CI.
+suite is `cuj`; use `-m cuj5` to reproduce the serialized budget-default CI job.

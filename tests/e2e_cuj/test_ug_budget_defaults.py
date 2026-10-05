@@ -13,7 +13,7 @@ from utils.evidence import (
 )
 from utils.terminal import AgentTerminal
 
-pytestmark = [pytest.mark.cuj, pytest.mark.tui]
+pytestmark = [pytest.mark.cuj, pytest.mark.cuj5, pytest.mark.tui]
 
 
 class TestCujBudgetDefaults(BaseCujTest):
