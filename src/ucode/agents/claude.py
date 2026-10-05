@@ -83,6 +83,7 @@ from ucode.mcp_web_search import (
     external_provider_selected,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.smart_routing import pricing
 from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -2108,6 +2109,20 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
+    if (
+        smart_routing_v2.savings_statusline_enabled()
+        and not options.launch_smart_routing
+        and workspace
+    ):
+        # Show "Smart routing off" in the status row on a plain (non-routed) launch.
+        settings_override = settings_override or {}
+        smart_routing_v2.install_savings_statusline(
+            settings_override,
+            CLAUDE_USER_SETTINGS_PATH,
+            price_cache=pricing.price_cache_path(APP_DIR, workspace),
+            routing_enabled=False,
+            baseline_session_start=False,
+        )
     exec_or_spawn(_build_claude_argv(binary, launch_args, settings_override=settings_override))
 
 
