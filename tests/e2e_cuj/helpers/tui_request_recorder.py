@@ -37,7 +37,6 @@ class RecordedRequest:
     sequence: int
     method: str
     path: str
-    query: str
     headers: dict[str, str]
     body: bytes
 
@@ -106,19 +105,6 @@ class TuiRequestRecorder:
         with self._condition:
             return len(self._requests)
 
-    def requests(
-        self, *, method: str | None = None, path: str | None = None, after: int = 0
-    ) -> list[RecordedRequest]:
-        method = method.upper() if method else None
-        with self._condition:
-            return [
-                request
-                for request in self._requests
-                if request.sequence > after
-                and (method is None or request.method == method)
-                and (path is None or request.path == path)
-            ]
-
     def expect_request(
         self,
         *,
@@ -128,10 +114,16 @@ class TuiRequestRecorder:
         timeout: float = 30,
     ) -> RecordedRequest:
         deadline = time.monotonic() + timeout
+        method = method.upper() if method else None
         with self._condition:
             while True:
-                if matches := self.requests(method=method, path=path, after=after):
-                    return matches[0]
+                for request in self._requests:
+                    if (
+                        request.sequence > after
+                        and (method is None or request.method == method)
+                        and (path is None or request.path == path)
+                    ):
+                        return request
                 if (remaining := deadline - time.monotonic()) <= 0:
                     raise AssertionError(f"Timed out waiting for TUI request: {method} {path}")
                 self._condition.wait(remaining)
@@ -151,7 +143,6 @@ class TuiRequestRecorder:
                     sequence=len(self._requests) + 1,
                     method=handler.command,
                     path=parsed.path,
-                    query=parsed.query,
                     headers=headers,
                     body=body,
                 )

@@ -19,10 +19,10 @@ class Upstream:
             def log_message(self, format, *args):
                 pass
 
-            def do_POST(self):
+            def forward(self):
                 length = int(self.headers.get("Content-Length", 0))
                 body = self.rfile.read(length)
-                owner.requests.append((self.path, dict(self.headers), body))
+                owner.requests.append((self.command, self.path, dict(self.headers), body))
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b"first")
@@ -30,6 +30,9 @@ class Upstream:
                 if self.path == "/stream":
                     owner.release_stream.wait(5)
                     self.wfile.write(b"second")
+
+            do_GET = forward
+            do_POST = forward
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -51,6 +54,7 @@ class Upstream:
 
 def test_records_and_forwards_request():
     with Upstream() as upstream, TuiRequestRecorder(upstream.url) as recorder:
+        httpx.get(f"{recorder.url}/config")
         checkpoint = recorder.checkpoint()
         payload = {"task": {"prompt": "unique prompt"}}
         response = httpx.post(
@@ -60,12 +64,13 @@ def test_records_and_forwards_request():
         )
 
         assert response.content == b"first"
-        request = recorder.expect_request(path="/routes:select", after=checkpoint)
-        assert request.query == "test=true"
+        request = recorder.expect_request(method="POST", path="/routes:select", after=checkpoint)
         assert request.payload["task"]["prompt"] == "unique prompt"
         assert request.headers["authorization"] == "<redacted>"
 
-        path, headers, body = upstream.requests[0]
+        assert upstream.requests[0][:2] == ("GET", "/config")
+        method, path, headers, body = upstream.requests[1]
+        assert method == "POST"
         assert path == "/routes:select?test=true"
         assert headers["Authorization"] == "Bearer secret"
         assert headers["X-Test"] == "kept"
@@ -90,8 +95,8 @@ def test_recorders_are_isolated():
     ):
         assert first.url != second.url
         httpx.post(f"{first.url}/first")
-        assert [request.path for request in first.requests()] == ["/first"]
-        assert second.requests() == []
+        assert first.checkpoint() == 1
+        assert second.checkpoint() == 0
 
 
 def test_streams_without_waiting_for_response_to_finish():
