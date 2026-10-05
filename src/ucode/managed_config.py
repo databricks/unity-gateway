@@ -38,7 +38,7 @@ from ucode.databricks import (
     get_databricks_token,
 )
 from ucode.time_utils import parse_update_time
-from ucode.ui import console, print_warning
+from ucode.ui import print_warning
 
 MANAGED_CONFIG_PATH = config_io.APP_DIR / "managed-config.json"
 
@@ -647,15 +647,14 @@ def save_managed_state(workspace: str, config: dict, *, outcome: str | None = No
     if outcome is not None:
         payload["retrieved_at"] = _utcnow().isoformat()
         payload["outcome"] = outcome
+    content = json.dumps(payload, indent=2) + "\n"
     if config_io.is_dry_run():
         # Print rather than write, matching how the agent config writers behave under --dry-run.
-        console.print(
-            f"\n[bold]\\[dry run] {MANAGED_CONFIG_PATH}[/bold]\n{json.dumps(payload, indent=2)}\n"
-        )
+        config_io.dry_run_preview(MANAGED_CONFIG_PATH, content)
         return
     config_io.ensure_parent_dir(MANAGED_CONFIG_PATH)
     try:
-        MANAGED_CONFIG_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        MANAGED_CONFIG_PATH.write_text(content, encoding="utf-8")
     except OSError as exc:
         raise RuntimeError(f"Failed to write managed state file: {MANAGED_CONFIG_PATH}") from exc
     _restrict_permissions(MANAGED_CONFIG_PATH)

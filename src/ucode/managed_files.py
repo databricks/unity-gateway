@@ -25,9 +25,9 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, cast
 
-from ucode.config_io import APP_DIR, is_dry_run
+from ucode.config_io import APP_DIR, dry_run_preview, is_dry_run
 from ucode.os_compatibility import subprocess_cross_os
-from ucode.ui import console, print_note, print_success, print_warning
+from ucode.ui import print_note, print_success, print_warning
 
 # Absolute path so a stripped PATH (desktop/GUI launchers) still finds it.
 _SUDO = "/usr/bin/sudo"
@@ -420,7 +420,7 @@ def reconcile_managed_file(
         if semantically_unchanged:
             return "unchanged"
     if is_dry_run():
-        console.print(f"\n[bold]\\[dry run] {path} (via sudo)[/bold]\n{desired_text}")
+        dry_run_preview(path, desired_text, note=" (via sudo)")
         return "written"
 
     created = current_text is None
