@@ -69,6 +69,9 @@ sign-in or TUI test.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
+Unmanaged Claude launches without a selected source explicitly use the `system.ai` parent
+schema; CLI regressions check this fallback and preserve explicit locations, providers,
+and managed model sources.
 Managed UC schema regressions in `test_cli.py` retain non-default catalog models with an overall
 default, a family default, or both, while preserving startup selection and family mappings.
 `TestBuildClaudeArgv` also checks that caller permission denies survive ug's technical
@@ -125,7 +128,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_configure_codex_databricks` | Configure Databricks Hosted; execute the generated auth helper; open Codex TUI and read a file | Generated helper invokes `ug` with clean token stdout; completed assistant answer contains the file value; normal exit and reopen |
 | `test_ug_configure_codex_openai_mps` | Select OpenAI MPS in the real configure picker; launch Codex | Saved provider in status; completed TUI file task; normal exit |
 | `test_ug_claude_custom_oauth_cli_boots`, `test_ug_codex_custom_oauth_cli_boots` | Launch with `ENABLE_CUSTOM_OAUTH_FROM_CLI=1`, `--workspace`, and `--client-id databricks-cli` | Real TUI reaches a usable prompt, accepts keyboard input, exits normally, and saves `client_id = databricks-cli` in its generated CLI profile; Claude also reads the OS-managed settings and requires a profile-only `apiKeyHelper` |
-| `test_case_07_configured_claude_discovers_system_models`, `test_case_09_fresh_claude_discovers_system_models` | Launch configured/fresh Claude with no discovery flag or source override | Claude caches `system.ai` models (including recognized Anthropic gateway aliases), includes ug's discovered family defaults, and shows a discovered picker entry |
+| `test_case_07_configured_claude_discovers_system_models`, `test_case_09_fresh_claude_discovers_system_models` | Launch configured/fresh Claude with no discovery flag or source override | Generated settings explicitly send the `system.ai` parent-schema header; Claude caches `system.ai` models (including recognized Anthropic gateway aliases), includes ug's discovered family defaults, and shows a discovered picker entry |
 | `test_case_08_configured_codex_uses_default_models`, `test_case_10_fresh_codex_uses_default_models` | Launch configured/fresh Codex with no source override | ug discovers `system.ai` models but leaves model/reasoning preferences unset; app-server exposes native GPT entries without a generated scoped catalog |
 | `test_case_11_*` | Launch configured and fresh Claude with an explicit provider and no managed config | The provider catalog replaces built-in picker rows; the cache contains exactly the provider model, and the picker shows both its row and Default resolving to it |
 | `test_case_12_*` | Launch configured and fresh Codex with a provider | The provider supplies exactly its model catalog |

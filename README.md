@@ -64,9 +64,10 @@ to change the wire model or API; in-session model selection does not rebuild its
 provider configuration.
 
 Without a managed workspace config, `ug claude` automatically discovers gateway
-models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
-no provider or model location is selected. Use `--provider` or `--model-location`
-to select another model source; managed workspace configs control their own sources.
+models for Claude Code's `/model` picker. Launches explicitly use `system.ai` as
+the parent schema when no provider or model location is selected. Use `--provider`
+or `--model-location` to select another model source; managed workspace configs
+control their own sources.
 
 `ug codex` validates discovered models with the installed Codex binary and publishes
 them to `~/.ucode/codex-model-catalog.json`, referenced by shared `~/.codex/config.toml`

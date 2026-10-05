@@ -2673,9 +2673,14 @@ def _launch_tool(
             # rewriting it; the admin's location exists only for this launch.
             provider = None
             parent_schema = managed_parent_schema
-        # Unmanaged Claude launches discover gateway models automatically; with no
-        # provider or parent header the gateway defaults to system.ai. Managed
-        # configs opt into discovery by selecting an MPS or Unity Catalog location.
+        elif tool == "claude" and managed is None and provider is None and parent_schema is None:
+            # An unmanaged Claude launch uses the shared system.ai model-service schema unless
+            # the developer selected a source explicitly. Keep the fallback launch-scoped so a
+            # previous user-selected schema is replaced on the next bare launch.
+            parent_schema = "system.ai"
+        # Claude launches discover gateway models automatically. Unmanaged launches default to
+        # system.ai above; managed configs opt into discovery by selecting an MPS or Unity Catalog
+        # location.
         if tool == "claude" and (managed is None or managed_provider or managed_parent_schema):
             os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         # The environment switch remains a developer override; managed config is the workspace

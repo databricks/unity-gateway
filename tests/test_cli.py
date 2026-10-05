@@ -423,28 +423,44 @@ def _patch_launch(tool: str):
     the auto-configure path is skipped entirely. configure_shared_state is
     also stubbed to avoid the launch-time refetch hitting the network.
     """
+    launch_state = dict(MINIMAL_STATE)
     return [
         patch("ucode.cli.ensure_bootstrap_dependencies"),
-        patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
+        patch("ucode.cli.load_state", return_value=launch_state),
         patch(
             "ucode.cli.ensure_provider_state",
-            return_value=MINIMAL_STATE,
+            return_value=launch_state,
         ),
         patch(
             "ucode.cli.configure_shared_state",
-            return_value=MINIMAL_STATE,
+            return_value=launch_state,
         ),
         patch(
             "ucode.cli.resolve_launch_model",
-            return_value=(MINIMAL_STATE, "databricks-claude-sonnet-4"),
+            return_value=(launch_state, "databricks-claude-sonnet-4"),
         ),
         patch(
             "ucode.cli.configure_tool",
-            return_value=MINIMAL_STATE,
+            return_value=launch_state,
         ),
         patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
         patch("ucode.cli.launch_agent"),
+        _patch_claude_default_catalog(),
     ]
+
+
+@contextlib.contextmanager
+def _patch_claude_default_catalog():
+    with (
+        patch("ucode.cli.get_databricks_token", return_value="token"),
+        patch(
+            "ucode.cli.list_anthropic_model_catalog",
+            return_value=db_mod.AnthropicModelCatalog(
+                model_ids=["system.ai.claude-sonnet-5"], model_id_to_display_name={}
+            ),
+        ),
+    ):
+        yield
 
 
 @contextlib.contextmanager
@@ -507,6 +523,7 @@ class TestSubcommandRouting:
             patches[5],
             patches[6],
             patches[7] as mock_launch,
+            patches[8],
         ):
             result = runner.invoke(app, [tool])
         assert result.exit_code == 0, result.output
@@ -531,6 +548,7 @@ class TestSubcommandRouting:
             patches[5],
             patches[6],
             patches[7],
+            patches[8],
             patch("ucode.cli.set_current_workspace") as mock_set,
         ):
             result = runner.invoke(
@@ -552,6 +570,7 @@ class TestSubcommandRouting:
             patches[5],
             patches[6],
             patches[7],
+            patches[8],
             patch("ucode.cli.set_current_workspace") as mock_set,
         ):
             result = runner.invoke(app, ["claude"])
@@ -754,21 +773,64 @@ class TestSubcommandRouting:
         assert "Model: system.ai.gpt-5-6-luna" not in output
         assert mock_launch.call_args.args[2] == forwarded_args
 
-    @pytest.mark.parametrize("persisted_provider", [None, "main.default.anthropic"])
-    def test_unmanaged_claude_launch_keeps_native_defaults(self, persisted_provider):
-        with _launch_policy_patches(None, persisted_provider=persisted_provider) as calls:
+    def test_unmanaged_claude_launch_defaults_to_system_ai(self):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
+        calls["list_catalog"].assert_called_once_with(
+            calls["state"]["workspace"], "token", parent_schema="system.ai"
+        )
+        assert calls["configure"].call_args.kwargs["provider"] is None
+        assert calls["configure"].call_args.kwargs["parent_schema"] == "system.ai"
+        assert (
+            calls["configure"].call_args.kwargs["picker_catalog"]
+            is calls["list_catalog"].return_value
+        )
+        assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == [
+            "main.default.claude-sonnet-5"
+        ]
+        assert calls["launch"].call_args.args[1]["_claude_launch_default_model"] == (
+            "main.default.claude-sonnet-5"
+        )
+        calls["resolve_model"].assert_not_called()
+        calls["launch"].assert_called_once()
+
+    def test_unmanaged_claude_launch_keeps_saved_provider_source(self):
+        with _launch_policy_patches(None, persisted_provider="main.default.bedrock") as calls:
             result = runner.invoke(app, ["claude"])
 
         assert result.exit_code == 0, result.output
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
         calls["list_catalog"].assert_not_called()
+        assert calls["configure"].call_args.kwargs["provider"] == "main.default.bedrock"
+        assert calls["configure"].call_args.kwargs["parent_schema"] is None
         assert calls["configure"].call_args.kwargs["picker_catalog"] is None
         assert "_claude_launch_picker_models" not in calls["launch"].call_args.args[1]
         assert "_claude_launch_default_model" not in calls["launch"].call_args.args[1]
-        if persisted_provider:
-            calls["resolve_model"].assert_not_called()
-        else:
-            calls["resolve_model"].assert_called_once()
+        calls["resolve_model"].assert_not_called()
+        calls["launch"].assert_called_once()
+
+    def test_managed_config_without_source_does_not_use_unmanaged_default(self):
+        with _launch_policy_patches({}) as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        calls["list_catalog"].assert_not_called()
+        assert calls["configure"].call_args.kwargs["provider"] is None
+        assert calls["configure"].call_args.kwargs["parent_schema"] is None
+        calls["resolve_model"].assert_called_once()
+        calls["launch"].assert_called_once()
+
+    def test_unmanaged_codex_launch_does_not_use_claude_default(self):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, ["codex"])
+
+        assert result.exit_code == 0, result.output
+        calls["list_catalog"].assert_not_called()
+        assert calls["configure"].call_args.kwargs["parent_schema"] is None
+        calls["resolve_model"].assert_called_once()
         calls["launch"].assert_called_once()
 
     def test_claude_model_location_replaces_builtin_models(self):
@@ -860,6 +922,7 @@ class TestSubcommandRouting:
             calls["state"]["workspace"], "token", provider="main.default.anthropic"
         )
         assert calls["configure"].call_args.kwargs["provider"] == "main.default.anthropic"
+        assert calls["configure"].call_args.kwargs["parent_schema"] is None
         assert (
             calls["configure"].call_args.kwargs["picker_catalog"]
             is calls["list_catalog"].return_value
@@ -979,6 +1042,7 @@ class TestSubcommandRouting:
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.ensure_provider_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state),
+            _patch_claude_default_catalog(),
             patch(
                 "ucode.cli.resolve_launch_model",
                 return_value=(state, "system.ai.claude-opus-4-8"),
@@ -1470,6 +1534,7 @@ class TestClaudeModelFlag:
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.ensure_provider_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state),
+            _patch_claude_default_catalog(),
             patch(
                 "ucode.cli.resolve_launch_model",
                 return_value=(state, "system.ai.claude-opus-4-8"),
@@ -1497,6 +1562,7 @@ class TestClaudeModelFlag:
             patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
             patch("ucode.cli.ensure_provider_state", return_value=MINIMAL_STATE),
             patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
+            _patch_claude_default_catalog(),
             patch("ucode.cli.resolve_launch_model", return_value=(MINIMAL_STATE, "system.ai.opus")),
             patch("ucode.cli.configure_tool", return_value=MINIMAL_STATE) as mock_configure,
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
@@ -1519,6 +1585,7 @@ class TestClaudeModelFlag:
             patch("ucode.cli.load_state", return_value=state),
             patch("ucode.cli.ensure_provider_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state),
+            _patch_claude_default_catalog(),
             patch("ucode.cli.resolve_launch_model", return_value=(state, "system.ai.opus")),
             patch("ucode.cli.configure_tool", return_value=state),
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
@@ -2912,6 +2979,7 @@ class TestAutoConfigureOnFirstRun:
                 "ucode.cli.configure_single_tool", return_value=configured_state
             ) as mock_configure,
             patch("ucode.cli.ensure_provider_state", return_value=configured_state),
+            _patch_claude_default_catalog(),
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
             patch("ucode.cli.configure_tool", return_value=configured_state),
             patch("ucode.cli.restore_file") as mock_restore,
@@ -2938,6 +3006,7 @@ class TestAutoConfigureOnFirstRun:
                 "ucode.cli.ensure_provider_state",
                 return_value=configured_state,
             ),
+            _patch_claude_default_catalog(),
             patch(
                 "ucode.cli.resolve_launch_model",
                 return_value=(configured_state, "databricks-claude-sonnet-4"),
@@ -2963,6 +3032,7 @@ class TestAutoConfigureOnFirstRun:
                 "ucode.cli.ensure_provider_state",
                 return_value=MINIMAL_STATE,
             ),
+            _patch_claude_default_catalog(),
             patch(
                 "ucode.cli.resolve_launch_model",
                 return_value=(MINIMAL_STATE, "databricks-claude-sonnet-4"),
@@ -2987,6 +3057,7 @@ class TestAutoConfigureOnFirstRun:
                 "ucode.cli.ensure_provider_state",
                 return_value=MINIMAL_STATE,
             ),
+            _patch_claude_default_catalog(),
             patch(
                 "ucode.cli.resolve_launch_model",
                 return_value=(MINIMAL_STATE, "databricks-claude-sonnet-4"),
@@ -3008,6 +3079,7 @@ class TestAutoConfigureOnFirstRun:
             patch("ucode.cli._auto_configure_tool"),
             patch("ucode.cli.configure_shared_state", return_value=MINIMAL_STATE),
             patch("ucode.cli.ensure_provider_state", return_value=MINIMAL_STATE),
+            _patch_claude_default_catalog(),
             patch(
                 "ucode.cli.resolve_launch_model",
                 return_value=(MINIMAL_STATE, "databricks-claude-sonnet-4"),
@@ -4966,6 +5038,7 @@ class TestSkipPreflightFlag:
             patch("ucode.cli.load_state", return_value=MINIMAL_STATE),
             patch("ucode.cli.ensure_provider_state", return_value=MINIMAL_STATE),
             patch("ucode.cli.configure_shared_state", cfg),
+            _patch_claude_default_catalog(),
             patch("ucode.cli.codex_agent.has_ucode_config", return_value=False),
             patch(
                 "ucode.cli.resolve_launch_model",
@@ -5283,7 +5356,7 @@ class TestBudgetRecommendationAtLaunch:
             patch("ucode.cli.ensure_provider_state", return_value=state),
             patch("ucode.cli.configure_shared_state", return_value=state),
             patch("ucode.cli.configure_tool", return_value=state) as cfg,
-            patch("ucode.cli.get_databricks_token", return_value="tok"),
+            _patch_claude_default_catalog(),
             patch("ucode.cli._fetch_managed_config", return_value=(managed, False)),
             patch("ucode.cli.launch_agent"),
         ):

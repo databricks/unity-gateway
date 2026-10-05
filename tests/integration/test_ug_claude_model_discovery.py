@@ -54,6 +54,9 @@ def _system_models_visible(session):
 
 
 def _assert_system_models_in_picker(session, screen):
+    settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
+    headers = settings["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+    assert "Databricks-Model-Service-Parent-Schema: system.ai" in headers, headers
     models = session.claude_gateway_models()
     ids = claude_system_model_ids(models)
     discovered = session.workspace_state()["claude_models"]
@@ -85,8 +88,9 @@ def _assert_replacement_picker(session, expected_ids):
 def test_case_07_configured_claude_discovers_system_models(live_session, workspace):
     """Scenario: configure Claude, then launch without source overrides or discovery flags.
 
-    Expected: native discovery caches system.ai models as raw IDs or recognized Claude
-    gateway aliases and shows a discovered picker entry.
+    Expected: generated settings explicitly select system.ai as the parent schema;
+    native discovery caches its models as raw IDs or recognized Claude gateway aliases
+    and shows a discovered picker entry.
     """
     session = live_session
     session.run(
@@ -114,8 +118,9 @@ def test_case_07_configured_claude_discovers_system_models(live_session, workspa
 def test_case_09_fresh_claude_discovers_system_models(live_session, workspace):
     """Scenario: launch fresh Claude with --workspace and no discovery flags.
 
-    Expected: native discovery caches system.ai models as raw IDs or recognized Claude
-    gateway aliases and shows a discovered picker entry.
+    Expected: generated settings explicitly select system.ai as the parent schema;
+    native discovery caches its models as raw IDs or recognized Claude gateway aliases
+    and shows a discovered picker entry.
     """
     session = live_session
     command = [str(session.binary), "claude", "--workspace", workspace]
