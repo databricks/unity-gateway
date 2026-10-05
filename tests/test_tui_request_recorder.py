@@ -1,3 +1,4 @@
+import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -15,8 +16,12 @@ def local_endpoint_url():
 
         def do_POST(self):
             self.rfile.read(int(self.headers.get("Content-Length", 0)))
-            self.send_response(204)
+            body = json.dumps({"selected_model": "system.ai.test"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            self.wfile.write(body)
 
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -37,3 +42,7 @@ def test_records_request_payload(local_endpoint_url):
             method="POST", path="/ai-gateway/routing/v1/routes:select"
         )
         assert request.payload["task"]["prompt"] == "hello"
+
+        response = recorder.expect_response(request)
+        assert response.status_code == 200
+        assert response.payload["selected_model"] == "system.ai.test"

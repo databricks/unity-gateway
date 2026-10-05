@@ -27,6 +27,7 @@ _SECRET_HEADERS = {
     "authorization",
     "cookie",
     "proxy-authorization",
+    "set-cookie",
     "x-api-key",
     "x-databricks-ai-gateway-token",
 }
@@ -46,6 +47,18 @@ class RecordedRequest:
         return json.loads(self.body)
 
 
+@dataclass(frozen=True)
+class RecordedResponse:
+    status_code: int
+    headers: dict[str, str]
+    body: bytes
+
+    @property
+    def payload(self) -> Any:
+        """The JSON response payload."""
+        return json.loads(self.body)
+
+
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -60,6 +73,7 @@ class TuiRequestRecorder:
         self.upstream = upstream.rstrip("/")
         self._condition = threading.Condition()
         self._requests: list[RecordedRequest] = []
+        self._responses: dict[int, RecordedResponse] = {}
         self._client: httpx.Client | None = None
         self._server: _Server | None = None
         self._thread: threading.Thread | None = None
@@ -128,6 +142,17 @@ class TuiRequestRecorder:
                     raise AssertionError(f"Timed out waiting for TUI request: {method} {path}")
                 self._condition.wait(remaining)
 
+    def expect_response(self, request: RecordedRequest, *, timeout: float = 30) -> RecordedResponse:
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while request.sequence not in self._responses:
+                if (remaining := deadline - time.monotonic()) <= 0:
+                    raise AssertionError(
+                        f"Timed out waiting for response to request {request.sequence}"
+                    )
+                self._condition.wait(remaining)
+            return self._responses[request.sequence]
+
     def _forward(self, handler: BaseHTTPRequestHandler) -> None:
         assert self._client
         length = int(handler.headers.get("Content-Length", 0))
@@ -138,15 +163,14 @@ class TuiRequestRecorder:
             for name, value in handler.headers.items()
         }
         with self._condition:
-            self._requests.append(
-                RecordedRequest(
-                    sequence=len(self._requests) + 1,
-                    method=handler.command,
-                    path=parsed.path,
-                    headers=headers,
-                    body=body,
-                )
+            request = RecordedRequest(
+                sequence=len(self._requests) + 1,
+                method=handler.command,
+                path=parsed.path,
+                headers=headers,
+                body=body,
             )
+            self._requests.append(request)
             self._condition.notify_all()
 
         forwarded_headers = {
@@ -166,10 +190,27 @@ class TuiRequestRecorder:
                     if name.lower() not in _STRIPPED_HEADERS:
                         handler.send_header(name, value)
                 handler.end_headers()
+                response_body = bytearray()
+                connected = True
                 for chunk in response.iter_raw():
-                    handler.wfile.write(chunk)
-                    handler.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+                    response_body.extend(chunk)
+                    if connected:
+                        try:
+                            handler.wfile.write(chunk)
+                            handler.wfile.flush()
+                        except (BrokenPipeError, ConnectionResetError):
+                            connected = False
+                with self._condition:
+                    self._responses[request.sequence] = RecordedResponse(
+                        status_code=response.status_code,
+                        headers={
+                            name.lower(): (
+                                "<redacted>" if name.lower() in _SECRET_HEADERS else value
+                            )
+                            for name, value in response.headers.items()
+                        },
+                        body=bytes(response_body),
+                    )
+                    self._condition.notify_all()
         except httpx.HTTPError:
             handler.send_error(502, "upstream request failed")
