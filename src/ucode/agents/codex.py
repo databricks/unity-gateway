@@ -58,13 +58,16 @@ from ucode.databricks import (
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
     ManagedFileWriteUnavailable,
+    apply_settings_passthrough,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
+    managed_file_snapshots,
     managed_file_status,
     managed_files_supported,
     managed_writes_allowed,
     mark_managed_file_verified,
+    plan_settings_passthrough,
     read_managed_file,
     reconcile_managed_file,
     revert_managed_file,
@@ -122,6 +125,11 @@ MANAGED_KEYS: list[list[str]] = [
     ["model_providers", CODEX_MODEL_PROVIDER_NAME],
     ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers"],
 ]
+
+# The managed config's harness-native settings (resolved from the manifest), and the leaf paths last
+# delivered from them so a setting the admin drops is withdrawn from the managed file.
+SETTINGS_PASSTHROUGH_STATE_KEY = "codex_settings_passthrough"
+SETTINGS_PASSTHROUGH_PATHS_STATE_KEY = "codex_settings_passthrough_paths"
 
 LEGACY_MANAGED_KEYS: list[list[str]] = [
     ["profile"],
@@ -511,7 +519,31 @@ def write_tool_config(
         enabled=False,
     )
     write_toml_file(CODEX_CONFIG_PATH, doc)
-    _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
+    passthrough = plan_settings_passthrough(
+        state.get(SETTINGS_PASSTHROUGH_STATE_KEY),
+        reserved_paths=[*MANAGED_KEYS, ["model_catalog_json"], [MANAGED_MCP_CONFIG_KEY]],
+        toml=True,
+    )
+    if passthrough.ignored:
+        print_warning_err(
+            "Skipped managed Codex settings that ug configures itself or TOML cannot hold: "
+            f"{', '.join(passthrough.ignored)}."
+        )
+    snapshots = managed_file_snapshots("codex", _parse_managed_config)
+    _reconcile_managed_config(
+        state,
+        lambda base: apply_settings_passthrough(
+            compose(base, include_catalog=False),
+            passthrough,
+            previous_paths=state.get(SETTINGS_PASSTHROUGH_PATHS_STATE_KEY) or [],
+            snapshots=snapshots,
+        ),
+        [*MANAGED_KEYS, *passthrough.paths],
+    )
+    if passthrough.paths:
+        state[SETTINGS_PASSTHROUGH_PATHS_STATE_KEY] = passthrough.paths
+    else:
+        state.pop(SETTINGS_PASSTHROUGH_PATHS_STATE_KEY, None)
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     return state
@@ -555,7 +587,9 @@ def revert_managed_config() -> str:
     )
 
 
-def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> None:
+def _reconcile_managed_config(
+    state: dict, compose: Callable[[dict], dict], owned_paths: list[list[str]]
+) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
     path = codex_managed_config_path()
     if path is None:
@@ -580,7 +614,7 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
     managed_before = copy.deepcopy(existing)
     desired_doc = compose(existing)
     if not managed_writes_allowed():
-        conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
+        conflicts = managed_file_conflicts(managed_before, desired_doc, owned_paths)
         if conflicts:
             raise RuntimeError(
                 "Codex configuration cannot be applied non-interactively because OS-managed "
@@ -596,11 +630,11 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
             tomlkit.dumps(desired_doc),
             tool="codex",
             display="Codex",
-            owned_paths=MANAGED_KEYS,
+            owned_paths=owned_paths,
             parser=_parse_managed_config,
         )
     except ManagedFileWriteUnavailable:
-        conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
+        conflicts = managed_file_conflicts(managed_before, desired_doc, owned_paths)
         if conflicts:
             raise
         print_warning_err(

@@ -53,6 +53,7 @@ RAW_MANIFEST = {
                 "smart_routing": {"enabled": True},
                 "tracing": {"enabled": True},
                 "http_headers": {"x-databricks-workspace": "eng-ml-inference"},
+                "settings": {"allowManagedMcpServersOnly": True, "env": {"FOO": "1"}},
             },
         },
         {
@@ -103,6 +104,18 @@ class TestNormalize:
     def test_http_headers_map_to_http_headers(self):
         claude = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["claude"]
         assert claude["http_headers"] == {"x-databricks-workspace": "eng-ml-inference"}
+
+    def test_settings_are_carried_verbatim(self):
+        agents = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]
+        assert agents["claude"]["settings"] == {
+            "allowManagedMcpServersOnly": True,
+            "env": {"FOO": "1"},
+        }
+        assert "settings" not in agents["codex"]
+
+    def test_non_object_settings_are_dropped(self):
+        raw = {"enabled_agents": [{"agent": "CODING_AGENT_CODEX", "config": {"settings": "x"}}]}
+        assert "settings" not in normalize_managed_config(raw)["enabled_agents"]["codex"]
 
     def test_smart_routing_maps_to_agent_switch(self):
         claude = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["claude"]

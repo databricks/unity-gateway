@@ -770,6 +770,112 @@ def _three_way_revert(current: dict, original: dict, last: dict, paths: list) ->
     return reverted
 
 
+@dataclass
+class SettingsPassthrough:
+    """An admin's harness-native settings, split into the leaves to deliver and those skipped."""
+
+    # (leaf path, value) pairs to write into the managed file; ucode owns these paths for revert.
+    leaves: list[tuple[list[str], object]]
+    # Dotted leaf paths skipped because ucode writes them itself or the file format can't hold them.
+    ignored: list[str]
+
+    @property
+    def paths(self) -> list[list[str]]:
+        return [path for path, _ in self.leaves]
+
+
+def _leaf_paths(value: dict, prefix: list[str]) -> Iterator[tuple[list[str], object]]:
+    for key, child in value.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(child, dict) and child:
+            yield from _leaf_paths(child, [*prefix, key])
+        else:
+            yield [*prefix, key], child
+
+
+def _overlaps(path: list[str], other: list[str]) -> bool:
+    """True when one path is a prefix of the other, so writing one would clobber the other."""
+    shorter = min(len(path), len(other))
+    return path[:shorter] == other[:shorter]
+
+
+def _integral_floats_as_ints(value: object) -> object:
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, list):
+        return [_integral_floats_as_ints(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _integral_floats_as_ints(item) for key, item in value.items()}
+    return value
+
+
+def plan_settings_passthrough(
+    settings: dict | None,
+    *,
+    reserved_paths: list[list[str]],
+    toml: bool = False,
+) -> SettingsPassthrough:
+    """Split an admin's harness-native ``settings`` into leaves to deliver and leaves to skip.
+
+    The managed config carries these verbatim rather than as ucode fields, so a new harness setting
+    needs no ucode change. A leaf overlapping ``reserved_paths`` is skipped: ucode's own gateway
+    wiring must keep working.
+
+    ``toml`` adapts the JSON values for a TOML file: nulls are skipped because TOML has none, and
+    whole-number floats become integers. The config's ``google.protobuf.Struct`` stores every number
+    as a double, and a TOML float would fail to load into an integer setting.
+    """
+    leaves: list[tuple[list[str], object]] = []
+    ignored: list[str] = []
+    for path, value in _leaf_paths(settings or {}, []):
+        if any(_overlaps(path, reserved) for reserved in reserved_paths) or (
+            toml and value is None
+        ):
+            ignored.append(".".join(path))
+        else:
+            leaves.append((path, _integral_floats_as_ints(value) if toml else value))
+    return SettingsPassthrough(leaves, ignored)
+
+
+def apply_settings_passthrough(
+    doc: dict,
+    passthrough: SettingsPassthrough,
+    *,
+    previous_paths: list,
+    snapshots: ManagedFileSnapshots,
+    union_list_paths: list[list[str]] | None = None,
+) -> dict:
+    """Write ``passthrough``'s leaves into ``doc`` and withdraw ones the admin has since dropped.
+
+    Each leaf is written as-is (lists replace), except that a ``union_list_paths`` leaf is merged into
+    the list already there, for lists ucode shares with the admin such as Claude's
+    ``permissions.deny``.
+
+    A path delivered last time (``previous_paths``) and no longer configured is withdrawn by the same
+    three-way rule ``ucode revert`` uses: only when the live value is still what ucode last wrote,
+    restoring the pre-ucode value if there was one, so a value someone edited by hand stays.
+    """
+    union = union_list_paths or []
+    for path, value in passthrough.leaves:
+        existing = _path_value(doc, path)
+        if path in union and isinstance(value, list) and isinstance(existing, list):
+            value = [*existing, *(item for item in value if item not in existing)]
+        _set_path_value(doc, path, value)
+
+    applied = passthrough.paths
+    stale = [
+        path
+        for raw in previous_paths
+        if (path := _owned_path(raw)) is not None and path not in applied
+    ]
+    if stale and snapshots.last_applied_by_ug is not None:
+        doc = _three_way_revert(
+            doc, snapshots.original_before_ug or {}, snapshots.last_applied_by_ug, stale
+        )
+    return doc
+
+
 # Read once into memory and passed to `sh -c`: root never executes a file from the (user-writable)
 # install directory, so the script can't be swapped between validation and use.
 _SUDO_REPLACE_SCRIPT = (

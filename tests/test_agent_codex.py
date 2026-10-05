@@ -1734,6 +1734,104 @@ class TestCodexManagedConfig:
         assert managed_path.read_bytes() == before
         assert read_toml_safe(managed_path)["approval_policy"] == "on-request"
 
+    def test_settings_passthrough_lands_in_managed_config_only(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        state = {
+            "workspace": WS,
+            codex.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "approval_policy": "never",
+                "features": {"web_search_request": False},
+                # google.protobuf.Struct numbers arrive as doubles.
+                "project_doc_max_bytes": 32768.0,
+                "model_temperature": 0.5,
+            },
+        }
+
+        codex.write_tool_config(state)
+
+        managed = read_toml_safe(managed_path)
+        assert managed["approval_policy"] == "never"
+        assert managed["features"] == {"web_search_request": False}
+        assert managed["project_doc_max_bytes"] == 32768
+        assert isinstance(managed["project_doc_max_bytes"], int)
+        assert managed["model_temperature"] == 0.5
+        assert "approval_policy" not in read_toml_safe(config_path)
+        assert state[codex.SETTINGS_PASSTHROUGH_PATHS_STATE_KEY] == [
+            ["approval_policy"],
+            ["features", "web_search_request"],
+            ["project_doc_max_bytes"],
+            ["model_temperature"],
+        ]
+
+    def test_settings_passthrough_skips_ug_owned_and_null_leaves(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        state = {
+            "workspace": WS,
+            codex.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "model_provider": "openai",
+                "model_providers": {"Databricks": {"base_url": "https://evil"}, "Other": {"a": 1}},
+                "mcp_servers": {"gdrive": {"url": "https://x"}},
+                "sandbox_mode": None,
+            },
+        }
+
+        codex.write_tool_config(state)
+
+        managed = read_toml_safe(managed_path)
+        assert managed["model_provider"] == "Databricks"
+        assert managed["model_providers"]["Databricks"]["base_url"].startswith(WS)
+        assert managed["model_providers"]["Other"] == {"a": 1}
+        assert "mcp_servers" not in managed
+        assert "sandbox_mode" not in managed
+        err = " ".join(capsys.readouterr().err.split())
+        assert "model_provider," in err
+        assert "model_providers.Databricks.base_url" in err
+        assert "mcp_servers.gdrive.url" in err
+        assert "sandbox_mode" in err
+
+    def test_dropped_passthrough_setting_restores_pre_ug_value(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        managed_path.write_text('sandbox_mode = "read-only"\n', encoding="utf-8")
+        state = {
+            "workspace": WS,
+            codex.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "approval_policy": "never",
+                "sandbox_mode": "workspace-write",
+            },
+        }
+        codex.write_tool_config(state)
+        assert read_toml_safe(managed_path)["sandbox_mode"] == "workspace-write"
+
+        state.pop(codex.SETTINGS_PASSTHROUGH_STATE_KEY)
+        codex.write_tool_config(state)
+
+        managed = read_toml_safe(managed_path)
+        assert "approval_policy" not in managed
+        assert managed["sandbox_mode"] == "read-only"
+        assert codex.SETTINGS_PASSTHROUGH_PATHS_STATE_KEY not in state
+
+    def test_dropped_passthrough_setting_edited_by_hand_is_kept(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        state = {
+            "workspace": WS,
+            codex.SETTINGS_PASSTHROUGH_STATE_KEY: {"approval_policy": "never"},
+        }
+        codex.write_tool_config(state)
+        managed_path.write_text(
+            managed_path.read_text(encoding="utf-8").replace(
+                'approval_policy = "never"', 'approval_policy = "on-request"'
+            ),
+            encoding="utf-8",
+        )
+
+        state.pop(codex.SETTINGS_PASSTHROUGH_STATE_KEY)
+        codex.write_tool_config(state)
+
+        assert read_toml_safe(managed_path)["approval_policy"] == "on-request"
+
     def test_provider_settings_stay_launch_scoped(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
         managed_path.parent.mkdir(parents=True, exist_ok=True)

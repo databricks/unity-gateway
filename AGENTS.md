@@ -70,6 +70,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | Tracing | Ignore | Create/replace | The seven `CLAUDE_CODE_*`/`OTEL_*` trace keys and `otelHeadersHelper`; only when the config enables tracing |
 | `managedMcpServers` | Ignore | Merge | Add/update the config's MCP server entries; other entries left alone |
 | Smart-routing hooks | Merge | Merge | `PreToolUse`, `SessionStart`, `SubagentStart`; only `ug`'s own marked handlers, other hooks left alone |
+| Admin `settings` | Ignore | Create/replace | Managed file only; each leaf of the config's per-agent `settings`, as-is. Leaves overlapping a field above are skipped with a warning; `permissions.deny` merges. A leaf the admin drops is withdrawn if unchanged since `ug` wrote it |
 
 </details>
 
@@ -86,5 +87,6 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config |
 | `model_catalog_json` | Create/replace | Create/replace | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list |
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone |
+| Admin `settings` | Ignore | Create/replace | Managed file only; each leaf of the config's per-agent `settings`, as-is. Leaves overlapping a field above or set to null are skipped with a warning. A leaf the admin drops is withdrawn if unchanged since `ug` wrote it |
 
 </details>

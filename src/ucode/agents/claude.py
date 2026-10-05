@@ -55,6 +55,7 @@ from ucode.managed_files import (
     OS,
     ManagedFileSnapshots,
     ManagedFileWriteUnavailable,
+    apply_settings_passthrough,
     current_os,
     managed_file_conflicts,
     managed_file_is_verified,
@@ -64,6 +65,7 @@ from ucode.managed_files import (
     managed_files_supported,
     managed_writes_allowed,
     mark_managed_file_verified,
+    plan_settings_passthrough,
     read_managed_file,
     reconcile_managed_file,
     revert_managed_file,
@@ -216,6 +218,11 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 # settings file on every launch so stale values never linger.
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
+CLAUDE_PERMISSIONS_DENY_PATH = ["permissions", "deny"]
+# The managed config's harness-native settings (resolved from the manifest), and the leaf paths last
+# delivered from them so a setting the admin drops is withdrawn from the managed file.
+SETTINGS_PASSTHROUGH_STATE_KEY = "claude_settings_passthrough"
+SETTINGS_PASSTHROUGH_PATHS_STATE_KEY = "claude_settings_passthrough_paths"
 ANTHROPIC_CUSTOM_HEADERS_ENV_KEY = "ANTHROPIC_CUSTOM_HEADERS"
 CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
     {
@@ -1465,18 +1472,47 @@ def write_tool_config(
         ),
     )
 
+    # The admin's settings may not displace anything ug writes, except the hooks and deny lists ug
+    # only merges its own entries into.
+    passthrough = plan_settings_passthrough(
+        state.get(SETTINGS_PASSTHROUGH_STATE_KEY),
+        reserved_paths=[
+            *(
+                path
+                for path in managed_file_keys
+                if path[0] != "hooks" and path != CLAUDE_PERMISSIONS_DENY_PATH
+            ),
+            *([key] for key in CLAUDE_MANAGED_PICKER_KEYS),
+            [MANAGED_MCP_SETTINGS_KEY],
+        ],
+    )
+    if passthrough.ignored:
+        print_warning(
+            "Skipped managed Claude Code settings that ug configures itself: "
+            f"{', '.join(passthrough.ignored)}."
+        )
     _reconcile_managed_settings(
         state,
-        lambda base: _compose(
-            base,
-            enforce_model_default_hierarchy=(
-                source_scoped_defaults or (provider is None and parent_schema is None)
+        lambda base: apply_settings_passthrough(
+            _compose(
+                base,
+                enforce_model_default_hierarchy=(
+                    source_scoped_defaults or (provider is None and parent_schema is None)
+                ),
+                managed_settings_snapshots=managed_snapshots,
             ),
-            managed_settings_snapshots=managed_snapshots,
+            passthrough,
+            previous_paths=state.get(SETTINGS_PASSTHROUGH_PATHS_STATE_KEY) or [],
+            snapshots=managed_snapshots,
+            union_list_paths=[CLAUDE_PERMISSIONS_DENY_PATH],
         ),
-        managed_file_keys,
+        [*managed_file_keys, *passthrough.paths],
         relayed,
     )
+    if passthrough.paths:
+        state[SETTINGS_PASSTHROUGH_PATHS_STATE_KEY] = passthrough.paths
+    else:
+        state.pop(SETTINGS_PASSTHROUGH_PATHS_STATE_KEY, None)
 
     custom_oauth = state.get("custom_oauth")
     web_search_profile = (
