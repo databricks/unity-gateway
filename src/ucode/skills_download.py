@@ -37,7 +37,7 @@ from ucode.skills_state import (
     remove_downloads,
     set_last_update_check,
 )
-from ucode.skills_usage import report_skill_usage, report_skill_usage_in_background
+from ucode.skills_usage import report_skill_usage_in_background
 from ucode.state import load_state
 from ucode.time_utils import parse_update_time
 from ucode.ui import (
@@ -544,8 +544,7 @@ def _update_stale_skills(
     but never replaces a different skill: one renamed onto a name already on disk, or onto the
     same new name as another update, is skipped. Returns how many skills were rewritten.
     Stops fetching once ``deadline`` passes; a skill is only ever fully written or left
-    untouched, never interrupted mid-write. Reports usage synchronously, since the launch
-    that follows replaces this process and would kill a background report.
+    untouched, never interrupted mid-write.
     """
     home = os.path.normpath(str(Path.home()))
     pairs_by_base: dict[str, list[tuple[dict, SkillRef]]] = {}
@@ -566,7 +565,7 @@ def _update_stale_skills(
         )
         record_downloads(_skill_installs(written, roots, path, workspace))
         updated.extend(written)
-    report_skill_usage(workspace, token, updated)
+    report_skill_usage_in_background(workspace, token, updated)
     return len(updated)
 
 

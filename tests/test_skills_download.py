@@ -53,15 +53,14 @@ def ref(
 
 
 @pytest.fixture(autouse=True)
-def usage_reports(monkeypatch) -> list[tuple[str, list[str]]]:
-    """Capture skill usage reports as ``(mode, fqns)`` so no test sends one over the network."""
-    reports: list[tuple[str, list[str]]] = []
-
-    def recorder(mode: str):
-        return lambda ws, tok, refs: reports.append((mode, [r.fqn for r in refs]))
-
-    monkeypatch.setattr(sd, "report_skill_usage_in_background", recorder("background"))
-    monkeypatch.setattr(sd, "report_skill_usage", recorder("blocking"))
+def usage_reports(monkeypatch) -> list[list[str]]:
+    """Capture each skill usage report's FQNs so no test starts a reporter process."""
+    reports: list[list[str]] = []
+    monkeypatch.setattr(
+        sd,
+        "report_skill_usage_in_background",
+        lambda ws, tok, refs: reports.append([r.fqn for r in refs]),
+    )
     return reports
 
 
@@ -444,7 +443,7 @@ class TestDownloadSkillsFromSchemaLocations:
             WS, "token", ["main.default", "ml.prod"], str(tmp_path)
         )
 
-        assert usage_reports == [("background", ["main.default.good", "ml.prod.pii"])]
+        assert usage_reports == [["main.default.good", "ml.prod.pii"]]
 
 
 class TestDownloadRefs:
@@ -586,7 +585,7 @@ class TestDownloadSelectedSkills:
         record = skills_state.attribution_for_dir(tmp_path / ".claude/skills/triage")
         assert record["workspace_id"] == "org-42"
 
-    def test_reports_written_skills_in_background(self, tmp_path, monkeypatch, usage_reports):
+    def test_reports_written_skills(self, tmp_path, monkeypatch, usage_reports):
         monkeypatch.setattr(sd, "get_skill", lambda ws, tok, fqn: ref(fqn.rsplit(".", 1)[-1]))
         monkeypatch.setattr(
             sd,
@@ -600,7 +599,7 @@ class TestDownloadSelectedSkills:
             WS, "token", ["main.default.good", "main.default.bad"], str(tmp_path)
         )
 
-        assert usage_reports == [("background", ["main.default.good"])]
+        assert usage_reports == [["main.default.good"]]
 
 
 class TestReconcileManagedSkills:
@@ -660,7 +659,7 @@ class TestReconcileManagedSkills:
 
         sd.reconcile_managed_skills({"skills": {"unity_catalog_location": "main.default"}})
 
-        assert usage_reports == [("background", ["main.default.pii"])]
+        assert usage_reports == [["main.default.pii"]]
 
     def test_downloaded_skills_are_recorded_as_managed(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sd, "list_schema_skills", lambda *a, **k: ([ref("triage")], None))
@@ -1382,7 +1381,9 @@ class TestUpdateStaleSkills:
         assert stored[0]["fqn"] == "main.default.triage"
         assert stored[0]["uc_update_time"] == "2026-09-01T00:00:00Z"
 
-    def test_reports_rewritten_skills_before_returning(self, tmp_path, monkeypatch, usage_reports):
+    def test_reports_rewritten_skills_from_every_base_once(
+        self, tmp_path, monkeypatch, usage_reports
+    ):
         home = tmp_path / "home"
         monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))
         project = tmp_path / "project"
@@ -1403,9 +1404,7 @@ class TestUpdateStaleSkills:
 
         sd._update_stale_skills(WS, "token", pairs, time.monotonic() + 30)
 
-        assert usage_reports == [
-            ("blocking", ["main.default.home-skill", "main.default.project-skill"])
-        ]
+        assert usage_reports == [["main.default.home-skill", "main.default.project-skill"]]
 
     def test_skips_rename_onto_skill_already_on_disk(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
