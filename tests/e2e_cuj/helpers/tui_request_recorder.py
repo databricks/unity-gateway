@@ -142,7 +142,8 @@ class TuiRequestRecorder:
                     raise AssertionError(f"Timed out waiting for TUI request: {method} {path}")
                 self._condition.wait(remaining)
 
-    def expect_response(self, request: RecordedRequest, *, timeout: float = 30) -> RecordedResponse:
+    def response_for(self, request: RecordedRequest, *, timeout: float = 30) -> RecordedResponse:
+        """Wait for the response sent back for a recorded request."""
         deadline = time.monotonic() + timeout
         with self._condition:
             while request.sequence not in self._responses:

@@ -52,4 +52,4 @@ def test_records_request_and_response(recorder):
 
     request = recorder.expect_request(method="POST", path=path)
     assert_request(request)
-    assert_response(recorder.expect_response(request))
+    assert_response(recorder.response_for(request))

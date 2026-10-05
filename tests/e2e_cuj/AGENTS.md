@@ -16,5 +16,5 @@ the recorder's upstream. Use sequence checkpoints to separate fresh TUI sessions
 Assert individual JSON fields through `RecordedRequest.payload`, for example
 `request.payload["task"]["prompt"] == expected_prompt`. Raw bytes remain available
 as `RecordedRequest.body`. Authorization, cookie, and token headers are redacted.
-Use `recorder.expect_response(request)` to inspect the status, headers, or JSON
-payload returned for that exact request.
+Use `recorder.response_for(request)` to inspect the status, headers, or JSON
+payload returned in response to that exact request.
