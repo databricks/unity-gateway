@@ -431,3 +431,79 @@ class TestConfigureSharedStateWorkspaceIsolation:
     def test_destination_keeps_its_own_list(self, monkeypatch):
         state = self._configure(monkeypatch, source_list=["opencode"], dest_list=["copilot"])
         assert self_managed_agents(state) == ["copilot"]
+
+
+class TestUnmanagedConfigureRecordsSelfManaged:
+    """With no managed agent list, agents set up by `ug configure` are recorded as self-managed."""
+
+    @staticmethod
+    def _patch_common(monkeypatch, state, managed):
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s, **k: (managed, False))
+        monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: True)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda m: [])
+        monkeypatch.setattr(cli_mod, "_configure_managed_skills", lambda m: None)
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+
+    def test_agents_flag_records_configured_agents(self, monkeypatch):
+        state = dict(BASE_STATE)
+        self._patch_common(monkeypatch, state, None)
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda s, tools, **k: {**s, "last_configured_tools": list(tools)},
+        )
+        with patch("ucode.cli.managed_write_session"):
+            cli_mod.configure_workspace_command(
+                selected_tools=["codex", "opencode"], workspaces=[(WORKSPACE, None)]
+            )
+        saved = cli_mod.save_state.call_args.args[0]
+        assert self_managed_agents(saved) == ["codex", "opencode"]
+
+    def test_failed_agent_not_recorded(self, monkeypatch):
+        state = dict(BASE_STATE)
+        self._patch_common(monkeypatch, state, None)
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda s, tools, **k: {**s, "last_configured_tools": ["codex"]},
+        )
+        with patch("ucode.cli.managed_write_session"):
+            cli_mod.configure_workspace_command(
+                selected_tools=["codex", "opencode"], workspaces=[(WORKSPACE, None)]
+            )
+        saved = cli_mod.save_state.call_args.args[0]
+        assert self_managed_agents(saved) == ["codex"]
+
+    def test_single_agent_recorded_without_managed_config(self, monkeypatch):
+        state = dict(BASE_STATE)
+        self._patch_common(monkeypatch, state, None)
+        monkeypatch.setattr(cli_mod, "configure_single_tool", lambda t, s, **k: s)
+        with patch("ucode.cli.managed_write_session"):
+            cli_mod.configure_workspace_command(tool="opencode", workspaces=[(WORKSPACE, None)])
+        assert is_self_managed(state, "opencode")
+
+    def test_single_agent_not_recorded_with_managed_config(self, monkeypatch):
+        state = dict(BASE_STATE)
+        self._patch_common(monkeypatch, state, {"enabled_agents": {"claude": {}}})
+        monkeypatch.setattr(cli_mod, "configure_single_tool", lambda t, s, **k: s)
+        with patch("ucode.cli.managed_write_session"):
+            cli_mod.configure_workspace_command(tool="opencode", workspaces=[(WORKSPACE, None)])
+        assert not is_self_managed(state, "opencode")
+
+    def test_managed_configure_records_nothing(self, monkeypatch):
+        state = dict(BASE_STATE)
+        self._patch_common(monkeypatch, state, {"enabled_agents": {"claude": {}}})
+        monkeypatch.setattr(cli_mod, "resolve_state", lambda m, s, t: s)
+        monkeypatch.setattr(cli_mod, "managed_provider_service", lambda m, t: None)
+        monkeypatch.setattr(cli_mod, "managed_unity_catalog_location", lambda m, t: None)
+        monkeypatch.setattr(cli_mod, "_summarize_managed_config", lambda *a: None)
+        monkeypatch.setattr(
+            cli_mod,
+            "configure_selected_tools",
+            lambda s, tools, **k: {**s, "last_configured_tools": list(tools)},
+        )
+        with patch("ucode.cli.managed_write_session"):
+            cli_mod.configure_workspace_command(workspaces=[(WORKSPACE, None)])
+        assert not self_managed_agents(state)

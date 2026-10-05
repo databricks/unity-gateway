@@ -769,6 +769,7 @@ def _setup_single_agent(
     )
     state = states[0]
     parent_schema = None
+    managed = None
     if apply_managed and tool in ("claude", "codex"):
         managed, _ = refresh_managed_config(state, force_refresh=True)
         _reject_disabled_agent(managed, tool)
@@ -776,7 +777,11 @@ def _setup_single_agent(
             state = resolve_state(managed, state, tool)
             if not managed_provider_service(managed, tool):
                 parent_schema = managed_unity_catalog_location(managed, tool)
+    elif apply_managed:
+        managed, _ = refresh_managed_config(state, force_refresh=False)
     state = configure_single_tool(tool, state, parent_schema=parent_schema)
+    if apply_managed and not managed_enabled_tools(managed or {}):
+        state = _record_unmanaged_configured_agents(state, [tool])
     install_databricks_ai_tools_for_agents(
         [tool], state, force_refresh=tool not in ("claude", "codex")
     )
@@ -792,6 +797,18 @@ def _setup_single_agent(
             expand=False,
         )
     )
+    return state
+
+
+def _record_unmanaged_configured_agents(state: dict, tools: list[str]) -> dict:
+    """With no managed agent list, every agent the developer configures is theirs to manage, so
+    record it as self-managed (shown by ``ug agents list``, kept if an admin later omits it)."""
+    added = [tool for tool in tools if not is_self_managed(state, tool)]
+    if not added or is_dry_run():
+        return state
+    for tool in added:
+        add_self_managed_agent(state, tool)
+    save_state(state)
     return state
 
 
@@ -1042,6 +1059,9 @@ def _configure_workspace_command(
     last_configured = state.get("last_configured_tools")
     configured_set = set(
         last_configured if last_configured is not None else state.get("available_tools") or []
+    )
+    state = _record_unmanaged_configured_agents(
+        state, [tool_name for tool_name in picked if tool_name in configured_set]
     )
     summary_lines = [f"[bold]Workspace:[/bold] [cyan]{state['workspace']}[/cyan]"]
     for tool_name in picked:
