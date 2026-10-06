@@ -38,6 +38,14 @@ MCP_OAUTH_CALLBACK_PORT = 3118
 # same requirement `claude-code` satisfies.
 CURSOR_OAUTH_CLIENT_ID = "cursor-desktop"
 
+# Published public OAuth client Codex authenticates with for OAuth MCP servers
+# (`codex mcp add --oauth-client-id`). Codex derives a per-MCP-server callback path
+# (`/callback/<hash>`) that can't be pre-registered on a shared app, so `/oidc` gates
+# it behind the `enableCodexLoopbackRedirectExemption` SAFE flag: for this client on a
+# loopback host it accepts any path (RFC 8252 already waives the port; the flag waives
+# the path). `databricks-cli` does not get that exemption.
+CODEX_CLI_OAUTH_CLIENT_ID = "codex-cli"
+
 # Published apps rarely appear/disappear, so a per-workspace probe result is good
 # for a while; delete the cache file to force a re-probe.
 _CACHE_PATH = APP_DIR / "oauth_client_cache.json"
@@ -129,6 +137,7 @@ def oauth_client_available(workspace: str, client_id: str) -> bool:
 __all__ = [
     "CLAUDE_CODE_OAUTH_CLIENT_ID",
     "CURSOR_OAUTH_CLIENT_ID",
+    "CODEX_CLI_OAUTH_CLIENT_ID",
     "MCP_OAUTH_CALLBACK_PORT",
     "oauth_client_available",
 ]

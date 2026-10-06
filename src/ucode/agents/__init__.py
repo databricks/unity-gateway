@@ -26,6 +26,7 @@ from ucode.databricks import (
 )
 from ucode.managed_config import refresh_managed_config
 from ucode.managed_files import managed_write_batch
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
 from ucode.ui import (
@@ -134,8 +135,11 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
         command = ["npm", "install", "-g", target]
 
     print_note(f"Upgrading {spec['display']}...")
+    if tool == "codex":
+        # Detach potentially incompatible metadata until the next validated refresh.
+        codex.detach_app_model_catalog()
     try:
-        subprocess.run(command, check=True, timeout=300)
+        subprocess_cross_os.run(command, check=True, timeout=300)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         print_warning(f"Could not update {spec['display']}; continuing.")
         return False
@@ -224,9 +228,11 @@ def install_tool_binary(
 
     print_section("Bootstrap")
     print_warning(f"`{binary}` was not found. Installing {spec['display']}...")
+    if tool == "codex":
+        codex.detach_app_model_catalog()
     try:
-        subprocess.run(["npm", "install", "-g", package], check=True, timeout=300)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        subprocess_cross_os.run(["npm", "install", "-g", package], check=True, timeout=300)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         message = f"Failed to install {spec['display']} automatically."
         if strict:
             raise RuntimeError(message) from exc
@@ -271,8 +277,12 @@ def tool_version_error(tool: str) -> str | None:
     return _minimum_version_error(tool)
 
 
-def ensure_bootstrap_dependencies(tool: str) -> None:
-    install_databricks_cli()
+def ensure_bootstrap_dependencies(
+    tool: str,
+    *,
+    skip_cli_version_check: bool = False,
+) -> None:
+    install_databricks_cli(skip_version_check=skip_cli_version_check)
     install_tool_binary(
         tool,
         strict=True,

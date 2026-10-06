@@ -1,14 +1,19 @@
 """Managed-config CUJs for agent model lists, smart routing, and Codex catalog fallback metadata.
 
-The admin CodingAgentConfig is injected via UCODE_MANAGED_CONFIG_STUB so the real /model TUI can be
-driven against a model list the live workspace does not publish; only the config INPUT is stubbed
-(auth, the config writers, and the agent binary stay real). See tests/AGENTS.md rule 4.
+The Claude defaults cases read published configs from their dedicated workspaces. Other cases
+inject the admin CodingAgentConfig via UCODE_MANAGED_CONFIG_STUB to exercise shapes the live
+workspace does not publish; only that config input is stubbed. See tests/AGENTS.md rule 4.
 """
 
 import json
+import os
 
 import pytest
-from utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
+from utils.constants import (
+    CLAUDE_SMART_ROUTING_MODELS,
+    CODEX_SMART_ROUTING_MODELS,
+    MANAGED_CLAUDE_PROVIDER_SERVICE,
+)
 from utils.evidence import FileTask
 from utils.managed import (
     build_claude_agent_config,
@@ -16,6 +21,7 @@ from utils.managed import (
     build_coding_agent_config,
     set_managed_config_stub,
 )
+from utils.provider_catalog import fetch_anthropic_parent_catalog, fetch_anthropic_provider_catalog
 from utils.terminal import AgentTerminal, TerminalProcess
 
 CLAUDE_OPUS = "system.ai.claude-opus-4-8"
@@ -31,36 +37,31 @@ MANAGED_CLAUDE_DEFAULT_ENV_KEYS = {
     "default_sonnet_model": "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "default_haiku_model": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 }
+CLAUDE_MPS_DEFAULTS_WORKSPACE = (
+    "https://eng-ml-inference-batch-inference-us-west-2.cloud.databricks.com"
+)
+CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE = (
+    "https://eng-ml-inference-ap-northeast-2.cloud.databricks.com"
+)
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
-CLAUDE_SMART_ROUTING_MODELS = [
-    "system.ai.claude-opus-5",
-    "system.ai.claude-sonnet-5",
-    "system.ai.claude-haiku-4-5",
-    "system.ai.glm-5-3",
-    "system.ai.kimi-k3",
-]
-CODEX_SMART_ROUTING_MODELS = [
-    "system.ai.gpt-6-astra",
-    "system.ai.gpt-5-6-sol",
-    "system.ai.gpt-5-6-terra",
-    "system.ai.gpt-5-6-luna",
-    "system.ai.gpt-5-5",
-    "system.ai.glm-5-3",
-    "system.ai.kimi-k3",
-]
 
 
-@pytest.mark.managed_fixture
+@pytest.mark.managed
 @pytest.mark.claude
-def test_managed_fixture_claude_mps_defaults_accompany_discovery(live_session, workspace, tmp_path):
-    """Scenario: launch Claude with managed defaults and MPS discovery.
+def test_managed_claude_mps_defaults_accompany_discovery(live_session):
+    """Scenario: launch Claude with managed defaults and MPS discovery on the west-2 workspace.
 
     Expected: the installed ug launch writes the MPS header and every admin-authored default to
-    both Claude settings files without changing the model ids. This settings reconciliation check
-    does not claim model inference.
+    both Claude settings files without changing the model ids, and replaces built-in picker rows
+    with labeled family-default shortcuts followed by the independently fetched MPS catalog,
+    including targets also used as defaults. This settings reconciliation check does not claim
+    model inference.
     """
     session = live_session
+    target_bearer = os.environ.get("UG_MPS_DEFAULTS_BEARER", "").strip()
+    assert target_bearer, "The runner needs UG_MPS_DEFAULTS_CLIENT_SECRET for this workspace."
+    session.env["DATABRICKS_BEARER"] = target_bearer
     defaults = {
         "default_model": "anthropic.claude-sonnet-5",
         "default_fable_model": "anthropic.claude-fable-5-1",
@@ -68,20 +69,17 @@ def test_managed_fixture_claude_mps_defaults_accompany_discovery(live_session, w
         "default_sonnet_model": "anthropic.claude-sonnet-5",
         "default_haiku_model": "anthropic.claude-haiku-4-5",
     }
-    config = build_coding_agent_config(
-        "CODING_AGENT_CLAUDE_CODE",
-        {
-            "agent": "CODING_AGENT_CLAUDE_CODE",
-            "config": {
-                "models": {"model_provider_service": MANAGED_CLAUDE_PROVIDER_SERVICE},
-                "default_models": defaults,
-            },
-        },
+    result = session.run(
+        "configure", "--workspace", CLAUDE_MPS_DEFAULTS_WORKSPACE, "--skip-upgrade", timeout=240
     )
-    set_managed_config_stub(session, tmp_path, config)
-    result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
 
+    catalog = fetch_anthropic_provider_catalog(
+        CLAUDE_MPS_DEFAULTS_WORKSPACE,
+        target_bearer,
+        MANAGED_CLAUDE_PROVIDER_SERVICE,
+    )
+    expected_families = ("opus", "sonnet", "haiku", "fable")
     command = [str(session.binary), "claude", "--", "--version"]
     with TerminalProcess(session, "claude", command, "managed-defaults-mps") as terminal:
         terminal.finish(timeout=240)
@@ -97,20 +95,37 @@ def test_managed_fixture_claude_mps_defaults_accompany_discovery(live_session, w
         assert env.get("ANTHROPIC_MODEL") == defaults["default_model"], settings
         for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
             assert env.get(env_key) == defaults[config_key], settings
+        picker = settings["modelPicker"]
+        assert picker["replaceBuiltInOptions"] is True, picker
+        default_options = picker["options"][: len(expected_families)]
+        catalog_options = picker["options"][len(expected_families) :]
+        for family, option in zip(expected_families, default_options, strict=True):
+            assert option["model"] == family, option
+            assert option["label"] == f"Default {family.title()}", option
+            assert option["description"] == defaults[f"default_{family}_model"], option
+        assert sorted(option["model"] for option in catalog_options) == sorted(catalog.model_ids)
+        for option in catalog_options:
+            if display_name := catalog.display_names.get(option["model"]):
+                assert option["label"] == display_name, option
 
 
-@pytest.mark.managed_fixture
+@pytest.mark.managed
 @pytest.mark.claude
-def test_managed_fixture_claude_parent_schema_defaults_accompany_discovery(
-    live_session, workspace, tmp_path
-):
-    """Scenario: launch Claude with managed defaults and Unity Catalog discovery.
+def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session):
+    """Scenario: launch Claude with managed defaults and UC discovery on the northeast-2 workspace.
 
     Expected: the installed ug launch writes the parent-schema header and every admin-authored
     default to both Claude settings files, adding ``[1m]`` only to Opus and Sonnet family defaults.
-    This settings reconciliation check does not claim model inference.
+    The replacement picker contains those family defaults and every model independently fetched
+    from the schema, preserving catalog labels. This settings reconciliation check does not claim
+    model inference.
     """
     session = live_session
+    target_bearer = os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_BEARER", "").strip()
+    assert target_bearer, (
+        "The runner needs UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET for this workspace."
+    )
+    session.env["DATABRICKS_BEARER"] = target_bearer
     parent_schema = "system.ai"
     defaults = {
         "default_model": f"{parent_schema}.claude-sonnet-5",
@@ -119,20 +134,18 @@ def test_managed_fixture_claude_parent_schema_defaults_accompany_discovery(
         "default_sonnet_model": f"{parent_schema}.claude-sonnet-5",
         "default_haiku_model": f"{parent_schema}.claude-haiku-4-5",
     }
-    config = build_coding_agent_config(
-        "CODING_AGENT_CLAUDE_CODE",
-        {
-            "agent": "CODING_AGENT_CLAUDE_CODE",
-            "config": {
-                "models": {"unity_catalog_location": parent_schema},
-                "default_models": defaults,
-            },
-        },
+    result = session.run(
+        "configure",
+        "--workspace",
+        CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE,
+        "--skip-upgrade",
+        timeout=240,
     )
-    set_managed_config_stub(session, tmp_path, config)
-    result = session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=240)
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
 
+    catalog = fetch_anthropic_parent_catalog(
+        CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE, target_bearer, parent_schema
+    )
     command = [str(session.binary), "claude", "--", "--version"]
     with TerminalProcess(session, "claude", command, "managed-defaults-parent-schema") as terminal:
         terminal.finish(timeout=240)
@@ -146,11 +159,26 @@ def test_managed_fixture_claude_parent_schema_defaults_accompany_discovery(
         expected_header = f"Databricks-Model-Service-Parent-Schema: {parent_schema}"
         assert expected_header in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines(), settings
         assert env.get("ANTHROPIC_MODEL") == defaults["default_model"], settings
+        expected_picker_models = []
         for config_key, env_key in MANAGED_CLAUDE_DEFAULT_ENV_KEYS.items():
             expected = defaults[config_key]
             if config_key in {"default_opus_model", "default_sonnet_model"}:
                 expected += "[1m]"
             assert env.get(env_key) == expected, settings
+            expected_picker_models.append(
+                defaults[config_key]
+                if defaults[config_key] == defaults["default_model"]
+                else expected
+            )
+        picker = settings["modelPicker"]
+        assert picker["replaceBuiltInOptions"] is True, picker
+        expected_picker_models = set(expected_picker_models) | set(catalog.model_ids)
+        assert sorted(option["model"] for option in picker["options"]) == sorted(
+            expected_picker_models
+        ), picker
+        for option in picker["options"]:
+            if display_name := catalog.display_names.get(option["model"]):
+                assert option["label"] == display_name, option
 
 
 @pytest.mark.managed_fixture

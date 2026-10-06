@@ -6,23 +6,27 @@ inspect what's configured (`cat ~/.copilot/.env`) and to give `revert` something
 to clean up; the values are also injected directly into the child process's
 environment at launch.
 
-We point Copilot CLI's `openai` provider at the Databricks MLflow chat-completions
-gateway, which serves Claude and codex (gpt-5) models. Gemini is intentionally
-excluded — Databricks' Gemini translation layer rejects the `stream_options`
-field that Copilot CLI sends, so Gemini models 400 on every request.
+We point Copilot CLI's `openai` provider at the Databricks MLflow gateway. GPT
+models with major version 6 or newer use Responses; other models use Chat
+Completions. Copilot fixes its wire API and model when it builds the native
+client, so changing models in the picker cannot change either mid-session.
+Relaunch Copilot after changing model families. Gemini is intentionally excluded
+— Databricks' Gemini translation layer rejects the `stream_options` field that
+Copilot CLI sends, so Gemini models 400 on every request.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import signal
-import subprocess
 import threading
 from pathlib import Path
 
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
+    apply_json_mcp_diff,
     backup_existing_file,
     parse_dotenv,
     read_json_safe,
@@ -34,9 +38,10 @@ from ucode.databricks import (
     build_copilot_base_url,
     get_databricks_token,
 )
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import mark_tool_managed, save_state
 
-from .args import LaunchOptions
+from .args import LaunchOptions, explicit_model_arg_value
 
 COPILOT_CONFIG_DIR = Path.home() / ".copilot"
 COPILOT_ENV_PATH = COPILOT_CONFIG_DIR / "ucode.env"
@@ -55,6 +60,7 @@ SPEC: ToolSpec = {
 MANAGED_KEYS: list[str] = [
     "COPILOT_PROVIDER_TYPE",
     "COPILOT_PROVIDER_BASE_URL",
+    "COPILOT_PROVIDER_WIRE_API",
     "COPILOT_MODEL",
     "COPILOT_PROVIDER_BEARER_TOKEN",
     "COPILOT_OFFLINE",
@@ -65,6 +71,13 @@ LEGACY_ENV_KEYS = [
     "OPENAI_API_KEY",
     "COPILOT_PROVIDER_API_KEY",
 ]
+_GPT_MODEL_MAJOR_PATTERN = re.compile(r"^(?:system\.ai\.)?(?:databricks-)?gpt-(\d+)(?=$|[.-])")
+
+
+def model_uses_responses_api(model: str) -> bool:
+    """Whether a supported GPT model id uses the Responses API."""
+    match = _GPT_MODEL_MAJOR_PATTERN.match(model)
+    return match is not None and int(match.group(1)) >= 6
 
 
 def default_model(state: dict) -> str | None:
@@ -88,11 +101,20 @@ def default_model(state: dict) -> str | None:
     return next(iter(claude_models.values()), None)
 
 
-def render_env_overlay(workspace: str, model: str, token: str) -> dict[str, str]:
+def render_env_overlay(
+    workspace: str,
+    selected_model: str,
+    token: str,
+    *,
+    override_model: str | None = None,
+) -> dict[str, str]:
+    request_model = override_model or selected_model
+    wire_api = "responses" if model_uses_responses_api(request_model) else "completions"
     return {
         "COPILOT_PROVIDER_TYPE": "openai",
         "COPILOT_PROVIDER_BASE_URL": build_copilot_base_url(workspace),
-        "COPILOT_MODEL": model,
+        "COPILOT_PROVIDER_WIRE_API": wire_api,
+        "COPILOT_MODEL": selected_model,
         "COPILOT_PROVIDER_BEARER_TOKEN": token,
         "COPILOT_OFFLINE": "true",
         "OAUTH_TOKEN": token,
@@ -101,7 +123,8 @@ def render_env_overlay(workspace: str, model: str, token: str) -> dict[str, str]
 
 def build_runtime_env(workspace: str, model: str, token: str) -> dict[str, str]:
     env = os.environ.copy()
-    env.update(render_env_overlay(workspace, model, token))
+    override_model = env.get("COPILOT_PROVIDER_WIRE_MODEL")
+    env.update(render_env_overlay(workspace, model, token, override_model=override_model))
     return env
 
 
@@ -142,6 +165,13 @@ def remove_mcp_server_config(name: str) -> bool:
     return True
 
 
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
+    """Apply ``add``/``remove`` to Copilot's `mcpServers` in a single read-modify-write. Returns the names actually removed."""
+    return apply_json_mcp_diff(
+        COPILOT_MCP_CONFIG_PATH, "mcpServers", add, remove, backup_path=COPILOT_MCP_BACKUP_PATH
+    )
+
+
 def write_tool_config(
     state: dict,
     model: str,
@@ -154,8 +184,10 @@ def write_tool_config(
         token = get_databricks_token(
             state["workspace"], state.get("profile"), force_refresh=force_refresh
         )
-    overlay = render_env_overlay(state["workspace"], model, token)
     existing = parse_dotenv(COPILOT_ENV_PATH)
+    # Keep the inspectable file self-consistent without treating it as launch input.
+    override_model = existing.get("COPILOT_PROVIDER_WIRE_MODEL")
+    overlay = render_env_overlay(state["workspace"], model, token, override_model=override_model)
     for key in LEGACY_ENV_KEYS:
         existing.pop(key, None)
     existing.update(overlay)
@@ -165,35 +197,41 @@ def write_tool_config(
     return state, token
 
 
-def _refresh_token_once(state: dict, *, force_refresh: bool = False) -> tuple[str, str]:
-    model = default_model(state)
+def _refresh_token_once(
+    state: dict,
+    model: str | None = None,
+    *,
+    force_refresh: bool = False,
+) -> tuple[str, str]:
+    model = model or default_model(state)
     if not model:
         raise RuntimeError("No Copilot model is available on this workspace.")
     _, token = write_tool_config(state, model, force_refresh=force_refresh)
     return model, token
 
 
-def _refresh_forever(state: dict, stop_event: threading.Event) -> None:
+def _refresh_forever(state: dict, model: str, stop_event: threading.Event) -> None:
     while not stop_event.wait(TOKEN_REFRESH_INTERVAL_SECONDS):
         try:
-            _refresh_token_once(state, force_refresh=True)
+            _refresh_token_once(state, model, force_refresh=True)
         except RuntimeError:
             continue
 
 
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
-    model, token = _refresh_token_once(state)
+    model = explicit_model_arg_value(tool_args) or options.user_pinned_model or default_model(state)
+    model, token = _refresh_token_once(state, model)
     env = build_runtime_env(state["workspace"], model, token)
 
     stop_event = threading.Event()
     refresher = threading.Thread(
         target=_refresh_forever,
-        args=(state, stop_event),
+        args=(state, model, stop_event),
         daemon=True,
     )
     refresher.start()
 
-    proc = subprocess.Popen([SPEC["binary"], *mcp_config_args(), *tool_args], env=env)
+    proc = subprocess_cross_os.popen([SPEC["binary"], *mcp_config_args(), *tool_args], env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

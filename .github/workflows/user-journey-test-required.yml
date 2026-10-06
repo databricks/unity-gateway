@@ -22,7 +22,9 @@ jobs:
       contents: read
       issues: read
       pull-requests: read
-    runs-on: ubuntu-latest
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: linux-ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Check out the trusted gate from the default branch
@@ -49,5 +51,5 @@ jobs:
           TEST_POLICY_PATH: tests/AGENTS.md
           USER_JOURNEY_WAIVER_ADMINS: rohita5l lilly-luo
         run: |
-          : "${USER_JOURNEY_JUDGE_MODEL:?Set the UG_CI_USER_JOURNEY_JUDGE_MODEL repository variable to a chat-capable system.ai model}"
+          : "${USER_JOURNEY_JUDGE_MODEL:?Set the UG_CI_USER_JOURNEY_JUDGE_MODEL repository variable to a Responses-capable system.ai model}"
           python3 .github/scripts/user-journey-required/check.py

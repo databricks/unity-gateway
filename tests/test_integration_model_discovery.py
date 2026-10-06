@@ -42,6 +42,15 @@ def test_claude_picker_accepts_native_haiku_deduplication():
     )
 
 
+def test_claude_picker_accepts_catalog_haiku_id_and_display_name():
+    screen = "Select model\n  ❯ 2. claude-haiku-4-5-20251001 ✔  claude-haiku-4-5-20251001"
+    assert claude_model_in_picker(
+        screen,
+        "claude-haiku-4-5-20251001",
+        "claude-haiku-4-5-20251001",
+    )
+
+
 @pytest.mark.parametrize(
     "screen",
     [

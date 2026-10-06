@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 import signal
-import subprocess
 import threading
 from pathlib import Path
 
@@ -13,6 +12,7 @@ from ucode.agent_updates import latest_version_below
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
+    apply_json_mcp_diff,
     backup_existing_file,
     deep_merge_dict,
     parse_dotenv,
@@ -25,6 +25,7 @@ from ucode.databricks import (
     build_tool_base_url,
     get_databricks_token,
 )
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import (
     get_provider_service,
     mark_tool_managed,
@@ -120,6 +121,17 @@ def _ensure_local_settings_selected_type() -> None:
         {"security": {"auth": {"selectedType": "gemini-api-key"}}},
     )
     write_json_file(GEMINI_SETTINGS_PATH, settings)
+
+
+def build_mcp_server_entry(argv: list[str]) -> dict:
+    """The `mcpServers` stdio entry `gemini mcp add <name> <argv> --type stdio` writes."""
+    return {"command": argv[0], "args": list(argv[1:])}
+
+
+def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
+    """Apply ``add``/``remove`` to Gemini's `mcpServers` (in ug's Gemini home settings) in a single
+    read-modify-write. Returns the names actually removed."""
+    return apply_json_mcp_diff(GEMINI_SETTINGS_PATH, "mcpServers", add, remove)
 
 
 def render_env_overlay(
@@ -246,7 +258,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     )
     refresher.start()
 
-    proc = subprocess.Popen([SPEC["binary"], *tool_args], env=env)
+    proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()
     except KeyboardInterrupt:

@@ -51,10 +51,39 @@ On first launch of a model-backed agent, `ug` prompts for a Databricks
 workspace, authenticates, and writes local agent config. Later launches reuse
 the saved workspace and credentials.
 
+Use `ug opencode --model system.ai.glm-5-3` (or `-m`) to select a configured
+model for one launch. OpenCode's `provider/model` form is also accepted.
+Unknown Databricks models produce an error; this option does not add models
+to discovery or change ug's saved default.
+
+`ug copilot` uses the Responses API for GPT-6 and newer model IDs, and Chat
+Completions for other models. The model selected at launch (including `--model`)
+determines the API. An inherited `COPILOT_PROVIDER_WIRE_MODEL` takes precedence
+because it overrides the model sent to the gateway. Restart Copilot through `ug`
+to change the wire model or API; in-session model selection does not rebuild its
+provider configuration.
+
 Without a managed workspace config, `ug claude` automatically discovers gateway
 models for Claude Code's `/model` picker. Discovery defaults to `system.ai` when
 no provider or model location is selected. Use `--provider` or `--model-location`
 to select another model source; managed workspace configs control their own sources.
+
+`ug codex` validates discovered models with the installed Codex binary and publishes
+them to `~/.ucode/codex-model-catalog.json`, referenced by shared `~/.codex/config.toml`
+for Codex App. Managed static lists use the same path during `ug configure`. The
+latest refresh supplies the app's catalog; custom catalogs (including Isaac's) and
+custom providers are preserved. The app's gateway provider and authentication must
+already be configured. Validation covers the local Codex binary.
+
+Codex loads the catalog at app-server startup. When ug reports a catalog change,
+finish active tasks, restart the app server on the **connected host**, then reconnect.
+Use `codex app-server daemon restart` for a standalone managed daemon; otherwise
+restart the process or application that owns the server. Reconnecting or reopening
+the desktop app can reuse a remote server with the old list.
+
+ug removes its shared reference on discovery/validation failure, reconfiguration,
+revert, or before installing/updating Codex. After an update, run `ug codex` to refresh
+discovery or `ug configure` for a managed static list, then restart the app server.
 
 ## Configure
 
@@ -104,6 +133,50 @@ Every Databricks MCP server is registered as a local stdio server that runs
 profile. V2 AI Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
+
+Claude-only setup also discovers GPT models for its generated `web_search`
+server; installing or configuring Codex is not required. Search registration
+requires an available Responses-capable model.
+
+Claude's generated `web_search` server uses the same saved custom OAuth CLI
+profile as its harness, when configured. It stores the profile name, not an
+access token, and refreshes credentials for search requests. This does not
+change search permissions.
+
+The built-in search server runs up to four searches concurrently. A slow search
+does not block tool discovery or another search's result. Additional searches
+wait for a worker. Cancelling a queued search prevents it from running; an
+active search retains its worker until its blocking request finishes, and its
+response is discarded. Closing the input stream drains accepted searches, so
+shutdown can wait for the existing authentication and HTTP timeouts. Input
+failure or interruption cancels queued searches and waits for active requests
+to finish. This removes local serialization without changing the backend model
+or speeding up an individual backend request.
+
+Launchers that supply their own search server can first query
+`ug mcp web-search --capabilities`. Contract version 1 supports setting
+`UCODE_CLAUDE_WEB_SEARCH_PROVIDER=external-if-safe` on the ug child process only
+when the capability response advertises that `automatic_provider` value.
+The default (unset or `ucode`) retains standalone ug search. External mode
+does not create, update, or delete saved search registrations. Generated
+helpers carry `--managed-by-ucode`. Only the launch override created after
+ownership verification exposes no tools; copied helpers and custom registrations
+retain their tools even when they inherit external provider selection.
+
+For an existing generated `web_search` entry, ug verifies its saved ownership
+fingerprint and uses a launch-only MCP override pointing at the current ug
+installation. This also handles older helper executables. Disabled entries
+are preserved without launch overrides, and `--strict-mcp-config` excludes saved registrations without
+an override. Unknown ownership, overlapping config scopes, or command-based
+MCP policies produce a warning and retain the existing provider; duplicate
+providers may remain. Explicit `external` selection instead fails on a conflict.
+Standalone refreshes preserve edited user entries and project/local servers.
+If no search model is available, they retain ownership of the installed entry so a
+later refresh or external-provider launch can still verify it.
+The selection does not authorize search or remove any permission denial.
+Concurrent setup still uses ug's existing whole-workspace state writes. A stale
+ownership fingerprint safely preserves the server and prevents automatic handoff;
+this contract does not make shared setup transactional.
 
 ## Skills
 
@@ -168,13 +241,26 @@ Databricks AI Tools are installed only by `ug configure`, never by agent launch
 commands. Use `--enable-databricks-ai-tools` or `--disable-databricks-ai-tools`
 with `ug configure` to control installation.
 
+## Claude Routing Plugin
+
+Smart routing passes generated agents through a per-launch `--plugin-dir`,
+alongside `--settings`, without persistent plugin registration. One temporary
+directory holds the settings, socket, and plugin and is removed when the launch
+finishes or fails. Existing hook configuration and disable/revert behavior are
+unchanged. Native daemon/background propagation of the plugin remains unverified.
+
+On Windows, Claude smart routing uses subagent hooks only. If first-prompt routing
+is enabled, ug warns and falls back to subagent routing because the first-prompt
+wrapper requires a Unix terminal.
+The generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
+
 ## Managed Files
 
 `ug` backs up files before overwriting them. `ug revert` restores backups.
 
 | Tool | Managed files |
 |------|---------------|
-| Codex | `~/.codex/ucode.config.toml`, legacy `~/.codex/config.toml`, `/etc/codex/managed_config.toml` (Linux and macOS) |
+| Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS) |
 | Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |
