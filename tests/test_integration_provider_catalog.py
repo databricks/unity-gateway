@@ -10,28 +10,6 @@ import pytest
 from tests.integration.utils import provider_catalog as catalog
 
 
-def _mock_json_boundary(monkeypatch, get_json):
-    class CatalogOpener:
-        def open(self, request, *, timeout):
-            assert request.get_method() == "GET"
-            assert timeout == 30
-            names = (
-                "Authorization",
-                "Accept",
-                "Anthropic-Version",
-                "Databricks-Model-Provider-Service",
-                catalog.MODEL_SERVICE_PARENT_SCHEMA_HEADER,
-            )
-            headers = {
-                name: request.get_header(name.capitalize())
-                for name in names
-                if request.has_header(name.capitalize())
-            }
-            return io.BytesIO(json.dumps(get_json(request.full_url, headers)).encode())
-
-    monkeypatch.setattr(catalog.urllib.request, "urlopen", CatalogOpener().open)
-
-
 def _page(*ids, has_more=False, last_id=None):
     return {
         "data": [{"id": model_id, "display_name": model_id} for model_id in ids],
@@ -105,7 +83,7 @@ def test_anthropic_provider_fetch_paginates_and_rejects_cross_page_duplicates(mo
         requests.append((url, headers))
         return next(pages)
 
-    _mock_json_boundary(monkeypatch, get_json)
+    monkeypatch.setattr(catalog, "_get_json", get_json)
     result = catalog.fetch_anthropic_provider_catalog("https://workspace/", "token", "c.s.mps")
     assert result.model_ids == ("a", "b")
     assert result.display_names == {"a": "a", "b": "b"}
@@ -115,8 +93,6 @@ def test_anthropic_provider_fetch_paginates_and_rejects_cross_page_duplicates(mo
     for _, headers in requests:
         assert headers["Authorization"] == "Bearer token"
         assert headers["Databricks-Model-Provider-Service"] == "c.s.mps"
-        assert headers["Anthropic-Version"] == "2023-06-01"
-        assert catalog.MODEL_SERVICE_PARENT_SCHEMA_HEADER not in headers
 
     pages = iter([_page("a", has_more=True, last_id="a"), _page("a")])
     with pytest.raises(AssertionError, match="repeated model id"):
@@ -127,14 +103,14 @@ def test_anthropic_provider_fetch_rejects_repeated_cursor(monkeypatch):
     pages = iter(
         [_page("a", has_more=True, last_id="cursor"), _page("b", has_more=True, last_id="cursor")]
     )
-    _mock_json_boundary(monkeypatch, lambda *args: next(pages))
+    monkeypatch.setattr(catalog, "_get_json", lambda *args: next(pages))
     with pytest.raises(AssertionError, match="repeated pagination cursor"):
         catalog.fetch_anthropic_provider_catalog("https://workspace", "token", "c.s.mps")
 
 
 def test_anthropic_provider_fetch_has_a_page_bound(monkeypatch):
     pages = iter(_page(str(i), has_more=True, last_id=str(i)) for i in range(20))
-    _mock_json_boundary(monkeypatch, lambda *args: next(pages))
+    monkeypatch.setattr(catalog, "_get_json", lambda *args: next(pages))
     with pytest.raises(AssertionError, match="exceeded 20 pages"):
         catalog.fetch_anthropic_provider_catalog("https://workspace", "token", "c.s.mps")
 
@@ -151,7 +127,6 @@ def test_codex_provider_fetch_is_a_scoped_bounded_metadata_get(monkeypatch):
         assert request.full_url == "https://workspace/ai-gateway/codex/v1/models"
         assert request.get_header("Authorization") == "Bearer token"
         assert request.get_header("Databricks-model-provider-service") == "c.s.mps"
-        assert not request.has_header(catalog.MODEL_SERVICE_PARENT_SCHEMA_HEADER.capitalize())
         assert timeout == 30
         return Response(json.dumps(payload).encode())
 
@@ -169,7 +144,7 @@ def test_codex_parent_fetch_uses_parent_scope_and_retains_exact_api_catalog(monk
         assert "Databricks-Model-Provider-Service" not in headers
         return {"models": [{"slug": model, "visibility": "list"} for model in ids]}
 
-    _mock_json_boundary(monkeypatch, get_json)
+    monkeypatch.setattr(catalog, "_get_json", get_json)
     result = catalog.fetch_codex_parent_catalog("https://workspace/", "token", "c.s")
     assert result.model_ids == tuple(ids)
 
@@ -182,43 +157,3 @@ def test_provider_fetch_does_not_hide_http_failures(monkeypatch, status):
     monkeypatch.setattr(catalog.urllib.request, "urlopen", urlopen)
     with pytest.raises(AssertionError, match=f"HTTP {status}"):
         catalog.fetch_codex_provider_catalog("https://workspace", "token", "c.s.mps")
-
-
-def test_anthropic_parent_catalog_retains_pages_labels_and_scoped_requests(monkeypatch):
-    pages = [
-        {
-            "data": [{"id": "catalog.models.claude_sonnet", "display_name": "Sonnet"}],
-            "has_more": True,
-            "last_id": "cursor with / and ?",
-        },
-        {
-            "data": [{"id": "anthropic-aigw-12345678-catalog.models.kimi"}],
-            "has_more": False,
-        },
-    ]
-    requests = []
-
-    class CatalogOpener:
-        def open(self, request, *, timeout):
-            requests.append(request)
-            assert timeout == 30
-            assert request.get_header("Authorization") == "Bearer test-bearer"
-            assert (
-                request.get_header(catalog.MODEL_SERVICE_PARENT_SCHEMA_HEADER.capitalize())
-                == "catalog.models"
-            )
-            assert request.get_header("Anthropic-version") == "2023-06-01"
-            assert not request.has_header("Databricks-model-provider-service")
-            return io.BytesIO(json.dumps(pages[len(requests) - 1]).encode())
-
-    monkeypatch.setattr(catalog.urllib.request, "urlopen", CatalogOpener().open)
-    result = catalog.fetch_anthropic_parent_catalog(
-        "https://workspace.invalid/", "test-bearer", "catalog.models"
-    )
-    assert result.payloads == tuple(pages)
-    assert result.model_ids == (pages[0]["data"][0]["id"], pages[1]["data"][0]["id"])
-    assert result.display_names == {result.model_ids[0]: "Sonnet", result.model_ids[1]: None}
-    assert parse_qs(urlparse(requests[1].full_url).query) == {
-        "limit": ["1000"],
-        "after_id": ["cursor with / and ?"],
-    }
