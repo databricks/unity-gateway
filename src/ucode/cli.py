@@ -2516,13 +2516,16 @@ def _configure_managed_skills(managed: dict | None) -> None:
 
 
 def _child_owns_stdout(tool: str, tool_args: list[str]) -> bool:
-    """True when the forwarded agent command speaks a stdio protocol on stdout.
+    """Reserve stdout when forwarded arguments contain a headless-mode token.
 
-    ``codex app-server`` puts its JSON-RPC stream on stdout, so ug's status
-    output must move to stderr for that launch; the file descriptor stays
-    untouched for the agent process.
+    Only scan before ``--``. Matching option values also move ug diagnostics to
+    stderr; argument forwarding and the agent's stdout descriptor stay untouched.
     """
-    return tool == "codex" and tool_args[:1] == ["app-server"]
+    if "--" in tool_args:
+        tool_args = tool_args[: tool_args.index("--")]
+    if tool == "claude":
+        return any(arg in {"-p", "--print"} for arg in tool_args)
+    return tool == "codex" and any(arg in {"exec", "e", "app-server"} for arg in tool_args)
 
 
 def _should_launch_smart_routing(

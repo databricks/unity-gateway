@@ -47,6 +47,21 @@ Custom request headers have component coverage in `test_cli.py`, `test_agent_cod
 launch-only Codex values, Claude cleanup, partial-write recovery, and rejection of existing
 or newly supplied administrator headers. Live custom-header journeys are not covered.
 
+
+`TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
+(plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
+and without ug's `--`, and an unchanged stdout descriptor. Detection checks exact tokens before
+the agent's `--`, including `e` and tokens after unknown or variadic options, without parsing
+Codex's options. An option value or prompt token equal to `exec`, `e`, or `app-server` also
+routes UG diagnostics to stderr; arguments and native agent stdout remain unchanged.
+Launches without a matching token retain stdout for status messages.
+`TestBootstrapStdout` in `test_agents_init.py` substitutes local Python processes
+for Databricks and agent installers/upgraders, asserting real stdout/stderr routing
+on success and failure, preserved version-output capture, and clean native handoff.
+These are component checks, not live installer, Isaac, or inference coverage.
+The live Claude/Codex headless prompt-argument and stdin journeys also require raw stdout to
+parse as JSON/JSONL without stripping UG messages; those assertions still require a live run.
+
 `test_mcp_web_search.py` and `test_agent_claude.py` cover custom OAuth search
 registration, stale registration repair, SDK cache reuse/refresh, CLI profile
 selection, and errors without browser consent through the MCP handler. These

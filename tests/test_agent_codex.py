@@ -1806,6 +1806,63 @@ class TestCodexManagedConfig:
         assert managed_path.read_bytes() == before
         assert read_toml_safe(managed_path)["approval_policy"] == "on-request"
 
+    @pytest.mark.parametrize(
+        ("ug_version", "agent_version"),
+        [("1.0", "0.135.0"), ("1.0", "unknown"), ("1.1", "0.134.0")],
+    )
+    def test_version_only_user_agent_change_invokes_no_sudo(
+        self, tmp_path, monkeypatch, ug_version, agent_version
+    ):
+        # Only ug's User-Agent version tokens changed: keep the managed file (accepted telemetry
+        # lag) and refresh the private config, which needs no sudo.
+        managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(codex, "ug_version", lambda: "1.0")
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+        codex.write_tool_config(state)
+        baseline = len(sudo_writes)
+        before = managed_path.read_bytes()
+        monkeypatch.setattr(codex, "ug_version", lambda: ug_version)
+        monkeypatch.setattr(codex, "agent_version", lambda binary: agent_version)
+
+        codex.write_tool_config(state)
+
+        assert len(sudo_writes) == baseline
+        assert managed_path.read_bytes() == before
+        private = read_toml_safe(codex.CODEX_CONFIG_PATH)
+        provider = private["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]
+        assert provider["http_headers"]["User-Agent"] == f"ucode/{ug_version} codex/{agent_version}"
+
+    def test_version_only_user_agent_change_is_not_a_noninteractive_conflict(
+        self, tmp_path, monkeypatch
+    ):
+        managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+        codex.write_tool_config(state)
+        before = managed_path.read_bytes()
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "unknown")
+
+        codex.write_tool_config(state)  # must not raise "cannot be applied non-interactively"
+
+        assert managed_path.read_bytes() == before
+
+    def test_user_agent_change_with_real_change_writes(self, tmp_path, monkeypatch):
+        managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+        codex.write_tool_config(state)
+        baseline = len(sudo_writes)
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.135.0")
+        state["codex_http_headers"] = {"x-team": "eng-ml"}
+
+        codex.write_tool_config(state)
+
+        assert len(sudo_writes) == baseline + 1
+        headers = read_toml_safe(managed_path)["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME][
+            "http_headers"
+        ]
+        assert headers["x-team"] == "eng-ml"
+        assert headers["User-Agent"].endswith(" codex/0.135.0")
+
     def test_provider_settings_stay_launch_scoped(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
         managed_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2210,3 +2267,29 @@ class TestWriteUserMcpServers:
             "args": ["x"],
         }
         assert not default_path.exists()
+
+
+class TestManagedUserAgent:
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            (
+                '[model_providers.Databricks.http_headers]\n"User-Agent" = "ucode/1.0 codex/0.154.0"\n',
+                "ucode/1.0 codex/0.154.0",
+            ),
+            ("[model_providers.Databricks]\nname = 'x'\n", None),
+            ("model_providers = 1\n", None),
+            ("not = = toml", None),
+            (b"\xff\xfe not utf-8", None),
+            (None, None),
+        ],
+    )
+    def test_reads_user_agent_from_managed_config(self, tmp_path, monkeypatch, content, expected):
+        path = tmp_path / "managed_config.toml"
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        elif content is not None:
+            path.write_text(content)
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: path)
+
+        assert codex.managed_user_agent() == expected
