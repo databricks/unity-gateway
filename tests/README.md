@@ -62,6 +62,14 @@ selection, and errors without browser consent through the MCP handler. These
 component checks replace external auth/network boundaries; they do not establish
 live search, parent/child discovery, or classifier permission behavior.
 
+`test_databricks.py` also covers process-local CLI token memoization, expiry
+margins, short-lived failure entries, forced refresh, and login invalidation.
+Concurrent callers share a per-profile fetch, and an in-flight result cannot
+restore a memo invalidated by login.
+Fake CLI subprocesses check that re-auth runs only when a successful help probe
+advertises `--no-browser`. Search component tests verify token reuse and transient
+timeout retries. These checks do not establish live login or launch-time savings.
+
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,
 the four-worker limit, active and queued cancellation, isolated worker errors, and

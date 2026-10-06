@@ -308,13 +308,19 @@ class TestConfiguredSearchAuthentication:
         def cli_token(command, **kwargs):
             calls.append(command)
             return subprocess.CompletedProcess(
-                command, 0, json.dumps({"access_token": f"token-{len(calls)}"}), ""
+                command,
+                0,
+                json.dumps({"access_token": f"token-{len(calls)}", "expires_in": 3600}),
+                "",
             )
 
         monkeypatch.setattr(databricks, "run", cli_token)
         assert self.search() == {"content": [{"type": "text", "text": "Search result"}]}
+        # A still-valid token is reused; once forgotten the CLI profile mints a new one.
         assert self.search() == {"content": [{"type": "text", "text": "Search result"}]}
-        assert self.auth_headers == ["Bearer token-1", "Bearer token-2"]
+        databricks.clear_databricks_token_cache()
+        assert self.search() == {"content": [{"type": "text", "text": "Search result"}]}
+        assert self.auth_headers == ["Bearer token-1", "Bearer token-1", "Bearer token-2"]
         assert [command[command.index("--profile") + 1] for command in calls] == [
             profile,
             profile,
@@ -333,11 +339,14 @@ class TestConfiguredSearchAuthentication:
         assert result["isError"] is True
         assert "Failed to acquire Databricks token" in result["content"][0]["text"]
         assert self.auth_headers == []
-        assert [timeout for _, timeout in calls] == [15, 30, 15]
-        assert "--no-browser" in calls[1][0]
-        assert all(
-            command[command.index("--profile") + 1] == "custom-profile" for command, _ in calls
-        )
+        # The `auth login --help` probe times out too, so no `--no-browser` re-auth is attempted.
+        assert [timeout for _, timeout in calls] == [15, 10]
+        assert calls[1][0] == ["databricks", "auth", "login", "--help"]
+        token_command = calls[0][0]
+        assert token_command[token_command.index("--profile") + 1] == "custom-profile"
+        # A timeout is transient, so the next search asks the CLI again rather than a memo.
+        self.search()
+        assert [timeout for _, timeout in calls] == [15, 10, 15]
 
     @pytest.mark.parametrize("profile", ["workspace-profile", "custom-profile"])
     def test_profile_auth_preserves_explicit_bearer_override(self, monkeypatch, profile):
