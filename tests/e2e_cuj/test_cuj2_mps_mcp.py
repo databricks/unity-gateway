@@ -293,7 +293,7 @@ def _run_agent_task(session, agent: str, marker: str):
 class TestCuj2MpsExplicitMcp(BaseCujTest):
     WORKSPACE_URL = WORKSPACE_URL
 
-    def test_configuration(self, live_session):
+    def test_cuj_configuration(self, live_session):
         """Scenario: publish both agent-specific MPS targets and the sandbox MCP, then configure ug.
 
         Expected: the published config selects gpt-5-nano for Codex and
@@ -328,7 +328,7 @@ class TestCuj2MpsExplicitMcp(BaseCujTest):
             assert listed_mcp_names(codex_output, MCP_NAME), codex_output
             assert not listed_mcp_names(codex_output, NEGATIVE_MCP_NAME), codex_output
 
-    def test_codex(self, live_session):
+    def test_cuj_codex_inference(self, live_session):
         """Scenario: configure ug from the dedicated workspace and complete a real Codex task.
 
         Expected: Codex sends a Responses request for gpt-5-nano with the
@@ -377,7 +377,7 @@ class TestCuj2MpsExplicitMcp(BaseCujTest):
                 answers = structured_final_answers("codex", result, transcripts)
                 assert any(marker in answer for answer in answers), answers
 
-    def test_claude(self, live_session):
+    def test_cuj_claude_inference(self, live_session):
         """Scenario: configure ug from the dedicated workspace and complete a real Claude task.
 
         Expected: Claude sends a Messages request for
