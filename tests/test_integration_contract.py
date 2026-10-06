@@ -54,6 +54,18 @@ def test_managed_integration_ci_is_blocking():
     ) in gate
 
 
+def test_dedicated_cuj_ci_discovers_the_whole_folder():
+    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
+    job = workflow.split("\n  dedicated-cuj:\n", 1)[1].split("\n  cujs:\n", 1)[0]
+    gate = workflow.split("\n  cujs:\n", 1)[1]
+
+    assert "docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0" in job
+    assert "pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj" in job
+    assert "find tests/e2e_cuj -name 'test_*.py'" in job
+    assert "test_cuj_" not in job
+    assert 'result["result"] != "success"' in gate
+
+
 def test_windows_integration_ci_uses_shared_claude_version():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     contents = workflow.read_text()
@@ -63,13 +75,11 @@ def test_windows_integration_ci_uses_shared_claude_version():
 
 
 def test_dedicated_cuj_job_selects_credentials_without_serialization():
-    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
-    contents = workflow.read_text()
-    cuj = contents.split("\n  cuj:\n", 1)[1].split("\n  # Non-blocking:", 1)[0]
+    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
+    cuj = workflow.split("\n  dedicated-cuj:\n", 1)[1].split("\n  cujs:\n", 1)[0]
 
     assert "concurrency:" not in cuj
-    assert "TEST_SUITE: e2e-cuj" in cuj
-    assert "test_marker: cuj and not cuj5_below_tier" in cuj
+    assert "test_marker: not cuj5_below_tier" in cuj
     assert "test_marker: cuj5_below_tier" in cuj
     assert "client_id_secret: UG_CUJ_SP_CLIENT_ID" in cuj
     assert "client_secret_secret: UG_CUJ_SP_CLIENT_SECRET" in cuj
@@ -77,43 +87,45 @@ def test_dedicated_cuj_job_selects_credentials_without_serialization():
     assert "client_secret_secret: UG_BUDGET_CUJ_SP_CLIENT_SECRET" in cuj
     assert "UG_CUJ_SP_CLIENT_ID: ${{ secrets[matrix.client_id_secret] }}" in cuj
     assert "UG_CUJ_SP_CLIENT_SECRET: ${{ secrets[matrix.client_secret_secret] }}" in cuj
+    assert 'tests/e2e_cuj -v -m "$TEST_MARKER"' in cuj
     assert "TEST_MARKER: ${{ matrix.test_marker }}" in cuj
-    assert "ARTIFACT_NAME: ${{ matrix.artifact_name }}" in cuj
+    assert "name: ${{ matrix.artifact_name }}" in cuj
 
 
-@pytest.mark.parametrize("suite", ["full", "live", "smoke", "tui", "installation"])
-@pytest.mark.parametrize("required_job", ["managed", "cuj"])
+@pytest.mark.parametrize(
+    "failed_job", ["installation", "workspace", "smoke", "full", "managed", "dedicated-cuj"]
+)
 @pytest.mark.parametrize("job_result", ["success", "failure", "cancelled", "skipped"])
-def test_integration_ci_gate_requires_selected_jobs(suite, required_job, job_result):
+def test_integration_ci_gate_requires_every_job(failed_job, job_result):
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     gate = workflow.read_text().split("\n  cujs:\n", 1)[1]
     script = re.search(r"          python3 - <<'PY'\n(.*?)          PY", gate, re.DOTALL)
     assert script is not None
     results = {
         job: {"result": "success"}
-        for job in ("installation", "workspace", "smoke", "full", "cuj", "managed")
+        for job in (
+            "installation",
+            "workspace",
+            "smoke",
+            "full",
+            "managed",
+            "dedicated-cuj",
+        )
     }
-    results[required_job]["result"] = job_result
-    for job in {
-        "installation": ("workspace", "smoke", "full"),
-        "smoke": ("full",),
-        "tui": ("smoke",),
-    }.get(suite, ()):
-        results[job]["result"] = "skipped"
+    results[failed_job]["result"] = job_result
     result = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script.group(1))],
-        env={"RESULTS": json.dumps(results), "SUITE": suite},
+        env={"RESULTS": json.dumps(results)},
         capture_output=True,
         text=True,
         timeout=10,
     )
-    selected = suite in {"full", "live"} or (required_job == "cuj" and suite == "tui")
-    if selected and job_result != "success":
-        assert result.returncode != 0
-        assert f"Integration jobs did not pass: {required_job}" in result.stderr
-    else:
+    if job_result == "success":
         assert result.returncode == 0, result.stderr
-        assert "All selected integration jobs passed:" in result.stdout
+        assert "All integration jobs passed:" in result.stdout
+    else:
+        assert result.returncode != 0
+        assert f"Integration jobs did not pass: {failed_job}" in result.stderr
 
 
 def test_integration_suite_uses_only_public_process_boundaries():

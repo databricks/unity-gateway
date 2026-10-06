@@ -122,38 +122,7 @@ def test_headless_only_is_allowed_on_windows_with_live_workspace_and_auth():
 
     assert args.headless_only is True
     assert args.installation_only is False
-    assert args.suite == "integration"
     assert args.pytest_args == ["-m", "live"]
-
-
-def test_cuj_suite_uses_test_owned_workspaces():
-    args = runner.arguments(
-        ["--suite", "e2e-cuj", "--claude-version", "2.1.280", "--codex-version", "0.154.0"],
-        platform_name="posix",
-        environment={"UCODE_TEST_WORKSPACE": "https://unrelated-integration-workspace.test"},
-    )
-
-    assert args.suite == "e2e-cuj"
-    assert args.workspace is None
-    assert args.pytest_args == ["-m", "cuj"]
-
-
-@pytest.mark.parametrize(
-    "options",
-    [
-        ["--installation-only"],
-        ["--headless-only"],
-        ["--workspace", "https://unrelated-integration-workspace.test"],
-        ["--profile", "unrelated-integration-profile"],
-    ],
-)
-def test_cuj_suite_rejects_integration_only_options(options):
-    with pytest.raises(SystemExit):
-        runner.arguments(
-            ["--suite", "e2e-cuj", "--claude-version", "2.1.280", *options],
-            platform_name="posix",
-            environment={},
-        )
 
 
 def test_windows_policy_paths_match_pinned_agent_locations():

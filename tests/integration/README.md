@@ -1,5 +1,12 @@
 # Integration tests
 
+The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
+and runs directly with pytest. It does not use this suite's runner or config fixtures.
+It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
+Its Claude/Codex evidence helpers keep scenario-specific assertions separate from shared mechanics.
+Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
+is read-only and checked for changes at teardown; concurrent readers need no reservation.
+
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
 patch application functions, substitute agent executables, run a fake gateway,
@@ -17,39 +24,37 @@ does not yet assert live `recommendModel` request counts for configs with and wi
 
 The budget usage and model-selection tests live in
 [`../e2e_cuj/test_ug_budget_defaults.py`](../e2e_cuj/test_ug_budget_defaults.py),
-outside this existing-workspace integration suite. The tests own their workspace,
-budget and model identifiers. CI runs them on separate runners: the above-tier case
-uses the shared `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET` secrets, while the
-below-tier case uses `UG_BUDGET_CUJ_SP_CLIENT_ID` and `UG_BUDGET_CUJ_SP_CLIENT_SECRET`.
-Both pairs map to the fixture's existing `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET`
-environment variables; each runner receives only its selected identity.
+outside this existing-workspace integration suite. The tests read their dedicated
+workspace's published budget and model identifiers. The fixed tier has
+`spending_percentage=0.0001` (0.01%). The `dedicated-cuj` workflow runs the suite
+in two matrix entries on isolated runners: the above-tier case uses the shared
+`UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET` secrets, while the below-tier
+case uses `UG_BUDGET_CUJ_SP_CLIENT_ID` and `UG_BUDGET_CUJ_SP_CLIENT_SECRET`.
+Each entry maps its selected identity into the fixture's standard
+`UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` environment variables.
 
-Run the above-tier case through the dedicated suite from a clean POSIX runner:
+Run the above-tier case directly from a clean POSIX runner:
 
 ```bash
 UG_CUJ_SP_CLIENT_ID=... UG_CUJ_SP_CLIENT_SECRET=... \
-python3.12 scripts/run_integration.py \
-  --suite e2e-cuj --ug-version checkout \
-  --claude-version 2.1.280 --codex-version 0.154.0 -- -m 'cuj and not cuj5_below_tier'
+uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
+  pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v -m 'not cuj5_below_tier'
 ```
 
-For the below-tier case, use the same command with `-m cuj5_below_tier` and set the
-two environment variables to the dedicated low-spend principal's credentials.
+For the below-tier case, set those standard environment variables to the dedicated
+low-spend principal's credentials and use `-m cuj5_below_tier` with the same command.
 
-The runner installs `databricks-sdk==0.135.0` in the isolated test environment.
 The workspace client reads the published config and real recommendation using
-OAuth M2M. The single 2% tier must recommend Codex on `system.ai.gpt-5-6-luna`
-for the test principal. The test checks `ug usage` spend, threshold, and percentage
-against backend reads, allowing spend to increase while the command runs.
+OAuth M2M. The above-tier case checks read-only `ug usage` spend, threshold, and
+percentage against backend reads, allowing spend to increase while the command runs.
 It then launches bare `ug` and verifies Codex selects
-Luna over its managed Sol default; it submits no inference task. It neither writes
-the budget nor requires account-level authentication. Independent runners can
-overlap; each still needs isolated machine-level agent settings.
+Luna over its managed Sol default. The below-tier case launches bare `ug` and
+verifies Claude selects Sonnet. Neither case submits an inference task or writes
+the budget; the dedicated workspace configuration remains read-only. Independent
+matrix entries can overlap because their local homes and artifacts are isolated.
 
-The below-tier case verifies the real default recommendation and bare `ug` selecting
-Claude Code on `system.ai.claude-sonnet-4-6`, without submitting a prompt. A fresh
-principal may have no spend counter, so this case establishes default model selection;
-numeric spend reporting remains covered by the above-tier case.
+A fresh below-tier principal may have no spend counter, so that case establishes
+default model selection; numeric spend reporting remains covered by the above-tier case.
 
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
@@ -347,7 +352,8 @@ real model tasks.
 
 There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
 checks** with Claude and Codex. The separate dedicated-workspace suite adds two
-budget model-selection cases run by the `cuj` matrix with separate credentials and markers.
+budget model-selection cases run by the `dedicated-cuj` matrix with separate credentials
+and markers.
 Selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
@@ -361,10 +367,11 @@ and managed skill cleanup. The two Claude default-model cases read published MPS
 Catalog sources directly from `eng-ml-inference-batch-inference-us-west-2` and
 `eng-ml-inference-ap-northeast-2`, respectively, then verify both generated settings files retain
 all admin-authored family defaults. Their replacement pickers contain those mapped defaults plus
-the independently fetched catalog for MPS. Labeled default rows appear first, followed by every
-catalog model, including models also used as defaults; catalog labels are retained. Direct renderer
-tests cover default/catalog composition, while focused CLI regressions cover partial family
-mappings, explicit model selection, and preservation of static model lists. Neither case injects
+the independently fetched MPS or UC schema catalog. MPS family shortcut rows remain separate
+from catalog rows for the same target; UC model IDs are deduplicated and catalog labels are retained.
+Direct renderer tests cover default/catalog composition, while focused CLI regressions verify UC
+catalog discovery with overall defaults, family defaults, or both, along with explicit model
+selection and preservation of static model lists. Neither case injects
 a config. Each obtains a token for its
 target workspace using OAuth client credentials. The two target service-principal client IDs are
 constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-2 and
@@ -372,7 +379,7 @@ constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-
 mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
 `ug configure` and Claude. The client secrets do not enter the pytest process.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
-executions; the complete integration suite collects 102 executions. See the named coverage and gaps matrix in
+executions; the complete integration suite collects 101 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
 
 ```bash
@@ -516,9 +523,13 @@ Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
 two agent jobs). Full runs all 62 live cases, including those smoke cases, in two
-disjoint agent lanes. The dedicated `cuj` matrix runs the above-tier and below-tier
-budget cases on separate runners with both agent binaries installed and no cross-run concurrency lock. The parent
-workflows retain their normal cancellation of superseded runs.
+disjoint agent lanes. The dedicated-cuj matrix runs the above-tier and below-tier
+budget cases on separate runners with both agent binaries installed. Its entries
+select `not cuj5_below_tier` with the shared credentials and `cuj5_below_tier`
+with the dedicated low-spend credentials; each runner keeps its own home and
+pytest artifacts. The workspace and budget configuration remain read-only, so
+these entries need no remote reservation or cross-run lock. The parent workflows
+retain their normal cancellation of superseded runs.
 
 The full-suite agent lanes are:
 
@@ -542,11 +553,11 @@ No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, workspace validation, smoke,
-both full lanes, both managed lanes, and `cuj` to pass for full/live runs. TUI runs also require
-`cuj`; managed jobs are intentionally not selected for TUI. Each tracing journey is
-included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
-a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke
-and installation subsets do not select `cuj` or managed tests.
+both full lanes, both managed lanes, and `dedicated-cuj` to pass. Each tracing journey is
+included in its agent's Full lane. The managed and dedicated-cuj lanes do not use
+`continue-on-error`: a failure, cancellation, or unexpected skip fails the aggregate
+check. The dedicated-cuj artifacts are named `integration-e2e-cuj` and
+`integration-cuj5-below-tier`.
 The advisory Windows installation and headless lanes are not yet included in that aggregate check.
 The existing required `e2e` context also waits for the complete integration workflow, so integration
 cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
@@ -663,15 +674,12 @@ visible `skip-user-journey-test` label, causing the gate to rerun. Editing or de
 comment removes the label and reruns the gate; manually adding the label does not bypass it.
 
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
-and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
-alias for `full`. Manual subsets are explicit: `smoke` runs just the six smoke
-cases; `tui` adds `and tui` to each agent lane's marker and runs all 12 live TUI cases,
-and also runs the dedicated `cuj` job. Installation checks always run. Set the ug/agent
-versions. From the CLI:
+and set the ug/agent versions. Manual runs execute the complete integration suite.
+From the CLI:
 
 ```bash
 gh workflow run integration.yml -R databricks/unity-gateway --ref YOUR_BRANCH \
-  -f suite=full -f ug_version=checkout \
+  -f ug_version=checkout \
   -f claude_version=2.1.268 -f codex_version=0.154.0
 gh run list -R databricks/unity-gateway --workflow integration.yml
 gh run watch RUN_ID -R databricks/unity-gateway --exit-status

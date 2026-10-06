@@ -6,8 +6,11 @@ import tomllib
 from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
-from base import BaseCujTest
-from utils.terminal import AgentTerminal
+
+from tests.integration.utils.terminal import AgentTerminal
+
+from .base import BaseCujTest
+from .helpers.constants import CLAUDE, CODEX, CodingAgent
 
 pytestmark = [pytest.mark.cuj, pytest.mark.tui]
 
@@ -20,50 +23,49 @@ class TestCujBudgetDefaults(BaseCujTest):
     LUNA_MODEL = "system.ai.gpt-5-6-luna"
 
     @pytest.mark.cuj5_below_tier
-    def test_bare_ug_uses_claude_default_below_budget_tier(self, live_session):
-        """Scenario: launch bare ``ug`` as a fresh principal below the fixed 2% tier.
+    def test_bare_ug_uses_claude_default_below_budget_tier(self, cuj):
+        """Scenario: launch bare ``ug`` as a fresh principal below the fixed 0.01% tier.
 
         Expected: the published config keeps Claude/Sonnet as the default, the real recommendation
         also selects Claude/Sonnet, and the real Claude TUI starts on that model without a prompt,
         inference request, budget write, or account-login flow. A fresh principal may have no
         spend counters yet; when the backend returns an effective threshold, omitted spend is
-        treated as zero and must remain below the 2% tier. If both figures are absent, this case
+        treated as zero and must remain below the 0.01% tier. If both figures are absent, this case
         verifies default selection without a numeric spend assertion.
         """
-        session = live_session
+        session, workspace, _ = cuj
         config_path = "/api/ai-gateway/v2/coding-agent-configs"
-        payload = self.workspace.api_client.do("GET", path=config_path)
+        payload = workspace.client.api_client.do("GET", path=config_path)
         config = payload["coding_agent_configs"][0]
-        assert config["default_agent"] == "CODING_AGENT_CLAUDE_CODE", config
+        assert config["default_agent"] == CodingAgent.CLAUDE_CODE, config
         claude = next(
-            agent
-            for agent in config["enabled_agents"]
-            if agent["agent"] == "CODING_AGENT_CLAUDE_CODE"
+            agent for agent in config["enabled_agents"] if agent["agent"] == CodingAgent.CLAUDE_CODE
         )
         claude_defaults = claude["config"]["default_models"]
         assert claude_defaults["default_model"] == self.SONNET_MODEL, config
         assert config["smart_defaults"]["budget_id"] == self.BUDGET_ID, config
         assert config["smart_defaults"]["tiers"] == [
             {
-                "spending_percentage": 0.02,
-                "recommended_agent": "CODING_AGENT_CODEX",
+                "spending_percentage": 0.0001,
+                "recommended_agent": CodingAgent.CODEX,
                 "recommended_model": self.LUNA_MODEL,
             }
         ], config
 
-        session.run(
-            "configure",
-            "--workspace",
-            self.WORKSPACE_URL,
-            "--skip-upgrade",
-            "--disable-databricks-ai-tools",
-            timeout=240,
+        session.configure(
+            [
+                "configure",
+                "--workspace",
+                self.WORKSPACE_URL,
+                "--skip-upgrade",
+                "--disable-databricks-ai-tools",
+            ]
         )
 
-        recommendation = self.workspace.api_client.do(
+        recommendation = workspace.client.api_client.do(
             "POST", path=config_path + ":recommendModel", body={}
         )
-        assert recommendation.get("recommended_agent") == "CODING_AGENT_CLAUDE_CODE", recommendation
+        assert recommendation.get("recommended_agent") == CodingAgent.CLAUDE_CODE, recommendation
         assert recommendation.get("recommended_model") == self.SONNET_MODEL, recommendation
 
         threshold = recommendation.get("effective_threshold")
@@ -73,14 +75,12 @@ class TestCujBudgetDefaults(BaseCujTest):
             assert threshold > 0, recommendation
             spend = Decimal("0") if spend is None else Decimal(str(spend))
             assert spend >= 0, recommendation
-            assert spend / threshold < Decimal("0.02"), recommendation
+            assert spend / threshold < Decimal("0.0001"), recommendation
         else:
             # A fresh principal can have no usage counter; that does not establish a numeric ratio.
             assert spend is None, recommendation
 
-        with AgentTerminal(
-            session, "claude", [str(session.binary)], "budget-default-claude"
-        ) as tui:
+        with AgentTerminal(session, CLAUDE, [str(session.binary)], "budget-default-claude") as tui:
             tui.boot(timeout=240)
             claude_settings = session.home / ".claude" / "ucode-settings.json"
             settings = json.loads(claude_settings.read_text())
@@ -91,47 +91,48 @@ class TestCujBudgetDefaults(BaseCujTest):
             )
             tui.exit_normally()
 
-    def test_bare_ug_uses_luna_budget_recommendation(self, live_session):
-        """Scenario: launch bare ``ug`` with the fixed 2% Luna budget tier active.
+    def test_bare_ug_uses_luna_budget_recommendation(self, cuj):
+        """Scenario: launch bare ``ug`` with the fixed 0.01% Luna budget tier active.
 
         Expected: the read-only `usage` command reports the backend's spend and threshold, then
         the real backend recommends Codex/Luna and the Codex TUI selects Luna over its managed Sol
         default, without budget writes or an inference task.
         """
-        session = live_session
+        session, workspace, _ = cuj
         config_path = "/api/ai-gateway/v2/coding-agent-configs"
-        payload = self.workspace.api_client.do("GET", path=config_path)
+        payload = workspace.client.api_client.do("GET", path=config_path)
         config = payload["coding_agent_configs"][0]
-        assert config["default_agent"] == "CODING_AGENT_CLAUDE_CODE", config
+        assert config["default_agent"] == CodingAgent.CLAUDE_CODE, config
         assert config["smart_defaults"]["budget_id"] == self.BUDGET_ID, config
         assert config["smart_defaults"]["tiers"] == [
             {
-                "spending_percentage": 0.02,
-                "recommended_agent": "CODING_AGENT_CODEX",
+                "spending_percentage": 0.0001,
+                "recommended_agent": CodingAgent.CODEX,
                 "recommended_model": self.LUNA_MODEL,
             }
         ], config
 
-        session.run(
-            "configure",
-            "--workspace",
-            self.WORKSPACE_URL,
-            "--skip-upgrade",
-            "--disable-databricks-ai-tools",
-            timeout=240,
+        session.configure(
+            [
+                "configure",
+                "--workspace",
+                self.WORKSPACE_URL,
+                "--skip-upgrade",
+                "--disable-databricks-ai-tools",
+            ]
         )
         model_config = session.home / ".codex" / "ucode.config.toml"
         assert tomllib.loads(model_config.read_text())["model"] == self.SOL_MODEL
 
-        before_usage = self.workspace.api_client.do(
+        before_usage = workspace.client.api_client.do(
             "POST", path=config_path + ":recommendModel", body={}
         )
         usage = session.run("usage", timeout=120)
-        after_usage = self.workspace.api_client.do(
+        after_usage = workspace.client.api_client.do(
             "POST", path=config_path + ":recommendModel", body={}
         )
         for recommendation in (before_usage, after_usage):
-            assert recommendation.get("recommended_agent") == "CODING_AGENT_CODEX", recommendation
+            assert recommendation.get("recommended_agent") == CodingAgent.CODEX, recommendation
             assert recommendation.get("recommended_model") == self.LUNA_MODEL, recommendation
 
         match = re.search(
@@ -162,7 +163,7 @@ class TestCujBudgetDefaults(BaseCujTest):
             <= int(format(float(after_spend / after_threshold), ".0%").removesuffix("%"))
         ), (before_usage, after_usage, usage)
 
-        with AgentTerminal(session, "codex", [str(session.binary)], "budget-luna") as tui:
+        with AgentTerminal(session, CODEX, [str(session.binary)], "budget-luna") as tui:
             tui.boot(timeout=240)
             assert tomllib.loads(model_config.read_text())["model"] == self.LUNA_MODEL
             tui.wait_for(

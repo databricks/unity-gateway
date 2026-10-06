@@ -4,11 +4,6 @@ on:
   workflow_call:
   workflow_dispatch:
     inputs:
-      suite:
-        description: Which integration checks to run
-        type: choice
-        options: [full, smoke, live, tui, installation]
-        default: full
       ug_version:
         description: Exact ug release, or checkout
         default: checkout
@@ -159,7 +154,7 @@ jobs:
 
   workspace:
     name: Workspace validation
-    if: ${{ inputs.suite != 'installation' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -181,7 +176,6 @@ jobs:
 
   smoke:
     name: Smoke journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
-    if: ${{ inputs.suite != 'tui' }}
     needs: workspace
     runs-on: ubuntu-22.04
     timeout-minutes: 20
@@ -212,11 +206,9 @@ jobs:
       - name: Run the selected live cases against the e2e workspace
         shell: bash
         run: |
-          suite="${TEST_SUITE:-integration}"
           case "$AGENT" in
             claude) args=(--claude-version "$CLAUDE_VERSION") ;;
             codex) args=(--codex-version "$CODEX_VERSION") ;;
-            both) args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION") ;;
             opencode) args=(--opencode-version "$OPENCODE_VERSION") ;;
           esac
           if [[ -n "$DEPENDENCY" ]]; then
@@ -225,7 +217,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            --suite "$suite" "${args[@]}" -- -m "$TEST_MARKER"
+            "${args[@]}" -- -m "$TEST_MARKER"
       - name: Upload live test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -242,7 +234,6 @@ jobs:
 
   headless-windows:
     name: Windows headless journey · Claude
-    if: ${{ inputs.suite != 'tui' }}
     needs: workspace
     runs-on: windows-server-latest
     continue-on-error: true
@@ -325,7 +316,7 @@ jobs:
 
   full:
     name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
-    if: ${{ !cancelled() && inputs.suite != 'smoke' && needs.workspace.result == 'success' }}
+    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: [workspace, smoke]
     runs-on: ubuntu-22.04
     # The runner enforces its own 3600s pytest deadline; keep the job above it
@@ -344,44 +335,15 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
-      TEST_MARKER: ${{ inputs.suite == 'tui' && 'live and tui' || 'live' }} and ${{ matrix.agent }}
+      TEST_MARKER: live and ${{ matrix.agent }}
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}
-    steps: *live-steps
-
-  cuj:
-    name: ${{ matrix.name }}
-    if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    runs-on: ubuntu-22.04
-    timeout-minutes: 70
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: "Dedicated CUJs · shared principal"
-            test_marker: cuj and not cuj5_below_tier
-            client_id_secret: UG_CUJ_SP_CLIENT_ID
-            client_secret_secret: UG_CUJ_SP_CLIENT_SECRET
-            artifact_name: integration-e2e-cuj
-          - name: "CUJ5: below-tier default · Claude"
-            test_marker: cuj5_below_tier
-            client_id_secret: UG_BUDGET_CUJ_SP_CLIENT_ID
-            client_secret_secret: UG_BUDGET_CUJ_SP_CLIENT_SECRET
-            artifact_name: integration-cuj5-below-tier
-    env:
-      UG_CUJ_SP_CLIENT_ID: ${{ secrets[matrix.client_id_secret] }}
-      UG_CUJ_SP_CLIENT_SECRET: ${{ secrets[matrix.client_secret_secret] }}
-      DEPENDENCY: ${{ inputs.dependency }}
-      AGENT: both
-      TEST_SUITE: e2e-cuj
-      TEST_MARKER: ${{ matrix.test_marker }}
-      ARTIFACT_NAME: ${{ matrix.artifact_name }}
     steps: *live-steps
 
   # Non-blocking: continue-on-error and absent from the cujs `needs`, so a flaky OpenCode
   # leg cannot block merges. Add it to cujs once the lane is stable.
   opencode:
     name: Full journeys · OpenCode (non-blocking)
-    if: ${{ !cancelled() && inputs.suite != 'smoke' && inputs.suite != 'tui' && needs.workspace.result == 'success' }}
+    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     continue-on-error: true
     runs-on: ubuntu-22.04
@@ -397,7 +359,7 @@ jobs:
 
   managed:
     name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
-    if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && inputs.suite != 'tui' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     strategy:
@@ -459,36 +421,85 @@ jobs:
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
 
+  dedicated-cuj:
+    name: ${{ matrix.name }}
+    # CUJ definitions: https://docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0/edit?usp=drive_web&ouid=117446678071138243519
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "Dedicated CUJs · shared principal"
+            test_marker: not cuj5_below_tier
+            client_id_secret: UG_CUJ_SP_CLIENT_ID
+            client_secret_secret: UG_CUJ_SP_CLIENT_SECRET
+            artifact_name: integration-e2e-cuj
+          - name: "CUJ5: below-tier default · Claude"
+            test_marker: cuj5_below_tier
+            client_id_secret: UG_BUDGET_CUJ_SP_CLIENT_ID
+            client_secret_secret: UG_BUDGET_CUJ_SP_CLIENT_SECRET
+            artifact_name: integration-cuj5-below-tier
+    env:
+      UV_INDEX_URL: https://pypi.org/simple
+      UG_CUJ_SP_CLIENT_ID: ${{ secrets[matrix.client_id_secret] }}
+      UG_CUJ_SP_CLIENT_SECRET: ${{ secrets[matrix.client_secret_secret] }}
+      TEST_MARKER: ${{ matrix.test_marker }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.19.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: 0.9.8
+      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+        with:
+          version: 1.17.0
+      - name: Install ug and agent CLIs
+        run: |
+          uv lock
+          uv tool install .
+          npm install -g \
+            "@anthropic-ai/claude-code@$CLAUDE_VERSION" \
+            "@openai/codex@$CODEX_VERSION"
+      - name: Run every E2E CUJ
+        run: |
+          if ! find tests/e2e_cuj -name 'test_*.py' -print -quit | grep -q .; then
+            echo "No E2E CUJs found."
+            exit 0
+          fi
+          uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
+            pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v -m "$TEST_MARKER" \
+            --basetemp "$RUNNER_TEMP/ug-cuj" --junitxml "$RUNNER_TEMP/ug-cuj-results.xml"
+      - name: Upload CUJ evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            ${{ runner.temp }}/ug-cuj/**/artifacts/
+            ${{ runner.temp }}/ug-cuj-results.xml
+
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     # installation-windows remains advisory until its initial platform issues are fixed.
-    needs: [installation, workspace, smoke, full, cuj, managed]
+    needs: [installation, workspace, smoke, full, managed, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require every selected integration job to pass
+      - name: Require every integration job to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
-          SUITE: ${{ inputs.suite || 'full' }}
         run: |
           python3 - <<'PY'
           import json
           import os
           results = json.loads(os.environ["RESULTS"])
-          suite = os.environ["SUITE"]
-          required = ["installation"]
-          if suite != "installation":
-              required.append("workspace")
-              if suite != "tui":
-                  required.append("smoke")
-              if suite != "smoke":
-                  required.append("full")
-                  required.append("cuj")
-          if suite in {"full", "live"}:
-              required.append("managed")
-          failed = [job for job in required if results[job]["result"] != "success"]
+          failed = [job for job, result in results.items() if result["result"] != "success"]
           if failed:
               raise SystemExit("Integration jobs did not pass: " + ", ".join(failed))
-          print("All selected integration jobs passed: " + ", ".join(required))
+          print("All integration jobs passed: " + ", ".join(results))
           PY

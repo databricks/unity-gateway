@@ -279,12 +279,6 @@ def arguments(
     platform_name = os.name if platform_name is None else platform_name
     environment = os.environ if environment is None else environment
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--suite",
-        choices=["integration", "e2e-cuj"],
-        default="integration",
-        help="CUJ tests declare their own workspace and use shared service-principal credentials.",
-    )
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--ug-version", default="checkout", help="Exact ug release, or checkout.")
     source.add_argument(
@@ -360,7 +354,7 @@ def arguments(
     )
     parser.add_argument("--npm-registry", default="https://registry.npmjs.org")
     parser.add_argument("--profile", help="Explicit Databricks profile to mint the live bearer.")
-    parser.add_argument("--workspace")
+    parser.add_argument("--workspace", default=environment.get("UCODE_TEST_WORKSPACE"))
     parser.add_argument(
         "--second-workspace",
         default=environment.get("UCODE_TEST_SECOND_WORKSPACE"),
@@ -379,14 +373,6 @@ def arguments(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
     )
     args = parser.parse_args(argv)
-    if args.suite == "integration" and args.workspace is None:
-        args.workspace = environment.get("UCODE_TEST_WORKSPACE")
-    if args.suite == "e2e-cuj" and (args.workspace or args.profile):
-        parser.error(
-            "CUJ tests declare their workspace and auth; do not use --workspace/--profile."
-        )
-    if args.suite == "e2e-cuj" and (args.installation_only or args.headless_only):
-        parser.error("--installation-only and --headless-only belong to the integration suite.")
     if platform_name != "posix" and not (args.installation_only or args.headless_only):
         parser.error(
             "Live agent/TUI integration requires POSIX PTY, managed-settings, and signal "
@@ -401,7 +387,7 @@ def arguments(
     filters.add_argument("--maxfail", type=int)
     extra = args.pytest_args[1:] if args.pytest_args[:1] == ["--"] else args.pytest_args
     selected = filters.parse_args(extra)
-    marker = selected.m or ("cuj" if args.suite == "e2e-cuj" else "live")
+    marker = selected.m or "live"
     if args.installation_only:
         marker = f"installation and ({selected.m})" if selected.m else "installation"
     args.pytest_args = []
@@ -423,7 +409,7 @@ def arguments(
     for dependency in args.dependency:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+", dependency):
             parser.error("--dependency requires an exact PACKAGE==VERSION constraint.")
-    if not args.installation_only and args.suite == "integration":
+    if not args.installation_only:
         if not args.workspace or not args.workspace.startswith("https://"):
             parser.error(
                 "Set UCODE_TEST_WORKSPACE to the existing e2e workspace, or use --workspace."
@@ -537,7 +523,6 @@ def main() -> int:
     target_bearers: dict[str, str] = {}
     client_secrets = (
         os.environ.get("DATABRICKS_CLIENT_SECRET", ""),
-        os.environ.get("UG_CUJ_SP_CLIENT_SECRET", ""),
         os.environ.get("UG_MPS_DEFAULTS_CLIENT_SECRET", ""),
         os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET", ""),
     )
@@ -606,7 +591,6 @@ def main() -> int:
             "warehouse_id": args.warehouse_id,
         },
         "platform": platform.platform(),
-        "suite": args.suite,
         "installation_only": args.installation_only,
         "headless_only": args.headless_only,
     }
@@ -813,7 +797,7 @@ def main() -> int:
                 raise RuntimeError(f"Expected {agent} {expected}, got {version!r}")
             report["agents"][agent] = version
 
-        if args.profile and not args.installation_only and args.suite == "integration":
+        if args.profile and not args.installation_only:
             # Never select a local profile implicitly. Do not persist auth output.
             with managed_process(
                 [
@@ -841,12 +825,13 @@ def main() -> int:
             if not bearer:
                 raise RuntimeError("Selected profile returned no access token.")
 
-        if not args.installation_only and args.suite == "integration":
+        if not bearer and not args.profile and not args.installation_only:
             client_id = os.environ.get("DATABRICKS_CLIENT_ID", "").strip()
             client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "").strip()
-            if not bearer and not args.profile and client_id and client_secret:
+            if client_id and client_secret:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
+        if not args.installation_only:
             for bearer_env, target_workspace, client_id, secret_env in MANAGED_DEFAULTS_TARGETS:
                 secret = os.environ.get(secret_env, "").strip()
                 if args.workspace.rstrip("/") == target_workspace:
@@ -855,8 +840,6 @@ def main() -> int:
                     target_bearers[bearer_env] = mint_m2m_token(target_workspace, client_id, secret)
 
         test_dependencies = ["pytest==9.0.3"]
-        if args.suite == "e2e-cuj":
-            test_dependencies.append("databricks-sdk==0.135.0")
         if os.name == "posix":
             test_dependencies.extend(["pexpect==4.9.0", "pyte==0.8.2"])
         run(
@@ -882,6 +865,7 @@ def main() -> int:
                 "UG_INTEGRATION_AGENTS": ",".join(agents),
                 "UG_INTEGRATION_CLAUDE_PROVIDER": args.claude_provider,
                 "UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER": args.claude_relayed_provider,
+                "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN": oauth_token,
                 "UG_INTEGRATION_CLAUDE_PROVIDER_MODEL": args.claude_provider_model,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_PROVIDER": args.claude_bedrock_allow_all_provider,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL": args.claude_bedrock_allow_all_model,
@@ -890,38 +874,24 @@ def main() -> int:
                 "UG_INTEGRATION_PARENT_SCHEMA": args.parent_schema,
                 "UG_INTEGRATION_CLAUDE_PARENT_MODEL": args.claude_parent_model,
                 "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,
+                "UCODE_TEST_WORKSPACE": args.workspace or "",
+                "DATABRICKS_BEARER": bearer,
+                "UG_MPS_DEFAULTS_BEARER": target_bearers.get("UG_MPS_DEFAULTS_BEARER", ""),
+                "UG_PARENT_SCHEMA_DEFAULTS_BEARER": target_bearers.get(
+                    "UG_PARENT_SCHEMA_DEFAULTS_BEARER", ""
+                ),
+                "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
+                "DATABRICKS_SECOND_BEARER": second_bearer,
+                "UG_INTEGRATION_WAREHOUSE_ID": args.warehouse_id or "",
             }
         )
-        if args.suite == "integration":
-            runtime_env.update(
-                {
-                    "UCODE_TEST_WORKSPACE": args.workspace or "",
-                    "DATABRICKS_BEARER": bearer,
-                    "UG_MPS_DEFAULTS_BEARER": target_bearers.get("UG_MPS_DEFAULTS_BEARER", ""),
-                    "UG_PARENT_SCHEMA_DEFAULTS_BEARER": target_bearers.get(
-                        "UG_PARENT_SCHEMA_DEFAULTS_BEARER", ""
-                    ),
-                    "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
-                    "DATABRICKS_SECOND_BEARER": second_bearer,
-                    "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN": oauth_token,
-                    "UG_INTEGRATION_WAREHOUSE_ID": args.warehouse_id or "",
-                }
-            )
         for agent in agents:
             runtime_env[f"UG_INTEGRATION_{agent.upper()}_MODEL"] = (
                 getattr(args, f"{agent}_model") or ""
             )
-        suite = ROOT / "tests" / args.suite.replace("-", "_")
+        suite = ROOT / "tests/integration"
         suite_hash = hashlib.sha256()
-        sources = [Path(__file__), *sorted(suite.rglob("*.py")), suite / "pytest.ini"]
-        if args.suite == "e2e-cuj":
-            sources.extend(
-                [
-                    ROOT / "tests/integration/conftest.py",
-                    *sorted((ROOT / "tests/integration/utils").rglob("*.py")),
-                ]
-            )
-        for path in sources:
+        for path in [Path(__file__), *sorted(suite.rglob("*.py")), suite / "pytest.ini"]:
             suite_hash.update(str(path.relative_to(ROOT)).encode() + b"\0" + path.read_bytes())
         report["suite_sha256"] = suite_hash.hexdigest()
         extra = args.pytest_args
@@ -935,14 +905,6 @@ def main() -> int:
             installation_only=args.installation_only,
             headless_only=args.headless_only,
         )
-        test_env = dict(runtime_env)
-        if args.suite == "e2e-cuj":
-            test_env.update(
-                {
-                    key: os.environ.get(key, "")
-                    for key in ("UG_CUJ_SP_CLIENT_ID", "UG_CUJ_SP_CLIENT_SECRET")
-                }
-            )
         with managed_process(
             [
                 test_python,
@@ -958,7 +920,7 @@ def main() -> int:
                 f"--junitxml={output / 'junit.xml'}",
                 *extra,
             ],
-            env=test_env,
+            env=runtime_env,
             cwd=output,
             stdin=subprocess.DEVNULL,
             interrupt=True,

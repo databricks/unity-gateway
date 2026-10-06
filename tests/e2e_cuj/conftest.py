@@ -1,21 +1,51 @@
-"""Standalone fixtures for dedicated-workspace CUJs."""
+"""Isolated local sessions using read-only workspace configuration."""
 
-from __future__ import annotations
-
+import os
 import shutil
+import tempfile
+from pathlib import Path
 
 import pytest
+from databricks.sdk.errors import DatabricksError
 
-from tests.integration.conftest import installed_binary as installed_binary
-from tests.integration.conftest import session as session
+from .helpers.constants import CLAUDE, CODEX, MANAGED_PATHS
+from .helpers.session import UserSession
+from .helpers.tui_request_recorder import TuiRequestRecorder
+from .helpers.workspace import Workspace
 
 
-@pytest.fixture
-def live_session(session, setup_workspace, request):
-    """Reuse the installed-product session with a fresh workspace bearer."""
-    headers = request.instance.workspace.config.authenticate()
-    session.env["DATABRICKS_BEARER"] = headers["Authorization"].removeprefix("Bearer ")
-    for binary in ("databricks", "claude", "codex"):
-        if not shutil.which(binary, path=session.env["PATH"]):
-            pytest.fail(f"Required CUJ binary is missing: {binary}", pytrace=False)
-    return session
+def pytest_configure(config):
+    boundary = config.getoption("confcutdir")
+    if boundary is None or Path(boundary).resolve() != Path(__file__).parent:
+        raise pytest.UsageError("Run with --confcutdir=tests/e2e_cuj to exclude unit-test mocks.")
+
+
+@pytest.fixture(scope="class")
+def cuj(request, setup_workspace, tmp_path_factory):
+    assert os.name == "posix", "Full TUI CUJs require a disposable POSIX runner"
+    assert not any(path.exists() for path in MANAGED_PATHS), (
+        "Existing machine-wide agent settings; use a clean disposable runner. Nothing was changed."
+    )
+    for tool in ("ug", CLAUDE, CODEX, "databricks"):
+        assert shutil.which(tool), f"Install the required CLI before running this CUJ: {tool}"
+
+    authorization = request.cls.workspace.config.authenticate().get("Authorization", "")
+    if not authorization.startswith("Bearer ") or not authorization.removeprefix("Bearer "):
+        raise RuntimeError("Service-principal authentication did not return a bearer token.")
+    bearer = authorization.removeprefix("Bearer ")
+    run_directory = tmp_path_factory.mktemp(request.cls.__name__)
+    artifacts = run_directory / "artifacts"
+    print(f"CUJ artifacts: {artifacts}")
+    with tempfile.TemporaryDirectory(prefix="ug-cuj-", dir="/tmp") as temporary:
+        workspace = Workspace(request.cls.workspace)
+        with TuiRequestRecorder(workspace.url) as recorder:
+            session = UserSession(Path(temporary), Path(shutil.which("ug")), artifacts, bearer)
+            try:
+                published = workspace.config()
+                try:
+                    yield session, workspace, recorder
+                finally:
+                    workspace.assert_unchanged(published)
+            except DatabricksError as error:
+                # Server messages may echo credentials; retain only the SDK error type.
+                raise RuntimeError(f"Workspace API failed: {type(error).__name__}") from None
