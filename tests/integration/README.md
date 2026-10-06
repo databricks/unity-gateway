@@ -6,8 +6,8 @@ It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
 Its Claude/Codex evidence helpers keep scenario-specific assertions separate from shared mechanics.
 Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
 is read-only and checked for changes at teardown; concurrent readers need no reservation.
-CUJ2 adds three separately collected cases for exact MPS/MCP configuration, Codex inference,
-and Claude inference.
+CUJ2 adds three separately collected cases for exact MPS/MCP configuration and real
+`read_fixture` tool use through Codex and Claude.
 
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
@@ -370,8 +370,9 @@ The old focused checks are now descriptive CUJs with setup and outcomes visible
 in each test. Duplicate boot-only checks are incorporated into the Databricks
 configuration TUI journeys. Real failures, including generated
 config left after revert and banners on app-server stdout, remain assertions.
-Live MCP/skills functionality, the broad configure-option matrix, and other
-agents are outside this focused revision.
+Live skills functionality, the broad configure-option matrix, and other agents are outside
+this focused revision. The CUJ2 cases exercise the preconfigured `ug_e2e.tools` MCP schema;
+MCP status/list commands remain separate follow-ups.
 Custom OAuth search dispatch and refresh are covered by component tests in
 `../test_mcp_web_search.py`; no live search request, delegated search, or classifier
 permission decision is asserted by those tests or this integration suite.
