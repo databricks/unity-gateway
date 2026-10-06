@@ -2949,6 +2949,28 @@ def list_all_mcp_services(
     return sorted(names), None
 
 
+def _merge_model_discovery_headers(
+    request_headers: dict[str, str] | None,
+    mandatory_header: tuple[str, str] | None = None,
+) -> dict[str, str] | None:
+    """Merge caller headers with an optional routing header for model discovery.
+
+    Header names are case-insensitive. The routing header is added last so a
+    caller cannot override the provider or parent-schema selector used for a
+    scoped discovery request.
+    """
+    merged = dict(request_headers or {})
+    if mandatory_header is not None:
+        name, value = mandatory_header
+        merged = {
+            existing: existing_value
+            for existing, existing_value in merged.items()
+            if existing.casefold() != name.casefold()
+        }
+        merged[name] = value
+    return merged or None
+
+
 def _get_anthropic_models_json(
     workspace: str,
     token: str,
@@ -3385,25 +3407,35 @@ def _fetch_codex_model_catalog(
     workspace: str,
     token: str,
     *,
-    source: CodexCatalogSource,
-    identifier: str,
+    source: CodexCatalogSource | None = None,
+    identifier: str | None = None,
+    request_headers: dict[str, str] | None = None,
 ) -> dict:
-    header_name, kind = source.value
+    mandatory_header = None
+    if source is not None:
+        assert identifier is not None
+        header_name, kind = source.value
+        mandatory_header = (header_name, identifier)
+        discovery_label = identifier
+        catalog_label = f"{kind} {identifier}"
+    else:
+        discovery_label = catalog_label = "workspace"
+    headers = _merge_model_discovery_headers(request_headers, mandatory_header)
     payload, reason = _http_get_json(
         f"{build_tool_base_url('codex', workspace)}/models",
         token,
         max_retries=2,
-        headers={header_name: identifier},
+        **({"headers": headers} if headers is not None else {}),
     )
     if reason:
-        message = f"Could not discover Codex models for {identifier}: {reason}"
+        message = f"Could not discover Codex models for {discovery_label}: {reason}"
         if "codex/v1/models is not enabled for this workspace" in reason.lower():
             raise CodexMpsModelCatalogUnavailable(message)
         raise RuntimeError(message)
     if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
-        raise RuntimeError(f"{kind} {identifier} returned an invalid Codex model catalog.")
+        raise RuntimeError(f"{catalog_label} returned an invalid Codex model catalog.")
     if not payload["models"]:
-        raise RuntimeError(f"{kind} {identifier} returned no Codex models.")
+        raise RuntimeError(f"{catalog_label} returned no Codex models.")
     return payload
 
 

@@ -86,11 +86,36 @@ class TestFetchCodexMpsModelCatalog:
             "tok",
             source=db_mod.CodexCatalogSource.PROVIDER,
             identifier="main.default.openai",
+            request_headers={
+                "databricks-model-provider-service": "wrong.provider",
+                "X-Trace-Id": "trace-1",
+            },
         )
 
         assert result["models"][0]["slug"] == "gpt-mps"
         assert seen["url"] == f"{WS}/ai-gateway/codex/v1/models"
-        assert seen["headers"] == {"Databricks-Model-Provider-Service": "main.default.openai"}
+        assert seen["headers"] == {
+            "X-Trace-Id": "trace-1",
+            "Databricks-Model-Provider-Service": "main.default.openai",
+        }
+
+    def test_sends_custom_headers_without_selector(self, monkeypatch):
+        seen = {}
+
+        def fake_get(url, token, **kwargs):
+            seen.update(url=url, token=token, **kwargs)
+            return {"models": [{"slug": "gpt-default"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        result = db_mod._fetch_codex_model_catalog(
+            WS,
+            "tok",
+            request_headers={"X-Trace-Id": "trace-1"},
+        )
+
+        assert result["models"][0]["slug"] == "gpt-default"
+        assert seen["headers"] == {"X-Trace-Id": "trace-1"}
 
     def test_rejects_empty_catalog(self, monkeypatch):
         monkeypatch.setattr(

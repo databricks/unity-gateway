@@ -392,6 +392,11 @@ def resolve_gemini_provider_model(
     )
 
 
+def validate_custom_headers(tool: str, state: dict, headers: dict[str, str]) -> None:
+    if tool == "codex" and headers:
+        codex.validate_custom_headers(state, headers)
+
+
 def configure_tool(
     tool: str,
     state: dict,

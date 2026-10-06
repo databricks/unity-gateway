@@ -37,6 +37,7 @@ from ucode.agents import (
     resolve_gemini_provider_model,
     resolve_launch_model,
     resolve_provider_models,
+    validate_custom_headers,
 )
 from ucode.agents import claude as claude_agent
 from ucode.agents import codex as codex_agent
@@ -478,6 +479,7 @@ def configure_shared_state(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     clear_custom_oauth: bool = False,
+    request_headers: dict[str, str] | None = None,
 ) -> dict:
     """Log into Databricks, verify AI Gateway, fetch model lists, persist state.
 
@@ -597,6 +599,14 @@ def configure_shared_state(
     with spinner("Verifying Unity AI Gateway..."):
         if not cli_custom_oauth:
             token = get_databricks_token(workspace, profile)
+        if request_headers:
+            managed, _ = _fetch_managed_config(state)
+            for tool in tools or []:
+                validate_custom_headers(
+                    tool,
+                    resolve_state(managed, state, tool) if managed is not None else state,
+                    request_headers,
+                )
         model_service_probe = probe_unity_gateway_capabilities(workspace, token)
     if model_service_probe.resource_available:
         print_success("Unity Gateway connected")
@@ -2260,7 +2270,11 @@ def claude_router_hook_cmd(
         sys.stdout.write(json.dumps(output))
 
 
-def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = None) -> None:
+def _auto_configure_tool(
+    tool: str,
+    custom_oauth: CustomOAuthConfig | None = None,
+    request_headers: dict[str, str] | None = None,
+) -> None:
     """Configure a tool for launch without sending a separate validation prompt.
 
     The real agent session follows immediately; explicit configure retains the
@@ -2272,6 +2286,8 @@ def _auto_configure_tool(tool: str, custom_oauth: CustomOAuthConfig | None = Non
     if not workspace:
         workspace, profile = _prompt_for_configuration(tool)
     configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
+    if request_headers:
+        configure_kwargs["request_headers"] = request_headers
     state = configure_shared_state(workspace, profile=profile, tools=[tool], **configure_kwargs)
 
     state = configure_single_tool(tool, state)
@@ -2683,10 +2699,11 @@ def _launch_tool(
             skip_cli_version_check=skip_preflight,
         )
         if needs_auto_configure:
-            if custom_oauth is None:
-                _auto_configure_tool(tool)
-            else:
-                _auto_configure_tool(tool, custom_oauth=custom_oauth)
+            _auto_configure_tool(
+                tool,
+                **({"custom_oauth": custom_oauth} if custom_oauth is not None else {}),
+                **({"request_headers": custom_headers} if custom_headers else {}),
+            )
         state = ensure_provider_state(tool)
         # Remembered before the fallback below collapses the two cases: a managed config may not
         # silently override a provider the user typed on the command line (it errors instead).
@@ -2702,6 +2719,11 @@ def _launch_tool(
         coding_agent_config_feature_disabled = False
         if managed is None:
             managed, coding_agent_config_feature_disabled = _fetch_managed_config(state)
+        validate_custom_headers(
+            tool,
+            resolve_state(managed, state, tool) if managed is not None else state,
+            custom_headers,
+        )
         _reject_managed_launch_source_options(
             managed,
             provider=explicit_provider,
