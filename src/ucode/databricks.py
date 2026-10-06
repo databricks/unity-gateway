@@ -47,6 +47,7 @@ from ucode.ui import (
     print_success,
     print_warning,
     spinner,
+    status_subprocess_stdout,
 )
 
 UNIX_DATABRICKS_INSTALL_URL = (
@@ -656,6 +657,7 @@ def run(
         text=text,
         env=env,
         timeout=timeout,
+        **({"stdout": status_subprocess_stdout()} if not capture_output else {}),
     )
 
 
@@ -2015,12 +2017,31 @@ def discover_model_services(
 _CODING_AGENT_CONFIGS_API_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 
 
+def _managed_config_user_agent() -> str:
+    """``ucode/<v>`` plus each ``<agent>/<v>`` ug already wrote into the OS-managed files.
+
+    The fetch serves every agent, so it reports what ug configured on this machine; reading the
+    managed files avoids probing each agent's ``--version`` on every fetch."""
+    from ucode.agents import claude, codex  # the agent modules import this one
+    from ucode.managed_files import ug_agent_token
+
+    tokens = [f"ucode/{ug_version()}"]
+    for agent, user_agent in (
+        ("claude", claude.managed_user_agent()),
+        ("codex", codex.managed_user_agent()),
+    ):
+        token = ug_agent_token(user_agent or "", agent)
+        if token:
+            tokens.append(token)
+    return " ".join(tokens)
+
+
 def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list[dict], str | None]:
     """List the workspace's managed CodingAgentConfig(s) via the AI Gateway."""
     hostname = workspace_hostname(workspace)
     url = f"https://{hostname}{_CODING_AGENT_CONFIGS_API_PATH}"
     payload, reason = _http_get_json(
-        url, token, timeout=30, headers={"User-Agent": f"ucode/{ug_version()}"}
+        url, token, timeout=30, headers={"User-Agent": _managed_config_user_agent()}
     )
     if reason is not None:
         return [], reason
@@ -2384,7 +2405,7 @@ def list_model_provider_services(
             # reach the next.
             return [dict(service) for service in cached], None
 
-    hostname = workspace_hostname(workspace)
+    origin = normalize_workspace_url(workspace)
     services: list[dict] = []
     page_token: str | None = None
     seen_tokens: set[str] = set()
@@ -2395,9 +2416,7 @@ def list_model_provider_services(
             params["parent"] = f"schemas/{parent}"
         if page_token:
             params["page_token"] = page_token
-        url = (
-            f"https://{hostname}/api/2.1/unity-catalog/model-provider-services?{urlencode(params)}"
-        )
+        url = f"{origin}/api/2.1/unity-catalog/model-provider-services?{urlencode(params)}"
         payload, reason = _http_get_json(url, token, timeout=30)
         if payload is None:
             # Surface the failure only if we have nothing yet; a mid-pagination blip still
@@ -2470,8 +2489,8 @@ def get_model_provider_service(
     server-side filter) makes a service that plainly exists look absent. Addressing it directly
     removes that whole class of false negative.
     """
-    hostname = workspace_hostname(workspace)
-    url = f"https://{hostname}/api/2.1/unity-catalog/model-provider-services/{service_name}"
+    origin = normalize_workspace_url(workspace)
+    url = f"{origin}/api/2.1/unity-catalog/model-provider-services/{service_name}"
     payload, reason = _http_get_json(url, token, timeout=30)
     if payload is None:
         return None, reason
@@ -2956,14 +2975,14 @@ def _get_anthropic_models_json(
     parent_schema: str | None = None,
     provider: str | None = None,
 ) -> tuple[dict | list | None, str | None]:
-    hostname = workspace_hostname(workspace)
+    origin = normalize_workspace_url(workspace)
     headers = None
     if provider is not None:
         headers = {MODEL_PROVIDER_SERVICE_HEADER: provider}
     elif parent_schema is not None:
         headers = {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema}
     return _http_get_json(
-        f"https://{hostname}{ANTHROPIC_MODELS_PATH}?limit=1000",
+        f"{origin}{ANTHROPIC_MODELS_PATH}?limit=1000",
         token,
         max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
         **({"headers": headers} if headers is not None else {}),
@@ -3198,8 +3217,7 @@ _MODEL_SERVICE_EMPTY_DETAIL = (
 
 
 def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
-    hostname = workspace_hostname(workspace)
-    base = f"https://{hostname}/api/2.1/unity-catalog/model-services"
+    base = f"{normalize_workspace_url(workspace)}/api/2.1/unity-catalog/model-services"
     page_token: str | None = None
     for page in range(_MODEL_SERVICE_PROBE_MAX_PAGES):
         params: dict[str, object] = {"page_size": _MODEL_SERVICE_PROBE_PAGE_SIZE}

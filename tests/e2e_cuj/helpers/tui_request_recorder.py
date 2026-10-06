@@ -1,15 +1,22 @@
 """Record TUI HTTP requests while forwarding them to a real workspace."""
 
+from __future__ import annotations
+
 import json
 import threading
 import time
+from copy import deepcopy
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
 from urllib.parse import urlsplit
 
 import httpx
+
+from .session import UserSession
 
 _STRIPPED_HEADERS = {
     "connection",
@@ -77,6 +84,7 @@ class TuiRequestRecorder:
         self._client: httpx.Client | None = None
         self._server: _Server | None = None
         self._thread: threading.Thread | None = None
+        self._session_home: Path | None = None
 
     @property
     def url(self) -> str:
@@ -118,6 +126,52 @@ class TuiRequestRecorder:
     def checkpoint(self) -> int:
         with self._condition:
             return len(self._requests)
+
+    def configure_session(self, session: UserSession, args: list[str]) -> None:
+        """Configure against the upstream, then retarget this isolated session to the recorder."""
+        if "--workspace" in args:
+            raise ValueError("configure_session owns --workspace")
+        session.configure([*args, "--workspace", self.upstream])
+        self._retarget_session(session.home)
+
+    def prepare_launch(self) -> None:
+        """Keep the recorder-scoped managed-config cache fresh for a no-preflight launch."""
+        if self._session_home is None:
+            raise RuntimeError("configure_session must run before prepare_launch")
+        path = self._session_home / ".ucode" / "managed-config.json"
+        payload = json.loads(path.read_text())
+        if payload.get("workspace") != self.url:
+            raise AssertionError("Managed-config cache does not target the recorder")
+        payload["retrieved_at"] = datetime.now(UTC).isoformat()
+        path.write_text(json.dumps(payload, indent=2) + "\n")
+
+    def _retarget_session(self, home: Path) -> None:
+        state_path = home / ".ucode" / "state.json"
+        state = json.loads(state_path.read_text())
+        upstream = state.get("current_workspace")
+        workspaces = state.get("workspaces")
+        if upstream != self.upstream or not isinstance(workspaces, dict):
+            raise AssertionError("ug configure did not persist the recorder upstream")
+        upstream_state = workspaces.get(upstream)
+        if not isinstance(upstream_state, dict):
+            raise AssertionError("ug configure wrote no upstream workspace state")
+        workspaces[self.url] = deepcopy(upstream_state)
+        state["current_workspace"] = self.url
+        state_path.write_text(json.dumps(state, indent=2) + "\n")
+
+        managed_path = home / ".ucode" / "managed-config.json"
+        managed = json.loads(managed_path.read_text())
+        if managed.get("workspace") != upstream:
+            raise AssertionError("ug configure wrote no upstream managed-config cache")
+        managed["workspace"] = self.url
+        managed_path.write_text(json.dumps(managed, indent=2) + "\n")
+        self._session_home = home
+        self.prepare_launch()
+
+    def requests_after(self, checkpoint: int) -> tuple[RecordedRequest, ...]:
+        """Return the requests recorded after a session boundary."""
+        with self._condition:
+            return tuple(request for request in self._requests if request.sequence > checkpoint)
 
     def expect_request(
         self,

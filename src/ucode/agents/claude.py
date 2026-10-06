@@ -69,6 +69,7 @@ from ucode.managed_files import (
     plan_settings_passthrough,
     read_managed_file,
     reconcile_managed_file,
+    record_ug_picker,
     revert_managed_file,
     warn_skipped_settings_passthrough,
     withdrawn_list_items,
@@ -288,6 +289,28 @@ def _parse_managed_settings(text: str) -> dict:
     if not isinstance(settings, dict):
         raise RuntimeError("the top-level JSON value must be an object")
     return settings
+
+
+def managed_user_agent() -> str | None:
+    """The User-Agent value in Claude Code's OS-managed custom headers, if one is there."""
+    path = _managed_settings_path()
+    try:
+        text = read_managed_file(path) if path else None
+        settings = _parse_managed_settings(text) if text else {}
+    except (RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
+        return None
+    env = settings.get("env")
+    headers = env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(env, dict) else None
+    if not isinstance(headers, str):
+        return None
+    values = (_user_agent_header_value(line) for line in headers.split("\n"))
+    return next((value for value in values if value is not None), None)
+
+
+def _user_agent_header_value(line: str) -> str | None:
+    """The value of a ``User-Agent`` line in ANTHROPIC_CUSTOM_HEADERS (any name casing), else None."""
+    name, separator, value = line.partition(":")
+    return value.strip() if separator and name.strip().casefold() == "user-agent" else None
 
 
 def _dump_managed_settings(settings: dict) -> str:
@@ -1450,23 +1473,19 @@ def write_tool_config(
             if managed_settings_snapshots is None:
                 for key in CLAUDE_MANAGED_PICKER_KEYS:
                     merged.pop(key, None)
-            elif managed_settings_snapshots.last_applied_by_ug is not None:
-                # Only picker keys ucode wrote to this file are its to revert. A matching
-                # last-applied snapshot can't prove that: ucode re-saves pickers it only preserved.
-                owned_paths = managed_settings_snapshots.owned_paths or []
-                owned_picker_keys = [
-                    key for key in CLAUDE_MANAGED_PICKER_KEYS if [key] in owned_paths
-                ]
-                last_applied = managed_settings_snapshots.last_applied_by_ug
-                live_picker = [merged.get(key) for key in CLAUDE_MANAGED_PICKER_KEYS]
-                ucode_picker = [last_applied.get(key) for key in CLAUDE_MANAGED_PICKER_KEYS]
-                if owned_picker_keys and live_picker == ucode_picker:
+            else:
+                # Revert only the picker ug recorded writing, and only while it is untouched as a
+                # unit; last-applied snapshots also hold foreign pickers ug merely preserved.
+                ug_picker = managed_settings_snapshots.ug_picker or {}
+                if ug_picker and all(merged.get(key) == ug_picker[key] for key in ug_picker):
                     baseline = managed_settings_snapshots.original_before_ug or {}
-                    for key in owned_picker_keys:
+                    for key in ug_picker:
                         if key in baseline:
                             merged[key] = baseline[key]
                         else:
                             merged.pop(key, None)
+                elif not ug_picker:
+                    _warn_unrecorded_allow_list(merged, managed_settings_snapshots)
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
@@ -1516,6 +1535,7 @@ def write_tool_config(
         ),
         [*managed_file_keys, *passthrough.paths],
         relayed,
+        [key for key in CLAUDE_MANAGED_PICKER_KEYS if key in overlay],
         withdrawn_denies=withdrawn_list_items(
             CLAUDE_PERMISSIONS_DENY_PATH, passthrough, previous_leaves
         ),
@@ -1671,11 +1691,27 @@ def _warn_if_settings_disable_smart_routing(
         )
 
 
+def _warn_unrecorded_allow_list(merged: dict, snapshots: ManagedFileSnapshots) -> None:
+    """Flag an enforced model allow-list ug may have written before it recorded its pickers.
+
+    Without a record ug can't tell it from an administrator's, so it is never removed; say how to
+    clear it instead of leaving the old model restriction in place silently."""
+    last_applied = snapshots.last_applied_by_ug or {}
+    keys = [k for k in ("availableModels", "enforceAvailableModels") if merged.get(k) is not None]
+    if keys and all(merged[k] == last_applied.get(k) for k in keys):
+        print_warning(
+            f"Claude Code managed settings at {_managed_settings_path()} still set "
+            f"{', '.join(keys)}, possibly from an earlier ug version. If you didn't expect a model "
+            "allow-list, run `ug revert` or ask your administrator to remove it."
+        )
+
+
 def _reconcile_managed_settings(
     state: dict,
     compose: Callable[[dict], dict],
     owned_paths: list[list[str]],
     relayed: bool,
+    picker_keys: list[str],
     withdrawn_denies: list | None = None,
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
@@ -1757,6 +1793,7 @@ def _reconcile_managed_settings(
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
     mark_managed_file_verified(state, "claude", path)
+    record_ug_picker("claude", {key: desired_settings[key] for key in picker_keys})
 
 
 def _preserve_permission_denies(

@@ -13,10 +13,11 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -250,8 +251,8 @@ class ManagedFileSnapshots:
 
     original_before_ug: dict | None
     last_applied_by_ug: dict | None
-    # Key paths ucode has written to this file, keyed by the file rather than the workspace.
-    owned_paths: list | None = None
+    # Picker values ug itself last wrote to this file; only these may later be reverted.
+    ug_picker: dict | None = None
 
 
 def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnapshots:
@@ -277,14 +278,35 @@ def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnaps
         entry = _manifest_files(_load_manifest()).get(tool)
         if not isinstance(entry, dict):
             return ManagedFileSnapshots(None, None)
-        owned_paths = entry.get("owned_paths")
+        ug_picker = entry.get("ug_picker")
         return ManagedFileSnapshots(
             _parse(_snapshot_text(entry, "backup_file")),
             _parse(_snapshot_text(entry, "last_applied_file")),
-            owned_paths if isinstance(owned_paths, list) else None,
+            ug_picker if isinstance(ug_picker, dict) else None,
         )
     except RuntimeError:
         return ManagedFileSnapshots(None, None)
+
+
+def record_ug_picker(tool: str, picker: dict) -> None:
+    """Record the picker values ug just confirmed in ``tool``'s managed file; empty clears it.
+
+    Kept in the file-keyed manifest because the managed file is machine-wide, not per workspace. An
+    unreadable manifest or a file ug never wrote leaves no record, so nothing is later reverted."""
+    if is_dry_run():
+        return
+    try:
+        manifest = _load_manifest()
+    except RuntimeError:
+        return
+    entry = _manifest_files(manifest).get(tool)
+    if not isinstance(entry, dict) or entry.get("ug_picker", {}) == picker:
+        return
+    if picker:
+        entry["ug_picker"] = picker
+    else:
+        entry.pop("ug_picker", None)
+    _write_manifest(manifest)
 
 
 def managed_file_conflicts(
@@ -292,6 +314,8 @@ def managed_file_conflicts(
 ) -> list[str]:
     """Return managed leaves that would override ucode's local settings."""
     conflicts: list[str] = []
+    existing = cast(dict, mask_user_agent_versions(existing))
+    desired = cast(dict, mask_user_agent_versions(desired))
     for path in owned_paths:
         existing_value = _path_value(existing, path)
         if existing_value is _MISSING:
@@ -310,6 +334,52 @@ def _unwrap(value: object) -> object:
         except Exception:  # noqa: BLE001
             return value
     return value
+
+
+# Header-safe version text only, so a token copied out of a managed file can't break a header.
+_VERSION = r"[0-9A-Za-z.+_-]+"
+
+
+def ug_agent_token(user_agent: str, agent: str) -> str | None:
+    """The ``<agent>/<v>`` token of ug's exact ``ucode/<v> <agent>/<v>`` User-Agent, else None."""
+    match = re.fullmatch(rf"ucode/{_VERSION} ({re.escape(agent)}/{_VERSION})", user_agent)
+    return match.group(1) if match else None
+
+
+_UG_USER_AGENT = re.compile(rf"ucode/{_VERSION} ([a-z][a-z0-9-]*)/{_VERSION}")
+
+
+def mask_user_agent_versions(value: object, key: object = None) -> object:
+    """Copy of a parsed managed document with the versions in ug's ``ucode/<v> <agent>/<v>``
+    User-Agent masked. They change on every ug or agent upgrade, which alone must not rewrite (and
+    prompt for sudo to replace) the root-owned file. Only User-Agent headers are masked: a
+    ``User-Agent`` key, or a ``User-Agent:`` line in a header string; every other value compares
+    exactly."""
+    value = _unwrap(value)
+    if isinstance(value, Mapping):
+        return {name: mask_user_agent_versions(item, name) for name, item in value.items()}
+    if isinstance(value, list):
+        return [mask_user_agent_versions(item) for item in value]
+    if not isinstance(value, str):
+        return value
+    if _is_user_agent(key):
+        return _mask_ug_user_agent(value)
+    lines = []
+    for line in value.split("\n"):
+        name, separator, header_value = line.partition(":")
+        if separator and _is_user_agent(name.strip()):
+            line = f"{name}{separator} {_mask_ug_user_agent(header_value.strip())}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _is_user_agent(name: object) -> bool:
+    return isinstance(name, str) and name.casefold() == "user-agent"
+
+
+def _mask_ug_user_agent(user_agent: str) -> str:
+    match = _UG_USER_AGENT.fullmatch(user_agent.strip())
+    return f"ucode/* {match.group(1)}/*" if match else user_agent
 
 
 def is_semantically_equal(current: object, desired: object) -> bool:
@@ -390,7 +460,8 @@ def reconcile_managed_file(
     """Back up, atomically write, and verify one OS-managed settings file.
 
     The first pre-ucode contents are retained until ``ucode revert``. Subsequent writes update only
-    the last-applied snapshot used for drift-safe three-way restoration.
+    the last-applied snapshot used for drift-safe three-way restoration. A difference only in ug's
+    User-Agent versions counts as unchanged (see ``mask_user_agent_versions``).
     """
     if not managed_files_supported():
         print_warning(
@@ -413,7 +484,8 @@ def reconcile_managed_file(
     if current_text is not None:
         try:
             semantically_unchanged = is_semantically_equal(
-                parser(current_text), parser(desired_text)
+                mask_user_agent_versions(parser(current_text)),
+                mask_user_agent_versions(parser(desired_text)),
             )
         except RuntimeError:
             semantically_unchanged = False

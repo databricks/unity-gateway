@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import tomllib
 from importlib import metadata
@@ -5539,26 +5540,244 @@ class TestForcedLoginWithExternalBearer:
         assert self._run(monkeypatch) == ["https://ws.cloud.databricks.com"]
 
 
-class TestStdioProtocolLaunch:
-    """`codex app-server` owns stdout, so ug's status output moves to stderr."""
+class TestChildStdoutLaunch:
+    """Claude print mode and Codex exec/app-server reserve stdout for the child."""
+
+    @pytest.fixture(autouse=True)
+    def preserve_runner_stdout(self, monkeypatch):
+        """Keep CliRunner's temporary stdout alive when ug rebinds sys.stdout."""
+        original_isolation = runner.isolation
+
+        @contextlib.contextmanager
+        def isolation(*args, **kwargs):
+            with original_isolation(*args, **kwargs) as streams:
+                with contextlib.redirect_stdout(sys.stdout):
+                    yield streams
+
+        monkeypatch.setattr(runner, "isolation", isolation)
+
+    @pytest.mark.parametrize("separator", [[], ["--"]], ids=["direct", "separator"])
+    @pytest.mark.parametrize(
+        ("tool", "tool_args", "display"),
+        [
+            ("claude", ["-p", "say hello", "--output-format", "json"], "Claude Code"),
+            (
+                "claude",
+                ["--output-format", "stream-json", "--verbose", "--print", "say hello"],
+                "Claude Code",
+            ),
+            ("codex", ["app-server", "--listen", "stdio://"], "Codex"),
+            ("codex", ["exec", "say hello"], "Codex"),
+            ("codex", ["exec", "--json", "say hello"], "Codex"),
+            ("codex", ["e", "say hello"], "Codex"),
+            ("codex", ["e", "--json", "say hello"], "Codex"),
+            ("codex", ["--model", "exec"], "Codex"),
+            ("codex", ["--cd", "app-server"], "Codex"),
+            ("codex", ["--profile", "e"], "Codex"),
+            ("codex", ["--no-alt-screen", "explain", "exec"], "Codex"),
+            ("codex", ["--image", "one.png", "two.png", "exec", "hello"], "Codex"),
+            (
+                "codex",
+                ["-c", 'model_reasoning_effort="low"', "exec", "--json", "hello"],
+                "Codex",
+            ),
+            ("codex", ["--config", 'model="example"', "e", "hello"], "Codex"),
+            ("codex", ['--config=model="example"', "exec", "hello"], "Codex"),
+            ("codex", ['-cmodel="example"', "exec", "--json", "hello"], "Codex"),
+            ("codex", ["-m", "example", "exec", "--json", "hello"], "Codex"),
+            ("codex", ["--model", "exec", "e", "--json", "hello"], "Codex"),
+            ("codex", ["--model=example", "exec", "hello"], "Codex"),
+            ("codex", ["-C", "dir with spaces", "exec", "--json", "hello"], "Codex"),
+            ("codex", ["--cd", "exec", "e", "hello"], "Codex"),
+            ("codex", ["--cd=example", "app-server", "--listen", "stdio://"], "Codex"),
+            (
+                "codex",
+                ["--strict-config", "--no-alt-screen", "--search", "exec", "--json", "hello"],
+                "Codex",
+            ),
+            (
+                "codex",
+                ["-c", 'model="example"', "--config", "features.web_search=true", "exec", "hello"],
+                "Codex",
+            ),
+        ],
+    )
+    def test_status_goes_to_stderr_and_arguments_are_preserved(
+        self, capfd, separator, tool, tool_args, display
+    ):
+        child_output = b'{"result":"child output"}\n'
+        if tool == "codex" and tool_args[0] in {"exec", "e"} and "--json" not in tool_args:
+            child_output = b"child output\n"
+
+        def bootstrap_status(*_args, **_kwargs):
+            print("Checking agent dependencies")
+            cli_mod.print_warning("Agent setup warning")
+
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.ensure_bootstrap_dependencies", side_effect=bootstrap_status),
+        ):
+            calls["launch"].side_effect = lambda *_args, **_kwargs: os.write(1, child_output)
+            result = runner.invoke(app, [tool, *separator, *tool_args])
+
+        captured = capfd.readouterr()
+        assert captured.out == child_output.decode()
+        assert captured.err == ""
+        assert result.exit_code == 0, result.output
+        assert result.stdout == ""
+        stderr = _strip_ansi(result.stderr)
+        assert "Checking agent dependencies" in stderr
+        assert "Agent setup warning" in stderr
+        assert "No managed coding agent config found" in stderr
+        assert f"Starting {display}" in stderr
+        calls["launch"].assert_called_once()
+        assert calls["launch"].call_args.args[0] == tool
+        assert calls["launch"].call_args.args[2] == tool_args
+
+    @pytest.mark.parametrize("separator", [[], ["--"]], ids=["direct", "separator"])
+    @pytest.mark.parametrize(
+        ("tool", "tool_args"),
+        [
+            ("claude", ["-p", "hello"]),
+            ("claude", ["--print", "hello"]),
+            ("codex", ["app-server"]),
+            ("codex", ["exec", "hello"]),
+            ("codex", ["exec", "--json", "hello"]),
+            ("codex", ["e", "hello"]),
+            ("codex", ["e", "--json", "hello"]),
+            ("codex", ["-c", 'model_reasoning_effort="low"', "exec", "--json", "hello"]),
+            ("codex", ["--no-alt-screen", "--model", "example", "e", "hello"]),
+            ("codex", ["--cd", "example", "app-server"]),
+        ],
+    )
+    def test_early_launch_failure_keeps_stdout_clean(self, separator, tool, tool_args):
+        def fail_bootstrap(*_args, **_kwargs):
+            print("Checking agent dependencies")
+            raise RuntimeError("Agent setup failed")
+
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.ensure_bootstrap_dependencies", side_effect=fail_bootstrap),
+        ):
+            result = runner.invoke(app, [tool, *separator, *tool_args])
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        stderr = _strip_ansi(result.stderr)
+        assert "Checking agent dependencies" in stderr
+        assert "Agent setup failed" in stderr
+        calls["launch"].assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("tool", "tool_args", "display"),
+        [
+            ("claude", [], "Claude Code"),
+            ("claude", ["explain --print and -p"], "Claude Code"),
+            ("claude", ["--", "-p"], "Claude Code"),
+            ("codex", [], "Codex"),
+            ("codex", ["explain exec and e"], "Codex"),
+            ("codex", ["--", "exec"], "Codex"),
+            ("codex", ["--model=exec"], "Codex"),
+            ("codex", ["-Cexec"], "Codex"),
+            ("codex", ["-c", 'model="exec"'], "Codex"),
+            ("codex", ["--model", "example", "--", "exec"], "Codex"),
+            ("codex", ['--config=model="example"', "--", "e"], "Codex"),
+            ("codex", ["--no-alt-screen", "--", "app-server"], "Codex"),
+        ],
+    )
+    def test_other_launches_keep_status_on_stdout(self, tool, tool_args, display):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, [tool, "--", *tool_args])
+
+        assert result.exit_code == 0, result.output
+        assert f"Starting {display}" in _strip_ansi(result.stdout)
+        assert result.stderr == ""
+        calls["launch"].assert_called_once()
+        assert calls["launch"].call_args.args[2] == tool_args
 
     def test_app_server_subcommand_owns_stdout(self):
         assert cli_mod._child_owns_stdout("codex", ["app-server", "--listen", "stdio://"]) is True
 
     def test_other_codex_launches_keep_stdout(self):
         assert cli_mod._child_owns_stdout("codex", []) is False
-        assert cli_mod._child_owns_stdout("codex", ["exec", "--json", "hi"]) is False
+        assert cli_mod._child_owns_stdout("codex", ["--", "exec"]) is False
+        assert cli_mod._child_owns_stdout("codex", ["--model=exec"]) is False
 
-    def test_other_agents_never_own_stdout(self):
+    def test_other_agent_commands_keep_stdout(self):
         assert cli_mod._child_owns_stdout("claude", ["app-server"]) is False
         assert cli_mod._child_owns_stdout("gemini", []) is False
 
-    def test_redirect_rebinds_stdout_without_touching_the_descriptor(self):
-        import sys
+    @pytest.mark.parametrize(
+        "option",
+        [
+            "--strict-config",
+            "--oss",
+            "--approve-for-me",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--dangerously-bypass-hook-trust",
+            "--worktree",
+            "--search",
+            "--no-alt-screen",
+            "--no-daemon",
+        ],
+    )
+    def test_codex_boolean_options_before_exec(self, option):
+        assert cli_mod._child_owns_stdout("codex", [option, "exec", "hello"])
 
+    @pytest.mark.parametrize(
+        "option",
+        [
+            "-c",
+            "--config",
+            "-m",
+            "--model",
+            "-C",
+            "--cd",
+            "-p",
+            "--profile",
+            "-s",
+            "--sandbox",
+            "-a",
+            "--ask-for-approval",
+            "--enable",
+            "--disable",
+            "--remote",
+            "--remote-auth-token-env",
+            "--local-provider",
+            "--add-dir",
+        ],
+    )
+    def test_codex_token_membership_also_matches_option_values(self, option):
+        assert cli_mod._child_owns_stdout("codex", [option, "exec"])
+        assert cli_mod._child_owns_stdout("codex", [f"{option}=exec"]) is False
+        assert cli_mod._child_owns_stdout("codex", [option, "exec", "e", "hello"])
+        assert cli_mod._child_owns_stdout("codex", [option, "exec", "--", "app-server"])
+        assert cli_mod._child_owns_stdout("codex", [option, "example", "--", "exec"]) is False
+
+    @pytest.mark.parametrize(
+        ("tool_args", "expected"),
+        [
+            (["--unknown", "exec"], True),
+            (["--image", "one.png", "two.png", "e"], True),
+            (["--model"], False),
+            (["--model", "--", "exec"], False),
+            (["--help", "exec"], True),
+            (["--version", "exec"], True),
+        ],
+    )
+    def test_codex_token_membership_does_not_parse_options(self, tool_args, expected):
+        assert cli_mod._child_owns_stdout("codex", tool_args) is expected
+
+    def test_redirect_rebinds_stdout_without_touching_the_descriptor(self, capfd):
         real_stdout = sys.stdout
         try:
             cli_mod.redirect_output_to_stderr()
             assert sys.stdout is sys.stderr
+            cli_mod.print_note("Gateway status")
+            os.write(1, b'{"result":"child output"}\n')
         finally:
             sys.stdout = real_stdout
+
+        captured = capfd.readouterr()
+        assert captured.out == '{"result":"child output"}\n'
+        assert "Gateway status" in captured.err
