@@ -1035,6 +1035,20 @@ class TestProviderServicePagination:
 
         assert "page_size=" in seen["url"]
 
+    def test_preserves_loopback_workspace_origin(self, monkeypatch):
+        seen: dict = {}
+
+        def fake_get(url, token, **kwargs):
+            seen["url"] = url
+            return self._page(["main.s.one"]), None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        db_mod.list_model_provider_services("http://127.0.0.1:54321", "tok", use_cache=False)
+
+        assert seen["url"].startswith(
+            "http://127.0.0.1:54321/api/2.1/unity-catalog/model-provider-services?"
+        )
+
 
 class TestGetModelProviderService:
     def test_addresses_the_service_directly(self, monkeypatch):
@@ -1060,6 +1074,26 @@ class TestGetModelProviderService:
         assert service["name"] == "main.tien_le.openai_all"
         assert service["allow_all_targets"] is True
         assert seen["url"].endswith("/model-provider-services/main.tien_le.openai_all")
+
+    def test_preserves_loopback_workspace_origin(self, monkeypatch):
+        seen: dict = {}
+
+        def fake_get(url, token, **kwargs):
+            seen["url"] = url
+            return {
+                "name": "model-provider-services/main.tien_le.openai_all",
+                "config": {"provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_OPENAI"},
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        db_mod.get_model_provider_service(
+            "main.tien_le.openai_all", "http://127.0.0.1:54321", "tok"
+        )
+
+        assert seen["url"] == (
+            "http://127.0.0.1:54321/api/2.1/unity-catalog/"
+            "model-provider-services/main.tien_le.openai_all"
+        )
 
     def test_missing_service_returns_the_reason(self, monkeypatch):
         monkeypatch.setattr(

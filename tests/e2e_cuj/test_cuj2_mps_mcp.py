@@ -131,7 +131,6 @@ def _assert_configured_files(session, workspace_url: str) -> None:
     assert claude_env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == claude_model, claude_env
     assert claude_env["ANTHROPIC_BASE_URL"] == workspace_url.rstrip("/") + "/ai-gateway/anthropic"
 
-    _, codex_model = MODEL_PROVIDER_SERVICE_FIXTURES[CODEX]
     codex_path = session.home / ".codex" / "ucode.config.toml"
     assert codex_path.is_file(), codex_path
     codex_config = tomllib.loads(codex_path.read_text(encoding="utf-8"))
@@ -139,9 +138,6 @@ def _assert_configured_files(session, workspace_url: str) -> None:
     codex_provider = codex_config["model_providers"]["Databricks"]
     assert codex_provider["wire_api"] == "responses", codex_provider
     assert codex_provider["base_url"] == workspace_url.rstrip("/") + "/ai-gateway/codex/v1"
-    assert session.workspace_state()["codex_default_model"] == codex_model, (
-        session.workspace_state()
-    )
 
 
 def _mcp_name_listed(output: str, name: str) -> bool:

@@ -2384,7 +2384,7 @@ def list_model_provider_services(
             # reach the next.
             return [dict(service) for service in cached], None
 
-    hostname = workspace_hostname(workspace)
+    origin = workspace_origin(workspace)
     services: list[dict] = []
     page_token: str | None = None
     seen_tokens: set[str] = set()
@@ -2395,9 +2395,7 @@ def list_model_provider_services(
             params["parent"] = f"schemas/{parent}"
         if page_token:
             params["page_token"] = page_token
-        url = (
-            f"https://{hostname}/api/2.1/unity-catalog/model-provider-services?{urlencode(params)}"
-        )
+        url = f"{origin}/api/2.1/unity-catalog/model-provider-services?{urlencode(params)}"
         payload, reason = _http_get_json(url, token, timeout=30)
         if payload is None:
             # Surface the failure only if we have nothing yet; a mid-pagination blip still
@@ -2470,8 +2468,8 @@ def get_model_provider_service(
     server-side filter) makes a service that plainly exists look absent. Addressing it directly
     removes that whole class of false negative.
     """
-    hostname = workspace_hostname(workspace)
-    url = f"https://{hostname}/api/2.1/unity-catalog/model-provider-services/{service_name}"
+    origin = workspace_origin(workspace)
+    url = f"{origin}/api/2.1/unity-catalog/model-provider-services/{service_name}"
     payload, reason = _http_get_json(url, token, timeout=30)
     if payload is None:
         return None, reason
