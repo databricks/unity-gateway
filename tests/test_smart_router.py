@@ -14,8 +14,25 @@ from typer.testing import CliRunner
 from ucode import cli, config_io, skills
 from ucode.skills import SMART_ROUTER_SKILL
 from ucode.smart_routing import session_env, v2
+from ucode.smart_routing.recipe_payload import smart_router_recipe_marker
 
 runner = CliRunner()
+
+
+@pytest.mark.parametrize(
+    ("enabled", "env", "expected"),
+    [
+        (True, {}, '<ug-routing-state>{"smart_router_recipe_name":"task_v3"}</ug-routing-state>'),
+        (
+            True,
+            {"SMART_ROUTER_NAME": 'custom<&"router'},
+            '<ug-routing-state>{"smart_router_recipe_name":"custom<&\\"router"}</ug-routing-state>',
+        ),
+        (False, {}, '<ug-routing-state>{"smart_router_recipe_name":null}</ug-routing-state>'),
+    ],
+)
+def test_smart_router_recipe_marker(enabled, env, expected):
+    assert smart_router_recipe_marker(enabled, env) == expected
 
 
 @pytest.fixture(autouse=True)
@@ -102,3 +119,32 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch):
     assert runner.invoke(cli.app, ["codex", "--enable-smart-routing"], env=env).exit_code == 0
     assert runner.invoke(cli.app, hook_args, input=payload, env=env).exit_code == 0
     route.assert_called_once()
+
+
+def test_codex_recipe_marker_follows_session_on_off_on(tmp_path):
+    session_file = tmp_path / "env.json"
+    session_file.write_text("{}", encoding="utf-8")
+    env = {
+        session_env.SESSION_ENV_VAR: str(session_file),
+        v2.ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        "SMART_ROUTER_NAME": "",
+    }
+    payload = json.dumps({"hook_event_name": "UserPromptSubmit"})
+
+    def recipe_value():
+        result = runner.invoke(
+            cli.app,
+            ["codex-router-hook", "recipe-metadata"],
+            input=payload,
+            env=env,
+        )
+        assert result.exit_code == 0, result.output
+        marker = json.loads(result.output)["hookSpecificOutput"]["additionalContext"]
+        encoded = marker.removeprefix("<ug-routing-state>").removesuffix("</ug-routing-state>")
+        return json.loads(encoded)["smart_router_recipe_name"]
+
+    assert recipe_value() == "task_v3"
+    assert runner.invoke(cli.app, ["codex", "--disable-smart-routing"], env=env).exit_code == 0
+    assert recipe_value() is None
+    assert runner.invoke(cli.app, ["codex", "--enable-smart-routing"], env=env).exit_code == 0
+    assert recipe_value() == "task_v3"

@@ -54,7 +54,7 @@ from ucode.smart_routing.claude_hooks import (
     sync_first_prompt_hook,
     sync_smart_routing_hooks,
 )
-from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
+from ucode.smart_routing.codex_hooks import merge_launch_hooks, routing_models
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_warning
 
@@ -610,15 +610,19 @@ def _codex_home_config_path() -> Path:
     return Path.home() / ".codex" / "config.toml"
 
 
-def _v2_pre_tool_use_hooks(state: dict, available_models: list[str]) -> list[dict]:
+def _v2_hooks(state: dict, available_models: list[str]) -> dict[str, list[dict]]:
     doc = read_toml_safe(_codex_home_config_path())
     configured_hooks = doc.get("hooks")
-    existing = configured_hooks.get("PreToolUse") if isinstance(configured_hooks, dict) else None
-    return merge_pre_tool_use_hooks(
-        existing if isinstance(existing, list) else [],
+    return merge_launch_hooks(
+        configured_hooks if isinstance(configured_hooks, dict) else {},
         state,
         available_models=available_models,
     )
+
+
+def _v2_pre_tool_use_hooks(state: dict, available_models: list[str]) -> list[dict]:
+    """Compatibility seam for callers that inspect only the spawn-routing hook."""
+    return _v2_hooks(state, available_models)["PreToolUse"]
 
 
 def launch_codex(
@@ -659,9 +663,7 @@ def launch_codex(
     catalog_path = custom_catalog_path()
     if catalog_path is not None:
         overlay["model_catalog_json"] = str(catalog_path)
-    overlay["hooks"] = {
-        "PreToolUse": _v2_pre_tool_use_hooks(state, available_models),
-    }
+    overlay["hooks"] = _v2_hooks(state, available_models)
     session_env_path = _prepare_smart_router_session("codex")
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.

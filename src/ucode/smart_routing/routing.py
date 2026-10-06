@@ -18,7 +18,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -194,9 +194,10 @@ def unwrap_anthropic_gateway_model(model: str) -> str:
     return model
 
 
-def configured_router_name() -> str:
+def configured_router_name(env: Mapping[str, str] | None = None) -> str:
     """Return the environment-selected router, falling back to ``task_v3``."""
-    return os.environ.get(ROUTER_NAME_ENV_VAR, "").strip() or ROUTER_NAME
+    source = os.environ if env is None else env
+    return source.get(ROUTER_NAME_ENV_VAR, "").strip() or ROUTER_NAME
 
 
 def select_route(
