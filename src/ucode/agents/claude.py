@@ -90,6 +90,7 @@ from ucode.smart_routing.claude_hooks import (
 )
 from ucode.smart_routing.routing import configured_router_name
 from ucode.state import (
+    LAUNCH_DISCOVERY_OVERLAY_KEY,
     MANAGED_OVERLAY_KEY,
     is_tool_managed,
     load_global_state,
@@ -1407,10 +1408,17 @@ def write_tool_config(
     # Relayed inference points at a local refresh proxy; its loopback base URL is
     # recorded in state so launch starts the proxy on the matching port.
     relayed_base_url = relayed_proxy_base_url(state) if relayed else None
+    config_models = state.get("claude_models") or {}
+    if LAUNCH_DISCOVERY_OVERLAY_KEY in state and "claude_models" not in state.get(
+        MANAGED_OVERLAY_KEY, {}
+    ):
+        # Header-specific discovery selects this launch's default, but must not leave family
+        # defaults behind in settings after a later launch clears the header.
+        config_models = state[LAUNCH_DISCOVERY_OVERLAY_KEY].get("claude_models") or {}
     overlay, managed_keys = render_overlay(
         state["workspace"],
         model,
-        state.get("claude_models") or {},
+        config_models,
         disable_web_search=web_search_model is not None,
         profile=state.get("profile"),
         use_pat=bool(state.get("use_pat")),
@@ -1487,8 +1495,10 @@ def write_tool_config(
                 }
                 managed_overlay = state.get(MANAGED_OVERLAY_KEY, {})
                 ucode_defaults = (
-                    managed_overlay.get("claude_models") or state.get("claude_models") or {}
-                )
+                    state[LAUNCH_DISCOVERY_OVERLAY_KEY].get("claude_models")
+                    if LAUNCH_DISCOVERY_OVERLAY_KEY in state
+                    else managed_overlay.get("claude_models") or config_models
+                ) or {}
 
             enforced_models = overlay_for_merge.get("availableModels")
             last_applied_env = {}

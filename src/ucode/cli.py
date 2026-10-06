@@ -2969,6 +2969,11 @@ def _launch_tool(
             parent_schema=parent_schema,
             **({"custom_headers": custom_headers} if tool == "claude" and custom_headers else {}),
         )
+        if tool == "claude" and LAUNCH_DISCOVERY_OVERLAY_KEY in state:
+            state[LAUNCH_DISCOVERY_OVERLAY_KEY]["_claude_launch_default_model"] = state.get(
+                "_claude_launch_default_model"
+            )
+            state["_claude_launch_default_model"] = resolved_model
         if picker_catalog and picker_catalog.model_ids:
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
             # replaced. Keep the catalog launch-scoped and leave the user's settings alone.

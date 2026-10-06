@@ -907,6 +907,8 @@ class TestSubcommandRouting:
 
     def test_claude_headers_are_forwarded(self):
         with _launch_policy_patches(None) as calls:
+            calls["state"]["claude_models"] = {"sonnet": "routed-claude-sonnet-4"}
+            calls["state"][cli_mod.LAUNCH_DISCOVERY_OVERLAY_KEY] = {"claude_models": {}}
             result = runner.invoke(
                 app, ["claude", "--header", "X-First: one", "--header", "X-Second: two:three"]
             )
@@ -919,6 +921,11 @@ class TestSubcommandRouting:
         assert calls["launch"].call_args.kwargs["options"].custom_headers == (
             ("X-First", "one"),
             ("X-Second", "two:three"),
+        )
+
+        assert (
+            calls["launch"].call_args.args[1]["_claude_launch_default_model"]
+            == "routed-claude-sonnet-4"
         )
 
     def test_codex_admin_header_collision_stops_before_discovery(self):

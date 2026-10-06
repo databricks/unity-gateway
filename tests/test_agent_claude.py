@@ -1225,14 +1225,38 @@ class TestWriteToolConfigManagedSettings:
             "User-Agent: ucode/1.0 claude/2.0",  # ug-managed name, replaced in place
         ]
 
-    def test_writes_custom_header_and_records_it_in_existing_state(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("baseline_models", "managed_overlay"),
+        [
+            ({}, {}),
+            ({"sonnet": "normal-claude-sonnet-4"}, {}),
+            ({"sonnet": "normal-claude-sonnet-4"}, {"claude_http_headers": None}),
+        ],
+    )
+    def test_writes_custom_header_and_records_it_in_existing_state(
+        self, monkeypatch, baseline_models, managed_overlay
+    ):
         private_writes: list = []
         managed_writes: list = []
         global_state: dict = {}
-        self._patch(monkeypatch, private_writes, managed_writes, global_state=global_state)
+        existing = {str(claude.CLAUDE_SETTINGS_PATH): {}, str(FAKE_MANAGED_PATH): {}}
+        self._patch(monkeypatch, private_writes, managed_writes, existing, global_state)
+        monkeypatch.setattr(
+            claude,
+            "refresh_managed_config",
+            lambda *a, **kw: _managed_config_result(
+                {"enabled_agents": {"claude": {}}} if managed_overlay else None
+            ),
+        )
 
         claude.write_tool_config(
-            {"workspace": WS, "codex_models": []},
+            {
+                "workspace": WS,
+                "codex_models": [],
+                "claude_models": {"sonnet": "routed-claude-sonnet-4"},
+                claude.LAUNCH_DISCOVERY_OVERLAY_KEY: {"claude_models": baseline_models},
+                claude.MANAGED_OVERLAY_KEY: managed_overlay,
+            },
             "databricks-claude-sonnet-4",
             custom_headers={"X-Development-Route": "route://development/test"},
         )
@@ -1244,6 +1268,24 @@ class TestWriteToolConfigManagedSettings:
         assert global_state[claude.CLAUDE_CUSTOM_HEADERS_STATE_KEY] == {
             "x-development-route": "route://development/test"
         }
+
+        # Neither settings file may retain a model discovered through the temporary header.
+        existing[str(claude.CLAUDE_SETTINGS_PATH)] = private_writes[-1][1]
+        existing[str(FAKE_MANAGED_PATH)] = json.loads(managed_writes[-1][1])
+        assert "routed-claude" not in json.dumps(existing)
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_models": [],
+                "claude_models": {"sonnet": "normal-claude-sonnet-4"},
+            },
+            "normal-claude-sonnet-4",
+        )
+        for settings in (private_writes[-1][1], json.loads(managed_writes[-1][1])):
+            assert settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"].startswith(
+                "normal-claude-sonnet-4"
+            )
+            assert "X-Development-Route" not in settings["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
     def test_allows_reusing_recorded_empty_header(self, monkeypatch):
         settings = {"env": {"ANTHROPIC_CUSTOM_HEADERS": "X-Development-Route:"}}
