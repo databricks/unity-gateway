@@ -18,18 +18,18 @@ Both inventories must omit `ug_e2e.other_tools`, including the accessible
 `fixture_decoy` service and its `decoy_status` tool. Claude traverses the server menu
 until it wraps; Codex includes rendered scrollback from `/mcp verbose`.
 
-CI runs one lane per agent using the existing `UG_CUJ3_WORKSPACE` and CUJ SP secrets.
-The lanes run after catalog discovery, even if it fails, and share its workspace
-concurrency lock. Each lane uploads terminal and native-transcript evidence.
-
-Run on a clean POSIX host with the CUJ SP credentials and dedicated workspace:
+Run on a clean disposable POSIX host with `ug`, `claude`, `codex`, and `databricks` on `PATH`.
+Set `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET`, install `pexpect==4.9.0` and
+`pyte==0.8.2`, and use a host without machine-wide agent settings. The test uses
+the dedicated workspace URL declared on `TestMcpRegistration`; no workspace URL environment
+variable is required.
 
 ```bash
-python3.12 scripts/run_integration.py --suite e2e-cuj \
-  --ug-version checkout --claude-version 2.1.280 --codex-version 0.154.0 \
-  --workspace "$CATALOG_DISCOVERY_WORKSPACE" \
-  -- -m 'managed and mcp_registration and workspace_isolated'
+uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
+  --confcutdir=tests/e2e_cuj tests/e2e_cuj \
+  -m 'managed and mcp_registration and workspace_isolated' -v
 ```
 
+CI discovers these tests in the shared `dedicated-cuj` job alongside catalog discovery.
 Only live passes establish coverage. UG status/list checks remain a separate follow-up.
 Skill storage and provisioning are not part of this suite.

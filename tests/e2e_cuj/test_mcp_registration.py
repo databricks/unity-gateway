@@ -2,20 +2,21 @@
 
 import hashlib
 import json
-import os
 import uuid
 
 import pytest
-from utils.evidence import (
+
+from tests.integration.utils.evidence import (
     agent_sessions,
     assert_no_terminal_api_error,
     assistant_answers,
     is_child_session,
 )
-from utils.mcp import open_claude_mcp_inventory, open_codex_mcp_inventory
-from utils.terminal import AgentTerminal
+from tests.integration.utils.mcp import open_claude_mcp_inventory, open_codex_mcp_inventory
 
 from .base import BaseCujTest
+from .helpers.constants import CLAUDE, CODEX
+from .helpers.terminal import Terminal
 
 pytestmark = [pytest.mark.managed, pytest.mark.mcp_registration, pytest.mark.workspace_isolated]
 
@@ -64,6 +65,9 @@ class McpFixtureTask:
 def _wait_for_mcp_task(tui, task):
     def completed(screen):
         assert_no_terminal_api_error(screen)
+        assert "Do you want to proceed?" not in screen, (
+            "Unexpected permission request; inspect the actual command:\n" + screen
+        )
         return task.completed(tui.session, tui.agent)
 
     tui.wait_for(
@@ -74,28 +78,27 @@ def _wait_for_mcp_task(tui, task):
 
 
 class TestMcpRegistration(BaseCujTest):
-    WORKSPACE_URL = os.environ.get("UCODE_TEST_WORKSPACE", "")
+    WORKSPACE_URL = "https://dbc-bbdd5508-648e.cloud.databricks.com"
 
     @pytest.mark.claude
     @pytest.mark.tui
-    def test_mcp_registration_claude_servers_connect_and_work(self, live_session, workspace):
+    def test_mcp_registration_claude_servers_connect_and_work(self, cuj):
         """Scenario: configure UG, inspect Claude's MCP menu, then call both fixture tools.
 
         Expected: both scoped servers are registered, connected, and expose their tools;
         no ug_e2e.other_tools server or decoy tool appears in the complete inventory;
         a parent assistant answer contains the correct receipts for a fresh run ID.
         """
-        session = live_session
-        session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
+        session, workspace, _recorder = cuj
+        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
         task = McpFixtureTask()
         allowed_tools = ",".join(
             f"mcp__{service.replace('.', '-')}__{tool}" for service, tool in SERVICES.items()
         )
-        with AgentTerminal(
+        with Terminal(
             session,
-            "claude",
-            [str(session.binary), "claude", "--", "--allowedTools", allowed_tools],
             "mcp-registration-claude",
+            [CLAUDE, "--", "--allowedTools", allowed_tools],
         ) as tui:
             tui.boot()
             inventory = open_claude_mcp_inventory(tui, SERVICES)
@@ -104,24 +107,22 @@ class TestMcpRegistration(BaseCujTest):
             tui.submit(task.prompt)
             _wait_for_mcp_task(tui, task)
             tui.exit_normally()
-        assert task.completed(session, "claude")
+        assert task.completed(session, CLAUDE)
         session.assert_not_routed()
 
     @pytest.mark.codex
     @pytest.mark.tui
-    def test_mcp_registration_codex_servers_connect_and_work(self, live_session, workspace):
+    def test_mcp_registration_codex_servers_connect_and_work(self, cuj):
         """Scenario: configure UG, inspect Codex's MCP inventory, then call both fixture tools.
 
         Expected: both scoped servers are registered, connected, and expose their tools;
         no ug_e2e.other_tools server or decoy tool appears in the complete inventory;
         a completed parent turn returns the correct receipts for a fresh run ID.
         """
-        session = live_session
-        session.run("configure", "--workspace", workspace, "--skip-upgrade", timeout=300)
+        session, workspace, _recorder = cuj
+        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
         task = McpFixtureTask()
-        with AgentTerminal(
-            session, "codex", [str(session.binary), "codex"], "mcp-registration-codex"
-        ) as tui:
+        with Terminal(session, "mcp-registration-codex", [CODEX]) as tui:
             tui.boot()
             inventory = open_codex_mcp_inventory(tui, SERVICES)
             assert "ug_e2e-other_tools" not in inventory, inventory
@@ -129,5 +130,5 @@ class TestMcpRegistration(BaseCujTest):
             tui.submit(task.prompt)
             _wait_for_mcp_task(tui, task)
             tui.exit_normally()
-        assert task.completed(session, "codex")
+        assert task.completed(session, CODEX)
         session.assert_not_routed()
