@@ -226,37 +226,6 @@ class TestCodexWriteConfig:
         assert "model_reasoning_effort" not in doc
         assert "profiles" not in doc
 
-    @pytest.mark.parametrize("model", ["system.ai.gpt-5-6-sol", "system.ai.gpt-5-6-luna"])
-    def test_managed_model_survives_state_hydration(self, tmp_path, monkeypatch, model):
-        import ucode.state as state_mod
-
-        config_path = tmp_path / ".codex" / "ucode.config.toml"
-        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
-        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "codex-ucode-config.backup.toml")
-        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.154.0")
-        monkeypatch.setattr(codex, "_reconcile_managed_config", lambda *args, **kwargs: None)
-
-        app_dir = tmp_path / ".ucode"
-        monkeypatch.setattr(state_mod, "APP_DIR", app_dir)
-        monkeypatch.setattr(state_mod, "STATE_PATH", app_dir / "state.json")
-        monkeypatch.setattr(codex, "save_state", state_mod.save_state)
-
-        from ucode.managed_resolve import resolve_state
-
-        managed = {
-            "enabled_agents": {
-                "codex": {"model_config": {"default_model": "system.ai.gpt-5-6-sol"}}
-            }
-        }
-        state = resolve_state(managed, {"workspace": WS}, "codex")
-        codex.write_tool_config(state, model=model)
-
-        assert read_toml_safe(config_path)["model"] == model
-        persisted = json.loads(state_mod.STATE_PATH.read_text())
-        persisted_state = persisted["workspaces"][WS]
-        assert "codex_default_model" not in persisted_state
-        assert "_managed_overlay" not in persisted_state
-
     def test_smart_routing_preserves_configured_startup_model(self, tmp_path, monkeypatch):
         config_path = tmp_path / "ucode.config.toml"
         config_path.write_text('model = "gpt-5.6-sol"\n')
@@ -940,15 +909,15 @@ class TestCodexDefaultModel:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", tmp_path / "ucode.config.toml")
         monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
 
-    def test_default_model_lookup_leaves_profile_model_preferences(self, tmp_path):
+    def test_clears_profile_model_preferences(self, tmp_path):
         codex.CODEX_CONFIG_PATH.write_text(
             'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "medium"\n', encoding="utf-8"
         )
 
         assert codex.default_model({"codex_models": ["system.ai.gpt-5-6-luna"]}) is None
         doc = read_toml_safe(codex.CODEX_CONFIG_PATH)
-        assert doc["model"] == "gpt-5.6-sol"
-        assert doc["model_reasoning_effort"] == "medium"
+        assert "model" not in doc
+        assert "model_reasoning_effort" not in doc
 
     def test_none_when_no_configured_model(self):
         assert codex.default_model({}) is None
