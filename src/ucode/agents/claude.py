@@ -210,6 +210,8 @@ CLAUDE_DEFAULT_MODEL_ENV_KEYS = {
     "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 }
+CLAUDE_CUSTOM_MODEL_FAMILIES = ("opus", "sonnet", "haiku")
+CLAUDE_CUSTOM_MODEL_SELECTOR = "opus"
 # Launch-scoped feature flags that ucode may write into Claude settings. These
 # must be removed again when the corresponding launch flag is absent.
 CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
@@ -1864,6 +1866,15 @@ def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[s
     return ["--model", launch_model]
 
 
+def _launch_custom_model_settings(model: str) -> dict:
+    """Pin a Databricks model through launch-scoped Claude family aliases."""
+    return {
+        "env": {
+            CLAUDE_DEFAULT_MODEL_ENV_KEYS[family]: model for family in CLAUDE_CUSTOM_MODEL_FAMILIES
+        },
+    }
+
+
 def _resolve_picker_model_id(model: str, settings_env: dict) -> str:
     """Resolve configured aliases and context suffixes for comparisons only."""
     model = re.sub(r"\[(?:1m|200k)\]$", "", model)
@@ -1873,6 +1884,24 @@ def _resolve_picker_model_id(model: str, settings_env: dict) -> str:
         if isinstance(family_model, str) and family_model:
             model = family_model
     return re.sub(r"\[(?:1m|200k)\]$", "", model)
+
+
+def _is_managed_launch_model(state: dict, model: str) -> bool:
+    """Return whether *model* is present in Claude's managed model catalog."""
+    picker_models = state.get("_claude_launch_picker_models")
+    if not isinstance(picker_models, list) or not picker_models:
+        picker_models = state.get("claude_static_models")
+    if not isinstance(picker_models, list) or not picker_models:
+        return False
+
+    settings_env = read_json_safe(CLAUDE_SETTINGS_PATH).get("env")
+    settings_env = settings_env if isinstance(settings_env, dict) else {}
+    resolved_model = _resolve_picker_model_id(model, settings_env)
+    return any(
+        isinstance(picker_model, str)
+        and _resolve_picker_model_id(picker_model, settings_env) == resolved_model
+        for picker_model in picker_models
+    )
 
 
 def _resolve_launch_binary(binary: str) -> str:
@@ -2100,7 +2129,18 @@ def launch(
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
     launch_args = list(tool_args)
-    if options.user_pinned_model:
+    launch_custom_model = state.get("_claude_launch_custom_model")
+    if isinstance(launch_custom_model, str) and launch_custom_model:
+        if _is_managed_launch_model(state, launch_custom_model):
+            launch_args = [
+                *_launch_model_args(tool_args, launch_custom_model),
+                *tool_args,
+            ]
+        else:
+            # Claude rejects raw model ids outside its catalog.
+            os.environ["ANTHROPIC_MODEL"] = CLAUDE_CUSTOM_MODEL_SELECTOR
+            settings_override = _launch_custom_model_settings(launch_custom_model)
+    elif options.user_pinned_model:
         os.environ["ANTHROPIC_MODEL"] = options.user_pinned_model
         settings_override = {"env": {"ANTHROPIC_MODEL": options.user_pinned_model}}
         launch_args = [
