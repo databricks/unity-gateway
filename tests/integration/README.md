@@ -52,6 +52,8 @@ Luna over its managed Sol default. The below-tier case launches bare `ug` and
 verifies Claude selects Sonnet. Neither case submits an inference task or writes
 the budget; the dedicated workspace configuration remains read-only. Independent
 matrix entries can overlap because their local homes and artifacts are isolated.
+The published config verifies Codex's managed Sol default; the generated local model is
+checked only after launch, with no intermediate after-configure local-profile assertion.
 
 A fresh below-tier principal may have no spend counter, so that case establishes
 default model selection; numeric spend reporting remains covered by the above-tier case.

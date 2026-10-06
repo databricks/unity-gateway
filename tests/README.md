@@ -197,6 +197,8 @@ Both entries read the preconfigured workspace and make no budget writes or infer
 requests. It does not cover spend boundaries, selection between multiple tiers, or
 explicit Claude overrides. Generated-file cleanup and strict app-server stdout
 assertions remain enforced in the integration suite.
+The published config verifies Codex's managed Sol default; the generated local model is
+checked only after launch, with no intermediate after-configure local-profile assertion.
 Unmanaged discovery Cases 7–14 configure, list models, or open the picker without
 submitting inference prompts; separate task journeys still perform inference.
 They require a real workspace with no CodingAgentConfig; a read-only prerequisite

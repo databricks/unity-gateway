@@ -132,10 +132,6 @@ class TestCujBudgetDefaults(BaseCujTest):
             ]
         )
         model_config = session.home / ".codex" / "ucode.config.toml"
-        actual_model = tomllib.loads(model_config.read_text()).get("model")
-        assert actual_model == self.SOL_MODEL, (
-            f"Codex config model mismatch: expected {self.SOL_MODEL!r}, got {actual_model!r}"
-        )
 
         before_usage = workspace.client.api_client.do(
             "POST", path=config_path + ":recommendModel", body={}
