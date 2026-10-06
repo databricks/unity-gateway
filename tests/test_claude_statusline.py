@@ -446,8 +446,11 @@ class TestMainModelTimeline:
         # Only the main transcript carries the timeline.
         assert state["files"][str(session.subagent("a1"))]["models"] == []
 
-    def test_first_prompt_baseline_stays_the_start_model_through_main_switches(self, session):
+    def test_first_prompt_baseline_follows_a_later_user_switch(self, session):
         assert session.render(OPUS, baseline_session_start=True) == "Smart routing on"
+        # The router kept Opus for the first answer, so the switch to Sonnet after it is the
+        # user's `/model`: neither m2 nor the subagent beside it is routing's saving (measuring
+        # both against the start model would claim $0.23).
         append(
             session.transcript,
             response("m1", OPUS_ID, MAIN_USAGE, at=T0),
@@ -455,10 +458,29 @@ class TestMainModelTimeline:
         )
         append(session.subagent("a1"), response("s1", SONNET_ID, SUBAGENT_USAGE, at=T2))
 
-        # Everything is measured against Opus: baseline $0.4551, actual $0.22707.
+        assert session.render(SONNET, baseline_session_start=True) == "Smart routing on"
+
+    def test_first_prompt_routing_keeps_its_credit_after_a_user_switch(self, session):
+        assert session.render(OPUS, baseline_session_start=True) == "Smart routing on"
+        # The router picked Sonnet; its first answer and the subagent beside it count against Opus.
+        append(session.transcript, response("m1", SONNET_ID, MAIN_USAGE, at=T0))
+        append(session.subagent("a1"), response("s1", SONNET_ID, SUBAGENT_USAGE, at=T1))
+        # Baseline $0.38005 - actual $0.15202.
         assert (
             session.render(SONNET, baseline_session_start=True)
-            == "💰 Est. saved with smart routing: $0.23 (50%)"
+            == "💰 Est. saved with smart routing: $0.23 (60%)"
+        )
+
+        # The user's `/model opus` then `/model sonnet` are their own baselines: the saving stays,
+        # over a baseline that grows by $0.10507 (against Opus it would be $0.27, 52%).
+        append(
+            session.transcript,
+            response("m2", OPUS_ID, MAIN_USAGE, at=T2),
+            response("m3", SONNET_ID, MAIN_USAGE, at=T3),
+        )
+        assert (
+            session.render(SONNET, baseline_session_start=True)
+            == "💰 Est. saved with smart routing: $0.23 (47%)"
         )
 
     def test_discards_state_written_by_an_older_version(self, tmp_path):
@@ -568,8 +590,20 @@ class TestModUsage:
     """``--mod-usage`` prices the Claude Code mod's token sums into the mod's two segments."""
 
     @staticmethod
-    def entry(agent: str, baseline: str | None, served: str, usage: dict) -> dict:
-        found = {"agent": agent, "served": served, "usage": usage}
+    def entry(
+        agent: str,
+        baseline: str | None,
+        served: str,
+        usage: dict,
+        *,
+        before_user_switch: bool = False,
+    ) -> dict:
+        found = {
+            "agent": agent,
+            "served": served,
+            "before_user_switch": before_user_switch,
+            "usage": usage,
+        }
         return found if baseline is None else {**found, "baseline": baseline}
 
     @staticmethod
@@ -687,11 +721,12 @@ class TestModUsage:
         )
 
     def test_first_prompt_routing_prices_against_the_start_model(self, session, tmp_path):
-        # Under first-prompt routing the router picks the main model too, so each entry's own
-        # baseline (the routed model) would hide the saving; its presence or absence is ignored.
+        # Under first-prompt routing the router picks the main model too, so an entry's own
+        # baseline (the routed model) would hide the saving; until the user switches the main
+        # model its presence or absence is ignored.
         entries = [
-            self.entry("main", SONNET_ID, SONNET_ID, MAIN_USAGE),
-            self.entry("a1", None, SONNET_ID, SUBAGENT_USAGE),
+            self.entry("main", SONNET_ID, SONNET_ID, MAIN_USAGE, before_user_switch=True),
+            self.entry("a1", None, SONNET_ID, SUBAGENT_USAGE, before_user_switch=True),
         ]
         usage = self.write(tmp_path, entries, start_model=OPUS_ID)
 
@@ -700,6 +735,23 @@ class TestModUsage:
             "💰 Est. saved $0.23 (60%)"
         )
         assert self.price(session, usage)["savings"] is None
+
+    def test_first_prompt_routing_prices_entries_after_a_user_switch_as_their_own(
+        self, session, tmp_path
+    ):
+        entries = [
+            self.entry("main", SONNET_ID, SONNET_ID, MAIN_USAGE, before_user_switch=True),
+            self.entry("a1", SONNET_ID, SONNET_ID, SUBAGENT_USAGE, before_user_switch=True),
+            # The user's `/model opus`, then `/model sonnet`.
+            self.entry("main", OPUS_ID, OPUS_ID, MAIN_USAGE),
+            self.entry("main", SONNET_ID, SONNET_ID, MAIN_USAGE),
+        ]
+        usage = self.write(tmp_path, entries, start_model=OPUS_ID)
+
+        # Baseline $0.48512 - actual $0.25709, as on the transcript path.
+        assert self.price(session, usage, first_prompt=True)["savings"] == (
+            "💰 Est. saved $0.23 (47%)"
+        )
 
     @pytest.mark.parametrize("start_model", [None, ""])
     def test_first_prompt_routing_without_a_start_model_has_no_estimate(

@@ -53,17 +53,23 @@ def test_savings_concern_matches_the_python_contract():
     assert f"'{SESSION_ENV_FILE_ENV_VAR}'" in source
     # One pricer line out: {"savings": ..., "plugin": ...}.
     assert "out.savings" in source and "out.plugin" in source
-    # Document in: {"version": 1, "start_model": ..., "main_model": ..., "entries": [...]};
-    # Python ignores main_model, the mod reads it back to seed itself after a reload.
+    # Document in: {"version": 1, "start_model": ..., "main_model": ..., "first_main_model": ...,
+    # "user_switched": ..., "entries": [{..., "before_user_switch": ...}]}; Python ignores the
+    # main-model fields, the mod reads them back to seed itself after a reload.
     for field in (
         "version: 1,",
         "start_model: startModel,",
         "main_model: lastMainModel,",
+        "first_main_model: firstMainModel,",
+        "user_switched: userSwitched,",
         "entries: Array.from(entries.values())",
+        "before_user_switch: beforeUserSwitch,",
     ):
         assert field in source, field
     assert "saved.version !== 1" in source
-    assert "saved.main_model" in source and "saved.start_model" in source
+    for field in ("main_model", "start_model", "first_main_model", "user_switched"):
+        assert f"saved.{field}" in source, field
+    assert "item.before_user_switch === true" in source
 
 
 def test_savings_concern_keeps_the_baseline_and_start_model_rules():
@@ -74,6 +80,13 @@ def test_savings_concern_keeps_the_baseline_and_start_model_rules():
     # The start model is only ever set once, so a later session.start cannot overwrite it.
     assert "startModel ??=" in source
     assert "startModel = " not in source.replace("startModel ??=", "")
+    # First-prompt routing switches the main model before its first request, so a main request
+    # on another model marks a user switch; each request is flagged before it runs.
+    assert "firstMainModel ??= lastMainModel" in source
+    assert "userSwitched ||= lastMainModel !== firstMainModel" in source
+    assert source.index("const beforeUserSwitch = !userSwitched") < source.index(
+        "const result = yield* next(e)"
+    )
     # Every turn.step counts (side queries are not turn steps): no turn-id filter.
     assert "mainTurns" not in source
 

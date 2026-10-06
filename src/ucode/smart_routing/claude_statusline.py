@@ -9,8 +9,10 @@ alike, would otherwise have run on the baseline main-agent model::
 
 summed over every assistant response in the main and subagent transcripts, per token class. The
 baseline is the main model the user chose; under first-prompt routing, where the router also picks
-the main model, it is the model the session started on, before routing switched it. A negative
-result (routing chose pricier models) is shown as a cost increase.
+the main model, it is the model the session started on, before routing switched it, until the main
+model changes again. The router switches it once, before the first answer, so a later change is the
+user's and makes their choice the baseline again. A negative result (routing chose pricier models)
+is shown as a cost increase.
 
 The baseline is fixed per response when it is first read, never recomputed: a subagent response is
 priced against the main model in effect at its timestamp (recorded as the main transcript is
@@ -75,9 +77,10 @@ _CENT = Decimal("0.01")
 _ORCHESTRATOR_PLUGIN_NAME = "model-orchestrator"
 _SYNTHETIC_MODEL = "<synthetic>"
 
-# The baseline model key for a response, given the key of the model that served it and its
-# timestamp (epoch seconds, None when the record has none).
-BaselineFor = Callable[[str, float | None], str]
+# The baseline model key for a response, given the key of the model that served it, its timestamp
+# (epoch seconds, None when the record has none), and the main agent's model timeline as read so
+# far (``_FileTotals.models``).
+BaselineFor = Callable[[str, float | None, list[list[Any]]], str]
 
 
 def effective_status_line(
@@ -213,25 +216,20 @@ def _claimable(
     return baseline - actual, baseline
 
 
-def _own_baseline(served_key: str, when: float | None) -> str:
+def _own_baseline(served_key: str, when: float | None, models: list[list[Any]]) -> str:
     """A response is its own baseline, so it is never counted as rerouted."""
     return served_key
 
 
-def _frozen_baseline(key: str) -> BaselineFor:
-    """Every response's baseline is one fixed model (the session's start model)."""
-    return lambda served_key, when: key
-
-
-def _timeline_baseline(models: list[list[Any]], fallback: str) -> BaselineFor:
+def _timeline_baseline(fallback: str) -> BaselineFor:
     """A subagent response's baseline is the main model in effect when it ran.
 
-    ``models`` is the main agent's ``[epoch, model_key]`` changes, in transcript order. A response
+    The timeline is the main agent's ``[epoch, model_key]`` changes, in transcript order. A response
     before the first recorded change gets the earliest model, one without a timestamp the latest,
     and ``fallback`` applies when the main transcript shows no model at all.
     """
 
-    def baseline_for(served_key: str, when: float | None) -> str:
+    def baseline_for(served_key: str, when: float | None, models: list[list[Any]]) -> str:
         if not models:
             return fallback
         if when is None:
@@ -240,6 +238,21 @@ def _timeline_baseline(models: list[list[Any]], fallback: str) -> BaselineFor:
             if epoch <= when:
                 return key
         return models[0][1]
+
+    return baseline_for
+
+
+def _first_prompt_baseline(start_key: str, after: BaselineFor) -> BaselineFor:
+    """The session's start model while the main agent is still on its first model, then ``after``.
+
+    The router switches the main model once, before its first answer, so any later change is the
+    user's: pricing past it against the start model would credit routing with the user's choice.
+    """
+
+    def baseline_for(served_key: str, when: float | None, models: list[list[Any]]) -> str:
+        if len(models) < 2 or (when is not None and when < models[1][0]):
+            return start_key
+        return after(served_key, when, models)
 
     return baseline_for
 
@@ -315,8 +328,13 @@ class _FileTotals:
         prices: dict[str, ModelPrice],
         baseline_for: BaselineFor,
         *,
-        main: bool = False,
+        timeline: list[list[Any]] | None = None,
     ) -> None:
+        """Fold in one transcript record.
+
+        ``timeline`` is the main agent's, for a subagent transcript; without one this is the main
+        transcript, which records its own in ``models`` as it is read.
+        """
         if not isinstance(record, dict) or record.get("type") != "assistant":
             return
         message = record.get("message")
@@ -330,9 +348,9 @@ class _FileTotals:
         model = raw_model if isinstance(raw_model, str) else ""
         served_key = model_key(model)
         when = _epoch(record.get("timestamp"))
-        if main and model and model != _SYNTHETIC_MODEL:
+        if timeline is None and model and model != _SYNTHETIC_MODEL:
             self._note_main_model(served_key, when)
-        baseline_key = baseline_for(served_key, when)
+        baseline_key = baseline_for(served_key, when, self.models if timeline is None else timeline)
         costs = _response_costs(prices, served_key, baseline_key, tokens)
         if costs is None:
             if model not in self.unpriced:
@@ -362,7 +380,7 @@ class _FileTotals:
         prices: dict[str, ModelPrice],
         baseline_for: BaselineFor,
         *,
-        main: bool = False,
+        timeline: list[list[Any]] | None = None,
     ) -> _FileTotals:
         """Fold in complete lines appended since ``offset``; returns the updated totals."""
         try:
@@ -387,7 +405,7 @@ class _FileTotals:
                 record = json.loads(line)
             except ValueError:
                 continue
-            totals.add_response(record, prices, baseline_for, main=main)
+            totals.add_response(record, prices, baseline_for, timeline=timeline)
         return totals
 
 
@@ -538,8 +556,8 @@ def _compute_savings(
     if cached is None:
         return None
     prices, fingerprint = cached
-    # First-prompt routing prices everything against the model the session started on. Otherwise
-    # the baseline is whatever main model each response ran beside, so it isn't part of the key.
+    # First-prompt routing prices work against the model the session started on. Otherwise the
+    # baseline is whatever main model each response ran beside, so it isn't part of the key.
     start_key = model_key(start["id"]) if baseline_session_start else None
 
     key = [start_key, fingerprint]
@@ -551,10 +569,12 @@ def _compute_savings(
     rerouted = 0
     unpriced = False
 
-    def fold(path: Path, baseline_for: BaselineFor, *, main: bool) -> _FileTotals:
+    def fold(
+        path: Path, baseline_for: BaselineFor, *, timeline: list[list[Any]] | None
+    ) -> _FileTotals:
         nonlocal actual_total, baseline_total, rerouted, unpriced
         totals = _FileTotals.load(files.get(str(path))).consume(
-            path, prices, baseline_for, main=main
+            path, prices, baseline_for, timeline=timeline
         )
         files[str(path)] = totals.dump()
         actual_total += totals.actual
@@ -563,16 +583,15 @@ def _compute_savings(
         unpriced = unpriced or bool(totals.unpriced)
         return totals
 
-    main_baseline = _own_baseline if start_key is None else _frozen_baseline(start_key)
+    main_baseline: BaselineFor = _own_baseline
+    subagent_baseline = _timeline_baseline(model_key(current["id"]))
+    if start_key is not None:
+        main_baseline = _first_prompt_baseline(start_key, main_baseline)
+        subagent_baseline = _first_prompt_baseline(start_key, subagent_baseline)
     # The main transcript is read first so its model timeline covers the subagent responses.
-    main_totals = fold(main_path, main_baseline, main=True)
-    subagent_baseline = (
-        main_baseline
-        if start_key is not None
-        else _timeline_baseline(main_totals.models, model_key(current["id"]))
-    )
+    main_totals = fold(main_path, main_baseline, timeline=None)
     for path in subagent_paths:
-        fold(path, subagent_baseline, main=False)
+        fold(path, subagent_baseline, timeline=main_totals.models)
     state["files"] = files
     _write_state(state_path, state)
 
@@ -588,8 +607,9 @@ def _mod_usage_savings(
 
     ``usage_path`` holds the mod's tokens pre-aggregated per (agent, baseline, served); a malformed
     or baseline-less entry, like an unpriced one, voids the estimate rather than undercount it.
-    Under first-prompt routing the baseline is the session's start model, not each entry's. A file
-    that can't be read as the mod's format at all is an error, not an empty estimate.
+    Under first-prompt routing, entries from before the user changed the main model use the
+    session's start model as their baseline. A file that can't be read as the mod's format at all is
+    an error, not an empty estimate.
     """
     document = json.loads(usage_path.read_text(encoding="utf-8"))
     if not isinstance(document, dict) or document.get("version") != _MOD_USAGE_VERSION:
@@ -614,7 +634,9 @@ def _mod_usage_savings(
         if not isinstance(entry, dict):
             return None
         usage, served = entry.get("usage"), entry.get("served")
-        baseline = fixed_baseline if fixed_baseline is not None else entry.get("baseline")
+        baseline = entry.get("baseline")
+        if fixed_baseline is not None and entry.get("before_user_switch") is True:
+            baseline = fixed_baseline
         if not isinstance(usage, dict) or not isinstance(served, str) or not served:
             return None
         if not isinstance(baseline, str) or not baseline:

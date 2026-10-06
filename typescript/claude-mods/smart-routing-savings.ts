@@ -4,10 +4,12 @@ type On = Parameters<Register>[0]
 
 // The savings concern of ug's smart-routing UI mod (composed by register.ts).
 // It only collects: per turn request (main agent and subagents) it sums token
-// usage by (agent, baseline, served), where served is the model that answered and
-// baseline is what the request would have used without routing: the main model in
-// effect for a subagent, the model that answered for main (routing never changes
-// the main model mid-session; first-prompt routing is priced from start_model).
+// usage by (agent, baseline, served, before_user_switch), where served is the model
+// that answered and baseline is what the request would have used without routing:
+// the main model in effect for a subagent, the model that answered for main
+// (routing never changes the main model mid-session). First-prompt routing switches
+// the main model once, before the first request, so a later change is the user's;
+// requests before it are flagged, and priced from start_model under that routing.
 // Claude Code's side queries (title, compaction, helpers) are not turn steps, so
 // they never count. A hooks module has no Node APIs and the price table lives in
 // Python, so after each turn it writes the sums next to UCODE_SESSION_ENV_FILE,
@@ -30,7 +32,13 @@ const CACHE_SPLIT_KEYS = ['ephemeral_5m_input_tokens', 'ephemeral_1h_input_token
 type Totals = Record<(typeof TOKEN_KEYS)[number], number> & {
   cache_creation?: Partial<Record<(typeof CACHE_SPLIT_KEYS)[number], number>>
 }
-type Entry = { agent: string; baseline: string; served: string; usage: Totals }
+type Entry = {
+  agent: string
+  baseline: string
+  served: string
+  before_user_switch: boolean
+  usage: Totals
+}
 type Priced = { savings: string | null; plugin: string | null }
 
 // Module state is shared with smart-routing-status.ts through savingsSegments().
@@ -40,6 +48,11 @@ let startModel: string | null = null
 // The model the main loop last named, so a subagent's baseline is a real model id
 // ($.session.model() may return an alias).
 let lastMainModel: string | null = null
+// The model the main loop's first request named (first-prompt routing's pick).
+// Set once.
+let firstMainModel: string | null = null
+// Whether a main request has since named another model, which only the user does.
+let userSwitched = false
 let seeding: Promise<void> | undefined
 let pricer: string[] | null | undefined
 let priced: Priced = { savings: null, plugin: null }
@@ -89,14 +102,21 @@ async function mainModel($: any): Promise<string | null> {
   }
 }
 
-function accumulate(agent: string, baseline: string, served: string, usage: any): void {
-  const key = JSON.stringify([agent, baseline, served])
+function accumulate(
+  agent: string,
+  baseline: string,
+  served: string,
+  beforeUserSwitch: boolean,
+  usage: any,
+): void {
+  const key = JSON.stringify([agent, baseline, served, beforeUserSwitch])
   let entry = entries.get(key)
   if (!entry) {
     entry = {
       agent,
       baseline,
       served,
+      before_user_switch: beforeUserSwitch,
       usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
     }
     entries.set(key, entry)
@@ -125,12 +145,14 @@ async function loadUsage($: any): Promise<void> {
       const baseline = str(item?.baseline)
       const served = str(item?.served)
       if (agent && baseline && served && item.usage && typeof item.usage === 'object') {
-        accumulate(agent, baseline, served, item.usage)
+        accumulate(agent, baseline, served, item.before_user_switch === true, item.usage)
         dirty = true
       }
     }
     startModel ??= str(saved.start_model)
     lastMainModel ??= str(saved.main_model)
+    firstMainModel ??= str(saved.first_main_model)
+    userSwitched ||= saved.user_switched === true
   } catch {}
 }
 
@@ -168,6 +190,8 @@ async function writeAndPrice($: any): Promise<void> {
         version: 1,
         start_model: startModel,
         main_model: lastMainModel,
+        first_main_model: firstMainModel,
+        user_switched: userSwitched,
         entries: Array.from(entries.values()),
       }),
     )
@@ -233,9 +257,14 @@ export const registerSavings = (on: On): void => {
     const enabled = await enable($)
     let baseline: string | null = null
     if (enabled) {
-      if (agent === null) lastMainModel = str(request.model) ?? lastMainModel
-      else baseline = lastMainModel ?? (await mainModel($))
+      if (agent === null) {
+        lastMainModel = str(request.model) ?? lastMainModel
+        firstMainModel ??= lastMainModel
+        userSwitched ||= lastMainModel !== firstMainModel
+      } else baseline = lastMainModel ?? (await mainModel($))
     }
+    // Read before the request runs: a concurrent main request may switch it.
+    const beforeUserSwitch = !userSwitched
     const result = yield* next(e)
     try {
       const usage = (result as any)?.usage
@@ -243,7 +272,7 @@ export const registerSavings = (on: On): void => {
       // Main's own baseline is what answered it: routing leaves the main model alone.
       const base = agent === null ? served : baseline
       if (enabled && usage && served && base) {
-        accumulate(agent ?? 'main', base, served, usage)
+        accumulate(agent ?? 'main', base, served, beforeUserSwitch, usage)
         dirty = true
       }
     } catch {}
