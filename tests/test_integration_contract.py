@@ -54,6 +54,17 @@ def test_managed_integration_ci_is_blocking():
     ) in gate
 
 
+def test_dedicated_cuj_ci_discovers_the_whole_folder():
+    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
+    job = workflow.split("\n  dedicated-cuj:\n", 1)[1].split("\n  cujs:\n", 1)[0]
+    gate = workflow.split("\n  cujs:\n", 1)[1]
+
+    assert "pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj" in job
+    assert "find tests/e2e_cuj -name 'test_*.py'" in job
+    assert "test_cuj_" not in job
+    assert 'required.append("dedicated-cuj")' in gate
+
+
 def test_windows_integration_ci_uses_shared_claude_version():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     contents = workflow.read_text()
@@ -71,7 +82,14 @@ def test_integration_ci_gate_requires_selected_managed_jobs(suite, managed_resul
     assert script is not None
     results = {
         job: {"result": "success"}
-        for job in ("installation", "workspace", "smoke", "full", "managed")
+        for job in (
+            "installation",
+            "workspace",
+            "smoke",
+            "full",
+            "managed",
+            "dedicated-cuj",
+        )
     }
     results["managed"]["result"] = managed_result
     for job in {
