@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from tests.e2e_cuj.helpers import session as session_module
+from tests.e2e_cuj.helpers import constants as constants_module
 from tests.e2e_cuj.helpers.session import UserSession
 from tests.integration.utils.harness import UserSession as IntegrationSession
 
@@ -56,7 +56,7 @@ def test_cuj_session_configures_noninteractively(tmp_path, monkeypatch):
         assert timeout == 240
 
     monkeypatch.setattr(session, "run", configure)
-    monkeypatch.setattr(session_module, "MANAGED_PATHS", ())
+    monkeypatch.setattr(constants_module, "MANAGED_PATHS", ())
 
     session.configure(["configure", "--workspace", "http://127.0.0.1:12345"])
 

@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from databricks.sdk.errors import DatabricksError
 
-from .helpers.constants import CLAUDE, CODEX
-from .helpers.session import MANAGED_PATHS, UserSession
+from .helpers.constants import CLAUDE, CODEX, MANAGED_PATHS
+from .helpers.session import UserSession
 from .helpers.tui_request_recorder import TuiRequestRecorder
 from .helpers.workspace import Workspace
 

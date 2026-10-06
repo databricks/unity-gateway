@@ -1,9 +1,10 @@
 """CUJ authentication and cleanup on the existing integration session."""
 
 import re
-from pathlib import Path
 
 from tests.integration.utils.harness import UserSession as IntegrationSession
+
+from . import constants
 
 try:
     from tests.integration.utils.terminal import TerminalProcess
@@ -11,13 +12,6 @@ except ModuleNotFoundError as error:
     if error.name not in {"pexpect", "pyte"}:
         raise
     TerminalProcess = None
-
-MANAGED_PATHS = (
-    Path("/etc/claude-code/managed-settings.json"),
-    Path("/etc/codex/managed_config.toml"),
-    Path("/etc/codex/requirements.toml"),
-    Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
-)
 
 
 class UserSession(IntegrationSession):
@@ -40,13 +34,13 @@ class UserSession(IntegrationSession):
     def configure(self, args):
         """Configure without a PTY so CI uses isolated user-local settings."""
         self.run(*args, timeout=240)
-        assert not any(path.exists() for path in MANAGED_PATHS), (
+        assert not any(path.exists() for path in constants.MANAGED_PATHS), (
             "Non-interactive CUJ configure unexpectedly created machine-wide settings"
         )
 
     def cleanup(self):
         if (self.home / ".ucode").exists():
             self.command("cleanup-revert", ["revert"])
-        assert not any(path.exists() for path in MANAGED_PATHS), (
+        assert not any(path.exists() for path in constants.MANAGED_PATHS), (
             "ug revert left machine-wide settings; disposable runner must not be reused"
         )
