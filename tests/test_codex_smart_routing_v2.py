@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -140,6 +141,7 @@ class TestLaunchCodex:
     def test_codex_launch_normalizes_cached_bootstrap_model(self, monkeypatch):
         calls = []
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
         monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: None)
 
@@ -183,6 +185,7 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
         monkeypatch.setattr(codex, "agent_version", lambda _: "0.145.0")
+        monkeypatch.setattr(codex, "custom_catalog_models", lambda: None)
         if custom_home:
             monkeypatch.setenv("CODEX_HOME", str(config_home))
             monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", tmp_path / "unused.config.toml")
@@ -203,13 +206,19 @@ class TestLaunchCodex:
                 assert path.read_text() == content
         assert codex._smart_routing_config_model({"codex_default_model": "admin"}) == "admin"
 
-    def test_owns_app_server_interposer_and_tui_lifecycle(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("platform_name", "tui_has_provider"), [("posix", False), ("nt", True)]
+    )
+    def test_owns_app_server_interposer_and_tui_lifecycle(
+        self, monkeypatch, platform_name, tui_has_provider
+    ):
         processes = []
         interposer_args = {}
         stopped = []
         token_calls = []
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
+        monkeypatch.setattr(v2, "os", SimpleNamespace(name=platform_name, environ=os.environ))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
 
@@ -283,20 +292,44 @@ class TestLaunchCodex:
         assert "--profile myprof" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override
         assert "--model system.ai.glm-5-2" in hook_override
-        assert processes[0].argv[10:] == [
+        assert processes[0].argv[10:12] == [
+            "--config",
+            (
+                "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
+                f'"{os.environ["UCODE_SESSION_ENV_FILE"]}"'
+            ),
+        ]
+        assert processes[0].argv[12:14] == [
+            "--config",
+            "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
+            + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"]),
+        ]
+        assert processes[0].argv[14:] == [
             "--listen",
             "ws://127.0.0.1:41001",
         ]
         assert processes[0].kwargs["env"][v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
         assert processes[0].kwargs["env"]["CODEX_HOME"] == "/user/codex-home"
-        assert processes[1].argv == [
-            "codex",
+        tui_argv = processes[1].argv
+        expected_tui_args = [
             "--remote",
             "ws://127.0.0.1:41002",
             "--model",
             "gpt-start",
             "--search",
         ]
+        if tui_has_provider:
+            assert tui_argv[:4] == [
+                "codex",
+                "--config",
+                'model_provider="Databricks"',
+                "--config",
+            ]
+            assert tui_argv[4] == processes[0].argv[7]
+            assert tui_argv[5:] == expected_tui_args
+        else:
+            assert tui_argv == ["codex", *expected_tui_args]
+        assert not any(arg.startswith("hooks.") for arg in tui_argv)
         assert interposer_args["args"] == (v2.LOOPBACK_HOST, "ws://127.0.0.1:41001")
         assert interposer_args["kwargs"]["available_models"] == [
             "system.ai.gpt-5-6-sol",
@@ -404,6 +437,14 @@ class TestLaunchCodex:
         hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
         assert "codex-router-hook route-subagent" in hook_override
         assert "--model system.ai.gpt-5-6-sol" in hook_override
+        assert (
+            "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
+            f'"{os.environ["UCODE_SESSION_ENV_FILE"]}"'
+        ) in argv
+        assert (
+            "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
+            + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"])
+        ) in argv
         # The hook subprocesses inherit the launch environment and pass the routing gate.
         assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
         assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"

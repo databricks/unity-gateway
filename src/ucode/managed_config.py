@@ -37,6 +37,7 @@ from ucode.databricks import (
     fetch_model_recommendation,
     get_databricks_token,
 )
+from ucode.time_utils import parse_update_time
 from ucode.ui import console, print_warning
 
 MANAGED_CONFIG_PATH = config_io.APP_DIR / "managed-config.json"
@@ -213,16 +214,16 @@ class NamesOrLocation:
 
 
 @dataclass(frozen=True)
-class SpendTier:
-    """One budget tier."""
+class SmartDefaultTier:
+    """One spend-based smart-default tier."""
 
     spending_percentage: float
     recommended_agent: str | None = None
     recommended_model: str | None = None
 
     @classmethod
-    def from_wire(cls, tier: object) -> SpendTier | None:
-        """Parse wire format spend tier."""
+    def from_wire(cls, tier: object) -> SmartDefaultTier | None:
+        """Parse a wire-format smart-default tier."""
         tier_dict = _as_dict(tier)
         pct = tier_dict.get("spending_percentage")
         if not isinstance(pct, (int, float)) or isinstance(pct, bool):
@@ -244,26 +245,26 @@ class SpendTier:
 
 
 @dataclass(frozen=True)
-class SpendTiers:
-    """Spend-based routing tiers (the wire ``spend_tiers`` / proto ``SpendTiers``)."""
+class SmartDefaults:
+    """Spend-based smart defaults (the wire ``smart_defaults`` / proto ``SmartDefaults``)."""
 
     budget_id: str | None = None
-    tiers: list[SpendTier] | None = None
+    tiers: list[SmartDefaultTier] | None = None
 
     @classmethod
-    def from_wire(cls, value: object) -> SpendTiers | None:
-        """Parse the wire ``spend_tiers``."""
-        spend_tiers = _as_dict(value)
-        if not spend_tiers:
+    def from_wire(cls, value: object) -> SmartDefaults | None:
+        """Parse the wire ``smart_defaults`` (or a legacy value supplied by the caller)."""
+        smart_defaults = _as_dict(value)
+        if not smart_defaults:
             return None
 
-        budget_id = _str(spend_tiers.get("budget_id"))
+        budget_id = _str(smart_defaults.get("budget_id"))
 
-        raw_tiers = spend_tiers.get("tiers")
+        raw_tiers = smart_defaults.get("tiers")
         tiers_list = [
             tier
             for raw in (raw_tiers if isinstance(raw_tiers, list) else [])
-            if (tier := SpendTier.from_wire(raw)) is not None
+            if (tier := SmartDefaultTier.from_wire(raw)) is not None
         ]
 
         if not (budget_id or tiers_list):
@@ -290,7 +291,7 @@ class CodingAgentConfig:
     enabled_agents: dict[str, AgentConfig] | None = None
     mcp_servers: NamesOrLocation | None = None
     skills: NamesOrLocation | None = None
-    spend_tiers: SpendTiers | None = None
+    smart_defaults: SmartDefaults | None = None
 
     @classmethod
     def from_wire(cls, raw: object) -> CodingAgentConfig:
@@ -314,7 +315,11 @@ class CodingAgentConfig:
         mcp_servers = NamesOrLocation.from_wire(raw_dict.get("mcp_servers"))
         skills = NamesOrLocation.from_wire(raw_dict.get("skills"))
 
-        spend_tiers = SpendTiers.from_wire(raw_dict.get("spend_tiers"))
+        # ``smart_defaults`` is the current wire key. A config read or cached by an older ug may
+        # still carry ``spend_tiers``; use it only when the current key is absent, so an explicit
+        # empty/null current value cannot resurrect the old policy.
+        smart_defaults_value = raw_dict.get("smart_defaults", raw_dict.get("spend_tiers"))
+        smart_defaults = SmartDefaults.from_wire(smart_defaults_value)
 
         return cls(
             name=name,
@@ -323,7 +328,7 @@ class CodingAgentConfig:
             enabled_agents=enabled_agents_dict or None,
             mcp_servers=mcp_servers,
             skills=skills,
-            spend_tiers=spend_tiers,
+            smart_defaults=smart_defaults,
         )
 
     def to_internal(self) -> dict:
@@ -352,10 +357,10 @@ class CodingAgentConfig:
             if skills_internal:
                 result["skills"] = skills_internal
 
-        if self.spend_tiers:
-            spend_tiers_internal = self.spend_tiers.to_internal()
-            if spend_tiers_internal:
-                result["spend_tiers"] = spend_tiers_internal
+        if self.smart_defaults:
+            smart_defaults_internal = self.smart_defaults.to_internal()
+            if smart_defaults_internal:
+                result["smart_defaults"] = smart_defaults_internal
 
         return result
 
@@ -447,20 +452,6 @@ def managed_update_time(managed: dict | None) -> str | None:
     return _str(_as_dict(managed).get("update_time"))
 
 
-def _parse_update_time(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    # An offset-less timestamp (e.g. a stub value) parses tz-naive; pin it to UTC so it can be
-    # compared against the tz-aware persisted watermark without raising.
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt
-
-
 def managed_config_is_newer(fetched: dict | None, applied_update_time: str | None) -> bool:
     """True when ``fetched`` is a newer version than the last one applied locally.
 
@@ -468,8 +459,8 @@ def managed_config_is_newer(fetched: dict | None, applied_update_time: str | Non
     re-applies it rather than trusting possibly-stale local settings; no previously-applied watermark
     also counts as newer (the first apply).
     """
-    fetched_ut = _parse_update_time(managed_update_time(fetched))
-    applied_ut = _parse_update_time(applied_update_time)
+    fetched_ut = parse_update_time(managed_update_time(fetched))
+    applied_ut = parse_update_time(applied_update_time)
     if fetched_ut is None or applied_ut is None:
         return True
     return fetched_ut > applied_ut
@@ -731,7 +722,7 @@ def _cached_result_if_fresh(workspace: str) -> ManagedConfigResult | None:
     if data.get("workspace") != workspace:
         return None
     # Reuses the RFC-3339 parser the update-time watermark uses; None (missing/unparseable) is stale.
-    retrieved_at = _parse_update_time(_str(data.get("retrieved_at")))
+    retrieved_at = parse_update_time(_str(data.get("retrieved_at")))
     if retrieved_at is None:
         return None
     age = _utcnow() - retrieved_at

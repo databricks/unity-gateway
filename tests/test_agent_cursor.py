@@ -140,3 +140,19 @@ class TestLaunch:
         cursor.launch({"workspace": WS}, ["--resume"])
 
         assert execs == [["cursor-agent", "--resume"]]
+
+
+class TestWriteUserMcpServers:
+    def test_batched_add_remove_preserves_user_entries(self, tmp_path, monkeypatch):
+        path = tmp_path / "mcp.json"
+        path.write_text(json.dumps({"mcpServers": {"mine": {"command": "z"}, "gone": {}}}))
+        monkeypatch.setattr(cursor, "CURSOR_MCP_CONFIG_PATH", path)
+
+        cursor.write_user_mcp_servers(
+            {"svc": cursor.build_mcp_server_entry(["ug", "mcp-proxy", "u"])}, {"gone"}
+        )
+
+        servers = json.loads(path.read_text())["mcpServers"]
+        assert servers["mine"] == {"command": "z"}  # user's own kept
+        assert "gone" not in servers
+        assert servers["svc"] == {"command": "ug", "args": ["mcp-proxy", "u"]}

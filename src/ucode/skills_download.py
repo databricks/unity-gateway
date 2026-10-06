@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import questionary
@@ -21,14 +27,18 @@ from ucode.skills_api import (
 )
 from ucode.skills_state import (
     SkillInstall,
+    forget,
+    last_update_check,
     list_downloaded,
     record_downloads,
     records_for_fqns,
     records_for_schema,
     records_for_scope,
     remove_downloads,
+    set_last_update_check,
 )
 from ucode.state import load_state
+from ucode.time_utils import parse_update_time
 from ucode.ui import (
     console,
     picker_style,
@@ -45,6 +55,11 @@ SKILL_BASE_DIR_NAMES = (".claude/skills", ".agents/skills")
 
 # Parallel skill fetches per schema; writes stay sequential (they prompt).
 _MAX_FETCH_WORKERS = 8
+
+# The launch-time refresh runs at most once per interval and gives up after the budget, so a slow
+# Unity Catalog can't hold up a launch for long.
+SKILL_UPDATE_CHECK_INTERVAL = timedelta(hours=24)
+SKILL_UPDATE_BUDGET_SECONDS = 60.0
 
 
 # --- On-disk writer --------------------------------------------------------
@@ -115,13 +130,23 @@ def should_download_skill(roots: list[Path], ref: SkillRef) -> bool:
 
 
 def write_skill(roots: list[Path], ref: SkillRef, files: dict[str, bytes]) -> None:
-    """Write ``ref``'s bundle (``{relpath: bytes}``) into every root.
+    """Write ``ref``'s bundle (``{relpath: bytes}``) into every root, replacing any existing copy.
 
-    The directory is named for the bundle, so it matches the ``name:`` an agent
-    reads from the written SKILL.md.
+    The directory is named for the bundle, so it matches the ``name:`` an agent reads from the
+    written SKILL.md. Each root is cleared before it is rewritten, so a file removed upstream does
+    not linger. A write interrupted partway leaves only that one directory incomplete, never a
+    stray copy elsewhere; the next write clears and rebuilds it, so a retry always converges on
+    the current bundle.
     """
+    if not files:
+        return
     for root in roots:
-        _write_bundle(root / ref.bundle_name, ref.bundle_name, files)
+        skill_dir = root / ref.bundle_name
+        if skill_dir.is_symlink():
+            skill_dir.unlink()
+        elif skill_dir.is_dir():
+            shutil.rmtree(skill_dir)
+        _write_bundle(skill_dir, ref.bundle_name, files)
 
 
 def _skill_installs(
@@ -163,30 +188,33 @@ def _skill_installs(
 
 
 def _fetch_bundles(
-    workspace: str, token: str, refs: list[SkillRef], *, label: str
+    workspace: str, token: str, refs: list[SkillRef], *, label: str, deadline: float | None = None
 ) -> dict[str, tuple[dict[str, bytes] | None, str | None]]:
     """Fetch every skill's bundle concurrently, keyed by FQN.
 
     Renders a ``k/n`` progress bar labeled ``label`` that advances as each fetch
     completes. Keying on the FQN keeps a cross-schema batch's securables apart,
-    since a securable name is unique only within its own schema.
+    since a securable name is unique only within its own schema. Stops waiting once
+    ``deadline`` (a ``time.monotonic()`` value) passes, leaving out skills still in flight.
     """
     if not refs:
         return {}
     results: dict[str, tuple[dict[str, bytes] | None, str | None]] = {}
-    with (
-        progress_bar(label, len(refs)) as advance,
-        ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(refs))) as pool,
-    ):
-        futures = {
-            pool.submit(
-                fetch_skill_bundle, workspace, token, ref.catalog, ref.schema, ref.securable_name
-            ): ref.fqn
-            for ref in refs
-        }
-        for future in as_completed(futures):
-            results[futures[future]] = future.result()
-            advance()
+    timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+    pool = ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(refs)))
+    futures = {
+        pool.submit(
+            fetch_skill_bundle, workspace, token, ref.catalog, ref.schema, ref.securable_name
+        ): ref.fqn
+        for ref in refs
+    }
+    try:
+        with progress_bar(label, len(refs)) as advance, suppress(TimeoutError):
+            for future in as_completed(futures, timeout=timeout):
+                results[futures[future]] = future.result()
+                advance()
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     return results
 
 
@@ -214,6 +242,38 @@ def _reject_bundle_name_collisions(refs: list[SkillRef]) -> list[SkillRef]:
     return kept
 
 
+def _fetch_bundles_and_write(
+    workspace: str,
+    token: str,
+    refs: list[SkillRef],
+    roots: list[Path],
+    *,
+    label: str,
+    deadline: float | None = None,
+) -> list[SkillRef]:
+    """Fetch each ref's bundle concurrently, write it into ``roots``, and return those that
+    reached disk. A per-skill fetch failure or disk error warns and skips only that skill;
+    one still fetching at ``deadline`` is skipped silently."""
+    if not refs:
+        return []
+    bundles = _fetch_bundles(workspace, token, refs, label=label, deadline=deadline)
+    written: list[SkillRef] = []
+    for ref in refs:
+        if ref.fqn not in bundles:
+            continue
+        files, reason = bundles[ref.fqn]
+        if reason or files is None:
+            print_warning(f"Skipping `{ref.fqn}`: {reason}.")
+            continue
+        try:
+            write_skill(roots, ref, files)
+        except OSError as exc:
+            print_warning(f"Skipping `{ref.fqn}`: {exc}.")
+            continue
+        written.append(ref)
+    return written
+
+
 def _download_refs(
     workspace: str, token: str, refs: list[SkillRef], roots: list[Path], *, label: str
 ) -> tuple[list[SkillRef], int]:
@@ -222,22 +282,13 @@ def _download_refs(
     The shared download core: drop siblings claiming one directory
     (``_reject_bundle_name_collisions``), prompt before overwriting a skill already
     on disk (``should_download_skill``, so a declined skill is never fetched), then
-    fetch the survivors' bundles concurrently and write them. ``written`` are the
-    refs that reached disk, so a caller can record their attribution; ``total`` is
-    the count that could reach disk (dropped siblings excluded), so a caller's
-    summary denominator is right. A per-skill fetch failure warns and skips it.
+    fetch and write the survivors. ``written`` are the refs that reached disk, so a
+    caller can record their attribution; ``total`` is the count that could reach disk
+    (dropped siblings excluded), so a caller's summary denominator is right.
     """
     refs = _reject_bundle_name_collisions(refs)
     to_download = [ref for ref in refs if should_download_skill(roots, ref)]
-    bundles = _fetch_bundles(workspace, token, to_download, label=label)
-    written: list[SkillRef] = []
-    for ref in to_download:
-        files, reason = bundles[ref.fqn]
-        if reason or files is None:
-            print_warning(f"Skipping `{ref.fqn}`: {reason}.")
-            continue
-        write_skill(roots, ref, files)
-        written.append(ref)
+    written = _fetch_bundles_and_write(workspace, token, to_download, roots, label=label)
     console.print()
     return written, len(refs)
 
@@ -391,25 +442,159 @@ def reconcile_managed_skills(managed: dict) -> tuple[list[str], list[str]]:
             removed = [str(r["bundle_name"]) for r in stale if r.get("bundle_name")]
 
     missing = [ref for ref in refs if not existing_skill_on_disk(roots, ref.bundle_name)]
-    written: list[str] = []
-    if missing:
-        bundles = _fetch_bundles(workspace, token, missing, label="Fetching workspace skills")
-        installed: list[SkillRef] = []
-        for ref in missing:
-            files, reason = bundles[ref.fqn]
-            if reason or files is None:
-                print_warning(f"Skipping `{ref.fqn}`: {reason}.")
-                continue
-            try:
-                write_skill(roots, ref, files)
-            except OSError as exc:
-                # Best-effort per skill: a disk failure on one must not strand the rest.
-                print_warning(f"Skipping `{ref.fqn}`: {exc}.")
-                continue
-            installed.append(ref)
-            written.append(ref.bundle_name)
-        record_downloads(_skill_installs(installed, roots, None, workspace, scope="managed"))
-    return written, removed
+    installed = _fetch_bundles_and_write(
+        workspace, token, missing, roots, label="Fetching workspace skills"
+    )
+    record_downloads(_skill_installs(installed, roots, None, workspace, scope="managed"))
+    return [ref.bundle_name for ref in installed], removed
+
+
+# --- Launch-time refresh ---------------------------------------------------
+
+
+def _eligible_launch_refresh_records(records: list[dict], workspace: str) -> list[dict]:
+    """The current workspace's own (non-managed) downloads, which a launch may refresh.
+
+    Managed skills are left to ``ug configure``, other workspaces' downloads are skipped
+    because the launch token authenticates only this workspace, and a record without an
+    ``fqn`` or ``base`` can't be refreshed.
+    """
+    return [
+        record
+        for record in records
+        if record.get("scope") != "managed"
+        and record.get("workspace") == workspace
+        and record.get("fqn")
+        and record.get("base")
+    ]
+
+
+def _refs_needing_refresh(
+    workspace: str, token: str, records: list[dict], deadline: float
+) -> list[tuple[dict, SkillRef]]:
+    """Pair each record to re-download with its current skill: one whose UC source is newer than
+    its download, or one whose on-disk copy is only partly present and needs restoring to mirror UC.
+
+    Resolves every record concurrently; one that no longer resolves (deleted, unfinalized,
+    unauthorized) is skipped, leaving its on-disk copy alone. Times are parsed before comparing
+    so the two RFC-3339 forms UC emits sort chronologically. A record with no parseable recorded
+    ``uc_update_time`` predates attribution, so it is refreshed once to backfill the field.
+    Stops waiting once ``deadline`` (a ``time.monotonic()`` value) passes, acting on whatever
+    resolved in time; unresolved records keep their on-disk copy and are retried next sweep.
+    """
+    if not records:
+        return []
+    pairs: list[tuple[dict, SkillRef]] = []
+    pool = ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(records)))
+    try:
+        futures = {pool.submit(get_skill, workspace, token, r["fqn"]): r for r in records}
+        try:
+            for future in as_completed(futures, timeout=max(0.0, deadline - time.monotonic())):
+                ref = future.result()
+                if ref is None:
+                    continue
+                record = futures[future]
+                stored = parse_update_time(record.get("uc_update_time"))
+                current = parse_update_time(ref.uc_update_time)
+                is_newer = stored is None or (current is not None and current > stored)
+                if is_newer or _record_dirs_missing(record):
+                    pairs.append((record, ref))
+        except TimeoutError:
+            pass  # out of budget: act on whatever resolved in time
+    finally:
+        # Reads are safe to abandon; don't block the launch on in-flight calls.
+        pool.shutdown(wait=False, cancel_futures=True)
+    return pairs
+
+
+def _reject_renames_onto_existing_skills(
+    pairs: list[tuple[dict, SkillRef]], roots: list[Path]
+) -> list[SkillRef]:
+    """The refs in ``pairs``, minus any whose bundle name changed to one already on disk.
+
+    A renamed skill is written under its new name, which may already hold a skill the user wrote
+    or another download, so skip it with a warning instead of silently replacing that skill.
+    """
+    kept: list[SkillRef] = []
+    for record, ref in pairs:
+        if ref.bundle_name != record.get("bundle_name") and existing_skill_on_disk(
+            roots, ref.bundle_name
+        ):
+            print_warning(
+                f"Skipping update of `{ref.fqn}`: it was renamed to `{ref.bundle_name}`, which "
+                "another skill already uses. Re-add it with `ug skills add` to choose which to keep."
+            )
+            continue
+        kept.append(ref)
+    return kept
+
+
+def _update_stale_skills(
+    workspace: str, token: str, pairs: list[tuple[dict, SkillRef]], deadline: float
+) -> int:
+    """Re-download each stale skill into its own base and refresh its manifest record.
+
+    Overwrites in place with no prompt, since the developer already chose to download these,
+    but never replaces a different skill: one renamed onto a name already on disk, or onto the
+    same new name as another update, is skipped. Returns how many skills were rewritten.
+    Stops fetching once ``deadline`` passes; a skill is only ever fully written or left
+    untouched, never interrupted mid-write.
+    """
+    home = os.path.normpath(str(Path.home()))
+    pairs_by_base: dict[str, list[tuple[dict, SkillRef]]] = {}
+    for record, ref in pairs:
+        pairs_by_base.setdefault(os.path.normpath(record["base"]), []).append((record, ref))
+
+    updated = 0
+    for base, base_pairs in pairs_by_base.items():
+        if time.monotonic() >= deadline:
+            break
+        path = None if base == home else base
+        roots = skill_dir_roots(path)
+        refs = _reject_bundle_name_collisions(
+            _reject_renames_onto_existing_skills(base_pairs, roots)
+        )
+        written = _fetch_bundles_and_write(
+            workspace, token, refs, roots, label="Updating skills", deadline=deadline
+        )
+        record_downloads(_skill_installs(written, roots, path, workspace))
+        updated += len(written)
+    return updated
+
+
+def refresh_downloaded_skills_on_launch(state: dict) -> None:
+    """Update downloaded skills whose UC source changed, before an agent launches.
+
+    Rate-limited to once per ``SKILL_UPDATE_CHECK_INTERVAL`` via the manifest's
+    ``last_update_check`` stamp, so back-to-back launches make no network calls. A record whose
+    directories the user deleted entirely is forgotten; one only partly deleted is re-downloaded
+    to restore the mirror. Best-effort: any failure is reported and the launch proceeds on
+    whatever is already on disk. The whole sweep is bounded to ``SKILL_UPDATE_BUDGET_SECONDS``;
+    when it runs out, checks/updates done so far stand and the rest wait for the next sweep.
+    """
+    try:
+        now = datetime.now(UTC)
+        last = last_update_check()
+        if last is not None and now - last < SKILL_UPDATE_CHECK_INTERVAL:
+            return
+        workspace = state.get("workspace")
+        if not workspace:
+            return
+        set_last_update_check(now)
+        deleted, present = [], []
+        for record in _eligible_launch_refresh_records(list_downloaded(), workspace):
+            (deleted if _record_dirs_all_missing(record) else present).append(record)
+        forget(deleted)
+        if present:
+            print_note("Checking Unity Catalog for downloaded skill updates...")
+            token = get_databricks_token(workspace, state.get("profile"))
+            deadline = time.monotonic() + SKILL_UPDATE_BUDGET_SECONDS
+            pairs = _refs_needing_refresh(workspace, token, present, deadline)
+            updated = _update_stale_skills(workspace, token, pairs, deadline)
+            if updated:
+                print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
+    except Exception as exc:  # noqa: BLE001 - a skill refresh must never block a launch
+        print_note(f"Skipped checking for skill updates: {exc}")
 
 
 def configure_location_skills_download_command(locations: list[str], *, path: str | None) -> int:
@@ -463,14 +648,18 @@ def _skill_download_choice(ref: SkillRef, roots: list[Path]) -> questionary.Choi
 
 def _skills_download_background_loader(
     workspace: str, token: str, roots: list[Path]
-) -> Callable[[Callable[[list[questionary.Choice]], None]], str | None]:
+) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], str | None]:
     """A picker ``background_loader`` that streams the workspace-wide skill walk in as choices."""
 
-    def loader(append: Callable[[list[questionary.Choice]], None]) -> str | None:
+    def loader(
+        append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
+    ) -> str | None:
         def on_skills(refs: list[SkillRef]) -> None:
             append([_skill_download_choice(ref, roots) for ref in refs])
 
-        found, reason = list_all_skills(workspace, token, on_skills=on_skills)
+        found, reason = list_all_skills(
+            workspace, token, on_skills=on_skills, cancel_event=cancel_event
+        )
         if reason == _SKILLS_WALK_TIMEOUT_REASON:
             return f"⚠ Timed out after {int(_SKILLS_WALK_DEADLINE_SECONDS)}s, found {len(found)} skills"
         return None
@@ -480,7 +669,9 @@ def _skills_download_background_loader(
 
 def prompt_for_skill_download_choices(
     roots: list[Path],
-    background_loader: Callable[[Callable[[list[questionary.Choice]], None]], str | None],
+    background_loader: Callable[
+        [Callable[[list[questionary.Choice]], None], threading.Event], str | None
+    ],
 ) -> list[str] | None:
     """Show the skill-download picker, returning the selected FQNs or None on Ctrl-C."""
     selection = scrolling_checkbox(
@@ -524,6 +715,12 @@ def configure_skills_download_picker_command(path: str | None = None) -> int:
 def _record_dirs_missing(record: dict) -> bool:
     """Whether any of a record's on-disk directories no longer exists."""
     return any(not Path(directory).exists() for directory in record.get("dirs") or [])
+
+
+def _record_dirs_all_missing(record: dict) -> bool:
+    """Whether every one of a record's on-disk directories no longer exists."""
+    dirs = record.get("dirs") or []
+    return bool(dirs) and all(not Path(directory).exists() for directory in dirs)
 
 
 def _download_label(record: dict) -> str:

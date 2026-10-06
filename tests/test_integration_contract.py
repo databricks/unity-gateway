@@ -1,7 +1,11 @@
 """Keep the black-box suite independent of application internals and test doubles."""
 
 import ast
+import json
 import re
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -35,6 +39,75 @@ def test_integration_ci_pins_a_skills_capable_databricks_cli():
         version = re.search(r"(?m)^          version: (\d+)\.(\d+)\.(\d+)\s*$", block)
         assert version, "Every integration setup-cli step must pin an exact CLI version"
         assert tuple(map(int, version.groups())) >= SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
+
+
+def test_managed_integration_ci_is_blocking():
+    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+    managed, gate = workflow.read_text().split("\n  managed:\n", 1)[1].split("\n  cujs:\n", 1)
+    assert "continue-on-error:" not in managed
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", gate)
+    assert needs is not None
+    assert "managed" in {job.strip() for job in needs.group(1).split(",")}
+    assert (
+        "if: ${{ always() && (github.event_name != 'pull_request' || "
+        "github.event.pull_request.head.repo.full_name == github.repository) }}"
+    ) in gate
+
+
+def test_dedicated_cuj_ci_discovers_the_whole_folder():
+    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
+    job = workflow.split("\n  dedicated-cuj:\n", 1)[1].split("\n  cujs:\n", 1)[0]
+    gate = workflow.split("\n  cujs:\n", 1)[1]
+
+    assert "docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0" in job
+    assert "pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj" in job
+    assert "find tests/e2e_cuj -name 'test_*.py'" in job
+    assert "test_cuj_" not in job
+    assert 'result["result"] != "success"' in gate
+
+
+def test_windows_integration_ci_uses_shared_claude_version():
+    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+    contents = workflow.read_text()
+
+    assert "  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.280' }}" in contents
+    assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
+
+
+@pytest.mark.parametrize(
+    "failed_job", ["installation", "workspace", "smoke", "full", "managed", "dedicated-cuj"]
+)
+@pytest.mark.parametrize("job_result", ["success", "failure", "cancelled", "skipped"])
+def test_integration_ci_gate_requires_every_job(failed_job, job_result):
+    workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
+    gate = workflow.read_text().split("\n  cujs:\n", 1)[1]
+    script = re.search(r"          python3 - <<'PY'\n(.*?)          PY", gate, re.DOTALL)
+    assert script is not None
+    results = {
+        job: {"result": "success"}
+        for job in (
+            "installation",
+            "workspace",
+            "smoke",
+            "full",
+            "managed",
+            "dedicated-cuj",
+        )
+    }
+    results[failed_job]["result"] = job_result
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script.group(1))],
+        env={"RESULTS": json.dumps(results)},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if job_result == "success":
+        assert result.returncode == 0, result.stderr
+        assert "All integration jobs passed:" in result.stdout
+    else:
+        assert result.returncode != 0
+        assert f"Integration jobs did not pass: {failed_job}" in result.stderr
 
 
 def test_integration_suite_uses_only_public_process_boundaries():
@@ -88,7 +161,7 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed", "workspace_switch"}:
-                    assert len(marks & {"claude", "codex"}) == 1, node.name
+                    assert len(marks & {"claude", "codex", "opencode"}) == 1, node.name
 
 
 def test_model_discovery_cases_match_current_launch_contract():

@@ -22,6 +22,7 @@ from ucode.agents import (
 )
 from ucode.databricks import (
     MIN_DATABRICKS_CLI_VERSION,
+    databricks_cli_installed,
     databricks_cli_version,
     has_valid_databricks_auth,
     install_databricks_cli,
@@ -107,11 +108,11 @@ def _install_databricks() -> bool:
         install_databricks_cli()
     except RuntimeError:
         return False
-    return shutil.which("databricks") is not None
+    return databricks_cli_installed()
 
 
 def _check_databricks_cli() -> Check:
-    if not shutil.which("databricks"):
+    if not databricks_cli_installed():
         return Check(
             "Databricks CLI",
             "error",
@@ -233,10 +234,10 @@ def _check_anthropic_env_collision() -> Check | None:
     )
 
 
-def _check_ucode() -> Check:
+def _check_ug() -> Check:
     """Report the installed build. Explicit updates are available via `ug upgrade`."""
     version = ug_version()
-    return Check("ucode", "info", f"v{version} (installed from GitHub)")
+    return Check("ug", "info", f"v{version} (installed from GitHub)")
 
 
 # ── orchestration ──────────────────────────────────────────────────────────
@@ -249,13 +250,13 @@ def _gather_checks() -> list[Check]:
     optional = [_check_databricks_auth(), _check_anthropic_env_collision()]
     checks.extend(c for c in optional if c is not None)
     checks.extend(_check_agent_clis())
-    checks.append(_check_ucode())
+    checks.append(_check_ug())
     return checks
 
 
 def doctor() -> int:
     """Run every check, print its status, and prompt to apply any offered fix."""
-    console.print(heading("ucode doctor"))
+    console.print(heading("ug doctor"))
     console.print()
 
     checks = _gather_checks()

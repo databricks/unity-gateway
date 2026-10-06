@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
+import threading
 import time
 from decimal import Decimal
+from pathlib import Path
 from urllib.parse import parse_qs
 
 import pytest
@@ -31,12 +34,16 @@ from ucode.databricks import (
     build_skills_mcp_url,
     build_tool_base_url,
     classify_model_family,
+    clear_databricks_cli_cache,
+    databricks_cli_installed,
+    databricks_cli_path,
     databricks_cli_version,
     ensure_databricks_cli_version,
     ensure_pat_bearer,
     get_databricks_profiles,
     get_databricks_token,
     install_ai_tools,
+    install_databricks_cli,
     list_databricks_apps,
     list_workspace_budgets,
     resolve_current_budget_spend,
@@ -49,10 +56,10 @@ WS_HOST = "example.databricks.com"
 
 
 class _FakeResponse:
-    """Minimal urlopen context manager returning a JSON body."""
+    """Minimal urlopen context manager returning a JSON body, or raw bytes as given."""
 
-    def __init__(self, payload: dict):
-        self._body = json.dumps(payload).encode("utf-8")
+    def __init__(self, payload: dict | bytes):
+        self._body = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
 
     def __enter__(self):
         return self
@@ -338,12 +345,28 @@ class TestDiscoverClaudeModels:
             "opaque-model-id",
         ]
         assert captured["request"] == (
-            f"{WS}/ai-gateway/anthropic/v1/models",
+            f"{WS}/ai-gateway/anthropic/v1/models?limit=1000",
             "token",
             {"max_retries": 2},
         )
 
-    def test_lists_anthropic_display_names_with_model_ids(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("scope_kwargs", "expected_headers"),
+        [
+            (
+                {"parent_schema": "main.default"},
+                {"Databricks-Model-Service-Parent-Schema": "main.default"},
+            ),
+            (
+                {"provider": "main.default.anthropic"},
+                {"Databricks-Model-Provider-Service": "main.default.anthropic"},
+            ),
+        ],
+        ids=["parent-schema", "provider-service"],
+    )
+    def test_lists_anthropic_display_names_with_model_ids(
+        self, monkeypatch, scope_kwargs, expected_headers
+    ):
         payload = {
             "data": [
                 {
@@ -362,7 +385,7 @@ class TestDiscoverClaudeModels:
 
         monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
 
-        catalog = db_mod.list_anthropic_model_catalog(WS, "token", parent_schema="main.default")
+        catalog = db_mod.list_anthropic_model_catalog(WS, "token", **scope_kwargs)
 
         assert catalog.model_ids == ["system.ai.glm-5-3-flash", "opaque-model-id"]
         assert catalog.model_id_to_display_name == {"system.ai.glm-5-3-flash": "GLM 5.3 Flash"}
@@ -370,11 +393,11 @@ class TestDiscoverClaudeModels:
         assert catalog.error_msg is None
         assert requests == [
             (
-                f"{WS}/ai-gateway/anthropic/v1/models",
+                f"{WS}/ai-gateway/anthropic/v1/models?limit=1000",
                 "token",
                 {
                     "max_retries": 2,
-                    "headers": {"Databricks-Model-Service-Parent-Schema": "main.default"},
+                    "headers": expected_headers,
                 },
             )
         ]
@@ -1087,6 +1110,30 @@ class TestResolveProviderService:
         assert service is None
         assert "no Claude models" in error
 
+    def test_bedrock_allow_all_targets_ok(self, monkeypatch):
+        # allow_all_targets routes any model, so no explicit Claude target is needed — the model id
+        # comes from the managed config's authored default instead.
+        payload = {
+            "model_provider_services": [
+                {
+                    "name": "model-provider-services/main.schema2.bedrock-all-svc",
+                    "config": {
+                        "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_AMAZON_BEDROCK",
+                        "allow_all_targets": True,
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=30: (payload, None)
+        )
+        service, error = db_mod.resolve_provider_service(
+            "claude", "main.schema2.bedrock-all-svc", WS, "token"
+        )
+        assert error is None
+        assert service["allow_all_targets"] is True
+        assert service["targets"] == []
+
     def test_not_found_lists_usable(self, monkeypatch):
         self._patch(monkeypatch)
         service, error = db_mod.resolve_provider_service("claude", "main.x.missing", WS, "token")
@@ -1122,6 +1169,20 @@ class TestResolveProviderService:
         assert error is None
         assert service["provider_type"] == "gemini_enterprise"
         assert service["targets"] == ["gemini-3.5-flash"]
+
+
+class TestServiceUsableForTool:
+    def test_bedrock_allow_all_targets_usable_without_targets(self):
+        service = {"provider_type": "amazon_bedrock", "targets": [], "allow_all_targets": True}
+        assert db_mod.service_usable_for_tool("claude", service)
+
+    def test_bedrock_without_claude_targets_unusable(self):
+        service = {
+            "provider_type": "amazon_bedrock",
+            "targets": ["amazon.titan-text-express-v1"],
+            "allow_all_targets": False,
+        }
+        assert not db_mod.service_usable_for_tool("claude", service)
 
 
 class TestModelProviderFeatureUnavailable:
@@ -1283,6 +1344,87 @@ class TestListMcpServices:
 
         assert names == []
         assert reason and reason.startswith("HTTP 404")
+
+    def test_requests_basic_view(self, monkeypatch):
+        # Only names are needed; BASIC omits the source-connection resolution that makes FULL
+        # costlier (and adds Atlas load) at scale.
+        captured: dict[str, str] = {}
+
+        def fake_get(url, token, timeout=30):
+            captured["url"] = url
+            return {"mcp_services": []}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        db_mod.list_mcp_services(WS, "token")
+
+        assert "view=BASIC" in captured["url"]
+
+    def test_follows_next_page_token(self, monkeypatch):
+        # A whole-schema pointer can span more than one page; ignoring next_page_token would
+        # silently drop services on later pages.
+        pages = [
+            (
+                {
+                    "mcp_services": [{"name": "mcp-services/system.ai.github"}],
+                    "next_page_token": "tok2",
+                },
+                None,
+            ),
+            ({"mcp_services": [{"name": "mcp-services/system.ai.slack"}]}, None),
+        ]
+        seen: list[str] = []
+
+        def fake_get(url, token, timeout=30):
+            seen.append(url)
+            return pages[len(seen) - 1]
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        names, reason = db_mod.list_mcp_services(WS, "token")
+
+        assert reason is None
+        assert names == ["system.ai.github", "system.ai.slack"]
+        assert "page_token=tok2" in seen[1]
+
+    def test_stops_on_repeated_page_token(self, monkeypatch):
+        # A server that echoes the same token must not spin forever.
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: (
+                {
+                    "mcp_services": [{"name": "mcp-services/system.ai.github"}],
+                    "next_page_token": "x",
+                },
+                None,
+            ),
+        )
+
+        names, reason = db_mod.list_mcp_services(WS, "token")
+
+        assert reason is None
+        assert names == ["system.ai.github"]
+
+    def test_keeps_earlier_pages_when_a_later_one_fails(self, monkeypatch):
+        calls = {"n": 0}
+
+        def fake_get(url, token, timeout=30):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {
+                    "mcp_services": [{"name": "mcp-services/system.ai.github"}],
+                    "next_page_token": "tok2",
+                }, None
+            return None, "HTTP 500 Server Error"
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        names, reason = db_mod.list_mcp_services(WS, "token")
+
+        # A mid-pagination failure keeps what we already collected rather than erroring out.
+        assert names == ["system.ai.github"]
+        assert reason is None
 
 
 class TestWalkCatalogSchemas:
@@ -1905,11 +2047,35 @@ class TestScrubJson:
 
 
 class TestGetDatabricksToken:
+    @pytest.fixture(autouse=True)
+    def _fresh_databricks_cli_cache(self):
+        # Real-subprocess tests below give each fake `databricks` script sole
+        # ownership of PATH (see `_fake_databricks`); a resolution cached from
+        # an earlier test (or a different PATH) must not leak in.
+        clear_databricks_cli_cache()
+        yield
+        clear_databricks_cli_cache()
+
     def _fake_databricks(self, tmp_path, script: str) -> dict:
         fake = tmp_path / "databricks"
-        fake.write_text(f"#!/bin/sh\n{script}\n")
+        fake.write_text(
+            "#!/bin/sh\n"
+            # `get_databricks_token` resolves `databricks_cli_path()` (which
+            # probes `--version` to discover/select a binary) before it ever
+            # runs the real command below. Answer that probe directly so it
+            # doesn't consume a turn of — or otherwise disturb — the
+            # call-counting/state-tracking logic several scripts below rely on.
+            'case "$*" in\n'
+            '  "--version") echo "Databricks CLI v1.20.0"; exit 0 ;;\n'
+            "esac\n"
+            f"{script}\n"
+        )
         fake.chmod(0o755)
-        return {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+        # PATH holds only the fake script, not the developer's real PATH: with
+        # both on PATH, discovery would find the real `databricks` too and may
+        # prefer whichever is newer, defeating the fake. The shebang is
+        # resolved by the kernel (not PATH lookup), so this stays runnable.
+        return {**os.environ, "PATH": str(tmp_path)}
 
     def test_returns_token_on_success(self, tmp_path, monkeypatch):
         env = self._fake_databricks(
@@ -2096,6 +2262,12 @@ class TestGetDatabricksProfiles:
 
 
 class TestListDatabricksApps:
+    @pytest.fixture(autouse=True)
+    def _fixed_databricks_cli_path(self, monkeypatch):
+        # These tests assert on argv shape; pin the resolved binary to the bare
+        # name so they don't depend on (or trigger) real PATH discovery.
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+
     def test_lists_apps_with_workspace_env(self, monkeypatch):
         calls: list[dict] = []
 
@@ -2186,6 +2358,19 @@ class TestListDatabricksApps:
 
 
 class TestProbeUnityGatewayCapabilities:
+    def test_probe_preserves_workspace_scheme_and_port(self, monkeypatch):
+        calls = []
+
+        def fake_get(url, token):
+            calls.append(url)
+            return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        db_mod.probe_unity_gateway_capabilities("http://127.0.0.1:54321", "fake-token")
+
+        assert calls == ["http://127.0.0.1:54321/api/2.1/unity-catalog/model-services?page_size=50"]
+
     def test_model_service_resource_returns_success(self, monkeypatch):
         calls: list[str] = []
 
@@ -2380,6 +2565,38 @@ class TestProbeUnityGatewayCapabilities:
         )
         assert not db_mod._looks_like_scope_failure("HTTP 403: Missing Unity Catalog grants")
 
+    def test_definitive_auth_failure_matches_invalid_token_403(self):
+        # A stale PAT 403s with an "Invalid access token" body — that's the token being
+        # rejected, not a missing grant, so it must classify as a definitive auth failure.
+        assert db_mod._looks_like_definitive_auth_failure(
+            'HTTP 403 Forbidden: {"error_code":403,"message":"Invalid access token."}'
+        )
+        assert db_mod._looks_like_definitive_auth_failure("HTTP 401: Unauthorized")
+        assert db_mod._looks_like_definitive_auth_failure("HTTP 400: Invalid Token")
+        # A plain permission 403 (missing grant) is left to permission routing.
+        assert not db_mod._looks_like_definitive_auth_failure(
+            "HTTP 403: Missing Unity Catalog grants"
+        )
+
+    def test_raise_for_invalid_access_token(self):
+        with pytest.raises(db_mod.AuthTokenError) as e:
+            db_mod.raise_for_invalid_access_token(WS, "HTTP 403 Forbidden: Invalid access token.")
+        assert str(e.value) == "Your access token is expired or invalid."
+        # No-op for a permission 403 or a clean result, so best-effort discovery still skips quietly.
+        db_mod.raise_for_invalid_access_token(WS, "HTTP 403: Missing Unity Catalog grants")
+        db_mod.raise_for_invalid_access_token(WS, None)
+
+    def test_invalid_token_403_routes_to_reauth_in_probe(self, monkeypatch):
+        # The gateway probe should also route a token-invalid 403 to re-auth guidance,
+        # not the "missing grants" permission message.
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token: (None, "HTTP 403 Forbidden: Invalid access token."),
+        )
+        with pytest.raises(RuntimeError, match="rejected the access token"):
+            db_mod.probe_unity_gateway_capabilities(WS, "fake-token")
+
     def test_model_service_forbidden_reports_permission_error(self, monkeypatch):
         calls: list[str] = []
 
@@ -2537,6 +2754,23 @@ class TestHttpGetJsonRetries:
         assert reason == "HTTP 503 Service Unavailable"
         assert len(calls) == 1
 
+    def test_bytes_retries_429_and_returns_undecoded_body(self, monkeypatch):
+        outcomes = iter([self._http_error(429, "Too Many Requests"), _FakeResponse(b"\x89PNG\x00")])
+
+        def fake_urlopen(request, timeout=None):
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
+
+        body, reason = db_mod._http_get_bytes("https://x/y", "tok", max_retries=2)
+
+        assert body == b"\x89PNG\x00"
+        assert reason is None
+
 
 class TestParseDatabricksCliVersion:
     def test_parses_standard_format(self):
@@ -2549,22 +2783,269 @@ class TestParseDatabricksCliVersion:
         assert _parse_databricks_cli_version("not a version") is None
 
 
+class TestDatabricksCliResolution:
+    """Unit coverage for the multi-CLI resolver: `_iter_databricks_executables`,
+    `_discover_databricks_clis`, `_select_databricks_cli`, and
+    `databricks_cli_path`/`clear_databricks_cli_cache`. All patch discovery or
+    the version-read subprocess directly — no real Databricks CLI is needed."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_databricks_cli_cache(self):
+        clear_databricks_cli_cache()
+        yield
+        clear_databricks_cli_cache()
+
+    # -- _iter_databricks_executables ---------------------------------------
+
+    def test_iter_finds_executable_on_path(self, tmp_path, monkeypatch):
+        fake = tmp_path / "databricks"
+        fake.write_text("#!/bin/sh\necho hi\n")
+        fake.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        assert db_mod._iter_databricks_executables() == [str(fake)]
+
+    def test_iter_skips_non_executable_and_missing_dirs(self, tmp_path, monkeypatch):
+        not_exec = tmp_path / "databricks"
+        not_exec.write_text("not executable")
+        not_exec.chmod(0o644)
+        missing_dir = tmp_path / "does-not-exist"
+        monkeypatch.setenv("PATH", os.pathsep.join([str(missing_dir), str(tmp_path)]))
+        assert db_mod._iter_databricks_executables() == []
+
+    def test_iter_returns_every_path_entry_in_order_without_deduping(self, tmp_path, monkeypatch):
+        first_dir, second_dir = tmp_path / "first", tmp_path / "second"
+        first_dir.mkdir()
+        second_dir.mkdir()
+        for directory in (first_dir, second_dir):
+            fake = directory / "databricks"
+            fake.write_text("#!/bin/sh\necho hi\n")
+            fake.chmod(0o755)
+        monkeypatch.setenv("PATH", os.pathsep.join([str(first_dir), str(second_dir)]))
+        assert db_mod._iter_databricks_executables() == [
+            str(first_dir / "databricks"),
+            str(second_dir / "databricks"),
+        ]
+
+    def test_iter_finds_windows_executables_by_pathext(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(db_mod.os, "name", "nt")
+        monkeypatch.setenv("PATHEXT", os.pathsep.join([".exe", ".bat"]))
+        monkeypatch.setenv("PATH", str(tmp_path))
+        # No execute bit on either file — Windows discovery has no X_OK check,
+        # so PATHEXT matching alone must decide which one is found.
+        (tmp_path / "databricks").write_text("no extension, must not match")
+        exe = tmp_path / "databricks.exe"
+        exe.write_text("matches PATHEXT's .exe")
+        assert db_mod._iter_databricks_executables() == [str(exe)]
+
+    # -- _discover_databricks_clis -------------------------------------------
+
+    def test_discover_dedupes_by_realpath_keeping_path_order(self, tmp_path, monkeypatch):
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        real_bin = real_dir / "databricks"
+        real_bin.write_text("#!/bin/sh\necho hi\n")
+        real_bin.chmod(0o755)
+
+        # A symlink elsewhere on PATH resolves to the same realpath and must be
+        # probed only once, at its first (real) PATH-order occurrence.
+        link_dir = tmp_path / "link"
+        link_dir.mkdir()
+        (link_dir / "databricks").symlink_to(real_bin)
+
+        monkeypatch.setenv("PATH", os.pathsep.join([str(real_dir), str(link_dir)]))
+        probed = []
+        monkeypatch.setattr(
+            db_mod,
+            "_read_databricks_cli_version",
+            lambda path: probed.append(path) or (1, 2, 3),
+        )
+
+        discovered = db_mod._discover_databricks_clis(use_cache=False)
+
+        assert discovered == [(str(real_bin), (1, 2, 3))]
+        assert probed == [str(real_bin)]
+
+    def test_discover_orders_best_first(self, monkeypatch):
+        # Newest version first; equal versions keep PATH order; unparseable last.
+        monkeypatch.setattr(
+            db_mod,
+            "_iter_databricks_executables",
+            lambda: [
+                "/path/a/databricks",  # 1.5.0
+                "/path/b/databricks",  # unparseable
+                "/path/c/databricks",  # 1.20.0
+                "/path/d/databricks",  # 1.5.0 (ties with a; a is earlier on PATH)
+            ],
+        )
+        versions = {
+            "/path/a/databricks": (1, 5, 0),
+            "/path/b/databricks": None,
+            "/path/c/databricks": (1, 20, 0),
+            "/path/d/databricks": (1, 5, 0),
+        }
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", lambda path: versions[path])
+
+        assert db_mod._discover_databricks_clis(use_cache=False) == [
+            ("/path/c/databricks", (1, 20, 0)),
+            ("/path/a/databricks", (1, 5, 0)),
+            ("/path/d/databricks", (1, 5, 0)),
+            ("/path/b/databricks", None),
+        ]
+
+    def test_discover_caches_until_forced(self, monkeypatch):
+        iter_calls = []
+        monkeypatch.setattr(
+            db_mod,
+            "_iter_databricks_executables",
+            lambda: iter_calls.append(True) or ["/usr/bin/databricks"],
+        )
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", lambda path: (1, 2, 3))
+
+        first = db_mod._discover_databricks_clis()
+        second = db_mod._discover_databricks_clis()
+        assert first is second
+        assert first == [("/usr/bin/databricks", (1, 2, 3))]
+        assert len(iter_calls) == 1
+
+        db_mod._discover_databricks_clis(use_cache=False)
+        assert len(iter_calls) == 2
+
+    # -- _select_databricks_cli -----------------------------------------------
+
+    def test_select_picks_newest_meeting_minimum(self, monkeypatch):
+        # Discovery hands `_select` a best-first-ordered map, so the first entry
+        # meeting the floor is the newest one.
+        monkeypatch.setattr(
+            db_mod,
+            "_discover_databricks_clis",
+            lambda **kw: [
+                ("/path/b/databricks", (1, 20, 0)),
+                ("/path/c/databricks", (1, 8, 0)),
+                ("/path/a/databricks", (1, 5, 0)),
+            ],
+        )
+        assert db_mod._select_databricks_cli((1, 0, 0)) == ("/path/b/databricks", (1, 20, 0))
+
+    def test_select_skips_too_old_and_unparseable(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_discover_databricks_clis",
+            lambda **kw: [
+                ("/path/c/databricks", (1, 3, 0)),  # meets the floor
+                ("/path/a/databricks", (0, 299, 2)),  # too old
+                ("/path/b/databricks", None),  # unparseable
+            ],
+        )
+        assert db_mod._select_databricks_cli((1, 0, 0)) == ("/path/c/databricks", (1, 3, 0))
+
+    def test_select_returns_none_when_none_meet_floor(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_discover_databricks_clis",
+            lambda **kw: [
+                ("/path/a/databricks", (0, 299, 2)),
+                ("/path/b/databricks", None),
+            ],
+        )
+        assert db_mod._select_databricks_cli((1, 0, 0)) == (None, None)
+
+    # -- databricks_cli_path ---------------------------------------------------
+
+    def test_path_returns_front_of_best_first_discovery(self, monkeypatch):
+        # `databricks_cli_path` just reads the front entry of the best-first list.
+        monkeypatch.setattr(
+            db_mod,
+            "_discover_databricks_clis",
+            lambda **kw: [
+                ("/path/new/databricks", (1, 20, 0)),
+                ("/path/old/databricks", (0, 299, 2)),
+            ],
+        )
+        assert databricks_cli_path() == "/path/new/databricks"
+
+    def test_path_falls_back_to_bare_name_when_nothing_discovered(self, monkeypatch):
+        # Discovery scans all of PATH (a superset of shutil.which), so an empty
+        # result means nothing to run — return the bare sentinel.
+        monkeypatch.setattr(db_mod, "_discover_databricks_clis", lambda **kw: [])
+        assert databricks_cli_path() == "databricks"
+
+    def test_path_is_cached_via_discovery(self, monkeypatch):
+        iter_calls = []
+        monkeypatch.setattr(
+            db_mod,
+            "_iter_databricks_executables",
+            lambda: iter_calls.append(True) or ["/path/a/databricks"],
+        )
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", lambda path: (1, 20, 0))
+
+        first = databricks_cli_path()
+        second = databricks_cli_path()
+        assert first == second == "/path/a/databricks"
+        assert len(iter_calls) == 1  # discovery cache backs the resolution
+
+        clear_databricks_cli_cache()
+        databricks_cli_path()
+        assert len(iter_calls) == 2
+
+    # -- _read_databricks_cli_version -----------------------------------------
+
+    def test_read_version_swallows_oserror(self, monkeypatch):
+        def boom(*a, **kw):
+            raise OSError("nope")
+
+        monkeypatch.setattr(db_mod, "run", boom)
+        assert db_mod._read_databricks_cli_version("/usr/bin/databricks") is None
+
+    def test_read_version_swallows_timeout(self, monkeypatch):
+        def boom(*a, **kw):
+            raise subprocess.TimeoutExpired("databricks", 10)
+
+        monkeypatch.setattr(db_mod, "run", boom)
+        assert db_mod._read_databricks_cli_version("/usr/bin/databricks") is None
+
+    def test_read_version_parses_output(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "run",
+            lambda *a, **kw: subprocess.CompletedProcess(a, 0, "Databricks CLI v1.20.0", ""),
+        )
+        assert db_mod._read_databricks_cli_version("/usr/bin/databricks") == (1, 20, 0)
+
+    # -- databricks_cli_installed ----------------------------------------------
+
+    def test_installed_true_when_discovery_finds_a_cli(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_discover_databricks_clis", lambda **kw: [("/usr/bin/databricks", (1, 20, 0))]
+        )
+        assert databricks_cli_installed() is True
+
+    def test_installed_false_when_nothing_discovered(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "_discover_databricks_clis", lambda **kw: [])
+        assert databricks_cli_installed() is False
+
+
 class TestEnsureDatabricksCliVersion:
+    @pytest.fixture(autouse=True)
+    def _fresh_databricks_cli_cache(self):
+        # Each test below gives its fake `databricks` script sole ownership of
+        # PATH; a resolution cached from an earlier test must not leak in.
+        clear_databricks_cli_cache()
+        yield
+        clear_databricks_cli_cache()
+
     def _fake_databricks(self, tmp_path, version_output: str) -> dict:
         fake = tmp_path / "databricks"
         fake.write_text(f"#!/bin/sh\necho '{version_output}'\n")
         fake.chmod(0o755)
-        return {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+        # Only the fake script is on PATH — with the developer's real PATH also
+        # present, discovery would find the real `databricks` too and might
+        # prefer it over the fake, depending on which is newer.
+        return {**os.environ, "PATH": str(tmp_path)}
 
     def test_passes_when_version_meets_minimum(self, tmp_path, monkeypatch):
         env = self._fake_databricks(tmp_path, "Databricks CLI v1.0.0")
         monkeypatch.setattr("os.environ", env)
         ensure_databricks_cli_version()  # should not raise
-
-    def test_passes_when_version_exceeds_minimum(self, tmp_path, monkeypatch):
-        env = self._fake_databricks(tmp_path, "Databricks CLI v1.8.0")
-        monkeypatch.setattr("os.environ", env)
-        ensure_databricks_cli_version()
 
     def test_auto_upgrades_when_version_too_old(self, tmp_path, monkeypatch):
         import ucode.databricks as db_mod
@@ -2621,34 +3102,108 @@ class TestEnsureDatabricksCliVersion:
         assert upgraded == ["upgrade"]
 
 
+class TestInstallDatabricksCli:
+    def test_windows_finds_existing_winget_alias_before_reinstalling(self, monkeypatch, tmp_path):
+        installed_dir = str(tmp_path / "Microsoft" / "WinGet" / "Packages" / "databricks")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("PATH", "/windows/system32")
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: installed_dir)
+        monkeypatch.setattr(
+            db_mod,
+            "_discover_databricks_clis",
+            lambda **kw: (
+                [(str(Path(installed_dir) / "databricks.exe"), (1, 18, 0))]
+                if installed_dir in os.environ["PATH"].split(os.pathsep)
+                else []
+            ),
+        )
+        monkeypatch.setattr(
+            db_mod,
+            "_run_databricks_cli_installer",
+            lambda **kw: pytest.fail("unexpected reinstall"),
+        )
+        checked = []
+        monkeypatch.setattr(
+            db_mod, "ensure_databricks_cli_version", lambda *a, **kw: checked.append(True)
+        )
+
+        install_databricks_cli()
+
+        assert checked == [True]
+
+    def test_checks_version_when_present(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "_discover_databricks_clis", lambda **kw: [("/usr/bin/databricks", (1, 20, 0))]
+        )
+        checked = []
+        monkeypatch.setattr(
+            db_mod, "ensure_databricks_cli_version", lambda *a, **kw: checked.append(True)
+        )
+        install_databricks_cli()
+        assert checked == [True]
+
+    def test_skip_version_check_bypasses_version_gate(self, monkeypatch):
+        """`--skip-preflight` sets skip_version_check: an already-installed CLI is
+        trusted without the minimum-version gate, so a public-preview build is no
+        longer a false positive."""
+        monkeypatch.setattr(
+            db_mod, "_discover_databricks_clis", lambda **kw: [("/usr/bin/databricks", (1, 20, 0))]
+        )
+        checked = []
+        monkeypatch.setattr(
+            db_mod, "ensure_databricks_cli_version", lambda *a, **kw: checked.append(True)
+        )
+        install_databricks_cli(skip_version_check=True)
+        assert checked == []
+
+    def test_skip_version_check_still_installs_when_missing(self, monkeypatch):
+        """A missing CLI is installed even under skip_version_check — only the
+        version *check* is bypassed, not the install."""
+        discovered: list[tuple[str, tuple[int, int, int] | None]] = []
+        monkeypatch.setattr(db_mod, "_discover_databricks_clis", lambda **kw: list(discovered))
+        installed = []
+
+        def fake_installer(brew_subcommand="install"):
+            discovered.append(("/usr/bin/databricks", (1, 20, 0)))
+            installed.append(brew_subcommand)
+
+        monkeypatch.setattr(db_mod, "_run_databricks_cli_installer", fake_installer)
+        checked = []
+        monkeypatch.setattr(
+            db_mod, "ensure_databricks_cli_version", lambda *a, **kw: checked.append(True)
+        )
+        install_databricks_cli(skip_version_check=True)
+        assert installed == ["install"]
+        assert checked == []
+
+
 class TestDatabricksCliVersion:
+    """`databricks_cli_version()` reports the version of whatever
+    `databricks_cli_path()` resolves to, so these drive it through a patched
+    `_discover_databricks_clis` rather than a bare `shutil.which`/`run` pair —
+    the resolver, not a single `--version` read, now owns path selection."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_databricks_cli_cache(self):
+        clear_databricks_cli_cache()
+        yield
+        clear_databricks_cli_cache()
+
     def test_none_when_absent(self, monkeypatch):
-        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: None)
+        monkeypatch.setattr(db_mod, "_discover_databricks_clis", lambda **kw: [])
         assert databricks_cli_version() is None
 
     def test_parses_installed_version(self, monkeypatch):
-        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: "/usr/bin/databricks")
         monkeypatch.setattr(
-            db_mod,
-            "run",
-            lambda *a, **kw: subprocess.CompletedProcess(a, 0, "Databricks CLI v0.299.2", ""),
+            db_mod, "_discover_databricks_clis", lambda **kw: [("/usr/bin/databricks", (0, 299, 2))]
         )
         assert databricks_cli_version() == (0, 299, 2)
 
     def test_none_on_unparseable_output(self, monkeypatch):
-        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: "/usr/bin/databricks")
         monkeypatch.setattr(
-            db_mod, "run", lambda *a, **kw: subprocess.CompletedProcess(a, 0, "garbage", "")
+            db_mod, "_discover_databricks_clis", lambda **kw: [("/usr/bin/databricks", None)]
         )
-        assert databricks_cli_version() is None
-
-    def test_never_raises_on_subprocess_error(self, monkeypatch):
-        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: "/usr/bin/databricks")
-
-        def boom(*a, **kw):
-            raise OSError("nope")
-
-        monkeypatch.setattr(db_mod, "run", boom)
         assert databricks_cli_version() is None
 
 
@@ -2666,6 +3221,57 @@ class TestUpgradeDatabricksCli:
 
 
 class TestRunDatabricksCliInstaller:
+    @pytest.mark.parametrize("subcommand", ["install", "upgrade"])
+    def test_windows_uses_winget(self, monkeypatch, tmp_path, subcommand):
+        calls = []
+        winget = r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\winget.exe"
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("PATH", "/windows/system32")
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: None)
+        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: winget if cmd == "winget" else None)
+        monkeypatch.setattr(db_mod, "run", lambda cmd, **kw: calls.append((cmd, kw)))
+
+        _run_databricks_cli_installer(brew_subcommand=subcommand)
+
+        assert calls == [
+            (
+                [
+                    winget,
+                    subcommand,
+                    "--exact",
+                    "--id",
+                    "Databricks.DatabricksCLI",
+                    "--source",
+                    "winget",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ],
+                {"timeout": 240},
+            )
+        ]
+        assert os.environ["PATH"].split(os.pathsep)[0] == str(
+            Path(os.environ["LOCALAPPDATA"]) / "Microsoft" / "WinGet" / "Links"
+        )
+
+    def test_windows_does_not_duplicate_persisted_paths(self, monkeypatch, tmp_path):
+        links_dir = str(tmp_path / "Microsoft" / "WinGet" / "Links")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("PATH", os.pathsep.join([links_dir, "/windows/system32"]))
+        monkeypatch.setattr(db_mod, "_windows_user_path", lambda: links_dir)
+
+        db_mod._refresh_windows_path()
+
+        assert os.environ["PATH"].split(os.pathsep).count(links_dir) == 1
+
+    def test_windows_without_winget_is_actionable(self, monkeypatch):
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: None)
+        monkeypatch.setattr(db_mod, "run", lambda *args, **kwargs: pytest.fail("unexpected run"))
+
+        with pytest.raises(RuntimeError, match="WinGet is required"):
+            _run_databricks_cli_installer()
+
     @pytest.mark.parametrize("brew_subcommand", ["install", "upgrade"])
     def test_macos_uses_fully_qualified_tap_formula(self, monkeypatch, brew_subcommand):
         calls = []
@@ -2679,6 +3285,33 @@ class TestRunDatabricksCliInstaller:
         # databricks/tap and fails if absent, rather than falling back to the
         # unrelated `databricks` cask.
         assert calls == [["brew", brew_subcommand, "databricks/tap/databricks"]]
+
+    def _fail_installer(self, monkeypatch):
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(db_mod.shutil, "which", lambda cmd: "/opt/homebrew/bin/brew")
+
+        def boom(cmd, **kw):
+            raise subprocess.CalledProcessError(1, cmd)
+
+        monkeypatch.setattr(db_mod, "run", boom)
+
+    def test_failure_message_never_advises_removing_a_shadowing_binary(self, monkeypatch, tmp_path):
+        # `databricks_cli_path` picks the databricks binary by absolute path, so a
+        # second `~/.local/bin/databricks` earlier on PATH can't change which one
+        # runs; the failure message must stay plain and never tell users to delete a
+        # copy, whether or not one exists here.
+        local_bin = tmp_path / ".local" / "bin" / "databricks"
+        local_bin.parent.mkdir(parents=True)
+        local_bin.write_text("stale")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._fail_installer(monkeypatch)
+
+        with pytest.raises(RuntimeError) as exc:
+            _run_databricks_cli_installer()
+
+        assert str(exc.value) == "Failed to install/upgrade Databricks CLI automatically."
+        assert "remove it" not in str(exc.value)
+        assert str(local_bin) not in str(exc.value)
 
 
 class TestHttpGetJsonTimeout:
@@ -2710,9 +3343,24 @@ class TestHttpGetJsonTimeout:
         assert reason is not None
         assert "timed out" in reason
 
+    def test_bytes_read_timeout_returns_reason_instead_of_raising(self, monkeypatch):
+        def raise_timeout(request, timeout=None):
+            raise TimeoutError("The read operation timed out")
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_timeout)
+
+        body, reason = db_mod._http_get_bytes(f"{WS}/api/2.0/fs/files/anything", "tok")
+
+        assert body is None
+        assert reason is not None
+        assert "timed out" in reason
+
 
 class TestInstallAiTools:
     def _capture_run(self, monkeypatch, *, raises=None):
+        # Pin the resolved binary to the bare name: these tests assert on argv
+        # shape and must not depend on (or trigger) real PATH discovery.
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
         calls = []
 
         def fake_run(args, **kwargs):
@@ -3163,6 +3811,8 @@ class TestCodingAgentConfigCrudClients:
         assert "default_options" not in db_mod.MANAGED_CONFIG_UPDATE_MASK_PATHS
         assert "tiers" not in db_mod.MANAGED_CONFIG_UPDATE_MASK_PATHS
         assert "spec_version" not in db_mod.MANAGED_CONFIG_UPDATE_MASK_PATHS
+        assert "spend_tiers" not in db_mod.MANAGED_CONFIG_UPDATE_MASK_PATHS
+        assert "smart_defaults" in db_mod.MANAGED_CONFIG_UPDATE_MASK_PATHS
 
     def test_update_mask_covers_every_field_the_manifest_can_set(self):
         # A path ucode omits is a field a re-run silently cannot clear, since the server merges per
@@ -3179,7 +3829,7 @@ class TestCodingAgentConfigCrudClients:
                     },
                     "mcp_servers": {"names": ["main.default.databricks_sql"]},
                     "skills": {"names": ["main.default.triage"]},
-                    "spend_tiers": {
+                    "smart_defaults": {
                         "budget_id": "11111111-1111-1111-1111-111111111111",
                         "tiers": [],
                     },
@@ -3649,3 +4299,161 @@ class TestBearerCommand:
 
         assert db_mod.has_valid_databricks_auth(WS) is True
         assert not marker.exists()
+
+
+class TestWalkCatalogSchemasCancellation:
+    def _fake_paginated(self, n_schemas):
+        def impl(url, token, *, items_key, extra_params=None, **kwargs):
+            if items_key == "catalogs":
+                return [{"name": "main"}], None
+            if items_key == "schemas":
+                return [{"name": f"s{i}"} for i in range(n_schemas)], None
+            return [], None
+
+        return impl
+
+    def test_cancel_event_stops_walk_during_probing(self, monkeypatch):
+        N = 50
+        monkeypatch.setattr(db_mod, "_paginated_json_items", self._fake_paginated(N))
+
+        cancel_event = threading.Event()
+        probe_calls: list[tuple[str, str]] = []
+
+        def slow_probe(cat, schema):
+            probe_calls.append((cat, schema))
+            cancel_event.set()
+            time.sleep(0.2)
+            return f"{cat}.{schema}"
+
+        collected = []
+        start = time.monotonic()
+        db_mod.walk_catalog_schemas(
+            WS,
+            "tok",
+            deadline=start + 60.0,
+            probe=slow_probe,
+            collect=lambda result, done, total: collected.append(result),
+            cancel_event=cancel_event,
+        )
+        assert probe_calls
+        assert len(probe_calls) < N
+        assert time.monotonic() - start < 5.0
+
+    def test_deadline_stops_walk_promptly(self, monkeypatch):
+        N = 50
+        monkeypatch.setattr(db_mod, "_paginated_json_items", self._fake_paginated(N))
+
+        collected = []
+
+        def slow_probe(cat, schema):
+            time.sleep(0.5)
+            return f"{cat}.{schema}"
+
+        start = time.monotonic()
+        db_mod.walk_catalog_schemas(
+            WS,
+            "tok",
+            deadline=start + 0.1,
+            probe=slow_probe,
+            collect=lambda result, done, total: collected.append(result),
+        )
+        assert time.monotonic() - start < 1.5
+        assert len(collected) < N
+
+    def test_all_probes_collected_on_full_success(self, monkeypatch):
+        N = 20
+        monkeypatch.setattr(db_mod, "_paginated_json_items", self._fake_paginated(N))
+
+        collected = []
+        reason = db_mod.walk_catalog_schemas(
+            WS,
+            "tok",
+            deadline=time.monotonic() + 60.0,
+            probe=lambda cat, schema: f"{cat}.{schema}",
+            collect=lambda result, done, total: collected.append(result),
+        )
+        assert reason is None
+        assert len(collected) == N
+
+    def test_raising_probes_are_skipped_not_stalled(self, monkeypatch):
+        N = 10
+        monkeypatch.setattr(db_mod, "_paginated_json_items", self._fake_paginated(N))
+
+        def probe(cat, schema):
+            if int(schema[1:]) % 2 == 0:
+                raise RuntimeError("probe failure")
+            return f"{cat}.{schema}"
+
+        collected = []
+        reason = db_mod.walk_catalog_schemas(
+            WS,
+            "tok",
+            deadline=time.monotonic() + 60.0,
+            probe=probe,
+            collect=lambda result, done, total: collected.append(result),
+        )
+        assert reason is None
+        assert len(collected) == N // 2
+        assert all("." in r for r in collected)
+
+
+class TestMcpServiceNeedsConnectionLogin:
+    """`mcp_service_needs_connection_login` classifies whether an mcp-service needs a per-user
+    connection sign-in (from its source_connection's securable_kind)."""
+
+    def _mock_http(self, monkeypatch, details=None, err=None):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token, **k: (details, err))
+
+    def test_true_for_oauth_u2m_connection(self, monkeypatch):
+        self._mock_http(
+            monkeypatch,
+            details={
+                "config": {
+                    "source_connection": {"securable_kind": "CONNECTION_HTTP_OAUTH_U2M_MAPPING"}
+                }
+            },
+        )
+        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.github") is True
+
+    def test_false_when_no_source_connection(self, monkeypatch):
+        # e.g. system.ai.web_search: no backing connection, so no per-user login (AIGTWY-4856).
+        self._mock_http(monkeypatch, details={"config": {"internal": {}}})
+        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.web_search") is False
+
+    def test_false_for_non_u2m_kind(self, monkeypatch):
+        self._mock_http(
+            monkeypatch,
+            details={"config": {"source_connection": {"securable_kind": "CONNECTION_MYSQL"}}},
+        )
+        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.pg") is False
+
+    def test_false_on_lookup_error(self, monkeypatch):
+        # Safe default: an unreachable API must not push a service into an OAuth flow.
+        self._mock_http(monkeypatch, details=None, err="HTTP 500")
+        assert db_mod.mcp_service_needs_connection_login(WS, "t", "system.ai.github") is False
+
+
+class TestRunDecodesUtf8:
+    @staticmethod
+    def _force_cp1252_default(monkeypatch):
+        real_run = db_mod.subprocess.run
+
+        def run_with_cp1252_default(*args, **kwargs):
+            if kwargs.get("text") and "encoding" not in kwargs:
+                kwargs["encoding"] = "cp1252"
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(db_mod.subprocess, "run", run_with_cp1252_default)
+
+    def test_text_mode_decodes_utf8_even_when_locale_defaults_to_cp1252(self, monkeypatch):
+        # Force the dependency's omitted encoding to behave like Windows on every host.
+        self._force_cp1252_default(monkeypatch)
+        script = r"import sys; sys.stdout.buffer.write('“ok”'.encode('utf-8'))"
+        result = db_mod.run([sys.executable, "-c", script], capture_output=True, text=True)
+        assert result.stdout == "“ok”"
+
+    def test_binary_mode_is_unchanged(self, monkeypatch):
+        self._force_cp1252_default(monkeypatch)
+        script = r"import sys; sys.stdout.buffer.write(b'\xff')"
+        result = db_mod.run([sys.executable, "-c", script], capture_output=True)
+        assert result.stdout == b"\xff"

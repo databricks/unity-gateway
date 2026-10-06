@@ -10,27 +10,23 @@ import logging
 import logging.handlers
 import os
 import platform
+import queue
 import random
 import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import (
-    ThreadPoolExecutor,
-    as_completed,
-)
-from concurrent.futures import (
-    TimeoutError as FutureTimeoutError,
-)
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
 from pathlib import Path
-from typing import Literal, NamedTuple, NoReturn, cast, overload
+from typing import Any, Literal, NamedTuple, NoReturn, cast, overload
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
@@ -40,6 +36,8 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
+from ucode.os_compatibility import subprocess_cross_os
+from ucode.telemetry import ug_version
 from ucode.ui import (
     err_console,
     normalize_workspace_url,
@@ -54,9 +52,7 @@ from ucode.ui import (
 UNIX_DATABRICKS_INSTALL_URL = (
     "https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh"
 )
-WINDOWS_DATABRICKS_INSTALL_URL = (
-    "https://raw.githubusercontent.com/databricks/setup-cli/main/install.ps1"
-)
+WINDOWS_DATABRICKS_WINGET_PACKAGE = "Databricks.DatabricksCLI"
 AI_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-beta"
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 # v1.0.0 is the release that ships `databricks aitools`.
@@ -201,8 +197,8 @@ def _log_auth_diagnostics() -> None:
         return
 
     try:
-        version_result = subprocess.run(
-            ["databricks", "--version"],
+        version_result = subprocess_cross_os.run(
+            [databricks_cli_path(), "--version"],
             check=False,
             capture_output=True,
             text=True,
@@ -214,8 +210,8 @@ def _log_auth_diagnostics() -> None:
         _debug("databricks --version", f"exception: {type(exc).__name__}: {exc}")
 
     try:
-        profiles_result = subprocess.run(
-            ["databricks", "auth", "profiles", "--output", "json"],
+        profiles_result = subprocess_cross_os.run(
+            [databricks_cli_path(), "auth", "profiles", "--output", "json"],
             check=False,
             capture_output=True,
             text=True,
@@ -289,40 +285,35 @@ def clear_workspace_org_id_cache() -> None:
     _WORKSPACE_ORG_IDS.clear()
 
 
-def _http_get_json(
+def _http_get_bytes(
     url: str,
     token: str,
     *,
     timeout: int = 10,
     max_retries: int = 0,
     headers: dict[str, str] | None = None,
-) -> tuple[dict | list | None, str | None]:
-    """GET a JSON endpoint. Returns (payload, None) on success, (None, reason) on failure.
+) -> tuple[bytes | None, str | None]:
+    """GET raw bytes. Returns (body, None) on success, (None, reason) on failure.
 
     ``max_retries`` opts individual callers into bounded retries for rate limits
     and network failures. Other callers retain the original single-attempt
     behavior.
 
-    Honors UCODE_DEBUG=1 to append status + truncated body to ~/.ucode/debug.log.
+    Honors UCODE_DEBUG=1 to append status + truncated error body to ~/.ucode/debug.log.
     """
     if max_retries < 0:
         raise ValueError("max_retries must be non-negative")
 
-    request_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    request_headers = {"Authorization": f"Bearer {token}"}
     request_headers.update(headers or {})
     request = urllib_request.Request(url, headers=request_headers)
     for attempt in range(max_retries + 1):
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
-                body = response.read().decode("utf-8")
+                body = response.read()
                 _capture_org_id(url, getattr(response, "headers", None))
             _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
-            if _debug_enabled():
-                _debug("body", body[:4000])
-            try:
-                return json.loads(body), None
-            except json.JSONDecodeError as exc:
-                return None, f"response was not valid JSON ({exc.msg})"
+            return body, None
         except urllib_error.HTTPError as exc:
             body = ""
             try:
@@ -365,6 +356,36 @@ def _http_get_json(
         time.sleep(delay)
 
     raise AssertionError("unreachable")
+
+
+def _http_get_json(
+    url: str,
+    token: str,
+    *,
+    timeout: int = 10,
+    max_retries: int = 0,
+    headers: dict[str, str] | None = None,
+) -> tuple[dict | list | None, str | None]:
+    """GET a JSON endpoint via `_http_get_bytes`, sharing its retries and failure reasons.
+
+    Honors UCODE_DEBUG=1 to append status + truncated body to ~/.ucode/debug.log.
+    """
+    body, reason = _http_get_bytes(
+        url,
+        token,
+        timeout=timeout,
+        max_retries=max_retries,
+        headers={"Accept": "application/json", **(headers or {})},
+    )
+    if body is None:
+        return None, reason
+    text = body.decode("utf-8")
+    if _debug_enabled():
+        _debug("body", text[:4000])
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError as exc:
+        return None, f"response was not valid JSON ({exc.msg})"
 
 
 def _http_send_json(
@@ -452,36 +473,6 @@ def _http_delete(
     should test ``reason`` rather than the payload.
     """
     return _http_send_json("DELETE", url, token, None, timeout=timeout, allow_empty_body=True)
-
-
-def _http_get_bytes(url: str, token: str, *, timeout: int = 10) -> tuple[bytes | None, str | None]:
-    """GET raw bytes. Returns (body, None) on success, (None, reason) on failure.
-
-    Like `_http_get_json` but leaves the body undecoded, since skill bundles can
-    contain binary files.
-    """
-    request = urllib_request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    try:
-        with urllib_request.urlopen(request, timeout=timeout) as response:
-            body = response.read()
-            _capture_org_id(url, getattr(response, "headers", None))
-        _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
-        return body, None
-    except urllib_error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-        except Exception:
-            detail = ""
-        _debug(f"GET {url}", f"HTTP {exc.code} {exc.reason}")
-        reason = f"HTTP {exc.code} {exc.reason}"
-        excerpt = detail.strip()[:200]
-        if excerpt:
-            reason = f"{reason}: {excerpt}"
-        return None, reason
-    except urllib_error.URLError as exc:
-        _debug(f"GET {url}", f"URLError: {exc.reason}")
-        return None, f"network error: {exc.reason}"
 
 
 # Workspace group whose members are workspace admins. `ucode setup` / `ucode publish` are restricted
@@ -658,7 +649,7 @@ def run(
     env: dict[str, str] | None = None,
     timeout: int | None = None,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
+    return subprocess_cross_os.run(
         args,
         check=check,
         capture_output=capture_output,
@@ -691,14 +682,203 @@ def _parse_databricks_cli_version(output: str) -> tuple[int, int, int] | None:
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
+def _iter_databricks_executables() -> list[str]:
+    """Scan every directory on PATH for a `databricks` executable, in PATH order.
+
+    A machine can have more than one `databricks` on PATH (e.g. a stale
+    ``~/.local/bin/databricks`` shadowing a newer Homebrew install); this is the
+    first step of discovering all of them so the caller can pick the best one
+    instead of `shutil.which`'s first match. Returns absolute paths and does NOT
+    dedupe — the same real binary can be reachable via more than one PATH entry
+    (e.g. a symlink), and deduping by realpath is `_discover_databricks_clis`'s
+    job. On POSIX a candidate must have the execute bit; on Windows PATHEXT is
+    honored (a matching filename is runnable — there's no execute bit to test).
+    """
+    if os.name == "nt":
+        exts = tuple(e for e in os.environ.get("PATHEXT", "").split(os.pathsep) if e) or (
+            ".exe",
+            ".bat",
+            ".cmd",
+        )
+
+        def perms_ok(_path: str) -> bool:
+            return True
+    else:
+        exts = ("",)
+
+        def perms_ok(path: str) -> bool:
+            return os.access(path, os.X_OK)
+
+    found: list[str] = []
+    seen_dirs: set[str] = {""}  # seed with "" so empty PATH entries are skipped
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if directory in seen_dirs:
+            continue
+        seen_dirs.add(directory)
+        for ext in exts:
+            candidate = os.path.join(directory, f"databricks{ext}")
+            if os.path.isfile(candidate) and perms_ok(candidate):
+                found.append(os.path.abspath(candidate))
+    return found
+
+
+def _read_databricks_cli_version(path: str) -> tuple[int, int, int] | None:
+    """Run ``<path> --version`` and parse it. None on any subprocess or parse failure.
+
+    Used only by discovery, which is what establishes ``path`` in the first
+    place — every other caller reads a version through ``databricks_cli_path()``.
+    """
+    try:
+        result = run([path, "--version"], check=False, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    raw = result.stdout or result.stderr or ""
+    output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
+    return _parse_databricks_cli_version(output)
+
+
+# Process-lifetime cache of discovered `databricks` binaries as an ordered list,
+# best-first: highest parseable version first, unparseable ones last, with PATH order
+# preserved among equals. `databricks_cli_path` just reads the front. None means
+# "not yet scanned" — distinct from an empty list, a cached "found nothing".
+_DISCOVERED_DATABRICKS_CLIS_ORDERED: list[tuple[str, tuple[int, int, int] | None]] | None = None
+
+
+def _discover_databricks_clis(
+    *, use_cache: bool = True
+) -> list[tuple[str, tuple[int, int, int] | None]]:
+    """Find every distinct `databricks` binary on PATH, ordered best-first.
+
+    Dedupes by ``os.path.realpath`` (first PATH-order occurrence wins), so the
+    same binary reachable via more than one PATH entry is only probed once.
+    Version is None when the candidate's ``--version`` errors or its output can't
+    be parsed. The result is sorted newest-version-first (unparseable last, PATH
+    order kept among ties), so the front entry is the one to run. Cached for the
+    life of the process; pass ``use_cache=False`` to force a fresh scan (which
+    also refreshes the cache).
+    """
+    global _DISCOVERED_DATABRICKS_CLIS_ORDERED
+    if use_cache and _DISCOVERED_DATABRICKS_CLIS_ORDERED is not None:
+        return _DISCOVERED_DATABRICKS_CLIS_ORDERED
+
+    seen_real: set[str] = set()
+    discovered: list[tuple[str, tuple[int, int, int] | None]] = []
+    for path in _iter_databricks_executables():
+        real = os.path.realpath(path)
+        if real in seen_real:
+            continue
+        seen_real.add(real)
+        discovered.append((path, _read_databricks_cli_version(path)))
+
+    # Best-first: highest version wins. A stable sort keeps PATH order among equal
+    # versions, and the None-version sentinel (unparseable) sinks below every real one.
+    discovered.sort(key=lambda pv: pv[1] or (-1, -1, -1), reverse=True)
+    _DISCOVERED_DATABRICKS_CLIS_ORDERED = discovered
+    return _DISCOVERED_DATABRICKS_CLIS_ORDERED
+
+
+def _select_databricks_cli(
+    minimum: tuple[int, int, int],
+) -> tuple[str, tuple[int, int, int]] | tuple[None, None]:
+    """The newest discovered CLI whose version is >= ``minimum``, or ``(None, None)``.
+
+    Discovery is already ordered newest-first, so the first match is the newest
+    one meeting ``minimum`` (ties resolve to the earliest on PATH).
+    """
+    for path, version in _discover_databricks_clis():
+        if version is not None and version >= minimum:
+            return path, version
+    return None, None
+
+
+def databricks_cli_path() -> str:
+    """Absolute path to the `databricks` binary every subprocess call must use.
+
+    A machine can have more than one `databricks` on PATH (e.g. a stale
+    ``~/.local/bin/databricks`` shadowing a newer Homebrew install), and
+    `shutil.which` only ever returns the first match — which may be the wrong
+    one. Discovery instead orders every binary newest-first, so the front entry
+    is the one to run; its absolute path means a shadowing install or a
+    minimal-PATH launcher (e.g. a desktop GUI) can't cause the wrong binary to
+    run. Falls back to the bare name only when nothing is discovered at all —
+    running it then raises FileNotFoundError, which callers surface as "CLI not
+    installed". Cached via discovery — call ``clear_databricks_cli_cache()`` to
+    force re-resolution (e.g. after installing/upgrading the CLI).
+    """
+    clis = _discover_databricks_clis()
+    return clis[0][0] if clis else "databricks"
+
+
+def clear_databricks_cli_cache() -> None:
+    """Forget cached CLI discovery/resolution (used by tests, and after an install/upgrade)."""
+    global _DISCOVERED_DATABRICKS_CLIS_ORDERED
+    _DISCOVERED_DATABRICKS_CLIS_ORDERED = None
+
+
+def databricks_cli_installed() -> bool:
+    """Whether any `databricks` binary was found on PATH."""
+    return bool(_discover_databricks_clis())
+
+
+def _windows_user_path() -> str | None:
+    if sys.platform != "win32":
+        return None
+
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, "Path")
+    except OSError:
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _refresh_windows_path() -> None:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    path = os.environ.get("PATH", "")
+    entries = path.split(os.pathsep) if path else []
+    persisted_path = _windows_user_path()
+    candidates = persisted_path.split(os.pathsep) if persisted_path else []
+    if local_app_data:
+        candidates.insert(0, str(Path(local_app_data) / "Microsoft" / "WinGet" / "Links"))
+
+    known = {os.path.normcase(entry) for entry in entries}
+    new_entries = []
+    for entry in candidates:
+        expanded = os.path.expandvars(entry)
+        normalized = os.path.normcase(expanded)
+        if expanded and normalized not in known:
+            new_entries.append(expanded)
+            known.add(normalized)
+    os.environ["PATH"] = os.pathsep.join([*new_entries, *entries])
+
+
 def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
     system = platform.system()
     try:
         if system == "Windows":
+            winget = shutil.which("winget")
+            if winget is None:
+                raise RuntimeError(
+                    "WinGet is required on Windows. Install App Installer, then run "
+                    f"`winget install --exact --id {WINDOWS_DATABRICKS_WINGET_PACKAGE}`."
+                )
             run(
-                ["powershell", "-Command", f"irm {WINDOWS_DATABRICKS_INSTALL_URL} | iex"],
+                [
+                    winget,
+                    brew_subcommand,
+                    "--exact",
+                    "--id",
+                    WINDOWS_DATABRICKS_WINGET_PACKAGE,
+                    "--source",
+                    "winget",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ],
                 timeout=240,
             )
+            _refresh_windows_path()
         elif system == "Darwin" and shutil.which("brew"):
             run(["brew", brew_subcommand, "databricks/tap/databricks"], timeout=240)
         elif shutil.which("curl"):
@@ -708,60 +888,68 @@ def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
         else:
             raise RuntimeError("Neither curl nor wget is available.")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as exc:
-        raise RuntimeError("Failed to install/upgrade Databricks CLI automatically.") from exc
+        message = "Failed to install/upgrade Databricks CLI automatically."
+        if system == "Windows" and isinstance(exc, RuntimeError):
+            message += f"\n{exc}"
+        raise RuntimeError(message) from exc
+    # A binary may have just been installed/upgraded at a new (or the same) path;
+    # drop any stale discovery/resolution so the next lookup re-scans PATH.
+    clear_databricks_cli_cache()
 
 
 def ensure_databricks_cli_version(
     minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
 ) -> None:
-    try:
-        result = run(
-            ["databricks", "--version"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError("Failed to read Databricks CLI version.") from exc
+    clis = _discover_databricks_clis(use_cache=False)
+    if not clis:
+        raise RuntimeError("Failed to read Databricks CLI version.")
 
-    raw = result.stdout or result.stderr or ""
-    output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
-    version = _parse_databricks_cli_version(output)
-    if version is None:
+    parsed = [(path, version) for path, version in clis if version is not None]
+    if not parsed:
+        # Best-effort sample for the error message: the binary we'd run's raw
+        # `--version` output (already known unparseable, but worth showing why).
+        try:
+            result = run(
+                [databricks_cli_path(), "--version"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            raw = result.stdout or result.stderr or ""
+            output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            output = f"<error reading version: {exc}>"
         raise RuntimeError(
             f"Could not parse Databricks CLI version from `databricks --version` output: {output!r}"
         )
-    if version < minimum:
-        current = ".".join(str(n) for n in version)
+
+    newest_path, newest_version = max(parsed, key=lambda item: item[1])
+    if newest_version < minimum:
+        current = ".".join(str(n) for n in newest_version)
         required = ".".join(str(n) for n in minimum)
         print_warning(
             f"Databricks CLI v{current} is too old (need v{required} or newer). Upgrading..."
         )
         _run_databricks_cli_installer(brew_subcommand="upgrade")
         ensure_databricks_cli_version(minimum)
+        return
+
+    # A discovered CLI already meets the floor: drop the cached resolution so
+    # `databricks_cli_path()` re-resolves to it (it may differ from whatever was
+    # cached before this call, e.g. right after an install).
+    clear_databricks_cli_cache()
 
 
 def databricks_cli_version() -> tuple[int, int, int] | None:
-    """Return the installed Databricks CLI's (major, minor, patch), or None if
-    the CLI is absent or its version can't be read/parsed. Unlike
-    ``ensure_databricks_cli_version`` this only reports — it never upgrades — so
-    ``ucode doctor`` can decide what to recommend."""
-    if not shutil.which("databricks"):
-        return None
-    try:
-        result = run(
-            ["databricks", "--version"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    raw = result.stdout or result.stderr or ""
-    output = (raw if isinstance(raw, str) else raw.decode(errors="replace")).strip()
-    return _parse_databricks_cli_version(output)
+    """Return the version of the Databricks CLI that ``databricks_cli_path()``
+    would run, or None if none was discovered / its version can't be
+    read/parsed. Unlike ``ensure_databricks_cli_version`` this only reports —
+    it never upgrades — so ``ucode doctor`` can decide what to recommend."""
+    # Discovery is ordered best-first, so the front entry's version is the one
+    # `databricks_cli_path()` would run.
+    clis = _discover_databricks_clis()
+    return clis[0][1] if clis else None
 
 
 def upgrade_databricks_cli() -> bool:
@@ -776,20 +964,34 @@ def upgrade_databricks_cli() -> bool:
 
 def install_databricks_cli(
     minimum: tuple[int, int, int] = MIN_DATABRICKS_CLI_VERSION,
+    *,
+    skip_version_check: bool = False,
 ) -> None:
-    if shutil.which("databricks"):
-        ensure_databricks_cli_version(minimum)
+    """Ensure the Databricks CLI is installed and (unless skipped) new enough.
+
+    ``skip_version_check`` is set on ``--skip-preflight`` launches: they trust a
+    prior ``ucode configure`` and must not re-run the minimum-version gate, whose
+    ``databricks aitools`` floor (v1.0.0) rejects a perfectly usable public-preview
+    build (e.g. v0.299.2) as a false positive. A missing CLI is still installed —
+    only the version *check* is bypassed."""
+    if platform.system() == "Windows":
+        _refresh_windows_path()
+
+    if databricks_cli_installed():
+        if not skip_version_check:
+            ensure_databricks_cli_version(minimum)
         return
 
     print_section("Bootstrap")
     print_warning("`databricks` was not found. Installing Databricks CLI...")
     _run_databricks_cli_installer(brew_subcommand="install")
 
-    if not shutil.which("databricks"):
+    if not _discover_databricks_clis(use_cache=False):
         raise RuntimeError(
             "Databricks CLI install completed, but `databricks` is still not on PATH."
         )
-    ensure_databricks_cli_version(minimum)
+    if not skip_version_check:
+        ensure_databricks_cli_version(minimum)
 
 
 def install_ai_tools(agent_tokens: list[str], profile: str | None = None) -> None:
@@ -806,7 +1008,15 @@ def install_ai_tools(agent_tokens: list[str], profile: str | None = None) -> Non
     try:
         with spinner(f"Installing Databricks AI Tools for {agents_arg}..."):
             run(
-                ["databricks", "aitools", "install", "--agents", agents_arg, "--scope", "global"]
+                [
+                    databricks_cli_path(),
+                    "aitools",
+                    "install",
+                    "--agents",
+                    agents_arg,
+                    "--scope",
+                    "global",
+                ]
                 + _profile_args(profile),
                 check=True,
                 capture_output=True,
@@ -885,7 +1095,7 @@ def has_valid_databricks_auth(workspace: str, profile: str | None = None) -> boo
         env = build_databricks_cli_env(workspace, profile)
         result = run(
             [
-                "databricks",
+                databricks_cli_path(),
                 "auth",
                 "token",
                 "--host",
@@ -929,7 +1139,7 @@ def list_profile_entries() -> list[dict]:
     """
     try:
         result = run(
-            ["databricks", "auth", "profiles", "--output", "json"],
+            [databricks_cli_path(), "auth", "profiles", "--output", "json"],
             check=False,
             capture_output=True,
             text=True,
@@ -1068,7 +1278,7 @@ def run_databricks_login(workspace: str, profile: str | None = None) -> None:
     try:
         profile_name = profile or find_profile_name_for_host(workspace)
         cmd = [
-            "databricks",
+            databricks_cli_path(),
             "auth",
             "login",
             "--host",
@@ -1172,7 +1382,7 @@ def get_databricks_token(
     profile = profile or find_profile_name_for_host(workspace)
     env = build_databricks_cli_env(workspace, profile)
     cmd = [
-        "databricks",
+        databricks_cli_path(),
         "auth",
         "token",
         "--host",
@@ -1236,7 +1446,7 @@ def get_databricks_token(
         try:
             reauth = run(
                 [
-                    "databricks",
+                    databricks_cli_path(),
                     "auth",
                     "login",
                     "--host",
@@ -1297,6 +1507,23 @@ class PermissionDeniedError(RuntimeError):
     denial for a consumer."""
 
 
+class AuthTokenError(RuntimeError):
+    """The workspace rejected the access token *itself* — expired or invalid — as
+    opposed to a valid identity missing a grant (:class:`PermissionDeniedError`).
+
+    A ``--use-pat`` profile is never validated locally (the static PAT is exported
+    as ``DATABRICKS_BEARER`` and returned unchecked), so a stale PAT only surfaces
+    on the first real API call. Discovery callers let this propagate as a hard,
+    actionable error instead of skipping the source, so an expired/invalid token
+    is reported rather than looking like an empty workspace (AIGTWY-4843)."""
+
+
+def raise_for_invalid_access_token(workspace: str, reason: str | None) -> None:
+    """Raise a concise auth error for a rejected token; ignore other failures."""
+    if reason and _looks_like_definitive_auth_failure(reason):
+        raise AuthTokenError("Your access token is expired or invalid.")
+
+
 def _looks_like_cli_permission_error(stderr: str | None) -> bool:
     """Whether a Databricks CLI stderr indicates an authorization failure.
 
@@ -1315,7 +1542,7 @@ def list_databricks_apps(workspace: str, profile: str | None = None) -> list[dic
     try:
         result = run(
             [
-                "databricks",
+                databricks_cli_path(),
                 "apps",
                 "list",
                 *_profile_args(profile),
@@ -1792,7 +2019,9 @@ def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list
     """List the workspace's managed CodingAgentConfig(s) via the AI Gateway."""
     hostname = workspace_hostname(workspace)
     url = f"https://{hostname}{_CODING_AGENT_CONFIGS_API_PATH}"
-    payload, reason = _http_get_json(url, token, timeout=30)
+    payload, reason = _http_get_json(
+        url, token, timeout=30, headers={"User-Agent": f"ucode/{ug_version()}"}
+    )
     if reason is not None:
         return [], reason
     if isinstance(payload, dict):
@@ -1873,7 +2102,7 @@ MANAGED_CONFIG_UPDATE_MASK_PATHS: tuple[str, ...] = (
     "enabled_agents",
     "mcp_servers",
     "skills",
-    "spend_tiers",
+    "smart_defaults",
 )
 
 
@@ -1959,6 +2188,13 @@ def delete_coding_agent_config(workspace: str, token: str, name: str) -> str | N
 # --- MCP services (parallel to model services) -----------------------------
 
 
+# Canonical path segment of an AI Gateway MCP-services endpoint
+# (``https://<ws>/ai-gateway/mcp-services/<catalog>.<schema>.<service>``). This is
+# the single source of truth: URL building (below), connection-backed detection
+# (`mcp_connection_login.connection_from_url`), and URL-shape classification
+# (`mcp.py`) all reference this one constant.
+AIGW_MCP_SERVICES_SEGMENT = "/ai-gateway/mcp-services/"
+
 _MCP_SERVICE_NAME_PREFIX = "mcp-services/"
 
 
@@ -1978,35 +2214,85 @@ def _mcp_service_full_name(service: dict, required_prefix: str) -> str | None:
 
 
 def list_mcp_services(
-    workspace: str, token: str, parent: str = "system.ai"
+    workspace: str, token: str, parent: str = "system.ai", *, max_pages: int = 100
 ) -> tuple[list[str], str | None]:
     """List UC MCP services under ``parent`` (a ``<catalog>.<schema>`` ref).
+
+    Requests the ``BASIC`` view explicitly: only service names are needed to build
+    the deterministic proxy URLs, and ``BASIC`` omits the source-connection
+    resolution that makes ``FULL`` costlier (and adds Atlas load) at scale. The
+    server already defaults to ``BASIC`` when ``view`` is unset; sending it keeps
+    the cheap view even if that default ever changes.
+
+    Pages through ``next_page_token`` so a schema with more services than one page
+    (e.g. a whole-``system.ai`` pointer) isn't silently truncated.
 
     A non-None string indicates the listing call itself failed. Callers can inspect
     ``error`` for ``HTTP 404`` to distinguish "invalid location" from other failures.
     """
     hostname = workspace_hostname(workspace)
-    url = (
-        f"https://{hostname}/api/2.1/unity-catalog/mcp-services"
-        f"?{urlencode({'parent': f'schemas/{parent}'})}"
-    )
-    payload, reason = _http_get_json(url, token, timeout=30)
-    if payload is None:
-        return [], reason
     expected_prefix = parent + "."
-    data = cast(dict, payload) if isinstance(payload, dict) else {}
     names: list[str] = []
-    for service in data.get("mcp_services") or []:
-        if not isinstance(service, dict):
-            continue
-        full_name = _mcp_service_full_name(service, expected_prefix)
-        if full_name:
-            names.append(full_name)
+    page_token: str | None = None
+    seen_tokens: set[str] = set()
+    for _ in range(max_pages):
+        params: dict[str, str] = {"parent": f"schemas/{parent}", "view": "BASIC"}
+        if page_token:
+            params["page_token"] = page_token
+        url = f"https://{hostname}/api/2.1/unity-catalog/mcp-services?{urlencode(params)}"
+        payload, reason = _http_get_json(url, token, timeout=30)
+        if payload is None:
+            # First-page failure surfaces the reason (e.g. HTTP 404 for an invalid
+            # location); a mid-pagination blip keeps whatever we already collected.
+            if not names:
+                return [], reason
+            break
+        data = cast(dict, payload) if isinstance(payload, dict) else {}
+        for service in data.get("mcp_services") or []:
+            if not isinstance(service, dict):
+                continue
+            full_name = _mcp_service_full_name(service, expected_prefix)
+            if full_name:
+                names.append(full_name)
+        page_token = data.get("next_page_token") or None
+        if not page_token or page_token in seen_tokens:
+            break
+        seen_tokens.add(page_token)
     return sorted(set(names)), None
 
 
 def build_mcp_service_url(workspace: str, full_name: str) -> str:
-    return f"{workspace}/ai-gateway/mcp-services/{full_name}"
+    return f"{workspace}{AIGW_MCP_SERVICES_SEGMENT}{full_name}"
+
+
+# Connection securable kinds that use per-user OAuth (U2M): the mcp-service only vends its tools
+# after a one-time per-user sign-in to the backing SaaS. Mirrors the webapp's
+# `hasGenericAccessTokenFlowKnownKinds`. A service with no source connection (e.g.
+# `system.ai.web_search`) needs no sign-in — just the Databricks token.
+OAUTH_U2M_CONNECTION_KINDS = frozenset(
+    {
+        "CONNECTION_HTTP_OAUTH_U2M_MAPPING",
+        "CONNECTION_HTTP_DCR",
+        "CONNECTION_SLACK_OAUTH_U2M_MAPPING",
+    }
+)
+
+
+def mcp_service_needs_connection_login(workspace: str, token: str, full_name: str) -> bool:
+    """Whether an AI Gateway mcp-service is backed by a per-user OAuth (U2M) connection, and so
+    needs a one-time connection sign-in before it vends tools.
+
+    Reads the service's ``config.source_connection.securable_kind`` via a per-service GET (the
+    listing omits it). No source connection (e.g. ``system.ai.web_search``), a non-U2M kind, or a
+    failed lookup all return ``False`` — the safe default: such services work with only the
+    Databricks token that ``ug mcp-proxy`` injects, and must not be pushed into a connection-login
+    OAuth flow they can't complete (AIGTWY-4856)."""
+    prefix = f"https://{workspace_hostname(workspace)}/api/2.1/unity-catalog"
+    details, err = _http_get_json(f"{prefix}/mcp-services/{quote(full_name, safe='')}", token)
+    if err is not None or not isinstance(details, dict):
+        return False
+    kind = ((details.get("config") or {}).get("source_connection") or {}).get("securable_kind")
+    return kind in OAUTH_U2M_CONNECTION_KINDS
 
 
 def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
@@ -2260,14 +2546,17 @@ def service_usable_for_tool(tool: str, service: dict) -> bool:
 
     Beyond the provider-type match, a Bedrock service is only usable for claude
     if it exposes at least one Claude model in its targets — otherwise there's no
-    routable model id to pin. (Anthropic services use canonical names, so any
-    match is usable.)
+    routable model id to pin — or is ``allow_all_targets``, in which case the model
+    id comes from elsewhere (e.g. the managed config's authored default). (Anthropic
+    services use canonical names, so any match is usable.)
     """
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
         return False
     if provider_type in BEDROCK_PROVIDER_TYPES:
-        return bool(map_claude_family_models(service.get("targets") or []))
+        return bool(service.get("allow_all_targets")) or bool(
+            map_claude_family_models(service.get("targets") or [])
+        )
     return True
 
 
@@ -2307,12 +2596,14 @@ def resolve_provider_service(
             f"Model provider service '{service_name}' is a '{provider_type}' provider, "
             f"which {tool} can't route to (supported: {supported})."
         )
-    if provider_type in BEDROCK_PROVIDER_TYPES and not map_claude_family_models(
-        match.get("targets") or []
+    if (
+        provider_type in BEDROCK_PROVIDER_TYPES
+        and not match.get("allow_all_targets")
+        and not map_claude_family_models(match.get("targets") or [])
     ):
         return None, (
             f"Model provider service '{service_name}' exposes no Claude models — "
-            f"add Claude targets to it or pick a different service."
+            f"add Claude targets to it, enable allow_all_targets, or pick a different service."
         )
     return match, None
 
@@ -2414,6 +2705,8 @@ _UC_LIST_PAGE_SIZE = 200
 _UC_LIST_MAX_PAGES = 50
 _SCHEMA_PROBE_WORKERS = 16
 _UC_LIST_HTTP_TIMEOUT = 10
+_WALK_POLL_INTERVAL = 0.05
+_PROBE_FAILED = object()
 # Most MCP services live outside `system.ai`, so this workspace-wide walk needs
 # enough time to enumerate them; a slow workspace still degrades to partial
 # results once the budget is exceeded instead of hanging indefinitely.
@@ -2425,22 +2718,45 @@ _UC_FUNCTIONS_SKIP_CATALOGS = frozenset(
 )
 
 
-def _drain_with_deadline(futures: dict, deadline: float, on_result) -> None:
-    """Iterate `futures` via `as_completed`, calling `on_result(value, key)` per
-    completed future, until either all are done or `deadline` passes. Per-task
-    exceptions are swallowed so one failure doesn't stop the rest."""
-    remaining = max(0.0, deadline - time.monotonic())
-    try:
-        for future in as_completed(futures, timeout=remaining):
+def _collect_concurrently[T, R](
+    items: list[T],
+    run: Callable[[T], R],
+    on_result: Callable[[R, T], None],
+    *,
+    max_workers: int,
+    should_stop: Callable[[], bool],
+) -> None:
+    """Run `run` over `items` on daemon workers that are never joined, so a slow or stuck
+    call can't block process exit. Results go to `on_result` on the calling thread until
+    every item is drained or `should_stop()` returns True."""
+    pending: queue.Queue[T] = queue.Queue()
+    for item in items:
+        pending.put(item)
+    results: queue.Queue[tuple[Any, T]] = queue.Queue()
+
+    def worker() -> None:
+        while not should_stop():
             try:
-                value = future.result()
+                item = pending.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                results.put((run(item), item))
             except Exception:  # noqa: BLE001
-                continue
-            on_result(value, futures[future])
-            if time.monotonic() > deadline:
-                break
-    except FutureTimeoutError:
-        pass
+                results.put((_PROBE_FAILED, item))
+
+    for _ in range(max(1, min(max_workers, len(items)))):
+        threading.Thread(target=worker, daemon=True).start()
+
+    remaining = len(items)
+    while remaining > 0 and not should_stop():
+        try:
+            result, item = results.get(timeout=_WALK_POLL_INTERVAL)
+        except queue.Empty:
+            continue
+        remaining -= 1
+        if result is not _PROBE_FAILED:
+            on_result(result, item)
 
 
 def _paginated_json_items(
@@ -2495,13 +2811,14 @@ def walk_catalog_schemas[T](
     collect: Callable[[T, int, int], None],
     skip_catalogs: frozenset[str] = _UC_FUNCTIONS_SKIP_CATALOGS,
     max_workers: int = _SCHEMA_PROBE_WORKERS,
+    cancel_event: threading.Event | None = None,
 ) -> str | None:
     """Discover every user `<catalog>.<schema>` in the workspace and probe each one in parallel.
 
     Catalogs and their schemas are listed (skipping `skip_catalogs` and `information_schema`), then
     each schema is probed concurrently until `deadline` (an absolute `time.monotonic()` value)
-    passes, so a slow workspace returns partial results instead of hanging. The caller supplies two
-    callables and owns whatever they accumulate:
+    passes or `cancel_event` is set, so a slow workspace returns partial results instead of hanging.
+    The caller supplies two callables and owns whatever they accumulate:
 
       - `probe(catalog, schema) -> result`: fetch one schema's data (e.g. its MCP services).
       - `collect(result, done, total)`: handle each probe result as it lands — accumulating,
@@ -2509,6 +2826,11 @@ def walk_catalog_schemas[T](
 
     Returns None once the probes run, or a short reason string if there are no catalogs or schemas
     to probe."""
+    cancel_event = cancel_event or threading.Event()
+
+    def should_stop() -> bool:
+        return cancel_event.is_set() or time.monotonic() > deadline
+
     hostname = workspace_hostname(workspace)
 
     catalogs, catalogs_reason = _paginated_json_items(
@@ -2531,33 +2853,27 @@ def walk_catalog_schemas[T](
         return "deadline exceeded while listing UC catalogs"
 
     schema_refs: list[tuple[str, str]] = []
-    schema_workers = max(1, min(max_workers, len(catalog_names)))
-    with ThreadPoolExecutor(max_workers=schema_workers) as pool:
-        schema_futures = {
-            pool.submit(
-                _paginated_json_items,
-                f"https://{hostname}/api/2.1/unity-catalog/schemas",
-                token,
-                items_key="schemas",
-                extra_params={"catalog_name": cat},
-                timeout=_UC_LIST_HTTP_TIMEOUT,
-            ): cat
-            for cat in catalog_names
-        }
 
-        def collect_schemas(result, catalog):
-            schemas, _ = result
-            for schema in schemas:
-                schema_name = schema.get("name")
-                if (
-                    isinstance(schema_name, str)
-                    and schema_name
-                    and schema_name != "information_schema"
-                ):
-                    schema_refs.append((catalog, schema_name))
+    def collect_schemas(result, catalog):
+        schemas, _ = result
+        for schema in schemas:
+            schema_name = schema.get("name")
+            if isinstance(schema_name, str) and schema_name and schema_name != "information_schema":
+                schema_refs.append((catalog, schema_name))
 
-        _drain_with_deadline(schema_futures, deadline, collect_schemas)
-        pool.shutdown(wait=False, cancel_futures=True)
+    _collect_concurrently(
+        catalog_names,
+        lambda cat: _paginated_json_items(
+            f"https://{hostname}/api/2.1/unity-catalog/schemas",
+            token,
+            items_key="schemas",
+            extra_params={"catalog_name": cat},
+            timeout=_UC_LIST_HTTP_TIMEOUT,
+        ),
+        collect_schemas,
+        max_workers=max_workers,
+        should_stop=should_stop,
+    )
 
     if not schema_refs:
         if time.monotonic() > deadline:
@@ -2566,20 +2882,19 @@ def walk_catalog_schemas[T](
 
     schemas_total = len(schema_refs)
     schemas_done = 0
-    probe_workers = max(1, min(max_workers, schemas_total))
-    with ThreadPoolExecutor(max_workers=probe_workers) as pool:
-        probe_futures = {
-            pool.submit(probe, catalog, schema): (catalog, schema)
-            for catalog, schema in schema_refs
-        }
 
-        def collect_probe(result, _ref):
-            nonlocal schemas_done
-            schemas_done += 1
-            collect(result, schemas_done, schemas_total)
+    def collect_probe(result, _ref):
+        nonlocal schemas_done
+        schemas_done += 1
+        collect(result, schemas_done, schemas_total)
 
-        _drain_with_deadline(probe_futures, deadline, collect_probe)
-        pool.shutdown(wait=False, cancel_futures=True)
+    _collect_concurrently(
+        schema_refs,
+        lambda ref: probe(*ref),
+        collect_probe,
+        max_workers=max_workers,
+        should_stop=should_stop,
+    )
 
     return None
 
@@ -2591,6 +2906,7 @@ def list_all_mcp_services(
     deadline_seconds: float = _MCP_SERVICES_WALK_DEADLINE_SECONDS,
     on_progress: Callable[[int, int, int], None] | None = None,
     on_services: Callable[[list[str]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[list[str], str | None]:
     """Return sorted unique MCP-service full names across every `<catalog>.<schema>`
     in the workspace. The mcp-services API is one-schema-per-call, so this walks
@@ -2621,7 +2937,9 @@ def list_all_mcp_services(
         if on_services is not None and new:
             on_services(sorted(new))
 
-    reason = walk_catalog_schemas(workspace, token, deadline=deadline, probe=probe, collect=collect)
+    reason = walk_catalog_schemas(
+        workspace, token, deadline=deadline, probe=probe, collect=collect, cancel_event=cancel_event
+    )
     if reason is not None:
         return [], reason
     if not names:
@@ -2632,14 +2950,20 @@ def list_all_mcp_services(
 
 
 def _get_anthropic_models_json(
-    workspace: str, token: str, *, parent_schema: str | None = None
+    workspace: str,
+    token: str,
+    *,
+    parent_schema: str | None = None,
+    provider: str | None = None,
 ) -> tuple[dict | list | None, str | None]:
     hostname = workspace_hostname(workspace)
-    headers = (
-        {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema} if parent_schema is not None else None
-    )
+    headers = None
+    if provider is not None:
+        headers = {MODEL_PROVIDER_SERVICE_HEADER: provider}
+    elif parent_schema is not None:
+        headers = {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema}
     return _http_get_json(
-        f"https://{hostname}{ANTHROPIC_MODELS_PATH}",
+        f"https://{hostname}{ANTHROPIC_MODELS_PATH}?limit=1000",
         token,
         max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
         **({"headers": headers} if headers is not None else {}),
@@ -2658,10 +2982,19 @@ def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | 
 
 
 def list_anthropic_model_catalog(
-    workspace: str, token: str, *, parent_schema: str | None = None
+    workspace: str,
+    token: str,
+    *,
+    parent_schema: str | None = None,
+    provider: str | None = None,
 ) -> AnthropicModelCatalog:
     """Return advertised Anthropic model ids and their optional display metadata."""
-    payload, reason = _get_anthropic_models_json(workspace, token, parent_schema=parent_schema)
+    payload, reason = _get_anthropic_models_json(
+        workspace,
+        token,
+        parent_schema=parent_schema,
+        provider=provider,
+    )
     if payload is None:
         return AnthropicModelCatalog(model_ids=[], model_id_to_display_name={}, error_msg=reason)
 
@@ -2865,8 +3198,7 @@ _MODEL_SERVICE_EMPTY_DETAIL = (
 
 
 def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
-    hostname = workspace_hostname(workspace)
-    base = f"https://{hostname}/api/2.1/unity-catalog/model-services"
+    base = f"{normalize_workspace_url(workspace)}/api/2.1/unity-catalog/model-services"
     page_token: str | None = None
     for page in range(_MODEL_SERVICE_PROBE_MAX_PAGES):
         params: dict[str, object] = {"page_size": _MODEL_SERVICE_PROBE_PAGE_SIZE}
@@ -2934,14 +3266,18 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
 
 
 def _looks_like_definitive_auth_failure(reason: str) -> bool:
-    """True when the token itself is rejected (401, or an invalid-token 400).
+    """True when the token itself is rejected (expired or invalid).
 
-    A 403 is left to the scope and permission routing, since it can mean a
-    missing OAuth scope or missing Unity Catalog grants rather than a bad token.
+    Matches a 401, an invalid-token 400 (the AI Gateway's `Invalid Token`), or a
+    403 whose body reports an invalid access token (Unity Catalog rejects a stale
+    PAT this way, e.g. `HTTP 403 Forbidden: ...Invalid access token...`). A *plain*
+    403 with no token-invalid wording is left to the scope and permission routing,
+    since it can mean a missing OAuth scope or Unity Catalog grants, not a bad token.
     """
-    if "HTTP 401" in reason:
+    lowered = reason.lower()
+    if "http 401" in lowered:
         return True
-    return "HTTP 400" in reason and "invalid token" in reason.lower()
+    return "invalid token" in lowered or "invalid access token" in lowered
 
 
 def _looks_like_scope_failure(reason: str) -> bool:
@@ -3099,10 +3435,7 @@ def build_pi_base_urls(workspace: str) -> dict[str, str]:
 
 
 def build_copilot_base_url(workspace: str) -> str:
-    # Copilot CLI's `openai` provider appends `/chat/completions` to the
-    # configured base URL. The Databricks MLflow chat-completions gateway is
-    # OpenAI-compatible and serves Claude, codex (gpt-5), and gemini models
-    # behind one URL.
+    # Copilot appends `/responses` or `/chat/completions`; both use this gateway base.
     return f"{workspace}/ai-gateway/mlflow/v1"
 
 

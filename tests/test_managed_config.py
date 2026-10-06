@@ -65,7 +65,7 @@ RAW_MANIFEST = {
     ],
     "mcp_servers": {"names": ["system.ai.github", "main.default.jira"]},
     "skills": {"names": ["system.ai.pdf-extraction"]},
-    "spend_tiers": {
+    "smart_defaults": {
         "budget_id": "c6563b45-df9a-4b19-afb2-d42dc2b52576",
         "tiers": [
             {
@@ -75,6 +75,13 @@ RAW_MANIFEST = {
             },
         ],
     },
+}
+
+# A legacy cache/API response from before the server renamed ``spend_tiers`` to
+# ``smart_defaults``. It is accepted only when the current key is absent.
+LEGACY_RAW_MANIFEST = {
+    **{key: value for key, value in RAW_MANIFEST.items() if key != "smart_defaults"},
+    "spend_tiers": RAW_MANIFEST["smart_defaults"],
 }
 
 
@@ -162,10 +169,27 @@ class TestNormalize:
         assert codex["model_config"]["model_provider_service"] == "main.default.openai-mps"
         assert codex["model_config"]["default_model"] == "gpt-5.4"
 
-    def test_budget_policy_carries_budget_id_and_tiers(self):
+    def test_smart_defaults_carries_budget_id_and_tiers(self):
         cfg = normalize_managed_config(RAW_MANIFEST)
-        assert cfg["spend_tiers"]["budget_id"] == "c6563b45-df9a-4b19-afb2-d42dc2b52576"
-        assert cfg["spend_tiers"]["tiers"][0]["recommended_agent"] == "codex"
+        assert cfg["smart_defaults"]["budget_id"] == "c6563b45-df9a-4b19-afb2-d42dc2b52576"
+        assert cfg["smart_defaults"]["tiers"][0]["recommended_agent"] == "codex"
+
+    def test_legacy_spend_tiers_fall_back_to_smart_defaults(self):
+        cfg = normalize_managed_config(LEGACY_RAW_MANIFEST)
+        assert cfg["smart_defaults"] == normalize_managed_config(RAW_MANIFEST)["smart_defaults"]
+        assert "spend_tiers" not in cfg
+
+    def test_smart_defaults_take_precedence_over_legacy_spend_tiers(self):
+        raw = {
+            **LEGACY_RAW_MANIFEST,
+            "smart_defaults": {"budget_id": "new-budget"},
+        }
+        assert normalize_managed_config(raw)["smart_defaults"] == {"budget_id": "new-budget"}
+
+    @pytest.mark.parametrize("smart_defaults", [None, {}, {"tiers": []}])
+    def test_explicit_empty_smart_defaults_do_not_resurrect_legacy(self, smart_defaults):
+        raw = {**LEGACY_RAW_MANIFEST, "smart_defaults": smart_defaults}
+        assert "smart_defaults" not in normalize_managed_config(raw)
 
     def test_spec_version_not_carried_into_internal_manifest(self):
         # Kept out so the serialize/normalize round trip (which never sees spec_version) is unaffected.
@@ -426,7 +450,7 @@ class TestFetchClient:
         monkeypatch.setattr(
             db_mod,
             "_http_get_json",
-            lambda url, token, timeout=10: (payload, None),
+            lambda url, token, timeout=10, headers=None: (payload, None),
         )
         configs, reason = db_mod.fetch_managed_coding_agent_configs("https://ws", "tok")
         assert reason is None
@@ -437,7 +461,7 @@ class TestFetchClient:
         monkeypatch.setattr(
             db_mod,
             "_http_get_json",
-            lambda url, token, timeout=10: ({}, None),
+            lambda url, token, timeout=10, headers=None: ({}, None),
         )
         configs, reason = db_mod.fetch_managed_coding_agent_configs("https://ws", "tok")
         assert configs == []
@@ -447,11 +471,35 @@ class TestFetchClient:
         monkeypatch.setattr(
             db_mod,
             "_http_get_json",
-            lambda url, token, timeout=10: (None, "HTTP 403 Forbidden"),
+            lambda url, token, timeout=10, headers=None: (None, "HTTP 403 Forbidden"),
         )
         configs, reason = db_mod.fetch_managed_coding_agent_configs("https://ws", "tok")
         assert configs == []
         assert reason == "HTTP 403 Forbidden"
+
+    def test_sends_ucode_user_agent_header(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "ug_version", lambda: "9.9.9")
+        captured = {}
+
+        class _FakeResponse:
+            headers: dict[str, str] = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b'{"coding_agent_configs": []}'
+
+        def fake_urlopen(request, timeout=None):
+            captured["request"] = request
+            return _FakeResponse()
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        db_mod.fetch_managed_coding_agent_configs("https://ws", "tok")
+        assert captured["request"].get_header("User-agent") == "ucode/9.9.9"
 
 
 WORKSPACE = "https://ws.example.com"
@@ -714,6 +762,20 @@ class TestRefreshTTL:
         )
         self._no_fetch(monkeypatch)
         assert refresh_managed_config(_state()) == (normalize_managed_config(RAW_MANIFEST), False)
+
+    def test_fresh_legacy_cache_normalizes_to_smart_defaults(self, monkeypatch):
+        self._write_cache(
+            config=LEGACY_RAW_MANIFEST,
+            outcome="published",
+            retrieved_at=NOW - timedelta(minutes=1),
+        )
+        self._no_fetch(monkeypatch)
+        result, feature_disabled = refresh_managed_config(_state())
+        assert result == normalize_managed_config(LEGACY_RAW_MANIFEST)
+        assert result is not None
+        assert "smart_defaults" in result
+        assert "spend_tiers" not in result
+        assert feature_disabled is False
 
     def test_fresh_no_config_cache_short_circuits(self, monkeypatch):
         self._write_cache(config={}, outcome="none", retrieved_at=NOW - timedelta(minutes=1))

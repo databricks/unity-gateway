@@ -3,6 +3,11 @@ and download orchestration."""
 
 from __future__ import annotations
 
+import threading
+import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
 import pytest
 
 import ucode.skills_download as sd
@@ -14,8 +19,19 @@ from ucode.skills_download import (
     skill_dir_roots,
     write_skill,
 )
+from ucode.skills_state import SkillInstall
 
 WS = "https://example.databricks.com"
+
+
+def _skill(securable_name: str, uc_update_time: str) -> SkillRef:
+    return SkillRef(
+        catalog="main",
+        schema="default",
+        securable_name=securable_name,
+        bundle_name=securable_name,
+        uc_update_time=uc_update_time,
+    )
 
 
 def ref(
@@ -106,12 +122,114 @@ class TestWriteSkill:
         assert (roots[0] / "triage/SKILL.md").read_bytes() == b"ok"
         assert not (tmp_path / "escape.md").exists()
 
+    def test_replace_drops_files_removed_upstream(self, tmp_path):
+        roots = skill_dir_roots(str(tmp_path))
+        write_skill(roots, ref("triage"), {"SKILL.md": b"v1", "notes.md": b"old"})
+
+        write_skill(roots, ref("triage"), {"SKILL.md": b"v2"})
+
+        for root in roots:
+            assert (root / "triage/SKILL.md").read_bytes() == b"v2"
+            assert not (root / "triage/notes.md").exists()
+
+    def test_empty_bundle_keeps_existing_copy(self, tmp_path):
+        roots = skill_dir_roots(str(tmp_path))
+        write_skill(roots, ref("triage"), {"SKILL.md": b"v1"})
+
+        write_skill(roots, ref("triage"), {})
+
+        assert (roots[0] / "triage/SKILL.md").read_bytes() == b"v1"
+
+    def test_replaces_symlinked_bundle_without_touching_its_target(self, tmp_path):
+        roots = skill_dir_roots(str(tmp_path))
+        target = tmp_path / "real-skill"
+        target.mkdir()
+        (target / "keep.md").write_bytes(b"authored")
+        roots[0].mkdir(parents=True)
+        (roots[0] / "triage").symlink_to(target)
+
+        write_skill(roots, ref("triage"), {"SKILL.md": b"fresh"})
+
+        assert not (roots[0] / "triage").is_symlink()
+        assert (roots[0] / "triage/SKILL.md").read_bytes() == b"fresh"
+        assert (target / "keep.md").exists()
+
+    def test_leaves_only_the_bundle_dir(self, tmp_path):
+        roots = skill_dir_roots(str(tmp_path))
+
+        write_skill(roots, ref("triage"), {"SKILL.md": b"v1"})
+        write_skill(roots, ref("triage"), {"SKILL.md": b"v2"})
+
+        for root in roots:
+            assert [p.name for p in root.iterdir()] == ["triage"]
+
+    def test_recovers_from_interrupted_previous_write(self, tmp_path):
+        roots = skill_dir_roots(str(tmp_path))
+        for root in roots:
+            partial = root / "triage"
+            (partial / "scripts").mkdir(parents=True)
+            (partial / "stale.py").write_bytes(b"garbage")
+            (partial / "scripts/old.py").write_bytes(b"garbage")
+
+        write_skill(roots, ref("triage"), {"SKILL.md": b"good", "scripts/run.py": b"print(1)"})
+
+        for root in roots:
+            assert (root / "triage/SKILL.md").read_bytes() == b"good"
+            assert (root / "triage/scripts/run.py").read_bytes() == b"print(1)"
+            assert not (root / "triage/stale.py").exists()
+            assert not (root / "triage/scripts/old.py").exists()
+
 
 class TestFetchBundles:
     def test_empty_leaves_returns_empty_without_pool(self):
         # min(workers, 0) would raise ValueError in ThreadPoolExecutor; the
         # early return keeps _fetch_bundles safe regardless of caller.
         assert sd._fetch_bundles(WS, "token", [], label="main.default") == {}
+
+    def test_expired_deadline_stops_waiting(self, monkeypatch):
+        release = threading.Event()
+
+        def blocking_fetch(*_args):
+            release.wait(timeout=5)
+            return {"SKILL.md": b"late"}, None
+
+        monkeypatch.setattr(sd, "fetch_skill_bundle", blocking_fetch)
+        start = time.monotonic()
+        try:
+            bundles = sd._fetch_bundles(
+                WS, "token", [ref("triage")], label="x", deadline=time.monotonic() - 1
+            )
+        finally:
+            release.set()
+        assert bundles == {}
+        assert time.monotonic() - start < 1.0
+
+
+class TestFetchBundlesAndWrite:
+    def test_writes_survivors_and_skips_fetch_failures(self, tmp_path, monkeypatch):
+        roots = skill_dir_roots(str(tmp_path))
+        monkeypatch.setattr(
+            sd,
+            "_fetch_bundles",
+            lambda *a, **k: {
+                "main.default.triage": ({"SKILL.md": b"ok"}, None),
+                "main.default.pii": (None, "HTTP 500"),
+            },
+        )
+        warnings: list[str] = []
+        monkeypatch.setattr(sd, "print_warning", warnings.append)
+
+        written = sd._fetch_bundles_and_write(
+            WS, "token", [ref("triage"), ref("pii")], roots, label="x"
+        )
+
+        assert [r.fqn for r in written] == ["main.default.triage"]
+        assert (roots[0] / "triage/SKILL.md").read_bytes() == b"ok"
+        assert any("pii" in w for w in warnings)
+
+    def test_empty_refs_makes_no_fetch(self, monkeypatch):
+        monkeypatch.setattr(sd, "_fetch_bundles", lambda *a, **k: pytest.fail("should not fetch"))
+        assert sd._fetch_bundles_and_write(WS, "token", [], [], label="x") == []
 
 
 class TestDownloadSkillsFromSchemaLocations:
@@ -855,7 +973,9 @@ class TestSkillDownloadPicker:
         monkeypatch.setattr(sd, "list_all_skills", fake_list_all)
         appended = []
 
-        message = sd._skills_download_background_loader(WS, "token", roots)(appended.extend)
+        message = sd._skills_download_background_loader(WS, "token", roots)(
+            appended.extend, threading.Event()
+        )
 
         assert message is None
         assert captured["token"] == "token"
@@ -870,7 +990,9 @@ class TestSkillDownloadPicker:
 
         monkeypatch.setattr(sd, "list_all_skills", fake_list_all)
 
-        message = sd._skills_download_background_loader(WS, "token", roots)(lambda choices: None)
+        message = sd._skills_download_background_loader(WS, "token", roots)(
+            lambda choices: None, threading.Event()
+        )
 
         assert message == "⚠ Timed out after 30s, found 2 skills"
 
@@ -1089,3 +1211,306 @@ class TestRemoveDownloadedSkillsCommand:
         sd.remove_downloaded_skills_command([], path=None)
 
         assert [r["fqn"] for r in offered] == ["ml.prod.pii"]  # managed skill withheld
+
+
+class TestEligibleLaunchRecords:
+    def test_keeps_current_workspace_non_managed_downloads(self, tmp_path):
+        home, proj, other = tmp_path / "home", tmp_path / "proj", tmp_path / "other"
+        records = [
+            {"fqn": "a.b.home", "workspace": WS, "scope": "user", "base": str(home)},
+            {"fqn": "a.b.proj", "workspace": WS, "scope": "project", "base": str(proj)},
+            {"fqn": "a.b.other", "workspace": WS, "scope": "project", "base": str(other)},
+            {"fqn": "a.b.managed", "workspace": WS, "scope": "managed", "base": str(home)},
+            {"fqn": "a.b.otherws", "workspace": "https://x", "scope": "user", "base": str(home)},
+        ]
+
+        eligible = sd._eligible_launch_refresh_records(records, WS)
+
+        assert {r["fqn"] for r in eligible} == {"a.b.home", "a.b.proj", "a.b.other"}
+
+    def test_skips_records_missing_fqn_or_base(self, tmp_path):
+        records = [
+            {"workspace": WS, "scope": "user", "base": str(tmp_path)},
+            {"fqn": "a.b.nobase", "workspace": WS, "scope": "user"},
+        ]
+
+        assert sd._eligible_launch_refresh_records(records, WS) == []
+
+
+class TestRefsNeedingRefresh:
+    def test_flags_only_newer_or_unversioned(self, monkeypatch):
+        records = [
+            {"fqn": "main.default.newer", "uc_update_time": "2026-01-01T00:00:00Z"},
+            {"fqn": "main.default.same", "uc_update_time": "2026-01-01T00:00:00Z"},
+            {"fqn": "main.default.older", "uc_update_time": "2026-06-01T00:00:00Z"},
+            {"fqn": "main.default.unversioned"},
+            {"fqn": "main.default.gone", "uc_update_time": "2026-01-01T00:00:00Z"},
+            # Mixed RFC-3339 precision: stored whole-second, UC edited to a sub-second later time.
+            {"fqn": "main.default.subsecond", "uc_update_time": "2026-06-26T05:58:25Z"},
+            # Stored sub-second, UC now on an earlier whole second: must NOT be judged newer.
+            {"fqn": "main.default.roundup", "uc_update_time": "2026-06-26T05:58:25.400Z"},
+        ]
+        current = {
+            "main.default.newer": _skill("newer", "2026-02-01T00:00:00Z"),
+            "main.default.same": _skill("same", "2026-01-01T00:00:00Z"),
+            "main.default.older": _skill("older", "2026-01-01T00:00:00Z"),
+            "main.default.unversioned": _skill("unversioned", "2026-01-01T00:00:00Z"),
+            "main.default.gone": None,
+            "main.default.subsecond": _skill("subsecond", "2026-06-26T05:58:25.400Z"),
+            "main.default.roundup": _skill("roundup", "2026-06-26T05:58:25Z"),
+        }
+        monkeypatch.setattr(sd, "get_skill", lambda ws, tok, fqn: current[fqn])
+
+        pairs = sd._refs_needing_refresh(WS, "token", records, time.monotonic() + 30)
+
+        assert {r["fqn"] for r, _ in pairs} == {
+            "main.default.newer",
+            "main.default.unversioned",
+            "main.default.subsecond",
+        }
+
+    def test_empty_records_makes_no_pool(self, monkeypatch):
+        monkeypatch.setattr(sd, "get_skill", lambda *a: pytest.fail("should not fetch"))
+        assert sd._refs_needing_refresh(WS, "token", [], time.monotonic() + 30) == []
+
+    def test_expired_deadline_stops_waiting(self, monkeypatch):
+        release = threading.Event()
+
+        def blocking_get_skill(*_args):
+            release.wait(timeout=5)
+            return None
+
+        monkeypatch.setattr(sd, "get_skill", blocking_get_skill)
+        start = time.monotonic()
+        try:
+            pairs = sd._refs_needing_refresh(
+                WS, "token", [{"fqn": "main.default.triage"}], time.monotonic() - 1
+            )
+        finally:
+            release.set()
+        assert pairs == []
+        assert time.monotonic() - start < 1.0
+
+
+class TestUpdateStaleSkills:
+    def test_overwrites_both_roots_and_refreshes_record(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setattr(
+            sd,
+            "_fetch_bundles",
+            lambda *a, **k: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
+        )
+
+        updated = sd._update_stale_skills(
+            WS,
+            "token",
+            [({"base": str(home)}, _skill("triage", "2026-09-01T00:00:00Z"))],
+            time.monotonic() + 30,
+        )
+
+        assert updated == 1
+        for family in (".claude/skills", ".agents/skills"):
+            assert (home / family / "triage" / "SKILL.md").read_bytes() == b"fresh"
+        stored = skills_state.list_downloaded()
+        assert stored[0]["fqn"] == "main.default.triage"
+        assert stored[0]["uc_update_time"] == "2026-09-01T00:00:00Z"
+
+    def test_skips_rename_onto_skill_already_on_disk(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))
+        authored = home / ".claude/skills/bar"
+        authored.mkdir(parents=True)
+        (authored / "SKILL.md").write_bytes(b"mine")
+        monkeypatch.setattr(sd, "_fetch_bundles", lambda *a, **k: pytest.fail("should not fetch"))
+        warnings: list[str] = []
+        monkeypatch.setattr(sd, "print_warning", warnings.append)
+
+        updated = sd._update_stale_skills(
+            WS,
+            "token",
+            [({"base": str(home), "bundle_name": "foo"}, ref("foo", "bar"))],
+            time.monotonic() + 30,
+        )
+
+        assert updated == 0
+        assert (authored / "SKILL.md").read_bytes() == b"mine"
+        assert "renamed to `bar`" in warnings[0]
+
+    def test_skips_second_rename_onto_the_same_new_name(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setattr(
+            sd,
+            "_fetch_bundles",
+            lambda ws, tok, refs, **k: {r.fqn: ({"SKILL.md": r.fqn.encode()}, None) for r in refs},
+        )
+        monkeypatch.setattr(sd, "print_warning", lambda _message: None)
+
+        updated = sd._update_stale_skills(
+            WS,
+            "token",
+            [
+                ({"base": str(home), "bundle_name": "foo"}, ref("foo", "shared")),
+                ({"base": str(home), "bundle_name": "bar"}, ref("bar", "shared")),
+            ],
+            time.monotonic() + 30,
+        )
+
+        assert updated == 1
+        assert (home / ".claude/skills/shared/SKILL.md").read_bytes() == b"main.default.foo"
+
+    def test_deadline_mid_fetch_writes_only_bundles_that_arrived(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))
+        release = threading.Event()
+
+        def fetch(ws, tok, catalog, schema, securable):
+            if securable == "slow":
+                release.wait(timeout=5)
+            return {"SKILL.md": securable.encode()}, None
+
+        monkeypatch.setattr(sd, "fetch_skill_bundle", fetch)
+        pairs = [
+            ({"base": str(home)}, _skill(name, "2026-09-01T00:00:00Z")) for name in ("fast", "slow")
+        ]
+        start = time.monotonic()
+        try:
+            updated = sd._update_stale_skills(WS, "token", pairs, time.monotonic() + 0.5)
+        finally:
+            release.set()
+
+        assert time.monotonic() - start < 2.0
+        assert updated == 1
+        assert (home / ".claude/skills/fast/SKILL.md").read_bytes() == b"fast"
+        assert not (home / ".claude/skills/slow").exists()
+        assert [r["fqn"] for r in skills_state.list_downloaded()] == ["main.default.fast"]
+
+    def test_expired_deadline_skips_downloads(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setattr(
+            sd, "_fetch_bundles", lambda *a, **k: pytest.fail("should not fetch past deadline")
+        )
+        updated = sd._update_stale_skills(
+            WS,
+            "token",
+            [({"base": str(tmp_path)}, _skill("triage", "2026-09-01T00:00:00Z"))],
+            time.monotonic() - 1,
+        )
+        assert updated == 0
+
+
+def _record_download(home, monkeypatch, *, uc_update_time="2026-01-01T00:00:00Z", on_disk=True):
+    """Record a home-scoped download of `triage`, writing its dirs when `on_disk`."""
+    monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))
+    dirs = tuple(str(home / family / "triage") for family in (".claude/skills", ".agents/skills"))
+    if on_disk:
+        for directory in dirs:
+            Path(directory).mkdir(parents=True)
+            (Path(directory) / "SKILL.md").write_bytes(b"old")
+    skills_state.record_downloads(
+        [
+            SkillInstall(
+                fqn="main.default.triage",
+                bundle_name="triage",
+                workspace=WS,
+                scope="user",
+                base=str(home),
+                dirs=dirs,
+                uc_update_time=uc_update_time,
+            )
+        ]
+    )
+
+
+class TestRefreshOnLaunch:
+    def test_interval_is_one_day(self):
+        assert sd.SKILL_UPDATE_CHECK_INTERVAL == timedelta(hours=24)
+
+    def test_rate_limited_skips_network(self, monkeypatch):
+        skills_state.set_last_update_check(datetime.now(UTC))
+        monkeypatch.setattr(sd, "list_downloaded", lambda: pytest.fail("should not read"))
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *a, **k: pytest.fail("no token"))
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+    def test_no_eligible_records_is_silent_and_skips_token(self, monkeypatch):
+        monkeypatch.setattr(sd, "list_downloaded", list)
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *a, **k: pytest.fail("no token"))
+        notes: list[str] = []
+        monkeypatch.setattr(sd, "print_note", notes.append)
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert skills_state.last_update_check() is not None
+        assert notes == []  # no "Checking..." line for users with no downloaded skills
+
+    def test_fail_open_reports_and_continues(self, monkeypatch):
+        def boom():
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(sd, "list_downloaded", boom)
+        notes: list[str] = []
+        monkeypatch.setattr(sd, "print_note", notes.append)
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert any("boom" in note for note in notes)
+        assert skills_state.last_update_check() is not None
+
+    def test_manually_deleted_skill_is_forgotten_not_redownloaded(self, tmp_path, monkeypatch):
+        _record_download(tmp_path / "home", monkeypatch, on_disk=False)
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *a, **k: pytest.fail("no token"))
+        monkeypatch.setattr(sd, "get_skill", lambda *a, **k: pytest.fail("no fetch"))
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert skills_state.list_downloaded() == []
+        assert skills_state.last_update_check() is not None
+
+    def test_partially_deleted_skill_is_redownloaded_to_restore_mirror(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        _record_download(home, monkeypatch)
+        removed = home / ".agents/skills/triage"
+        (removed / "SKILL.md").unlink()
+        removed.rmdir()
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(
+            sd, "get_skill", lambda ws, tok, fqn: _skill("triage", "2026-01-01T00:00:00Z")
+        )
+        monkeypatch.setattr(
+            sd,
+            "_fetch_bundles",
+            lambda *a, **k: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
+        )
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert (home / ".claude/skills/triage/SKILL.md").read_bytes() == b"fresh"
+        assert (home / ".agents/skills/triage/SKILL.md").read_bytes() == b"fresh"
+        assert skills_state.list_downloaded()[0]["fqn"] == "main.default.triage"
+
+    def test_updates_changed_skill_end_to_end(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        _record_download(home, monkeypatch)
+        monkeypatch.setattr(sd, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(
+            sd, "get_skill", lambda ws, tok, fqn: _skill("triage", "2026-09-01T00:00:00Z")
+        )
+        monkeypatch.setattr(
+            sd,
+            "_fetch_bundles",
+            lambda *a, **k: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
+        )
+        messages: list[str] = []
+        monkeypatch.setattr(sd, "print_success", messages.append)
+        notes: list[str] = []
+        monkeypatch.setattr(sd, "print_note", notes.append)
+
+        sd.refresh_downloaded_skills_on_launch({"workspace": WS})
+
+        assert (home / ".claude/skills/triage/SKILL.md").read_bytes() == b"fresh"
+        assert skills_state.list_downloaded()[0]["uc_update_time"] == "2026-09-01T00:00:00Z"
+        assert skills_state.last_update_check() is not None
+        assert any("Checking Unity Catalog" in note for note in notes)
+        assert any("Updated 1" in m for m in messages)

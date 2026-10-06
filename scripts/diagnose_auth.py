@@ -154,8 +154,10 @@ def check_live(host: str, profile: str | None) -> None:
             headers={"Authorization": f"Bearer {token}"},
             timeout=15,
         )
-        print(f"  workspace API /scim/v2/Me -> HTTP {r.status_code} "
-              f"({'valid' if r.status_code == 200 else 'REJECTED'})")
+        print(
+            f"  workspace API /scim/v2/Me -> HTTP {r.status_code} "
+            f"({'valid' if r.status_code == 200 else 'REJECTED'})"
+        )
     except Exception as exc:
         print(f"  probe skipped: {type(exc).__name__}: {exc}")
 
@@ -190,13 +192,28 @@ def watch(host: str, profile: str | None, interval: int) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--host", required=True, help="workspace URL, e.g. https://x.cloud.databricks.com")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--host", required=True, help="workspace URL, e.g. https://x.cloud.databricks.com"
+    )
     ap.add_argument("--profile", help="Databricks CLI profile name")
-    ap.add_argument("--live", action="store_true", help="mint a token via the CLI and probe it (mutates cache)")
-    ap.add_argument("--force", action="store_true", help="run the rotation check (force-refresh; mutates cache)")
-    ap.add_argument("--stress", type=int, metavar="N", help="N concurrent force-refreshes to reproduce the race")
-    ap.add_argument("--watch", type=int, metavar="SECONDS", help="poll validity on an interval (overnight repro)")
+    ap.add_argument(
+        "--live", action="store_true", help="mint a token via the CLI and probe it (mutates cache)"
+    )
+    ap.add_argument(
+        "--force", action="store_true", help="run the rotation check (force-refresh; mutates cache)"
+    )
+    ap.add_argument(
+        "--stress", type=int, metavar="N", help="N concurrent force-refreshes to reproduce the race"
+    )
+    ap.add_argument(
+        "--watch",
+        type=int,
+        metavar="SECONDS",
+        help="poll validity on an interval (overnight repro)",
+    )
     args = ap.parse_args()
 
     inspect_cache(args.host, args.profile)

@@ -25,6 +25,7 @@ MAX_DIFF_BYTES = 60_000
 INTEGRATION_DIFF_BYTES = MAX_DIFF_BYTES // 2
 WAIVER_LABEL = "skip-user-journey-test"
 WAIVER_COMMENT = "/skip-user-journey-test"
+RESPONSES_API_PATH = "/ai-gateway/codex/v1/responses"
 
 SYSTEM_PROMPT = """You are a CI policy gate for Unity Gateway (ug), a Python CLI that
 configures and launches coding agents through Databricks AI Gateway.
@@ -151,6 +152,30 @@ def build_system_prompt(test_policy: str) -> str:
     )
 
 
+def build_responses_request(model: str, user_prompt: str, test_policy: str) -> dict[str, Any]:
+    return {
+        "model": model,
+        "instructions": build_system_prompt(test_policy),
+        "input": user_prompt,
+        "max_output_tokens": 1_000,
+        "store": False,
+    }
+
+
+def extract_response_text(payload: dict[str, Any]) -> str:
+    """Extract final text while ignoring reasoning and tool-call output items."""
+    parts: list[str] = []
+    for item in payload.get("output", []) or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for content in item.get("content", []) or []:
+            if isinstance(content, dict) and content.get("type") == "output_text":
+                text = content.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+    return "\n".join(parts).strip()
+
+
 def parse_verdict(content: str) -> tuple[bool, str]:
     """Parse the strict JSON judge response, tolerating accidental fences."""
     candidate = content.strip()
@@ -180,19 +205,9 @@ def _judge(title: str, diff: str, test_policy: str) -> tuple[bool, str]:
     token = _env("DATABRICKS_BEARER")
     model = _env("USER_JOURNEY_JUDGE_MODEL")
     user_prompt = f"Pull request title: {title}\n\nDiff:\n{diff}\n"
-    body = json.dumps(
-        {
-            "model": model,
-            "temperature": 0,
-            "max_tokens": 250,
-            "messages": [
-                {"role": "system", "content": build_system_prompt(test_policy)},
-                {"role": "user", "content": user_prompt},
-            ],
-        }
-    ).encode()
+    body = json.dumps(build_responses_request(model, user_prompt, test_policy)).encode()
     request = urllib.request.Request(
-        f"{host}/ai-gateway/mlflow/v1/chat/completions",
+        f"{host}{RESPONSES_API_PATH}",
         data=body,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         method="POST",
@@ -200,17 +215,19 @@ def _judge(title: str, diff: str, test_policy: str) -> tuple[bool, str]:
     try:
         with urllib.request.urlopen(request, timeout=90) as response:
             payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read(1_000).decode(errors="replace").strip()
+        raise GateError(
+            f"The Databricks user-journey judge request failed ({exc.code}): {detail}"
+        ) from exc
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise GateError(f"The Databricks user-journey judge request failed: {exc}") from exc
 
-    try:
-        content = payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise GateError(
-            "The Databricks user-journey judge returned an unexpected response."
-        ) from exc
-    if not isinstance(content, str):
-        raise GateError("The Databricks user-journey judge returned non-text content.")
+    if not isinstance(payload, dict):
+        raise GateError("The Databricks user-journey judge returned an unexpected response.")
+    content = extract_response_text(payload)
+    if not content:
+        raise GateError("The Databricks user-journey judge returned no output text.")
     return parse_verdict(content)
 
 

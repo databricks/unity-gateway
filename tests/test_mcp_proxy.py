@@ -61,7 +61,7 @@ def test_proxy_imports_the_streamable_http_client_shared_by_both_majors():
 class TestDatabricksTokenAuth:
     def test_injects_bearer_from_minted_token(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok-123")
-        auth = mcp_proxy._build_token_auth(WS, "uc-dogfood")
+        auth = mcp_proxy._build_token_auth(URL, WS, "uc-dogfood")
 
         request = httpx.Request("POST", URL)
         # auth_flow is a generator that yields the (mutated) request.
@@ -73,7 +73,7 @@ class TestDatabricksTokenAuth:
         # The auth must subclass the *same* httpx flavor's Auth as the transport,
         # or the SDK's AsyncClient won't accept it.
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "t")
-        auth = mcp_proxy._build_token_auth(WS, None)
+        auth = mcp_proxy._build_token_auth(URL, WS, None)
 
         assert isinstance(auth, mcp_proxy._httpx().Auth)
 
@@ -84,7 +84,7 @@ class TestDatabricksTokenAuth:
             "get_databricks_token",
             lambda ws, profile: calls.append((ws, profile)) or "t",
         )
-        auth = mcp_proxy._build_token_auth(WS, "myprofile")
+        auth = mcp_proxy._build_token_auth(URL, WS, "myprofile")
 
         list(auth.auth_flow(httpx.Request("POST", URL)))
 
@@ -95,7 +95,7 @@ class TestDatabricksTokenAuth:
         # picked up mid-session without the proxy tracking expiry itself.
         tokens = iter(["first", "second"])
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: next(tokens))
-        auth = mcp_proxy._build_token_auth(WS, None)
+        auth = mcp_proxy._build_token_auth(URL, WS, None)
 
         r1 = httpx.Request("POST", URL)
         r2 = httpx.Request("POST", URL)
@@ -107,7 +107,7 @@ class TestDatabricksTokenAuth:
 
     def test_auth_flow_yields_the_same_request(self, monkeypatch):
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "t")
-        auth = mcp_proxy._build_token_auth(WS, None)
+        auth = mcp_proxy._build_token_auth(URL, WS, None)
 
         request = httpx.Request("POST", URL)
         yielded = list(auth.auth_flow(request))
@@ -122,10 +122,134 @@ class TestDatabricksTokenAuth:
             raise RuntimeError("no access token; run `databricks auth login`")
 
         monkeypatch.setattr(mcp_proxy, "get_databricks_token", boom)
-        auth = mcp_proxy._build_token_auth(WS, "p")
+        auth = mcp_proxy._build_token_auth(URL, WS, "p")
 
         with pytest.raises(mcp_proxy.ProxyAuthError, match="databricks auth login"):
             list(auth.auth_flow(httpx.Request("POST", URL)))
+
+    # --- lazy on-401 connection login ---------------------------------------
+
+    @staticmethod
+    def _run_flow(auth, request, response):
+        """Drive the sync auth_flow, feeding `response` after the first yield.
+        Returns the yielded requests (1 = no retry, 2 = logged in and retried)."""
+        gen = auth.auth_flow(request)
+        yielded = [next(gen)]
+        try:
+            yielded.append(gen.send(response))
+        except StopIteration:
+            pass
+        return yielded
+
+    def test_on_401_from_connection_service_runs_login_then_retries(self, monkeypatch):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        logins: list = []
+        monkeypatch.setattr(
+            mcp_proxy,
+            "run_connection_login",
+            lambda url, ws, **k: logins.append((url, k.get("profile"))) or (True, "signed in"),
+        )
+        auth = mcp_proxy._build_token_auth(CONN_URL, WS, "p")
+        yielded = self._run_flow(auth, httpx.Request("POST", CONN_URL), httpx.Response(401))
+        assert logins == [(CONN_URL, "p")]  # login driven once, only on the 401
+        assert len(yielded) == 2  # retried after signing in
+        assert yielded[1].headers["Authorization"] == "Bearer tok"
+
+    def test_non_connection_401_is_not_retried(self, monkeypatch):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+        logins: list = []
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: logins.append(1) or (True, "")
+        )
+        auth = mcp_proxy._build_token_auth(URL, WS, "p")  # URL is not an mcp-services endpoint
+        yielded = self._run_flow(auth, httpx.Request("POST", URL), httpx.Response(401))
+        assert logins == [] and len(yielded) == 1
+
+    def test_success_response_never_logs_in(self, monkeypatch):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+        logins: list = []
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: logins.append(1) or (True, "")
+        )
+        auth = mcp_proxy._build_token_auth(CONN_URL, WS, "p")
+        yielded = self._run_flow(auth, httpx.Request("POST", CONN_URL), httpx.Response(200))
+        assert logins == [] and len(yielded) == 1  # tools/list etc. never trigger a browser
+
+    def test_no_login_service_does_not_drive_login_on_401(self, monkeypatch):
+        # A no-login mcp-service (web_search) that 401s must NOT open a connection-login browser --
+        # it's a bad-token problem, not a missing connection credential (AIGTWY-4856).
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a, **k: False)
+        logins: list = []
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: logins.append(1) or (True, "")
+        )
+        ws_url = f"{WS}/ai-gateway/mcp-services/system.ai.web_search"
+        auth = mcp_proxy._build_token_auth(ws_url, WS, "p")
+        yielded = self._run_flow(auth, httpx.Request("POST", ws_url), httpx.Response(401))
+        assert logins == [] and len(yielded) == 1  # token-only; no resource login driven
+
+    def test_login_runs_at_most_once_per_session(self, monkeypatch):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        logins: list = []
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: logins.append(1) or (True, "")
+        )
+        auth = mcp_proxy._build_token_auth(CONN_URL, WS, "p")
+        # Two 401s in the same session — the browser login must fire only once.
+        self._run_flow(auth, httpx.Request("POST", CONN_URL), httpx.Response(401))
+        self._run_flow(auth, httpx.Request("POST", CONN_URL), httpx.Response(401))
+        assert logins == [1]
+
+    def test_use_pat_never_drives_connection_login(self, monkeypatch):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+        logins: list = []
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: logins.append(1) or (True, "")
+        )
+        auth = mcp_proxy._build_token_auth(CONN_URL, WS, "p", use_pat=True)
+        yielded = self._run_flow(auth, httpx.Request("POST", CONN_URL), httpx.Response(401))
+        assert logins == [] and len(yielded) == 1  # PAT has no connection OAuth to drive
+
+    def test_login_failure_becomes_a_proxy_auth_error(self, monkeypatch):
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: (False, "user cancelled")
+        )
+        auth = mcp_proxy._build_token_auth(CONN_URL, WS, "p")
+        gen = auth.auth_flow(httpx.Request("POST", CONN_URL))
+        next(gen)
+        with pytest.raises(mcp_proxy.ProxyAuthError, match="user cancelled"):
+            gen.send(httpx.Response(401))
+
+    def test_async_auth_flow_drives_login_on_401(self, monkeypatch):
+        # The proxy uses the async client, so async_auth_flow is the real path; the
+        # blocking login runs off the event loop via anyio.to_thread.
+        monkeypatch.setattr(mcp_proxy, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mcp_proxy, "mcp_service_needs_connection_login", lambda *a, **k: True)
+        logins: list = []
+        monkeypatch.setattr(
+            mcp_proxy, "run_connection_login", lambda *a, **k: logins.append(1) or (True, "")
+        )
+        auth = mcp_proxy._build_token_auth(CONN_URL, WS, "p")
+
+        async def scenario():
+            gen = auth.async_auth_flow(httpx.Request("POST", CONN_URL))
+            await gen.__anext__()
+            try:
+                await gen.asend(httpx.Response(401))
+            except StopAsyncIteration:
+                pass
+            await gen.aclose()
+            return logins
+
+        assert anyio.run(scenario) == [1]
+
+
+CONN_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
 
 
 class TestPump:
@@ -230,7 +354,7 @@ def test_run_uses_mcp_http_defaults(monkeypatch):
         yield
 
     monkeypatch.setattr(httpx_module, "AsyncClient", CapturingClient)
-    monkeypatch.setattr(mcp_proxy, "_build_token_auth", lambda *args: object())
+    monkeypatch.setattr(mcp_proxy, "_build_token_auth", lambda *args, **kwargs: object())
     monkeypatch.setattr(mcp_proxy, "streamable_http_client", stop_bridge)
 
     with pytest.raises(StopBridge):
@@ -255,7 +379,7 @@ class TestServe:
 
         assert captured["func"] is mcp_proxy._run
         # PAT is resolved inside the token mint, so _run takes no use_pat arg.
-        assert captured["args"] == (URL, WS, "uc-dogfood")
+        assert captured["args"] == (URL, WS, "uc-dogfood", False)
 
     def test_defaults_profile_none(self, monkeypatch):
         captured: dict = {}
@@ -264,7 +388,7 @@ class TestServe:
 
         mcp_proxy.serve(URL, WS)
 
-        assert captured["args"] == (URL, WS, None)
+        assert captured["args"] == (URL, WS, None, False)
 
     def test_use_pat_exports_the_bearer_before_serving(self, monkeypatch):
         # PAT auth: the profile's static token must be exported (ensure_pat_bearer)
