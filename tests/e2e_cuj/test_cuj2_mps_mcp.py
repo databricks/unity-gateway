@@ -32,7 +32,7 @@ from .helpers.workspace import Workspace
 WORKSPACE_URL = "https://dbc-0dcf95cf-e357.cloud.databricks.com"
 
 
-def _agent_config(agent: str) -> dict:
+def expected_agent_config(agent: str) -> dict:
     mps_name, model = MODEL_PROVIDER_SERVICE_FIXTURES[agent]
     return {
         "agent": CODING_AGENT_BY_CLI_NAME[agent],
@@ -51,7 +51,7 @@ def _assert_cuj2_config(config: dict) -> None:
     expected = {
         "spec_version": 1,
         "default_agent": CODING_AGENT_BY_CLI_NAME[CODEX],
-        "enabled_agents": [_agent_config(CLAUDE), _agent_config(CODEX)],
+        "enabled_agents": [expected_agent_config(CLAUDE), expected_agent_config(CODEX)],
         "mcp_servers": {"names": [SANDBOX_MCP_SERVICE_NAME]},
     }
     assert actual == expected, config
