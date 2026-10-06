@@ -3,6 +3,8 @@
 Each CUJ owns a separate workspace. Subclass `BaseCujTest` from `base.py` and set
 `WORKSPACE_URL`. Setup provides `self.workspace`, a Databricks SDK client using
 `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET` with OAuth M2M authentication.
+The workspaces share one metastore, so metastore-scoped fixture names belong in
+`helpers/constants.py`; keep each workspace URL in its test class.
 All workspace configurations are READ ONLY. Never create, publish, update, delete,
 or restore workspace configuration, including during setup or teardown. Validate
 the preconfigured workspace and fail on a mismatch; never repair it. Concurrent
@@ -48,6 +50,14 @@ records; neither routing banners nor native records alone prove an applied decis
 model, for both Claude and Codex. It uses the published models/defaults and asserts
 configuration is unchanged, including during teardown after failures. Routing-disabled
 coverage requires a separately preconfigured workspace and is not part of this CUJ.
+
+`test_cuj2_mps_mcp.py` runs three independently collected cases against a permanently
+preconfigured workspace: configuration, Codex inference, and Claude inference. Each case
+reads and validates the exact two-agent MPS/MCP shape. No case creates, updates, deletes,
+or restores CodingAgentConfig. The fixture's final read-only equality check is the only
+workspace mutation guard. The test uses the shared `UserSession`, `Workspace`, and
+`TuiRequestRecorder`, `AgentTerminal`, and integration transcript readers directly; only
+CUJ2's `run_code` call/result correlation remains local to the test.
 
 Use a clean disposable POSIX runner without existing machine-wide agent settings.
 Install the intended versions of `ug`, `claude`, `codex`, and `databricks` on PATH.
