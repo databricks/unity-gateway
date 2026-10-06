@@ -58,10 +58,7 @@ def _run_session(session, recorder, agent, task, launch_args):
     return evidence.observe(task), recorder.requests_after(checkpoint)
 
 
-def run_smart_routing_journeys(cuj) -> SmartRoutingScenario:
-    """Run each live journey and collect the evidence used by the tests."""
-    session, workspace, recorder = cuj
-    published = workspace.config()
+def _assert_published_config_matches_expectations(published):
     assert published["spec_version"] == 1
     assert published["default_agent"] == CodingAgent.CLAUDE_CODE
     entries = published["enabled_agents"]
@@ -73,8 +70,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingScenario:
         CODEX: configs[CodingAgent.CODEX],
     }
 
-    supported, defaults, overrides = {}, {}, {}
-    for agent, config in agent_configs.items():
+    for config in agent_configs.values():
         assert config["smart_routing"]["enabled"] is True
         assert config.get("tracing", {}).get("enabled", False) is False
         assert not config.get("smart_defaults") and not config.get("spend_tiers")
@@ -83,9 +79,22 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingScenario:
         )
         offered = config["models"]["model_services"]
         assert len(set(offered)) >= 2
+        assert config["default_models"]["default_model"] in offered
+
+    return agent_configs
+
+
+def run_smart_routing_journeys(cuj) -> SmartRoutingScenario:
+    """Run each live journey and collect the evidence used by the tests."""
+    session, workspace, recorder = cuj
+    published = workspace.config()
+    agent_configs = _assert_published_config_matches_expectations(published)
+
+    supported, defaults, overrides = {}, {}, {}
+    for agent, config in agent_configs.items():
+        offered = config["models"]["model_services"]
         supported[agent] = workspace.model_ids(agent)
         defaults[agent] = config["default_models"]["default_model"]
-        assert defaults[agent] in offered
         overrides[agent] = next(model for model in offered if model != defaults[agent])
 
     recorder.configure_session(
