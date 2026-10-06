@@ -458,16 +458,7 @@ jobs:
             exit 0
           fi
           uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
-            pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v \
-            --basetemp "$RUNNER_TEMP/ug-cuj" --junitxml "$RUNNER_TEMP/ug-cuj-results.xml"
-      - name: Upload CUJ evidence
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
-        with:
-          name: integration-e2e-cuj
-          path: |
-            ${{ runner.temp }}/ug-cuj/**/artifacts/
-            ${{ runner.temp }}/ug-cuj-results.xml
+            pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v
 
   cujs:
     name: All integration tests

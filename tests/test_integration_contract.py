@@ -89,7 +89,6 @@ def test_dedicated_cuj_job_runs_both_principals_in_one_collection():
         assert f"{key}: ${{{{ secrets.{key} }}}}" in cuj
     assert "tests/e2e_cuj -v" in cuj
     assert "TEST_MARKER" not in cuj
-    assert "name: integration-e2e-cuj" in cuj
 
 
 @pytest.mark.parametrize(

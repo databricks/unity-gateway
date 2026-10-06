@@ -556,8 +556,7 @@ The **All integration tests** check requires installation, workspace validation,
 both full lanes, both managed lanes, and `dedicated-cuj` to pass. Each tracing journey is
 included in its agent's Full lane. The managed and dedicated-cuj lanes do not use
 `continue-on-error`: a failure, cancellation, or unexpected skip fails the aggregate
-check. The dedicated-cuj artifacts are named `integration-e2e-cuj` and
-`integration-cuj5-below-tier`.
+check.
 The advisory Windows installation and headless lanes are not yet included in that aggregate check.
 The existing required `e2e` context also waits for the complete integration workflow, so integration
 cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
@@ -703,8 +702,7 @@ gh run download RUN_ID -R databricks/unity-gateway \
 ```
 
 Use `integration-full-AGENT` for a full lane, `integration-smoke-AGENT` for
-smoke, `integration-e2e-cuj` for the above-tier budget test, or `integration-cuj5-below-tier`
-for the below-tier case. Use `integration-installation` for Linux package failures, or
+smoke. Use `integration-installation` for Linux package failures, or
 `integration-installation-windows` for native Windows package failures, or
 `integration-headless-windows-claude` for the Windows gateway journey. Older runs used
 `integration-full-AGENT-GROUP`, `integration-cujs`, or numbered `integration-live-*`
