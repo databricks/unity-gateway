@@ -30,21 +30,18 @@ name the backing model, not the service. Codex evidence joins the completed answ
 client-selected turn model. None proves the gateway's backing destination. Only live passes
 establish coverage.
 
-The tests in `test_catalog_discovery.py` subclass Lilly's `BaseCujTest`.
-`WORKSPACE_URL` comes from the explicit runner workspace; the SDK authenticates with
-`UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET`. Existing integration helpers
-provide fresh installed-agent sessions, real TUI driving, and transcript evidence.
+The test class selects the CUJ3 workspace, `https://dbc-bbdd5508-648e.cloud.databricks.com`.
+The shared `cuj` fixture supplies its authenticated SDK client and isolated local session;
+workspace configuration remains read-only. Set `UG_CUJ_SP_CLIENT_ID` and
+`UG_CUJ_SP_CLIENT_SECRET` before a live run.
 
-CI runs a serialized Claude/Codex matrix using `UG_CUJ3_WORKSPACE` and the CUJ SP
-secrets. Job concurrency prevents simultaneous runs against that workspace. Both
-lanes block full/live runs. Run on a clean host/container with the two SP environment
-variables set and an explicit dedicated workspace:
+CI discovers these tests through the shared `dedicated-cuj` job, which installs both
+pinned agents. No catalog-specific workflow or workspace secret is needed. Locally,
+install ug, both agents, and the Databricks CLI on a clean POSIX host, then run:
 
 ```bash
-python3.12 scripts/run_integration.py --suite e2e-cuj \
-  --ug-version checkout --claude-version 2.1.280 --codex-version 0.154.0 \
-  --workspace "$CATALOG_DISCOVERY_WORKSPACE" \
-  -- -m 'managed and catalog_discovery and workspace_isolated'
+uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
+  --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_catalog_discovery.py -v
 ```
 
 MCP/skills discovery remains separate.
