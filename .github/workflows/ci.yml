@@ -83,6 +83,11 @@ jobs:
             name: Agent launch tests · Pi
             keyword: TestPiLaunch
             package: '@earendil-works/pi-coding-agent'
+          - group: cuj
+            name: Dedicated-workspace CUJs
+            keyword: ''
+            package: '@anthropic-ai/claude-code'
+            additional_package: '@openai/codex'
     env:
       # See the test job: hosted runners can't reach the internal pypi-proxy,
       # so resolve against public PyPI (paired with the `uv lock` step below).
@@ -98,7 +103,10 @@ jobs:
       # apiKeyHelper short-circuit to this value when set. Tokens are
       # short-lived (~1h); rotate when CI starts failing with 401s.
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      UG_CUJ_SP_CLIENT_ID: ${{ matrix.group == 'cuj' && secrets.UG_CUJ_SP_CLIENT_ID || '' }}
+      UG_CUJ_SP_CLIENT_SECRET: ${{ matrix.group == 'cuj' && secrets.UG_CUJ_SP_CLIENT_SECRET || '' }}
       AGENT_PACKAGE: ${{ matrix.package }}
+      ADDITIONAL_AGENT_PACKAGE: ${{ matrix.additional_package }}
       TEST_KEYWORD: ${{ matrix.keyword }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -108,13 +116,33 @@ jobs:
       - name: Install the shard's agent CLI
         if: ${{ matrix.package != '' }}
         run: npm install -g "$AGENT_PACKAGE"
+      - name: Install the CUJ shard's second agent CLI
+        if: ${{ matrix.additional_package != '' }}
+        run: npm install -g "$ADDITIONAL_AGENT_PACKAGE"
       - run: uv lock
       - run: uv tool install .
       # Redirect stdin so any interactive `databricks auth login --no-browser`
       # fallback EOFs instead of hanging the runner. With DATABRICKS_BEARER
       # set, the auth code path doesn't shell out at all — this is a safety
       # net for any code path we may have missed.
-      - run: uv run pytest tests/test_e2e.py -v -k "$TEST_KEYWORD" < /dev/null
+      - name: Run agent launch tests
+        if: ${{ matrix.group != 'cuj' }}
+        run: uv run pytest tests/test_e2e.py -v -k "$TEST_KEYWORD" < /dev/null
+      - name: Run every dedicated-workspace CUJ
+        if: ${{ matrix.group == 'cuj' }}
+        run: |
+          if find tests/e2e_cuj -name 'test_*.py' -print -quit | grep -q .; then
+            uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
+              pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v \
+              --basetemp="$RUNNER_TEMP/e2e-cuj"
+          fi
+      - name: Upload CUJ evidence
+        if: ${{ !cancelled() && matrix.group == 'cuj' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: e2e-dedicated-workspace-cujs
+          include-hidden-files: true
+          path: ${{ runner.temp }}/e2e-cuj/**/artifacts/
 
   e2e:
     name: All agent tests

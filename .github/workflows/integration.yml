@@ -428,55 +428,11 @@ jobs:
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
 
-  dedicated-cuj:
-    name: Dedicated-workspace CUJs
-    if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    runs-on: ubuntu-22.04
-    timeout-minutes: 70
-    env:
-      UV_INDEX_URL: https://pypi.org/simple
-      UG_CUJ_SP_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
-      UG_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
-        with:
-          node-version: 22.19.0
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-        with:
-          version: 0.9.8
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
-        with:
-          version: 1.17.0
-      - name: Install ug and agent CLIs
-        run: |
-          uv lock
-          uv tool install .
-          npm install -g \
-            "@anthropic-ai/claude-code@$CLAUDE_VERSION" \
-            "@openai/codex@$CODEX_VERSION"
-      - name: Run every dedicated-workspace CUJ
-        run: |
-          if ! find tests/e2e_cuj -name 'test_*.py' -print -quit | grep -q .; then
-            echo "No dedicated-workspace CUJs found."
-            exit 0
-          fi
-          uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
-            pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v \
-            --basetemp="$RUNNER_TEMP/e2e-cuj"
-      - name: Upload CUJ evidence
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
-        with:
-          name: integration-dedicated-cujs
-          include-hidden-files: true
-          path: ${{ runner.temp }}/e2e-cuj/**/artifacts/
-
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     # installation-windows remains advisory until its initial platform issues are fixed.
-    needs: [installation, workspace, smoke, full, managed, dedicated-cuj]
+    needs: [installation, workspace, smoke, full, managed]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -499,8 +455,6 @@ jobs:
                   required.append("full")
           if suite in {"full", "live"}:
               required.append("managed")
-          if suite not in {"installation", "smoke"}:
-              required.append("dedicated-cuj")
           failed = [job for job in required if results[job]["result"] != "success"]
           if failed:
               raise SystemExit("Integration jobs did not pass: " + ", ".join(failed))
