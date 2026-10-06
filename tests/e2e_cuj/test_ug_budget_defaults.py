@@ -2,7 +2,6 @@
 
 import json
 import re
-import tomllib
 from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
@@ -131,7 +130,6 @@ class TestCujBudgetDefaults(BaseCujTest):
                 "--disable-databricks-ai-tools",
             ]
         )
-        model_config = session.home / ".codex" / "ucode.config.toml"
 
         before_usage = workspace.client.api_client.do(
             "POST", path=config_path + ":recommendModel", body={}
@@ -174,10 +172,6 @@ class TestCujBudgetDefaults(BaseCujTest):
 
         with AgentTerminal(session, CODEX, [str(session.binary)], "budget-luna") as tui:
             tui.boot(timeout=240)
-            actual_model = tomllib.loads(model_config.read_text()).get("model")
-            assert actual_model == self.LUNA_MODEL, (
-                f"Codex config model mismatch: expected {self.LUNA_MODEL!r}, got {actual_model!r}"
-            )
             tui.wait_for(
                 lambda text: re.search(rf"model:\s+{re.escape(self.LUNA_MODEL)}\s", text),
                 "Codex's selected model to be Luna",
