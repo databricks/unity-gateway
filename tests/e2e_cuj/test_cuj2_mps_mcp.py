@@ -256,6 +256,20 @@ def _agent_prompt(marker: str) -> str:
     )
 
 
+def _assert_codex_mcp_started(tui: AgentTerminal) -> None:
+    if "startup issue" not in tui.visible:
+        return
+    previous = tui.visible
+    tui.send("\x14", "open Codex startup issue details")
+    tui.wait_for(
+        lambda screen: screen != previous,
+        "Codex startup issue details",
+        timeout=10,
+        stable_for=1,
+    )
+    raise AssertionError("Codex reported a startup issue:\n" + tui.visible)
+
+
 def _assert_inference_request(recorder, request, *, provider: str, model: str, marker: str) -> None:
     assert request.headers["databricks-model-provider-service"] == provider
     assert request.payload["model"] == model
@@ -326,6 +340,7 @@ class TestCuj2CodexInference(_Cuj2Base):
         checkpoint = recorder.checkpoint()
         with AgentTerminal(session, CODEX, [str(session.binary), CODEX], "cuj2-codex") as tui:
             tui.boot()
+            _assert_codex_mcp_started(tui)
             tui.submit(_agent_prompt(marker))
 
             def completed(screen):
