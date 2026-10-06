@@ -70,7 +70,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | Tracing | Ignore | Create/replace | The seven `CLAUDE_CODE_*`/`OTEL_*` trace keys and `otelHeadersHelper`; only when the config enables tracing |
 | `managedMcpServers` | Ignore | Merge | Add/update the config's MCP server entries; other entries left alone |
 | Smart-routing hooks | Merge | Merge | `PreToolUse`, `SessionStart`, `SubagentStart`; only `ug`'s own marked handlers, other hooks left alone |
-| Admin `settings` | Ignore | Create/replace | Managed file only; each leaf of the config's per-agent `settings`, as-is. Leaves overlapping a field above are skipped with a warning (printed once per change). `permissions.deny` and `hooks.<event>` lists merge: IT-authored entries stay, and entries `ug` delivered that the admin drops are withdrawn. Any other dropped leaf is withdrawn if unchanged since `ug` wrote it. `allowManagedHooksOnly`/`disableAllHooks` are delivered but warn, since they also block smart routing's per-launch hooks |
+| Admin `agent_native_settings` | Ignore | Create/replace | Managed file only; each leaf of the config's per-agent `agent_native_settings`, as-is. The server rejects keys overlapping a field above; `ug` still skips any it receives, with a warning printed once per change. `permissions.deny` and `hooks.<event>` lists merge: IT-authored entries stay, and entries `ug` delivered that the admin drops are withdrawn. Any other dropped leaf is withdrawn if unchanged since `ug` wrote it. `allowManagedHooksOnly`/`disableAllHooks` are delivered but warn, since they also block smart routing's per-launch hooks |
 
 </details>
 
@@ -87,6 +87,6 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config |
 | `model_catalog_json` | Create/replace | Create/replace | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list |
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone |
-| Admin `settings` | Ignore | Create/replace | Managed file only; each leaf of the config's per-agent `settings`, as-is. Leaves overlapping a field above or set to null are skipped with a warning. A leaf the admin drops is withdrawn if unchanged since `ug` wrote it |
+| Admin `agent_native_settings` | Ignore | Create/replace | Managed file only; each leaf of the config's per-agent `agent_native_settings`, as-is. The server rejects keys overlapping a field above; `ug` still skips any it receives, and nulls, with a warning. A leaf the admin drops is withdrawn if unchanged since `ug` wrote it |
 
 </details>

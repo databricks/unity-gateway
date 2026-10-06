@@ -64,7 +64,7 @@ def _full_manifest() -> dict:
             "claude": {
                 "http_headers": {"x-databricks-workspace": "eng-ml-inference"},
                 "otel_tracing_enabled": True,
-                "settings": {"allowManagedMcpServersOnly": True},
+                "agent_native_settings": {"allowManagedMcpServersOnly": True},
                 "model_config": {
                     "default_model": "system.ai.claude-opus-4-8",
                     "default_models_by_model_family": {

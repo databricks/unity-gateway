@@ -229,9 +229,9 @@ def _enabled_agent_payload(tool: str, agent_config: dict) -> dict:
     tracing_enabled = agent_config.get("otel_tracing_enabled")
     if isinstance(tracing_enabled, bool):
         config["tracing"] = {"enabled": tracing_enabled}
-    settings = agent_config.get("settings")
+    settings = agent_config.get("agent_native_settings")
     if isinstance(settings, dict) and settings:
-        config["settings"] = settings
+        config["agent_native_settings"] = settings
 
     entry: dict = {"agent": AGENT_TOOL_TO_ENUM[tool]}
     if config:

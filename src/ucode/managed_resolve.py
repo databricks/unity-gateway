@@ -37,7 +37,7 @@ _CLAUDE_FAMILY_SLOTS = {
 # Agents whose writers support the per-agent managed OTLP tracing flag.
 OTEL_TRACING_TOOLS = ("claude", "codex")
 
-# Agents with an OS-managed settings file that can receive the config's harness-native `settings`.
+# Agents with an OS-managed settings file that can receive the config's harness-native `agent_native_settings`.
 SETTINGS_PASSTHROUGH_TOOLS = ("claude", "codex")
 
 
@@ -109,7 +109,7 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
         overrides[f"{tool}_http_headers"] = http_headers
     if tool in OTEL_TRACING_TOOLS and managed_otel_tracing_enabled(managed, tool):
         overrides[f"{tool}_otel_tracing"] = True
-    settings = _as_dict(_agent_entry(managed, tool).get("settings"))
+    settings = _as_dict(_agent_entry(managed, tool).get("agent_native_settings"))
     if tool in SETTINGS_PASSTHROUGH_TOOLS and settings:
         overrides[f"{tool}_settings_passthrough"] = settings
     return overrides

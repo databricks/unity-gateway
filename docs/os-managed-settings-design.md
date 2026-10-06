@@ -84,7 +84,7 @@ partial, and conflicting files.
 
 ## Admin Settings Passthrough
 
-A coding agent config can carry harness-native `settings` per agent (Claude Code and Codex). ucode
+A coding agent config can carry harness-native `agent_native_settings` per agent (Claude Code and Codex). ucode
 doesn't interpret them. It writes each leaf into that agent's managed file as-is after the gateway
 overlay, so an admin can set any key the harness supports (for example Claude's
 `allowManagedMcpServersOnly`) without a ucode release. The rules:

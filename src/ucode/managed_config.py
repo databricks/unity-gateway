@@ -171,7 +171,7 @@ class AgentConfig:
             models=agent_models,
             smart_routing_enabled=smart_routing.get("enabled") is True,
             otel_tracing_enabled=_tracing_enabled(config_dict.get("tracing")),
-            settings=_as_dict(config_dict.get("settings")) or None,
+            settings=_as_dict(config_dict.get("agent_native_settings")) or None,
         )
 
     def to_internal(self) -> dict:
@@ -187,7 +187,7 @@ class AgentConfig:
         if self.otel_tracing_enabled is not None:
             result["otel_tracing_enabled"] = self.otel_tracing_enabled
         if self.settings:
-            result["settings"] = self.settings
+            result["agent_native_settings"] = self.settings
         return result
 
 
