@@ -2358,6 +2358,19 @@ class TestListDatabricksApps:
 
 
 class TestProbeUnityGatewayCapabilities:
+    def test_probe_preserves_workspace_scheme_and_port(self, monkeypatch):
+        calls = []
+
+        def fake_get(url, token):
+            calls.append(url)
+            return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        db_mod.probe_unity_gateway_capabilities("http://127.0.0.1:54321", "fake-token")
+
+        assert calls == ["http://127.0.0.1:54321/api/2.1/unity-catalog/model-services?page_size=50"]
+
     def test_model_service_resource_returns_success(self, monkeypatch):
         calls: list[str] = []
 

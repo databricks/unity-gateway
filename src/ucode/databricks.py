@@ -3198,8 +3198,7 @@ _MODEL_SERVICE_EMPTY_DETAIL = (
 
 
 def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
-    hostname = workspace_hostname(workspace)
-    base = f"https://{hostname}/api/2.1/unity-catalog/model-services"
+    base = f"{normalize_workspace_url(workspace)}/api/2.1/unity-catalog/model-services"
     page_token: str | None = None
     for page in range(_MODEL_SERVICE_PROBE_MAX_PAGES):
         params: dict[str, object] = {"page_size": _MODEL_SERVICE_PROBE_PAGE_SIZE}

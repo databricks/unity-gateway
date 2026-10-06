@@ -1,5 +1,14 @@
 # Integration tests
 
+The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
+and runs directly with pytest. It does not use this suite's runner or config fixtures.
+It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
+Its Claude/Codex evidence helpers keep scenario-specific assertions separate from shared mechanics.
+Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
+is read-only and checked for changes at teardown; concurrent readers need no reservation.
+The smart-routing CUJ's four sessions cover routing and explicit-model bypass, not
+routing-disabled behavior.
+
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
 patch application functions, substitute agent executables, run a fake gateway,
@@ -621,14 +630,12 @@ visible `skip-user-journey-test` label, causing the gate to rerun. Editing or de
 comment removes the label and reruns the gate; manually adding the label does not bypass it.
 
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
-and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
-alias for `full`. Manual subsets are explicit: `smoke` runs just the six smoke
-cases; `tui` adds `and tui` to each agent lane's marker and runs all 12 live TUI cases. Installation
-checks always run. Set the ug/agent versions. From the CLI:
+and set the ug/agent versions. Manual runs execute the complete integration suite.
+From the CLI:
 
 ```bash
 gh workflow run integration.yml -R databricks/unity-gateway --ref YOUR_BRANCH \
-  -f suite=full -f ug_version=checkout \
+  -f ug_version=checkout \
   -f claude_version=2.1.268 -f codex_version=0.154.0
 gh run list -R databricks/unity-gateway --workflow integration.yml
 gh run watch RUN_ID -R databricks/unity-gateway --exit-status
