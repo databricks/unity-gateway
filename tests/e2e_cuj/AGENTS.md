@@ -52,8 +52,10 @@ reads and validates the exact two-agent MPS/MCP shape. No case creates, updates,
 or restores CodingAgentConfig. The fixture's final read-only equality check is the only
 workspace mutation guard. The test uses the shared `UserSession`, `Workspace`, and
 `TuiRequestRecorder`, `AgentTerminal`, and integration transcript readers directly. The
-configuration case verifies the selected sandbox service and generated MCP listings; live
-`run_code` execution remains deferred because MAS cannot downscope the CI service principal.
+configuration case verifies the selected sandbox service and generated MCP listings. The Codex
+and Claude TUI cases additionally verify Codex's real `model/list` and Claude's native cache plus
+`/model` picker, respectively; live `run_code` execution remains deferred because MAS cannot
+downscope the CI service principal.
 
 Use a clean disposable POSIX runner without existing machine-wide agent settings.
 Install the intended versions of `ug`, `claude`, `codex`, and `databricks` on PATH.

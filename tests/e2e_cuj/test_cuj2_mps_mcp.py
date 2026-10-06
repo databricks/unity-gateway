@@ -15,6 +15,7 @@ from tests.integration.utils.evidence import (
     assistant_answers,
     is_child_session,
 )
+from tests.integration.utils.model_discovery import claude_model_in_picker
 from tests.integration.utils.terminal import AgentTerminal
 
 from .base import BaseCujTest
@@ -133,6 +134,7 @@ def _assert_configured_files(session, workspace_url: str) -> None:
     assert codex_path.is_file(), codex_path
     codex_config = tomllib.loads(codex_path.read_text(encoding="utf-8"))
     assert codex_config["model_provider"] == "Databricks", codex_config
+    assert codex_config["model"] == MODEL_PROVIDER_SERVICE_FIXTURES[CODEX][1], codex_config
     codex_provider = codex_config["model_providers"]["Databricks"]
     assert codex_provider["wire_api"] == "responses", codex_provider
     assert codex_provider["base_url"] == workspace_url.rstrip("/") + "/ai-gateway/codex/v1"
@@ -151,6 +153,21 @@ def _assert_generated_mcp_listings(session) -> None:
         output = f"{listing.stdout}\n{listing.stderr}"
         assert _mcp_name_listed(output, SANDBOX_MCP_SERVICE_NAME), output
         assert not _mcp_name_listed(output, WEB_SEARCH_MCP_SERVICE_NAME), output
+
+
+def _assert_codex_provider_discovery(session, expected_model: str) -> None:
+    model_ids = session.codex_model_ids(
+        ["app-server", "--listen", "stdio://"], name="cuj2-codex-models"
+    )
+    assert model_ids == [expected_model], model_ids
+
+
+def _assert_claude_provider_discovery(session, screen: str, expected_model: str) -> None:
+    models = session.claude_gateway_models("cuj2-claude-models")
+    model_ids = [model["id"] for model in models]
+    assert model_ids == [expected_model], models
+    display_name = models[0].get("display_name")
+    assert claude_model_in_picker(screen, expected_model, display_name), screen
 
 
 def _parent_transcripts(session, agent: str) -> dict[str, list[dict]]:
@@ -204,8 +221,8 @@ class TestCuj2Configuration(_Cuj2Base):
         """Scenario: configure ug from the preconfigured two-agent MPS/MCP workspace.
 
         Expected: the read-only CodingAgentConfig selects the two exact MPS resources and sandbox
-        MCP; both native MPS APIs advertise their selected model, generated agent settings use
-        the exact provider/model values, and agent MCP listings exclude web_search.
+        MCP; generated agent settings use the exact provider/model values, and agent MCP listings
+        exclude web_search. The agent-specific TUI cases assert provider discovery surfaces.
         """
         session, workspace, _ = cuj
         published = workspace.config()
@@ -230,7 +247,8 @@ class TestCuj2CodexInference(_Cuj2Base):
     def test_cuj_codex_inference(self, cuj):
         """Scenario: configure through the recorder and complete a real Codex inference.
 
-        Expected: Codex sends a Responses request for gpt-5-nano with the
+        Expected: ug's real Codex app-server `model/list` exposes only gpt-5-nano through the
+        configured provider; Codex then sends a Responses request for gpt-5-nano with the
         ug_e2e.providers.openai target header and receives its paired HTTP 200 response; its
         parent transcript contains the final marker.
         """
@@ -250,6 +268,7 @@ class TestCuj2CodexInference(_Cuj2Base):
         )
         _assert_configured_files(session, workspace.url)
         _assert_generated_mcp_listings(session)
+        _assert_codex_provider_discovery(session, MODEL_PROVIDER_SERVICE_FIXTURES[CODEX][1])
 
         recorder.prepare_launch()
         marker = f"CUJ2-CODEX-{uuid.uuid4().hex}"
@@ -286,9 +305,10 @@ class TestCuj2ClaudeInference(_Cuj2Base):
     def test_cuj_claude_inference(self, cuj):
         """Scenario: configure through the recorder and complete a real Claude inference.
 
-        Expected: Claude sends a Messages request for claude-haiku-4-5-20251001 with the
-        ug_e2e.providers.anthropic target header and receives its paired HTTP 200 response; its
-        parent transcript contains the final marker.
+        Expected: Claude's native gateway discovery cache and real `/model` picker expose only
+        claude-haiku-4-5-20251001 through the configured provider; Claude then sends a Messages
+        request for that model with the ug_e2e.providers.anthropic target header and receives its
+        paired HTTP 200 response; its parent transcript contains the final marker.
         """
         session, workspace, recorder = cuj
         published = workspace.config()
@@ -310,8 +330,15 @@ class TestCuj2ClaudeInference(_Cuj2Base):
         recorder.prepare_launch()
         marker = f"CUJ2-CLAUDE-{uuid.uuid4().hex}"
         checkpoint = recorder.checkpoint()
+        expected_model = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][1]
         with AgentTerminal(session, CLAUDE, [str(session.binary), CLAUDE], "cuj2-claude") as tui:
             tui.boot()
+            screen = tui.open_model_picker(
+                model_visible=lambda text: (
+                    session.claude_gateway_cache_ready([expected_model])
+                    and claude_model_in_picker(text, expected_model, None)
+                )
+            )
             tui.submit(_agent_prompt(marker))
 
             def completed(screen):
@@ -320,6 +347,8 @@ class TestCuj2ClaudeInference(_Cuj2Base):
 
             tui.wait_for(completed, "completed Claude task", timeout=240)
             tui.exit_normally()
+
+        _assert_claude_provider_discovery(session, screen, expected_model)
 
         request = recorder.expect_request(
             method="POST",
