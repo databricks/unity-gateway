@@ -2998,13 +2998,15 @@ def _get_anthropic_models_json(
     *,
     parent_schema: str | None = None,
     provider: str | None = None,
+    request_headers: dict[str, str] | None = None,
 ) -> tuple[dict | list | None, str | None]:
     hostname = workspace_hostname(workspace)
-    headers = None
+    mandatory_header = None
     if provider is not None:
-        headers = {MODEL_PROVIDER_SERVICE_HEADER: provider}
+        mandatory_header = (MODEL_PROVIDER_SERVICE_HEADER, provider)
     elif parent_schema is not None:
-        headers = {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema}
+        mandatory_header = (MODEL_SERVICE_PARENT_SCHEMA_HEADER, parent_schema)
+    headers = _merge_model_discovery_headers(request_headers, mandatory_header)
     return _http_get_json(
         f"https://{hostname}{ANTHROPIC_MODELS_PATH}?limit=1000",
         token,
@@ -3030,6 +3032,7 @@ def list_anthropic_model_catalog(
     *,
     parent_schema: str | None = None,
     provider: str | None = None,
+    request_headers: dict[str, str] | None = None,
 ) -> AnthropicModelCatalog:
     """Return advertised Anthropic model ids and their optional display metadata."""
     payload, reason = _get_anthropic_models_json(
@@ -3037,6 +3040,7 @@ def list_anthropic_model_catalog(
         token,
         parent_schema=parent_schema,
         provider=provider,
+        **({"request_headers": request_headers} if request_headers is not None else {}),
     )
     if payload is None:
         return AnthropicModelCatalog(model_ids=[], model_id_to_display_name={}, error_msg=reason)
@@ -3072,14 +3076,20 @@ def list_anthropic_model_catalog(
     )
 
 
-def discover_claude_models(workspace: str, token: str) -> tuple[dict[str, str], str | None]:
+def discover_claude_models(
+    workspace: str,
+    token: str,
+    *,
+    request_headers: dict[str, str] | None = None,
+) -> tuple[dict[str, str], str | None]:
     """Discover Claude families on this workspace's AI Gateway.
 
     Returns (models_by_family, reason). reason is None on success; otherwise it
     describes why the dict is empty (HTTP error, network error, or no models
     matching the expected naming convention).
     """
-    payload, reason = _get_anthropic_models_json(workspace, token)
+    kwargs = {"request_headers": request_headers} if request_headers is not None else {}
+    payload, reason = _get_anthropic_models_json(workspace, token, **kwargs)
     if payload is None:
         return {}, reason
 

@@ -146,6 +146,7 @@ from ucode.smart_routing.session_env import (
     set_session_environment,
 )
 from ucode.state import (
+    LAUNCH_DISCOVERY_OVERLAY_KEY,
     clear_state,
     get_provider_service,
     load_state,
@@ -657,8 +658,12 @@ def configure_shared_state(
             )
             if want_claude:
                 claude_models, claude_reason = ms_claude, ms_reason
-                if not claude_models:
-                    claude_models, claude_reason = discover_claude_models(workspace, token)
+                if request_headers or not claude_models:
+                    claude_models, claude_reason = discover_claude_models(
+                        workspace,
+                        token,
+                        **({"request_headers": request_headers} if request_headers else {}),
+                    )
             if want_gemini:
                 gemini_models, gemini_reason = ms_gemini, ms_reason
                 if not gemini_models:
@@ -684,6 +689,8 @@ def configure_shared_state(
             state["web_search_model"] = web_search_model
     else:
         if want_claude:
+            if request_headers:
+                state[LAUNCH_DISCOVERY_OVERLAY_KEY] = {"claude_models": state.get("claude_models")}
             state["claude_models"] = claude_models
         if want_gemini:
             state["gemini_models"] = gemini_models
@@ -2779,6 +2786,7 @@ def _launch_tool(
                 bool(provider) or bool(managed_parent_schema) or managed_models_known
             ),
             skip_preflight=skip_preflight,
+            **({"request_headers": custom_headers} if custom_headers and tool == "claude" else {}),
             **configure_kwargs,
         )
         # An admin-published managed config wins over the developer's own settings. Layered on after
@@ -2855,10 +2863,15 @@ def _launch_tool(
         )
         if should_fetch_claude_picker_catalog:
             token = get_databricks_token(state["workspace"], state.get("profile"))
+            catalog_kwargs: dict = (
+                {"provider": provider} if provider else {"parent_schema": parent_schema}
+            )
+            if custom_headers:
+                catalog_kwargs["request_headers"] = custom_headers
             picker_catalog = list_anthropic_model_catalog(
                 state["workspace"],
                 token,
-                **({"provider": provider} if provider else {"parent_schema": parent_schema}),
+                **catalog_kwargs,
             )
             error = picker_catalog.error_msg
             if error:

@@ -410,7 +410,15 @@ class TestDiscoverClaudeModels:
 
         monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
 
-        catalog = db_mod.list_anthropic_model_catalog(WS, "token", **scope_kwargs)
+        catalog = db_mod.list_anthropic_model_catalog(
+            WS,
+            "token",
+            **scope_kwargs,
+            request_headers={
+                next(iter(expected_headers)).lower(): "wrong-selector",
+                "X-Trace-Id": "trace-1",
+            },
+        )
 
         assert catalog.model_ids == ["system.ai.glm-5-3-flash", "opaque-model-id"]
         assert catalog.model_id_to_display_name == {"system.ai.glm-5-3-flash": "GLM 5.3 Flash"}
@@ -422,9 +430,27 @@ class TestDiscoverClaudeModels:
                 "token",
                 {
                     "max_retries": 2,
-                    "headers": expected_headers,
+                    "headers": {"X-Trace-Id": "trace-1", **expected_headers},
                 },
             )
+        ]
+
+    def test_custom_headers_do_not_leak_to_later_headerless_call(self, monkeypatch):
+        requests = []
+        payload = {"data": [{"id": "databricks-claude-sonnet-4-6"}]}
+
+        def fake_get(url, token, **kwargs):
+            requests.append(kwargs)
+            return payload, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        db_mod.discover_claude_models(WS, "token", request_headers={"X-Trace-Id": "trace-1"})
+        db_mod.discover_claude_models(WS, "token")
+
+        assert requests == [
+            {"max_retries": 2, "headers": {"X-Trace-Id": "trace-1"}},
+            {"max_retries": 2},
         ]
 
     def test_selects_opus_4_8_when_advertised(self, monkeypatch):

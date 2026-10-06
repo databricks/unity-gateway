@@ -906,17 +906,20 @@ class TestSubcommandRouting:
         ]
 
     def test_claude_headers_are_forwarded(self):
-        with patch("ucode.cli._launch_tool") as mock_launch:
+        with _launch_policy_patches(None) as calls:
             result = runner.invoke(
-                app,
-                ["claude", "--header", "X-First: one", "--header", "X-Second: two:three"],
+                app, ["claude", "--header", "X-First: one", "--header", "X-Second: two:three"]
             )
 
         assert result.exit_code == 0, result.output
-        assert mock_launch.call_args.kwargs["headers"] == [
-            "X-First: one",
-            "X-Second: two:three",
-        ]
+        assert calls["shared"].call_args.kwargs["request_headers"] == {
+            "X-First": "one",
+            "X-Second": "two:three",
+        }
+        assert calls["launch"].call_args.kwargs["options"].custom_headers == (
+            ("X-First", "one"),
+            ("X-Second", "two:three"),
+        )
 
     def test_codex_admin_header_collision_stops_before_discovery(self):
         managed = {"enabled_agents": {"codex": {"http_headers": {"X-Test": "admin"}}}}
@@ -4972,6 +4975,50 @@ class TestConfigureSharedStateSkipDiscovery:
         assert state["web_search_model"] == "databricks-gpt-5"
         # Existing model list preserved, not overwritten to {}.
         assert state["claude_models"] == {"opus": "databricks-claude-opus-4-8"}
+
+    def test_custom_discovery_preserves_saved_models(self, monkeypatch):
+        from ucode import mcp
+        from ucode import state as state_mod
+
+        self._stub(monkeypatch)
+        monkeypatch.setattr(cli_mod, "save_state", mcp.save_state)
+        monkeypatch.setattr(cli_mod, "load_state", state_mod.load_state)
+        monkeypatch.setattr(cli_mod, "_fetch_managed_config", lambda state: (None, False))
+        workspace = MINIMAL_STATE["workspace"]
+        normal = {"sonnet": "normal-claude-sonnet-4"}
+        routed = {"sonnet": "routed-claude-sonnet-4"}
+        mcp.save_state({"workspace": workspace, "claude_models": normal})
+        monkeypatch.setattr(
+            cli_mod, "discover_model_services", lambda w, t: (normal, ["gpt"], [], [], None)
+        )
+        discovery = MagicMock(return_value=(routed, None))
+        monkeypatch.setattr(cli_mod, "discover_claude_models", discovery)
+        headers = {"X-Route": "development"}
+
+        state = cli_mod.configure_shared_state(workspace, tools=["claude"], request_headers=headers)
+
+        discovery.assert_called_once_with(workspace, "token", request_headers=headers)
+        assert state["claude_models"] == routed
+        assert state_mod.load_state()["claude_models"] == normal
+        # Later configuration writes must still preserve the normal discovery state.
+        state = cli_mod.resolve_state(
+            {
+                "enabled_agents": {
+                    "claude": {
+                        "model_config": {
+                            "default_models_by_model_family": {
+                                "default_sonnet_model": "admin-sonnet"
+                            }
+                        }
+                    }
+                }
+            },
+            state,
+            "claude",
+        )
+        assert state["claude_models"] == {"sonnet": "admin-sonnet"}
+        mcp.save_state(state)
+        assert state_mod.load_state()["claude_models"] == normal
 
 
 class TestConfigureSharedStateSkipPreflight:
