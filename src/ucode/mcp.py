@@ -2501,10 +2501,10 @@ def configured_mcp_servers_by_name(
     reported/handled separately). ``agents`` drops agents outside that scope, and a server left
     with no in-scope agent is omitted. Each value is ``{"server", "clients", "managed"}``.
 
-    Managed servers can be delivered two ways: to fallback state (``managed_mcp_servers``) or, for
-    Claude/Codex, into the agents' OS-managed files — the latter is the source of truth, so it is
-    read directly here. Shared by ``ug mcp list`` and ``ug mcp login`` so both (and ``ug status``)
-    see the same configured-server set regardless of how a managed server was delivered."""
+    Managed servers (the ``managed_mcp_servers`` fallback state and each agent's OS-managed file)
+    come from the shared ``managed_mcp_servers`` helper, so this stays in agreement with ``ug mcp
+    list`` and the ``ug mcp add`` picker. Used by ``ug mcp list`` and ``ug status`` so both see the
+    same configured-server set regardless of how a managed server was delivered."""
     configured: dict[str, dict[str, Any]] = {}
 
     def _collect(server: dict, *, managed: bool) -> None:
@@ -2522,15 +2522,10 @@ def configured_mcp_servers_by_name(
 
     for server in state.get("mcp_servers") or []:
         _collect(server, managed=False)
-    for server in state.get("managed_mcp_servers") or []:
+    # Fallback ``managed_mcp_servers`` state + each agent's OS-managed file, via the shared helper
+    # (keeps the isinstance guard and _MANAGED_FILE_AGENTS set, so this can't drift from `ug mcp list`).
+    for server in managed_mcp_servers(state, agents):
         _collect(server, managed=True)
-    # Managed servers delivered through the agents' OS-managed files (Claude/Codex) live in those
-    # files, not in state, so read them too — otherwise `ug mcp login` would miss them.
-    for agent, module in (("claude", claude), ("codex", codex)):
-        if agents is not None and agent not in agents:
-            continue
-        for name, url in module.read_managed_mcp_urls().items():
-            _collect({"name": name, "url": url, "clients": [agent]}, managed=True)
     return configured
 
 
@@ -2566,7 +2561,7 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
     live = _query_live_statuses(probe_clients)
 
     # Merge developer- and workspace-managed servers by registered name, unioning their agents
-    # (shared with `ug mcp login` so both see the same configured-server set, including the servers
+    # (shared with `ug status` so both see the same configured-server set, including the servers
     # delivered through the agents' OS-managed files).
     configured = configured_mcp_servers_by_name(state, agents)
 

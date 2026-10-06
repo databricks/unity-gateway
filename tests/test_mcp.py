@@ -4002,7 +4002,7 @@ class TestParseMcpListOutput:
 
 
 class TestConfiguredMcpServersByName:
-    """The shared enumeration used by both `ug mcp list` and `ug mcp login`."""
+    """The shared enumeration used by both `ug mcp list` and `ug status`."""
 
     @pytest.fixture(autouse=True)
     def _no_managed_files(self, monkeypatch):
@@ -4045,7 +4045,7 @@ class TestConfiguredMcpServersByName:
 
     def test_includes_servers_delivered_via_os_managed_files(self, monkeypatch):
         # Managed servers written to the agents' OS-managed files (Claude/Codex) live in those
-        # files, not state, so `ug mcp login`/`list` must still see them via the managed-file read.
+        # files, not state, so `ug status`/`ug mcp list` must still see them via the managed-file read.
         url = f"{WS}/ai-gateway/mcp-services/system.ai.slack"
         monkeypatch.setattr(mcp.claude, "read_managed_mcp_urls", lambda: {"system-ai-slack": url})
         monkeypatch.setattr(mcp.codex, "read_managed_mcp_urls", lambda: {"system-ai-slack": url})

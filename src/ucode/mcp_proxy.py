@@ -132,9 +132,9 @@ def _build_token_auth(url: str, workspace: str, profile: str | None, *, use_pat:
     an already-signed-in service never prompts. The login runs at most once per
     session; PAT profiles have no connection OAuth to drive, so they never do it.
 
-    The base class comes from whichever httpx the SDK uses (see ``_httpx``); the
-    sync and async flavours share the same generator contract. The async client
-    uses ``async_auth_flow``, so the blocking login runs off the event loop."""
+    The base class comes from whichever httpx the SDK uses (see ``_httpx``). Auth
+    is async-only: the sync ``auth_flow`` raises, and the async client uses
+    ``async_auth_flow``, so the blocking login runs off the event loop."""
     httpx = _httpx()
     # PAT auth has no interactive OAuth to drive, so never treat it as connection-backed.
     connection = None if use_pat else connection_from_url(url)

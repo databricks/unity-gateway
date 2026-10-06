@@ -1168,8 +1168,8 @@ def status() -> int:
     state = load_state()
     workspace = state.get("workspace")
     managed_configs = state.get("managed_configs") or {}
-    # The one enumerator `ug mcp list` / `ug mcp login` use, keyed by name with each server's
-    # agents — so the per-agent counts below can't drift from what those commands report.
+    # The one enumerator `ug mcp list` uses, keyed by name with each server's agents — so the
+    # per-agent counts below can't drift from what `ug mcp list` reports.
     configured_mcp = configured_mcp_servers_by_name(state)
     cached_managed = load_managed_state(workspace) if workspace else None
     managed, managed_freshness = _live_status_managed_state(state, cached_managed)
