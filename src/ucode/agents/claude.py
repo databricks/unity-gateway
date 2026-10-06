@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from ucode import gateway_proxy
@@ -1759,7 +1759,9 @@ def _reconcile_managed_settings(
     mark_managed_file_verified(state, "claude", path)
 
 
-def _preserve_permission_denies(existing: dict, desired: dict, *, withdrawn: list = ()) -> None:
+def _preserve_permission_denies(
+    existing: dict, desired: dict, *, withdrawn: Sequence[object] = ()
+) -> None:
     """Keep the deny rules already in ``existing`` alongside ``desired``'s, except ``withdrawn``.
 
     ``withdrawn`` holds rules ug delivered from the admin's settings that the admin has since dropped;
