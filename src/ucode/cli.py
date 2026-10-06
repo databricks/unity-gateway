@@ -131,6 +131,7 @@ from ucode.skills_download import (
     configure_selected_skills_download_command,
     configure_skills_download_picker_command,
     reconcile_managed_skills,
+    refresh_downloaded_skills_on_launch,
     remove_downloaded_skills_command,
 )
 from ucode.skills_list import configured_skill_counts_by_agent, list_configured_skills_command
@@ -2740,13 +2741,6 @@ def _launch_tool(
             if tool == "claude" and managed is not None
             else {}
         )
-        is_managed_claude_source_without_defaults = (
-            tool == "claude"
-            and managed is not None
-            and bool(managed_parent_schema or managed_provider)
-            and managed_default_model(managed, tool) is None
-            and not coding_agent_config_defaults
-        )
         if provider and tool != "gemini":
             provider_models, error, relayed = resolve_provider_models(tool, state, provider)
             if error:
@@ -2771,12 +2765,12 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        # Managed defaults choose models without limiting the selected source's catalog.
         should_fetch_claude_picker_catalog = (
             tool == "claude"
             and not relayed
             and (
-                is_managed_claude_source_without_defaults
-                or bool(managed_provider)
+                bool(managed_parent_schema or managed_provider)
                 or (managed is None and bool(explicit_provider or parent_schema))
             )
         )
@@ -2894,6 +2888,8 @@ def _launch_tool(
                     )
                     or picker_catalog.model_ids[0]
                 )
+        if not skip_preflight:
+            refresh_downloaded_skills_on_launch(state)
         # Relayed = a Claude subscription: forward the model to Claude Code's own flag, like `-- --model X`.
         should_forward_relayed_model = (
             tool == "claude"

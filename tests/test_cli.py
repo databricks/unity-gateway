@@ -1289,23 +1289,18 @@ class TestManagedClaudeModelDiscovery:
         assert os.environ["ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
     @pytest.mark.parametrize(
-        ("source", "model_args", "default_model"),
+        "model_args",
         [
-            ({}, [], None),
-            ({}, ["--model", "system.ai.claude-sonnet-5"], None),
-            ({"unity_catalog_location": "system.ai"}, [], "system.ai.claude-sonnet-5"),
+            [],
+            ["--model", "system.ai.claude-sonnet-5"],
         ],
-        ids=["family-default", "explicit-model", "managed-location"],
+        ids=["family-default", "explicit-model"],
     )
-    def test_managed_partial_defaults_replace_unmapped_families(
-        self, source, model_args, default_model
-    ):
+    def test_managed_partial_defaults_without_source_replace_unmapped_families(self, model_args):
         managed = {
             "enabled_agents": {
                 "claude": {
                     "model_config": {
-                        **source,
-                        "default_model": default_model,
                         "default_models_by_model_family": {
                             "default_sonnet_model": "system.ai.claude-sonnet-5"
                         },
@@ -1321,12 +1316,44 @@ class TestManagedClaudeModelDiscovery:
         assert result.exit_code == 0, result.output
         calls["list_catalog"].assert_not_called()
         picker = calls["configure"].call_args.kwargs["picker_catalog"]
-        assert picker.model_ids == [
-            explicit_model or default_model or "system.ai.claude-sonnet-5[1m]"
-        ]
-        assert calls["configure"].call_args.kwargs["route_root_model"] == default_model
+        assert picker.model_ids == [explicit_model or "system.ai.claude-sonnet-5[1m]"]
+        assert calls["configure"].call_args.kwargs["route_root_model"] is None
         assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == picker.model_ids
         assert calls["launch"].call_args.kwargs["options"].user_pinned_model == explicit_model
+
+    @pytest.mark.parametrize(
+        ("with_overall_default", "with_family_default"),
+        [(True, False), (False, True), (True, True)],
+        ids=["overall-default", "family-default", "overall-and-family-default"],
+    )
+    def test_managed_uc_defaults_preserve_discovered_catalog(
+        self, with_overall_default, with_family_default
+    ):
+        sonnet = "ug_e2e.models.claude_sonnet"
+        haiku = "ug_e2e.models.claude_haiku"
+        discovered = db_mod.AnthropicModelCatalog(
+            model_ids=[haiku, sonnet], model_id_to_display_name={}
+        )
+        model_config = {"unity_catalog_location": "ug_e2e.models"}
+        if with_overall_default:
+            model_config["default_model"] = sonnet
+        if with_family_default:
+            model_config["default_models_by_model_family"] = {"default_sonnet_model": sonnet}
+        managed = {"enabled_agents": {"claude": {"model_config": model_config}}}
+
+        with _launch_policy_patches(managed, picker_catalog=discovered) as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        calls["list_catalog"].assert_called_once_with(
+            MINIMAL_STATE["workspace"], "token", parent_schema="ug_e2e.models"
+        )
+        configured = calls["configure"].call_args.kwargs
+        assert configured["route_root_model"] == (sonnet if with_overall_default else None)
+        assert configured["coding_agent_config_defaults"] == (
+            {"sonnet": sonnet} if with_family_default else {}
+        )
+        assert set(configured["picker_catalog"].model_ids) == {sonnet, haiku}
 
     def test_relayed_managed_defaults_keep_native_picker(self, monkeypatch):
         calls = self._invoke(monkeypatch, self.MPS_CONFIG, relayed=True)

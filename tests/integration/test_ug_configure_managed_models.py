@@ -21,7 +21,7 @@ from utils.managed import (
     build_coding_agent_config,
     set_managed_config_stub,
 )
-from utils.provider_catalog import fetch_anthropic_provider_catalog
+from utils.provider_catalog import fetch_anthropic_parent_catalog, fetch_anthropic_provider_catalog
 from utils.terminal import AgentTerminal, TerminalProcess
 
 CLAUDE_OPUS = "system.ai.claude-opus-4-8"
@@ -116,8 +116,9 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session)
 
     Expected: the installed ug launch writes the parent-schema header and every admin-authored
     default to both Claude settings files, adding ``[1m]`` only to Opus and Sonnet family defaults.
-    The replacement picker contains exactly those family defaults. This settings reconciliation
-    check does not claim model inference.
+    The replacement picker contains those family defaults and every model independently fetched
+    from the schema, preserving catalog labels. This settings reconciliation check does not claim
+    model inference.
     """
     session = live_session
     target_bearer = os.environ.get("UG_PARENT_SCHEMA_DEFAULTS_BEARER", "").strip()
@@ -142,6 +143,9 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session)
     )
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
 
+    catalog = fetch_anthropic_parent_catalog(
+        CLAUDE_PARENT_SCHEMA_DEFAULTS_WORKSPACE, target_bearer, parent_schema
+    )
     command = [str(session.binary), "claude", "--", "--version"]
     with TerminalProcess(session, "claude", command, "managed-defaults-parent-schema") as terminal:
         terminal.finish(timeout=240)
@@ -168,9 +172,13 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session)
             )
         picker = settings["modelPicker"]
         assert picker["replaceBuiltInOptions"] is True, picker
+        expected_picker_models = set(expected_picker_models) | set(catalog.model_ids)
         assert sorted(option["model"] for option in picker["options"]) == sorted(
             expected_picker_models
         ), picker
+        for option in picker["options"]:
+            if display_name := catalog.display_names.get(option["model"]):
+                assert option["label"] == display_name, option
 
 
 @pytest.mark.managed_fixture
