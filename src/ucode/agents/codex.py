@@ -788,7 +788,6 @@ def default_model(state: dict) -> str | None:
         return state["codex_default_model"]
     if smart_routing_v2.smart_routing_enabled():
         return _smart_routing_config_model(state)
-    clear_model_preferences(state)
     return None
 
 
