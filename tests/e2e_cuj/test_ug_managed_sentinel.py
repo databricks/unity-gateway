@@ -114,18 +114,19 @@ def _assert_inference_requests(
     expected_model: str,
 ) -> None:
     """Assert every recorded inference request for one task and require a tool follow-up."""
-    requests = []
+    observed = []
     after = checkpoint
     while True:
         try:
-            request = recorder.expect_request(method="POST", path=path, after=after, timeout=0.2)
+            request = recorder.expect_request(method="POST", after=after, timeout=0.2)
         except AssertionError as exc:
             assert str(exc).startswith("Timed out waiting for TUI request:"), str(exc)
             break
-        requests.append(request)
+        observed.append(request)
         after = request.sequence
 
-    assert len(requests) >= 2, [(request.sequence, request.path) for request in requests]
+    requests = [request for request in observed if request.path == path]
+    assert len(requests) >= 2, [(request.sequence, request.path) for request in observed]
     served_models = []
     marked_requests = 0
     for request in requests:
