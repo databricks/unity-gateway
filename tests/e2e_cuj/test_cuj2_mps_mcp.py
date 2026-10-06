@@ -265,9 +265,11 @@ def _assert_inference_request(recorder, request, *, provider: str, model: str, m
     assert response.body, "Inference response was empty"
 
 
-class TestCuj2MpsExplicitMcp(BaseCujTest):
+class _Cuj2Base(BaseCujTest):
     WORKSPACE_URL = WORKSPACE_URL
 
+
+class TestCuj2Configuration(_Cuj2Base):
     def test_cuj_configuration(self, cuj):
         """Scenario: configure ug from the preconfigured two-agent MPS/MCP workspace.
 
@@ -293,6 +295,8 @@ class TestCuj2MpsExplicitMcp(BaseCujTest):
         _assert_configured_files(session, workspace.url)
         _assert_generated_mcp_listings(session)
 
+
+class TestCuj2CodexInference(_Cuj2Base):
     def test_cuj_codex_inference(self, cuj):
         """Scenario: configure through the recorder and complete a real Codex MCP task.
 
@@ -347,6 +351,8 @@ class TestCuj2MpsExplicitMcp(BaseCujTest):
         )
         _assert_task_evidence(session, CODEX, marker)
 
+
+class TestCuj2ClaudeInference(_Cuj2Base):
     def test_cuj_claude_inference(self, cuj):
         """Scenario: configure through the recorder and complete a real Claude MCP task.
 
