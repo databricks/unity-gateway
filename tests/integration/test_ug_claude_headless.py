@@ -16,7 +16,7 @@ def test_ug_claude_headless_prompt_argument(live_session, workspace):
     """Scenario: configure claude and submit a headless prompt via argument.
 
     Expected: the real agent reads the fixture and returns its unknown value in
-    its structured completed answer, with exit code zero.
+    its structured completed answer, with exit code zero and JSON-only stdout.
     """
     session = live_session
     task = FileTask(session)
@@ -42,6 +42,7 @@ def test_ug_claude_headless_prompt_argument(live_session, workspace):
         "Read",
         timeout=180,
     )
+    assert json.loads(result.stdout)["type"] == "result"
     task.assert_headless_answer("claude", result)
     session.assert_not_routed()
 
@@ -50,7 +51,7 @@ def test_ug_claude_headless_prompt_stdin(live_session, workspace):
     """Scenario: configure claude and submit a headless prompt via stdin.
 
     Expected: the real agent reads the fixture and returns its unknown value in
-    its structured completed answer, with exit code zero.
+    its structured completed answer, with exit code zero and JSON-only stdout.
     """
     session = live_session
     task = FileTask(session)
@@ -76,6 +77,7 @@ def test_ug_claude_headless_prompt_stdin(live_session, workspace):
         timeout=180,
         input_text=task.prompt + "\n",
     )
+    assert json.loads(result.stdout)["type"] == "result"
     task.assert_headless_answer("claude", result)
     session.assert_not_routed()
 

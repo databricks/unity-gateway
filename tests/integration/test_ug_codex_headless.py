@@ -1,5 +1,7 @@
 """CUJs for using codex from scripts through installed ug."""
 
+import json
+
 import pytest
 from utils.constants import CODEX_TEST_MODEL
 from utils.evidence import FileTask
@@ -12,7 +14,7 @@ def test_ug_codex_headless_prompt_argument(live_session, workspace):
     """Scenario: configure codex and submit a headless prompt via argument.
 
     Expected: the real agent reads the fixture and returns its unknown value in
-    its structured completed answer, with exit code zero.
+    its structured completed answer, with exit code zero and JSONL-only stdout.
     """
     session = live_session
     task = FileTask(session)
@@ -38,6 +40,8 @@ def test_ug_codex_headless_prompt_argument(live_session, workspace):
         task.prompt,
         timeout=180,
     )
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    assert events and all(isinstance(event, dict) for event in events)
     task.assert_headless_answer("codex", result)
     session.assert_not_routed()
 
@@ -46,7 +50,7 @@ def test_ug_codex_headless_prompt_stdin(live_session, workspace):
     """Scenario: configure codex and submit a headless prompt via stdin.
 
     Expected: the real agent reads the fixture and returns its unknown value in
-    its structured completed answer, with exit code zero.
+    its structured completed answer, with exit code zero and JSONL-only stdout.
     """
     session = live_session
     task = FileTask(session)
@@ -73,6 +77,8 @@ def test_ug_codex_headless_prompt_stdin(live_session, workspace):
         timeout=180,
         input_text=task.prompt + "\n",
     )
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    assert events and all(isinstance(event, dict) for event in events)
     task.assert_headless_answer("codex", result)
     session.assert_not_routed()
 

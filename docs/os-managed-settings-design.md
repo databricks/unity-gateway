@@ -13,10 +13,9 @@ The two stacked PRs make precedence handling deterministic:
    managed-settings path.
 
 After both PRs merge, interactive configuration reconciles the agent's OS-managed file by default.
-Non-interactive execution uses local settings when the managed file is compatible. Claude repairs
+Non-interactive execution uses local settings when the managed file is compatible. Both agents repair
 conflicting managed settings using `sudo -n`, which requires existing authorization and never prompts
-for a password. If that repair is denied, Claude does not launch. Codex remains local-only without a
-TTY.
+for a password. If that repair is denied, the agent does not launch.
 
 ## Configuration Files
 
@@ -32,14 +31,15 @@ configuration, except for Claude subscription relay.
 
 Standard input determines whether UG may request administrator permission interactively. Standard
 output does not affect the decision, so piping logs does not disable an otherwise interactive
-configuration. Without a TTY, Claude attempts to repair an existing conflicting file through a
+configuration. Without a TTY, either agent attempts to repair an existing conflicting file through a
 one-shot `sudo -n` transaction with stdin disconnected. Cached credentials or a passwordless sudo
 policy must authorize that command; UG never retries a denied repair with prompting enabled.
 
 This lets headless Isaac launches recover when Isaac rewrites gateway-owned fields before starting
 UG. The same backup, unrelated-policy preservation, atomic replacement, and verification apply.
-An absent or compatible managed file still causes no write or sudo call. Codex and `ucode revert`
-retain the interactive-only managed-write policy.
+An absent or compatible managed file still causes no write or sudo call. `ucode revert`
+retains the interactive-only managed-write policy. Codex MCP registration retains its existing
+non-interactive user-scope fallback.
 
 This is a new shared ucode distinction. The previous implementation inferred interactivity from
 command shape in some flows and did not guard managed-file writes consistently.
@@ -54,14 +54,13 @@ command shape in some flows and did not guard managed-file writes consistently.
 | Interactive | Already identical | Continue without a backup, write, or `sudo` invocation. |
 | Non-interactive | Absent | Use the local ucode file. Do not create the managed file. |
 | Non-interactive | Ucode-owned values absent or equal | Use the local ucode file. Do not modify the managed file. |
-| Non-interactive Claude | Ucode-owned value conflicts | Repair through `sudo -n`; stop before launching if authorization or verification fails. |
-| Non-interactive Codex | Ucode-owned value conflicts | Stop before launching because the higher-precedence value would override ucode. |
+| Non-interactive | Ucode-owned value conflicts | Repair through `sudo -n`; stop before launching if authorization or verification fails. |
 | Any | Invalid, unreadable, or symlinked | Stop without modifying the file because precedence cannot be established safely. |
 
 `ucode configure`, first-time `ucode claude` or `ucode codex`, and later launches all use the same
 agent-specific reconciliation path. A first-time launch from an interactive terminal can therefore
 request administrator permission. A first-time non-interactive launch uses local settings unless
-Claude must repair an existing conflicting managed file.
+the agent must repair an existing conflicting managed file.
 
 For Claude, turning off UG tracing preserves the live OS-managed telemetry values unchanged,
 including values UG wrote on an earlier run. The same applies when the workspace has no managed
@@ -81,7 +80,7 @@ For each agent, ucode:
 
 1. Strictly parses the existing managed JSON or TOML document.
 2. Produces the desired document by applying the same gateway overlay used for the local ucode file.
-3. Preserves settings outside the paths owned by ucode and rejects a changed Claude baseline before
+3. Preserves settings outside the paths owned by ucode and rejects a changed baseline before
    backing up or writing a document composed from stale policy.
 4. Preserves enterprise Claude permission-deny entries while adding ucode-required entries.
 5. Records the original baseline before the first change.
@@ -110,8 +109,8 @@ errors:
 - retries once only when device management restored the exact pre-write contents;
 - preserves a concurrently changed policy instead of overwriting it.
 
-The privilege boundary is interactive. Non-interactive paths do not invoke either normal `sudo` or
-`sudo -n`.
+Interactive updates may request administrator permission. Non-interactive conflict repairs use only
+`sudo -n` with stdin disconnected, never an interactive sudo worker or a prompting fallback.
 
 Root access cannot sustainably override an actively enforced policy. If an MDM process immediately
 restores the original file twice, ucode stops with an error instead of repeatedly fighting the
@@ -168,7 +167,7 @@ to unchanged launches.
 
 The verification scopes distinguish:
 
-- an interactively reconciled managed file;
+- a managed file reconciled interactively or through an authorized non-prompting repair;
 - a managed file verified as compatible with local settings;
 - a managed file verified as compatible with Claude relay.
 
@@ -202,9 +201,8 @@ standard Databricks authentication.
 - whether a managed baseline backup is available.
 
 Interactive updates announce the backup location, administrator-permission request, and verified
-result. An identical file produces no elevation message. Non-interactive Claude repairs do not ask
-for a password. Claude `-p`/`--print` launches send UG status and diagnostics to stderr, preserving
-the agent's stdout for text, JSON, or streaming JSON.
+result. An identical file produces no elevation message. Non-interactive repairs do not ask
+for a password.
 
 Representative blockers are:
 

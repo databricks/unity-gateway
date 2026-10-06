@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -1677,7 +1678,7 @@ class TestCodexManagedConfig:
         assert doc["approval_policy"] == "on-request"
         assert "model" not in doc
 
-    def _sudo_counting_env(self, tmp_path, monkeypatch):
+    def _sudo_counting_env(self, tmp_path, monkeypatch, *, non_interactive=False):
         """Real reconcile flow (semantic no-op check included) with sudo writes counted."""
         config_path = tmp_path / ".codex" / "ucode.config.toml"
         managed_path = tmp_path / "etc-codex" / "managed_config.toml"
@@ -1686,16 +1687,25 @@ class TestCodexManagedConfig:
         monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "codex-ucode-config.backup.toml")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
         monkeypatch.setattr(codex, "save_state", lambda state: None)
-        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: not non_interactive)
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: managed_path)
         monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
-        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: True)
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda: not non_interactive)
         monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", tmp_path / "managed-backups")
         monkeypatch.setattr(
             managed_files, "MANAGED_BACKUP_MANIFEST_PATH", tmp_path / "managed-backups" / "m.json"
         )
 
-        def _write(target, text):
+        if non_interactive:
+            monkeypatch.setattr(
+                managed_files,
+                "_print_managed_write_permission",
+                lambda *args: pytest.fail("headless repair must not ask for a password"),
+            )
+
+        def _write(target, text, **kwargs):
+            assert target == managed_path
+            assert kwargs == ({"non_interactive": True} if non_interactive else {})
             sudo_writes.append(text)
             Path(target).parent.mkdir(parents=True, exist_ok=True)
             Path(target).write_text(text, encoding="utf-8")
@@ -1756,34 +1766,155 @@ class TestCodexManagedConfig:
         assert codex.MODEL_PROVIDER_SERVICE_HEADER not in managed_headers
         assert managed["model_catalog_json"] == "/tmp/stale.json"
 
-    def test_noninteractive_uses_local_config_when_managed_config_is_compatible(
+    @pytest.mark.parametrize(
+        "original",
+        [
+            None,
+            "",
+            'approval_policy = "on-request"\n',
+            'model_provider = "Databricks"\napproval_policy = "on-request"\n',
+        ],
+        ids=["absent", "empty", "unrelated", "compatible"],
+    )
+    def test_noninteractive_compatible_managed_config_is_read_only(
+        self, tmp_path, monkeypatch, original
+    ):
+        managed_path, sudo_writes = self._sudo_counting_env(
+            tmp_path, monkeypatch, non_interactive=True
+        )
+        if original is not None:
+            managed_path.parent.mkdir(parents=True, exist_ok=True)
+            managed_path.write_text(original, encoding="utf-8")
+        before = managed_files.managed_file_fingerprint(managed_path)
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+
+        codex.write_tool_config(state)
+
+        assert read_toml_safe(codex.CODEX_CONFIG_PATH)["model_provider"] == "Databricks"
+        assert managed_files.read_managed_file(managed_path) == original
+        assert managed_files.managed_file_fingerprint(managed_path) == before
+        assert sudo_writes == []
+        assert not managed_files.MANAGED_BACKUP_DIR.exists()
+        assert state["managed_file_fingerprints"]["codex"]["scope"] == "local-compatible"
+        assert codex.managed_config_is_current(state)
+
+    def test_noninteractive_repairs_conflicting_managed_config_without_prompting(
         self, tmp_path, monkeypatch
     ):
-        _, managed_path = self._patch(tmp_path, monkeypatch)
-        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
-        state = {"workspace": WS, "codex_models": ["gpt-5"]}
-        codex.write_tool_config(state)
-        assert not managed_path.exists()
-
-    def test_noninteractive_preserves_unrelated_managed_config(self, tmp_path, monkeypatch):
-        _, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path, sudo_writes = self._sudo_counting_env(
+            tmp_path, monkeypatch, non_interactive=True
+        )
         managed_path.parent.mkdir(parents=True, exist_ok=True)
-        original = 'approval_policy = "on-request"\n'
+        original = (
+            'model_provider = "enterprise"\n'
+            'approval_policy = "on-request"\n'
+            '[mcp_servers.policy]\nurl = "https://policy.example.com/mcp"\n'
+            '[model_providers.Enterprise]\nname = "Enterprise"\n'
+            '[model_providers.Databricks]\nbase_url = "https://old.example.com"\n'
+            "request_timeout_ms = 42000\n"
+            '[model_providers.Databricks.auth]\ncommand = "isaac"\n'
+        )
         managed_path.write_text(original, encoding="utf-8")
-        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
 
-        codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+        codex.write_tool_config(state)
 
-        assert managed_path.read_text(encoding="utf-8") == original
+        written = read_toml_safe(managed_path)
+        local_provider = read_toml_safe(codex.CODEX_CONFIG_PATH)["model_providers"]["Databricks"]
+        assert written["model_provider"] == "Databricks"
+        assert written["approval_policy"] == "on-request"
+        assert written["mcp_servers"] == {"policy": {"url": "https://policy.example.com/mcp"}}
+        assert written["model_providers"]["Enterprise"] == {"name": "Enterprise"}
+        assert written["model_providers"]["Databricks"] == {
+            **local_provider,
+            "request_timeout_ms": 42000,
+        }
+        assert len(sudo_writes) == 1
+        assert state["managed_file_fingerprints"]["codex"]["scope"] == "managed"
+        assert codex.managed_config_is_current(state)
+        snapshots = managed_files.managed_file_snapshots("codex", codex._parse_managed_config)
+        assert snapshots.original_before_ug == codex._parse_managed_config(original)
+        assert snapshots.last_applied_by_ug == written
+        assert snapshots.owned_paths == codex.MANAGED_KEYS
 
-    def test_noninteractive_fails_when_managed_config_conflicts(self, tmp_path, monkeypatch):
-        _, managed_path = self._patch(tmp_path, monkeypatch)
+        codex.write_tool_config(state)
+
+        assert len(sudo_writes) == 1
+        assert managed_path.read_text(encoding="utf-8") == sudo_writes[0]
+
+    @pytest.mark.parametrize("failure", ["password-required", "permission-denied"])
+    def test_noninteractive_unavailable_credentials_are_fatal_without_prompt_fallback(
+        self, tmp_path, monkeypatch, failure
+    ):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch, non_interactive=True)
         managed_path.parent.mkdir(parents=True, exist_ok=True)
-        managed_path.write_text('model_provider = "enterprise"\n', encoding="utf-8")
-        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
+        original = 'model_provider = "enterprise"\napproval_policy = "on-request"\n'
+        managed_path.write_text(original, encoding="utf-8")
+        attempts = []
 
-        with pytest.raises(RuntimeError, match="cannot be applied non-interactively"):
-            codex.write_tool_config({"workspace": WS, "codex_models": ["gpt-5"]})
+        def deny_write(target, text, *, non_interactive):
+            assert target == managed_path
+            attempts.append(non_interactive)
+            if failure == "permission-denied":
+                raise PermissionError("sudo denied")
+            raise subprocess.CalledProcessError(
+                1, ["sudo", "-n"], stderr="sudo: a password is required"
+            )
+
+        monkeypatch.setattr(managed_files, "_sudo_replace", deny_write)
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+
+        with pytest.raises(RuntimeError, match="cannot be applied non-interactively") as error:
+            codex.write_tool_config(state)
+
+        assert attempts == [True]
+        assert str(managed_path) in str(error.value)
+        assert "model_provider" in str(error.value)
+        assert "without prompting failed" in str(error.value)
+        assert "interactive terminal" in str(error.value)
+        assert "administrator" in str(error.value)
+        assert isinstance(error.value.__cause__, managed_files.ManagedFileWriteUnavailable)
+        assert managed_path.read_text(encoding="utf-8") == original
+        assert "codex" not in state.get("managed_file_fingerprints", {})
+        snapshots = managed_files.managed_file_snapshots("codex", codex._parse_managed_config)
+        assert snapshots.original_before_ug == codex._parse_managed_config(original)
+        assert snapshots.last_applied_by_ug is None
+
+    @pytest.mark.parametrize(
+        ("non_interactive", "original"),
+        [
+            (True, 'model_provider = "enterprise"\n'),
+            (False, 'model_provider = "enterprise"\n'),
+            (False, None),
+        ],
+        ids=["headless-existing", "interactive-existing", "interactive-absent"],
+    )
+    def test_reconcile_rejects_managed_config_changed_since_caller_read(
+        self, tmp_path, monkeypatch, non_interactive, original
+    ):
+        managed_path, sudo_writes = self._sudo_counting_env(
+            tmp_path, monkeypatch, non_interactive=non_interactive
+        )
+        managed_path.parent.mkdir(parents=True, exist_ok=True)
+        if original is not None:
+            managed_path.write_text(original, encoding="utf-8")
+        administrator_update = 'model_provider = "admin"\napproval_policy = "untrusted"\n'
+
+        def read_then_update(target):
+            current_text = managed_files.read_managed_file(target)
+            target.write_text(administrator_update, encoding="utf-8")
+            return current_text
+
+        monkeypatch.setattr(codex, "read_managed_file", read_then_update)
+        state = {"workspace": WS, "codex_models": ["gpt-5"]}
+
+        with pytest.raises(RuntimeError, match="preserved the newer file"):
+            codex.write_tool_config(state)
+
+        assert managed_path.read_text(encoding="utf-8") == administrator_update
+        assert sudo_writes == []
+        assert not managed_files.MANAGED_BACKUP_DIR.exists()
+        assert "codex" not in state.get("managed_file_fingerprints", {})
 
     def test_invalid_managed_toml_is_not_modified(self, tmp_path, monkeypatch):
         _, managed_path = self._patch(tmp_path, monkeypatch)

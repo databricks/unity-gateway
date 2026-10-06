@@ -2510,10 +2510,62 @@ def _configure_managed_skills(managed: dict | None) -> None:
         print_note(f"Removed workspace skill(s) no longer configured: {', '.join(removed)}")
 
 
+def _codex_subcommand(tool_args: list[str]) -> str | None:
+    """Find the first positional argument after known Codex global options."""
+    value_options = {
+        "-c",
+        "--config",
+        "-m",
+        "--model",
+        "-C",
+        "--cd",
+        "-p",
+        "--profile",
+        "-s",
+        "--sandbox",
+        "-a",
+        "--ask-for-approval",
+        "--enable",
+        "--disable",
+        "--remote",
+        "--remote-auth-token-env",
+        "--local-provider",
+        "--add-dir",
+    }
+    boolean_options = {
+        "--strict-config",
+        "--oss",
+        "--approve-for-me",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--worktree",
+        "--search",
+        "--no-alt-screen",
+        "--no-daemon",
+    }
+    remaining = iter(tool_args)
+    for arg in remaining:
+        if arg == "--":
+            return None
+        if not arg.startswith("-"):
+            return arg
+        option, separator, _value = arg.partition("=")
+        if option in value_options:
+            if not separator:
+                value = next(remaining, None)
+                if value is None or value.startswith("-"):
+                    return None
+        elif len(arg) > 2 and arg[:2] in value_options:
+            continue
+        elif arg not in boolean_options:
+            return None
+    return None
+
+
 def _child_owns_stdout(tool: str, tool_args: list[str]) -> bool:
     """True when the forwarded agent command needs stdout free of ug messages.
 
-    Claude print mode and ``codex app-server`` reserve stdout for their output;
+    Claude print mode and Codex exec/app-server reserve stdout for their output;
     the file descriptor stays untouched for the agent process.
     """
     if tool == "claude":
@@ -2522,7 +2574,7 @@ def _child_owns_stdout(tool: str, tool_args: list[str]) -> bool:
                 break
             if arg in {"-p", "--print"}:
                 return True
-    return tool == "codex" and tool_args[:1] == ["app-server"]
+    return tool == "codex" and _codex_subcommand(tool_args) in {"app-server", "exec", "e"}
 
 
 def _should_launch_smart_routing(

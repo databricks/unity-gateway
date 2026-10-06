@@ -579,15 +579,9 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
         ) from exc
     managed_before = copy.deepcopy(existing)
     desired_doc = compose(existing)
-    if not managed_writes_allowed():
-        conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
-        if conflicts:
-            raise RuntimeError(
-                "Codex configuration cannot be applied non-interactively because OS-managed "
-                f"settings at {path} override ucode values: {', '.join(conflicts)}. Run `ucode "
-                "configure --agent codex` from an interactive terminal or contact your "
-                "administrator."
-            )
+    non_interactive = not managed_writes_allowed()
+    conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
+    if non_interactive and not conflicts:
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
     try:
@@ -598,10 +592,17 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
             display="Codex",
             owned_paths=MANAGED_KEYS,
             parser=_parse_managed_config,
+            non_interactive=non_interactive,
+            expected_current_text=current_text,
         )
-    except ManagedFileWriteUnavailable:
-        conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
+    except ManagedFileWriteUnavailable as exc:
         if conflicts:
+            if non_interactive:
+                raise RuntimeError(
+                    "Codex configuration cannot be applied non-interactively because OS-managed "
+                    f"settings at {path} override ucode values: {', '.join(conflicts)}. "
+                    f"Updating them without prompting failed. {exc}"
+                ) from exc
             raise
         print_warning_err(
             f"Codex OS-managed settings could not be updated at {path}; continuing with local "

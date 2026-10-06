@@ -38,7 +38,7 @@ err_console = Console(stderr=True, highlight=False)
 def redirect_output_to_stderr() -> None:
     """Move status output to stderr because a child process now owns stdout.
 
-    Claude print mode and ``codex app-server`` can emit structured output on
+    Claude print mode and Codex exec/app-server can emit structured output on
     stdout, so any ug line printed there corrupts the stream. Rich resolves
     ``console.file`` to ``sys.stdout`` at print time, so rebinding the module attribute sends every
     status print to stderr while ``os.execvp`` still hands the launched agent
