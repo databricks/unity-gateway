@@ -422,7 +422,7 @@ jobs:
             ${{ runner.temp }}/ug-integration/wheels/
 
   dedicated-cuj:
-    name: Dedicated-workspace CUJs
+    name: E2E CUJs
     # CUJ definitions: https://docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0/edit?usp=drive_web&ouid=117446678071138243519
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-22.04
@@ -449,10 +449,10 @@ jobs:
           npm install -g \
             "@anthropic-ai/claude-code@$CLAUDE_VERSION" \
             "@openai/codex@$CODEX_VERSION"
-      - name: Run every dedicated-workspace CUJ
+      - name: Run every E2E CUJ
         run: |
           if ! find tests/e2e_cuj -name 'test_*.py' -print -quit | grep -q .; then
-            echo "No dedicated-workspace CUJs found."
+            echo "No E2E CUJs found."
             exit 0
           fi
           uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
