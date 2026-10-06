@@ -9,11 +9,14 @@ import sys
 from ucode.os_compatibility import subprocess_cross_os
 
 
-def exec_or_spawn(argv: list[str]) -> None:
+def exec_or_spawn(argv: list[str], *, wait_for_exit: bool = False) -> None:
     """Hand the terminal to ``argv``, then exit with its status.
 
     On POSIX we ``os.execvp`` — the agent process *replaces* ucode, inheriting
     the controlling terminal cleanly.
+
+    ``wait_for_exit`` keeps ucode alive on POSIX while the child runs. Launchers
+    use this only when they must clean up a launch-scoped resource afterwards.
 
     On Windows there is no real ``exec``: ``os.execvp`` spawns a *new* process
     and immediately terminates the parent, so the launching shell resumes its
@@ -22,7 +25,7 @@ def exec_or_spawn(argv: list[str]) -> None:
     for it, and propagate its exit code — the same pattern the token-refreshing
     agents (gemini/opencode/copilot/pi) already use.
     """
-    if os.name != "nt":
+    if os.name != "nt" and not wait_for_exit:
         os.execvp(argv[0], argv)
         return  # unreachable on POSIX; keeps type-checkers happy
 

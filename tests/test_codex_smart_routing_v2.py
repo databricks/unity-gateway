@@ -77,22 +77,39 @@ class TestLaunchCodex:
             )
         ]
 
-    def test_codex_smart_routing_preserves_custom_header(self, monkeypatch):
+    @pytest.mark.parametrize("static_models", [None, ["gpt-static"]])
+    def test_codex_smart_routing_preserves_custom_header(
+        self, tmp_path, monkeypatch, static_models
+    ):
         captured = {}
+        requested = {}
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
-        monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: "gpt-start")
+        monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: "gpt-old")
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: None)
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", tmp_path / "app-catalog.json")
+        monkeypatch.setattr(codex, "get_databricks_token", lambda *_args, **_kwargs: "token")
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda *_args, **kwargs: (
+                requested.update(kwargs) or {"models": [{"slug": "gpt-start"}]}
+            ),
+        )
+        monkeypatch.setattr(codex, "validate_codex_catalog", lambda *_args: None)
 
         def launch_v2(state, tool_args, **kwargs):
             captured.update(kwargs)
+            if not static_models:
+                assert json.loads(kwargs["catalog_path"].read_text())["models"] == [
+                    {"slug": "gpt-start"}
+                ]
             raise SystemExit(0)
 
         monkeypatch.setattr(v2, "launch_codex", launch_v2)
         custom_headers = {"X-Development-Route": "route://development/test"}
-
         with pytest.raises(SystemExit):
             codex.launch(
-                {"workspace": WS},
+                {"workspace": WS, "codex_static_models": static_models},
                 [],
                 options=LaunchOptions(
                     launch_smart_routing=True,
@@ -105,6 +122,14 @@ class TestLaunchCodex:
         env_name = headers["X-Development-Route"]
         assert os.environ[env_name] == custom_headers["X-Development-Route"]
         monkeypatch.delenv(env_name)
+        if static_models:
+            assert requested == {}
+            assert "catalog_models" not in captured
+        else:
+            assert requested["request_headers"] == custom_headers
+            assert captured["start_model"] == "gpt-start"
+            assert captured["catalog_models"] == ["gpt-start"]
+            assert not captured["catalog_path"].exists()
 
     @pytest.mark.parametrize(
         "tool_args",
