@@ -3877,7 +3877,10 @@ def _upgrade_failure_detail(result: subprocess.CompletedProcess[str]) -> str:
 
 
 def _verify_upgraded_commands() -> None:
-    """Ensure both compatibility entry points were installed and can start."""
+    """Ensure both compatibility entry points were installed and can start.
+
+    Uses ``--help`` because the entry point answers a bare ``--version`` without importing the CLI.
+    """
     for command in ("ug", "ucode"):
         executable = shutil.which(command)
         if executable is None:
@@ -3886,7 +3889,7 @@ def _verify_upgraded_commands() -> None:
                 "Reinstall Unity Gateway and ensure the uv tool bin directory is on PATH."
             )
         result = subprocess_cross_os.run(
-            [executable, "--version"],
+            [executable, "--help"],
             check=False,
             capture_output=True,
             text=True,
@@ -3894,7 +3897,7 @@ def _verify_upgraded_commands() -> None:
         if result.returncode != 0:
             detail = _upgrade_failure_detail(result)
             raise RuntimeError(
-                f"Upgrade completed, but `{command} --version` failed"
+                f"Upgrade completed, but `{command} --help` failed"
                 f"{f': {detail}' if detail else '.'}"
             )
 

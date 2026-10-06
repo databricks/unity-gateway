@@ -16,7 +16,6 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-from ucode import gateway_proxy
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -2031,6 +2030,9 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
 
     def token_provider(force_refresh: bool) -> str:
         return get_databricks_token(workspace, profile, force_refresh=force_refresh)
+
+    # Only relayed launches need the proxy (and its `httpx` import).
+    from ucode import gateway_proxy
 
     server, cache, client = gateway_proxy.start_relay_proxy(workspace, token_provider, port)
     # start_relay_proxy falls back to an OS-assigned port when the cached one is taken

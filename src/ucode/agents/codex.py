@@ -15,7 +15,6 @@ from pathlib import Path
 import tomlkit
 from tomlkit.exceptions import ParseError
 
-from ucode import gateway_proxy
 from ucode.codex_config import (
     catalog_slugs,
     codex_config_args,
@@ -1079,6 +1078,9 @@ def _launch_codex_with_otel_proxy(
     exec-replacing this process; mirrors Claude's relayed launch. The proxy binds an
     OS-assigned port and tears everything down when Codex exits (or fails to spawn).
     """
+    # Only tracing launches need the proxy (and its `httpx` import).
+    from ucode import gateway_proxy
+
     server, cache, client = gateway_proxy.start_otel_proxy(
         workspace, _otel_token_provider(state, workspace)
     )

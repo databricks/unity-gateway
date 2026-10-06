@@ -18,6 +18,11 @@ The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
 
+`../test_startup_imports.py` covers the bare version fast path, deferred imports,
+metadata fallback, and other-argument dispatch as component checks. Installation
+checks still exercise real console-script help and version output; neither suite
+asserts end-to-end agent startup latency.
+
 `TestChildStdoutLaunch` in `../test_cli.py` covers clean Claude print-mode and
 Codex exec/app-server stdout, early launch errors, and forwarding through ug's `--`.
 Token membership before the agent's `--` intentionally also matches option values and prompt

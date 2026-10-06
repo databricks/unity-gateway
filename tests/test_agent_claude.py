@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, Mock
 import pytest
 
 from ucode import databricks as db_mod
-from ucode import managed_files
+from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, claude
 from ucode.smart_routing import claude_routing, v2
 from ucode.state import MANAGED_OVERLAY_KEY
@@ -2527,7 +2527,7 @@ class TestClaudeLaunch:
 
         monkeypatch.setattr(claude, "_managed_relayed_conflicts", lambda: None)
         monkeypatch.setattr(claude, "_ensure_subscription_login", lambda: None)
-        monkeypatch.setattr(claude.gateway_proxy, "start_relay_proxy", start_relay_proxy)
+        monkeypatch.setattr(gateway_proxy, "start_relay_proxy", start_relay_proxy)
         monkeypatch.setattr(
             claude,
             "get_databricks_token",

@@ -48,7 +48,7 @@ from ucode.os_compatibility.file_lock_cross_os import (
     release_file_lock,
 )
 from ucode.skills import SMART_ROUTER_SKILL, install_skill
-from ucode.smart_routing import claude_routing, codex_interposer, routing
+from ucode.smart_routing import claude_routing, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     sync_first_prompt_hook,
@@ -676,6 +676,9 @@ def launch_codex(
         exec_or_spawn([binary, *config_args, *tool_args])
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
+
+    # Codex-only, and pulls in `websockets`; keep it off the Claude launch path.
+    from ucode.smart_routing import codex_interposer
 
     # Preserve the user's normal CODEX_HOME (including MCP servers, skills, and
     # preferences) and layer only ucode's gateway settings at CLI precedence.

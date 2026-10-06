@@ -31,8 +31,8 @@ dependencies = [
 ]
 
 [project.scripts]
-ug = "ucode.cli:main"
-ucode = "ucode.cli:main"
+ug = "ucode.entrypoint:main"
+ucode = "ucode.entrypoint:main"
 
 [tool.hatch.build.targets.wheel]
 # Keep the Python module and existing ~/.ucode configuration paths compatible.

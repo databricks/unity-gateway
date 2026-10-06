@@ -12,8 +12,6 @@ from pathlib import Path
 from typing import NotRequired, TypedDict
 from urllib.parse import urlparse
 
-from databricks.sdk import oauth
-
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
 from ucode.databricks import (
     build_auth_token_argv,
@@ -187,6 +185,9 @@ def get_custom_client_token(
     if custom_oauth_cli_enabled(config):
         profile = profile or _custom_cli_profile(workspace, config["client_id"])
         return get_databricks_token(workspace, profile, force_refresh=force_refresh)
+    # `databricks.sdk` eagerly imports every service module (~0.7s); only the SDK backend needs it.
+    from databricks.sdk import oauth
+
     try:
         endpoints = oauth.get_workspace_endpoints(workspace)
         cache = oauth.TokenCache(
