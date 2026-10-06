@@ -56,8 +56,9 @@ preconfigured workspace: configuration, Codex inference, and Claude inference. E
 reads and validates the exact two-agent MPS/MCP shape. No case creates, updates, deletes,
 or restores CodingAgentConfig. The fixture's final read-only equality check is the only
 workspace mutation guard. The test uses the shared `UserSession`, `Workspace`, and
-`TuiRequestRecorder`, `AgentTerminal`, and integration transcript readers directly; only
-CUJ2's `run_code` call/result correlation remains local to the test.
+`TuiRequestRecorder`, `AgentTerminal`, and integration transcript readers directly. The
+configuration case verifies the selected sandbox service and generated MCP listings; live
+`run_code` execution remains deferred because MAS cannot downscope the CI service principal.
 
 Use a clean disposable POSIX runner without existing machine-wide agent settings.
 Install the intended versions of `ug`, `claude`, `codex`, and `databricks` on PATH.

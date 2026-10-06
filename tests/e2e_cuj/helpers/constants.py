@@ -34,24 +34,3 @@ MODEL_PROVIDER_SERVICE_FIXTURES = {
 
 SANDBOX_MCP_SERVICE_NAME = "system.ai.sandbox"
 WEB_SEARCH_MCP_SERVICE_NAME = "system.ai.web_search"
-SANDBOX_MCP_TOOL_IDENTIFIERS = frozenset(
-    {
-        SANDBOX_MCP_SERVICE_NAME,
-        SANDBOX_MCP_SERVICE_NAME.replace(".", "-"),
-        SANDBOX_MCP_SERVICE_NAME.replace(".", "_"),
-    }
-)
-
-TOOL_CALL_EVENT_TYPES = frozenset(
-    {"custom_tool_call", "function_call", "mcp_tool_call", "tool_call", "tool_use"}
-)
-TOOL_RESULT_EVENT_TYPES = frozenset(
-    {
-        "custom_tool_call_output",
-        "function_call_output",
-        "mcp_tool_result",
-        "mcp_tool_call_output",
-        "tool_result",
-        "tool_call_output",
-    }
-)

@@ -24,9 +24,6 @@ from .helpers.constants import (
     CODING_AGENT_BY_CLI_NAME,
     MODEL_PROVIDER_SERVICE_FIXTURES,
     SANDBOX_MCP_SERVICE_NAME,
-    SANDBOX_MCP_TOOL_IDENTIFIERS,
-    TOOL_CALL_EVENT_TYPES,
-    TOOL_RESULT_EVENT_TYPES,
     WEB_SEARCH_MCP_SERVICE_NAME,
 )
 from .helpers.workspace import Workspace
@@ -155,24 +152,6 @@ def _assert_generated_mcp_listings(session) -> None:
         assert not _mcp_name_listed(output, WEB_SEARCH_MCP_SERVICE_NAME), output
 
 
-def _dict_nodes(value: object):
-    if isinstance(value, dict):
-        yield value
-        for child in value.values():
-            yield from _dict_nodes(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from _dict_nodes(child)
-
-
-def _call_id(mapping: dict) -> str | None:
-    for key in ("id", "call_id", "callId", "tool_use_id", "toolUseId"):
-        value = mapping.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None
-
-
 def _parent_transcripts(session, agent: str) -> dict[str, list[dict]]:
     return {
         path: records
@@ -181,79 +160,29 @@ def _parent_transcripts(session, agent: str) -> dict[str, list[dict]]:
     }
 
 
-def _correlated_run_code(transcripts: dict[str, list[dict]], marker: str) -> dict:
-    calls: dict[str, dict] = {}
-    results: dict[str, dict] = {}
-    for records in transcripts.values():
-        for record in records:
-            for node in _dict_nodes(record):
-                event_type = str(node.get("type", "")).lower()
-                identifier = _call_id(node)
-                if not identifier:
-                    continue
-                if event_type in TOOL_CALL_EVENT_TYPES:
-                    calls[identifier] = node
-                elif event_type in TOOL_RESULT_EVENT_TYPES:
-                    results[identifier] = node
-
-    for identifier, call in calls.items():
-        call_text = json.dumps(call, sort_keys=True, default=str).lower()
-        result = results.get(identifier)
-        result_text = json.dumps(result, sort_keys=True, default=str) if result else ""
-        failed = any(
-            node.get("is_error") is True
-            or str(node.get("status", "")).lower() in {"error", "failed", "failure"}
-            for node in _dict_nodes(result)
-        )
-        if (
-            "run_code" in call_text
-            and any(name in call_text for name in SANDBOX_MCP_TOOL_IDENTIFIERS)
-            and marker.lower() in call_text
-            and marker in result_text
-            and not failed
-        ):
-            return {"call_id": identifier, "call": call, "result": result}
-    raise AssertionError(
-        f"No successful sandbox run_code call/result carried marker {marker!r}; "
-        f"calls={list(calls)} results={list(results)}"
-    )
-
-
 def _task_complete(session, agent: str, marker: str) -> bool:
     transcripts = _parent_transcripts(session, agent)
-    if not any(
+    return any(
         marker in answer
         for records in transcripts.values()
         for answer in assistant_answers(agent, records)
-    ):
-        return False
-    try:
-        _correlated_run_code(transcripts, marker)
-    except AssertionError:
-        return False
-    return True
+    )
 
 
 def _assert_task_evidence(session, agent: str, marker: str) -> None:
     transcripts = _parent_transcripts(session, agent)
-    tool_evidence = _correlated_run_code(transcripts, marker)
     answers = [
         answer for records in transcripts.values() for answer in assistant_answers(agent, records)
     ]
     assert any(marker in answer for answer in answers), answers
     session.record(
         f"cuj2-{agent}-evidence",
-        {"marker": marker, "tool": tool_evidence, "answers": answers},
+        {"marker": marker, "answers": answers},
     )
 
 
 def _agent_prompt(marker: str) -> str:
-    return (
-        "Complete this task using the configured model and MCP; do not answer from the prompt. "
-        f"Call the configured `run_code` MCP tool with a Python program that prints the exact "
-        f"marker `{marker}`. Wait for the real tool result. "
-        f"Final answer must contain the marker `{marker}`, with no invented tool output."
-    )
+    return f"Reply with the exact marker `{marker}` and no other text. Do not use tools."
 
 
 def _assert_inference_request(recorder, request, *, provider: str, model: str, marker: str) -> None:
@@ -298,11 +227,11 @@ class TestCuj2Configuration(_Cuj2Base):
 
 class TestCuj2CodexInference(_Cuj2Base):
     def test_cuj_codex_inference(self, cuj):
-        """Scenario: configure through the recorder and complete a real Codex MCP task.
+        """Scenario: configure through the recorder and complete a real Codex inference.
 
         Expected: Codex sends a Responses request for gpt-5-nano with the
         ug_e2e.providers.openai target header and receives its paired HTTP 200 response; its
-        parent transcript contains a correlated sandbox run_code call/result and final marker.
+        parent transcript contains the final marker.
         """
         session, workspace, recorder = cuj
         published = workspace.config()
@@ -333,7 +262,7 @@ class TestCuj2CodexInference(_Cuj2Base):
                 assert "Do you want to proceed?" not in screen, screen
                 return _task_complete(session, CODEX, marker)
 
-            tui.wait_for(completed, "completed Codex MCP task", timeout=240)
+            tui.wait_for(completed, "completed Codex task", timeout=240)
             tui.exit_normally()
 
         request = recorder.expect_request(
@@ -354,11 +283,11 @@ class TestCuj2CodexInference(_Cuj2Base):
 
 class TestCuj2ClaudeInference(_Cuj2Base):
     def test_cuj_claude_inference(self, cuj):
-        """Scenario: configure through the recorder and complete a real Claude MCP task.
+        """Scenario: configure through the recorder and complete a real Claude inference.
 
         Expected: Claude sends a Messages request for claude-haiku-4-5-20251001 with the
         ug_e2e.providers.anthropic target header and receives its paired HTTP 200 response; its
-        parent transcript contains a correlated sandbox run_code call/result and final marker.
+        parent transcript contains the final marker.
         """
         session, workspace, recorder = cuj
         published = workspace.config()
@@ -383,29 +312,12 @@ class TestCuj2ClaudeInference(_Cuj2Base):
         with AgentTerminal(session, CLAUDE, [str(session.binary), CLAUDE], "cuj2-claude") as tui:
             tui.boot()
             tui.submit(_agent_prompt(marker))
-            permission_approved = False
 
             def completed(screen):
-                nonlocal permission_approved
                 assert_no_terminal_api_error(screen)
-                if "Do you want to proceed?" in screen:
-                    expected_prompt = (
-                        "system-ai-sandbox — Run Code Tool: (MCP)",
-                        f'code: "print(\\"{marker}\\")"',
-                        "Do you want to proceed?",
-                        "❯ 1. Yes",
-                    )
-                    assert all(part in screen for part in expected_prompt), (
-                        "Claude requested an unrecognized permission:\n" + screen
-                    )
-                    if permission_approved:
-                        return False
-                    tui.send("\r", f"approve sandbox run_code for marker {marker}")
-                    permission_approved = True
-                    return False
                 return _task_complete(session, CLAUDE, marker)
 
-            tui.wait_for(completed, "completed Claude MCP task", timeout=240)
+            tui.wait_for(completed, "completed Claude task", timeout=240)
             tui.exit_normally()
 
         request = recorder.expect_request(
