@@ -4,11 +4,6 @@ on:
   workflow_call:
   workflow_dispatch:
     inputs:
-      suite:
-        description: Which integration checks to run
-        type: choice
-        options: [full, smoke, live, tui, installation]
-        default: full
       ug_version:
         description: Exact ug release, or checkout
         default: checkout
@@ -159,7 +154,7 @@ jobs:
 
   workspace:
     name: Workspace validation
-    if: ${{ inputs.suite != 'installation' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -181,7 +176,6 @@ jobs:
 
   smoke:
     name: Smoke journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
-    if: ${{ inputs.suite != 'tui' }}
     needs: workspace
     runs-on: ubuntu-22.04
     timeout-minutes: 20
@@ -240,7 +234,6 @@ jobs:
 
   headless-windows:
     name: Windows headless journey · Claude
-    if: ${{ inputs.suite != 'tui' }}
     needs: workspace
     runs-on: windows-server-latest
     continue-on-error: true
@@ -323,7 +316,7 @@ jobs:
 
   full:
     name: Full journeys · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
-    if: ${{ !cancelled() && inputs.suite != 'smoke' && needs.workspace.result == 'success' }}
+    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: [workspace, smoke]
     runs-on: ubuntu-22.04
     # The runner enforces its own 3600s pytest deadline; keep the job above it
@@ -342,7 +335,7 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
-      TEST_MARKER: ${{ inputs.suite == 'tui' && 'live and tui' || 'live' }} and ${{ matrix.agent }}
+      TEST_MARKER: live and ${{ matrix.agent }}
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}
     steps: *live-steps
 
@@ -350,7 +343,7 @@ jobs:
   # leg cannot block merges. Add it to cujs once the lane is stable.
   opencode:
     name: Full journeys · OpenCode (non-blocking)
-    if: ${{ !cancelled() && inputs.suite != 'smoke' && inputs.suite != 'tui' && needs.workspace.result == 'success' }}
+    if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     continue-on-error: true
     runs-on: ubuntu-22.04
@@ -366,7 +359,7 @@ jobs:
 
   managed:
     name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}
-    if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && inputs.suite != 'tui' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     strategy:
@@ -431,11 +424,7 @@ jobs:
   dedicated-cuj:
     name: Dedicated-workspace CUJs
     # CUJ definitions: https://docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0/edit?usp=drive_web&ouid=117446678071138243519
-    if: >-
-      inputs.suite != 'installation' &&
-      inputs.suite != 'smoke' &&
-      (github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository)
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-22.04
     timeout-minutes: 70
     env:
@@ -477,29 +466,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require every selected integration job to pass
+      - name: Require every integration job to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
-          SUITE: ${{ inputs.suite || 'full' }}
         run: |
           python3 - <<'PY'
           import json
           import os
           results = json.loads(os.environ["RESULTS"])
-          suite = os.environ["SUITE"]
-          required = ["installation"]
-          if suite != "installation":
-              required.append("workspace")
-              if suite != "tui":
-                  required.append("smoke")
-              if suite != "smoke":
-                  required.append("full")
-          if suite in {"full", "live"}:
-              required.append("managed")
-          if suite not in {"installation", "smoke"}:
-              required.append("dedicated-cuj")
-          failed = [job for job in required if results[job]["result"] != "success"]
+          failed = [job for job, result in results.items() if result["result"] != "success"]
           if failed:
               raise SystemExit("Integration jobs did not pass: " + ", ".join(failed))
-          print("All selected integration jobs passed: " + ", ".join(required))
+          print("All integration jobs passed: " + ", ".join(results))
           PY

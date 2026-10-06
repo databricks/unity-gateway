@@ -619,14 +619,12 @@ visible `skip-user-journey-test` label, causing the gate to rerun. Editing or de
 comment removes the label and reruns the gate; manually adding the label does not bypass it.
 
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
-and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
-alias for `full`. Manual subsets are explicit: `smoke` runs just the six smoke
-cases; `tui` adds `and tui` to each agent lane's marker and runs all 12 live TUI cases. Installation
-checks always run. Set the ug/agent versions. From the CLI:
+and set the ug/agent versions. Manual runs execute the complete integration suite.
+From the CLI:
 
 ```bash
 gh workflow run integration.yml -R databricks/unity-gateway --ref YOUR_BRANCH \
-  -f suite=full -f ug_version=checkout \
+  -f ug_version=checkout \
   -f claude_version=2.1.268 -f codex_version=0.154.0
 gh run list -R databricks/unity-gateway --workflow integration.yml
 gh run watch RUN_ID -R databricks/unity-gateway --exit-status
