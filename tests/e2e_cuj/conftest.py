@@ -45,10 +45,7 @@ def cuj(request, setup_workspace, tmp_path_factory):
                 try:
                     yield session, workspace, recorder
                 finally:
-                    try:
-                        session.cleanup()
-                    finally:
-                        workspace.assert_unchanged(published)
+                    workspace.assert_unchanged(published)
             except DatabricksError as error:
                 # Server messages may echo credentials; retain only the SDK error type.
                 raise RuntimeError(f"Workspace API failed: {type(error).__name__}") from None

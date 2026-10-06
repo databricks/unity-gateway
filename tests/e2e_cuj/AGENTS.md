@@ -36,7 +36,7 @@ payload returned in response to that exact request.
 Reuse `tests/integration/utils` session, terminal, file-task, and transcript helpers
 directly. Importing helpers does not load that suite's conftest. Never use its
 managed-config stub helpers. CUJ adapters retain strict routing/model correlation,
-reject unexpected permission prompts, and clean up local agent settings only.
+reject unexpected permission prompts, and keep local agent settings in temporary homes.
 In `helpers/evidence.py`, `ClaudeCujHelper` and `CodexCujHelper` implement
 `_completed_turn` and `_assert_applied`; `BaseCujHelper` holds common model checks.
 `get_cuj_helper` is the single agent selector and rejects unsupported agents.
