@@ -430,7 +430,12 @@ jobs:
 
   dedicated-cuj:
     name: Dedicated-workspace CUJs
-    if: ${{ inputs.suite != 'installation' && inputs.suite != 'smoke' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    # CUJ definitions: https://docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0/edit?usp=drive_web&ouid=117446678071138243519
+    if: >-
+      inputs.suite != 'installation' &&
+      inputs.suite != 'smoke' &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-22.04
     timeout-minutes: 70
     env:
@@ -462,15 +467,7 @@ jobs:
             exit 0
           fi
           uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
-            pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v \
-            --basetemp="$RUNNER_TEMP/e2e-cuj"
-      - name: Upload CUJ evidence
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
-        with:
-          name: integration-dedicated-cujs
-          include-hidden-files: true
-          path: ${{ runner.temp }}/e2e-cuj/**/artifacts/
+            pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v
 
   cujs:
     name: All integration tests

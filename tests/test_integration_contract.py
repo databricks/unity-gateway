@@ -59,6 +59,7 @@ def test_dedicated_cuj_ci_discovers_the_whole_folder():
     job = workflow.split("\n  dedicated-cuj:\n", 1)[1].split("\n  cujs:\n", 1)[0]
     gate = workflow.split("\n  cujs:\n", 1)[1]
 
+    assert "docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0" in job
     assert "pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj" in job
     assert "find tests/e2e_cuj -name 'test_*.py'" in job
     assert "test_cuj_" not in job
