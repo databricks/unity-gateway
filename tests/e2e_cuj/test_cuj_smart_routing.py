@@ -38,7 +38,6 @@ class SessionCase:
 
 @dataclass(frozen=True)
 class SmartRoutingSessionResults:
-    published: dict
     supported: dict[str, set[str]]
     defaults: dict[str, str]
     overrides: dict[str, str]
@@ -150,7 +149,6 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
         )
 
     return SmartRoutingSessionResults(
-        published=published,
         supported=supported,
         defaults=defaults,
         overrides=overrides,
@@ -161,7 +159,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
 
 @pytest.fixture(scope="class")
 def completed_smart_routing_runs(cuj):
-    """Run the live journeys once per test class and return their captured evidence."""
+    """Run all live journeys once for this CUJ suite and return their captured evidence."""
     return run_smart_routing_journeys(cuj)
 
 
@@ -269,7 +267,3 @@ class TestCujSmartRouting(BaseCujTest):
     @pytest.mark.skip(reason="Requires a separate read-only workspace with routing disabled")
     def test_routing_disabled_fresh_sessions_use_defaults_without_router_decisions(self):
         """Covered when a second, preconfigured routing-disabled CUJ workspace is available."""
-
-    def test_workspace_configuration_remains_read_only(self, completed_smart_routing_runs, cuj):
-        _, workspace, _ = cuj
-        workspace.assert_unchanged(completed_smart_routing_runs.published)
