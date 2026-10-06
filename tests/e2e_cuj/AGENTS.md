@@ -44,6 +44,11 @@ In `helpers/evidence.py`, `ClaudeCujHelper` and `CodexCujHelper` implement
 Model evidence combines observed gateway requests/responses with native completed-turn
 records; neither routing banners nor native records alone prove an applied decision.
 
+`test_cuj_smart_routing.py` runs four fresh interactive sessions: routed and explicit
+model, for both Claude and Codex. It uses the published models/defaults and asserts
+configuration is unchanged, including during teardown after failures. Routing-disabled
+coverage requires a separately preconfigured workspace and is not part of this CUJ.
+
 Use a clean disposable POSIX runner without existing machine-wide agent settings.
 Install the intended versions of `ug`, `claude`, `codex`, and `databricks` on PATH.
 The terminal helpers also require `pexpect==4.9.0` and `pyte==0.8.2`:
