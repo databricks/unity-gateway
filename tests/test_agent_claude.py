@@ -1253,6 +1253,25 @@ class TestWriteToolConfigManagedSettings:
             {"x-development-route": ""}, {"x-development-route": ""}
         )
 
+    def test_rejects_new_admin_header_before_writing_settings(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        global_state = {claude.CLAUDE_CUSTOM_HEADERS_STATE_KEY: {"x-development-route": "old"}}
+        self._patch(monkeypatch, private_writes, managed_writes, global_state=global_state)
+
+        with pytest.raises(RuntimeError, match="cannot override existing Claude Code header"):
+            claude.write_tool_config(
+                {"workspace": WS, "claude_http_headers": {"X-Development-Route": "old"}},
+                "databricks-claude-sonnet-4",
+                custom_headers={"x-development-route": "temporary"},
+            )
+
+        assert private_writes == []
+        assert managed_writes == []
+        assert global_state[claude.CLAUDE_CUSTOM_HEADERS_STATE_KEY] == {
+            "x-development-route": "old"
+        }
+
     @pytest.mark.parametrize(
         ("route_headers", "remaining"),
         [

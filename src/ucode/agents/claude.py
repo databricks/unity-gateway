@@ -1280,7 +1280,9 @@ def _recorded_custom_headers() -> dict[str, str]:
 
 
 def _reject_custom_header_collisions(
-    custom_headers: dict[str, str], previous_custom_headers: dict[str, str]
+    custom_headers: dict[str, str],
+    previous_custom_headers: dict[str, str],
+    managed_http_headers: dict[str, str] | None = None,
 ) -> None:
     if not custom_headers:
         return
@@ -1297,7 +1299,9 @@ def _reject_custom_header_collisions(
                     f"Cannot safely inspect Claude Code managed settings at {managed_path}: {exc}."
                 ) from exc
 
-    conflicts: set[str] = set()
+    conflicts = custom_headers.keys() & {
+        name.strip().casefold() for name in (managed_http_headers or {})
+    }
     for settings in settings_sources:
         existing = _custom_headers_from_settings(settings)
         for name in custom_headers:
@@ -1331,7 +1335,9 @@ def write_tool_config(
     current_custom_headers = {
         name.casefold(): value for name, value in (custom_headers or {}).items()
     }
-    _reject_custom_header_collisions(current_custom_headers, previous_custom_headers)
+    _reject_custom_header_collisions(
+        current_custom_headers, previous_custom_headers, state.get("claude_http_headers")
+    )
     if previous_custom_headers or current_custom_headers:
         global_state = load_global_state()
         global_state[CLAUDE_CUSTOM_HEADERS_STATE_KEY] = (

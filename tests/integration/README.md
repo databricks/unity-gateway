@@ -18,6 +18,9 @@ The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
 
+Custom `--header` parsing, delivery configuration, collision rejection, and cleanup
+have component coverage listed in `../README.md`; live custom-header journeys are not covered.
+
 The `smart_defaults` wire schema, legacy `spend_tiers` cache reads, and recommendation
 request gating are covered by unit/component tests listed in `../README.md`. This suite
 does not yet assert live `recommendModel` request counts for configs with and without tiers.
