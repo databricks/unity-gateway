@@ -2490,7 +2490,10 @@ class TestClaudeLaunch:
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
         settings_path = tmp_path / "ucode-settings.json"
-        settings_path.write_text(json.dumps({"env": {"USER_SETTING": "keep"}}))
+        saved_model = "system.ai.claude-haiku-4-5"
+        settings_path.write_text(
+            json.dumps({"model": saved_model, "env": {"USER_SETTING": "keep"}})
+        )
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
         original_settings = settings_path.read_bytes()
 
@@ -2501,9 +2504,10 @@ class TestClaudeLaunch:
             options=LaunchOptions(user_pinned_model=custom_model),
         )
 
-        assert os.environ.get("ANTHROPIC_MODEL") is None
+        assert os.environ["ANTHROPIC_MODEL"] == claude.CLAUDE_CUSTOM_MODEL_SELECTOR
         assert calls[0][0:2] == ["claude", "--settings"]
         settings = json.loads(calls[0][2])
+        assert settings["model"] == saved_model
         for family in claude.CLAUDE_CUSTOM_MODEL_FAMILIES:
             key = claude.CLAUDE_DEFAULT_MODEL_ENV_KEYS[family]
             assert settings["env"][key] == custom_model

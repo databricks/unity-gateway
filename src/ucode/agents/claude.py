@@ -213,6 +213,7 @@ CLAUDE_DEFAULT_MODEL_ENV_KEYS = {
 # discovered/configured separately and should not silently turn an explicit model launch into a
 # Fable selection.
 CLAUDE_CUSTOM_MODEL_FAMILIES = ("opus", "sonnet", "haiku")
+CLAUDE_CUSTOM_MODEL_SELECTOR = "opus"
 # Launch-scoped feature flags that ucode may write into Claude settings. These
 # must be removed again when the corresponding launch flag is absent.
 CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
@@ -2085,9 +2086,9 @@ def launch(
     launch_custom_model = state.get("_claude_launch_custom_model")
     if isinstance(launch_custom_model, str) and launch_custom_model:
         # A ucode-owned --model is a raw Databricks id. Do not pass it through Claude Code's
-        # client-side model validation or persist it in ucode-settings.json. Native model options
-        # already present in tool_args remain untouched below.
-        os.environ.pop("ANTHROPIC_MODEL", None)
+        # client-side model validation or persist it in ucode-settings.json. A native family alias
+        # must still outrank any saved picker model; every alias resolves to the custom id below.
+        os.environ["ANTHROPIC_MODEL"] = CLAUDE_CUSTOM_MODEL_SELECTOR
         settings_override = _launch_custom_model_settings(launch_custom_model)
     elif options.user_pinned_model:
         os.environ["ANTHROPIC_MODEL"] = options.user_pinned_model
