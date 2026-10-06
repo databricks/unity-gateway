@@ -190,12 +190,12 @@ class TestCujBudgetDefaults(_BudgetDefaultsBase):
 
 
 class TestCujBudgetDefaultsExplicitClaude(_BudgetDefaultsBase):
-    def test_ug_claude_displays_codex_luna_recommendation(self, cuj):
+    def test_ug_claude_starts_on_sonnet_despite_codex_luna_recommendation(self, cuj):
         """Scenario: launch explicit ``ug claude`` for an above-tier principal.
 
         Expected: the live backend recommends Codex/Luna, and the Claude launch displays
-        that recommendation before exiting normally. No task is submitted; this checks
-        recommendation display, not which model Claude uses for inference.
+        that recommendation while its generated model setting and native header select Sonnet.
+        No task is submitted; this checks startup selection, not the model used for inference.
         """
         session, workspace, _ = cuj
         session.configure(
@@ -227,5 +227,12 @@ class TestCujBudgetDefaultsExplicitClaude(_BudgetDefaultsBase):
             ), (
                 "Claude launch did not display the backend recommendation "
                 f"for {self.LUNA_MODEL!r}:\n{transcript}"
+            )
+            claude_settings = session.home / ".claude" / "ucode-settings.json"
+            settings = json.loads(claude_settings.read_text())
+            assert settings["env"]["ANTHROPIC_MODEL"] == self.SONNET_MODEL, settings
+            tui.wait_for(
+                lambda text: re.search(r"Claude Sonnet 4\.6\s*·", text),
+                "Claude's native Sonnet model header",
             )
             tui.exit_normally()
