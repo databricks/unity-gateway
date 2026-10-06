@@ -34,3 +34,6 @@ MODEL_PROVIDER_SERVICE_FIXTURES = {
 
 SANDBOX_MCP_SERVICE_NAME = "system.ai.sandbox"
 WEB_SEARCH_MCP_SERVICE_NAME = "system.ai.web_search"
+MCP_FIXTURE_LOCATION = "ug_e2e.tools"
+MCP_FIXTURE_SERVICE_NAME = "ug_e2e.tools.fixture_reader"
+MCP_FIXTURE_TOOL_NAME = "read_fixture"

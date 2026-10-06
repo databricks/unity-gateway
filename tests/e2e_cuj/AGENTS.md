@@ -47,13 +47,14 @@ Model evidence combines observed gateway requests/responses with native complete
 records; neither routing banners nor native records alone prove an applied decision.
 
 `test_cuj2_mps_mcp.py` runs three independently collected cases against a permanently
-preconfigured workspace: configuration, Codex inference, and Claude inference. Each case
-reads and validates the exact two-agent MPS/MCP shape. No case creates, updates, deletes,
+preconfigured workspace: configuration, Codex MCP tool use, and Claude MCP tool use. Each
+case reads and validates the exact two-agent MPS/MCP shape. No case creates, updates, deletes,
 or restores CodingAgentConfig. The fixture's final read-only equality check is the only
 workspace mutation guard. The test uses the shared `UserSession`, `Workspace`, and
-`TuiRequestRecorder`, `AgentTerminal`, and integration transcript readers directly. The
-configuration case verifies the selected sandbox service and generated MCP listings; live
-`run_code` execution remains deferred because MAS cannot downscope the CI service principal.
+`TuiRequestRecorder`, `AgentTerminal`, MCP inventory helper, and integration transcript readers
+directly. The configuration case verifies the `ug_e2e.tools` selector and generated
+`fixture_reader` listings; each TUI case verifies the connected native inventory, calls
+`read_fixture` with a fresh nonce, and checks its SHA-256 receipt in the parent transcript.
 
 Use a clean disposable POSIX runner without existing machine-wide agent settings.
 Install the intended versions of `ug`, `claude`, `codex`, and `databricks` on PATH.
