@@ -7,7 +7,7 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Category | Location | What it proves |
 | --- | --- | --- |
 | Unit/component | Existing `test_*.py` files | Individual behavior; dependencies may be mocked |
-| Dedicated-workspace CUJ | `e2e_cuj/test_cuj_smart_routing.py` | Real first-prompt routing and explicit-model bypass against read-only workspace configuration |
+| Dedicated-workspace CUJ | `e2e_cuj/test_cuj_*.py` | Real user journeys against read-only, preconfigured workspaces |
 | Existing e2e | `test_e2e*.py` | Real workspace behavior with some patched setup/internal calls |
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
