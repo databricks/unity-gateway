@@ -318,6 +318,21 @@ class TestBuildSkillsMcpUrl:
 
 
 class TestDiscoverClaudeModels:
+    def test_preserves_explicit_origin(self, monkeypatch):
+        captured = {}
+
+        def fake_get(url, token, **kwargs):
+            captured["request"] = (url, token, kwargs)
+            return {"data": []}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+        db_mod.list_anthropic_models("http://127.0.0.1:43123", "token")
+
+        assert captured["request"][0] == (
+            "http://127.0.0.1:43123/ai-gateway/anthropic/v1/models?limit=1000"
+        )
+
     def test_lists_all_anthropic_model_ids_without_legacy_validation(self, monkeypatch):
         captured = {}
         payload = {

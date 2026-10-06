@@ -2954,14 +2954,14 @@ def _get_anthropic_models_json(
     parent_schema: str | None = None,
     provider: str | None = None,
 ) -> tuple[dict | list | None, str | None]:
-    hostname = workspace_hostname(workspace)
+    origin = normalize_workspace_url(workspace)
     headers = None
     if provider is not None:
         headers = {MODEL_PROVIDER_SERVICE_HEADER: provider}
     elif parent_schema is not None:
         headers = {MODEL_SERVICE_PARENT_SCHEMA_HEADER: parent_schema}
     return _http_get_json(
-        f"https://{hostname}{ANTHROPIC_MODELS_PATH}?limit=1000",
+        f"{origin}{ANTHROPIC_MODELS_PATH}?limit=1000",
         token,
         max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
         **({"headers": headers} if headers is not None else {}),
