@@ -187,3 +187,45 @@ class TestCujBudgetDefaults(_BudgetDefaultsBase):
                 f"for {self.LUNA_MODEL!r}:\n{transcript}"
             )
             tui.exit_normally()
+
+
+class TestCujBudgetDefaultsExplicitClaude(_BudgetDefaultsBase):
+    def test_ug_claude_displays_codex_luna_recommendation(self, cuj):
+        """Scenario: launch explicit ``ug claude`` for an above-tier principal.
+
+        Expected: the live backend recommends Codex/Luna, and the Claude launch displays
+        that recommendation before exiting normally. No task is submitted; this checks
+        recommendation display, not which model Claude uses for inference.
+        """
+        session, workspace, _ = cuj
+        session.configure(
+            [
+                "configure",
+                "--workspace",
+                self.WORKSPACE_URL,
+                "--skip-upgrade",
+                "--disable-databricks-ai-tools",
+            ]
+        )
+        recommendation = workspace.client.api_client.do(
+            "POST", path="/api/ai-gateway/v2/coding-agent-configs:recommendModel", body={}
+        )
+        assert recommendation.get("recommended_agent") == CodingAgent.CODEX, recommendation
+        assert recommendation.get("recommended_model") == self.LUNA_MODEL, recommendation
+
+        with AgentTerminal(
+            session, CLAUDE, [str(session.binary), CLAUDE], "explicit-claude"
+        ) as tui:
+            tui.boot(timeout=240)
+            transcript = session.redact(
+                "".join(tui.output) + "\n" + tui.visible,
+                strip_ansi=True,
+            )
+            assert re.search(
+                rf"Recommended agent is Codex with model {re.escape(self.LUNA_MODEL)}\.",
+                transcript,
+            ), (
+                "Claude launch did not display the backend recommendation "
+                f"for {self.LUNA_MODEL!r}:\n{transcript}"
+            )
+            tui.exit_normally()
