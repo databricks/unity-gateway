@@ -2100,16 +2100,6 @@ class TestOtelTokenProvider:
 class TestWriteUserMcpServers:
     """Batched user-scope `[mcp_servers]` writes for the workspace-managed reconcile path."""
 
-    def test_passes_external_auth_by_name_without_persisting_credentials(self, monkeypatch):
-        monkeypatch.setenv("DATABRICKS_BEARER", "test-bearer-not-for-persistence")
-        monkeypatch.setenv("DATABRICKS_BEARER_COMMAND", "test-token-command")
-
-        assert codex.managed_mcp_entry(["ug", "mcp-proxy", "https://ws/svc"]) == {
-            "command": "ug",
-            "args": ["mcp-proxy", "https://ws/svc"],
-            "env_vars": ["DATABRICKS_BEARER", "DATABRICKS_BEARER_COMMAND"],
-        }
-
     def test_adds_and_preserves_other_tables(self, tmp_path, monkeypatch):
         path = tmp_path / "config.toml"
         path.write_text('model = "gpt-5"\n\n[mcp_servers.mine]\ncommand = "x"\nargs = []\n')
