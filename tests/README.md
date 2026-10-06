@@ -42,9 +42,25 @@ These are component checks, not live Windows coverage for every agent.
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
-Custom request headers have component coverage in `test_cli.py`, `test_agent_codex.py`,
-and `test_codex_smart_routing_v2.py`: parsing, launch-only values, and administrator
-header collisions with or without an OS-managed file. Live custom-header journeys are not covered.
+Custom request headers have component coverage in `test_cli.py`, `test_databricks.py`,
+`test_agent_codex.py`, and `test_codex_smart_routing_v2.py`: parsing, launch-only values and
+catalogs, gateway discovery, and administrator-header collisions before discovery.
+`test_launcher.py` checks waiting for the child before cleaning up temporary catalogs.
+Live custom-header journeys are not covered.
+
+`TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
+(plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
+and without ug's `--`, and an unchanged stdout descriptor. Detection checks exact tokens before
+the agent's `--`, including `e` and tokens after unknown or variadic options, without parsing
+Codex's options. An option value or prompt token equal to `exec`, `e`, or `app-server` also
+routes UG diagnostics to stderr; arguments and native agent stdout remain unchanged.
+Launches without a matching token retain stdout for status messages.
+`TestBootstrapStdout` in `test_agents_init.py` substitutes local Python processes
+for Databricks and agent installers/upgraders, asserting real stdout/stderr routing
+on success and failure, preserved version-output capture, and clean native handoff.
+These are component checks, not live installer, Isaac, or inference coverage.
+The live Claude/Codex headless prompt-argument and stdin journeys also require raw stdout to
+parse as JSON/JSONL without stripping UG messages; those assertions still require a live run.
 
 `test_mcp_web_search.py` and `test_agent_claude.py` cover custom OAuth search
 registration, stale registration repair, SDK cache reuse/refresh, CLI profile

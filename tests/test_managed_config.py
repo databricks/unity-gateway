@@ -477,8 +477,25 @@ class TestFetchClient:
         assert configs == []
         assert reason == "HTTP 403 Forbidden"
 
-    def test_sends_ucode_user_agent_header(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("claude_ua", "codex_ua", "expected"),
+        [
+            (None, None, "ucode/9.9.9"),
+            ("ucode/1.0 claude/2.1.289", None, "ucode/9.9.9 claude/2.1.289"),
+            (
+                "ucode/1.0 claude/2.1.289",
+                "ucode/1.0 codex/0.154.0",
+                "ucode/9.9.9 claude/2.1.289 codex/0.154.0",
+            ),
+            ("admin-agent/1.0", "ucode/1.0 claude/2.1.289", "ucode/9.9.9"),
+        ],
+    )
+    def test_sends_ucode_user_agent_header(self, monkeypatch, claude_ua, codex_ua, expected):
+        from ucode.agents import claude, codex
+
         monkeypatch.setattr(db_mod, "ug_version", lambda: "9.9.9")
+        monkeypatch.setattr(claude, "managed_user_agent", lambda: claude_ua)
+        monkeypatch.setattr(codex, "managed_user_agent", lambda: codex_ua)
         captured = {}
 
         class _FakeResponse:
@@ -499,7 +516,7 @@ class TestFetchClient:
 
         monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
         db_mod.fetch_managed_coding_agent_configs("https://ws", "tok")
-        assert captured["request"].get_header("User-agent") == "ucode/9.9.9"
+        assert captured["request"].get_header("User-agent") == expected
 
 
 WORKSPACE = "https://ws.example.com"
