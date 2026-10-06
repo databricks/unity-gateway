@@ -22,6 +22,7 @@ from .helpers.constants import (
     CLAUDE,
     CODEX,
     CODING_AGENT_BY_CLI_NAME,
+    INFERENCE_PATHS,
     MODEL_PROVIDER_SERVICE_FIXTURES,
     SANDBOX_MCP_SERVICE_NAME,
     WEB_SEARCH_MCP_SERVICE_NAME,
@@ -239,18 +240,18 @@ class TestCuj2CodexInference(_Cuj2Base):
         _assert_mps_catalog(workspace)
         _assert_mcp_services(workspace)
 
-        session.configure(
+        recorder.configure_session(
+            session,
             [
                 "configure",
-                "--workspace",
-                recorder.url,
                 "--skip-upgrade",
                 "--disable-databricks-ai-tools",
-            ]
+            ],
         )
-        _assert_configured_files(session, recorder.url)
+        _assert_configured_files(session, workspace.url)
         _assert_generated_mcp_listings(session)
 
+        recorder.prepare_launch()
         marker = f"CUJ2-CODEX-{uuid.uuid4().hex}"
         checkpoint = recorder.checkpoint()
         with AgentTerminal(session, CODEX, [str(session.binary), CODEX], "cuj2-codex") as tui:
@@ -267,7 +268,7 @@ class TestCuj2CodexInference(_Cuj2Base):
 
         request = recorder.expect_request(
             method="POST",
-            path="/ai-gateway/codex/v1/responses",
+            path=INFERENCE_PATHS[CODEX],
             after=checkpoint,
             timeout=240,
         )
@@ -295,18 +296,18 @@ class TestCuj2ClaudeInference(_Cuj2Base):
         _assert_mps_catalog(workspace)
         _assert_mcp_services(workspace)
 
-        session.configure(
+        recorder.configure_session(
+            session,
             [
                 "configure",
-                "--workspace",
-                recorder.url,
                 "--skip-upgrade",
                 "--disable-databricks-ai-tools",
-            ]
+            ],
         )
-        _assert_configured_files(session, recorder.url)
+        _assert_configured_files(session, workspace.url)
         _assert_generated_mcp_listings(session)
 
+        recorder.prepare_launch()
         marker = f"CUJ2-CLAUDE-{uuid.uuid4().hex}"
         checkpoint = recorder.checkpoint()
         with AgentTerminal(session, CLAUDE, [str(session.binary), CLAUDE], "cuj2-claude") as tui:
@@ -322,7 +323,7 @@ class TestCuj2ClaudeInference(_Cuj2Base):
 
         request = recorder.expect_request(
             method="POST",
-            path="/ai-gateway/anthropic/v1/messages",
+            path=INFERENCE_PATHS[CLAUDE],
             after=checkpoint,
             timeout=240,
         )

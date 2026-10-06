@@ -2384,7 +2384,7 @@ def list_model_provider_services(
             # reach the next.
             return [dict(service) for service in cached], None
 
-    origin = workspace_origin(workspace)
+    origin = normalize_workspace_url(workspace)
     services: list[dict] = []
     page_token: str | None = None
     seen_tokens: set[str] = set()
@@ -2468,7 +2468,7 @@ def get_model_provider_service(
     server-side filter) makes a service that plainly exists look absent. Addressing it directly
     removes that whole class of false negative.
     """
-    origin = workspace_origin(workspace)
+    origin = normalize_workspace_url(workspace)
     url = f"{origin}/api/2.1/unity-catalog/model-provider-services/{service_name}"
     payload, reason = _http_get_json(url, token, timeout=30)
     if payload is None:
