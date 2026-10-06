@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import tomllib
 from importlib import metadata
@@ -5500,8 +5501,107 @@ class TestForcedLoginWithExternalBearer:
         assert self._run(monkeypatch) == ["https://ws.cloud.databricks.com"]
 
 
-class TestStdioProtocolLaunch:
-    """`codex app-server` owns stdout, so ug's status output moves to stderr."""
+class TestChildStdoutLaunch:
+    """Claude print mode and Codex app-server reserve stdout for the child."""
+
+    @pytest.fixture(autouse=True)
+    def preserve_runner_stdout(self, monkeypatch):
+        """Keep CliRunner's temporary stdout alive when ug rebinds sys.stdout."""
+        original_isolation = runner.isolation
+
+        @contextlib.contextmanager
+        def isolation(*args, **kwargs):
+            with original_isolation(*args, **kwargs) as streams:
+                with contextlib.redirect_stdout(sys.stdout):
+                    yield streams
+
+        monkeypatch.setattr(runner, "isolation", isolation)
+
+    @pytest.mark.parametrize("separator", [[], ["--"]], ids=["direct", "separator"])
+    @pytest.mark.parametrize(
+        ("tool", "tool_args", "display"),
+        [
+            ("claude", ["-p", "say hello", "--output-format", "json"], "Claude Code"),
+            (
+                "claude",
+                ["--output-format", "stream-json", "--verbose", "--print", "say hello"],
+                "Claude Code",
+            ),
+            ("codex", ["app-server", "--listen", "stdio://"], "Codex"),
+        ],
+    )
+    def test_status_goes_to_stderr_and_arguments_are_preserved(
+        self, capfd, separator, tool, tool_args, display
+    ):
+        def bootstrap_status(*_args, **_kwargs):
+            print("Checking agent dependencies")
+            cli_mod.print_warning("Agent setup warning")
+
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.ensure_bootstrap_dependencies", side_effect=bootstrap_status),
+        ):
+            calls["launch"].side_effect = lambda *_args, **_kwargs: os.write(
+                1, b'{"result":"child output"}\n'
+            )
+            result = runner.invoke(app, [tool, *separator, *tool_args])
+
+        captured = capfd.readouterr()
+        assert captured.out == '{"result":"child output"}\n'
+        assert captured.err == ""
+        assert result.exit_code == 0, result.output
+        assert result.stdout == ""
+        stderr = _strip_ansi(result.stderr)
+        assert "Checking agent dependencies" in stderr
+        assert "Agent setup warning" in stderr
+        assert "No managed coding agent config found" in stderr
+        assert f"Starting {display}" in stderr
+        calls["launch"].assert_called_once()
+        assert calls["launch"].call_args.args[0] == tool
+        assert calls["launch"].call_args.args[2] == tool_args
+
+    @pytest.mark.parametrize("separator", [[], ["--"]], ids=["direct", "separator"])
+    @pytest.mark.parametrize(
+        ("tool", "tool_args"),
+        [("claude", ["-p", "hello"]), ("claude", ["--print", "hello"]), ("codex", ["app-server"])],
+    )
+    def test_early_launch_failure_keeps_stdout_clean(self, separator, tool, tool_args):
+        def fail_bootstrap(*_args, **_kwargs):
+            print("Checking agent dependencies")
+            raise RuntimeError("Agent setup failed")
+
+        with (
+            _launch_policy_patches(None) as calls,
+            patch("ucode.cli.ensure_bootstrap_dependencies", side_effect=fail_bootstrap),
+        ):
+            result = runner.invoke(app, [tool, *separator, *tool_args])
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        stderr = _strip_ansi(result.stderr)
+        assert "Checking agent dependencies" in stderr
+        assert "Agent setup failed" in stderr
+        calls["launch"].assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("tool", "tool_args", "display"),
+        [
+            ("claude", [], "Claude Code"),
+            ("claude", ["explain --print and -p"], "Claude Code"),
+            ("claude", ["--", "-p"], "Claude Code"),
+            ("codex", [], "Codex"),
+            ("codex", ["exec", "--json", "hi"], "Codex"),
+        ],
+    )
+    def test_other_launches_keep_status_on_stdout(self, tool, tool_args, display):
+        with _launch_policy_patches(None) as calls:
+            result = runner.invoke(app, [tool, "--", *tool_args])
+
+        assert result.exit_code == 0, result.output
+        assert f"Starting {display}" in _strip_ansi(result.stdout)
+        assert result.stderr == ""
+        calls["launch"].assert_called_once()
+        assert calls["launch"].call_args.args[2] == tool_args
 
     def test_app_server_subcommand_owns_stdout(self):
         assert cli_mod._child_owns_stdout("codex", ["app-server", "--listen", "stdio://"]) is True
@@ -5510,16 +5610,20 @@ class TestStdioProtocolLaunch:
         assert cli_mod._child_owns_stdout("codex", []) is False
         assert cli_mod._child_owns_stdout("codex", ["exec", "--json", "hi"]) is False
 
-    def test_other_agents_never_own_stdout(self):
+    def test_other_agent_commands_keep_stdout(self):
         assert cli_mod._child_owns_stdout("claude", ["app-server"]) is False
         assert cli_mod._child_owns_stdout("gemini", []) is False
 
-    def test_redirect_rebinds_stdout_without_touching_the_descriptor(self):
-        import sys
-
+    def test_redirect_rebinds_stdout_without_touching_the_descriptor(self, capfd):
         real_stdout = sys.stdout
         try:
             cli_mod.redirect_output_to_stderr()
             assert sys.stdout is sys.stderr
+            cli_mod.print_note("Gateway status")
+            os.write(1, b'{"result":"child output"}\n')
         finally:
             sys.stdout = real_stdout
+
+        captured = capfd.readouterr()
+        assert captured.out == '{"result":"child output"}\n'
+        assert "Gateway status" in captured.err

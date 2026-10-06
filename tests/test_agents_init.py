@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import subprocess
-from contextlib import contextmanager
+import sys
+from contextlib import contextmanager, nullcontext, redirect_stdout
 from unittest.mock import MagicMock
 
 import pytest
 
 import ucode.agents as agents_mod
+import ucode.databricks as db_mod
 from ucode.agents import (
     DEFAULT_TOOL,
     TOOL_SPECS,
@@ -25,6 +27,7 @@ from ucode.agents import (
 )
 from ucode.agents.args import has_explicit_model_arg
 from ucode.managed_config import ManagedConfigResult
+from ucode.ui import redirect_output_to_stderr
 
 
 class TestModelArgumentParsing:
@@ -585,6 +588,99 @@ class TestResolveGeminiProviderModel:
             self._STATE, "c.s.g", None, service={"name": "c.s.g", "targets": ["gemini-3.5-flash"]}
         )
         assert (model, error) == ("gemini-3.5-flash", None)
+
+
+class TestBootstrapStdout:
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    @pytest.mark.parametrize("installed", [False, True], ids=["install", "upgrade"])
+    @pytest.mark.parametrize("child_owns_stdout", [False, True], ids=["interactive", "protocol"])
+    @pytest.mark.parametrize("failure", [None, "databricks", "agent"])
+    def test_setup_children_respect_stdout_ownership(
+        self, monkeypatch, capfd, tool, installed, child_owns_stdout, failure
+    ):
+        """Real subprocess streams exercise simulated installers and native handoff."""
+        available = {"databricks": installed, tool: installed}
+        updated = set()
+        commands = []
+
+        def which(binary):
+            return (
+                f"/tools/{binary}" if available.get(binary) or binary in {"npm", "brew"} else None
+            )
+
+        def run_dependency(command, **kwargs):
+            commands.append(command)
+            if command == ["databricks", "--version"]:
+                version = "1.17.0" if "databricks" in updated else "0.1.0"
+                script = f"print('Databricks CLI v{version}')"
+            else:
+                dependency = "databricks" if command[0] == "brew" else "agent"
+                returncode = int(failure == dependency)
+                script = (
+                    f"import sys; print('{dependency} setup stdout'); "
+                    f"print('{dependency} setup stderr', file=sys.stderr); sys.exit({returncode})"
+                )
+                if returncode == 0:
+                    binary = "databricks" if dependency == "databricks" else tool
+                    available[binary] = True
+                    updated.add(binary)
+            kwargs["timeout"] = 10
+            return subprocess.run(
+                [sys.executable, "-c", script], stdin=subprocess.DEVNULL, **kwargs
+            )
+
+        monkeypatch.setattr(agents_mod.shutil, "which", which)
+        monkeypatch.setattr(db_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(agents_mod, "_too_new_downgrade", lambda _tool: None)
+        monkeypatch.setattr(
+            agents_mod,
+            "_minimum_version_error",
+            lambda _tool: None if tool in updated else "must upgrade",
+        )
+        monkeypatch.setattr(agents_mod, "prompt_yes_no_default", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(agents_mod.subprocess_cross_os, "run", run_dependency)
+
+        with redirect_stdout(sys.stdout):
+            if child_owns_stdout:
+                redirect_output_to_stderr()
+            with pytest.raises(RuntimeError) if failure else nullcontext():
+                agents_mod.ensure_bootstrap_dependencies(tool)
+                subprocess.run(
+                    [sys.executable, "-c", 'print(\'{"result":"native output"}\')'],
+                    stdin=subprocess.DEVNULL,
+                    check=True,
+                    timeout=10,
+                )
+
+        captured = capfd.readouterr()
+        assert "databricks setup stderr" in captured.err
+        assert not {"Databricks CLI v0.1.0", "Databricks CLI v1.17.0"}.intersection(
+            (captured.out + captured.err).splitlines()
+        )
+        assert [
+            "brew",
+            "upgrade" if installed else "install",
+            "databricks/tap/databricks",
+        ] in commands
+        if failure != "databricks":
+            agent_command = (
+                agents_mod._NATIVE_UPGRADE_COMMANDS[tool]
+                if installed
+                else ["npm", "install", "-g", TOOL_SPECS[tool]["package"]]
+            )
+            assert agent_command in commands
+            assert "agent setup stderr" in captured.err
+        if child_owns_stdout:
+            assert captured.out == ("" if failure else '{"result":"native output"}\n')
+            assert "databricks setup stdout" in captured.err
+            if failure != "databricks":
+                assert "agent setup stdout" in captured.err
+        else:
+            assert "databricks setup stdout" in captured.out
+            assert "setup stdout" not in captured.err
+            if failure != "databricks":
+                assert "agent setup stdout" in captured.out
+            assert ('{"result":"native output"}' in captured.out) is (failure is None)
 
 
 class TestInstallToolBinary:

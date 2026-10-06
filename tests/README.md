@@ -27,6 +27,14 @@ These are component checks, not live Windows coverage for every agent.
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
+`TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex
+`app-server` status/error output on stderr, argument forwarding with and without
+ug's `--`, and an unchanged stdout descriptor. Interactive launches retain stdout.
+`TestBootstrapStdout` in `test_agents_init.py` substitutes local Python processes
+for Databricks and agent installers/upgraders, asserting real stdout/stderr routing
+on success and failure, preserved version-output capture, and clean native handoff.
+These are component checks, not live installer, Isaac, or inference coverage.
+
 `test_mcp_web_search.py` and `test_agent_claude.py` cover custom OAuth search
 registration, stale registration repair, SDK cache reuse/refresh, CLI profile
 selection, and errors without browser consent through the MCP handler. These
@@ -39,8 +47,11 @@ legacy ownership, copied marked helpers, custom/disabled entry preservation, con
 arguments, routing/direct/relayed paths, and concurrent standalone/custom helper
 catalogs. These are component checks, not a live Isaac or gateway journey.
 
-`test_agent_claude.py` covers OS-managed telemetry ownership and headless configuration. These are
-unit/component regressions, not automated Isaac or live telemetry-export coverage.
+`test_agent_claude.py` and `test_managed_files.py` cover OS-managed telemetry ownership and headless
+Claude conflict repair: non-prompting sudo, disconnected stdin, denied authorization, repeated drift,
+backup preservation, and preservation of unrelated settings and permission denies. Compatible files
+remain read-only. These are component regressions with privileged writes replaced by temporary-file
+operations, not automated Isaac, real sudo-policy, or live telemetry-export coverage.
 
 Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 `test_managed_setup.py`, `test_databricks.py`, and `test_managed_budget.py`: parsing the

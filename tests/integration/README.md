@@ -10,6 +10,16 @@ The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
 
+`TestChildStdoutLaunch` in `../test_cli.py` covers clean Claude print-mode and
+Codex app-server stdout, early launch errors, and forwarding through ug's `--`.
+`TestBootstrapStdout` in `../test_agents_init.py` exercises real subprocess streams
+with substituted installer/upgrader commands, including failures and native handoff.
+These component checks do not establish live installer, Isaac, or inference coverage.
+
+Headless managed-settings conflict repair is covered by `../test_agent_claude.py` and
+`../test_managed_files.py` using temporary files and substituted privileged writes. This suite does
+not yet exercise Isaac rewriting OS-managed settings or real `sudo -n` authorization on a devbox.
+
 The `smart_defaults` wire schema, legacy `spend_tiers` cache reads, and recommendation
 request gating are covered by unit/component tests listed in `../README.md`. This suite
 does not yet assert live `recommendModel` request counts for configs with and without tiers.

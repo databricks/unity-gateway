@@ -1,8 +1,8 @@
 """Safely manage root-owned, highest-precedence agent settings files.
 
 Interactive updates preserve unrelated policy, retain a private baseline for ``ucode revert``, and
-verify the privileged atomic replacement. Non-interactive runs only check whether existing managed
-values are compatible with ucode's local settings.
+verify the privileged atomic replacement. Callers may explicitly request a non-interactive repair,
+which uses sudo's non-prompting mode and never consumes the caller's standard input.
 """
 
 from __future__ import annotations
@@ -386,18 +386,21 @@ def reconcile_managed_file(
     display: str,
     owned_paths: list[list[str]],
     parser: ManagedParser,
+    non_interactive: bool = False,
+    expected_current_text: object = _MISSING,
 ) -> str:
     """Back up, atomically write, and verify one OS-managed settings file.
 
     The first pre-ucode contents are retained until ``ucode revert``. Subsequent writes update only
     the last-applied snapshot used for drift-safe three-way restoration.
+    ``expected_current_text`` rejects policy changes since the caller composed the desired file.
     """
     if not managed_files_supported():
         print_warning(
             f"{display}: OS-managed settings aren't supported on this platform; skipped {path}."
         )
         return "unsupported"
-    if not managed_writes_allowed() and not is_dry_run():
+    if not managed_writes_allowed() and not non_interactive and not is_dry_run():
         raise RuntimeError(
             f"Refusing to update {display} managed settings at {path} non-interactively. "
             "Run the command from an interactive terminal."
@@ -408,6 +411,11 @@ def reconcile_managed_file(
             "Replace it with a regular file or contact your administrator."
         )
     current_text = read_managed_file(path)
+    if expected_current_text is not _MISSING and current_text != expected_current_text:
+        raise RuntimeError(
+            f"{display} managed settings changed while ucode was preparing the update. "
+            "ucode preserved the newer file; run the command again."
+        )
     if current_text == desired_text:
         return "unchanged"
     if current_text is not None:
@@ -425,7 +433,8 @@ def reconcile_managed_file(
 
     created = current_text is None
     _ensure_backup(tool, path, current_text)
-    _print_managed_write_permission(display)
+    if not non_interactive:
+        _print_managed_write_permission(display)
     if read_managed_file(path) != current_text:
         raise RuntimeError(
             f"{display} managed settings changed while ucode was preparing the update. "
@@ -433,7 +442,10 @@ def reconcile_managed_file(
         )
     for attempt in range(2):
         try:
-            _sudo_replace(path, desired_text)
+            if non_interactive:
+                _sudo_replace(path, desired_text, non_interactive=True)
+            else:
+                _sudo_replace(path, desired_text)
         except PermissionError as exc:
             raise ManagedFileWriteUnavailable(
                 f"{display} cannot start because ucode could not update {path}: {exc}. "
@@ -777,7 +789,7 @@ _SUDO_REPLACE_SCRIPT = (
 )
 
 
-def _sudo_replace_command(mode: str, *args: str) -> list[str]:
+def _sudo_replace_command(mode: str, *args: str, non_interactive: bool = False) -> list[str]:
     return _sudo_command(
         "/bin/sh",
         "-c",
@@ -786,6 +798,7 @@ def _sudo_replace_command(mode: str, *args: str) -> list[str]:
         mode,
         current_os().value,
         *args,
+        non_interactive=non_interactive,
     )
 
 
@@ -935,9 +948,9 @@ def _sudo_remove(path: Path) -> None:
             _restore_immutable(path, original_flags)
 
 
-def _sudo_replace(path: Path, desired_text: str) -> None:
+def _sudo_replace(path: Path, desired_text: str, *, non_interactive: bool = False) -> None:
     """Atomically replace ``path`` while preserving metadata and file flags."""
-    if not managed_writes_allowed():
+    if not managed_writes_allowed() and not non_interactive:
         raise RuntimeError("Refusing to invoke sudo for managed settings non-interactively.")
     _validate_sudo_replace_target(path)
     with tempfile.NamedTemporaryFile(
@@ -946,7 +959,7 @@ def _sudo_replace(path: Path, desired_text: str) -> None:
         tmp.write(desired_text)
         tmp_path = tmp.name
     try:
-        if _managed_write_session_depth:
+        if _managed_write_session_depth and not non_interactive:
             _session_worker().replace(path, tmp_path)
         else:
             subprocess_cross_os.run(
@@ -954,7 +967,9 @@ def _sudo_replace(path: Path, desired_text: str) -> None:
                     "once",
                     tmp_path,
                     str(path),
+                    non_interactive=non_interactive,
                 ),
+                stdin=subprocess.DEVNULL if non_interactive else None,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -1032,8 +1047,8 @@ def _sudo_failure_message(path: Path, display: str, exc: subprocess.CalledProces
     )
 
 
-def _sudo_command(*args: str) -> list[str]:
-    """Build a sudo command only for an explicitly interactive managed-file operation."""
-    if not managed_writes_allowed():
+def _sudo_command(*args: str, non_interactive: bool = False) -> list[str]:
+    """Require a terminal or an explicit non-prompting managed-file operation."""
+    if not managed_writes_allowed() and not non_interactive:
         raise RuntimeError("Refusing to invoke sudo for managed settings non-interactively.")
-    return [_SUDO, *args]
+    return [_SUDO, *(["-n"] if non_interactive else []), *args]

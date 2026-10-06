@@ -2511,12 +2511,17 @@ def _configure_managed_skills(managed: dict | None) -> None:
 
 
 def _child_owns_stdout(tool: str, tool_args: list[str]) -> bool:
-    """True when the forwarded agent command speaks a stdio protocol on stdout.
+    """True when the forwarded agent command needs stdout free of ug messages.
 
-    ``codex app-server`` puts its JSON-RPC stream on stdout, so ug's status
-    output must move to stderr for that launch; the file descriptor stays
-    untouched for the agent process.
+    Claude print mode and ``codex app-server`` reserve stdout for their output;
+    the file descriptor stays untouched for the agent process.
     """
+    if tool == "claude":
+        for arg in tool_args:
+            if arg == "--":
+                break
+            if arg in {"-p", "--print"}:
+                return True
     return tool == "codex" and tool_args[:1] == ["app-server"]
 
 

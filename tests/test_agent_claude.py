@@ -1814,7 +1814,41 @@ class TestWriteToolConfigManagedSettings:
 
         assert managed_writes == []
 
-    def test_noninteractive_fails_when_managed_file_conflicts(self, monkeypatch):
+    def test_noninteractive_repairs_conflicting_managed_settings_without_prompting(
+        self, monkeypatch
+    ):
+        private_writes: list = []
+        managed_writes: list = []
+        existing = {
+            str(FAKE_MANAGED_PATH): {
+                "apiKeyHelper": "isaac auth token",
+                "env": {"ANTHROPIC_BASE_URL": "https://other.example.com", "ISAAC_ONLY": "keep"},
+                "permissions": {"deny": ["Read(secret.txt)"]},
+            }
+        }
+        self._patch(monkeypatch, private_writes, managed_writes, existing)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+
+        def reconcile(path, text, **kwargs):
+            assert kwargs["non_interactive"] is True
+            assert json.loads(kwargs["expected_current_text"]) == existing[str(FAKE_MANAGED_PATH)]
+            managed_writes.append(json.loads(text))
+            return "written"
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", reconcile)
+
+        claude.write_tool_config({"workspace": WS, "codex_models": []}, None)
+
+        assert len(managed_writes) == 1
+        written = managed_writes[0]
+        assert written["apiKeyHelper"] == private_writes[0][1]["apiKeyHelper"]
+        assert written["env"]["ANTHROPIC_BASE_URL"] == f"{WS}/ai-gateway/anthropic"
+        assert written["env"]["ISAAC_ONLY"] == "keep"
+        assert "Read(secret.txt)" in written["permissions"]["deny"]
+
+    def test_noninteractive_fails_when_conflicting_managed_file_cannot_be_repaired(
+        self, monkeypatch
+    ):
         private_writes: list = []
         managed_writes: list = []
         existing = {
@@ -1823,6 +1857,12 @@ class TestWriteToolConfigManagedSettings:
         self._patch(monkeypatch, private_writes, managed_writes, existing)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
         state = {"workspace": WS, "codex_models": []}
+
+        def deny_managed_write(*args, **kwargs):
+            assert kwargs["non_interactive"] is True
+            raise managed_files.ManagedFileWriteUnavailable("sudo: a password is required")
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", deny_managed_write)
 
         with pytest.raises(RuntimeError, match="cannot be applied non-interactively"):
             claude.write_tool_config(state, "databricks-claude-sonnet-4")
@@ -1900,7 +1940,9 @@ class TestWriteToolConfigManagedSettings:
         assert not any(key in private["env"] for key in claude.CLAUDE_OTEL_TRACE_ENV_KEYS)
         assert "otelHeadersHelper" not in private
 
-    def test_explicit_ug_tracing_still_rejects_conflicting_managed_telemetry(self, monkeypatch):
+    def test_explicit_ug_tracing_rejects_conflicting_telemetry_when_repair_is_denied(
+        self, monkeypatch
+    ):
         private_writes: list = []
         managed_writes: list = []
         self._patch(
@@ -1911,12 +1953,58 @@ class TestWriteToolConfigManagedSettings:
         )
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
 
+        def deny_managed_write(*args, **kwargs):
+            assert kwargs["non_interactive"] is True
+            raise managed_files.ManagedFileWriteUnavailable("sudo: a password is required")
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", deny_managed_write)
+
         with pytest.raises(RuntimeError, match="env.OTEL_TRACES_EXPORTER"):
             claude.write_tool_config(
                 {"workspace": WS, "codex_models": [], "claude_otel_tracing": True}, None
             )
 
         assert managed_writes == []
+
+    def test_noninteractive_repairs_managed_models_and_tracing(self, monkeypatch):
+        private_writes: list = []
+        managed_writes: list = []
+        self._patch(
+            monkeypatch,
+            private_writes,
+            managed_writes,
+            {
+                str(FAKE_MANAGED_PATH): {
+                    "env": {
+                        "ANTHROPIC_DEFAULT_OPUS_MODEL": "isaac-opus",
+                        "OTEL_TRACES_EXPORTER": "none",
+                        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "https://isaac.example/traces",
+                        "MCP_TOOL_TIMEOUT": "420000",
+                    },
+                    "otelHeadersHelper": "isaac auth otel",
+                }
+            },
+        )
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: False)
+
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "claude_otel_tracing": True,
+            },
+            None,
+            coding_agent_config_defaults={"opus": "system.ai.claude-opus-4-8"},
+        )
+
+        assert len(managed_writes) == 1
+        written = json.loads(managed_writes[0][1])
+        assert written["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "system.ai.claude-opus-4-8[1m]"
+        assert written["env"]["OTEL_TRACES_EXPORTER"] == "otlp"
+        assert written["env"][
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+        ] == claude.build_otel_traces_endpoint(WS)
+        assert written["otelHeadersHelper"] == private_writes[0][1]["otelHeadersHelper"]
+        assert written["env"]["MCP_TOOL_TIMEOUT"] == "420000"
 
     def test_sudo_failure_uses_local_settings_when_managed_file_is_compatible(self, monkeypatch):
         private_writes: list = []
