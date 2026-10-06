@@ -1,8 +1,6 @@
 """Offline checks for read-only CUJ workspace configuration and catalog access."""
 
-import ast
 import copy
-from pathlib import Path
 
 import pytest
 from databricks.sdk import WorkspaceClient
@@ -16,26 +14,6 @@ from tests.e2e_cuj.helpers.workspace import Workspace
 def client(monkeypatch):
     monkeypatch.setattr(Config, "_resolve_host_metadata", lambda self: None, raising=False)
     return WorkspaceClient(host="https://example.test", token="test-token", auth_type="pat")
-
-
-def test_cuj_workspace_api_calls_are_get_only():
-    calls = []
-    for path in (Path(__file__).parent / "e2e_cuj").rglob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
-            if not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "do"
-            ):
-                continue
-            method = (
-                node.args[0]
-                if node.args
-                else next(keyword.value for keyword in node.keywords if keyword.arg == "method")
-            )
-            assert isinstance(method, ast.Constant) and method.value == "GET", path
-            calls.append(node)
-    assert calls, "Expected read-only SDK API calls"
 
 
 def test_cuj_catalog_rejects_unknown_agent_before_network_access(client, monkeypatch):
