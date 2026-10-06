@@ -12,6 +12,14 @@ baseline is the main model the user chose; under first-prompt routing, where the
 the main model, it is the model the session started on, before routing switched it. A negative
 result (routing chose pricier models) is shown as a cost increase.
 
+The baseline is fixed per response when it is first read, never recomputed: a subagent response is
+priced against the main model in effect at its timestamp (recorded as the main transcript is
+read), and a main-agent response is its own baseline, so switching models with ``/model`` never
+reprices earlier work.
+
+Under Claude Code mods there is no statusline; ``v2`` hands the mod a pricer command instead
+(``mod_pricer_argv``), and the mod runs it with ``--mod-usage`` on its own token sums.
+
 Claude Code debounces refreshes and cancels a run that is still going when the next one starts,
 so this module stays stdlib-only (ug's CLI imports take about a second) and reads transcripts
 incrementally, resuming from offsets kept in a per-session state file.
@@ -28,11 +36,16 @@ import shlex
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+# Only ``ucode.constants`` may be imported here besides ``pricing``: anything heavier (``session_env``
+# pulls in ``config_io``, hence tomlkit and Rich) would get a refresh cancelled.
+from ucode.constants import SMART_ROUTING_ENV_KEYS, TRUTHY_ENV_VALUES
 from ucode.smart_routing.pricing import (
     ModelPrice,
     TokenUsage,
@@ -44,7 +57,15 @@ from ucode.smart_routing.pricing import (
 MODULE = "ucode.smart_routing.claude_statusline"
 STATE_DIRNAME = "claude-savings"
 STATE_RETENTION_SECONDS = 7 * 24 * 60 * 60
-_STATE_VERSION = 1
+_STATE_VERSION = 2
+# Env var naming the hooks' session-controls file; duplicated from ``session_env.SESSION_ENV_VAR``
+# (a test keeps them equal) because importing that module is too heavy for a refresh.
+SESSION_ENV_FILE_ENV_VAR = "UCODE_SESSION_ENV_FILE"
+# The mods' pricer command (a JSON argv) and the token sums it prices (a file the mod writes next to
+# the session env file); the mod reads both names, so change them together.
+PRICER_ENV_VAR = "UCODE_SAVINGS_PRICER"
+MOD_USAGE_FILENAME = "mod-usage.json"
+_MOD_USAGE_VERSION = 1
 # statusLine options that shape how the row renders rather than what it runs.
 _PRESERVED_STATUS_LINE_KEYS = ("padding", "refreshInterval", "hideVimModeIndicator")
 _SAFE_SESSION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -52,8 +73,11 @@ _CENT = Decimal("0.01")
 # The Claude Code plugin whose skill drives smart routing's subagent delegation; the row shows its
 # installed version. ug doesn't install it, so the row reads whatever Claude Code recorded on disk.
 _ORCHESTRATOR_PLUGIN_NAME = "model-orchestrator"
-# Pointer to the skill that breaks the estimate down, appended after a savings estimate.
-_SAVINGS_SKILL_HINT = "/smart-router savings for details"
+_SYNTHETIC_MODEL = "<synthetic>"
+
+# The baseline model key for a response, given the key of the model that served it and its
+# timestamp (epoch seconds, None when the record has none).
+BaselineFor = Callable[[str, float | None], str]
 
 
 def effective_status_line(
@@ -93,7 +117,7 @@ def savings_status_line(
     baseline_session_start: bool,
 ) -> dict:
     """The ``statusLine`` setting that prints ``original``'s row(s), then the smart-routing row."""
-    argv = [python, "-P", "-m", MODULE, "--state-dir", str(state_dir)]
+    argv = [*_module_argv(python), "--state-dir", str(state_dir)]
     argv += ["--price-cache", str(price_cache)]
     if routing_enabled:
         argv.append("--routing-enabled")
@@ -105,6 +129,19 @@ def savings_status_line(
     }
     command = savings if original is None else _chain_commands(original["command"], savings)
     return {"type": "command", "command": command, **preserved}
+
+
+def mod_pricer_argv(*, python: str, price_cache: Path, baseline_session_start: bool) -> list[str]:
+    """The command the Claude Code mod runs (plus ``--mod-usage PATH``) to price its token sums."""
+    argv = [*_module_argv(python), "--price-cache", str(price_cache)]
+    if baseline_session_start:
+        argv.append("--baseline-session-start")
+    return argv
+
+
+def _module_argv(python: str) -> list[str]:
+    # -P keeps the launch directory off sys.path, so a project file can't shadow a stdlib module.
+    return [python, "-P", "-m", MODULE]
 
 
 def _chain_commands(original: str, savings: str) -> str:
@@ -141,6 +178,72 @@ def prune_state(state_dir: Path, *, now: float | None = None) -> None:
             continue
 
 
+def _epoch(raw: object) -> float | None:
+    """Epoch seconds of a transcript record's ISO-8601 ``timestamp``, or None."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        moment = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return (moment if moment.tzinfo else moment.replace(tzinfo=UTC)).timestamp()
+
+
+def _response_costs(
+    prices: dict[str, ModelPrice], served_key: str, baseline_key: str, tokens: TokenUsage
+) -> tuple[Decimal, Decimal] | None:
+    """``(actual, baseline)`` dollars for one response, or None when either model can't be priced."""
+    served_price = prices.get(served_key)
+    baseline_price = prices.get(baseline_key)
+    if served_price is None or baseline_price is None:
+        return None
+    actual = token_cost(served_price, tokens)
+    baseline = token_cost(baseline_price, tokens)
+    if actual is None or baseline is None:
+        return None
+    return actual, baseline
+
+
+def _claimable(
+    actual: Decimal, baseline: Decimal, *, rerouted: bool
+) -> tuple[Decimal, Decimal] | None:
+    """``(saved, baseline)``, or None until routing changed some model and there is a cost to compare."""
+    if not rerouted or baseline <= 0:
+        return None
+    return baseline - actual, baseline
+
+
+def _own_baseline(served_key: str, when: float | None) -> str:
+    """A response is its own baseline, so it is never counted as rerouted."""
+    return served_key
+
+
+def _frozen_baseline(key: str) -> BaselineFor:
+    """Every response's baseline is one fixed model (the session's start model)."""
+    return lambda served_key, when: key
+
+
+def _timeline_baseline(models: list[list[Any]], fallback: str) -> BaselineFor:
+    """A subagent response's baseline is the main model in effect when it ran.
+
+    ``models`` is the main agent's ``[epoch, model_key]`` changes, in transcript order. A response
+    before the first recorded change gets the earliest model, one without a timestamp the latest,
+    and ``fallback`` applies when the main transcript shows no model at all.
+    """
+
+    def baseline_for(served_key: str, when: float | None) -> str:
+        if not models:
+            return fallback
+        if when is None:
+            return models[-1][1]
+        for epoch, key in reversed(models):
+            if epoch <= when:
+                return key
+        return models[0][1]
+
+    return baseline_for
+
+
 @dataclass
 class _FileTotals:
     """Running cost totals for one transcript file, resumable from ``offset``."""
@@ -156,6 +259,9 @@ class _FileTotals:
     last_actual: Decimal = Decimal(0)
     last_baseline: Decimal = Decimal(0)
     last_rerouted: int = 0
+    # Main transcript only: ``[epoch, model_key]`` each time the main agent's model changed, so a
+    # later ``/model`` switch doesn't reprice the work done before it.
+    models: list[list[Any]] = field(default_factory=list)
 
     def dump(self) -> dict[str, Any]:
         return {
@@ -168,6 +274,7 @@ class _FileTotals:
             "last_actual": str(self.last_actual),
             "last_baseline": str(self.last_baseline),
             "last_rerouted": self.last_rerouted,
+            "models": self.models,
         }
 
     @classmethod
@@ -177,6 +284,7 @@ class _FileTotals:
         try:
             unpriced = raw.get("unpriced")
             last_id = raw.get("last_id")
+            models = raw.get("models")
             return cls(
                 offset=int(raw.get("offset", 0)),
                 actual=Decimal(str(raw.get("actual", 0))),
@@ -187,16 +295,27 @@ class _FileTotals:
                 last_actual=Decimal(str(raw.get("last_actual", 0))),
                 last_baseline=Decimal(str(raw.get("last_baseline", 0))),
                 last_rerouted=int(raw.get("last_rerouted", 0)),
+                models=[[float(epoch), str(key)] for epoch, key in models]
+                if isinstance(models, list)
+                else [],
             )
         except (TypeError, ValueError, InvalidOperation):
             return cls()
+
+    def _note_main_model(self, key: str, when: float | None) -> None:
+        if self.models and self.models[-1][1] == key:
+            return
+        # A record with no timestamp sorts with the one before it.
+        epoch = when if when is not None else (self.models[-1][0] if self.models else 0.0)
+        self.models.append([epoch, key])
 
     def add_response(
         self,
         record: object,
         prices: dict[str, ModelPrice],
-        baseline_key: str,
-        baseline_price: ModelPrice,
+        baseline_for: BaselineFor,
+        *,
+        main: bool = False,
     ) -> None:
         if not isinstance(record, dict) or record.get("type") != "assistant":
             return
@@ -210,13 +329,17 @@ class _FileTotals:
         raw_model = message.get("model")
         model = raw_model if isinstance(raw_model, str) else ""
         served_key = model_key(model)
-        served_price = prices.get(served_key)
-        actual = token_cost(served_price, tokens) if served_price is not None else None
-        baseline = token_cost(baseline_price, tokens)
-        if actual is None or baseline is None:
+        when = _epoch(record.get("timestamp"))
+        if main and model and model != _SYNTHETIC_MODEL:
+            self._note_main_model(served_key, when)
+        baseline_key = baseline_for(served_key, when)
+        costs = _response_costs(prices, served_key, baseline_key, tokens)
+        if costs is None:
             if model not in self.unpriced:
                 self.unpriced.append(model)
             actual = baseline = Decimal(0)
+        else:
+            actual, baseline = costs
         rerouted = int(served_key != baseline_key)
 
         # Claude Code writes one record per content block, each repeating the response's usage,
@@ -237,8 +360,9 @@ class _FileTotals:
         self,
         path: Path,
         prices: dict[str, ModelPrice],
-        baseline_key: str,
-        baseline_price: ModelPrice,
+        baseline_for: BaselineFor,
+        *,
+        main: bool = False,
     ) -> _FileTotals:
         """Fold in complete lines appended since ``offset``; returns the updated totals."""
         try:
@@ -263,7 +387,7 @@ class _FileTotals:
                 record = json.loads(line)
             except ValueError:
                 continue
-            totals.add_response(record, prices, baseline_key, baseline_price)
+            totals.add_response(record, prices, baseline_for, main=main)
         return totals
 
 
@@ -292,8 +416,13 @@ def _read_state(path: Path) -> dict[str, Any]:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"version": _STATE_VERSION}
-    if not isinstance(state, dict) or state.get("version") != _STATE_VERSION:
+    if not isinstance(state, dict):
         return {"version": _STATE_VERSION}
+    if state.get("version") != _STATE_VERSION:
+        # Only start_model survives a format change: it can't be re-captured once routing has
+        # switched the session's model, and the rest is rebuilt from the transcripts.
+        start = _model_ref(state.get("start_model"))
+        return {"version": _STATE_VERSION, **({} if start is None else {"start_model": start})}
     return state
 
 
@@ -347,8 +476,8 @@ def orchestrator_plugin_version(config_dir: Path | None = None) -> str | None:
     return None
 
 
-def _savings_text(saved: Decimal, baseline: Decimal) -> str:
-    """The savings clause: a money-bag estimate when positive, an honest cost increase when not."""
+def _savings_figures(saved: Decimal, baseline: Decimal) -> tuple[str, Decimal]:
+    """``saved``'s magnitude as dollars (to the cent) and as a whole percent of ``baseline``."""
     percent = Decimal(0)
     if baseline > 0:
         percent = (abs(saved) / baseline * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP)
@@ -356,9 +485,23 @@ def _savings_text(saved: Decimal, baseline: Decimal) -> str:
     amount = (
         "<$0.01" if magnitude < _CENT else f"${magnitude.quantize(_CENT, rounding=ROUND_HALF_UP):,}"
     )
+    return amount, percent
+
+
+def _savings_text(saved: Decimal, baseline: Decimal) -> str:
+    """The savings clause: a money-bag estimate when positive, an honest cost increase when not."""
+    amount, percent = _savings_figures(saved, baseline)
     if saved >= 0:
         return f"💰 Est. saved with smart routing: {amount} ({percent}%)"
     return f"Smart routing cost {amount} more ({percent}%)"
+
+
+def _mod_savings_text(saved: Decimal, baseline: Decimal) -> str:
+    """The mod's savings segment; the mod's band already says it is about smart routing."""
+    amount, percent = _savings_figures(saved, baseline)
+    if saved >= 0:
+        return f"💰 Est. saved {amount} ({percent}%)"
+    return f"cost {amount} more ({percent}%)"
 
 
 def _compute_savings(
@@ -366,7 +509,7 @@ def _compute_savings(
 ) -> tuple[Decimal, Decimal] | None:
     """The ``(saved, baseline)`` dollars for one statusline payload, or None with nothing to claim.
 
-    None until some response ran on a model other than the baseline, and whenever any response
+    None until some response ran on a model other than its baseline, and whenever any response
     can't be priced: an undercounted figure would be worse than none. The caller then shows "on".
     """
     try:
@@ -390,39 +533,150 @@ def _compute_savings(
     if start is None:
         start = state["start_model"] = current
         _write_state(state_path, state)
-    baseline = start if baseline_session_start else current
 
     cached = read_price_cache(price_cache)
     if cached is None:
         return None
     prices, fingerprint = cached
-    baseline_key = model_key(baseline["id"])
-    baseline_price = prices.get(baseline_key)
-    if baseline_price is None:
-        return None
+    # First-prompt routing prices everything against the model the session started on. Otherwise
+    # the baseline is whatever main model each response ran beside, so it isn't part of the key.
+    start_key = model_key(start["id"]) if baseline_session_start else None
 
-    key = [baseline_key, fingerprint]
+    key = [start_key, fingerprint]
     files = state.get("files")
     if state.get("key") != key or not isinstance(files, dict):
         state["key"], files = key, {}
+    main_path, *subagent_paths = _transcript_paths(Path(transcript))
     actual_total = baseline_total = Decimal(0)
     rerouted = 0
     unpriced = False
-    for path in _transcript_paths(Path(transcript)):
+
+    def fold(path: Path, baseline_for: BaselineFor, *, main: bool) -> _FileTotals:
+        nonlocal actual_total, baseline_total, rerouted, unpriced
         totals = _FileTotals.load(files.get(str(path))).consume(
-            path, prices, baseline_key, baseline_price
+            path, prices, baseline_for, main=main
         )
         files[str(path)] = totals.dump()
         actual_total += totals.actual
         baseline_total += totals.baseline
         rerouted += totals.rerouted
         unpriced = unpriced or bool(totals.unpriced)
+        return totals
+
+    main_baseline = _own_baseline if start_key is None else _frozen_baseline(start_key)
+    # The main transcript is read first so its model timeline covers the subagent responses.
+    main_totals = fold(main_path, main_baseline, main=True)
+    subagent_baseline = (
+        main_baseline
+        if start_key is not None
+        else _timeline_baseline(main_totals.models, model_key(current["id"]))
+    )
+    for path in subagent_paths:
+        fold(path, subagent_baseline, main=False)
     state["files"] = files
     _write_state(state_path, state)
 
-    if unpriced or rerouted <= 0 or baseline_total <= 0:
+    if unpriced:
         return None
-    return baseline_total - actual_total, baseline_total
+    return _claimable(actual_total, baseline_total, rerouted=rerouted > 0)
+
+
+def _mod_usage_savings(
+    usage_path: Path, *, price_cache: Path, baseline_session_start: bool
+) -> tuple[Decimal, Decimal] | None:
+    """The ``(saved, baseline)`` dollars for the mod's token sums, or None with nothing to claim.
+
+    ``usage_path`` holds the mod's tokens pre-aggregated per (agent, baseline, served); a malformed
+    or baseline-less entry, like an unpriced one, voids the estimate rather than undercount it.
+    Under first-prompt routing the baseline is the session's start model, not each entry's. A file
+    that can't be read as the mod's format at all is an error, not an empty estimate.
+    """
+    document = json.loads(usage_path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or document.get("version") != _MOD_USAGE_VERSION:
+        raise ValueError(f"unsupported mod usage file: {usage_path}")
+    entries = document.get("entries")
+    if not isinstance(entries, list):
+        raise ValueError(f"unsupported mod usage file: {usage_path}")
+    fixed_baseline = None
+    if baseline_session_start:
+        start = document.get("start_model")
+        if not isinstance(start, str) or not start:
+            return None
+        fixed_baseline = start
+    cached = read_price_cache(price_cache)
+    if cached is None:
+        return None
+    prices = cached[0]
+
+    actual_total = baseline_total = Decimal(0)
+    rerouted = False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return None
+        usage, served = entry.get("usage"), entry.get("served")
+        baseline = fixed_baseline if fixed_baseline is not None else entry.get("baseline")
+        if not isinstance(usage, dict) or not isinstance(served, str) or not served:
+            return None
+        if not isinstance(baseline, str) or not baseline:
+            return None
+        # The mod's usage has no cache-write TTL split, and ug launches Claude with 1-hour caching.
+        tokens = TokenUsage.from_message_usage(usage, uncovered_writes_1h=True)
+        if not any(tokens):
+            continue
+        served_key, baseline_key = model_key(served), model_key(baseline)
+        costs = _response_costs(prices, served_key, baseline_key, tokens)
+        if costs is None:
+            return None
+        actual_total += costs[0]
+        baseline_total += costs[1]
+        rerouted = rerouted or served_key != baseline_key
+    return _claimable(actual_total, baseline_total, rerouted=rerouted)
+
+
+def mod_usage_output(usage_path: Path, *, price_cache: Path, baseline_session_start: bool) -> str:
+    """The one JSON line the mod reads: its savings segment and plugin segment, each or null."""
+    # Each segment fails alone, and the mod must get a parseable line whatever goes wrong.
+    savings = plugin = None
+    try:
+        computed = _mod_usage_savings(
+            usage_path, price_cache=price_cache, baseline_session_start=baseline_session_start
+        )
+        savings = None if computed is None else _mod_savings_text(*computed)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        version = orchestrator_plugin_version()
+        plugin = f"plugin v{version}" if version else None
+    except Exception:  # noqa: BLE001
+        pass
+    return json.dumps({"savings": savings, "plugin": plugin}, ensure_ascii=False)
+
+
+def _routing_on(launch_enabled: bool) -> bool:
+    """Whether smart routing is on now, following the session's ``/smart-router`` toggle.
+
+    The launch decides whether a session is routed at all: a plain launch never routes, and could
+    inherit an outer routed session's file. For a routed one, the session file (which the toggle
+    rewrites but the statusLine command can't be) overrides the launch-time flag when it names a
+    routing flag; an empty file, as after turning routing back on, leaves the launch's choice.
+    """
+    if not launch_enabled:
+        return False
+    path = os.environ.get(SESSION_ENV_FILE_ENV_VAR, "").strip()
+    if not path:
+        return True
+    try:
+        values = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    if not isinstance(values, dict):
+        return True
+    flags = [values[name] for name in SMART_ROUTING_ENV_KEYS if name in values]
+    if not flags:
+        return True
+    return any(
+        isinstance(flag, str) and flag.strip().lower() in TRUTHY_ENV_VALUES for flag in flags
+    )
 
 
 def render(
@@ -435,13 +689,13 @@ def render(
 ) -> str:
     """The one-line smart-routing status row.
 
-    ``off`` when routing is disabled, ``on`` once it is on but no estimate exists yet, otherwise the
-    estimate. The orchestrator plugin version is appended when it can be read, and a pointer to the
-    ``/smart-router savings`` breakdown follows an estimate.
+    ``off`` when routing is disabled (at launch, or since by ``/smart-router``), ``on`` once it is
+    on but no estimate exists yet, otherwise the estimate. The orchestrator plugin version is
+    appended when it can be read.
     """
     version = orchestrator_plugin_version()
     plugin = f" · smart router plugin v{version}" if version else ""
-    if not routing_enabled:
+    if not _routing_on(routing_enabled):
         return f"Smart routing off{plugin}"
     computed = _compute_savings(
         raw,
@@ -451,26 +705,37 @@ def render(
     )
     if computed is None:
         return f"Smart routing on{plugin}"
-    return f"{_savings_text(*computed)}{plugin} · {_SAVINGS_SKILL_HINT}"
+    return f"{_savings_text(*computed)}{plugin}"
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog=MODULE, description="Print the smart-routing status row for a Claude Code session."
+        prog=MODULE,
+        description="Print the smart-routing status row for a Claude Code session, or (with "
+        "--mod-usage) price the Claude Code mod's token sums as a JSON line.",
     )
-    parser.add_argument("--state-dir", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--state-dir", type=Path)
+    source.add_argument("--mod-usage", type=Path)
     parser.add_argument("--price-cache", type=Path, required=True)
     parser.add_argument("--routing-enabled", action="store_true")
     parser.add_argument("--baseline-session-start", action="store_true")
     args = parser.parse_args(argv)
     try:
-        line = render(
-            sys.stdin.read(),
-            routing_enabled=args.routing_enabled,
-            state_dir=args.state_dir,
-            price_cache=args.price_cache,
-            baseline_session_start=args.baseline_session_start,
-        )
+        if args.mod_usage is not None:
+            line = mod_usage_output(
+                args.mod_usage,
+                price_cache=args.price_cache,
+                baseline_session_start=args.baseline_session_start,
+            )
+        else:
+            line = render(
+                sys.stdin.read(),
+                routing_enabled=args.routing_enabled,
+                state_dir=args.state_dir,
+                price_cache=args.price_cache,
+                baseline_session_start=args.baseline_session_start,
+            )
         # Write bytes so the middle-dot survives a non-UTF-8 stdout locale.
         sys.stdout.buffer.write((line + "\n").encode("utf-8"))
     except Exception:  # noqa: BLE001 - a status error must never break the user's status row

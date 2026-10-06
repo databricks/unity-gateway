@@ -93,6 +93,21 @@ class TestTokenUsage:
 
         assert tokens == TokenUsage(cache_write_5m=40)
 
+    def test_can_bill_writes_the_breakdown_does_not_cover_as_one_hour_writes(self):
+        unsplit = {"cache_creation_input_tokens": 40}
+        partial = {
+            "cache_creation_input_tokens": 6509,
+            "cache_creation": {"ephemeral_1h_input_tokens": 6000, "ephemeral_5m_input_tokens": 9},
+        }
+
+        assert TokenUsage.from_message_usage(unsplit, uncovered_writes_1h=True) == TokenUsage(
+            cache_write_1h=40
+        )
+        # The breakdown's own 5-minute writes stay 5-minute; only the 500 uncovered move to 1-hour.
+        assert TokenUsage.from_message_usage(partial, uncovered_writes_1h=True) == TokenUsage(
+            cache_write_5m=9, cache_write_1h=6500
+        )
+
     @pytest.mark.parametrize("bad", [None, -5, True, "12", 1.5])
     def test_ignores_non_count_values(self, bad):
         assert TokenUsage.from_message_usage({"input_tokens": bad, "output_tokens": 3}) == (

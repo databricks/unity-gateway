@@ -2489,6 +2489,45 @@ class TestClaudeLaunch:
         assert f"-m {claude_statusline.MODULE}" in command
         assert "--routing-enabled" not in command
 
+    @staticmethod
+    def _launch_after_routing_setup_failure(monkeypatch, savings: str) -> dict:
+        """Launch routed, with `launch_claude` failing to write its files, and return the settings."""
+        calls: list[list[str]] = []
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, savings)
+        monkeypatch.setenv(claude.FIRST_PROMPT_SOCKET_ENV, "/tmp/first.sock")
+        monkeypatch.setenv("OAUTH_TOKEN", "stale")
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(
+            v2, "launch_claude", Mock(side_effect=v2.ClaudeRoutingSetupError("disk full"))
+        )
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+
+        claude.launch(
+            {"workspace": WS, "profile": "test"},
+            ["--debug"],
+            options=LaunchOptions(launch_smart_routing=True),
+        )
+
+        return json.loads(calls[0][2])
+
+    def test_routing_setup_failure_launches_normally_with_the_off_row(self, monkeypatch):
+        # The fallback forces routing off for this launch, so the status row must say "off"
+        # rather than be missing (or be the routed launch's "on", which never got written).
+        settings = self._launch_after_routing_setup_failure(monkeypatch, "1")
+
+        assert settings["env"][v2.ENABLE_SMART_ROUTING_ENV_VAR] == "0"
+        command = settings["statusLine"]["command"]
+        assert f"-m {claude_statusline.MODULE}" in command
+        assert "--routing-enabled" not in command
+
+    def test_routing_setup_failure_respects_the_savings_opt_out(self, monkeypatch):
+        settings = self._launch_after_routing_setup_failure(monkeypatch, "0")
+
+        assert settings["env"][v2.ENABLE_SMART_ROUTING_ENV_VAR] == "0"
+        assert "statusLine" not in settings
+
     def test_windows_launch_preserves_prompt_as_literal_argv(self, monkeypatch, tmp_path):
         native_binary = tmp_path / "Claude Code" / "claude.exe"
         prompt = 'keep "quotes" & pipes | and %PATH% literal'

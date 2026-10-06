@@ -2109,12 +2109,9 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
-    if (
-        smart_routing_v2.savings_statusline_enabled()
-        and not options.launch_smart_routing
-        and workspace
-    ):
-        # Show "Smart routing off" in the status row on a plain (non-routed) launch.
+    if smart_routing_v2.savings_statusline_enabled() and workspace:
+        # Show "Smart routing off" in the status row when nothing is routed: a plain launch, or a
+        # routed one whose setup failed (`launch_claude` otherwise exits without reaching here).
         settings_override = settings_override or {}
         smart_routing_v2.install_savings_statusline(
             settings_override,

@@ -20,6 +20,19 @@ from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import claude_hooks, claude_pty, claude_statusline, pricing, routing, v2
 from ucode.smart_routing.pricing import ModelPrice
 
+_START_SAVINGS_PRICE_REFRESH = v2._start_savings_price_refresh
+
+
+@pytest.fixture(autouse=True)
+def no_savings_price_refresh(monkeypatch) -> Mock:
+    """Routed launches start a background price refresh; keep its thread and network call out.
+
+    ``TestSavingsStatusline`` restores the real starter and runs it inline against a fake rates API.
+    """
+    refresh = Mock()
+    monkeypatch.setattr(v2, "_start_savings_price_refresh", refresh)
+    return refresh
+
 
 def _plugin_agent_models(plugin_dir: Path) -> set[str]:
     models = set()
@@ -525,13 +538,22 @@ class TestSavingsStatusline:
     """``ENABLE_SMART_ROUTING_SAVINGS`` puts the savings row in the per-launch settings."""
 
     @staticmethod
-    def _launch(monkeypatch, tmp_path, *, first_prompt: bool) -> dict:
+    def _launch(
+        monkeypatch, tmp_path, *, first_prompt: bool, mods: bool = False, savings: str = "1"
+    ) -> dict:
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(
             json.dumps({"statusLine": {"type": "command", "command": "my-line", "padding": 1}})
         )
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SAVINGS_STATUSLINE_ENV_VAR, savings)
+        if mods:
+            monkeypatch.setenv(v2.ENABLE_CLAUDE_CODE_MODS_ENV_VAR, "1")
+            # The mod's TypeScript is not under test here, only how the launch wires it.
+            monkeypatch.setattr(v2.mods, "write_mod", Mock())
+        else:
+            monkeypatch.delenv(v2.ENABLE_CLAUDE_CODE_MODS_ENV_VAR, raising=False)
+        monkeypatch.setattr(v2, "_start_savings_price_refresh", _START_SAVINGS_PRICE_REFRESH)
         if first_prompt:
             monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
             monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
@@ -611,9 +633,8 @@ class TestSavingsStatusline:
         return captured
 
     def test_subagent_only_wraps_the_user_statusline(self, monkeypatch, tmp_path):
-        status_line = self._launch(monkeypatch, tmp_path, first_prompt=False)["settings"][
-            "statusLine"
-        ]
+        captured = self._launch(monkeypatch, tmp_path, first_prompt=False)
+        status_line = captured["settings"]["statusLine"]
 
         assert status_line["type"] == "command"
         assert status_line["padding"] == 1
@@ -626,6 +647,8 @@ class TestSavingsStatusline:
         assert "--routing-enabled" in command
         # The baseline follows the main model the user chose.
         assert "--baseline-session-start" not in command
+        # Only the mod runs a pricer; the statusline is self-contained.
+        assert claude_statusline.PRICER_ENV_VAR not in captured["settings"]["env"]
 
     def test_first_prompt_routing_uses_the_pre_routing_baseline(self, monkeypatch, tmp_path):
         status_line = self._launch(monkeypatch, tmp_path, first_prompt=True)["settings"][
@@ -649,6 +672,38 @@ class TestSavingsStatusline:
         assert cached[0] == {
             "claude-opus-4-8": ModelPrice(input=Decimal("5"), output=Decimal("25"))
         }
+
+    @pytest.mark.parametrize("first_prompt", [False, True])
+    def test_mods_get_a_pricer_command_instead_of_a_statusline(
+        self, monkeypatch, tmp_path, first_prompt
+    ):
+        captured = self._launch(monkeypatch, tmp_path, first_prompt=first_prompt, mods=True)
+
+        settings = captured["settings"]
+        # The mod draws the savings itself; the user's own statusline is left alone.
+        assert "statusLine" not in settings
+        price_cache = pricing.price_cache_path(tmp_path, "https://example.com")
+        assert json.loads(settings["env"][claude_statusline.PRICER_ENV_VAR]) == (
+            claude_statusline.mod_pricer_argv(
+                python=sys.executable,
+                price_cache=price_cache,
+                baseline_session_start=first_prompt,
+            )
+        )
+        # The pricer reads the same cache, so the price refresh still runs.
+        assert captured["rates_request"] == (
+            "https://example.com",
+            "token",
+            ["system.ai.claude-opus-4-8"],
+        )
+        assert pricing.read_price_cache(price_cache) is not None
+
+    def test_opting_out_of_savings_skips_the_mods_pricer_and_refresh(self, monkeypatch, tmp_path):
+        captured = self._launch(monkeypatch, tmp_path, first_prompt=False, mods=True, savings="0")
+
+        assert claude_statusline.PRICER_ENV_VAR not in captured["settings"]["env"]
+        assert "statusLine" not in captured["settings"]
+        assert "rates_request" not in captured
 
 
 class TestSavingsPriceRefresh:

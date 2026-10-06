@@ -84,18 +84,26 @@ class TokenUsage(NamedTuple):
     output: int = 0
 
     @classmethod
-    def from_message_usage(cls, usage: Mapping[str, Any]) -> TokenUsage:
+    def from_message_usage(
+        cls, usage: Mapping[str, Any], *, uncovered_writes_1h: bool = False
+    ) -> TokenUsage:
         """Read an Anthropic Messages ``usage`` object as Claude Code records it in transcripts.
 
         Cache writes are split by TTL because a 1-hour write bills at twice the input rate and a
         5-minute write at 1.25x; ug enables 1-hour caching. Writes the breakdown doesn't cover are
-        billed as 5-minute writes, the API's default TTL.
+        billed as 5-minute writes, the API's default TTL. A caller whose usage never carries the
+        breakdown, but whose session ran with 1-hour caching, sets ``uncovered_writes_1h`` so those
+        writes aren't undercounted at the 5-minute rate.
         """
         creation = usage.get("cache_creation")
         creation = creation if isinstance(creation, Mapping) else {}
         write_1h = _count(creation.get("ephemeral_1h_input_tokens"))
         write_5m = _count(creation.get("ephemeral_5m_input_tokens"))
-        write_5m += max(_count(usage.get("cache_creation_input_tokens")) - write_1h - write_5m, 0)
+        uncovered = max(_count(usage.get("cache_creation_input_tokens")) - write_1h - write_5m, 0)
+        if uncovered_writes_1h:
+            write_1h += uncovered
+        else:
+            write_5m += uncovered
         return cls(
             input=_count(usage.get("input_tokens")),
             cache_write_5m=write_5m,

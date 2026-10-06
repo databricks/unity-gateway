@@ -197,9 +197,10 @@ def install_savings_statusline(
 ) -> None:
     """Point the per-launch ``statusLine`` at the smart-routing row, wrapping the user's own one.
 
-    ``routing_enabled`` is False on a plain (non-routed) launch so the row reads "off". The row
-    reads per-token prices from ``price_cache``, since a statusline refresh can't wait on the
-    network; ``_start_savings_price_refresh`` fills it on routed launches.
+    ``routing_enabled`` is False when the launch isn't routed (a plain launch, or routing setup
+    failed) so the row reads "off". The row reads per-token prices from ``price_cache``, since a
+    statusline refresh can't wait on the network; ``_start_savings_price_refresh`` fills it on
+    routed launches.
     """
     state_dir = APP_DIR / claude_statusline.STATE_DIRNAME
     claude_statusline.prune_state(state_dir)
@@ -696,13 +697,24 @@ def launch_claude(
         sync_first_prompt_hook(settings, hook_executable)
     if savings_statusline_enabled():
         price_cache = pricing.price_cache_path(APP_DIR, workspace)
-        install_savings_statusline(
-            settings,
-            user_settings_path,
-            price_cache=price_cache,
-            routing_enabled=True,
-            baseline_session_start=route_first_prompt,
-        )
+        if mods_enabled:
+            # The mod draws the savings itself, so there is no statusline to install: it runs this
+            # command on its own token sums.
+            env[claude_statusline.PRICER_ENV_VAR] = json.dumps(
+                claude_statusline.mod_pricer_argv(
+                    python=sys.executable,
+                    price_cache=price_cache,
+                    baseline_session_start=route_first_prompt,
+                )
+            )
+        else:
+            install_savings_statusline(
+                settings,
+                user_settings_path,
+                price_cache=price_cache,
+                routing_enabled=True,
+                baseline_session_start=route_first_prompt,
+            )
         _start_savings_price_refresh(
             workspace,
             token,
