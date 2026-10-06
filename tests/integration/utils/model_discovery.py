@@ -2,6 +2,7 @@
 
 import hashlib
 import re
+import tomllib
 
 _CLAUDE_GATEWAY_ALIAS = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{8}-(?P<model>.*)$")
 _CLAUDE_PICKER_ROW = re.compile(r"(?m)^[ \t]*(?:[❯›>][ \t]*)?\d+\.[ \t]+(?P<label>[^\n]*)$")
@@ -124,3 +125,31 @@ def assert_picker_inventory(screen: str, agent: str, display_names: dict[str, st
         "expected": sorted(display_names),
         "observed": observed,
     }
+
+
+def assert_claude_system_models_in_picker(session, screen):
+    """Require system.ai discovery and picker evidence; the native catalog may lag UC."""
+    models = session.claude_gateway_models()
+    ids = claude_system_model_ids(models)
+    discovered = session.workspace_state()["claude_models"]
+    assert discovered, "ug configure found no Claude system.ai models"
+    assert all(model_id.startswith("system.ai.claude-") for model_id in discovered.values()), (
+        discovered
+    )
+    assert set(discovered.values()) & set(ids), (discovered, models)
+    assert any(
+        claude_model_in_picker(screen, model["id"], model.get("display_name")) for model in models
+    ), screen
+
+
+def assert_codex_default_models(session, models):
+    """Require system.ai discovery while leaving Codex's native catalog and defaults intact."""
+    discovered = session.workspace_state()["codex_models"]
+    assert discovered and all(model.startswith("system.ai.") for model in discovered)
+    config = tomllib.loads((session.home / ".codex/ucode.config.toml").read_text())
+    assert "model" not in config, config
+    assert "model_reasoning_effort" not in config, config
+    assert "model_catalog_json" not in config, config
+    assert models and len(models) == len(set(models)), models
+    assert any(model.startswith("gpt-") for model in models), models
+    assert not list((session.home / ".ucode").glob("codex-model-catalog-*.json"))

@@ -268,7 +268,9 @@ def test_integration_suite_uses_only_public_process_boundaries():
 
 
 def test_live_integration_cases_belong_to_exactly_one_ci_agent():
-    for path in (Path(__file__).parent / "integration").glob("test_*.py"):
+    root = Path(__file__).parent
+    paths = [*root.glob("integration/test_*.py"), *root.glob("e2e_cuj/test_*.py")]
+    for path in paths:
         tree = ast.parse(path.read_text())
         module_marks = _markers(
             node
@@ -279,7 +281,7 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
                 for target in node.targets
             )
         )
-        for node in tree.body:
+        for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed_fixture", "workspace_switch"}:
@@ -287,9 +289,13 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
 
 
 def test_model_discovery_cases_match_current_launch_contract():
-    root = Path(__file__).parent / "integration"
+    root = Path(__file__).parent
     seen = []
-    for path in root.glob("test_ug_*_model_discovery.py"):
+    paths = [
+        *root.glob("integration/test_ug_*_model_discovery.py"),
+        *root.glob("e2e_cuj/test_ug_*_model_discovery.py"),
+    ]
+    for path in paths:
         source = path.read_text()
         assert "UG_ENABLE_MODEL_DISCOVERY" not in source, path.name
         tree = ast.parse(source)
@@ -309,7 +315,7 @@ def test_model_discovery_cases_match_current_launch_contract():
                 for target in node.targets
             )
         )
-        for node in tree.body:
+        for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef):
                 continue
             match = re.match(r"test_case_(\d{2})_", node.name)

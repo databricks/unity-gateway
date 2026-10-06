@@ -346,6 +346,8 @@ suite runs all 80 live cases across two parallel agent jobs: one Claude VM and o
 Codex VM, each running its configure, headless, and commands/lifecycle cases
 serially. Each agent is installed once for the full suite, and no two full jobs
 for the same agent overlap within a run.
+CUJ7's two configured discovery cases run in the required `dedicated-cuj` job,
+using the shared CUJ scaffolding and `UG_CUJ7_WORKSPACE` repository secret.
 CI starts integration alongside unit tests and the existing e2e shards. Integration
 does not wait for agent e2e or get skipped when an agent shard fails. These suites
 share workspace capacity; overlapping their requests can still encounter rate limits.

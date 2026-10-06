@@ -618,6 +618,14 @@ Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workf
 uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
 cannot receive those secrets.
 
+CUJ7's configured Claude picker and Codex app-server discovery cases live in
+`tests/e2e_cuj/test_ug_cuj7_model_discovery.py`. The existing required `dedicated-cuj`
+job runs them with the other CUJs, using `UG_CUJ7_WORKSPACE` and the shared
+`UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` credentials. The workspace must
+publish no CodingAgentConfig and expose discoverable `system.ai` models. Both
+cases reuse the CUJ session/terminal helpers and check that the workspace remains
+unmanaged after the test; they never change remote configuration.
+
 The workspace check requires the secret to match
 `https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash
 is accepted). It never changes the secret or switches workspaces. There is no
