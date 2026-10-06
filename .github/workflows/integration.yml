@@ -429,6 +429,7 @@ jobs:
     timeout-minutes: 70
     env:
       UV_INDEX_URL: https://pypi.org/simple
+      UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}
       UG_CUJ_SP_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
       UG_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
       UG_BUDGET_CUJ_SP_CLIENT_ID: ${{ secrets.UG_BUDGET_CUJ_SP_CLIENT_ID }}
