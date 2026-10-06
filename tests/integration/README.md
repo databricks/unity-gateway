@@ -1,5 +1,12 @@
 # Integration tests
 
+The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
+and runs directly with pytest. It does not use this suite's runner or config fixtures.
+It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
+Its Claude/Codex evidence helpers keep scenario-specific assertions separate from shared mechanics.
+Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
+is read-only and checked for changes at teardown; concurrent readers need no reservation.
+
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
 patch application functions, substitute agent executables, run a fake gateway,

@@ -11,9 +11,10 @@ class BaseCujTest:
     WORKSPACE_URL: ClassVar[str] = ""
     workspace: WorkspaceClient
 
-    @pytest.fixture(autouse=True)
-    def setup_workspace(self):
-        if not self.WORKSPACE_URL:
+    @pytest.fixture(scope="class", autouse=True)
+    def setup_workspace(self, request):
+        workspace_url = request.cls.WORKSPACE_URL
+        if not workspace_url:
             pytest.fail("Set WORKSPACE_URL on your CUJ test class.", pytrace=False)
 
         client_id = os.environ.get("UG_CUJ_SP_CLIENT_ID", "")
@@ -21,8 +22,8 @@ class BaseCujTest:
         if not client_id or not client_secret:
             pytest.fail("Set UG_CUJ_SP_CLIENT_ID and UG_CUJ_SP_CLIENT_SECRET.", pytrace=False)
 
-        self.workspace = WorkspaceClient(
-            host=self.WORKSPACE_URL,
+        request.cls.workspace = WorkspaceClient(
+            host=workspace_url,
             client_id=client_id,
             client_secret=client_secret,
             auth_type="oauth-m2m",
