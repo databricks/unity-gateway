@@ -1,8 +1,7 @@
-"""End-to-end sentinel for the published managed Claude and Codex configuration.
+"""End-to-end journeys for the published managed Claude and Codex configuration.
 
-The selected managed workspace publishes one static configuration for both agents. This journey
-fetches that configuration through one public ``ug configure`` command, checks the generated files,
-then runs real tasks on the bare managed default and explicit Claude/Codex selections.
+The selected managed workspace publishes one static configuration for both agents. Separate cases
+check the generated files, record Claude and Codex inference requests, and query trace evidence.
 """
 
 from __future__ import annotations
@@ -10,12 +9,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import time
 import tomllib
 import uuid
 
 import pytest
 from base import BaseCujTest
+from helpers.tui_request_recorder import TuiRequestRecorder
 from utils.evidence import FileTask
 from utils.sql import query_count, resolve_trace_table, resolve_warehouse_id
 from utils.terminal import AgentTerminal
@@ -35,12 +36,111 @@ CODEX_MODELS = ["system.ai.gpt-5-6-sol", "system.ai.gpt-5-6-luna"]
 CODEX_DEFAULT = CODEX_MODELS[0]
 CODEX_LUNA = CODEX_MODELS[1]
 EXPECTED_HEADER_NAMES = {"x-ug-e2e-run", "x-ug-e2e-agent"}
+CLAUDE_REQUEST_PATH = "/ai-gateway/anthropic/v1/messages"
+CODEX_REQUEST_PATH = "/ai-gateway/codex/v1/responses"
 TRACE_WAIT_SECONDS = 360
 TRACE_POLL_SECONDS = 10
 
 
 def _claude_models_visible(text: str) -> bool:
     return all(model in text for model in CLAUDE_MODELS)
+
+
+def _claude_picker_visible(text: str) -> bool:
+    selected_model_row = any(
+        line.lstrip().startswith(("❯", "›", ">")) and any(model in line for model in CLAUDE_MODELS)
+        for line in text.splitlines()
+    )
+    return selected_model_row and _claude_models_visible(text)
+
+
+def _install_claude_recorder_launcher(session, recorder_base_url: str) -> None:
+    """Route the real Claude launch through a disposable settings copy."""
+    wrapper_dir = session.home / ".ucode" / "e2e-claude-recorder-bin"
+    wrapper_dir.mkdir(parents=True, exist_ok=True)
+    original_path = session.env["PATH"]
+    claude_binary = shutil.which("claude", path=original_path)
+    assert claude_binary, original_path
+    script = f"""#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+CLAUDE_BINARY = {json.dumps(claude_binary)}
+RECORDER_BASE_URL = {json.dumps(recorder_base_url)}
+OVERRIDE_DIR = Path({json.dumps(str(wrapper_dir))})
+
+args = sys.argv[1:]
+try:
+    settings_index = args.index("--settings")
+except ValueError:
+    settings_index = -1
+if settings_index >= 0:
+    if settings_index + 1 >= len(args):
+        raise SystemExit("Claude recorder launcher received --settings without a value")
+    settings_value = args[settings_index + 1]
+    if settings_value.lstrip().startswith("{{"):
+        settings = json.loads(settings_value)
+        inline = True
+    else:
+        settings = json.loads(Path(settings_value).read_text(encoding="utf-8"))
+        inline = False
+    settings_env = settings.setdefault("env", {{}})
+    if not isinstance(settings_env, dict):
+        raise SystemExit("Claude settings env must be an object")
+    settings_env["ANTHROPIC_BASE_URL"] = RECORDER_BASE_URL
+    if inline:
+        args[settings_index + 1] = json.dumps(settings, separators=(",", ":"))
+    else:
+        override_path = OVERRIDE_DIR / ("settings-" + str(os.getpid()) + ".json")
+        override_path.write_text(json.dumps(settings), encoding="utf-8")
+        args[settings_index + 1] = str(override_path)
+os.execv(CLAUDE_BINARY, [CLAUDE_BINARY, *args])
+"""
+    launcher = wrapper_dir / "claude"
+    launcher.write_text(script, encoding="utf-8")
+    launcher.chmod(0o755)
+    session.env["PATH"] = os.pathsep.join((str(wrapper_dir), original_path))
+
+
+def _assert_inference_requests(
+    recorder: TuiRequestRecorder,
+    checkpoint: int,
+    path: str,
+    marker: str,
+    run_id: str,
+    agent: str,
+    expected_model: str,
+) -> None:
+    """Assert every recorded inference request for one task and require a tool follow-up."""
+    requests = []
+    after = checkpoint
+    while True:
+        try:
+            request = recorder.expect_request(method="POST", path=path, after=after, timeout=0.2)
+        except AssertionError as exc:
+            assert str(exc).startswith("Timed out waiting for TUI request:"), str(exc)
+            break
+        requests.append(request)
+        after = request.sequence
+
+    assert len(requests) >= 2, [(request.sequence, request.path) for request in requests]
+    served_models = []
+    marked_requests = 0
+    for request in requests:
+        assert request.headers["x-ug-e2e-run"] == run_id, request.headers
+        # AIGTWY-4876: Each request identifies the active agent, preventing cross-agent headers.
+        assert request.headers["x-ug-e2e-agent"] == agent, request.headers
+        payload = request.payload
+        assert isinstance(payload, dict), type(payload)
+        assert isinstance(payload.get("model"), str), sorted(payload)
+        if marker in json.dumps(payload):
+            marked_requests += 1
+        if recorder.response_for(request).status_code == 200:
+            served_models.append(payload["model"])
+    assert marked_requests >= 2, marked_requests
+    assert expected_model in served_models, served_models
 
 
 def _managed_config(session) -> dict:
@@ -119,9 +219,10 @@ def _assert_published_config(raw: dict, entries: dict[str, dict]) -> dict[str, s
     return claude_headers
 
 
-def _assert_generated_configs(session, claude_headers: dict[str, str]) -> None:
+def _assert_generated_configs(session, claude_headers: dict[str, str], workspace: str) -> None:
     claude_settings_path = session.home / ".claude" / "ucode-settings.json"
     claude_settings = json.loads(claude_settings_path.read_text())
+    # AIGTWY-4876: Each agent picker exposes exactly its configured model list.
     assert claude_settings["availableModels"] == CLAUDE_MODELS, claude_settings
     claude_picker = claude_settings["modelPicker"]
     assert claude_picker["replaceBuiltInOptions"] is True, claude_settings
@@ -134,6 +235,7 @@ def _assert_generated_configs(session, claude_headers: dict[str, str]) -> None:
         )
     ], claude_settings
     claude_env = claude_settings["env"]
+    assert claude_env["ANTHROPIC_BASE_URL"] == f"{workspace}/ai-gateway/anthropic", claude_settings
     assert claude_env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == CLAUDE_MODELS[0] + "[1m]", claude_settings
     assert claude_env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == (CLAUDE_MODELS[1] + "[1m]"), (
         claude_settings
@@ -151,6 +253,7 @@ def _assert_generated_configs(session, claude_headers: dict[str, str]) -> None:
     codex_profile_path = session.home / ".codex" / "ucode.config.toml"
     codex_profile = tomllib.loads(codex_profile_path.read_text())
     codex_provider = codex_profile["model_providers"]["Databricks"]
+    assert codex_provider["base_url"] == f"{workspace}/ai-gateway/codex/v1", codex_profile
     assert _managed_header_subset(codex_provider["http_headers"]) == {
         "x-ug-e2e-run": claude_headers["x-ug-e2e-run"],
         "x-ug-e2e-agent": "codex",
@@ -315,16 +418,18 @@ def _wait_for_trace_pairs(
         time.sleep(min(TRACE_POLL_SECONDS, remaining))
 
 
-class TestCujManagedConfig(BaseCujTest):
-    WORKSPACE_URL = "https://dbc-135c115c-c255.cloud.databricks.com"
+MANAGED_WORKSPACE_URL = "https://dbc-135c115c-c255.cloud.databricks.com"
 
-    def test_cuj_managed_config_sentinel(self, live_session):
-        """Scenario: configure one published two-agent policy and run both agents.
 
-        Expected: no agent selector; configured models, defaults, tracing and headers in generated
-        files; six completed tasks and matching agent inference plus native gateway client spans.
-        Auxiliary client calls for a task may use another model. Gateway receipt of headers is not
-        asserted here.
+class TestCujManagedConfiguration(BaseCujTest):
+    WORKSPACE_URL = MANAGED_WORKSPACE_URL
+
+    def test_cuj_managed_configuration(self, live_session):
+        """Scenario: configure a fresh session against the published two-agent policy.
+
+        Expected: ``ug configure`` selects both enabled agents without a picker, writes the
+        configured models, defaults, aliases, headers and tracing settings, and publishes the
+        managed Codex catalog.
         """
         session = live_session
         workspace = self.WORKSPACE_URL
@@ -338,12 +443,13 @@ class TestCujManagedConfig(BaseCujTest):
             "--skip-upgrade",
             timeout=300,
         )
+        # AIGTWY-4876: Fresh configure selects both managed agents without an agent selector.
         assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
 
         raw = _managed_config(session)
         entries = _managed_entries(raw)
         claude_headers = _assert_published_config(raw, entries)
-        _assert_generated_configs(session, claude_headers)
+        _assert_generated_configs(session, claude_headers, workspace)
         codex_models = session.codex_model_ids(
             ["app-server", "--listen", "stdio://"], name="managed-sentinel-codex-models"
         )
@@ -365,6 +471,294 @@ class TestCujManagedConfig(BaseCujTest):
             },
         )
 
+
+class TestCujManagedClaude(BaseCujTest):
+    WORKSPACE_URL = MANAGED_WORKSPACE_URL
+
+    def test_cuj_managed_claude(self, live_session):
+        """Scenario: configure managed Claude and complete the default and alias TUI tasks.
+
+        Expected: the configured Claude catalog and family defaults are visible, the model picker
+        shows all three configured models, each task completes, and the recorder sees the managed
+        headers and requested model on every inference request.
+        """
+        session = live_session
+        workspace = self.WORKSPACE_URL
+        configured = session.run(
+            "configure",
+            "--workspace",
+            workspace,
+            "--skip-upgrade",
+            timeout=300,
+        )
+        assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
+
+        raw = _managed_config(session)
+        entries = _managed_entries(raw)
+        claude = entries["CODING_AGENT_CLAUDE_CODE"]
+        claude_headers = _assert_published_config(raw, entries)
+        assert claude["models"] == {"model_services": CLAUDE_MODELS}, claude
+        assert claude["default_models"] == CLAUDE_DEFAULTS, claude
+        assert claude_headers["x-ug-e2e-agent"] == "claude", claude_headers
+
+        claude_settings_path = session.home / ".claude" / "ucode-settings.json"
+        settings = json.loads(claude_settings_path.read_text())
+        assert settings["env"]["ANTHROPIC_BASE_URL"] == (f"{workspace}/ai-gateway/anthropic"), (
+            settings
+        )
+        run_id = claude_headers["x-ug-e2e-run"]
+
+        with TuiRequestRecorder(workspace) as recorder:
+            _install_claude_recorder_launcher(session, f"{recorder.url}/ai-gateway/anthropic")
+
+            root_task = FileTask(session)
+            root_marker = f"ug-managed-claude-{uuid.uuid4().hex}-root"
+            session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={root_marker}"
+            root_checkpoint = recorder.checkpoint()
+            with AgentTerminal(
+                session, "claude", [str(session.binary)], "managed-claude-root"
+            ) as tui:
+                tui.boot()
+                tui.submit(f"{root_task.prompt} Inference marker: {root_marker}")
+                tui.wait_for_task(root_task)
+                picker_screen = tui.open_model_picker(model_visible=_claude_picker_visible)
+                assert _claude_picker_visible(picker_screen), picker_screen
+                tui.exit_normally()
+            # AIGTWY-4876: Bare `ug` Claude has no override; the request below requires Sonnet.
+            root_task.assert_completed(session, "claude")
+            # AIGTWY-4876: Every Claude request, including tool follow-ups, carries both headers.
+            _assert_inference_requests(
+                recorder,
+                root_checkpoint,
+                CLAUDE_REQUEST_PATH,
+                root_marker,
+                run_id,
+                "claude",
+                CLAUDE_DEFAULTS["default_model"],
+            )
+
+            claude_opus_task = FileTask(session)
+            claude_opus_marker = f"ug-managed-claude-{uuid.uuid4().hex}-opus"
+            session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={claude_opus_marker}"
+            opus_checkpoint = recorder.checkpoint()
+            with AgentTerminal(
+                session,
+                "claude",
+                [str(session.binary), "claude", "--model", "opus"],
+                "managed-claude-opus",
+            ) as tui:
+                tui.boot()
+                tui.submit(f"{claude_opus_task.prompt} Inference marker: {claude_opus_marker}")
+                tui.wait_for_task(claude_opus_task)
+                tui.exit_normally()
+            # AIGTWY-4876: Opus, Sonnet, and Haiku aliases each require their real configured model.
+            claude_opus_task.assert_completed(session, "claude")
+            _assert_inference_requests(
+                recorder,
+                opus_checkpoint,
+                CLAUDE_REQUEST_PATH,
+                claude_opus_marker,
+                run_id,
+                "claude",
+                CLAUDE_DEFAULTS["default_opus_model"] + "[1m]",
+            )
+
+            claude_sonnet_task = FileTask(session)
+            claude_sonnet_marker = f"ug-managed-claude-{uuid.uuid4().hex}-sonnet"
+            session.env["OTEL_RESOURCE_ATTRIBUTES"] = (
+                f"ug_integration_marker={claude_sonnet_marker}"
+            )
+            sonnet_checkpoint = recorder.checkpoint()
+            with AgentTerminal(
+                session,
+                "claude",
+                [str(session.binary), "claude", "--model", "sonnet"],
+                "managed-claude-sonnet",
+            ) as tui:
+                tui.boot()
+                tui.submit(f"{claude_sonnet_task.prompt} Inference marker: {claude_sonnet_marker}")
+                tui.wait_for_task(claude_sonnet_task)
+                tui.exit_normally()
+            claude_sonnet_task.assert_completed(session, "claude")
+            _assert_inference_requests(
+                recorder,
+                sonnet_checkpoint,
+                CLAUDE_REQUEST_PATH,
+                claude_sonnet_marker,
+                run_id,
+                "claude",
+                CLAUDE_DEFAULTS["default_sonnet_model"] + "[1m]",
+            )
+
+            claude_haiku_task = FileTask(session)
+            claude_haiku_marker = f"ug-managed-claude-{uuid.uuid4().hex}-haiku"
+            session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={claude_haiku_marker}"
+            haiku_checkpoint = recorder.checkpoint()
+            with AgentTerminal(
+                session,
+                "claude",
+                [str(session.binary), "claude", "--model", "haiku"],
+                "managed-claude-haiku",
+            ) as tui:
+                tui.boot()
+                tui.submit(f"{claude_haiku_task.prompt} Inference marker: {claude_haiku_marker}")
+                tui.wait_for_task(claude_haiku_task)
+                tui.exit_normally()
+            claude_haiku_task.assert_completed(session, "claude")
+            _assert_inference_requests(
+                recorder,
+                haiku_checkpoint,
+                CLAUDE_REQUEST_PATH,
+                claude_haiku_marker,
+                run_id,
+                "claude",
+                CLAUDE_DEFAULTS["default_haiku_model"],
+            )
+        final_settings = json.loads(claude_settings_path.read_text())
+        assert final_settings["env"]["ANTHROPIC_BASE_URL"] == (
+            f"{workspace}/ai-gateway/anthropic"
+        ), final_settings
+        assert _claude_header_lines(final_settings["env"]["ANTHROPIC_CUSTOM_HEADERS"]) == (
+            claude_headers
+        ), final_settings
+
+
+class TestCujManagedCodex(BaseCujTest):
+    WORKSPACE_URL = MANAGED_WORKSPACE_URL
+
+    def test_cuj_managed_codex(self, live_session):
+        """Scenario: configure managed Codex and complete default and explicit model TUI tasks.
+
+        Expected: the configured Codex catalog and default are visible, each task completes, and
+        the recorder sees the managed headers and requested Sol or Luna model on each request.
+        """
+        session = live_session
+        workspace = self.WORKSPACE_URL
+        configured = session.run(
+            "configure",
+            "--workspace",
+            workspace,
+            "--skip-upgrade",
+            timeout=300,
+        )
+        assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
+
+        raw = _managed_config(session)
+        entries = _managed_entries(raw)
+        codex = entries["CODING_AGENT_CODEX"]
+        claude_headers = _assert_published_config(raw, entries)
+        assert codex["models"] == {"model_services": CODEX_MODELS}, codex
+        assert codex["default_models"] == {"default_model": CODEX_DEFAULT}, codex
+        assert _normalized_headers(codex["http_headers"])["x-ug-e2e-agent"] == "codex", codex
+        codex_models = session.codex_model_ids(
+            ["app-server", "--listen", "stdio://"], name="managed-codex-models"
+        )
+        assert codex_models == CODEX_MODELS, codex_models
+
+        profile = tomllib.loads((session.home / ".codex" / "ucode.config.toml").read_text())
+        assert profile["model_providers"]["Databricks"]["base_url"] == (
+            f"{workspace}/ai-gateway/codex/v1"
+        ), profile
+        run_id = claude_headers["x-ug-e2e-run"]
+        session.env.pop("OTEL_RESOURCE_ATTRIBUTES", None)
+
+        with TuiRequestRecorder(workspace) as recorder:
+            recorder_base_url = f"{recorder.url}/ai-gateway/codex/v1"
+
+            codex_default_task = FileTask(session)
+            codex_default_marker = f"ug-managed-codex-{uuid.uuid4().hex}-default"
+            default_checkpoint = recorder.checkpoint()
+            with AgentTerminal(
+                session,
+                "codex",
+                [
+                    str(session.binary),
+                    "codex",
+                    "--",
+                    "--config",
+                    f'model_providers.Databricks.base_url="{recorder_base_url}"',
+                    "--config",
+                    f'otel.span_attributes.ug_integration_marker="{codex_default_marker}"',
+                ],
+                "managed-codex-default",
+            ) as tui:
+                tui.boot()
+                tui.submit(f"{codex_default_task.prompt} Inference marker: {codex_default_marker}")
+                tui.wait_for_task(codex_default_task)
+                tui.exit_normally()
+            # AIGTWY-4876: Bare `ug codex` has no override; the request below requires Sol.
+            codex_default_task.assert_completed(session, "codex")
+            # AIGTWY-4876: Every Codex request, including tool follow-ups, carries both headers.
+            _assert_inference_requests(
+                recorder,
+                default_checkpoint,
+                CODEX_REQUEST_PATH,
+                codex_default_marker,
+                run_id,
+                "codex",
+                CODEX_DEFAULT,
+            )
+
+            codex_luna_task = FileTask(session)
+            codex_luna_marker = f"ug-managed-codex-{uuid.uuid4().hex}-luna"
+            luna_checkpoint = recorder.checkpoint()
+            with AgentTerminal(
+                session,
+                "codex",
+                [
+                    str(session.binary),
+                    "codex",
+                    "--",
+                    "--model",
+                    CODEX_LUNA,
+                    "--config",
+                    f'model_providers.Databricks.base_url="{recorder_base_url}"',
+                    "--config",
+                    f'otel.span_attributes.ug_integration_marker="{codex_luna_marker}"',
+                ],
+                "managed-codex-luna",
+            ) as tui:
+                tui.boot()
+                tui.submit(f"{codex_luna_task.prompt} Inference marker: {codex_luna_marker}")
+                tui.wait_for_task(codex_luna_task)
+                tui.exit_normally()
+            # AIGTWY-4876: Explicit Luna selection completes and is served by the Luna model.
+            codex_luna_task.assert_completed(session, "codex")
+            _assert_inference_requests(
+                recorder,
+                luna_checkpoint,
+                CODEX_REQUEST_PATH,
+                codex_luna_marker,
+                run_id,
+                "codex",
+                CODEX_LUNA,
+            )
+
+
+class TestCujManagedTracing(BaseCujTest):
+    WORKSPACE_URL = MANAGED_WORKSPACE_URL
+
+    def test_cuj_managed_tracing(self, live_session):
+        """Scenario: configure both managed agents and run uniquely marked tasks for each agent.
+
+        Expected: one task for each agent completes through a real TUI, then the trace table
+        contains each expected marker/model pair in the agent and native client span layouts.
+        Auxiliary native client calls may use another model.
+        """
+        session = live_session
+        workspace = self.WORKSPACE_URL
+        configured = session.run(
+            "configure",
+            "--workspace",
+            workspace,
+            "--skip-upgrade",
+            timeout=300,
+        )
+        assert "Select coding agents to configure:" not in configured.stdout, configured.stdout
+
+        raw = _managed_config(session)
+        entries = _managed_entries(raw)
+        _assert_published_config(raw, entries)
         bearer = session.env["DATABRICKS_BEARER"]
         trace_table = resolve_trace_table(workspace, bearer)
         warehouse_id = os.environ.get("UG_INTEGRATION_WAREHOUSE_ID", "").strip()
@@ -372,78 +766,20 @@ class TestCujManagedConfig(BaseCujTest):
         run_id = uuid.uuid4().hex
         trace_pairs: list[tuple[str, str, str]] = []
 
-        root_task = FileTask(session)
-        root_marker = f"ug-managed-sentinel-{run_id}-root"
-        trace_pairs.append((root_marker, CLAUDE_DEFAULTS["default_model"], "resource"))
-        session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={root_marker}"
-        with AgentTerminal(
-            session, "claude", [str(session.binary)], "managed-sentinel-root"
-        ) as tui:
+        claude_task = FileTask(session)
+        claude_marker = f"ug-managed-trace-{run_id}-claude"
+        trace_pairs.append((claude_marker, CLAUDE_DEFAULTS["default_model"], "resource"))
+        session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={claude_marker}"
+        with AgentTerminal(session, "claude", [str(session.binary)], "managed-trace-claude") as tui:
             tui.boot()
-            tui.submit(f"{root_task.prompt} Trace marker: {root_marker}")
-            tui.wait_for_task(root_task)
-            picker_screen = tui.open_model_picker(model_visible=_claude_models_visible)
-            assert _claude_models_visible(picker_screen), picker_screen
+            tui.submit(f"{claude_task.prompt} Trace marker: {claude_marker}")
+            tui.wait_for_task(claude_task)
             tui.exit_normally()
-        root_task.assert_completed(session, "claude")
+        claude_task.assert_completed(session, "claude")
 
-        claude_opus_task = FileTask(session)
-        claude_opus_marker = f"ug-managed-sentinel-{run_id}-claude-opus"
-        trace_pairs.append(
-            (claude_opus_marker, CLAUDE_DEFAULTS["default_opus_model"] + "[1m]", "resource")
-        )
-        session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={claude_opus_marker}"
-        with AgentTerminal(
-            session,
-            "claude",
-            [str(session.binary), "claude", "--model", "opus"],
-            "managed-sentinel-claude-opus",
-        ) as tui:
-            tui.boot()
-            tui.submit(f"{claude_opus_task.prompt} Trace marker: {claude_opus_marker}")
-            tui.wait_for_task(claude_opus_task)
-            tui.exit_normally()
-        claude_opus_task.assert_completed(session, "claude")
-
-        claude_sonnet_task = FileTask(session)
-        claude_sonnet_marker = f"ug-managed-sentinel-{run_id}-claude-sonnet"
-        trace_pairs.append(
-            (claude_sonnet_marker, CLAUDE_DEFAULTS["default_sonnet_model"] + "[1m]", "resource")
-        )
-        session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={claude_sonnet_marker}"
-        with AgentTerminal(
-            session,
-            "claude",
-            [str(session.binary), "claude", "--model", "sonnet"],
-            "managed-sentinel-claude-sonnet",
-        ) as tui:
-            tui.boot()
-            tui.submit(f"{claude_sonnet_task.prompt} Trace marker: {claude_sonnet_marker}")
-            tui.wait_for_task(claude_sonnet_task)
-            tui.exit_normally()
-        claude_sonnet_task.assert_completed(session, "claude")
-
-        claude_haiku_task = FileTask(session)
-        claude_haiku_marker = f"ug-managed-sentinel-{run_id}-claude-haiku"
-        trace_pairs.append(
-            (claude_haiku_marker, CLAUDE_DEFAULTS["default_haiku_model"], "resource")
-        )
-        session.env["OTEL_RESOURCE_ATTRIBUTES"] = f"ug_integration_marker={claude_haiku_marker}"
-        with AgentTerminal(
-            session,
-            "claude",
-            [str(session.binary), "claude", "--model", "haiku"],
-            "managed-sentinel-claude-haiku",
-        ) as tui:
-            tui.boot()
-            tui.submit(f"{claude_haiku_task.prompt} Trace marker: {claude_haiku_marker}")
-            tui.wait_for_task(claude_haiku_task)
-            tui.exit_normally()
-        claude_haiku_task.assert_completed(session, "claude")
-
-        codex_default_task = FileTask(session)
-        codex_default_marker = f"ug-managed-sentinel-{run_id}-codex-default"
-        trace_pairs.append((codex_default_marker, CODEX_DEFAULT, "span"))
+        codex_task = FileTask(session)
+        codex_marker = f"ug-managed-trace-{run_id}-codex"
+        trace_pairs.append((codex_marker, CODEX_DEFAULT, "span"))
         session.env.pop("OTEL_RESOURCE_ATTRIBUTES", None)
         with AgentTerminal(
             session,
@@ -453,37 +789,15 @@ class TestCujManagedConfig(BaseCujTest):
                 "codex",
                 "--",
                 "--config",
-                f'otel.span_attributes.ug_integration_marker="{codex_default_marker}"',
+                f'otel.span_attributes.ug_integration_marker="{codex_marker}"',
             ],
-            "managed-sentinel-codex-default",
+            "managed-trace-codex",
         ) as tui:
             tui.boot()
-            tui.submit(f"{codex_default_task.prompt} Trace marker: {codex_default_marker}")
-            tui.wait_for_task(codex_default_task)
+            tui.submit(f"{codex_task.prompt} Trace marker: {codex_marker}")
+            tui.wait_for_task(codex_task)
             tui.exit_normally()
-        codex_default_task.assert_completed(session, "codex")
+        codex_task.assert_completed(session, "codex")
 
-        codex_luna_task = FileTask(session)
-        codex_luna_marker = f"ug-managed-sentinel-{run_id}-codex-luna"
-        trace_pairs.append((codex_luna_marker, CODEX_LUNA, "span"))
-        with AgentTerminal(
-            session,
-            "codex",
-            [
-                str(session.binary),
-                "codex",
-                "--",
-                "--model",
-                CODEX_LUNA,
-                "--config",
-                f'otel.span_attributes.ug_integration_marker="{codex_luna_marker}"',
-            ],
-            "managed-sentinel-codex-luna",
-        ) as tui:
-            tui.boot()
-            tui.submit(f"{codex_luna_task.prompt} Trace marker: {codex_luna_marker}")
-            tui.wait_for_task(codex_luna_task)
-            tui.exit_normally()
-        codex_luna_task.assert_completed(session, "codex")
-
+        # AIGTWY-4876: Poll for each marker/client model pair until the deadline.
         _wait_for_trace_pairs(workspace, bearer, warehouse_id, trace_table, trace_pairs, session)
