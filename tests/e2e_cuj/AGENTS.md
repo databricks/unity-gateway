@@ -3,6 +3,8 @@
 Each CUJ owns a separate workspace. Subclass `BaseCujTest` from `base.py` and set
 `WORKSPACE_URL`. Setup provides `self.workspace`, a Databricks SDK client using
 `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET` with OAuth M2M authentication.
+A CUJ that needs another identity overrides `CLIENT_ID_ENV` and `CLIENT_SECRET_ENV`
+with its credential environment-variable names.
 The workspaces share one metastore, so metastore-scoped fixture names belong in
 `helpers/constants.py`; keep each workspace URL in its test class.
 All workspace configurations are READ ONLY. Never create, publish, update, delete,
