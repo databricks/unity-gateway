@@ -786,12 +786,16 @@ def read_managed_mcp_urls() -> dict[str, str]:
 
 
 def default_model(state: dict) -> str | None:
-    """Return a managed Codex model, or leave selection to Codex."""
+    """Return a managed Codex model, or leave selection to Codex.
+
+    Model cleanup is handled by the config writer and launch path. Keeping this lookup pure is
+    required because state hydration calls it while persisting configuration; clearing the profile
+    there would remove a managed model immediately after the writer saved it.
+    """
     if isinstance(state.get("codex_default_model"), str):
         return state["codex_default_model"]
     if smart_routing_v2.smart_routing_enabled():
         return _smart_routing_config_model(state)
-    clear_model_preferences(state)
     return None
 
 

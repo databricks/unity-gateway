@@ -73,6 +73,8 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 `smart_defaults` wire field, reading older `spend_tiers` caches, skipping recommendations
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
+Codex configuration regressions also check that saving managed state preserves the generated
+default or budget-selected model and that model lookup leaves configuration files unchanged.
 
 `test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
 gateway provider on Windows while Unix launch arguments stay unchanged and routing
