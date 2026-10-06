@@ -244,9 +244,9 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_agents_self_managed_opencode_journey` | Under the injected `managed_workspace_default` config (enables Claude/Codex, not OpenCode): bare configure, `ug agents list`, refused OpenCode launch, `ug agents add opencode`, real headless task, `ug agents remove opencode` (marker `managed_fixture and opencode`, non-blocking CI lane) | OpenCode absent from the list and launch fails with "doesn't enable OpenCode" / `ug agents add opencode`; after add it is listed self-managed and the headless Read task returns the fixture value; after remove it is hidden and refused again |
 | `test_ug_agents_admin_managed_guardrails` | `ug agents add` / `remove` on an agent the admin config enables | Add is a no-op noting the admin manages it; remove is rejected with nonzero exit |
 | `test_ug_claude_headless_fresh_workspace`, `test_ug_codex_headless_fresh_workspace` | From fresh state, launch an agent with `--workspace` against a workspace with no managed config | Claude Haiku 4.5 and Codex GPT-5.4 Nano read an unpredictable file value through the gateway and return it in a structured completed answer; exit zero; no routing |
-| Fresh Claude/Codex `--provider` journeys | From fresh state, launch each real agent CLI with `--workspace` and an explicit provider, optionally obtained from a reusable dummy MPS fixture | Claude's provider header and all-targets catalog, plus Codex's app-server model catalog, match the selected services; both CLIs exit successfully without routing or inference |
-| `test_ug_claude_headless_fresh_model_location` | From fresh state, launch Claude with `--workspace` and `--model-location system.ai` | Haiku 4.5 reads an unpredictable file value and returns it in a structured completed answer; exit zero; no routing |
-| `test_ug_codex_headless_fresh_model_location` | From fresh state, launch Codex with `--workspace` and `--model-location` | Codex uses a model in the parent schema to read an unpredictable file value and returns it in a structured completed answer; exit zero; no routing |
+| Fresh Claude/Codex `--provider` journeys | From fresh state, launch each real agent CLI with `--workspace` and an existing provider | Claude's provider header and Codex's app-server model catalog match the selected services; both CLIs exit successfully without routing or inference |
+| `test_ug_claude_headless_fresh_model_location` | From fresh state, launch Claude in the CUJ7 workspace with `--workspace`, `--model-location ug_e2e.models`, and `ug_e2e.models.claude_haiku` | Haiku reads an unpredictable file value through the selected model location and returns it in a structured completed answer; exit zero; no routing |
+| `test_ug_codex_headless_fresh_model_location` | From fresh state, launch Codex in the CUJ7 workspace with `--workspace`, `--model-location ug_e2e.models`, and `ug_e2e.models.gpt_luna` | Luna reads an unpredictable file value through the selected model location and returns it in a structured completed answer; exit zero; no routing |
 | `test_ug_claude_exports_trace_to_configured_table`, `test_ug_codex_exports_trace_to_configured_table` | Configure tracing, complete a headless task carrying a unique trace marker, then wait for ingestion | The configured trace table contains an agent span with the same trace-safe marker and requested model |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` before and after ug's separator with smart routing enabled, without workspace policy | Real file task completes; JSON `modelUsage` reports the requested model with output tokens; no routing wrapper |
 | `test_ug_codex_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` / `-m VALUE` with smart routing enabled | Real file task completes; no routing wrapper |
@@ -346,8 +346,12 @@ suite runs all 80 live cases across two parallel agent jobs: one Claude VM and o
 Codex VM, each running its configure, headless, and commands/lifecycle cases
 serially. Each agent is installed once for the full suite, and no two full jobs
 for the same agent overlap within a run.
-CUJ7's two configured discovery cases run in the required `dedicated-cuj` job,
-using the shared CUJ scaffolding and `UG_CUJ7_WORKSPACE` repository secret.
+CUJ7's four cases run in the required `dedicated-cuj` job: configured Claude picker and
+Codex app-server discovery, plus fresh Claude/Codex model-location file tasks. The class
+pins `WORKSPACE_URL` to `https://dbc-14e376e8-6541.cloud.databricks.com` rather than using
+a workspace secret. The workspace must publish no `CodingAgentConfig`, expose discoverable
+`system.ai` models, and retain the existing models `ug_e2e.models.claude_haiku` and
+`ug_e2e.models.gpt_luna`; the shared service principal needs read/use privileges on both.
 CI starts integration alongside unit tests and the existing e2e shards. Integration
 does not wait for agent e2e or get skipped when an agent shard fails. These suites
 share workspace capacity; overlapping their requests can still encounter rate limits.

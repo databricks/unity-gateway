@@ -563,7 +563,6 @@ jobs:
       UG_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
       UG_BUDGET_CUJ_SP_CLIENT_ID: ${{ secrets.UG_BUDGET_CUJ_SP_CLIENT_ID }}
       UG_BUDGET_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_BUDGET_CUJ_SP_CLIENT_SECRET }}
-      UG_CUJ7_WORKSPACE: ${{ secrets.UG_CUJ7_WORKSPACE }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4

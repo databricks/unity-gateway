@@ -1,4 +1,4 @@
-"""CUJ7: configured model discovery in a dedicated unmanaged workspace."""
+"""CUJ7: model discovery and scoped inference in a dedicated unmanaged workspace."""
 
 import os
 import shutil
@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from databricks.sdk.errors import DatabricksError, NotFound
 
+from tests.integration.utils.evidence import FileTask
 from tests.integration.utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
 from tests.integration.utils.model_discovery import (
     assert_claude_system_models_in_picker,
@@ -15,6 +16,7 @@ from tests.integration.utils.model_discovery import (
 
 from .base import BaseCujTest
 from .helpers.constants import CLAUDE, CODEX, MANAGED_PATHS
+from .helpers.evidence import SessionEvidence
 from .helpers.session import UserSession
 from .helpers.terminal import Terminal
 
@@ -22,7 +24,7 @@ pytestmark = [pytest.mark.live, pytest.mark.cuj7, pytest.mark.workspace_isolated
 
 
 class TestUnmanagedModelDiscovery(BaseCujTest):
-    WORKSPACE_URL = os.environ.get("UG_CUJ7_WORKSPACE", "").strip().rstrip("/")
+    WORKSPACE_URL = "https://dbc-14e376e8-6541.cloud.databricks.com"
 
     @pytest.fixture(autouse=True)
     def unmanaged_workspace(self, setup_workspace):
@@ -114,3 +116,67 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         )
         models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
         assert_codex_default_models(session, models)
+
+    @pytest.mark.claude
+    def test_ug_claude_headless_fresh_model_location(self, live_session):
+        """Scenario: launch fresh Claude with --model-location ug_e2e.models.
+
+        Expected: Haiku completes a file task without prior configuration or routing.
+        """
+        session = live_session
+        task = FileTask(session)
+        model = "ug_e2e.models.claude_haiku"
+        evidence = SessionEvidence(session.home, CLAUDE)
+
+        result = session.run(
+            CLAUDE,
+            "--workspace",
+            self.workspace.config.host,
+            "--model-location",
+            "ug_e2e.models",
+            "--",
+            "--model",
+            model,
+            "-p",
+            task.prompt,
+            "--output-format",
+            "json",
+            "--allowedTools",
+            "Read",
+            timeout=240,
+        )
+        task.assert_headless_answer(CLAUDE, result)
+        turn = evidence.completed(task)
+        assert turn and set(turn.models) == {model}, turn
+        session.assert_not_routed()
+
+    @pytest.mark.codex
+    def test_ug_codex_headless_fresh_model_location(self, live_session):
+        """Scenario: launch fresh Codex with --model-location ug_e2e.models.
+
+        Expected: GPT Luna completes a file task without prior configuration or routing.
+        """
+        session = live_session
+        task = FileTask(session)
+        model = "ug_e2e.models.gpt_luna"
+        evidence = SessionEvidence(session.home, CODEX)
+
+        result = session.run(
+            CODEX,
+            "--workspace",
+            self.workspace.config.host,
+            "--model-location",
+            "ug_e2e.models",
+            "--",
+            "exec",
+            "--skip-git-repo-check",
+            "--json",
+            "--model",
+            model,
+            task.prompt,
+            timeout=240,
+        )
+        task.assert_headless_answer(CODEX, result)
+        turn = evidence.completed(task)
+        assert turn and set(turn.models) == {model}, turn
+        session.assert_not_routed()

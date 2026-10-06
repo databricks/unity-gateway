@@ -385,26 +385,11 @@ MPS CUJs select the existing services already used by e2e:
 Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` to
 reproduce another existing service. Use `--claude-provider-model` /
 `--codex-provider-model` when it allows a different model. Those choices are recorded in `versions.json`.
-By default, no service is created or modified. A missing service, permission, or OAuth token
+No service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
 
-The two fresh `--provider` setup journeys can get or create named MPS fixtures as part of test
-setup. Pass `--mps-fixture-schema ug_e2e.provider` in the integration workspace. The fixtures
-reuse existing Anthropic and OpenAI services after validating their provider types,
-all-targets setting, and declared model metadata, or create them with literal dummy provider
-keys if absent. The Anthropic fixture allows all provider models; the OpenAI fixture allows only
-its declared target. The schema must already exist; the MPS resources remain for later runs.
-These journeys check ug's provider selection and real agent CLI launch; they do not send
-inference requests or claim that the dummy keys can serve model traffic. This option does not
-change the other MPS journeys.
-
-```bash
-python3.12 scripts/run_integration.py \
-  --ug-version checkout --claude-version 2.1.268 --codex-version 0.154.0 \
-  --workspace https://dbc-14e376e8-6541.cloud.databricks.com --profile YOUR_PROFILE \
-  --mps-fixture-schema ug_e2e.provider \
-  -- -k fresh_provider
-```
+The fresh `--provider` journeys use these preprovisioned services to check provider selection
+and real agent CLI launch, without inference. Codex also checks its app-server model catalog.
 
 The tracing journeys are part of their respective Full agent lanes and use the existing
 e2e workspace and bearer. Because that workspace deliberately has no published managed
@@ -459,11 +444,10 @@ provider or parent replacement picker can render the raw gateway ID/display name
 the assertion accepts either numbered-row form. Custom Model Services must
 still appear by their gateway IDs or display names in a numbered picker row;
 startup banners and footer text cannot satisfy discovery assertions. Cases 7–14 send no inference prompts;
-they only configure, list models, and open/close the picker. Separate fresh-state headless
-CUJs complete real file tasks through `--workspace` and `--model-location` when no managed
-config is present. The fresh workspace tasks pin Claude Haiku 4.5 and Codex GPT-5.4 Nano; the
-fresh Claude model-location task also pins Haiku 4.5 to keep inference inexpensive. The two
-fresh `--provider` journeys check setup and launch with dummy MPS credentials, without inference.
+they only configure, list models, and open/close the picker. The two dedicated CUJ7 fresh-state
+cases instead complete real file tasks through `--workspace` and `--model-location`, using
+`ug_e2e.models.claude_haiku` and `ug_e2e.models.gpt_luna`. The two fresh `--provider`
+journeys check setup and launch with existing services, without inference.
 
 There are **80 live cases** (including 14 marked TUI journeys) and **7 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case. One
@@ -618,13 +602,17 @@ Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workf
 uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
 cannot receive those secrets.
 
-CUJ7's configured Claude picker and Codex app-server discovery cases live in
-`tests/e2e_cuj/test_ug_cuj7_model_discovery.py`. The existing required `dedicated-cuj`
-job runs them with the other CUJs, using `UG_CUJ7_WORKSPACE` and the shared
-`UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` credentials. The workspace must
-publish no CodingAgentConfig and expose discoverable `system.ai` models. Both
-cases reuse the CUJ session/terminal helpers and check that the workspace remains
-unmanaged after the test; they never change remote configuration.
+CUJ7's four cases live in `tests/e2e_cuj/test_ug_cuj7_model_discovery.py`: configured
+Claude picker and Codex app-server discovery, plus fresh Claude/Codex model-location file
+tasks. The class pins `WORKSPACE_URL` to
+`https://dbc-14e376e8-6541.cloud.databricks.com`; the required `dedicated-cuj` job uses
+the shared `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` credentials, not a workspace
+secret. The workspace must publish no `CodingAgentConfig`, expose discoverable `system.ai`
+models, and retain the existing models `ug_e2e.models.claude_haiku` and
+`ug_e2e.models.gpt_luna`; the shared service principal needs read/use privileges on both.
+All four cases reuse the CUJ
+session/terminal helpers and check that the workspace remains unmanaged; they never
+change remote configuration.
 
 The workspace check requires the secret to match
 `https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash
