@@ -715,6 +715,11 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
 
 
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"
+_CODEX_MCP_AUTH_ENV_VARS = [
+    "DATABRICKS_BEARER",
+    "DATABRICKS_BEARER_COMMAND",
+    "DATABRICKS_CONFIG_FILE",
+]
 
 
 def managed_mcp_uses_managed_file() -> bool:
@@ -729,7 +734,11 @@ def managed_mcp_uses_managed_file() -> bool:
 
 def managed_mcp_entry(argv: list[str]) -> dict:
     """A ``[mcp_servers.<name>]`` stdio entry from the ``ug mcp-proxy`` argv (same as user scope)."""
-    return {"command": argv[0], "args": list(argv[1:])}
+    return {
+        "command": argv[0],
+        "args": list(argv[1:]),
+        "env_vars": list(_CODEX_MCP_AUTH_ENV_VARS),
+    }
 
 
 def managed_mcp_http_entry(url: str, client_id: str) -> dict:

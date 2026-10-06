@@ -6,8 +6,8 @@ It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
 Its Claude/Codex evidence helpers keep scenario-specific assertions separate from shared mechanics.
 Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
 is read-only and checked for changes at teardown; concurrent readers need no reservation.
-The smart-routing CUJ's four sessions cover routing and explicit-model bypass, not
-routing-disabled behavior.
+CUJ2 adds three separately collected cases for exact MPS/MCP configuration, Codex inference,
+and Claude inference.
 
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,

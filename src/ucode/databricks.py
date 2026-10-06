@@ -2405,7 +2405,7 @@ def list_model_provider_services(
             # reach the next.
             return [dict(service) for service in cached], None
 
-    hostname = workspace_hostname(workspace)
+    origin = normalize_workspace_url(workspace)
     services: list[dict] = []
     page_token: str | None = None
     seen_tokens: set[str] = set()
@@ -2416,9 +2416,7 @@ def list_model_provider_services(
             params["parent"] = f"schemas/{parent}"
         if page_token:
             params["page_token"] = page_token
-        url = (
-            f"https://{hostname}/api/2.1/unity-catalog/model-provider-services?{urlencode(params)}"
-        )
+        url = f"{origin}/api/2.1/unity-catalog/model-provider-services?{urlencode(params)}"
         payload, reason = _http_get_json(url, token, timeout=30)
         if payload is None:
             # Surface the failure only if we have nothing yet; a mid-pagination blip still
@@ -2491,8 +2489,8 @@ def get_model_provider_service(
     server-side filter) makes a service that plainly exists look absent. Addressing it directly
     removes that whole class of false negative.
     """
-    hostname = workspace_hostname(workspace)
-    url = f"https://{hostname}/api/2.1/unity-catalog/model-provider-services/{service_name}"
+    origin = normalize_workspace_url(workspace)
+    url = f"{origin}/api/2.1/unity-catalog/model-provider-services/{service_name}"
     payload, reason = _http_get_json(url, token, timeout=30)
     if payload is None:
         return None, reason
@@ -3000,7 +2998,7 @@ def _get_anthropic_models_json(
     provider: str | None = None,
     request_headers: dict[str, str] | None = None,
 ) -> tuple[dict | list | None, str | None]:
-    hostname = workspace_hostname(workspace)
+    origin = normalize_workspace_url(workspace)
     mandatory_header = None
     if provider is not None:
         mandatory_header = (MODEL_PROVIDER_SERVICE_HEADER, provider)
@@ -3008,7 +3006,7 @@ def _get_anthropic_models_json(
         mandatory_header = (MODEL_SERVICE_PARENT_SCHEMA_HEADER, parent_schema)
     headers = _merge_model_discovery_headers(request_headers, mandatory_header)
     return _http_get_json(
-        f"https://{hostname}{ANTHROPIC_MODELS_PATH}?limit=1000",
+        f"{origin}{ANTHROPIC_MODELS_PATH}?limit=1000",
         token,
         max_retries=_ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES,
         **({"headers": headers} if headers is not None else {}),
