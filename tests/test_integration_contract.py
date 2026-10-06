@@ -74,22 +74,22 @@ def test_windows_integration_ci_uses_shared_claude_version():
     assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
 
 
-def test_dedicated_cuj_job_selects_credentials_without_serialization():
+def test_dedicated_cuj_job_runs_both_principals_in_one_collection():
     workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
     cuj = workflow.split("\n  dedicated-cuj:\n", 1)[1].split("\n  cujs:\n", 1)[0]
 
     assert "concurrency:" not in cuj
-    assert "test_marker: not cuj5_below_tier" in cuj
-    assert "test_marker: cuj5_below_tier" in cuj
-    assert "client_id_secret: UG_CUJ_SP_CLIENT_ID" in cuj
-    assert "client_secret_secret: UG_CUJ_SP_CLIENT_SECRET" in cuj
-    assert "client_id_secret: UG_BUDGET_CUJ_SP_CLIENT_ID" in cuj
-    assert "client_secret_secret: UG_BUDGET_CUJ_SP_CLIENT_SECRET" in cuj
-    assert "UG_CUJ_SP_CLIENT_ID: ${{ secrets[matrix.client_id_secret] }}" in cuj
-    assert "UG_CUJ_SP_CLIENT_SECRET: ${{ secrets[matrix.client_secret_secret] }}" in cuj
-    assert 'tests/e2e_cuj -v -m "$TEST_MARKER"' in cuj
-    assert "TEST_MARKER: ${{ matrix.test_marker }}" in cuj
-    assert "name: ${{ matrix.artifact_name }}" in cuj
+    assert "matrix:" not in cuj
+    for key in (
+        "UG_CUJ_SP_CLIENT_ID",
+        "UG_CUJ_SP_CLIENT_SECRET",
+        "UG_BUDGET_CUJ_SP_CLIENT_ID",
+        "UG_BUDGET_CUJ_SP_CLIENT_SECRET",
+    ):
+        assert f"{key}: ${{{{ secrets.{key} }}}}" in cuj
+    assert "tests/e2e_cuj -v" in cuj
+    assert "TEST_MARKER" not in cuj
+    assert "name: integration-e2e-cuj" in cuj
 
 
 @pytest.mark.parametrize(

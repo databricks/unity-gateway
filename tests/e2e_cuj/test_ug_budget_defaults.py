@@ -14,14 +14,18 @@ from .helpers.constants import CLAUDE, CODEX, CodingAgent
 pytestmark = [pytest.mark.cuj, pytest.mark.tui]
 
 
-class TestCujBudgetDefaults(BaseCujTest):
+class _BudgetDefaultsBase(BaseCujTest):
     WORKSPACE_URL = "https://dbc-497adeef-62c0.cloud.databricks.com"
     BUDGET_ID = "25c4ce5c-fcd6-4d00-8266-69030cc1a236"
     SONNET_MODEL = "system.ai.claude-sonnet-4-6"
     SOL_MODEL = "system.ai.gpt-5-6-sol"
     LUNA_MODEL = "system.ai.gpt-5-6-luna"
 
-    @pytest.mark.cuj5_below_tier
+
+class TestCujBudgetDefaultsBelowTier(_BudgetDefaultsBase):
+    CLIENT_ID_ENV = "UG_BUDGET_CUJ_SP_CLIENT_ID"
+    CLIENT_SECRET_ENV = "UG_BUDGET_CUJ_SP_CLIENT_SECRET"
+
     def test_bare_ug_uses_claude_default_below_budget_tier(self, cuj):
         """Scenario: launch bare ``ug`` as a fresh principal below the fixed 1% tier.
 
@@ -90,6 +94,8 @@ class TestCujBudgetDefaults(BaseCujTest):
             )
             tui.exit_normally()
 
+
+class TestCujBudgetDefaults(_BudgetDefaultsBase):
     def test_bare_ug_shows_luna_recommendation_and_starts_codex(self, cuj):
         """Scenario: launch bare ``ug`` with the fixed 1% Luna budget tier active.
 

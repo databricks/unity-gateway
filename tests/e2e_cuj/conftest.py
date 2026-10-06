@@ -45,7 +45,24 @@ def cuj(request, setup_workspace, tmp_path_factory):
                 try:
                     yield session, workspace, recorder
                 finally:
-                    workspace.assert_unchanged(published)
+                    try:
+                        workspace.assert_unchanged(published)
+                    finally:
+                        # A TUI launch can reconcile machine-wide settings. Restore them through
+                        # the public interactive command before the next class starts.
+                        if any(
+                            (session.home / ".ucode" / name).is_file()
+                            for name in ("state.json", "managed-backups/manifest.json")
+                        ):
+                            from tests.integration.utils.terminal import TerminalProcess
+
+                            with TerminalProcess(
+                                session,
+                                "ug",
+                                [str(session.binary), "revert"],
+                                "cleanup-revert",
+                            ) as terminal:
+                                terminal.finish()
             except DatabricksError as error:
                 # Server messages may echo credentials; retain only the SDK error type.
                 raise RuntimeError(f"Workspace API failed: {type(error).__name__}") from None

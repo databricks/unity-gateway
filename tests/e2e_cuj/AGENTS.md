@@ -3,6 +3,8 @@
 Each CUJ owns a separate workspace. Subclass `BaseCujTest` from `base.py` and set
 `WORKSPACE_URL`. Setup provides `self.workspace`, a Databricks SDK client using
 `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET` with OAuth M2M authentication.
+A CUJ that needs another identity overrides `CLIENT_ID_ENV` and `CLIENT_SECRET_ENV`
+with its credential environment-variable names.
 All workspace configurations are READ ONLY. Never create, publish, update, delete,
 or restore workspace configuration, including during setup or teardown. Validate
 the preconfigured workspace and fail on a mismatch; never repair it. Concurrent
@@ -10,13 +12,11 @@ runs may read the same CUJ workspace. Do not add reservations or remote lock fil
 Keep local homes, task files, and artifacts isolated per run. No stubbed configuration.
 Use `CLAUDE` / `CODEX` from `helpers/constants.py`; reject unsupported agents explicitly.
 
-The budget-default CUJ uses two marker-selected runs against the fixed tier with
-`spending_percentage=0.01` (1%). The shared-principal run uses
-`UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET` with `-m 'not cuj5_below_tier'`;
-the below-tier run uses `UG_BUDGET_CUJ_SP_CLIENT_ID` and
-`UG_BUDGET_CUJ_SP_CLIENT_SECRET` with `-m cuj5_below_tier`. CI maps the selected
-identity into the standard
-`UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` fixture variables. Both cases
+The budget-default CUJ runs both cases in the shared `E2E CUJs` job against the fixed
+`spending_percentage=0.01` (1%) tier. The above-tier class uses the standard
+`UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET` credentials; the below-tier class
+selects `UG_BUDGET_CUJ_SP_CLIENT_ID` and `UG_BUDGET_CUJ_SP_CLIENT_SECRET`.
+Each class gets its own SDK client, local home, and artifacts. Both cases
 read the workspace and budget recommendation; below-tier bare `ug` selects
 Claude/Sonnet, while above-tier read-only `ug usage` agrees with backend spend,
 threshold, and percentage, the launch panel displays a Codex/Luna recommendation,
@@ -62,10 +62,8 @@ Use a clean disposable POSIX runner without existing machine-wide agent settings
 Install the intended versions of `ug`, `claude`, `codex`, and `databricks` on PATH.
 The terminal helpers also require `pexpect==4.9.0` and `pyte==0.8.2`:
 `uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v`.
-Append `-m 'not cuj5_below_tier'` for the shared-principal run or
-`-m cuj5_below_tier` for the dedicated low-spend run, after setting the standard
-credential variables to the selected identity. Collection with `--collect-only`
-does not authenticate or contact a workspace. Only the short-lived bearer is
+Set both credential pairs to run CUJ5 together with the other CUJs. Collection with
+`--collect-only` does not authenticate or contact a workspace. Only the short-lived bearer is
 forwarded to agent processes, never the SP secret.
 
 Artifacts are written beneath pytest's per-scenario temporary directory, printed during setup.

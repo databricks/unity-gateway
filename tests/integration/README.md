@@ -26,23 +26,20 @@ The budget usage and model recommendation/default tests live in
 [`../e2e_cuj/test_ug_budget_defaults.py`](../e2e_cuj/test_ug_budget_defaults.py),
 outside this existing-workspace integration suite. The tests read their dedicated
 workspace's published budget and model identifiers. The fixed tier has
-`spending_percentage=0.01` (1%). The `dedicated-cuj` workflow runs the suite
-in two matrix entries on isolated runners: the above-tier case uses the shared
-`UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET` secrets, while the below-tier
-case uses `UG_BUDGET_CUJ_SP_CLIENT_ID` and `UG_BUDGET_CUJ_SP_CLIENT_SECRET`.
-Each entry maps its selected identity into the fixture's standard
-`UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` environment variables.
+`spending_percentage=0.01` (1%). The shared `E2E CUJs` job runs all tests in one
+pytest collection. The above-tier case uses `UG_CUJ_SP_CLIENT_ID` and
+`UG_CUJ_SP_CLIENT_SECRET`; the below-tier class selects `UG_BUDGET_CUJ_SP_CLIENT_ID`
+and `UG_BUDGET_CUJ_SP_CLIENT_SECRET`. Each class gets its own authenticated SDK
+client, local home, and artifacts.
 
-Run the above-tier case directly from a clean POSIX runner:
+Run the suite directly from a clean POSIX runner with both credential pairs set:
 
 ```bash
 UG_CUJ_SP_CLIENT_ID=... UG_CUJ_SP_CLIENT_SECRET=... \
+UG_BUDGET_CUJ_SP_CLIENT_ID=... UG_BUDGET_CUJ_SP_CLIENT_SECRET=... \
 uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
-  pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v -m 'not cuj5_below_tier'
+  pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v
 ```
-
-For the below-tier case, set those standard environment variables to the dedicated
-low-spend principal's credentials and use `-m cuj5_below_tier` with the same command.
 
 The workspace client reads the published config and real recommendation using
 OAuth M2M. The above-tier case checks read-only `ug usage` spend, threshold, and
@@ -51,8 +48,7 @@ It then launches bare `ug`, verifies the launch panel displays the backend's
 Codex/Luna recommendation, and confirms the native Codex TUI starts and exits
 normally. The below-tier case launches bare `ug` and
 verifies Claude selects Sonnet. Neither case submits an inference task or writes
-the budget; the dedicated workspace configuration remains read-only. Independent
-matrix entries can overlap because their local homes and artifacts are isolated.
+the budget; the dedicated workspace configuration remains read-only.
 The published config verifies Codex's managed Sol default, and the native Codex TUI verifies
 the above-tier Codex launch and its displayed Luna recommendation. Applying Luna over Sol is
 outside this coverage.
@@ -356,8 +352,7 @@ real model tasks.
 
 There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
 checks** with Claude and Codex. The separate dedicated-workspace suite adds two
-budget recommendation/default cases run by the `dedicated-cuj` matrix with separate credentials
-and markers.
+budget recommendation/default cases run in the shared `E2E CUJs` job with separate credentials.
 Selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
@@ -527,12 +522,11 @@ Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
 two agent jobs). Full runs all 62 live cases, including those smoke cases, in two
-disjoint agent lanes. The dedicated-cuj matrix runs the above-tier and below-tier
-budget cases on separate runners with both agent binaries installed. Its entries
-select `not cuj5_below_tier` with the shared credentials and `cuj5_below_tier`
-with the dedicated low-spend credentials; each runner keeps its own home and
-pytest artifacts. The workspace and budget configuration remain read-only, so
-these entries need no remote reservation or cross-run lock. The parent workflows
+disjoint agent lanes. The `E2E CUJs` job runs both budget cases alongside all other
+dedicated-workspace CUJs. Each class selects its credentials and gets its own home
+and artifacts; `ug revert` cleans up local agent configuration between classes.
+Workspace and budget configuration remain read-only, with no remote reservation or
+cross-run lock. The parent workflows
 retain their normal cancellation of superseded runs.
 
 The full-suite agent lanes are:

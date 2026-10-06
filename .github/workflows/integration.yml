@@ -422,30 +422,17 @@ jobs:
             ${{ runner.temp }}/ug-integration/wheels/
 
   dedicated-cuj:
-    name: ${{ matrix.name }}
+    name: E2E CUJs
     # CUJ definitions: https://docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0/edit?usp=drive_web&ouid=117446678071138243519
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-22.04
     timeout-minutes: 70
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: "Dedicated CUJs · shared principal"
-            test_marker: not cuj5_below_tier
-            client_id_secret: UG_CUJ_SP_CLIENT_ID
-            client_secret_secret: UG_CUJ_SP_CLIENT_SECRET
-            artifact_name: integration-e2e-cuj
-          - name: "CUJ5: below-tier default · Claude"
-            test_marker: cuj5_below_tier
-            client_id_secret: UG_BUDGET_CUJ_SP_CLIENT_ID
-            client_secret_secret: UG_BUDGET_CUJ_SP_CLIENT_SECRET
-            artifact_name: integration-cuj5-below-tier
     env:
       UV_INDEX_URL: https://pypi.org/simple
-      UG_CUJ_SP_CLIENT_ID: ${{ secrets[matrix.client_id_secret] }}
-      UG_CUJ_SP_CLIENT_SECRET: ${{ secrets[matrix.client_secret_secret] }}
-      TEST_MARKER: ${{ matrix.test_marker }}
+      UG_CUJ_SP_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
+      UG_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
+      UG_BUDGET_CUJ_SP_CLIENT_ID: ${{ secrets.UG_BUDGET_CUJ_SP_CLIENT_ID }}
+      UG_BUDGET_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_BUDGET_CUJ_SP_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
@@ -471,13 +458,13 @@ jobs:
             exit 0
           fi
           uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
-            pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v -m "$TEST_MARKER" \
+            pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v \
             --basetemp "$RUNNER_TEMP/ug-cuj" --junitxml "$RUNNER_TEMP/ug-cuj-results.xml"
       - name: Upload CUJ evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: ${{ matrix.artifact_name }}
+          name: integration-e2e-cuj
           path: |
             ${{ runner.temp }}/ug-cuj/**/artifacts/
             ${{ runner.temp }}/ug-cuj-results.xml

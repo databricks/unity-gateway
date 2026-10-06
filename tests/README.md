@@ -161,7 +161,7 @@ All tests live directly in `integration/`; shared mechanics live in `utils/`.
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
 | `test_ug_configure_managed_claude`, `test_ug_configure_managed_codex` | Configure against a workspace that publishes a managed CodingAgentConfig | No agent selector; each agent's generated config exposes exactly the admin's static model_services; real gateway prompt on launch. The Codex case also checks the shared catalog pointer, restart guidance, and a fresh bare app-server's visible model list |
-| `e2e_cuj/test_ug_budget_defaults.py` | Launch bare `ug` with separate low-spend and above-tier principals against the fixed 1% tier (`spending_percentage=0.01`) | Low-spend principal selects the default Claude/Sonnet; above-tier principal receives and displays a Codex/Luna recommendation, starts native Codex, and read-only `ug usage` agrees with backend spend, threshold, and percentage. No budget writes or inference tasks. Run in the `dedicated-cuj` workflow with the credential-specific marker documented in `integration/README.md`. |
+| `e2e_cuj/test_ug_budget_defaults.py` | Launch bare `ug` with separate low-spend and above-tier principals against the fixed 1% tier (`spending_percentage=0.01`) | Low-spend principal selects the default Claude/Sonnet; above-tier principal receives and displays a Codex/Luna recommendation, starts native Codex, and read-only `ug usage` agrees with backend spend, threshold, and percentage. No budget writes or inference tasks. Run in the shared `E2E CUJs` job with both credential pairs documented in `integration/README.md`. |
 | `test_case_01_*` | Launch managed Claude without defaults after configure and from fresh state | Claude receives the admin MPS header; its gateway cache and replacement picker match the independently fetched provider model IDs; catalog labels are preserved and a model appears in a numbered picker row |
 | `test_case_03_*`, `test_case_05_*` | Pass a provider or model-location override to managed Claude after configure and from fresh state | ug rejects the override before Claude starts and preserves agent-owned state |
 | `test_case_02_*` | Launch managed Codex after configure and from fresh state | The scoped and stable catalogs, ug-launched app server, and fresh bare app server match the independently fetched admin MPS model IDs. The configured case uses real `ug revert` to remove ug's shared pointer and stable file while preserving a user setting |
@@ -191,8 +191,8 @@ The dedicated-workspace CUJ suite adds two cases around the fixed 1% Luna recomm
 (`spending_percentage=0.01`):
 default Claude/Sonnet selection with a low-spend principal, and usage plus Codex/Luna
 recommendation display and native Codex startup with the above-tier principal. It runs outside the 62-case integration suite
-in the `dedicated-cuj` workflow's two matrix entries: the shared principal selects
-`not cuj5_below_tier`, while the low-spend principal selects `cuj5_below_tier`.
+in the shared `E2E CUJs` job. Both cases are collected together; separate test classes
+select the shared and low-spend credentials without changing process-wide authentication.
 Both entries read the preconfigured workspace and make no budget writes or inference
 requests. It does not cover spend boundaries, selection between multiple tiers, or
 explicit Claude overrides. Generated-file cleanup and strict app-server stdout
@@ -240,13 +240,11 @@ journeys for both agents, in two parallel jobs. After smoke finishes, the full
 suite runs all 62 live cases across two parallel agent jobs: one Claude VM and one
 Codex VM, each running its configure, headless, and commands/lifecycle cases
 serially. Each agent is installed once for the full suite, and no two full jobs
-for the same agent overlap within a run. The dedicated budget cases run in the
-`dedicated-cuj` matrix on separate runners with both agent binaries installed.
-They read shared workspace configuration without changing the budget, so the matrix
-needs no concurrency lock. The above-tier entry selects `not cuj5_below_tier` and
-uses `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET`; the below-tier entry selects
-`cuj5_below_tier` and maps `UG_BUDGET_CUJ_SP_CLIENT_ID` /
-`UG_BUDGET_CUJ_SP_CLIENT_SECRET` into the same fixture environment variables.
+for the same agent overlap within a run. The dedicated budget cases run together
+with all dedicated-workspace CUJs in the `E2E CUJs` job with both agent binaries
+installed. Each class selects the shared or low-spend credentials and gets its own
+local home and artifacts. `ug revert` cleans up local agent configuration between
+classes. Workspace and budget configuration remain read-only, with no cross-run lock.
 CI starts integration alongside unit tests and the existing e2e shards. Integration
 does not wait for agent e2e or get skipped when an agent shard fails. These suites
 share workspace capacity; overlapping their requests can still encounter rate limits.
