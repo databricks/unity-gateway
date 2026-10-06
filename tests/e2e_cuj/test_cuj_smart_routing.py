@@ -37,13 +37,13 @@ class SessionCase:
 
 
 @dataclass(frozen=True)
-class SmartRoutingScenario:
+class SmartRoutingSessionResults:
     published: dict
     supported: dict[str, set[str]]
     defaults: dict[str, str]
     overrides: dict[str, str]
-    routed: dict[str, SessionCase]
-    explicit: dict[str, SessionCase]
+    no_model_override: dict[str, SessionCase]
+    with_model_override: dict[str, SessionCase]
 
 
 def _run_session(session, recorder, agent, task, launch_args):
@@ -84,7 +84,7 @@ def _assert_published_config_matches_expectations(published):
     return agent_configs
 
 
-def run_smart_routing_journeys(cuj) -> SmartRoutingScenario:
+def run_smart_routing_journeys(cuj) -> SmartRoutingSessionResults:
     """Run each live journey and collect the evidence used by the tests."""
     session, workspace, recorder = cuj
     published = workspace.config()
@@ -102,7 +102,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingScenario:
         ["configure", "--disable-databricks-ai-tools"],
     )
 
-    routed, explicit = {}, {}
+    no_model_override, with_model_override = {}, {}
     for agent in AGENTS:
         task = FileTask(session)
         task.prompt += " Do not delegate."
@@ -118,7 +118,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingScenario:
             for request in requests
             if request.method == "POST" and request.path == INFERENCE_PATHS[agent]
         )
-        routed[agent] = SessionCase(
+        no_model_override[agent] = SessionCase(
             agent=agent,
             launch_args=(agent,),
             task=task,
@@ -139,7 +139,7 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingScenario:
             for request in requests
             if request.method == "POST" and request.path == INFERENCE_PATHS[agent]
         )
-        explicit[agent] = SessionCase(
+        with_model_override[agent] = SessionCase(
             agent=agent,
             launch_args=launch_args,
             task=task,
@@ -149,13 +149,13 @@ def run_smart_routing_journeys(cuj) -> SmartRoutingScenario:
             inference_response=recorder.response_for(inference_request),
         )
 
-    return SmartRoutingScenario(
+    return SmartRoutingSessionResults(
         published=published,
         supported=supported,
         defaults=defaults,
         overrides=overrides,
-        routed=routed,
-        explicit=explicit,
+        no_model_override=no_model_override,
+        with_model_override=with_model_override,
     )
 
 
@@ -172,7 +172,7 @@ class TestCujSmartRouting(BaseCujTest):
     def test_agent_completes_real_first_prompt_file_task_without_model_override(
         self, completed_smart_routing_runs, agent
     ):
-        case = completed_smart_routing_runs.routed[agent]
+        case = completed_smart_routing_runs.no_model_override[agent]
         assert case.launch_args == (agent,)
         assert case.task.value not in case.task.prompt
         assert case.observation.turn is not None
@@ -182,7 +182,7 @@ class TestCujSmartRouting(BaseCujTest):
     def test_router_decision_exists_and_is_correlated_to_the_prompt(
         self, completed_smart_routing_runs, agent
     ):
-        case = completed_smart_routing_runs.routed[agent]
+        case = completed_smart_routing_runs.no_model_override[agent]
         decisions = [request for request in case.requests if request.path == ROUTING_PATH]
         assert decisions == [case.route_request]
         assert case.route_request.payload["task"]["prompt"] == case.task.prompt
@@ -193,7 +193,7 @@ class TestCujSmartRouting(BaseCujTest):
     def test_selected_model_is_used_for_inference_and_the_task_completes(
         self, completed_smart_routing_runs, agent
     ):
-        case = completed_smart_routing_runs.routed[agent]
+        case = completed_smart_routing_runs.no_model_override[agent]
         inference_model = case.inference_request.payload["model"]
         if agent == CLAUDE:
             assert inference_model == case.selected_model
@@ -211,7 +211,7 @@ class TestCujSmartRouting(BaseCujTest):
     def test_selected_model_is_a_supported_system_ai_target_in_the_live_router_contract(
         self, completed_smart_routing_runs, agent
     ):
-        case = completed_smart_routing_runs.routed[agent]
+        case = completed_smart_routing_runs.no_model_override[agent]
         live_supported = {
             canonical_model(model) for model in completed_smart_routing_runs.supported[agent]
         }
@@ -226,7 +226,7 @@ class TestCujSmartRouting(BaseCujTest):
         self, completed_smart_routing_runs
     ):
         # There is deliberately no expected winner and no cross-agent comparison.
-        for agent, case in completed_smart_routing_runs.routed.items():
+        for agent, case in completed_smart_routing_runs.no_model_override.items():
             response_model = canonical_model(
                 case.route_response.payload["route_selection"][0]["route_option"]["model"]
             )
@@ -241,16 +241,16 @@ class TestCujSmartRouting(BaseCujTest):
             pytest.param(
                 CLAUDE,
                 marks=pytest.mark.skip(
-                    reason="TODO: Fix explicit Claude model precedence over managed defaults"
+                    reason="TODO: Fix Claude model override precedence over managed defaults"
                 ),
             ),
             CODEX,
         ],
     )
-    def test_explicit_supported_model_bypasses_router_and_is_used_for_inference(
+    def test_with_model_override_bypasses_router_and_uses_requested_model(
         self, completed_smart_routing_runs, agent
     ):
-        case = completed_smart_routing_runs.explicit[agent]
+        case = completed_smart_routing_runs.with_model_override[agent]
         expected = completed_smart_routing_runs.overrides[agent]
         assert case.launch_args == (agent, "--model", expected)
         assert not [request for request in case.requests if request.path == ROUTING_PATH]
