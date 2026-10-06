@@ -42,6 +42,10 @@ These are component checks, not live Windows coverage for every agent.
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
+Custom request headers have component coverage in `test_cli.py`, `test_agent_codex.py`,
+and `test_codex_smart_routing_v2.py`: parsing, launch-only values, and administrator
+header collisions with or without an OS-managed file. Live custom-header journeys are not covered.
+
 `test_mcp_web_search.py` and `test_agent_claude.py` cover custom OAuth search
 registration, stale registration repair, SDK cache reuse/refresh, CLI profile
 selection, and errors without browser consent through the MCP handler. These

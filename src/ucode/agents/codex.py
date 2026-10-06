@@ -1144,6 +1144,12 @@ def launch(
     options: LaunchOptions,
 ) -> None:
     custom_headers = dict(options.custom_headers)
+    blocked_names = {name.casefold() for name in custom_headers} & {
+        name.strip().casefold() for name in (state.get("codex_http_headers") or {})
+    }
+    if blocked_names:
+        names = ", ".join(sorted(blocked_names))
+        raise RuntimeError(f"--header cannot override managed Codex header(s): {names}.")
     if options.launch_smart_routing:
         _launch_smart_routing(state, tool_args, custom_headers=custom_headers)
         return
