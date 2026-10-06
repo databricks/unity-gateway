@@ -1694,15 +1694,8 @@ def _reconcile_managed_settings(
     managed_before = copy.deepcopy(existing)
     desired_settings = compose(existing)
     _preserve_permission_denies(managed_before, desired_settings)
-    if not managed_writes_allowed():
-        conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
-        if conflicts:
-            raise RuntimeError(
-                "Claude Code configuration cannot be applied non-interactively because "
-                f"OS-managed settings at {path} override ucode values: {', '.join(conflicts)}. "
-                "Run `ucode configure --agent claude` from an interactive terminal or contact "
-                "your administrator."
-            )
+    conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
+    if not managed_writes_allowed() and not conflicts:
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
     try:
@@ -1715,7 +1708,6 @@ def _reconcile_managed_settings(
             parser=_parse_managed_settings,
         )
     except ManagedFileWriteUnavailable:
-        conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
         if conflicts:
             raise
         print_warning(
