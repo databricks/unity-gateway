@@ -320,9 +320,7 @@ class AgentTerminal(TerminalProcess):
         self.actions.append({"reason": "model-picker-visible", "screen": screen})
         self.send("\x1b", "close the model picker")
         self.wait_for(
-            lambda text: (
-                not model_visible(text) if model_visible is not None else "Select model" not in text
-            ),
+            lambda text: "Select model" not in text,
             "the prompt after closing the model picker",
         )
         return screen
