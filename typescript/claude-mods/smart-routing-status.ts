@@ -1,5 +1,7 @@
 import type { Register } from 'claude-code'
 
+import { savingsSegments } from './smart-routing-savings'
+
 type On = Parameters<Register>[0]
 
 // The status band concern of ug's smart-routing UI mod (composed by register.ts).
@@ -67,11 +69,13 @@ export const registerStatusBand = (on: On): void => {
           children: ['— ' + (firstPrompt ? 'routing first prompt + subagents' : 'routing subagents')],
         })
       : Text({ dimColor: true, children: ["— Reenable with '/smart-router on'"] })
+    // Python-priced savings/plugin strings; empty when off or nothing to show.
+    const extras = enabled ? savingsSegments().map(s => Text({ dimColor: true, children: ['· ' + s] })) : []
 
     const line = Box({
       flexDirection: 'row',
       columnGap: 1,
-      children: [Text({ bold: true, children: [BANNER] }), pill, trailer],
+      children: [Text({ bold: true, children: [BANNER] }), pill, trailer, ...extras],
     })
     const children = theirs ? [line, theirs] : [line]
     return Box({ flexDirection: 'column', children })
