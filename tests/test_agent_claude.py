@@ -1250,7 +1250,7 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(claude, "read_json_safe", lambda _path: settings)
 
         claude._reject_custom_header_collisions(
-            {"x-development-route": ""}, {"x-development-route": ""}
+            {"x-development-route": ""}, {"x-development-route": {""}}
         )
 
     def test_rejects_new_admin_header_before_writing_settings(self, monkeypatch):
@@ -1308,6 +1308,70 @@ class TestWriteToolConfigManagedSettings:
         for headers in (private_headers, managed_headers):
             assert "X-Development-Route: old" not in headers
             assert ("x-development-route: admin" in headers) is bool(remaining)
+        assert claude.CLAUDE_CUSTOM_HEADERS_STATE_KEY not in global_state
+
+    def test_partial_header_write_journals_old_and_new_values(self, monkeypatch):
+        monkeypatch.setattr(
+            claude, "refresh_managed_config", lambda *a, **kw: _managed_config_result(None)
+        )
+        private_writes: list = []
+        managed_writes: list = []
+        existing_headers = {"env": {"ANTHROPIC_CUSTOM_HEADERS": "X-User: keep"}}
+        existing_by_path = {
+            str(claude.CLAUDE_SETTINGS_PATH): existing_headers,
+            str(FAKE_MANAGED_PATH): existing_headers,
+        }
+        global_state: dict = {}
+        self._patch(
+            monkeypatch,
+            private_writes,
+            managed_writes,
+            existing_by_path,
+            global_state,
+        )
+        state = {"workspace": WS, "codex_models": []}
+
+        claude.write_tool_config(
+            state,
+            "databricks-claude-sonnet-4",
+            custom_headers={"X-Development-Route": "route-a"},
+        )
+        existing_by_path[str(claude.CLAUDE_SETTINGS_PATH)] = private_writes[-1][1]
+        existing_by_path[str(FAKE_MANAGED_PATH)] = json.loads(managed_writes[-1][1])
+        private_writes.clear()
+        managed_writes.clear()
+
+        def fail_managed_write(*args, **kwargs):
+            raise RuntimeError("managed settings failure")
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", fail_managed_write)
+        with pytest.raises(RuntimeError, match="managed settings failure"):
+            claude.write_tool_config(
+                state,
+                "databricks-claude-sonnet-4",
+                custom_headers={"X-Development-Route": "route-b"},
+            )
+
+        assert global_state[claude.CLAUDE_CUSTOM_HEADERS_STATE_KEY] == {
+            "x-development-route": ["route-a", "route-b"]
+        }
+        existing_by_path[str(claude.CLAUDE_SETTINGS_PATH)] = private_writes[-1][1]
+        private_writes.clear()
+        managed_writes.clear()
+
+        def write_managed(path, text, **kwargs):
+            managed_writes.append((str(path), text))
+            return "written"
+
+        monkeypatch.setattr(claude, "reconcile_managed_file", write_managed)
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        private_headers = private_writes[0][1]["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        managed_headers = json.loads(managed_writes[0][1])["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+        for headers in (private_headers, managed_headers):
+            assert "X-User: keep" in headers
+            assert "route-a" not in headers
+            assert "route-b" not in headers
         assert claude.CLAUDE_CUSTOM_HEADERS_STATE_KEY not in global_state
 
     @pytest.mark.parametrize("source", ["private", "managed"])

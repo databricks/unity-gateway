@@ -1268,20 +1268,27 @@ def _custom_headers_from_settings(settings: dict) -> dict[str, set[str]]:
     return headers
 
 
-def _recorded_custom_headers() -> dict[str, str]:
+def _recorded_custom_headers() -> dict[str, set[str]]:
     recorded = load_global_state().get(CLAUDE_CUSTOM_HEADERS_STATE_KEY)
     if not isinstance(recorded, dict):
         return {}
-    return {
-        name.casefold(): value
-        for name, value in recorded.items()
-        if isinstance(name, str) and isinstance(value, str)
-    }
+    normalized: dict[str, set[str]] = {}
+    for name, values in recorded.items():
+        if not isinstance(name, str):
+            continue
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, list):
+            continue
+        strings = {value for value in values if isinstance(value, str)}
+        if strings:
+            normalized[name.casefold()] = strings
+    return normalized
 
 
 def _reject_custom_header_collisions(
     custom_headers: dict[str, str],
-    previous_custom_headers: dict[str, str],
+    previous_custom_headers: dict[str, set[str]],
     managed_http_headers: dict[str, str] | None = None,
 ) -> None:
     if not custom_headers:
@@ -1305,10 +1312,7 @@ def _reject_custom_header_collisions(
     for settings in settings_sources:
         existing = _custom_headers_from_settings(settings)
         for name in custom_headers:
-            previous_value = previous_custom_headers.get(name)
-            if existing.get(name, set()) - (
-                {previous_value} if previous_value is not None else set()
-            ):
+            if existing.get(name, set()) - previous_custom_headers.get(name, set()):
                 conflicts.add(name)
     if conflicts:
         names = ", ".join(sorted(conflicts))
@@ -1340,9 +1344,14 @@ def write_tool_config(
     )
     if previous_custom_headers or current_custom_headers:
         global_state = load_global_state()
-        global_state[CLAUDE_CUSTOM_HEADERS_STATE_KEY] = (
-            previous_custom_headers | current_custom_headers
-        )
+        # Retain old and new values until both settings files finish writing.
+        # This lets cleanup remove either value after a partial write failure.
+        pending_headers = {name: set(values) for name, values in previous_custom_headers.items()}
+        for name, value in current_custom_headers.items():
+            pending_headers.setdefault(name, set()).add(value)
+        global_state[CLAUDE_CUSTOM_HEADERS_STATE_KEY] = {
+            name: sorted(values) for name, values in pending_headers.items()
+        }
         save_global_state(global_state)
     external_search = external_provider_selected()
     # Back up only a file that predates ucode's management of the tool. A
@@ -1620,7 +1629,7 @@ def _merge_anthropic_custom_headers(
     existing: object,
     ucode_headers: str,
     managed_header_names: Collection[str] = CLAUDE_MANAGED_CUSTOM_HEADER_NAMES,
-    removable_header_values: dict[str, str] | None = None,
+    removable_header_values: dict[str, set[str]] | None = None,
 ) -> str:
     """Preserve user headers while replacing the header names managed by ucode.
 
@@ -1663,7 +1672,7 @@ def _merge_anthropic_custom_headers(
         if (
             separator
             and removable_header_values
-            and removable_header_values.get(normalized_name) == _value.strip()
+            and _value.strip() in removable_header_values.get(normalized_name, set())
         ):
             continue
         if line:
