@@ -65,8 +65,12 @@ catalogs. It also checks explicit search-model precedence and preservation of an
 existing Isaac server when no GPT model is available. These component tests mock
 external discovery and the Claude CLI; they do not establish live search coverage.
 
-`test_agent_claude.py` covers OS-managed telemetry ownership and headless configuration. These are
-unit/component regressions, not automated Isaac or live telemetry-export coverage.
+`test_agent_claude.py`, `test_agent_codex.py`, and `test_managed_files.py` cover OS-managed
+telemetry ownership and headless Claude/Codex conflict repair: non-prompting sudo, disconnected
+stdin, denied authorization, repeated drift, backup preservation, and preservation of unrelated
+settings and permission denies. Compatible files remain read-only. These are component regressions
+with privileged writes replaced by temporary-file operations, not automated Isaac, real sudo-policy,
+or live telemetry-export coverage.
 
 Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 `test_managed_setup.py`, `test_databricks.py`, and `test_managed_budget.py`: parsing the
