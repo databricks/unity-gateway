@@ -532,6 +532,33 @@ def _parse_managed_config(text: str) -> dict:
         raise RuntimeError(f"invalid TOML: {exc}") from exc
 
 
+def managed_user_agent() -> str | None:
+    """The User-Agent value in Codex's OS-managed Databricks provider headers, if one is there."""
+    path = codex_managed_config_path()
+    try:
+        text = read_managed_file(path) if path else None
+        doc = _parse_managed_config(text) if text else {}
+    except (RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
+        return None
+    headers = _managed_provider_headers(doc)
+    key = _user_agent_key(headers)
+    value = headers[key] if headers is not None and key is not None else None
+    return value if isinstance(value, str) else None
+
+
+def _managed_provider_headers(doc: dict) -> dict | None:
+    """The Databricks provider's ``http_headers`` table in a Codex config document, if present."""
+    providers = doc.get("model_providers")
+    provider = providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, dict) else None
+    headers = provider.get("http_headers") if isinstance(provider, dict) else None
+    return headers if isinstance(headers, dict) else None
+
+
+def _user_agent_key(headers: dict | None) -> str | None:
+    """The ``User-Agent`` key in ``headers`` under any casing, else None."""
+    return next((key for key in headers or {} if str(key).casefold() == "user-agent"), None)
+
+
 def managed_config_is_current(state: dict) -> bool:
     path = codex_managed_config_path()
     if path is None:
@@ -613,6 +640,11 @@ def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> N
 
 
 MANAGED_MCP_CONFIG_KEY = "mcp_servers"
+_CODEX_MCP_AUTH_ENV_VARS = [
+    "DATABRICKS_BEARER",
+    "DATABRICKS_BEARER_COMMAND",
+    "DATABRICKS_CONFIG_FILE",
+]
 
 
 def managed_mcp_uses_managed_file() -> bool:
@@ -627,7 +659,11 @@ def managed_mcp_uses_managed_file() -> bool:
 
 def managed_mcp_entry(argv: list[str]) -> dict:
     """A ``[mcp_servers.<name>]`` stdio entry from the ``ug mcp-proxy`` argv (same as user scope)."""
-    return {"command": argv[0], "args": list(argv[1:])}
+    return {
+        "command": argv[0],
+        "args": list(argv[1:]),
+        "env_vars": list(_CODEX_MCP_AUTH_ENV_VARS),
+    }
 
 
 def managed_mcp_http_entry(url: str, client_id: str) -> dict:

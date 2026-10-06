@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 from databricks.sdk.errors import DatabricksError
 
+from tests.integration.utils.terminal import TerminalProcess
+
 from .helpers.constants import CLAUDE, CODEX, MANAGED_PATHS
 from .helpers.session import UserSession
 from .helpers.tui_request_recorder import TuiRequestRecorder
@@ -48,14 +50,11 @@ def cuj(request, setup_workspace, tmp_path_factory):
                     try:
                         workspace.assert_unchanged(published)
                     finally:
-                        # A TUI launch can reconcile machine-wide settings. Restore them through
-                        # the public interactive command before the next class starts.
+                        state_dir = session.home / ".ucode"
                         if any(
-                            (session.home / ".ucode" / name).is_file()
+                            (state_dir / name).is_file()
                             for name in ("state.json", "managed-backups/manifest.json")
                         ):
-                            from tests.integration.utils.terminal import TerminalProcess
-
                             with TerminalProcess(
                                 session,
                                 "ug",
@@ -63,6 +62,9 @@ def cuj(request, setup_workspace, tmp_path_factory):
                                 "cleanup-revert",
                             ) as terminal:
                                 terminal.finish()
+                        assert not any(path.exists() for path in MANAGED_PATHS), (
+                            "CUJ teardown left machine-wide agent settings"
+                        )
             except DatabricksError as error:
                 # Server messages may echo credentials; retain only the SDK error type.
                 raise RuntimeError(f"Workspace API failed: {type(error).__name__}") from None
