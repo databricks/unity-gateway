@@ -1035,6 +1035,26 @@ class TestCodexLaunch:
 
         assert "temporary" not in managed_path.read_text(encoding="utf-8")
 
+    @pytest.mark.parametrize("smart_routing", [False, True])
+    def test_custom_header_rejects_admin_header_without_os_config(
+        self, tmp_path, monkeypatch, smart_routing
+    ):
+        launches = self._patch(tmp_path, monkeypatch)
+        original = codex.CODEX_CONFIG_PATH.read_text(encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="cannot override managed Codex header"):
+            codex.launch(
+                {"workspace": WS, "codex_http_headers": {"X-Test": "admin"}},
+                [],
+                options=LaunchOptions(
+                    launch_smart_routing=smart_routing,
+                    custom_headers=(("x-test", "temporary"),),
+                ),
+            )
+
+        assert launches == []
+        assert codex.CODEX_CONFIG_PATH.read_text(encoding="utf-8") == original
+
     @pytest.mark.parametrize("custom_catalog", [None, "/user/isaac-app-model-catalog.json"])
     def test_native_update_detaches_catalog_without_discovery(
         self, tmp_path, monkeypatch, custom_catalog
