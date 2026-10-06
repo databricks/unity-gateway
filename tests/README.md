@@ -131,6 +131,11 @@ that Claude settings and Codex's shell policy carry the interpreter and session 
 These are component checks; they do not establish native skill permission matching or
 PowerShell execution.
 
+`test_orchestrator_config.py` covers the bundled orchestrator's preferences,
+ownership, locking, interrupted-write recovery, and UG catalog precedence. It
+also checks that model resolution refuses delegation outside an enabled
+smart-routing session. These checks do not make model calls or activate hooks.
+
 The portable Windows routing test checks native executable forwarding, generated
 hooks/plugins, caller arguments, and cleanup without Unix imports. It does not
 establish live Windows hook execution or interactive routing.

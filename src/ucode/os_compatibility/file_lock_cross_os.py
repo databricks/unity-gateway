@@ -19,6 +19,7 @@ def _acquire_windows_exclusive_file_lock(
     *,
     locking: Callable[[int, int, int], None],
     lock_mode: int,
+    blocking: bool = True,
 ) -> None:
     while True:
         lock_file.seek(0)
@@ -30,14 +31,16 @@ def _acquire_windows_exclusive_file_lock(
             winerror = getattr(exc, "winerror", None)
             if exc.errno != errno.EACCES or winerror not in (None, _WINDOWS_LOCK_VIOLATION):
                 raise
+            if not blocking:
+                raise BlockingIOError(exc.errno, str(exc)) from exc
             time.sleep(_LOCK_POLL_SECONDS)
 
 
-def acquire_exclusive_file_lock(lock_file: IO[Any]) -> None:
+def acquire_exclusive_file_lock(lock_file: IO[Any], *, blocking: bool = True) -> None:
     if sys.platform != "win32":
         import fcntl
 
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        fcntl.flock(lock_file, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         return
 
     import msvcrt
@@ -46,6 +49,7 @@ def acquire_exclusive_file_lock(lock_file: IO[Any]) -> None:
         lock_file,
         locking=msvcrt.locking,
         lock_mode=msvcrt.LK_NBLCK,
+        blocking=blocking,
     )
 
 
