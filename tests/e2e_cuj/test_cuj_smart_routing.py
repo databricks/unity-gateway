@@ -58,9 +58,8 @@ def _run_session(session, recorder, agent, task, launch_args):
     return evidence.observe(task), recorder.requests_after(checkpoint)
 
 
-@pytest.fixture(scope="class")
-def smart_routing_scenario(cuj):
-    """Pytest's beforeAll equivalent: run all live sessions exactly once."""
+def run_smart_routing_journeys(cuj) -> SmartRoutingScenario:
+    """Run each live journey and collect the evidence used by the tests."""
     session, workspace, recorder = cuj
     published = workspace.config()
     assert published["spec_version"] == 1
@@ -151,14 +150,20 @@ def smart_routing_scenario(cuj):
     )
 
 
+@pytest.fixture(scope="class")
+def completed_smart_routing_runs(cuj):
+    """Run the live journeys once per test class and return their captured evidence."""
+    return run_smart_routing_journeys(cuj)
+
+
 class TestCujSmartRouting(BaseCujTest):
     WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_agent_completes_real_first_prompt_file_task_without_model_override(
-        self, smart_routing_scenario, agent
+        self, completed_smart_routing_runs, agent
     ):
-        case = smart_routing_scenario.routed[agent]
+        case = completed_smart_routing_runs.routed[agent]
         assert case.launch_args == (agent,)
         assert case.task.value not in case.task.prompt
         assert case.observation.turn is not None
@@ -166,9 +171,9 @@ class TestCujSmartRouting(BaseCujTest):
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_router_decision_exists_and_is_correlated_to_the_prompt(
-        self, smart_routing_scenario, agent
+        self, completed_smart_routing_runs, agent
     ):
-        case = smart_routing_scenario.routed[agent]
+        case = completed_smart_routing_runs.routed[agent]
         decisions = [request for request in case.requests if request.path == ROUTING_PATH]
         assert decisions == [case.route_request]
         assert case.route_request.payload["task"]["prompt"] == case.task.prompt
@@ -177,9 +182,9 @@ class TestCujSmartRouting(BaseCujTest):
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_selected_model_is_used_for_inference_and_the_task_completes(
-        self, smart_routing_scenario, agent
+        self, completed_smart_routing_runs, agent
     ):
-        case = smart_routing_scenario.routed[agent]
+        case = completed_smart_routing_runs.routed[agent]
         inference_model = case.inference_request.payload["model"]
         if agent == CLAUDE:
             assert inference_model == case.selected_model
@@ -188,18 +193,18 @@ class TestCujSmartRouting(BaseCujTest):
         assert case.inference_response.status_code == 200
         result = case.observation.assert_applied(
             case.task,
-            smart_routing_scenario.supported[agent],
+            completed_smart_routing_runs.supported[agent],
             expected=case.selected_model,
         )
         assert case.task.value in result["answer"]
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_selected_model_is_a_supported_system_ai_target_in_the_live_router_contract(
-        self, smart_routing_scenario, agent
+        self, completed_smart_routing_runs, agent
     ):
-        case = smart_routing_scenario.routed[agent]
+        case = completed_smart_routing_runs.routed[agent]
         live_supported = {
-            canonical_model(model) for model in smart_routing_scenario.supported[agent]
+            canonical_model(model) for model in completed_smart_routing_runs.supported[agent]
         }
         options = case.route_request.payload["route_options"]
         offered = {canonical_model(option["model"]) for option in options}
@@ -209,16 +214,16 @@ class TestCujSmartRouting(BaseCujTest):
         assert case.selected_model.startswith("system.ai.")
 
     def test_routing_assertions_accept_each_agents_independent_supported_selection(
-        self, smart_routing_scenario
+        self, completed_smart_routing_runs
     ):
         # There is deliberately no expected winner and no cross-agent comparison.
-        for agent, case in smart_routing_scenario.routed.items():
+        for agent, case in completed_smart_routing_runs.routed.items():
             response_model = canonical_model(
                 case.route_response.payload["route_selection"][0]["route_option"]["model"]
             )
             assert case.selected_model == response_model
             assert response_model in {
-                canonical_model(model) for model in smart_routing_scenario.supported[agent]
+                canonical_model(model) for model in completed_smart_routing_runs.supported[agent]
             }
 
     @pytest.mark.parametrize(
@@ -234,10 +239,10 @@ class TestCujSmartRouting(BaseCujTest):
         ],
     )
     def test_explicit_supported_model_bypasses_router_and_is_used_for_inference(
-        self, smart_routing_scenario, agent
+        self, completed_smart_routing_runs, agent
     ):
-        case = smart_routing_scenario.explicit[agent]
-        expected = smart_routing_scenario.overrides[agent]
+        case = completed_smart_routing_runs.explicit[agent]
+        expected = completed_smart_routing_runs.overrides[agent]
         assert case.launch_args == (agent, "--model", expected)
         assert not [request for request in case.requests if request.path == ROUTING_PATH]
         inference_model = case.inference_request.payload["model"]
@@ -248,7 +253,7 @@ class TestCujSmartRouting(BaseCujTest):
         assert case.inference_response.status_code == 200
         case.observation.assert_applied(
             case.task,
-            smart_routing_scenario.supported[agent],
+            completed_smart_routing_runs.supported[agent],
             expected=expected,
         )
 
@@ -256,6 +261,6 @@ class TestCujSmartRouting(BaseCujTest):
     def test_routing_disabled_fresh_sessions_use_defaults_without_router_decisions(self):
         """Covered when a second, preconfigured routing-disabled CUJ workspace is available."""
 
-    def test_workspace_configuration_remains_read_only(self, smart_routing_scenario, cuj):
+    def test_workspace_configuration_remains_read_only(self, completed_smart_routing_runs, cuj):
         _, workspace, _ = cuj
-        workspace.assert_unchanged(smart_routing_scenario.published)
+        workspace.assert_unchanged(completed_smart_routing_runs.published)
