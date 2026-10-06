@@ -24,13 +24,13 @@ class TestCujBudgetDefaults(BaseCujTest):
 
     @pytest.mark.cuj5_below_tier
     def test_bare_ug_uses_claude_default_below_budget_tier(self, cuj):
-        """Scenario: launch bare ``ug`` as a fresh principal below the fixed 0.01% tier.
+        """Scenario: launch bare ``ug`` as a fresh principal below the fixed 1% tier.
 
         Expected: the published config keeps Claude/Sonnet as the default, the real recommendation
         also selects Claude/Sonnet, and the real Claude TUI starts on that model without a prompt,
         inference request, budget write, or account-login flow. A fresh principal may have no
         spend counters yet; when the backend returns an effective threshold, omitted spend is
-        treated as zero and must remain below the 0.01% tier. If both figures are absent, this case
+        treated as zero and must remain below the 1% tier. If both figures are absent, this case
         verifies default selection without a numeric spend assertion.
         """
         session, workspace, _ = cuj
@@ -46,7 +46,7 @@ class TestCujBudgetDefaults(BaseCujTest):
         assert config["smart_defaults"]["budget_id"] == self.BUDGET_ID, config
         assert config["smart_defaults"]["tiers"] == [
             {
-                "spending_percentage": 0.0001,
+                "spending_percentage": 0.01,
                 "recommended_agent": CodingAgent.CODEX,
                 "recommended_model": self.LUNA_MODEL,
             }
@@ -75,7 +75,7 @@ class TestCujBudgetDefaults(BaseCujTest):
             assert threshold > 0, recommendation
             spend = Decimal("0") if spend is None else Decimal(str(spend))
             assert spend >= 0, recommendation
-            assert spend / threshold < Decimal("0.0001"), recommendation
+            assert spend / threshold < Decimal("0.01"), recommendation
         else:
             # A fresh principal can have no usage counter; that does not establish a numeric ratio.
             assert spend is None, recommendation
@@ -92,7 +92,7 @@ class TestCujBudgetDefaults(BaseCujTest):
             tui.exit_normally()
 
     def test_bare_ug_uses_luna_budget_recommendation(self, cuj):
-        """Scenario: launch bare ``ug`` with the fixed 0.01% Luna budget tier active.
+        """Scenario: launch bare ``ug`` with the fixed 1% Luna budget tier active.
 
         Expected: the read-only `usage` command reports the backend's spend and threshold, then
         the real backend recommends Codex/Luna and the Codex TUI selects Luna over its managed Sol
@@ -103,10 +103,20 @@ class TestCujBudgetDefaults(BaseCujTest):
         payload = workspace.client.api_client.do("GET", path=config_path)
         config = payload["coding_agent_configs"][0]
         assert config["default_agent"] == CodingAgent.CLAUDE_CODE, config
+        codex_agent = next(
+            agent for agent in config["enabled_agents"] if agent["agent"] == CodingAgent.CODEX
+        )
+        live_default_model = (
+            codex_agent.get("config", {}).get("default_models", {}).get("default_model")
+        )
+        assert live_default_model == self.SOL_MODEL, (
+            f"Live Codex config model mismatch: expected {self.SOL_MODEL!r}, "
+            f"got {live_default_model!r}"
+        )
         assert config["smart_defaults"]["budget_id"] == self.BUDGET_ID, config
         assert config["smart_defaults"]["tiers"] == [
             {
-                "spending_percentage": 0.0001,
+                "spending_percentage": 0.01,
                 "recommended_agent": CodingAgent.CODEX,
                 "recommended_model": self.LUNA_MODEL,
             }
@@ -122,7 +132,10 @@ class TestCujBudgetDefaults(BaseCujTest):
             ]
         )
         model_config = session.home / ".codex" / "ucode.config.toml"
-        assert tomllib.loads(model_config.read_text())["model"] == self.SOL_MODEL
+        actual_model = tomllib.loads(model_config.read_text()).get("model")
+        assert actual_model == self.SOL_MODEL, (
+            f"Codex config model mismatch: expected {self.SOL_MODEL!r}, got {actual_model!r}"
+        )
 
         before_usage = workspace.client.api_client.do(
             "POST", path=config_path + ":recommendModel", body={}
@@ -165,7 +178,10 @@ class TestCujBudgetDefaults(BaseCujTest):
 
         with AgentTerminal(session, CODEX, [str(session.binary)], "budget-luna") as tui:
             tui.boot(timeout=240)
-            assert tomllib.loads(model_config.read_text())["model"] == self.LUNA_MODEL
+            actual_model = tomllib.loads(model_config.read_text()).get("model")
+            assert actual_model == self.LUNA_MODEL, (
+                f"Codex config model mismatch: expected {self.LUNA_MODEL!r}, got {actual_model!r}"
+            )
             tui.wait_for(
                 lambda text: re.search(rf"model:\s+{re.escape(self.LUNA_MODEL)}\s", text),
                 "Codex's selected model to be Luna",

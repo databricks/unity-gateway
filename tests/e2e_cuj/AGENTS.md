@@ -11,7 +11,7 @@ Keep local homes, task files, and artifacts isolated per run. No stubbed configu
 Use `CLAUDE` / `CODEX` from `helpers/constants.py`; reject unsupported agents explicitly.
 
 The budget-default CUJ uses two marker-selected runs against the fixed tier with
-`spending_percentage=0.0001` (0.01%). The shared-principal run uses
+`spending_percentage=0.01` (1%). The shared-principal run uses
 `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET` with `-m 'not cuj5_below_tier'`;
 the below-tier run uses `UG_BUDGET_CUJ_SP_CLIENT_ID` and
 `UG_BUDGET_CUJ_SP_CLIENT_SECRET` with `-m cuj5_below_tier`. CI maps the selected

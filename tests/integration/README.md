@@ -26,7 +26,7 @@ The budget usage and model-selection tests live in
 [`../e2e_cuj/test_ug_budget_defaults.py`](../e2e_cuj/test_ug_budget_defaults.py),
 outside this existing-workspace integration suite. The tests read their dedicated
 workspace's published budget and model identifiers. The fixed tier has
-`spending_percentage=0.0001` (0.01%). The `dedicated-cuj` workflow runs the suite
+`spending_percentage=0.01` (1%). The `dedicated-cuj` workflow runs the suite
 in two matrix entries on isolated runners: the above-tier case uses the shared
 `UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET` secrets, while the below-tier
 case uses `UG_BUDGET_CUJ_SP_CLIENT_ID` and `UG_BUDGET_CUJ_SP_CLIENT_SECRET`.
