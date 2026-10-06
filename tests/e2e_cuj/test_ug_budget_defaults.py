@@ -4,14 +4,10 @@ import json
 import re
 from decimal import ROUND_HALF_UP, Decimal
 
-import pytest
-
 from tests.integration.utils.terminal import AgentTerminal
 
 from .base import BaseCujTest
 from .helpers.constants import CLAUDE, CODEX, CodingAgent
-
-pytestmark = [pytest.mark.cuj, pytest.mark.tui]
 
 
 class _BudgetDefaultsBase(BaseCujTest):

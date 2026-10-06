@@ -22,19 +22,14 @@ The `smart_defaults` wire schema, legacy `spend_tiers` cache reads, and recommen
 request gating are covered by unit/component tests listed in `../README.md`. This suite
 does not yet assert live `recommendModel` request counts for configs with and without tiers.
 
-## Dedicated-workspace CUJs
+## Dedicated-workspace CUJ5
 
-The budget usage and model recommendation/default tests live in
-[`../e2e_cuj/test_ug_budget_defaults.py`](../e2e_cuj/test_ug_budget_defaults.py),
-outside this existing-workspace integration suite. The tests read their dedicated
-workspace's published budget and model identifiers. The fixed tier has
-`spending_percentage=0.01` (1%). The shared `E2E CUJs` job runs all tests in one
-pytest collection. The above-tier case uses `UG_CUJ_SP_CLIENT_ID` and
-`UG_CUJ_SP_CLIENT_SECRET`; the below-tier class selects `UG_BUDGET_CUJ_SP_CLIENT_ID`
-and `UG_BUDGET_CUJ_SP_CLIENT_SECRET`. Each class gets its own authenticated SDK
-client, local home, and artifacts.
+[`../e2e_cuj/test_ug_budget_defaults.py`](../e2e_cuj/test_ug_budget_defaults.py) runs
+both budget cases in the shared `E2E CUJs` job against the fixed 1% tier. The above-tier
+case uses `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET`; the below-tier case uses
+`UG_BUDGET_CUJ_SP_CLIENT_ID` / `UG_BUDGET_CUJ_SP_CLIENT_SECRET`.
 
-Run the suite directly from a clean POSIX runner with both credential pairs set:
+Run from a clean POSIX runner with both credential pairs set:
 
 ```bash
 UG_CUJ_SP_CLIENT_ID=... UG_CUJ_SP_CLIENT_SECRET=... \
@@ -43,20 +38,10 @@ uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
   pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v
 ```
 
-The workspace client reads the published config and real recommendation using
-OAuth M2M. The above-tier case checks read-only `ug usage` spend, threshold, and
-percentage against backend reads, allowing spend to increase while the command runs.
-It then launches bare `ug`, verifies the launch panel displays the backend's
-Codex/Luna recommendation, and confirms the native Codex TUI starts and exits
-normally. The below-tier case launches bare `ug` and
-verifies Claude selects Sonnet. Neither case submits an inference task or writes
-the budget; the dedicated workspace configuration remains read-only.
-The published config verifies Codex's managed Sol default, and the native Codex TUI verifies
-the above-tier Codex launch and its displayed Luna recommendation. Applying Luna over Sol is
-outside this coverage.
-
-A fresh below-tier principal may have no spend counter, so that case establishes
-default model selection; numeric spend reporting remains covered by the above-tier case.
+Both cases are read-only and submit no inference tasks. The above-tier case checks
+`ug usage`, the Luna recommendation, and Codex startup; it does not assert that Codex
+applies Luna. The below-tier case verifies Claude/Sonnet selection and checks the
+spend percentage when the backend supplies budget figures.
 
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
@@ -353,9 +338,7 @@ they only configure, list models, and open/close the picker. Other live CUJs per
 real model tasks.
 
 There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with Claude and Codex. The separate dedicated-workspace suite adds two
-budget recommendation/default cases run in the shared `E2E CUJs` job with separate credentials.
-Selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
+checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
 workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
 uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
@@ -524,14 +507,7 @@ Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
 two agent jobs). Full runs all 62 live cases, including those smoke cases, in two
-disjoint agent lanes. The `E2E CUJs` job runs both budget cases alongside all other
-dedicated-workspace CUJs. Each class selects its credentials and gets its own home
-and artifacts; `ug revert` cleans up local agent configuration between classes.
-Workspace and budget configuration remain read-only, with no remote reservation or
-cross-run lock. The parent workflows
-retain their normal cancellation of superseded runs.
-
-The full-suite agent lanes are:
+disjoint agent lanes:
 
 | Agent lane | Marker | Cases |
 | --- | --- | --- |
@@ -553,10 +529,10 @@ No test retries or assertion changes
 compensate for capacity failures. Both matrices use `fail-fast: false` and upload
 uniquely named evidence even when the other agent fails.
 The **All integration tests** check requires installation, workspace validation, smoke,
-both full lanes, both managed lanes, and `dedicated-cuj` to pass. Each tracing journey is
-included in its agent's Full lane. The managed and dedicated-cuj lanes do not use
-`continue-on-error`: a failure, cancellation, or unexpected skip fails the aggregate
-check.
+both full lanes, and both **Managed config** lanes to pass for full/live runs. Each tracing
+journey is included in its agent's Full lane. The managed lanes do not use `continue-on-error`:
+a failure, cancellation, or unexpected skip fails the aggregate check. Manual smoke, TUI,
+and installation subsets do not select managed tests and do not require them.
 The advisory Windows installation and headless lanes are not yet included in that aggregate check.
 The existing required `e2e` context also waits for the complete integration workflow, so integration
 cannot still be running when that gate passes. Full coverage on PRs needs no label or opt-in.
@@ -702,7 +678,7 @@ gh run download RUN_ID -R databricks/unity-gateway \
 ```
 
 Use `integration-full-AGENT` for a full lane, `integration-smoke-AGENT` for
-smoke. Use `integration-installation` for Linux package failures, or
+smoke, `integration-installation` for Linux package failures, or
 `integration-installation-windows` for native Windows package failures, or
 `integration-headless-windows-claude` for the Windows gateway journey. Older runs used
 `integration-full-AGENT-GROUP`, `integration-cujs`, or numbered `integration-live-*`

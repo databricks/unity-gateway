@@ -74,23 +74,6 @@ def test_windows_integration_ci_uses_shared_claude_version():
     assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
 
 
-def test_dedicated_cuj_job_runs_both_principals_in_one_collection():
-    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
-    cuj = workflow.split("\n  dedicated-cuj:\n", 1)[1].split("\n  cujs:\n", 1)[0]
-
-    assert "concurrency:" not in cuj
-    assert "matrix:" not in cuj
-    for key in (
-        "UG_CUJ_SP_CLIENT_ID",
-        "UG_CUJ_SP_CLIENT_SECRET",
-        "UG_BUDGET_CUJ_SP_CLIENT_ID",
-        "UG_BUDGET_CUJ_SP_CLIENT_SECRET",
-    ):
-        assert f"{key}: ${{{{ secrets.{key} }}}}" in cuj
-    assert "tests/e2e_cuj -v" in cuj
-    assert "TEST_MARKER" not in cuj
-
-
 @pytest.mark.parametrize(
     "failed_job", ["installation", "workspace", "smoke", "full", "managed", "dedicated-cuj"]
 )

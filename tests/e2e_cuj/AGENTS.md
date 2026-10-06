@@ -12,18 +12,6 @@ runs may read the same CUJ workspace. Do not add reservations or remote lock fil
 Keep local homes, task files, and artifacts isolated per run. No stubbed configuration.
 Use `CLAUDE` / `CODEX` from `helpers/constants.py`; reject unsupported agents explicitly.
 
-The budget-default CUJ runs both cases in the shared `E2E CUJs` job against the fixed
-`spending_percentage=0.01` (1%) tier. The above-tier class uses the standard
-`UG_CUJ_SP_CLIENT_ID` and `UG_CUJ_SP_CLIENT_SECRET` credentials; the below-tier class
-selects `UG_BUDGET_CUJ_SP_CLIENT_ID` and `UG_BUDGET_CUJ_SP_CLIENT_SECRET`.
-Each class gets its own SDK client, local home, and artifacts. Both cases
-read the workspace and budget recommendation; below-tier bare `ug` selects
-Claude/Sonnet, while above-tier read-only `ug usage` agrees with backend spend,
-threshold, and percentage, the launch panel displays a Codex/Luna recommendation,
-and bare `ug` starts the native Codex TUI. Neither case writes workspace or budget
-configuration or submits an inference task. The above-tier case does not assert that
-Codex applies Luna over its managed Sol default.
-
 Before adding any helper, search the existing test utilities and installed SDK for
 equivalent functionality. Reuse them directly; never build a parallel HTTP/auth
 client, session harness, terminal driver, or workspace CRUD layer. Workspace
@@ -67,8 +55,7 @@ Use a clean disposable POSIX runner without existing machine-wide agent settings
 Install the intended versions of `ug`, `claude`, `codex`, and `databricks` on PATH.
 The terminal helpers also require `pexpect==4.9.0` and `pyte==0.8.2`:
 `uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v`.
-Set both credential pairs to run CUJ5 together with the other CUJs. Collection with
-`--collect-only` does not authenticate or contact a workspace. Only the short-lived bearer is
-forwarded to agent processes, never the SP secret.
+Collection with `--collect-only` does not authenticate or contact a workspace.
+Only the short-lived bearer is forwarded to agent processes, never the SP secret.
 
 Artifacts are written beneath pytest's per-scenario temporary directory, printed during setup.

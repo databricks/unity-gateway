@@ -190,19 +190,7 @@ executions. Thirteen additional managed-fixture cases cover focused model, MCP, 
 and lifecycle shapes; two published-config cases cover Claude defaults. Parametrization varies
 argument spelling or routing mode, never hides the agent/provider in the test name. Duplicate boot-only cases
 are incorporated into the Databricks configuration TUI journeys.
-The dedicated-workspace CUJ suite adds two cases around the fixed 1% Luna recommendation tier
-(`spending_percentage=0.01`):
-default Claude/Sonnet selection with a low-spend principal, and usage plus Codex/Luna
-recommendation display and native Codex startup with the above-tier principal. It runs outside the 62-case integration suite
-in the shared `E2E CUJs` job. Both cases are collected together; separate test classes
-select the shared and low-spend credentials without changing process-wide authentication.
-Both entries read the preconfigured workspace and make no budget writes or inference
-requests. It does not cover spend boundaries, selection between multiple tiers, or
-explicit Claude overrides. Generated-file cleanup and strict app-server stdout
-assertions remain enforced in the integration suite.
-The published config verifies Codex's managed Sol default, and the native Codex TUI verifies
-the above-tier Codex launch and its displayed Luna recommendation. Applying Luna over Sol is
-outside this coverage.
+Generated-file cleanup and strict app-server stdout assertions remain enforced.
 Unmanaged discovery Cases 7–14 configure, list models, or open the picker without
 submitting inference prompts; separate task journeys still perform inference.
 They require a real workspace with no CodingAgentConfig; a read-only prerequisite
@@ -243,11 +231,7 @@ journeys for both agents, in two parallel jobs. After smoke finishes, the full
 suite runs all 62 live cases across two parallel agent jobs: one Claude VM and one
 Codex VM, each running its configure, headless, and commands/lifecycle cases
 serially. Each agent is installed once for the full suite, and no two full jobs
-for the same agent overlap within a run. The dedicated budget cases run together
-with all dedicated-workspace CUJs in the `E2E CUJs` job with both agent binaries
-installed. Each class selects the shared or low-spend credentials and gets its own
-local home and artifacts. `ug revert` cleans up local agent configuration between
-classes. Workspace and budget configuration remain read-only, with no cross-run lock.
+for the same agent overlap within a run.
 CI starts integration alongside unit tests and the existing e2e shards. Integration
 does not wait for agent e2e or get skipped when an agent shard fails. These suites
 share workspace capacity; overlapping their requests can still encounter rate limits.
