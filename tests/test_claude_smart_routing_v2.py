@@ -500,7 +500,7 @@ class TestV2ModelPickerDiscovery:
     """modelPicker takes priority over gateway model discovery for smart routing."""
 
     @staticmethod
-    def _launch(monkeypatch, tmp_path, *, picker_catalog):
+    def _launch(monkeypatch, tmp_path, *, picker_catalog, custom_headers=None):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
@@ -512,9 +512,12 @@ class TestV2ModelPickerDiscovery:
 
         discovery_calls = 0
 
-        def fake_discovery(*_args):
+        discovery_kwargs: dict = {}
+
+        def fake_discovery(*_args, **kwargs):
             nonlocal discovery_calls
             discovery_calls += 1
+            discovery_kwargs.update(kwargs)
             return AnthropicModelCatalog(
                 model_ids=["system.ai.claude-opus-4-8"], model_id_to_display_name={}
             )
@@ -532,30 +535,49 @@ class TestV2ModelPickerDiscovery:
                 compose_settings=lambda _args: ({}, []),
                 launch_model_args=claude._launch_model_args,
                 model_name=claude._maybe_add_1m_suffix,
+                **({"custom_headers": custom_headers} if custom_headers else {}),
             )
         assert exc.value.code == 0
-        return discovery_calls
+        return discovery_calls, discovery_kwargs
 
-    def test_model_picker_disables_model_discovery(self, tmp_path, monkeypatch):
-        discovery_calls = self._launch(
+    @pytest.mark.parametrize(
+        "custom_headers",
+        [None, {"X-Development-Route": "test-target"}],
+        ids=["without-headers", "with-headers"],
+    )
+    def test_model_picker_disables_model_discovery(self, tmp_path, monkeypatch, custom_headers):
+        discovery_calls, discovery_kwargs = self._launch(
             monkeypatch,
             tmp_path,
             picker_catalog=AnthropicModelCatalog(
                 model_ids=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
                 model_id_to_display_name={},
             ),
+            custom_headers=custom_headers,
         )
         # The picker supplied the models, so discovery never ran and the launch left
         # gateway model discovery disabled instead of enabling it alongside the picker.
         assert discovery_calls == 0
+        assert discovery_kwargs == {}
         assert "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY" not in os.environ
         assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
-    def test_no_model_picker_enables_model_discovery(self, tmp_path, monkeypatch):
-        discovery_calls = self._launch(monkeypatch, tmp_path, picker_catalog=None)
+    @pytest.mark.parametrize(
+        "custom_headers",
+        [None, {"X-Development-Route": "test-target"}],
+        ids=["without-headers", "with-headers"],
+    )
+    def test_no_model_picker_enables_model_discovery(self, tmp_path, monkeypatch, custom_headers):
+        discovery_calls, discovery_kwargs = self._launch(
+            monkeypatch,
+            tmp_path,
+            picker_catalog=None,
+            custom_headers=custom_headers,
+        )
         # Without a picker the router falls back to gateway discovery and enables Claude
         # Code's model-discovery feature for the launch.
         assert discovery_calls == 1
+        assert discovery_kwargs == ({"request_headers": custom_headers} if custom_headers else {})
         assert os.environ.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY") == "1"
         assert os.environ.get("ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY") == "1"
 

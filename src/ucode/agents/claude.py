@@ -1322,6 +1322,18 @@ def _reject_custom_header_collisions(
         )
 
 
+def validate_custom_headers(state: dict, custom_headers: dict[str, str] | None = None) -> None:
+    """Validate launch-scoped headers before any Claude model discovery begins."""
+    normalized_headers = {
+        name.casefold(): value for name, value in dict(custom_headers or {}).items()
+    }
+    _reject_custom_header_collisions(
+        normalized_headers,
+        _recorded_custom_headers(),
+        state.get("claude_http_headers"),
+    )
+
+
 def write_tool_config(
     state: dict,
     model: str | None,
@@ -2175,6 +2187,11 @@ def launch(
                 compose_settings=_compose_v2_settings,
                 launch_model_args=_launch_model_args,
                 model_name=_maybe_add_1m_suffix,
+                **(
+                    {"custom_headers": dict(options.custom_headers)}
+                    if options.custom_headers
+                    else {}
+                ),
             )
         except smart_routing_v2.ClaudeRoutingSetupError:
             _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())

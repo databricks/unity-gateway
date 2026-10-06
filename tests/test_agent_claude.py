@@ -2810,8 +2810,17 @@ class TestClaudeLaunch:
         assert calls == [["claude", "--settings", str(claude.CLAUDE_SETTINGS_PATH), *tool_args]]
         v2.launch_claude.assert_not_called()
 
-    @pytest.mark.parametrize("tool_args", [["fix this bug"], ["--", "fix this bug"]])
-    def test_v2_positional_prompt_uses_first_prompt_routing(self, monkeypatch, tool_args):
+    @pytest.mark.parametrize(
+        ("tool_args", "custom_headers"),
+        [
+            (["fix this bug"], ()),
+            (["--", "fix this bug"], ()),
+            (["fix this bug"], (("X-Development-Route", "test-target"),)),
+        ],
+    )
+    def test_v2_positional_prompt_uses_first_prompt_routing(
+        self, monkeypatch, tool_args, custom_headers
+    ):
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         launch_v2 = Mock()
         monkeypatch.setattr(v2, "launch_claude", launch_v2)
@@ -2819,18 +2828,26 @@ class TestClaudeLaunch:
         claude.launch(
             {"workspace": WS},
             tool_args,
-            options=LaunchOptions(launch_smart_routing=True),
+            options=LaunchOptions(
+                launch_smart_routing=True,
+                custom_headers=custom_headers,
+            ),
         )
 
+        expected_kwargs = {
+            "binary": "claude",
+            "user_settings_path": claude.CLAUDE_USER_SETTINGS_PATH,
+            "launch_model": None,
+            "compose_settings": claude._compose_v2_settings,
+            "launch_model_args": claude._launch_model_args,
+            "model_name": claude._maybe_add_1m_suffix,
+        }
+        if custom_headers:
+            expected_kwargs["custom_headers"] = dict(custom_headers)
         launch_v2.assert_called_once_with(
             {"workspace": WS},
             tool_args,
-            binary="claude",
-            user_settings_path=claude.CLAUDE_USER_SETTINGS_PATH,
-            launch_model=None,
-            compose_settings=claude._compose_v2_settings,
-            launch_model_args=claude._launch_model_args,
-            model_name=claude._maybe_add_1m_suffix,
+            **expected_kwargs,
         )
 
     def test_gateway_discovery_uses_direct_gateway(self, monkeypatch):
