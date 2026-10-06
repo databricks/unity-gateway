@@ -918,6 +918,16 @@ class TestSubcommandRouting:
             "X-Second: two:three",
         ]
 
+    def test_codex_admin_header_collision_stops_before_discovery(self):
+        managed = {"enabled_agents": {"codex": {"http_headers": {"X-Test": "admin"}}}}
+        with _launch_policy_patches(managed) as calls:
+            result = runner.invoke(app, ["codex", "--header", "x-test: temporary"])
+
+        assert result.exit_code == 1
+        assert "cannot override managed Codex header" in result.output
+        calls["shared"].assert_not_called()
+        calls["launch"].assert_not_called()
+
     def test_headers_parse_values_with_colons_and_deduplicate_case_insensitively(self):
         assert cli_mod._parse_custom_headers(
             [
@@ -4914,6 +4924,24 @@ class TestConfigureSharedStateSkipDiscovery:
         )
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {})
         monkeypatch.setattr(cli_mod, "save_state", lambda s: None)
+
+    def test_custom_headers_validate_after_auth_before_discovery(self, monkeypatch):
+        self._stub(monkeypatch)
+        authenticated = MagicMock()
+        monkeypatch.setattr(cli_mod, "ensure_databricks_auth", authenticated)
+        discovery = MagicMock()
+        monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", discovery)
+
+        def managed_after_auth(state):
+            authenticated.assert_called_once()
+            return {"enabled_agents": {"codex": {"http_headers": {"X-Route": "admin"}}}}, False
+
+        monkeypatch.setattr(cli_mod, "_fetch_managed_config", managed_after_auth)
+        with pytest.raises(RuntimeError, match="cannot override managed Codex header"):
+            cli_mod.configure_shared_state(
+                MINIMAL_STATE["workspace"], tools=["codex"], request_headers={"x-route": "test"}
+            )
+        discovery.assert_not_called()
 
     def test_skips_family_discovery_and_fetches_web_search_model(self, monkeypatch):
         import ucode.cli as cli_mod

@@ -559,14 +559,33 @@ def _managed_header_names() -> set[str]:
     return names
 
 
+def validate_custom_headers(state: dict, custom_headers: dict[str, str]) -> None:
+    """Reject launch headers that collide with configured administrator values."""
+    if not custom_headers:
+        return
+
+    requested_names = {name.casefold() for name in custom_headers}
+    blocked_names = requested_names & {
+        name.strip().casefold() for name in (state.get("codex_http_headers") or {})
+    }
+    if blocked_names:
+        names = ", ".join(sorted(blocked_names))
+        raise RuntimeError(f"--header cannot override managed Codex header(s): {names}.")
+
+    blocked_names = _managed_header_names() & requested_names
+    if blocked_names:
+        names = ", ".join(sorted(blocked_names))
+        raise RuntimeError(f"--header cannot override OS-managed Codex header(s): {names}.")
+
+
 def _with_custom_headers(doc: dict, custom_headers: dict[str, str]) -> dict:
     """Return a launch-only config that reads custom header values from the environment."""
     if not custom_headers:
         return doc
-    blocked_names = _managed_header_names() & {name.casefold() for name in custom_headers}
-    if blocked_names:
-        names = ", ".join(sorted(blocked_names))
-        raise RuntimeError(f"--header cannot override OS-managed Codex header(s): {names}.")
+    # Keep this check at the final config boundary as well as before discovery. The latter avoids
+    # sending a request with a header that will later be rejected; this one protects callers that
+    # reach the launch renderer directly.
+    validate_custom_headers({}, custom_headers)
 
     launch_doc = copy.deepcopy(doc)
     providers = launch_doc.get("model_providers")
@@ -948,6 +967,15 @@ def _model_catalog_path(workspace: str, scope: str) -> Path:
     return base.with_name(f"{base.stem}-{digest}{base.suffix}")
 
 
+def _temporary_model_catalog_dir() -> tempfile.TemporaryDirectory:
+    """Allocate a private directory for a per-launch catalog."""
+    parent = CODEX_MODEL_CATALOG_PATH.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    return tempfile.TemporaryDirectory(
+        prefix=f".{CODEX_MODEL_CATALOG_PATH.stem}-launch-", dir=parent
+    )
+
+
 def _write_model_catalog(path: Path, catalog: dict) -> None:
     if is_dry_run():
         write_json_file(path, catalog)
@@ -1153,6 +1181,7 @@ def _run_codex(
     *,
     otel_tracing: bool,
     workspace: str | None,
+    wait_for_exit: bool = False,
 ) -> None:
     """Launch Codex — via the loopback proxy when OTLP tracing is on, else exec-replace."""
     if tool_args[:1] == ["update"]:
@@ -1161,7 +1190,11 @@ def _run_codex(
     if otel_tracing and workspace:
         _launch_codex_with_otel_proxy(state, base_argv, tool_args, workspace)
     else:
-        exec_or_spawn([*base_argv, *tool_args])
+        argv = [*base_argv, *tool_args]
+        if wait_for_exit:
+            exec_or_spawn(argv, wait_for_exit=True)
+        else:
+            exec_or_spawn(argv)
 
 
 def launch(
@@ -1171,12 +1204,7 @@ def launch(
     options: LaunchOptions,
 ) -> None:
     custom_headers = dict(options.custom_headers)
-    blocked_names = {name.casefold() for name in custom_headers} & {
-        name.strip().casefold() for name in (state.get("codex_http_headers") or {})
-    }
-    if blocked_names:
-        names = ", ".join(sorted(blocked_names))
-        raise RuntimeError(f"--header cannot override managed Codex header(s): {names}.")
+    validate_custom_headers(state, custom_headers)
     if options.launch_smart_routing:
         _launch_smart_routing(state, tool_args, custom_headers=custom_headers)
         return
@@ -1238,53 +1266,78 @@ def launch(
     updating = tool_args[:1] == ["update"]
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")
-    if workspace and token and (provider or parent_schema) and not updating:
-        try:
-            if provider is not None:
-                catalog_source = CodexCatalogSource.PROVIDER
-                catalog_identifier = provider
-                catalog_scope = f"provider:{provider}"
-            elif parent_schema is not None:
-                catalog_source = CodexCatalogSource.PARENT_SCHEMA
-                catalog_identifier = parent_schema
-                catalog_scope = f"parent:{parent_schema}"
-            else:
-                raise RuntimeError("Codex model discovery requires a provider or parent schema.")
-            catalog = _fetch_codex_model_catalog(
-                workspace,
-                token,
-                source=catalog_source,
-                identifier=catalog_identifier,
+    temporary_catalog_dir: tempfile.TemporaryDirectory | None = None
+    temporary_catalog_path: Path | None = None
+    try:
+        if (
+            workspace
+            and token
+            and not updating
+            and (
+                provider
+                or parent_schema
+                or (custom_headers and not state.get("codex_static_models"))
             )
-            validate_codex_catalog(binary, catalog)
-        except CodexMpsModelCatalogUnavailable:
-            detach_app_model_catalog()
-        except RuntimeError:
-            # A failed discovery/validation must not leave a previous workspace's
-            # catalog active in independently launched app servers.
-            _detach_app_catalog_after_failure()
-            raise
-        else:
-            catalog_path = _model_catalog_path(workspace, catalog_scope)
-            _write_model_catalog(catalog_path, catalog)
-            sync_app_model_catalog(catalog)
-            profile_doc["model_catalog_json"] = str(catalog_path)
-            # Codex otherwise boots on its bundled default model (e.g. gpt-5.6-sol),
-            # which an MPS's allowlist doesn't route, so the first request 403s. Pin
-            # the MPS's primary (first) target unless the user chose a model or a
-            # managed default already applies.
-            if not profile_doc.get("model") and not _tool_args_select_model(tool_args):
-                slugs = catalog_slugs(catalog)
-                if slugs:
-                    profile_doc["model"] = slugs[0]
-    profile_doc = _with_custom_headers(profile_doc, custom_headers)
-    _run_codex(
-        state,
-        [binary, *codex_config_args(profile_doc)],
-        tool_args,
-        otel_tracing=otel_tracing,
-        workspace=workspace,
-    )
+        ):
+            try:
+                fetch_kwargs: dict = {}
+                catalog_scope: str | None = None
+                if provider is not None:
+                    fetch_kwargs["source"] = CodexCatalogSource.PROVIDER
+                    fetch_kwargs["identifier"] = provider
+                    catalog_scope = f"provider:{provider}"
+                elif parent_schema is not None:
+                    fetch_kwargs["source"] = CodexCatalogSource.PARENT_SCHEMA
+                    fetch_kwargs["identifier"] = parent_schema
+                    catalog_scope = f"parent:{parent_schema}"
+                if custom_headers:
+                    fetch_kwargs["request_headers"] = custom_headers
+                catalog = _fetch_codex_model_catalog(workspace, token, **fetch_kwargs)
+                validate_codex_catalog(binary, catalog)
+            except CodexMpsModelCatalogUnavailable:
+                if custom_headers:
+                    raise
+                detach_app_model_catalog()
+            except RuntimeError:
+                # A failed discovery/validation must not leave a previous workspace's
+                # catalog active in independently launched app servers.
+                if not custom_headers:
+                    _detach_app_catalog_after_failure()
+                raise
+            else:
+                if custom_headers:
+                    temporary_catalog_dir = _temporary_model_catalog_dir()
+                    temporary_catalog_path = (
+                        Path(temporary_catalog_dir.name) / CODEX_MODEL_CATALOG_PATH.name
+                    )
+                    catalog_path = temporary_catalog_path
+                else:
+                    assert catalog_scope is not None
+                    catalog_path = _model_catalog_path(workspace, catalog_scope)
+                _write_model_catalog(catalog_path, catalog)
+                if not custom_headers:
+                    sync_app_model_catalog(catalog)
+                profile_doc["model_catalog_json"] = str(catalog_path)
+                # Codex otherwise boots on its bundled default model (e.g. gpt-5.6-sol),
+                # which an MPS's allowlist doesn't route, so the first request 403s. Pin
+                # the MPS's primary (first) target unless the user chose a model or a
+                # managed default already applies.
+                if not profile_doc.get("model") and not _tool_args_select_model(tool_args):
+                    slugs = catalog_slugs(catalog)
+                    if slugs:
+                        profile_doc["model"] = slugs[0]
+        profile_doc = _with_custom_headers(profile_doc, custom_headers)
+        _run_codex(
+            state,
+            [binary, *codex_config_args(profile_doc)],
+            tool_args,
+            otel_tracing=otel_tracing,
+            workspace=workspace,
+            wait_for_exit=temporary_catalog_path is not None,
+        )
+    finally:
+        if temporary_catalog_dir is not None:
+            temporary_catalog_dir.cleanup()
 
 
 def _launch_smart_routing(
@@ -1292,30 +1345,89 @@ def _launch_smart_routing(
 ) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
     binary = SPEC["binary"]
+    temporary_catalog_dir: tempfile.TemporaryDirectory | None = None
+    temporary_catalog_path: Path | None = None
+    catalog_models: list[str] | None = None
+    try:
+        if custom_headers and not state.get("codex_static_models"):
+            workspace = state.get("workspace")
+            if isinstance(workspace, str) and workspace:
+                fetch_kwargs: dict = {"request_headers": custom_headers}
+                provider = state.get("_codex_launch_provider")
+                parent_schema = state.get("_codex_launch_parent_schema")
+                if isinstance(provider, str) and provider.strip():
+                    fetch_kwargs.update(
+                        source=CodexCatalogSource.PROVIDER,
+                        identifier=provider.strip(),
+                    )
+                elif isinstance(parent_schema, str) and parent_schema.strip():
+                    fetch_kwargs.update(
+                        source=CodexCatalogSource.PARENT_SCHEMA,
+                        identifier=parent_schema.strip(),
+                    )
+                catalog = _fetch_codex_model_catalog(
+                    workspace, _launch_token(state, workspace), **fetch_kwargs
+                )
+                validate_codex_catalog(binary, catalog)
+                catalog_models = catalog_slugs(catalog)
+                temporary_catalog_dir = _temporary_model_catalog_dir()
+                temporary_catalog_path = (
+                    Path(temporary_catalog_dir.name) / CODEX_MODEL_CATALOG_PATH.name
+                )
+                _write_model_catalog(temporary_catalog_path, catalog)
 
-    configured_model = _smart_routing_config_model(state)
-    # Prefer the custom catalog if it exists.
-    models = custom_catalog_models() or routing_models(state)
-    start_model = (
-        configured_model
-        or (codex_model_id(models[0]) if models else None)
-        or APP_SERVER_SMART_ROUTING_STARTING_MODEL
-    )
-    if custom_headers:
+        configured_model = _smart_routing_config_model(state)
+        if (
+            custom_headers
+            and catalog_models
+            and not isinstance(state.get("codex_default_model"), str)
+            and configured_model
+            and not any(
+                configured_model == model
+                or codex_model_id(configured_model) == codex_model_id(model)
+                for model in catalog_models
+            )
+        ):
+            # A profile model may have been pinned by an earlier ordinary launch.
+            # Let the header-specific catalog choose the bootstrap model unless an
+            # administrator explicitly supplied the startup model in state.
+            configured_model = None
+        # Prefer the launch-scoped catalog when one was discovered. Ordinary
+        # launches retain the configured static catalog and cached model list.
+        models = (
+            catalog_models
+            if catalog_models is not None
+            else (custom_catalog_models() or routing_models(state))
+        )
+        start_model = (
+            configured_model
+            or (codex_model_id(models[0]) if models else None)
+            or APP_SERVER_SMART_ROUTING_STARTING_MODEL
+        )
+        if custom_headers:
 
-        def routed_render_overlay(*args, **kwargs) -> dict:
-            return _with_custom_headers(render_overlay(*args, **kwargs), custom_headers)
+            def routed_render_overlay(*args, **kwargs) -> dict:
+                return _with_custom_headers(render_overlay(*args, **kwargs), custom_headers)
 
-    else:
-        routed_render_overlay = render_overlay
+        else:
+            routed_render_overlay = render_overlay
 
-    smart_routing_v2.launch_codex(
-        state,
-        tool_args,
-        binary=binary,
-        start_model=start_model,
-        render_overlay=routed_render_overlay,
-    )
+        catalog_kwargs: dict = (
+            {"catalog_models": catalog_models, "catalog_path": temporary_catalog_path}
+            if catalog_models is not None
+            else {}
+        )
+        smart_routing_v2.launch_codex(
+            state,
+            tool_args,
+            binary=binary,
+            start_model=start_model,
+            render_overlay=routed_render_overlay,
+            **catalog_kwargs,
+        )
+    finally:
+        if temporary_catalog_dir is not None:
+            temporary_catalog_dir.cleanup()
 
 
 def disable_smart_routing(state: dict) -> bool:

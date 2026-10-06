@@ -968,7 +968,13 @@ class TestCodexLaunch:
         launches: list[list[str]] = []
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.134.0")
-        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(argv))
+
+        def launch_process(argv, **kwargs):
+            launches.append(argv)
+            if kwargs.get("wait_for_exit"):
+                raise SystemExit(0)
+
+        monkeypatch.setattr(codex, "exec_or_spawn", launch_process)
         monkeypatch.setattr(
             codex,
             "get_databricks_token",
@@ -998,12 +1004,21 @@ class TestCodexLaunch:
     def test_custom_header_is_launch_only(self, tmp_path, monkeypatch):
         launches = self._patch(tmp_path, monkeypatch)
         value = "route://development/test"
-
-        codex.launch(
-            {"workspace": WS},
-            [],
-            options=LaunchOptions(custom_headers=(("X-Development-Route", value),)),
+        fetch_kwargs = {}
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda workspace, token, **kwargs: (
+                fetch_kwargs.update(kwargs) or {"models": [{"slug": "gpt-custom"}]}
+            ),
         )
+        with pytest.raises(SystemExit) as exc:
+            codex.launch(
+                {"workspace": WS},
+                [],
+                options=LaunchOptions(custom_headers=(("X-Development-Route", value),)),
+            )
+        assert exc.value.code == 0
 
         env_name = f"{codex.CUSTOM_HEADER_ENV_PREFIX}_{os.getpid()}_0"
         provider_arg = next(
@@ -1014,7 +1029,80 @@ class TestCodexLaunch:
         assert value not in provider_arg
         assert os.environ[env_name] == value
         assert "X-Development-Route" not in codex.CODEX_CONFIG_PATH.read_text(encoding="utf-8")
+        assert fetch_kwargs["request_headers"] == {"X-Development-Route": value}
         monkeypatch.delenv(env_name)
+
+    def test_custom_header_discovery_uses_private_catalog(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        value = "route://development/test"
+        old_catalog = {"models": [{"slug": "normal-route"}]}
+        custom_catalog = {"models": [{"slug": "development-route"}]}
+        codex.sync_app_model_catalog(old_catalog)
+        shared_path = tmp_path / "config.toml"
+        stable_path = tmp_path / "stable-provider-catalog.json"
+        stable_path.write_text(json.dumps(old_catalog), encoding="utf-8")
+        monkeypatch.setattr(codex, "_model_catalog_path", lambda workspace, scope: stable_path)
+        fetch_kwargs = {}
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda workspace, token, **kwargs: fetch_kwargs.update(kwargs) or custom_catalog,
+        )
+        observed_catalogs: list[Path] = []
+
+        def launch_process(argv, **kwargs):
+            assert kwargs == {"wait_for_exit": True}
+            catalog_arg = next(arg for arg in argv if arg.startswith("model_catalog_json="))
+            catalog_path = Path(catalog_arg.partition("=")[2].strip('"'))
+            assert catalog_path.exists()
+            observed_catalogs.append(catalog_path)
+            launches.append(argv)
+            raise SystemExit(0)
+
+        monkeypatch.setattr(codex, "exec_or_spawn", launch_process)
+
+        with pytest.raises(SystemExit) as exc:
+            codex.launch(
+                {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
+                [],
+                options=LaunchOptions(custom_headers=(("X-Development-Route", value),)),
+            )
+
+        assert exc.value.code == 0
+        assert fetch_kwargs["request_headers"] == {"X-Development-Route": value}
+        assert observed_catalogs
+        assert not observed_catalogs[0].exists()
+        assert not observed_catalogs[0].parent.exists()
+        assert json.loads(codex.CODEX_MODEL_CATALOG_PATH.read_text()) == old_catalog
+        assert read_toml_safe(shared_path)["model_catalog_json"] == str(
+            codex.CODEX_MODEL_CATALOG_PATH
+        )
+        assert json.loads(stable_path.read_text()) == old_catalog
+
+    def test_custom_header_discovery_failure_preserves_catalog(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        old_catalog = {"models": [{"slug": "normal-route"}]}
+        codex.sync_app_model_catalog(old_catalog)
+        shared_path = tmp_path / "config.toml"
+        app_catalog_before = codex.CODEX_MODEL_CATALOG_PATH.read_bytes()
+        shared_before = shared_path.read_text(encoding="utf-8")
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("HTTP 403 Forbidden")),
+        )
+
+        with pytest.raises(RuntimeError, match="HTTP 403 Forbidden"):
+            codex.launch(
+                {"workspace": WS, "_codex_launch_provider": "main.default.openai"},
+                [],
+                options=LaunchOptions(custom_headers=(("X-Development-Route", "route://test"),)),
+            )
+
+        assert launches == []
+        assert codex.CODEX_MODEL_CATALOG_PATH.read_bytes() == app_catalog_before
+        assert shared_path.read_text(encoding="utf-8") == shared_before
+        assert not list(codex.CODEX_MODEL_CATALOG_PATH.parent.glob(".*-launch-*"))
 
     @pytest.mark.parametrize("header_table", ["http_headers", "env_http_headers"])
     def test_custom_header_rejects_managed_header(self, tmp_path, monkeypatch, header_table):

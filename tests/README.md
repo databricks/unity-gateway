@@ -42,11 +42,12 @@ These are component checks, not live Windows coverage for every agent.
 Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
-Custom request headers have component coverage in `test_cli.py`, `test_agent_codex.py`,
-`test_codex_smart_routing_v2.py`, `test_agent_claude.py`, and `test_state.py`: parsing,
-launch-only Codex values, Claude cleanup, partial-write recovery, and rejection of existing
-or newly supplied administrator headers. Live custom-header journeys are not covered.
-
+Custom request headers have component coverage in `test_cli.py`, `test_databricks.py`,
+`test_agent_codex.py`, `test_codex_smart_routing_v2.py`, `test_agent_claude.py`,
+`test_claude_smart_routing_v2.py`, and `test_state.py`: parsing, gateway discovery isolation,
+launch-only Codex values/catalogs, Claude cleanup and partial-write recovery, and administrator
+header collisions before discovery. `test_launcher.py` checks waiting for child exit.
+Live custom-header journeys are not covered.
 
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
