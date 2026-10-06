@@ -1926,6 +1926,11 @@ class TestCodexReconcileManagedMcp:
         assert doc["model_provider"] == "Databricks"
         assert doc["mcp_servers"]["system-ai-github"]["command"] == "/opt/ug"
         assert doc["mcp_servers"]["system-ai-github"]["args"][:2] == ["mcp-proxy", "--url"]
+        assert doc["mcp_servers"]["system-ai-github"]["env_vars"] == [
+            "DATABRICKS_BEARER",
+            "DATABRICKS_BEARER_COMMAND",
+            "DATABRICKS_CONFIG_FILE",
+        ]
         assert captured["owned_paths"] == [["mcp_servers"]]
         assert captured["tool"] == "codex"
 
@@ -2055,6 +2060,11 @@ class TestWriteUserMcpServers:
         assert dict(doc["mcp_servers"]["system-ai-github"]) == {
             "command": "ug",
             "args": ["mcp-proxy", "https://ws/svc"],
+            "env_vars": [
+                "DATABRICKS_BEARER",
+                "DATABRICKS_BEARER_COMMAND",
+                "DATABRICKS_CONFIG_FILE",
+            ],
         }
 
     def test_removes_named_entries_only(self, tmp_path, monkeypatch):

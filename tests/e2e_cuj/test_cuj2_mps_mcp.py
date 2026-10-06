@@ -383,10 +383,27 @@ class TestCuj2ClaudeInference(_Cuj2Base):
         with AgentTerminal(session, CLAUDE, [str(session.binary), CLAUDE], "cuj2-claude") as tui:
             tui.boot()
             tui.submit(_agent_prompt(marker))
+            permission_approved = False
 
             def completed(screen):
+                nonlocal permission_approved
                 assert_no_terminal_api_error(screen)
-                assert "Do you want to proceed?" not in screen, screen
+                if "Do you want to proceed?" in screen:
+                    expected_prompt = (
+                        "system-ai-sandbox — Run Code Tool: (MCP)",
+                        f'code: "print(\\"{marker}\\")"',
+                        'language: "python"',
+                        "Do you want to proceed?",
+                        "❯ 1. Yes",
+                    )
+                    assert all(part in screen for part in expected_prompt), (
+                        "Claude requested an unrecognized permission:\n" + screen
+                    )
+                    if permission_approved:
+                        return False
+                    tui.send("\r", f"approve sandbox run_code for marker {marker}")
+                    permission_approved = True
+                    return False
                 return _task_complete(session, CLAUDE, marker)
 
             tui.wait_for(completed, "completed Claude MCP task", timeout=240)
