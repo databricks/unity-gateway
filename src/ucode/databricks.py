@@ -47,6 +47,7 @@ from ucode.ui import (
     print_success,
     print_warning,
     spinner,
+    status_subprocess_stdout,
 )
 
 UNIX_DATABRICKS_INSTALL_URL = (
@@ -656,6 +657,7 @@ def run(
         text=text,
         env=env,
         timeout=timeout,
+        **({"stdout": status_subprocess_stdout()} if not capture_output else {}),
     )
 
 

@@ -16,6 +16,14 @@ The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
 
+`TestChildStdoutLaunch` in `../test_cli.py` covers clean Claude print-mode and
+Codex exec/app-server stdout, early launch errors, and forwarding through ug's `--`.
+`TestBootstrapStdout` in `../test_agents_init.py` exercises real subprocess streams
+with substituted installer/upgrader commands, including failures and native handoff.
+These component checks do not establish live installer, Isaac, or inference coverage.
+The live Claude/Codex headless prompt-argument and stdin journeys require raw stdout to parse
+as JSON/JSONL, without discarding non-JSON lines before checking the completed file task.
+
 Headless managed-settings conflict repair is covered by `../test_agent_claude.py`,
 `../test_agent_codex.py`, and `../test_managed_files.py` using temporary files and substituted
 privileged writes. This suite does not yet exercise Isaac rewriting OS-managed settings or real
