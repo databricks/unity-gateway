@@ -209,11 +209,6 @@ CLAUDE_DEFAULT_MODEL_ENV_KEYS = {
     "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 }
-# Raw launch ids have historically been pinned to Claude's three standard family aliases. Fable is
-# discovered/configured separately and should not silently turn an explicit model launch into a
-# Fable selection.
-CLAUDE_CUSTOM_MODEL_FAMILIES = ("opus", "sonnet", "haiku")
-CLAUDE_CUSTOM_MODEL_SELECTOR = "opus"
 # Launch-scoped feature flags that ucode may write into Claude settings. These
 # must be removed again when the corresponding launch flag is absent.
 CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
@@ -1832,21 +1827,6 @@ def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[s
     return ["--model", launch_model]
 
 
-def _launch_custom_model_settings(model: str) -> dict:
-    """Pin a raw Databricks model through Claude's launch-scoped family aliases.
-
-    Claude Code validates ``ANTHROPIC_MODEL`` and its native ``--model`` value against the
-    client-side catalog, so neither can carry a Databricks model-service id. The family aliases
-    are passed through to the gateway unchanged. Keep this override in the inline launch settings;
-    ``write_tool_config`` must continue to leave the user's persistent model selection alone.
-    """
-    return {
-        "env": {
-            CLAUDE_DEFAULT_MODEL_ENV_KEYS[family]: model for family in CLAUDE_CUSTOM_MODEL_FAMILIES
-        },
-    }
-
-
 def _resolve_picker_model_id(model: str, settings_env: dict) -> str:
     """Resolve configured aliases and context suffixes for comparisons only."""
     model = re.sub(r"\[(?:1m|200k)\]$", "", model)
@@ -2083,15 +2063,7 @@ def launch(
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
     launch_args = list(tool_args)
-    launch_custom_model = state.get("_claude_launch_custom_model")
-    if isinstance(launch_custom_model, str) and launch_custom_model:
-        os.environ["ANTHROPIC_MODEL"] = CLAUDE_CUSTOM_MODEL_SELECTOR
-        settings_override = _launch_custom_model_settings(launch_custom_model)
-        launch_args = [
-            *_launch_model_args(tool_args, CLAUDE_CUSTOM_MODEL_SELECTOR),
-            *tool_args,
-        ]
-    elif options.user_pinned_model:
+    if options.user_pinned_model:
         os.environ["ANTHROPIC_MODEL"] = options.user_pinned_model
         settings_override = {"env": {"ANTHROPIC_MODEL": options.user_pinned_model}}
         launch_args = [

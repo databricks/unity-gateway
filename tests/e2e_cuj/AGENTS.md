@@ -46,11 +46,6 @@ In `helpers/evidence.py`, `ClaudeCujHelper` and `CodexCujHelper` implement
 Model evidence combines observed gateway requests/responses with native completed-turn
 records; neither routing banners nor native records alone prove an applied decision.
 
-`test_cuj_smart_routing.py` runs four fresh interactive sessions: routed and explicit
-model, for both Claude and Codex. It uses the published models/defaults and asserts
-configuration is unchanged, including during teardown after failures. Routing-disabled
-coverage requires a separately preconfigured workspace and is not part of this CUJ.
-
 `test_cuj2_mps_mcp.py` runs three independently collected cases against a permanently
 preconfigured workspace: configuration, Codex inference, and Claude inference. Each case
 reads and validates the exact two-agent MPS/MCP shape. No case creates, updates, deletes,

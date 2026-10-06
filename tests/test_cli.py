@@ -813,11 +813,6 @@ class TestSubcommandRouting:
         assert calls["launch"].call_args.kwargs["options"].user_pinned_model == (
             "main.default.claude-opus-5"
         )
-        assert "_claude_launch_default_model" not in calls["launch"].call_args.args[1]
-        assert (
-            calls["launch"].call_args.args[1]["_claude_launch_custom_model"]
-            == "main.default.claude-opus-5"
-        )
         assert calls["launch"].call_args.args[2] == []
 
     @pytest.mark.parametrize(
@@ -1509,32 +1504,11 @@ class TestClaudeModelFlag:
         ):
             result = runner.invoke(app, ["claude", "--model", "cat.schema.claude-opus-5"])
         assert result.exit_code == 0, result.output
-        # The model is passed through invocation-scoped launch state/options, not persisted in
-        # settings.
+        # The model is passed through invocation-scoped LaunchOptions, not persisted in settings.
         assert mock_configure.call_args.kwargs["custom_model"] is None
         assert mock_configure.call_args.kwargs["route_root_model"] is None
         assert (
-            mock_launch.call_args.args[1]["_claude_launch_custom_model"]
-            == "cat.schema.claude-opus-5"
-        )
-        assert (
             mock_launch.call_args.kwargs["options"].user_pinned_model == "cat.schema.claude-opus-5"
-        )
-
-    def test_explicit_model_clears_managed_default_route_root(self):
-        managed = {
-            "enabled_agents": {
-                "claude": {"model_config": {"default_model": "system.ai.claude-sonnet-5"}}
-            }
-        }
-        with _launch_policy_patches(managed) as calls:
-            result = runner.invoke(app, ["claude", "--model", "system.ai.claude-opus-4-8"])
-
-        assert result.exit_code == 0, result.output
-        assert calls["configure"].call_args.kwargs["route_root_model"] is None
-        assert (
-            calls["launch"].call_args.args[1]["_claude_launch_custom_model"]
-            == "system.ai.claude-opus-4-8"
         )
 
     def test_v2_model_sets_transient_launch_override(self, monkeypatch):

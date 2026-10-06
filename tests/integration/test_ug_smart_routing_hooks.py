@@ -131,10 +131,7 @@ def _toggle_with_skill(tui, session, agent: str, enabled: bool) -> None:
         lambda screen: (
             "Smart Router" in screen
             and confirmation in screen
-            and (
-                assistant_answer_contains(session, agent, confirmation)
-                or assistant_answer_contains(session, agent, f"**{state}** for this session")
-            )
+            and assistant_answer_contains(session, agent, confirmation)
         ),
         f"the installed Smart Router skill to turn routing {state}",
         timeout=120,
