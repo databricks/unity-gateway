@@ -2529,6 +2529,30 @@ class TestClaudeLaunch:
 
         assert calls[0][-2:] == ["--model", "claude-sonnet-5"]
 
+    def test_launch_managed_custom_model_uses_native_model_over_stale_settings(
+        self, monkeypatch, tmp_path
+    ):
+        calls: list[list[str]] = []
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_text(json.dumps({"model": "system.ai.claude-haiku-4-5"}))
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_args: "token")
+        monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
+
+        custom_model = "system.ai.claude-opus-4-8"
+        claude.launch(
+            {
+                "workspace": WS,
+                "_claude_launch_custom_model": custom_model,
+                "claude_static_models": ["system.ai.claude-opus-4-8", "system.ai.claude-haiku-4-5"],
+            },
+            [],
+            options=LaunchOptions(user_pinned_model=custom_model),
+        )
+
+        assert calls[0][1:3] == ["--settings", str(settings_path)]
+        assert calls[0][-2:] == ["--model", custom_model]
+
     def test_launch_default_model_is_inherited_by_smart_routing(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
         monkeypatch.setattr(v2, "launch_claude", Mock())
