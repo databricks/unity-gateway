@@ -164,6 +164,14 @@ def test_cuj_evidence_ignores_existing_session(tmp_path):
         ("gpt-5.6-sol", "system.ai.gpt-5-6-sol"),
         ("system.ai.gpt-6-sol", "system.ai.gpt-6-sol"),
         (
+            "anthropic.claude-haiku-4-5-20251001-v1:0",
+            "system.ai.claude-haiku-4-5",
+        ),
+        (
+            "anthropic.claude-haiku-4-5-20251002-v1:0",
+            "system.ai.anthropic.claude-haiku-4-5-20251002-v1:0",
+        ),
+        (
             "anthropic-aigw-invalid-claude-opus-4-8",
             "system.ai.anthropic-aigw-invalid-claude-opus-4-8",
         ),

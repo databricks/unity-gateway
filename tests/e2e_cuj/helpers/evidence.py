@@ -10,6 +10,10 @@ from tests.integration.utils.evidence import read_jsonl
 
 from .constants import CLAUDE, CODEX
 
+_EXPLICIT_MODEL_ALIASES = {
+    "anthropic.claude-haiku-4-5-20251001-v1:0": "system.ai.claude-haiku-4-5",
+}
+
 
 def canonical_model(value):
     """Only documented gateway aliases, not fuzzy family/date matching."""
@@ -17,6 +21,7 @@ def canonical_model(value):
     # `anthropic-aigw-1234abcd-system.ai.glm-5-2`.
     value = re.sub(r"^anthropic-aigw-[0-9a-f]{8}-", "", value)
     value = value.removesuffix("[1m]")
+    value = _EXPLICIT_MODEL_ALIASES.get(value, value)
     value = value.removeprefix("system.ai.")
     # Codex writes dotted major/minor versions (`gpt-5.6-sol`) while the
     # gateway model identifier uses a hyphen (`system.ai.gpt-5-6-sol`).
