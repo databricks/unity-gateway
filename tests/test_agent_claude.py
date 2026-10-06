@@ -1370,6 +1370,111 @@ class TestWriteToolConfigManagedSettings:
         assert managed_path.read_bytes() == before
         assert json.loads(managed_path.read_text())["adminPolicy"] == {"z": 1, "a": 2}
 
+    def test_settings_passthrough_reapply_unchanged_invokes_no_sudo(self, tmp_path, monkeypatch):
+        managed_path, sudo_writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "allowManagedMcpServersOnly": True,
+                "permissions": {"deny": ["mcp__gdrive"]},
+            },
+        }
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert len(sudo_writes) == 1
+        first_bytes = managed_path.read_bytes()
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert len(sudo_writes) == 1
+        assert managed_path.read_bytes() == first_bytes
+
+    def test_settings_passthrough_shared_lists_keep_it_entries_and_withdraw_dropped_ones(
+        self, tmp_path, monkeypatch
+    ):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        it_hook = {"matcher": "Bash", "hooks": [{"type": "command", "command": "/usr/bin/audit"}]}
+        admin_hook = {"matcher": "Edit", "hooks": [{"type": "command", "command": "/opt/lint"}]}
+        managed_path.write_text(
+            json.dumps(
+                {"permissions": {"deny": ["Bash(rm:*)"]}, "hooks": {"PreToolUse": [it_hook]}}
+            ),
+            encoding="utf-8",
+        )
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "permissions": {"deny": ["mcp__gdrive", "mcp__slack"]},
+                "hooks": {"PreToolUse": [admin_hook]},
+            },
+        }
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        managed = json.loads(managed_path.read_text())
+        assert managed["permissions"]["deny"] == ["Bash(rm:*)", "mcp__gdrive", "mcp__slack"]
+        assert managed["hooks"]["PreToolUse"] == [it_hook, admin_hook]
+
+        # IT adds a deny rule after ug's first write; ug re-saves it, but it is still IT's.
+        managed["permissions"]["deny"].append("WebFetch")
+        managed_path.write_text(json.dumps(managed), encoding="utf-8")
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        state[claude.SETTINGS_PASSTHROUGH_STATE_KEY] = {"permissions": {"deny": ["mcp__slack"]}}
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        managed = json.loads(managed_path.read_text())
+        assert managed["permissions"]["deny"] == ["Bash(rm:*)", "mcp__slack", "WebFetch"]
+        assert managed["hooks"]["PreToolUse"] == [it_hook]
+
+    def test_settings_passthrough_warnings_print_once_per_change(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "apiKeyHelper": "echo x",
+                "allowManagedHooksOnly": True,
+            },
+        }
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        first = " ".join(capsys.readouterr().out.split())
+        assert "apiKeyHelper" in first
+        assert "allowManagedHooksOnly" in first
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        relaunch = capsys.readouterr().out
+        assert "apiKeyHelper" not in relaunch
+        assert "allowManagedHooksOnly" not in relaunch
+
+        state[claude.SETTINGS_PASSTHROUGH_STATE_KEY]["otelHeadersHelper"] = "echo y"
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert "otelHeadersHelper" in " ".join(capsys.readouterr().out.split())
+
+    def test_settings_passthrough_withdrawn_end_to_end(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        managed_path.write_text(json.dumps({"cleanupPeriodDays": 30}), encoding="utf-8")
+        state = {
+            "workspace": WS,
+            "codex_models": [],
+            claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                "allowManagedMcpServersOnly": True,
+                "cleanupPeriodDays": 7,
+            },
+        }
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+        assert json.loads(managed_path.read_text())["cleanupPeriodDays"] == 7
+
+        state.pop(claude.SETTINGS_PASSTHROUGH_STATE_KEY)
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        managed = json.loads(managed_path.read_text())
+        assert "allowManagedMcpServersOnly" not in managed
+        assert managed["cleanupPeriodDays"] == 30
+        assert claude.SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY not in state
+
     def test_managed_file_applies_model_default_precedence(self, monkeypatch):
         managed_defaults = self._write_managed_model_defaults(
             monkeypatch,
@@ -2024,9 +2129,9 @@ class TestWriteToolConfigManagedSettings:
         assert managed["env"]["DISABLE_AUTOUPDATER"] == "1"
         assert managed["env"]["ANTHROPIC_BASE_URL"]
         assert "allowManagedMcpServersOnly" not in private_writes[0][1]
-        assert state[claude.SETTINGS_PASSTHROUGH_PATHS_STATE_KEY] == [
-            ["allowManagedMcpServersOnly"],
-            ["env", "DISABLE_AUTOUPDATER"],
+        assert state[claude.SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY] == [
+            [["allowManagedMcpServersOnly"], True],
+            [["env", "DISABLE_AUTOUPDATER"], "1"],
         ]
 
     def test_settings_passthrough_skips_ug_owned_leaves(self, monkeypatch, capsys):
@@ -2094,9 +2199,9 @@ class TestWriteToolConfigManagedSettings:
         state = {
             "workspace": WS,
             "codex_models": [],
-            claude.SETTINGS_PASSTHROUGH_PATHS_STATE_KEY: [
-                ["allowManagedMcpServersOnly"],
-                ["cleanupPeriodDays"],
+            claude.SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY: [
+                [["allowManagedMcpServersOnly"], True],
+                [["cleanupPeriodDays"], 7],
             ],
         }
 
@@ -2105,7 +2210,7 @@ class TestWriteToolConfigManagedSettings:
         managed = json.loads(managed_writes[0][1])
         assert "allowManagedMcpServersOnly" not in managed
         assert managed["cleanupPeriodDays"] == 30
-        assert claude.SETTINGS_PASSTHROUGH_PATHS_STATE_KEY not in state
+        assert claude.SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY not in state
 
 
 class TestAddClaudeMcpServer:

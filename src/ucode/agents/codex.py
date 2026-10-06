@@ -71,6 +71,7 @@ from ucode.managed_files import (
     read_managed_file,
     reconcile_managed_file,
     revert_managed_file,
+    warn_skipped_settings_passthrough,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
@@ -126,10 +127,12 @@ MANAGED_KEYS: list[list[str]] = [
     ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers"],
 ]
 
-# The managed config's harness-native settings (resolved from the manifest), and the leaf paths last
-# delivered from them so a setting the admin drops is withdrawn from the managed file.
+# The managed config's harness-native settings (resolved from the manifest); the leaves last delivered
+# from them, so a setting the admin drops is withdrawn; and the leaves last skipped, so the warning
+# about them prints once rather than on every launch.
 SETTINGS_PASSTHROUGH_STATE_KEY = "codex_settings_passthrough"
-SETTINGS_PASSTHROUGH_PATHS_STATE_KEY = "codex_settings_passthrough_paths"
+SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY = "codex_settings_passthrough_leaves"
+SETTINGS_PASSTHROUGH_IGNORED_STATE_KEY = "codex_settings_passthrough_ignored"
 
 LEGACY_MANAGED_KEYS: list[list[str]] = [
     ["profile"],
@@ -524,26 +527,24 @@ def write_tool_config(
         reserved_paths=[*MANAGED_KEYS, ["model_catalog_json"], [MANAGED_MCP_CONFIG_KEY]],
         toml=True,
     )
-    if passthrough.ignored:
-        print_warning_err(
-            "Skipped managed Codex settings that ug configures itself or TOML cannot hold: "
-            f"{', '.join(passthrough.ignored)}."
-        )
+    warn_skipped_settings_passthrough(
+        state, SETTINGS_PASSTHROUGH_IGNORED_STATE_KEY, passthrough, "Codex", print_warning_err
+    )
     snapshots = managed_file_snapshots("codex", _parse_managed_config)
     _reconcile_managed_config(
         state,
         lambda base: apply_settings_passthrough(
             compose(base, include_catalog=False),
             passthrough,
-            previous_paths=state.get(SETTINGS_PASSTHROUGH_PATHS_STATE_KEY) or [],
+            previous_leaves=state.get(SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY) or [],
             snapshots=snapshots,
         ),
         [*MANAGED_KEYS, *passthrough.paths],
     )
-    if passthrough.paths:
-        state[SETTINGS_PASSTHROUGH_PATHS_STATE_KEY] = passthrough.paths
+    if passthrough.leaves:
+        state[SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY] = passthrough.record()
     else:
-        state.pop(SETTINGS_PASSTHROUGH_PATHS_STATE_KEY, None)
+        state.pop(SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY, None)
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     return state

@@ -783,6 +783,16 @@ class SettingsPassthrough:
     def paths(self) -> list[list[str]]:
         return [path for path, _ in self.leaves]
 
+    def items_at(self, path: list[str]) -> list:
+        """The admin's list at ``path``, or an empty list when it doesn't set one there."""
+        return next(
+            (value for leaf, value in self.leaves if leaf == path and isinstance(value, list)), []
+        )
+
+    def record(self) -> list:
+        """The ``[path, value]`` pairs to persist, so the next apply knows what ucode delivered."""
+        return [[path, value] for path, value in self.leaves]
+
 
 def _leaf_paths(value: dict, prefix: list[str]) -> Iterator[tuple[list[str], object]]:
     for key, child in value.items():
@@ -838,42 +848,112 @@ def plan_settings_passthrough(
     return SettingsPassthrough(leaves, ignored)
 
 
+def warn_skipped_settings_passthrough(
+    state: dict,
+    state_key: str,
+    passthrough: SettingsPassthrough,
+    display: str,
+    warn: Callable[[str], None],
+) -> None:
+    """Warn about skipped settings once, recording them in ``state[state_key]`` so a relaunch with
+    the same config stays quiet, while an admin edit that changes the skipped set warns again."""
+    if passthrough.ignored and passthrough.ignored != state.get(state_key):
+        warn(
+            f"Skipped managed {display} settings that ug configures itself or the file can't "
+            f"hold: {', '.join(passthrough.ignored)}."
+        )
+    if passthrough.ignored:
+        state[state_key] = passthrough.ignored
+    else:
+        state.pop(state_key, None)
+
+
 def apply_settings_passthrough(
     doc: dict,
     passthrough: SettingsPassthrough,
     *,
-    previous_paths: list,
+    previous_leaves: list,
     snapshots: ManagedFileSnapshots,
-    union_list_paths: list[list[str]] | None = None,
+    is_shared_list: Callable[[list[str]], bool] = lambda path: False,
 ) -> dict:
     """Write ``passthrough``'s leaves into ``doc`` and withdraw ones the admin has since dropped.
 
-    Each leaf is written as-is (lists replace), except that a ``union_list_paths`` leaf is merged into
-    the list already there, for lists ucode shares with the admin such as Claude's
-    ``permissions.deny``.
+    Each leaf is written as-is (lists replace), except a list the file shares with other authors
+    (``is_shared_list``, e.g. Claude's ``permissions.deny`` or a hook event): there the admin's items
+    are merged in, and only items ucode itself delivered last time are withdrawn, so IT-authored
+    entries survive.
 
-    A path delivered last time (``previous_paths``) and no longer configured is withdrawn by the same
-    three-way rule ``ucode revert`` uses: only when the live value is still what ucode last wrote,
-    restoring the pre-ucode value if there was one, so a value someone edited by hand stays.
+    ``previous_leaves`` is the ``[path, value]`` list :meth:`SettingsPassthrough.record` saved last
+    time. A previously delivered scalar path the admin has dropped is withdrawn by the same three-way
+    rule ``ucode revert`` uses: only when the live value is still what ucode last wrote, restoring the
+    pre-ucode value if there was one, so a value someone edited by hand stays.
     """
-    union = union_list_paths or []
-    for path, value in passthrough.leaves:
-        existing = _path_value(doc, path)
-        if path in union and isinstance(value, list) and isinstance(existing, list):
-            value = [*existing, *(item for item in value if item not in existing)]
-        _set_path_value(doc, path, value)
-
+    previous = _recorded_leaves(previous_leaves)
     applied = passthrough.paths
-    stale = [
-        path
-        for raw in previous_paths
-        if (path := _owned_path(raw)) is not None and path not in applied
+    shared_paths = [
+        path for path, value in passthrough.leaves if _is_shared(path, value, is_shared_list)
     ]
+    shared_paths += [
+        path
+        for path, value in previous
+        if path not in shared_paths and _is_shared(path, value, is_shared_list)
+    ]
+    for path, value in passthrough.leaves:
+        if path not in shared_paths:
+            _set_path_value(doc, path, value)
+    for path in shared_paths:
+        _merge_shared_list(
+            doc,
+            path,
+            passthrough.items_at(path),
+            withdrawn=withdrawn_list_items(path, passthrough, previous_leaves),
+        )
+
+    stale = [path for path, _ in previous if path not in applied and path not in shared_paths]
     if stale and snapshots.last_applied_by_ug is not None:
         doc = _three_way_revert(
             doc, snapshots.original_before_ug or {}, snapshots.last_applied_by_ug, stale
         )
     return doc
+
+
+def withdrawn_list_items(
+    path: list[str], passthrough: SettingsPassthrough, previous_leaves: list
+) -> list:
+    """Items ucode delivered into the shared list at ``path`` last time that the admin has dropped."""
+    current = passthrough.items_at(path)
+    return [
+        item
+        for previous_path, value in _recorded_leaves(previous_leaves)
+        if previous_path == path and isinstance(value, list)
+        for item in value
+        if item not in current
+    ]
+
+
+def _is_shared(path: list[str], value: object, is_shared_list: Callable[[list[str]], bool]) -> bool:
+    return isinstance(value, list) and is_shared_list(path)
+
+
+def _recorded_leaves(raw: object) -> list[tuple[list[str], object]]:
+    if not isinstance(raw, list):
+        return []
+    leaves: list[tuple[list[str], object]] = []
+    for entry in raw:
+        if isinstance(entry, list) and len(entry) == 2 and (path := _owned_path(entry[0])):
+            leaves.append((path, entry[1]))
+    return leaves
+
+
+def _merge_shared_list(doc: dict, path: list[str], admin_items: list, *, withdrawn: list) -> None:
+    existing = _path_value(doc, path)
+    current = existing if isinstance(existing, list) else []
+    merged = [item for item in current if item not in withdrawn]
+    merged.extend(item for item in admin_items if item not in merged)
+    if merged:
+        _set_path_value(doc, path, merged)
+    elif existing is not _MISSING:
+        _delete_path_value(doc, path)
 
 
 # Read once into memory and passed to `sh -c`: root never executes a file from the (user-writable)

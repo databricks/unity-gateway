@@ -55,6 +55,7 @@ from ucode.managed_files import (
     OS,
     ManagedFileSnapshots,
     ManagedFileWriteUnavailable,
+    SettingsPassthrough,
     apply_settings_passthrough,
     current_os,
     managed_file_conflicts,
@@ -69,6 +70,8 @@ from ucode.managed_files import (
     read_managed_file,
     reconcile_managed_file,
     revert_managed_file,
+    warn_skipped_settings_passthrough,
+    withdrawn_list_items,
 )
 from ucode.mcp_oauth import (
     CLAUDE_CODE_OAUTH_CLIENT_ID,
@@ -219,10 +222,15 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
 CLAUDE_PERMISSIONS_DENY_PATH = ["permissions", "deny"]
-# The managed config's harness-native settings (resolved from the manifest), and the leaf paths last
-# delivered from them so a setting the admin drops is withdrawn from the managed file.
+# The managed config's harness-native settings (resolved from the manifest); the leaves last delivered
+# from them, so a setting the admin drops is withdrawn; and the leaves last skipped, so the warning
+# about them prints once rather than on every launch.
 SETTINGS_PASSTHROUGH_STATE_KEY = "claude_settings_passthrough"
-SETTINGS_PASSTHROUGH_PATHS_STATE_KEY = "claude_settings_passthrough_paths"
+SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY = "claude_settings_passthrough_leaves"
+SETTINGS_PASSTHROUGH_IGNORED_STATE_KEY = "claude_settings_passthrough_ignored"
+# Settings that stop Claude Code from running hooks outside the managed file, which is where smart
+# routing installs its per-launch hooks.
+CLAUDE_HOOK_LOCKDOWN_KEYS = ("allowManagedHooksOnly", "disableAllHooks")
 ANTHROPIC_CUSTOM_HEADERS_ENV_KEY = "ANTHROPIC_CUSTOM_HEADERS"
 CLAUDE_MANAGED_CUSTOM_HEADER_NAMES = frozenset(
     {
@@ -1486,11 +1494,11 @@ def write_tool_config(
             [MANAGED_MCP_SETTINGS_KEY],
         ],
     )
-    if passthrough.ignored:
-        print_warning(
-            "Skipped managed Claude Code settings that ug configures itself: "
-            f"{', '.join(passthrough.ignored)}."
-        )
+    warn_skipped_settings_passthrough(
+        state, SETTINGS_PASSTHROUGH_IGNORED_STATE_KEY, passthrough, "Claude Code", print_warning
+    )
+    previous_leaves = state.get(SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY) or []
+    _warn_if_settings_disable_smart_routing(passthrough, previous_leaves)
     _reconcile_managed_settings(
         state,
         lambda base: apply_settings_passthrough(
@@ -1502,17 +1510,20 @@ def write_tool_config(
                 managed_settings_snapshots=managed_snapshots,
             ),
             passthrough,
-            previous_paths=state.get(SETTINGS_PASSTHROUGH_PATHS_STATE_KEY) or [],
+            previous_leaves=previous_leaves,
             snapshots=managed_snapshots,
-            union_list_paths=[CLAUDE_PERMISSIONS_DENY_PATH],
+            is_shared_list=_is_shared_claude_list,
         ),
         [*managed_file_keys, *passthrough.paths],
         relayed,
+        withdrawn_denies=withdrawn_list_items(
+            CLAUDE_PERMISSIONS_DENY_PATH, passthrough, previous_leaves
+        ),
     )
-    if passthrough.paths:
-        state[SETTINGS_PASSTHROUGH_PATHS_STATE_KEY] = passthrough.paths
+    if passthrough.leaves:
+        state[SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY] = passthrough.record()
     else:
-        state.pop(SETTINGS_PASSTHROUGH_PATHS_STATE_KEY, None)
+        state.pop(SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY, None)
 
     custom_oauth = state.get("custom_oauth")
     web_search_profile = (
@@ -1638,11 +1649,34 @@ def _managed_settings_conflicts(
     return conflicts
 
 
+def _is_shared_claude_list(path: list[str]) -> bool:
+    """Lists IT and ug also write to in the managed file, so the admin's entries merge into them."""
+    return path == CLAUDE_PERMISSIONS_DENY_PATH or (len(path) == 2 and path[0] == "hooks")
+
+
+def _warn_if_settings_disable_smart_routing(
+    passthrough: SettingsPassthrough, previous_leaves: list
+) -> None:
+    if passthrough.record() == previous_leaves:
+        return
+    lockdown = [
+        ".".join(path)
+        for path, value in passthrough.leaves
+        if value is True and path in ([key] for key in CLAUDE_HOOK_LOCKDOWN_KEYS)
+    ]
+    if lockdown:
+        print_warning(
+            f"Your managed settings set {', '.join(lockdown)}, which also blocks the per-launch "
+            "hooks ug's smart routing installs; smart-routed launches will run unrouted."
+        )
+
+
 def _reconcile_managed_settings(
     state: dict,
     compose: Callable[[dict], dict],
     owned_paths: list[list[str]],
     relayed: bool,
+    withdrawn_denies: list | None = None,
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -1691,7 +1725,7 @@ def _reconcile_managed_settings(
         ) from exc
     managed_before = copy.deepcopy(existing)
     desired_settings = compose(existing)
-    _preserve_permission_denies(managed_before, desired_settings)
+    _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])
     if not managed_writes_allowed():
         conflicts = _managed_settings_conflicts(managed_before, desired_settings, owned_paths)
         if conflicts:
@@ -1725,7 +1759,12 @@ def _reconcile_managed_settings(
     mark_managed_file_verified(state, "claude", path)
 
 
-def _preserve_permission_denies(existing: dict, desired: dict) -> None:
+def _preserve_permission_denies(existing: dict, desired: dict, *, withdrawn: list = ()) -> None:
+    """Keep the deny rules already in ``existing`` alongside ``desired``'s, except ``withdrawn``.
+
+    ``withdrawn`` holds rules ug delivered from the admin's settings that the admin has since dropped;
+    every other existing rule (IT-authored ones included) stays.
+    """
     existing_permissions = existing.get("permissions")
     desired_permissions = desired.get("permissions")
     if not isinstance(existing_permissions, dict) or not isinstance(desired_permissions, dict):
@@ -1734,10 +1773,8 @@ def _preserve_permission_denies(existing: dict, desired: dict) -> None:
     desired_denies = desired_permissions.get("deny")
     if not isinstance(existing_denies, list) or not isinstance(desired_denies, list):
         return
-    desired_permissions["deny"] = [
-        *existing_denies,
-        *(rule for rule in desired_denies if rule not in existing_denies),
-    ]
+    kept = [rule for rule in existing_denies if rule not in withdrawn]
+    desired_permissions["deny"] = [*kept, *(rule for rule in desired_denies if rule not in kept)]
 
 
 def default_model(state: dict) -> str | None:

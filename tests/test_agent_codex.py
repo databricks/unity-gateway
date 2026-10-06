@@ -1756,11 +1756,11 @@ class TestCodexManagedConfig:
         assert isinstance(managed["project_doc_max_bytes"], int)
         assert managed["model_temperature"] == 0.5
         assert "approval_policy" not in read_toml_safe(config_path)
-        assert state[codex.SETTINGS_PASSTHROUGH_PATHS_STATE_KEY] == [
-            ["approval_policy"],
-            ["features", "web_search_request"],
-            ["project_doc_max_bytes"],
-            ["model_temperature"],
+        assert state[codex.SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY] == [
+            [["approval_policy"], "never"],
+            [["features", "web_search_request"], False],
+            [["project_doc_max_bytes"], 32768],
+            [["model_temperature"], 0.5],
         ]
 
     def test_settings_passthrough_skips_ug_owned_and_null_leaves(
@@ -1811,7 +1811,7 @@ class TestCodexManagedConfig:
         managed = read_toml_safe(managed_path)
         assert "approval_policy" not in managed
         assert managed["sandbox_mode"] == "read-only"
-        assert codex.SETTINGS_PASSTHROUGH_PATHS_STATE_KEY not in state
+        assert codex.SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY not in state
 
     def test_dropped_passthrough_setting_edited_by_hand_is_kept(self, tmp_path, monkeypatch):
         managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)

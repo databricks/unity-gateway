@@ -91,11 +91,16 @@ overlay, so an admin can set any key the harness supports (for example Claude's
 
 - A leaf that overlaps a path ucode writes itself (gateway URL, auth helper, model picker, managed
   MCP servers, Codex provider, and so on) is skipped with a warning, so the admin's settings can't
-  break the gateway wiring. Claude's `permissions.deny` is merged into ucode's own entries.
+  break the gateway wiring. The warning prints once and again only when the skipped set changes.
+- Lists the file shares with IT, Claude's `permissions.deny` and each `hooks.<event>`, are merged
+  rather than replaced. ucode records the items it delivered, so when the admin drops one only that
+  item is withdrawn; entries IT authored, before or after ucode's first write, stay.
+- Claude's `allowManagedHooksOnly` and `disableAllHooks` are delivered as configured, with a warning
+  that they also block the per-launch hooks smart routing installs.
 - Codex leaves set to `null` are skipped because TOML has no null value.
 - Delivered leaves become ucode-owned paths, so `ucode revert` removes them. When the admin later
-  drops one, ucode withdraws it using the same three-way rule: only when the live value is still the
-  one ucode wrote, and the pre-ucode value is restored if there was one.
+  drops a non-list leaf, ucode withdraws it using the same three-way rule: only when the live value
+  is still the one ucode wrote, and the pre-ucode value is restored if there was one.
 - Settings only go into the managed file, never into the private ucode file. Where ucode can't write
   the managed file (unsupported platform, relayed Claude launch), they aren't applied.
 

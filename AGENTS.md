@@ -70,7 +70,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | Tracing | Ignore | Create/replace | The seven `CLAUDE_CODE_*`/`OTEL_*` trace keys and `otelHeadersHelper`; only when the config enables tracing |
 | `managedMcpServers` | Ignore | Merge | Add/update the config's MCP server entries; other entries left alone |
 | Smart-routing hooks | Merge | Merge | `PreToolUse`, `SessionStart`, `SubagentStart`; only `ug`'s own marked handlers, other hooks left alone |
-| Admin `settings` | Ignore | Create/replace | Managed file only; each leaf of the config's per-agent `settings`, as-is. Leaves overlapping a field above are skipped with a warning; `permissions.deny` merges. A leaf the admin drops is withdrawn if unchanged since `ug` wrote it |
+| Admin `settings` | Ignore | Create/replace | Managed file only; each leaf of the config's per-agent `settings`, as-is. Leaves overlapping a field above are skipped with a warning (printed once per change). `permissions.deny` and `hooks.<event>` lists merge: IT-authored entries stay, and entries `ug` delivered that the admin drops are withdrawn. Any other dropped leaf is withdrawn if unchanged since `ug` wrote it. `allowManagedHooksOnly`/`disableAllHooks` are delivered but warn, since they also block smart routing's per-launch hooks |
 
 </details>
 
