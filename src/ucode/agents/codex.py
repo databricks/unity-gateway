@@ -627,7 +627,11 @@ def managed_mcp_uses_managed_file() -> bool:
 
 def managed_mcp_entry(argv: list[str]) -> dict:
     """A ``[mcp_servers.<name>]`` stdio entry from the ``ug mcp-proxy`` argv (same as user scope)."""
-    return {"command": argv[0], "args": list(argv[1:])}
+    return {
+        "command": argv[0],
+        "args": list(argv[1:]),
+        "env_vars": ["DATABRICKS_BEARER", "DATABRICKS_BEARER_COMMAND"],
+    }
 
 
 def managed_mcp_http_entry(url: str, client_id: str) -> dict:
