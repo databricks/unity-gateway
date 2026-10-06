@@ -1,7 +1,7 @@
 """Report downloaded skills to AI Gateway, which counts them toward UC skill popularity.
 
-Reports are sent by a detached child process, so no command waits on the network and neither an
-exit nor an ``os.execvp`` into an agent cuts a report short.
+Reports are sent by a detached child process, so no command waits on the network and exiting
+doesn't cut a report short.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def report_skill_usage_in_background(workspace: str, token: str, refs: list[Skil
 
 
 def main() -> None:
-    """Send the handed over request, one report per 50 skills, ignoring every failure."""
+    """Send the handed over request, one report per 50 skills, stopping at the first failure."""
     token = sys.stdin.read()
     request = json.loads(os.environ[_REPORT_REQUEST_ENV_VAR])
     url = f"https://{workspace_hostname(request['workspace'])}{_REPORT_SKILL_USAGE_PATH}"
@@ -64,7 +64,11 @@ def main() -> None:
     skills = request["skills"]
     for start in range(0, len(skills), _MAX_SKILLS_PER_REPORT):
         report = {"skills": skills[start : start + _MAX_SKILLS_PER_REPORT]}
-        _http_post_json(url, token, report, timeout=_REPORT_TIMEOUT_SECONDS, headers=headers)
+        _, reason = _http_post_json(
+            url, token, report, timeout=_REPORT_TIMEOUT_SECONDS, headers=headers
+        )
+        if reason:
+            return
 
 
 if __name__ == "__main__":

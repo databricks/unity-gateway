@@ -143,16 +143,15 @@ class TestReportSkillUsageInBackground:
 class TestDetachedReporter:
     def test_a_large_request_arrives_after_ug_exits_right_away(self, monkeypatch, tmp_path):
         debug_log = isolated_debug_log(monkeypatch, tmp_path)
-        skill_count = 1000
 
         subprocess.run(
-            [sys.executable, "-c", _REPORT_THEN_EXIT, str(skill_count)],
+            [sys.executable, "-c", _REPORT_THEN_EXIT, "1000"],
             cwd=tmp_path,
             timeout=60,
             check=True,
         )
 
-        assert wait_for_report_posts(debug_log, skill_count // 50) == skill_count // 50
+        assert wait_for_report_posts(debug_log, 1) == 1
 
     def test_a_ucode_package_in_the_working_directory_is_not_run(self, monkeypatch, tmp_path):
         debug_log = isolated_debug_log(monkeypatch, tmp_path / "home")
@@ -171,15 +170,19 @@ class TestDetachedReporter:
         assert not stolen.exists()
 
 
-def capture_failing_posts(monkeypatch) -> list[dict]:
+def capture_posts(monkeypatch, *, failure: str | None = None) -> list[dict]:
     posts: list[dict] = []
 
     def fake_post(url, token, payload, **kwargs):
         posts.append({"url": url, "token": token, "payload": payload, **kwargs})
-        return None, "HTTP 429 Too Many Requests"
+        return (None, failure) if failure else ({}, None)
 
     monkeypatch.setattr(su, "_http_post_json", fake_post)
     return posts
+
+
+def skill_entries(count: int) -> list[dict]:
+    return [{"full_name": f"main.default.skill-{i}", "id": SKILL_ID} for i in range(count)]
 
 
 def run_reporter(monkeypatch, skills: list[dict]) -> None:
@@ -191,7 +194,7 @@ def run_reporter(monkeypatch, skills: list[dict]) -> None:
 
 class TestReporterMain:
     def test_posts_full_name_and_id_with_ucode_user_agent(self, monkeypatch):
-        posts = capture_failing_posts(monkeypatch)
+        posts = capture_posts(monkeypatch)
         monkeypatch.setattr(su, "ug_version", lambda: "1.2.3")
         skills = [{"full_name": "main.default.triage", "id": SKILL_ID}]
 
@@ -207,12 +210,16 @@ class TestReporterMain:
             }
         ]
 
-    def test_sends_every_batch_of_fifty_despite_failures(self, monkeypatch):
-        posts = capture_failing_posts(monkeypatch)
+    def test_sends_one_report_per_fifty_skills(self, monkeypatch):
+        posts = capture_posts(monkeypatch)
 
-        run_reporter(
-            monkeypatch,
-            [{"full_name": f"main.default.skill-{i}", "id": SKILL_ID} for i in range(51)],
-        )
+        run_reporter(monkeypatch, skill_entries(101))
 
-        assert [len(post["payload"]["skills"]) for post in posts] == [50, 1]
+        assert [len(post["payload"]["skills"]) for post in posts] == [50, 50, 1]
+
+    def test_stops_after_the_first_failed_report(self, monkeypatch):
+        posts = capture_posts(monkeypatch, failure="network error: timed out")
+
+        run_reporter(monkeypatch, skill_entries(101))
+
+        assert [len(post["payload"]["skills"]) for post in posts] == [50]

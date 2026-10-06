@@ -551,7 +551,7 @@ def _update_stale_skills(
     for record, ref in pairs:
         pairs_by_base.setdefault(os.path.normpath(record["base"]), []).append((record, ref))
 
-    updated: list[SkillRef] = []
+    updated = 0
     for base, base_pairs in pairs_by_base.items():
         if time.monotonic() >= deadline:
             break
@@ -564,9 +564,8 @@ def _update_stale_skills(
             workspace, token, refs, roots, label="Updating skills", deadline=deadline
         )
         record_downloads(_skill_installs(written, roots, path, workspace))
-        updated.extend(written)
-    report_skill_usage_in_background(workspace, token, updated)
-    return len(updated)
+        updated += len(written)
+    return updated
 
 
 def refresh_downloaded_skills_on_launch(state: dict) -> None:

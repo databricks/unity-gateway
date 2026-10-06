@@ -1381,30 +1381,24 @@ class TestUpdateStaleSkills:
         assert stored[0]["fqn"] == "main.default.triage"
         assert stored[0]["uc_update_time"] == "2026-09-01T00:00:00Z"
 
-    def test_reports_rewritten_skills_from_every_base_once(
-        self, tmp_path, monkeypatch, usage_reports
-    ):
+    def test_updates_are_not_reported_as_usage(self, tmp_path, monkeypatch, usage_reports):
         home = tmp_path / "home"
         monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: home))
-        project = tmp_path / "project"
-        project.mkdir()
         monkeypatch.setattr(
             sd,
-            "fetch_skill_bundle",
-            lambda ws, tok, c, s, leaf: (
-                (None, "HTTP 500 Server Error") if leaf == "bad" else ({"SKILL.md": b"ok"}, None)
-            ),
+            "_fetch_bundles",
+            lambda *a, **k: {"main.default.triage": ({"SKILL.md": b"fresh"}, None)},
         )
-        monkeypatch.setattr(sd, "print_warning", lambda _message: None)
-        pairs = [
-            ({"base": str(home)}, _skill("home-skill", "2026-09-01T00:00:00Z")),
-            ({"base": str(project)}, _skill("project-skill", "2026-09-01T00:00:00Z")),
-            ({"base": str(project)}, _skill("bad", "2026-09-01T00:00:00Z")),
-        ]
 
-        sd._update_stale_skills(WS, "token", pairs, time.monotonic() + 30)
+        updated = sd._update_stale_skills(
+            WS,
+            "token",
+            [({"base": str(home)}, _skill("triage", "2026-09-01T00:00:00Z"))],
+            time.monotonic() + 30,
+        )
 
-        assert usage_reports == [["main.default.home-skill", "main.default.project-skill"]]
+        assert updated == 1
+        assert usage_reports == []
 
     def test_skips_rename_onto_skill_already_on_disk(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
