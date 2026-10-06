@@ -1,0 +1,261 @@
+"""Smart-routing CUJ: execute once, then report each contract assertion separately."""
+
+from dataclasses import dataclass
+
+import pytest
+
+from tests.integration.utils.evidence import FileTask
+
+from .base import BaseCujTest
+from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, CodingAgent
+from .helpers.evidence import SessionEvidence, SessionObservation, canonical_model
+from .helpers.terminal import Terminal
+from .helpers.tui_request_recorder import RecordedRequest, RecordedResponse
+
+ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
+AGENTS = (CLAUDE, CODEX)
+
+
+@dataclass(frozen=True)
+class SessionCase:
+    agent: str
+    launch_args: tuple[str, ...]
+    task: FileTask
+    observation: SessionObservation
+    requests: tuple[RecordedRequest, ...]
+    inference_request: RecordedRequest
+    inference_response: RecordedResponse
+    route_request: RecordedRequest | None = None
+    route_response: RecordedResponse | None = None
+
+    @property
+    def selected_model(self):
+        assert self.route_response is not None
+        selections = self.route_response.payload["route_selection"]
+        assert len(selections) == 1
+        return canonical_model(selections[0]["route_option"]["model"])
+
+
+@dataclass(frozen=True)
+class SmartRoutingScenario:
+    published: dict
+    supported: dict[str, set[str]]
+    defaults: dict[str, str]
+    overrides: dict[str, str]
+    routed: dict[str, SessionCase]
+    explicit: dict[str, SessionCase]
+
+
+def _run_session(session, recorder, agent, task, launch_args):
+    evidence = SessionEvidence(session.home, agent)
+    checkpoint = recorder.checkpoint()
+    recorder.prepare_launch()
+    with Terminal(session, "-".join(launch_args), list(launch_args)) as tui:
+        tui.boot(timeout=150)
+        tui.submit(task.prompt)
+        tui.task(evidence, task)
+        tui.exit_normally()
+    return evidence.observe(task), recorder.requests_after(checkpoint)
+
+
+@pytest.fixture(scope="class")
+def smart_routing_scenario(cuj):
+    """Pytest's beforeAll equivalent: run all live sessions exactly once."""
+    session, workspace, recorder = cuj
+    published = workspace.config()
+    assert published["spec_version"] == 1
+    assert published["default_agent"] == CodingAgent.CLAUDE_CODE
+    entries = published["enabled_agents"]
+    assert len(entries) == 2
+    configs = {entry["agent"]: entry["config"] for entry in entries}
+    assert set(configs) == {CodingAgent.CLAUDE_CODE, CodingAgent.CODEX}
+    agent_configs = {
+        CLAUDE: configs[CodingAgent.CLAUDE_CODE],
+        CODEX: configs[CodingAgent.CODEX],
+    }
+
+    supported, defaults, overrides = {}, {}, {}
+    for agent, config in agent_configs.items():
+        assert config["smart_routing"]["enabled"] is True
+        assert config.get("tracing", {}).get("enabled", False) is False
+        assert not config.get("smart_defaults") and not config.get("spend_tiers")
+        assert set(config["models"]) == {"model_services"}, (
+            "No MPS or schema source is allowed in this CUJ"
+        )
+        offered = config["models"]["model_services"]
+        assert len(set(offered)) >= 2
+        supported[agent] = workspace.model_ids(agent)
+        defaults[agent] = config["default_models"]["default_model"]
+        assert defaults[agent] in offered
+        overrides[agent] = next(model for model in offered if model != defaults[agent])
+
+    recorder.configure_session(
+        session,
+        ["configure", "--disable-databricks-ai-tools"],
+    )
+
+    routed, explicit = {}, {}
+    for agent in AGENTS:
+        task = FileTask(session)
+        task.prompt += " Do not delegate."
+        observation, requests = _run_session(session, recorder, agent, task, (agent,))
+        route_request = next(
+            request
+            for request in requests
+            if request.method == "POST" and request.path == ROUTING_PATH
+        )
+        route_response = recorder.response_for(route_request)
+        inference_request = next(
+            request
+            for request in requests
+            if request.method == "POST" and request.path == INFERENCE_PATHS[agent]
+        )
+        routed[agent] = SessionCase(
+            agent=agent,
+            launch_args=(agent,),
+            task=task,
+            observation=observation,
+            requests=requests,
+            route_request=route_request,
+            route_response=route_response,
+            inference_request=inference_request,
+            inference_response=recorder.response_for(inference_request),
+        )
+
+        task = FileTask(session)
+        task.prompt += " Do not delegate."
+        launch_args = (agent, "--model", overrides[agent])
+        observation, requests = _run_session(session, recorder, agent, task, launch_args)
+        inference_request = next(
+            request
+            for request in requests
+            if request.method == "POST" and request.path == INFERENCE_PATHS[agent]
+        )
+        explicit[agent] = SessionCase(
+            agent=agent,
+            launch_args=launch_args,
+            task=task,
+            observation=observation,
+            requests=requests,
+            inference_request=inference_request,
+            inference_response=recorder.response_for(inference_request),
+        )
+
+    return SmartRoutingScenario(
+        published=published,
+        supported=supported,
+        defaults=defaults,
+        overrides=overrides,
+        routed=routed,
+        explicit=explicit,
+    )
+
+
+class TestCujSmartRouting(BaseCujTest):
+    WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
+
+    @pytest.mark.parametrize("agent", AGENTS)
+    def test_agent_completes_real_first_prompt_file_task_without_model_override(
+        self, smart_routing_scenario, agent
+    ):
+        case = smart_routing_scenario.routed[agent]
+        assert case.launch_args == (agent,)
+        assert case.task.value not in case.task.prompt
+        assert case.observation.turn is not None
+        assert case.task.value in case.observation.turn.answer
+
+    @pytest.mark.parametrize("agent", AGENTS)
+    def test_router_decision_exists_and_is_correlated_to_the_prompt(
+        self, smart_routing_scenario, agent
+    ):
+        case = smart_routing_scenario.routed[agent]
+        decisions = [request for request in case.requests if request.path == ROUTING_PATH]
+        assert decisions == [case.route_request]
+        assert case.route_request.payload["task"]["prompt"] == case.task.prompt
+        assert case.route_request.payload["route_selector"]["router_name"]
+        assert case.route_response.status_code == 200
+
+    @pytest.mark.parametrize("agent", AGENTS)
+    def test_selected_model_is_used_for_inference_and_the_task_completes(
+        self, smart_routing_scenario, agent
+    ):
+        case = smart_routing_scenario.routed[agent]
+        inference_model = case.inference_request.payload["model"]
+        if agent == CLAUDE:
+            assert inference_model == case.selected_model
+        else:
+            assert canonical_model(inference_model) == case.selected_model
+        assert case.inference_response.status_code == 200
+        result = case.observation.assert_applied(
+            case.task,
+            smart_routing_scenario.supported[agent],
+            expected=case.selected_model,
+        )
+        assert case.task.value in result["answer"]
+
+    @pytest.mark.parametrize("agent", AGENTS)
+    def test_selected_model_is_a_supported_system_ai_target_in_the_live_router_contract(
+        self, smart_routing_scenario, agent
+    ):
+        case = smart_routing_scenario.routed[agent]
+        live_supported = {
+            canonical_model(model) for model in smart_routing_scenario.supported[agent]
+        }
+        options = case.route_request.payload["route_options"]
+        offered = {canonical_model(option["model"]) for option in options}
+        assert options and all(option["harness"] == agent for option in options)
+        assert offered <= live_supported
+        assert case.selected_model in offered
+        assert case.selected_model.startswith("system.ai.")
+
+    def test_routing_assertions_accept_each_agents_independent_supported_selection(
+        self, smart_routing_scenario
+    ):
+        # There is deliberately no expected winner and no cross-agent comparison.
+        for agent, case in smart_routing_scenario.routed.items():
+            response_model = canonical_model(
+                case.route_response.payload["route_selection"][0]["route_option"]["model"]
+            )
+            assert case.selected_model == response_model
+            assert response_model in {
+                canonical_model(model) for model in smart_routing_scenario.supported[agent]
+            }
+
+    @pytest.mark.parametrize(
+        "agent",
+        [
+            pytest.param(
+                CLAUDE,
+                marks=pytest.mark.skip(
+                    reason="TODO: Fix explicit Claude model precedence over managed defaults"
+                ),
+            ),
+            CODEX,
+        ],
+    )
+    def test_explicit_supported_model_bypasses_router_and_is_used_for_inference(
+        self, smart_routing_scenario, agent
+    ):
+        case = smart_routing_scenario.explicit[agent]
+        expected = smart_routing_scenario.overrides[agent]
+        assert case.launch_args == (agent, "--model", expected)
+        assert not [request for request in case.requests if request.path == ROUTING_PATH]
+        inference_model = case.inference_request.payload["model"]
+        if agent == CLAUDE:
+            assert inference_model == expected
+        else:
+            assert canonical_model(inference_model) == canonical_model(expected)
+        assert case.inference_response.status_code == 200
+        case.observation.assert_applied(
+            case.task,
+            smart_routing_scenario.supported[agent],
+            expected=expected,
+        )
+
+    @pytest.mark.skip(reason="Requires a separate read-only workspace with routing disabled")
+    def test_routing_disabled_fresh_sessions_use_defaults_without_router_decisions(self):
+        """Covered when a second, preconfigured routing-disabled CUJ workspace is available."""
+
+    def test_workspace_configuration_remains_read_only(self, smart_routing_scenario, cuj):
+        _, workspace, _ = cuj
+        workspace.assert_unchanged(smart_routing_scenario.published)

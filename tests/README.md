@@ -7,7 +7,7 @@ mocks, monkeypatching, fake binaries/services, or fabricated ug state.
 | Category | Location | What it proves |
 | --- | --- | --- |
 | Unit/component | Existing `test_*.py` files | Individual behavior; dependencies may be mocked |
-| Dedicated-workspace CUJ | `e2e_cuj/test_cuj_*.py` | Real user journeys against read-only, preconfigured workspaces |
+| Dedicated-workspace CUJ | `e2e_cuj/test_cuj_smart_routing.py` | Real first-prompt routing and explicit-model bypass against read-only workspace configuration |
 | Existing e2e | `test_e2e*.py` | Real workspace behavior with some patched setup/internal calls |
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
@@ -22,6 +22,9 @@ CUJs never republish configuration or create a remote reservation.
 CUJ helper tests also verify that unsupported agent names fail rather than defaulting to Codex.
 They cover Claude/Codex helper dispatch and rejection of routing decisions without
 the agent-specific prompt-submission evidence.
+The smart-routing CUJ runs four fresh sessions: routed and explicit model for both
+Claude and Codex. Routing-disabled coverage is deferred until a separately
+preconfigured workspace is assigned.
 
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.
