@@ -5571,6 +5571,11 @@ class TestChildStdoutLaunch:
             ("codex", ["exec", "--json", "say hello"], "Codex"),
             ("codex", ["e", "say hello"], "Codex"),
             ("codex", ["e", "--json", "say hello"], "Codex"),
+            ("codex", ["--model", "exec"], "Codex"),
+            ("codex", ["--cd", "app-server"], "Codex"),
+            ("codex", ["--profile", "e"], "Codex"),
+            ("codex", ["--no-alt-screen", "explain", "exec"], "Codex"),
+            ("codex", ["--image", "one.png", "two.png", "exec", "hello"], "Codex"),
             (
                 "codex",
                 ["-c", 'model_reasoning_effort="low"', "exec", "--json", "hello"],
@@ -5672,12 +5677,9 @@ class TestChildStdoutLaunch:
             ("codex", [], "Codex"),
             ("codex", ["explain exec and e"], "Codex"),
             ("codex", ["--", "exec"], "Codex"),
-            ("codex", ["--model", "exec"], "Codex"),
             ("codex", ["--model=exec"], "Codex"),
-            ("codex", ["--cd", "exec"], "Codex"),
             ("codex", ["-Cexec"], "Codex"),
             ("codex", ["-c", 'model="exec"'], "Codex"),
-            ("codex", ["--no-alt-screen", "explain", "exec"], "Codex"),
             ("codex", ["--model", "example", "--", "exec"], "Codex"),
             ("codex", ['--config=model="example"', "--", "e"], "Codex"),
             ("codex", ["--no-alt-screen", "--", "app-server"], "Codex"),
@@ -5699,7 +5701,7 @@ class TestChildStdoutLaunch:
     def test_other_codex_launches_keep_stdout(self):
         assert cli_mod._child_owns_stdout("codex", []) is False
         assert cli_mod._child_owns_stdout("codex", ["--", "exec"]) is False
-        assert cli_mod._child_owns_stdout("codex", ["--model", "exec"]) is False
+        assert cli_mod._child_owns_stdout("codex", ["--model=exec"]) is False
 
     def test_other_agent_commands_keep_stdout(self):
         assert cli_mod._child_owns_stdout("claude", ["app-server"]) is False
@@ -5745,24 +5747,26 @@ class TestChildStdoutLaunch:
             "--add-dir",
         ],
     )
-    def test_codex_global_option_values_are_not_subcommands(self, option):
-        assert cli_mod._child_owns_stdout("codex", [option, "exec"]) is False
+    def test_codex_token_membership_also_matches_option_values(self, option):
+        assert cli_mod._child_owns_stdout("codex", [option, "exec"])
         assert cli_mod._child_owns_stdout("codex", [f"{option}=exec"]) is False
         assert cli_mod._child_owns_stdout("codex", [option, "exec", "e", "hello"])
-        assert cli_mod._child_owns_stdout("codex", [option, "exec", "--", "app-server"]) is False
+        assert cli_mod._child_owns_stdout("codex", [option, "exec", "--", "app-server"])
+        assert cli_mod._child_owns_stdout("codex", [option, "example", "--", "exec"]) is False
 
     @pytest.mark.parametrize(
-        "tool_args",
+        ("tool_args", "expected"),
         [
-            ["--unknown", "exec"],
-            ["--model"],
-            ["--model", "--", "exec"],
-            ["--help", "exec"],
-            ["--version", "exec"],
+            (["--unknown", "exec"], True),
+            (["--image", "one.png", "two.png", "e"], True),
+            (["--model"], False),
+            (["--model", "--", "exec"], False),
+            (["--help", "exec"], True),
+            (["--version", "exec"], True),
         ],
     )
-    def test_incomplete_or_unrecognized_codex_options_do_not_identify_exec(self, tool_args):
-        assert cli_mod._child_owns_stdout("codex", tool_args) is False
+    def test_codex_token_membership_does_not_parse_options(self, tool_args, expected):
+        assert cli_mod._child_owns_stdout("codex", tool_args) is expected
 
     def test_redirect_rebinds_stdout_without_touching_the_descriptor(self, capfd):
         real_stdout = sys.stdout

@@ -41,9 +41,11 @@ quoted executable paths and replacement of legacy `ucode` routing/web-search hel
 
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
-and without ug's `--`, and an unchanged stdout descriptor. Interactive launches retain stdout.
-Codex coverage includes the `e` alias and known leading options, including their values and `--`.
-Unknown or variadic leading options are not classified; put `exec` first for those invocations.
+and without ug's `--`, and an unchanged stdout descriptor. Detection checks exact tokens before
+the agent's `--`, including `e` and tokens after unknown or variadic options, without parsing
+Codex's options. An option value or prompt token equal to `exec`, `e`, or `app-server` also
+routes UG diagnostics to stderr; arguments and native agent stdout remain unchanged.
+Launches without a matching token retain stdout for status messages.
 `TestBootstrapStdout` in `test_agents_init.py` substitutes local Python processes
 for Databricks and agent installers/upgraders, asserting real stdout/stderr routing
 on success and failure, preserved version-output capture, and clean native handoff.

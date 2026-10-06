@@ -18,6 +18,8 @@ It is not collected by the default `uv run pytest` command.
 
 `TestChildStdoutLaunch` in `../test_cli.py` covers clean Claude print-mode and
 Codex exec/app-server stdout, early launch errors, and forwarding through ug's `--`.
+Token membership before the agent's `--` intentionally also matches option values and prompt
+tokens; component tests verify this only moves UG diagnostics, preserving agent arguments/stdout.
 `TestBootstrapStdout` in `../test_agents_init.py` exercises real subprocess streams
 with substituted installer/upgrader commands, including failures and native handoff.
 These component checks do not establish live installer, Isaac, or inference coverage.
