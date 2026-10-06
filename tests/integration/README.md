@@ -22,7 +22,7 @@ does not yet assert live `recommendModel` request counts for configs with and wi
 
 ## Dedicated-workspace CUJs
 
-The budget usage and model-selection tests live in
+The budget usage and model recommendation/default tests live in
 [`../e2e_cuj/test_ug_budget_defaults.py`](../e2e_cuj/test_ug_budget_defaults.py),
 outside this existing-workspace integration suite. The tests read their dedicated
 workspace's published budget and model identifiers. The fixed tier has
@@ -47,13 +47,15 @@ low-spend principal's credentials and use `-m cuj5_below_tier` with the same com
 The workspace client reads the published config and real recommendation using
 OAuth M2M. The above-tier case checks read-only `ug usage` spend, threshold, and
 percentage against backend reads, allowing spend to increase while the command runs.
-It then launches bare `ug` and verifies Codex selects
-Luna over its managed Sol default. The below-tier case launches bare `ug` and
+It then launches bare `ug`, verifies the launch panel displays the backend's
+Codex/Luna recommendation, and confirms the native Codex TUI starts and exits
+normally. The below-tier case launches bare `ug` and
 verifies Claude selects Sonnet. Neither case submits an inference task or writes
 the budget; the dedicated workspace configuration remains read-only. Independent
 matrix entries can overlap because their local homes and artifacts are isolated.
 The published config verifies Codex's managed Sol default, and the native Codex TUI verifies
-the above-tier Luna selection over Sol.
+the above-tier Codex launch and its displayed Luna recommendation. Applying Luna over Sol is
+outside this coverage.
 
 A fresh below-tier principal may have no spend counter, so that case establishes
 default model selection; numeric spend reporting remains covered by the above-tier case.
@@ -354,7 +356,7 @@ real model tasks.
 
 There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
 checks** with Claude and Codex. The separate dedicated-workspace suite adds two
-budget model-selection cases run by the `dedicated-cuj` matrix with separate credentials
+budget recommendation/default cases run by the `dedicated-cuj` matrix with separate credentials
 and markers.
 Selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
 re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against

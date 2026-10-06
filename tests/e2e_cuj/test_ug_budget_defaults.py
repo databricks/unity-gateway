@@ -1,4 +1,4 @@
-"""Live model-selection check for a fixed workspace budget recommendation."""
+"""Live budget recommendation and default-model checks for a fixed workspace tier."""
 
 import json
 import re
@@ -90,12 +90,13 @@ class TestCujBudgetDefaults(BaseCujTest):
             )
             tui.exit_normally()
 
-    def test_bare_ug_uses_luna_budget_recommendation(self, cuj):
+    def test_bare_ug_shows_luna_recommendation_and_starts_codex(self, cuj):
         """Scenario: launch bare ``ug`` with the fixed 1% Luna budget tier active.
 
         Expected: the read-only `usage` command reports the backend's spend and threshold, then
-        the real backend recommends Codex/Luna and the Codex TUI selects Luna over its managed Sol
-        default, without budget writes or an inference task.
+        the real backend recommends Codex/Luna, the launch panel displays that recommendation, and
+        the native Codex TUI starts and exits normally, without budget writes or an inference task.
+        Applying the recommended Luna model over the managed Sol default is outside this coverage.
         """
         session, workspace, _ = cuj
         config_path = "/api/ai-gateway/v2/coding-agent-configs"
@@ -172,8 +173,15 @@ class TestCujBudgetDefaults(BaseCujTest):
 
         with AgentTerminal(session, CODEX, [str(session.binary)], "budget-luna") as tui:
             tui.boot(timeout=240)
-            tui.wait_for(
-                lambda text: re.search(rf"model:\s+{re.escape(self.LUNA_MODEL)}\s", text),
-                "Codex's selected model to be Luna",
+            transcript = session.redact(
+                "".join(tui.output) + "\n" + tui.visible,
+                strip_ansi=True,
+            )
+            assert re.search(
+                rf"Recommended agent is Codex with model {re.escape(self.LUNA_MODEL)}\.",
+                transcript,
+            ), (
+                "Codex launch did not display the backend recommendation "
+                f"for {self.LUNA_MODEL!r}:\n{transcript}"
             )
             tui.exit_normally()

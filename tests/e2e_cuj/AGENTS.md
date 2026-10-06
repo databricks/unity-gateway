@@ -19,8 +19,10 @@ identity into the standard
 `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` fixture variables. Both cases
 read the workspace and budget recommendation; below-tier bare `ug` selects
 Claude/Sonnet, while above-tier read-only `ug usage` agrees with backend spend,
-threshold, and percentage and bare `ug` selects Codex/Luna over Sol. Neither case
-writes workspace or budget configuration or submits an inference task.
+threshold, and percentage, the launch panel displays a Codex/Luna recommendation,
+and bare `ug` starts the native Codex TUI. Neither case writes workspace or budget
+configuration or submits an inference task. The above-tier case does not assert that
+Codex applies Luna over its managed Sol default.
 
 Before adding any helper, search the existing test utilities and installed SDK for
 equivalent functionality. Reuse them directly; never build a parallel HTTP/auth
