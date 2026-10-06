@@ -33,6 +33,12 @@ or concurrency limits.
 Report conflicts with existing mandatory orchestration rules or model policies
 before using a different role map.
 
+Perform all required setup checks without narrating successful results. Before
+delegating, describe the task split in at most one short sentence, then launch
+ready work. Explain interpreter, routing-gate, role-map, or adapter details only
+when requested or needed to explain a failure or blocker. Keep later updates
+focused on findings, blockers, and results.
+
 ## Delegation gate
 
 Delegate to save the root's context and overall cost: cheaper children return
