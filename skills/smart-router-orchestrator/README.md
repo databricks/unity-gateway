@@ -1,8 +1,8 @@
 # Smart Router Orchestrator
 
-UG bundles the `orchestrate` workflow and five Claude role definitions.
+UG bundles the `smart-router-orchestrator` workflow and five Claude role definitions.
 Smart-routed Claude and Codex launches install and
-activate this skill alongside `smart-router` only with `ENABLE_ORCHESTRATION=1`.
+activate this skill alongside `smart-router` only with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`.
 The feature is off by default; routing alone installs only `smart-router`.
 
 The workflow is injected before root prompts and after compaction. The hook checks
@@ -14,7 +14,7 @@ opted-in sessions. A change made outside the conversation is observed at the nex
 prompt or compaction; model routing still checks the controls for each subagent.
 An installed skill or saved model preference cannot enable orchestration.
 Explicit user requests for subagents still use native harness behavior while routing
-is off, without the orchestrator's workflow.
+is off, without the Smart Router Orchestrator workflow.
 User instructions take precedence, and easy tasks remain in the root.
 
 Claude loads the bundled roles as `ug-smart-router:<role>` in its temporary

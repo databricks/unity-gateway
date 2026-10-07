@@ -249,15 +249,15 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 ### Smart Router Orchestrator
 
 Smart-routed Claude and Codex sessions install `smart-router`. Set
-`ENABLE_ORCHESTRATION=1` at launch to also install and activate Smart Router
-Orchestrator through the bundled `orchestrate` skill; orchestration is off by
+`ENABLE_SMART_ROUTER_ORCHESTRATOR=1` at launch to also install and activate Smart Router
+Orchestrator through the bundled `smart-router-orchestrator` skill; orchestration is off by
 default. For example:
 
 ```bash
-ENABLE_ORCHESTRATION=1 ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1 ug claude
+ENABLE_SMART_ROUTER_ORCHESTRATOR=1 ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1 ug claude
 ```
 
-Use `ug codex` in the same command for Codex. The orchestrator assigns bounded work
+Use `ug codex` in the same command for Codex. Smart Router Orchestrator assigns bounded work
 to explorer, researcher, worker, tester, and reviewer roles while the root plans,
 integrates, and verifies results. Easy tasks and explicit requests not to delegate
 stay in the root.
@@ -267,7 +267,7 @@ and session controls. Turning Smart Router off through its skill stops new autom
 turning it on restores orchestration only in opted-in sessions. Explicit user
 requests for subagents still use normal harness behavior while routing is off.
 Stored skill files do not activate orchestration when the feature flag is unset or
-`ENABLE_ORCHESTRATION=0`, or in non-routed sessions. Existing Isaac pilot gating
+`ENABLE_SMART_ROUTER_ORCHESTRATOR=0`, or in non-routed sessions. Existing Isaac pilot gating
 and UG launch exclusions still apply.
 
 Hooks refresh orchestration state before each prompt and after compaction. A
@@ -277,7 +277,7 @@ routing still checks the controls for each subagent.
 UG supplies its own hooks; Codex combines them with existing hooks and applies
 project trust. Smart routing selects subagent models; separate role-model
 preferences are ignored and their files are left untouched. See the bundled
-[Smart Router Orchestrator documentation](skills/orchestrate/README.md) for details.
+[Smart Router Orchestrator documentation](skills/smart-router-orchestrator/README.md) for details.
 
 ## Managed Files
 

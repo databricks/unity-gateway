@@ -27,7 +27,7 @@ from ucode.config_io import (
     write_text_file,
 )
 from ucode.constants import (
-    ENABLE_ORCHESTRATION_ENV_VAR,
+    ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     LOOPBACK_HOST,
@@ -47,7 +47,7 @@ from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
 )
-from ucode.skills import ORCHESTRATOR_SKILL, SMART_ROUTER_SKILL, install_skill
+from ucode.skills import SMART_ROUTER_ORCHESTRATOR_SKILL, SMART_ROUTER_SKILL, install_skill
 from ucode.smart_routing import claude_routing, codex_interposer, orchestrator, routing
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
@@ -86,7 +86,7 @@ class ClaudeRoutingSetupError(RuntimeError):
 def _prepare_smart_router_session(agent: str) -> Path:
     skills = [SMART_ROUTER_SKILL]
     if orchestrator.feature_enabled():
-        skills.append(ORCHESTRATOR_SKILL)
+        skills.append(SMART_ROUTER_ORCHESTRATOR_SKILL)
     for skill in skills:
         try:
             install_skill(skill, agent, config_io.APP_DIR.parent)
@@ -528,7 +528,7 @@ def launch_claude(
     if not isinstance(env, dict):
         raise RuntimeError("Claude settings 'env' must be an object for smart routing.")
     env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
-    env[ENABLE_ORCHESTRATION_ENV_VAR] = "1" if orchestrator.feature_enabled() else "0"
+    env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = "1" if orchestrator.feature_enabled() else "0"
     if route_first_prompt:
         env[ENABLE_SMART_ROUTING_ENV_VAR] = "1"
     else:

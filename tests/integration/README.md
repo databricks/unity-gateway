@@ -281,9 +281,9 @@ PATH conflicts for the Smart Router skill have subprocess/component coverage in
 `ug` first in PATH. The live journeys above do not inject a second installation or
 establish PowerShell command execution.
 
-The toggle journeys run with `ENABLE_ORCHESTRATION` unset and with
-`ENABLE_ORCHESTRATION=1`. They require only `smart-router` by default and both
-`orchestrate` and `smart-router` when opted in. They verify the saved session
+The toggle journeys run with `ENABLE_SMART_ROUTER_ORCHESTRATOR` unset and with
+`ENABLE_SMART_ROUTER_ORCHESTRATOR=1`. They require only `smart-router` by default and both
+`smart-router-orchestrator` and `smart-router` when opted in. They verify the saved session
 controls, a new CLI confirmation in the native tool-result records, and a new
 assistant answer after each skill invocation.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.

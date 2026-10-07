@@ -126,8 +126,8 @@ def _toggle_with_skill(tui, session, agent: str, enabled: bool) -> None:
         if path.is_dir() and path.name not in ignored_skills
     )
     expected_skills = (
-        ["orchestrate", "smart-router"]
-        if session.env.get("ENABLE_ORCHESTRATION") == "1"
+        ["smart-router", "smart-router-orchestrator"]
+        if session.env.get("ENABLE_SMART_ROUTER_ORCHESTRATOR") == "1"
         else ["smart-router"]
     )
     assert installed_skills == expected_skills, installed_skills
@@ -291,11 +291,11 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     live_session, workspace, tmp_path, orchestration_enabled
 ):
     """Scenario: launch Claude with subagent routing enabled and orchestration unset
-    or opted in through ENABLE_ORCHESTRATION=1, spawn a child, invoke the
+    or opted in through ENABLE_SMART_ROUTER_ORCHESTRATOR=1, spawn a child, invoke the
     installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
 
-    Expected: only Smart Router is installed by default; opting in also installs orchestrate.
+    Expected: only Smart Router is installed by default; opting in also installs smart-router-orchestrator.
     Each invocation records the CLI confirmation in the native transcript and changes the saved
     routing controls, even with collapsed terminal output; all three uniquely tagged
     calculations complete in native child sessions; only the first and third show the
@@ -307,7 +307,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
     if orchestration_enabled:
-        session.env["ENABLE_ORCHESTRATION"] = "1"
+        session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
     config = build_coding_agent_config(
         "CODING_AGENT_CLAUDE_CODE",
         build_claude_agent_config(CLAUDE_SMART_ROUTING_MODELS, smart_routing=True),
@@ -348,11 +348,11 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
     live_session, workspace, tmp_path, orchestration_enabled
 ):
     """Scenario: launch Codex with subagent routing enabled and orchestration unset
-    or opted in through ENABLE_ORCHESTRATION=1, spawn a child, invoke the
+    or opted in through ENABLE_SMART_ROUTER_ORCHESTRATOR=1, spawn a child, invoke the
     installed Smart Router skill to turn routing off, spawn another child, turn routing
     back on through the skill, and spawn a third child in the same real TUI session.
 
-    Expected: only Smart Router is installed by default; opting in also installs orchestrate.
+    Expected: only Smart Router is installed by default; opting in also installs smart-router-orchestrator.
     Each invocation records the CLI confirmation in the native transcript and changes the saved
     routing controls, even with collapsed terminal output; all three uniquely tagged
     calculations complete in native child sessions; only the first and third show the
@@ -364,7 +364,7 @@ def test_smart_router_skill_toggles_codex_subagent_routing(
     session.env["ENABLE_SMART_ROUTING_V2"] = "1"
     session.env["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] = "1"
     if orchestration_enabled:
-        session.env["ENABLE_ORCHESTRATION"] = "1"
+        session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
     config = build_coding_agent_config(
         "CODING_AGENT_CODEX",
         build_codex_agent_config(models=CODEX_SMART_ROUTING_MODELS, smart_routing=True),

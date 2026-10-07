@@ -13,22 +13,22 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from ucode import skills
-from ucode.constants import ENABLE_ORCHESTRATION_ENV_VAR
+from ucode.constants import ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR
 from ucode.smart_routing.hooks import sync_managed_hooks
 from ucode.smart_routing.session_env import effective_environment, session_env_path
 
 HOOK_MODULE = "ucode.smart_routing.orchestrator"
 DISABLED_CONTEXT = (
     "Smart Router Orchestrator is off for this session. This supersedes earlier "
-    "orchestrator instructions. Continue in the root unless the user explicitly requests "
-    "subagents; use native tools and the current Smart Router setting for those requests. "
+    "Smart Router Orchestrator instructions. Continue in the root unless the user explicitly "
+    "requests subagents; use native tools and the current Smart Router setting for those requests. "
     "Collect results from children already running."
 )
 
 
 def feature_enabled(env: Mapping[str, str] | None = None) -> bool:
     source = os.environ if env is None else env
-    return source.get(ENABLE_ORCHESTRATION_ENV_VAR) == "1"
+    return source.get(ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR) == "1"
 
 
 def enabled(env: Mapping[str, str] | None = None) -> bool:
@@ -49,7 +49,7 @@ def enabled(env: Mapping[str, str] | None = None) -> bool:
 
 
 def skill_directory() -> Path:
-    return skills._skills_source() / skills.ORCHESTRATOR_SKILL
+    return skills._skills_source() / skills.SMART_ROUTER_ORCHESTRATOR_SKILL
 
 
 def add_claude_agents(plugin_dir: Path) -> None:

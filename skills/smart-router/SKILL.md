@@ -23,11 +23,11 @@ to restart through an updated Unity Gateway with smart routing enabled.
 
 With no argument, explain that only `on` and `off` are accepted. Do not edit the state file.
 This affects subsequent subagent model selection in the current session, not the root model
-or first prompt. In sessions launched with `ENABLE_ORCHESTRATION=1`, it also controls Smart Router
-Orchestrator. When turned off, earlier orchestrate instructions
-are superseded: do not start new automatic delegation or fall back to orchestrator role models.
+or first prompt. In sessions launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`, it also controls Smart Router
+Orchestrator. When turned off, earlier Smart Router Orchestrator instructions
+are superseded: do not start new automatic delegation or fall back to Smart Router Orchestrator role models.
 Continue in the root unless the user explicitly requests a subagent. Honor that request using
-native tools and normal harness model selection, without the orchestrator; keep routing off.
-Existing children can finish. When turned on, apply the orchestrate
-skill to further work only if the session was launched with `ENABLE_ORCHESTRATION=1`.
+native tools and normal harness model selection, without Smart Router Orchestrator; keep routing off.
+Existing children can finish. When turned on, apply the `smart-router-orchestrator`
+skill to further work only if the session was launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`.
 Do not change the orchestration feature flag. Return the command's result.
