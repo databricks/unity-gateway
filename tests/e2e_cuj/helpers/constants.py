@@ -34,3 +34,10 @@ MODEL_PROVIDER_SERVICE_FIXTURES = {
 
 SANDBOX_MCP_SERVICE_NAME = "system.ai.sandbox"
 WEB_SEARCH_MCP_SERVICE_NAME = "system.ai.web_search"
+
+BEDROCK_PROVIDER_SERVICE_FIXTURE = (
+    "ug_e2e.providers.bedrock",
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+)
+UC_MODEL_LOCATION_FIXTURE = ("ug_e2e.models", "ug_e2e.models.codex_primary")
+FIXTURE_READER_MCP_SERVICE_NAME = "ug_e2e.tools.fixture_reader"
