@@ -18,24 +18,6 @@ CODEX_PROFILE_NAME = "ucode"
 DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / f"{CODEX_PROFILE_NAME}.config.toml"
 
 
-def codex_working_directory(tool_args: list[str]) -> Path:
-    """Resolve the launch directory before looking up project configuration."""
-    directory = Path.cwd()
-    args = iter(tool_args)
-    for arg in args:
-        if arg == "--":
-            break
-        if arg in {"--cd", "-C"}:
-            value = next(args, None)
-            if value is not None:
-                directory = Path(value).expanduser()
-        elif arg.startswith("--cd="):
-            directory = Path(arg.partition("=")[2]).expanduser()
-        elif arg.startswith("-C"):
-            directory = Path(arg[2:].removeprefix("=")).expanduser()
-    return directory.resolve()
-
-
 class ModelVisibility(StrEnum):
     """A model's visibility in Codex's picker/APIs (mirrors Codex's ModelVisibility)."""
 

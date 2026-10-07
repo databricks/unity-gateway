@@ -17,7 +17,6 @@ from typing import NoReturn, TextIO
 from ucode import config_io
 from ucode.codex_config import (
     codex_config_args,
-    codex_working_directory,
     custom_catalog_models,
     custom_catalog_path,
 )
@@ -657,10 +656,6 @@ def launch_codex(
         overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["features.hooks"] = True
-    legacy_plugin_config = orchestrator.legacy_codex_plugin_config(
-        cwd=codex_working_directory(tool_args)
-    )
-    overlay.update(legacy_plugin_config)
     _prepare_smart_router_session("codex")
     # Codex constructs tool subprocess environments through its shell policy.
     # The skill's gate needs the same launch baseline as the routing hook, even
@@ -712,16 +707,7 @@ def launch_codex(
                 }
             )
         tui = subprocess_cross_os.popen(
-            [
-                binary,
-                *provider_args,
-                *codex_config_args(legacy_plugin_config),
-                "--remote",
-                tui_url,
-                "--model",
-                start_model,
-                *tool_args,
-            ]
+            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
         )
         try:
             returncode = tui.wait()

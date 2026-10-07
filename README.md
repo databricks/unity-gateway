@@ -262,15 +262,10 @@ harness behavior while routing is off. Stored skill files do not activate it in
 later non-routed sessions. The existing Isaac pilot gate and UG launch exclusions
 are unchanged.
 
-UG automatically suppresses installed standalone `model-orchestrator` plugins,
-including Isaac-synced Codex registrations, for each Claude or Codex launch.
-This also applies when smart routing is off, so the old hooks cannot activate
-orchestration independently. Codex project registrations are included. UG supplies
-only its own hooks; Codex combines them with existing hooks and applies project
-trust. Saved plugin settings and unrelated plugins
-and hooks remain intact. Smart routing selects subagent models; separate role-model
+UG supplies its own hooks; Codex combines them with existing hooks and applies
+project trust. Smart routing selects subagent models; separate role-model
 preferences are ignored and their files are left untouched. See the bundled
-[orchestrator documentation](skills/orchestrate/README.md) for cutover details.
+[orchestrator documentation](skills/orchestrate/README.md) for details.
 
 ## Managed Files
 

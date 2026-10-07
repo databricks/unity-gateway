@@ -20,16 +20,7 @@ Role instructions belong in each task prompt because routing may replace the
 requested Claude role or Codex model. Hook approval in the native `/hooks` UI
 is still required where the harness prompts for it.
 
-## Existing installations and preferences
-
-UG suppresses installed `model-orchestrator` marketplace plugins for every Claude
-and Codex launch, including Isaac-synced Codex registrations and launches with
-smart routing off. The old activation hook does not check routing state, so its
-plugin is disabled through native per-launch settings. Saved registrations,
-unrelated plugins and hooks, and launches outside UG are unaffected.
-
-This covers marketplace installations; manually copied activation hooks or
-development copies passed through `--plugin-dir` need to be removed separately.
+## Routing check
 
 Separate role-model preferences are not used by the UG workflow. Existing
 `.model-orchestrator.json` project preferences,

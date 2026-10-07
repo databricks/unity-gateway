@@ -290,10 +290,8 @@ Their off-phase child is an explicit user-requested delegation;
 these journeys do not establish automatic orchestration behavior. Root-only
 activation, compaction, retained skills in ineligible sessions, nested-session
 eligibility, role-contract preservation, and isolation from legacy preference files
-lack dedicated regression coverage. The journeys do not cover per-launch legacy-plugin
-suppression or preservation of saved settings and unrelated plugins/hooks.
-Codex's native hook merging, project trust, and execution of pre-existing hooks
-are not exercised by this integration suite.
+lack dedicated regression coverage. Codex's native hook merging, project trust,
+and execution of pre-existing hooks are not exercised by this integration suite.
 
 The Claude on/off/on journey handles the visible permission prompt for the exact
 read-only orchestrator check. It verifies the command in the current dialog and

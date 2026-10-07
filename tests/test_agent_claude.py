@@ -2597,10 +2597,7 @@ class TestClaudeLaunch:
         native_binary = tmp_path / "Claude Code" / "claude.exe"
         prompt = 'keep "quotes" & pipes | and %PATH% literal'
         calls: list[list[str]] = []
-        # Keep the platform simulation local so filesystem readers use the real host paths.
-        monkeypatch.setattr(
-            claude, "os", SimpleNamespace(name="nt", path=os.path, environ=os.environ)
-        )
+        monkeypatch.setattr(claude.os, "name", "nt")
         monkeypatch.setattr(claude.shutil, "which", lambda _binary: str(native_binary))
         monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
 

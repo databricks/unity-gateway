@@ -143,10 +143,9 @@ including collapsed-output records, and excludes user echoes and assistant claim
 
 Dedicated regression coverage is missing for root-only orchestrator activation,
 compaction, retained skills in ineligible sessions, nested-session eligibility,
-role-contract preservation, and isolation from legacy preference files. Legacy-plugin
-suppression and preservation of saved settings and unrelated plugins/hooks are also
-not covered by these journeys. Codex's native hook merging and project trust,
-automatic delegation, and legacy-hook execution remain outside the integration suite.
+role-contract preservation, and isolation from legacy preference files. Codex's
+native hook merging and project trust, automatic delegation, and execution of
+pre-existing hooks remain outside the integration suite.
 
 The portable Windows routing test checks native executable forwarding, generated
 hooks/plugins, caller arguments, and cleanup without Unix imports. It does not
