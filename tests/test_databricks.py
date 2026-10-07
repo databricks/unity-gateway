@@ -2711,6 +2711,107 @@ class TestProbeUnityGatewayCapabilities:
         assert calls == [f"https://{WS_HOST}/api/2.1/unity-catalog/model-services?page_size=50"]
 
 
+class TestHttpCustomHeaders:
+    def test_get_merges_custom_headers_without_overriding_auth_or_explicit(self, monkeypatch):
+        seen = []
+
+        class _FakeOpener:
+            def open(self, request, timeout=None):
+                seen.append(request)
+                return _FakeResponse({"ok": True})
+
+        monkeypatch.setattr(
+            db_mod,
+            "get_custom_headers",
+            lambda: {
+                "authorization": "wrong-token",
+                "X-Route": "scoped",
+                "x-selector": "scoped-selector",
+            },
+        )
+        monkeypatch.setattr(db_mod.urllib_request, "build_opener", lambda handler: _FakeOpener())
+
+        payload, reason = db_mod._http_get_json(
+            "https://x/y",
+            "tok",
+            headers={"X-Selector": "explicit-selector"},
+        )
+
+        assert payload == {"ok": True}
+        assert reason is None
+        request_headers = {name.casefold(): value for name, value in seen[0].header_items()}
+        assert request_headers["authorization"] == "Bearer tok"
+        assert request_headers["x-route"] == "scoped"
+        assert request_headers["x-selector"] == "explicit-selector"
+        assert [name.casefold() for name, _ in seen[0].header_items()].count("authorization") == 1
+
+    def test_send_json_preserves_transport_headers_case_insensitively(self, monkeypatch):
+        seen = []
+
+        class _JsonResponse(_FakeResponse):
+            status = 200
+
+        class _FakeOpener:
+            def open(self, request, timeout=None):
+                seen.append(request)
+                return _JsonResponse({"ok": True})
+
+        monkeypatch.setattr(
+            db_mod,
+            "get_custom_headers",
+            lambda: {
+                "authorization": "wrong-token",
+                "accept": "text/plain",
+                "content-type": "text/plain",
+                "X-Route": "scoped",
+            },
+        )
+        monkeypatch.setattr(db_mod.urllib_request, "build_opener", lambda handler: _FakeOpener())
+
+        payload, reason = db_mod._http_post_json("https://x/y", "tok", {"value": 1})
+
+        assert payload == {"ok": True}
+        assert reason is None
+        request_headers = {name.casefold(): value for name, value in seen[0].header_items()}
+        assert request_headers["authorization"] == "Bearer tok"
+        assert request_headers["accept"] == "application/json"
+        assert request_headers["content-type"] == "application/json"
+        assert request_headers["x-route"] == "scoped"
+
+    def test_custom_headers_are_absent_from_redirected_request(self, monkeypatch):
+        seen = []
+        handlers = []
+
+        class _FakeOpener:
+            def open(self, request, timeout=None):
+                seen.append(request)
+                return _FakeResponse({"ok": True})
+
+        monkeypatch.setattr(db_mod, "get_custom_headers", lambda: {"X-Route": "scoped"})
+        monkeypatch.setattr(
+            db_mod.urllib_request,
+            "build_opener",
+            lambda handler: handlers.append(handler) or _FakeOpener(),
+        )
+        db_mod._http_get_bytes("https://x/y", "tok")
+
+        with pytest.raises(db_mod.urllib_error.HTTPError):
+            handlers[0].redirect_request(seen[0], None, 302, "Found", {}, "https://other/y")
+
+        redirected = handlers[0].redirect_request(seen[0], None, 302, "Found", {}, "https://x/z")
+        assert redirected is not None
+        assert {name.casefold() for name, _ in redirected.header_items()} >= {
+            "x-route",
+        }
+
+        seen.clear()
+        handlers.clear()
+        monkeypatch.setattr(db_mod, "get_custom_headers", lambda: {})
+        db_mod._http_get_bytes("https://x/y", "tok", headers={"X-Route": "explicit"})
+        with pytest.raises(db_mod.urllib_error.HTTPError):
+            handlers[0].redirect_request(seen[0], None, 302, "Found", {}, "https://other/y")
+
+
 class TestHttpGetJsonReason:
     """The `reason` string returned by `_http_get_json` must include the response body
     so callers (e.g. the Unity Gateway capability probe) can route on it. Before issue #84's fix
@@ -3590,6 +3691,19 @@ class TestModelServicesCache:
         db_mod.list_model_services(WS, "tok", use_cache=False)
         assert calls["n"] == 2
 
+    def test_custom_headers_bypass_and_do_not_overwrite_cache(self, monkeypatch):
+        calls: dict = {}
+        db_mod.clear_model_services_cache()
+        monkeypatch.setattr(db_mod, "_get_model_services_page", self._counting_page(calls))
+
+        db_mod.list_model_services(WS, "tok")
+        monkeypatch.setattr(db_mod, "get_custom_headers", lambda: {"X-Route": "scoped"})
+        db_mod.list_model_services(WS, "tok")
+        monkeypatch.setattr(db_mod, "get_custom_headers", lambda: {})
+        db_mod.list_model_services(WS, "tok")
+
+        assert calls["n"] == 2
+
     def test_each_workspace_is_cached_separately(self, monkeypatch):
         calls: dict = {}
         db_mod.clear_model_services_cache()
@@ -3661,6 +3775,19 @@ class TestModelProviderServicesCache:
         monkeypatch.setattr(db_mod, "_http_get_json", self._counting_listing(calls))
         db_mod.list_model_provider_services(WS, "tok")
         db_mod.list_model_provider_services(WS, "tok", use_cache=False)
+        assert calls["n"] == 2
+
+    def test_custom_headers_bypass_and_do_not_overwrite_cache(self, monkeypatch):
+        calls: dict = {}
+        db_mod.clear_model_services_cache()
+        monkeypatch.setattr(db_mod, "_http_get_json", self._counting_listing(calls))
+
+        db_mod.list_model_provider_services(WS, "tok")
+        monkeypatch.setattr(db_mod, "get_custom_headers", lambda: {"X-Route": "scoped"})
+        db_mod.list_model_provider_services(WS, "tok")
+        monkeypatch.setattr(db_mod, "get_custom_headers", lambda: {})
+        db_mod.list_model_provider_services(WS, "tok")
+
         assert calls["n"] == 2
 
     def test_each_workspace_is_cached_separately(self, monkeypatch):

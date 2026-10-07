@@ -18,7 +18,8 @@ The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
 
-Custom `--header` parsing, delivery, discovery isolation, and collision rejection have component
+Custom `--header` parsing, invocation cleanup, usage delivery, discovery/cache isolation, and
+collision rejection have component
 coverage listed in `../README.md`; live custom-header journeys are not covered.
 
 `TestChildStdoutLaunch` in `../test_cli.py` covers clean Claude print-mode and

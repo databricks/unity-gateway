@@ -45,6 +45,8 @@ quoted executable paths and replacement of legacy `ucode` routing/web-search hel
 Custom request headers have component coverage in `test_cli.py`, `test_databricks.py`,
 `test_agent_codex.py`, and `test_codex_smart_routing_v2.py`: parsing, launch-only values and
 catalogs, gateway discovery, and administrator-header collisions before discovery.
+Global-option tests cover `usage`/`recommendModel`, local-option precedence, and cleanup on
+success or failure; request/config tests cover redirect handling and cache isolation.
 `test_launcher.py` checks waiting for the child before cleaning up temporary catalogs.
 Live custom-header journeys are not covered.
 
