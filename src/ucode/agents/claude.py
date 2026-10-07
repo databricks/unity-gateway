@@ -69,6 +69,7 @@ from ucode.managed_files import (
     plan_settings_passthrough,
     read_managed_file,
     reconcile_managed_file,
+    record_settings_passthrough,
     record_ug_picker,
     revert_managed_file,
     warn_skipped_settings_passthrough,
@@ -225,11 +226,10 @@ CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
 CLAUDE_REMOVED_ENV_KEYS = ("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",)
 CLAUDE_MANAGED_PICKER_KEYS = ("availableModels", "enforceAvailableModels", "modelPicker")
 CLAUDE_PERMISSIONS_DENY_PATH = ["permissions", "deny"]
-# The managed config's harness-native settings (resolved from the manifest); the leaves last delivered
-# from them, so a setting the admin drops is withdrawn; and the leaves last skipped, so the warning
-# about them prints once rather than on every launch.
+# The managed config's harness-native settings (resolved from the manifest), and the leaves last
+# skipped so the warning about them prints once rather than on every launch. What ug delivered is
+# recorded in the file-keyed managed manifest instead, because the managed file is machine-wide.
 SETTINGS_PASSTHROUGH_STATE_KEY = "claude_settings_passthrough"
-SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY = "claude_settings_passthrough_leaves"
 SETTINGS_PASSTHROUGH_IGNORED_STATE_KEY = "claude_settings_passthrough_ignored"
 # Settings that stop Claude Code from running hooks outside the managed file, which is where smart
 # routing installs its per-launch hooks.
@@ -1518,7 +1518,7 @@ def write_tool_config(
     warn_skipped_settings_passthrough(
         state, SETTINGS_PASSTHROUGH_IGNORED_STATE_KEY, passthrough, "Claude Code", print_warning
     )
-    previous_leaves = state.get(SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY) or []
+    previous_leaves = (managed_snapshots.settings_passthrough if managed_snapshots else None) or []
     _warn_if_settings_disable_smart_routing(passthrough, previous_leaves)
     _reconcile_managed_settings(
         state,
@@ -1541,11 +1541,8 @@ def write_tool_config(
         withdrawn_denies=withdrawn_list_items(
             CLAUDE_PERMISSIONS_DENY_PATH, passthrough, previous_leaves
         ),
+        passthrough_leaves=passthrough.record(),
     )
-    if passthrough.leaves:
-        state[SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY] = passthrough.record()
-    else:
-        state.pop(SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY, None)
 
     custom_oauth = state.get("custom_oauth")
     web_search_profile = (
@@ -1715,6 +1712,7 @@ def _reconcile_managed_settings(
     relayed: bool,
     picker_keys: list[str],
     withdrawn_denies: list | None = None,
+    passthrough_leaves: list | None = None,
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -1796,6 +1794,7 @@ def _reconcile_managed_settings(
         return
     mark_managed_file_verified(state, "claude", path)
     record_ug_picker("claude", {key: desired_settings[key] for key in picker_keys})
+    record_settings_passthrough("claude", passthrough_leaves or [])
 
 
 def _preserve_permission_denies(

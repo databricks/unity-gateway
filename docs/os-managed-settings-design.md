@@ -96,6 +96,9 @@ yet: its MCP allowlist lives in `requirements.toml`, which ucode doesn't write. 
 - Lists the file shares with IT, Claude's `permissions.deny` and each `hooks.<event>`, are merged
   rather than replaced. ucode records the items it delivered, so when the admin drops one only that
   item is withdrawn; entries IT authored, before or after ucode's first write, stay.
+- That record lives in the managed-backup manifest, keyed by the file like ucode's picker record,
+  not in per-workspace state: the managed file is machine-wide, so a launch for a workspace without
+  these settings withdraws what ucode last delivered for another one.
 - Claude's `allowManagedHooksOnly` and `disableAllHooks` are delivered as configured, with a warning
   that they also block the per-launch hooks smart routing installs.
 - Delivered leaves become ucode-owned paths, so `ucode revert` removes them. When the admin later

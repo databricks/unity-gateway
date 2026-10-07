@@ -253,6 +253,8 @@ class ManagedFileSnapshots:
     last_applied_by_ug: dict | None
     # Picker values ug itself last wrote to this file; only these may later be reverted.
     ug_picker: dict | None = None
+    # ``[path, value]`` leaves ug last delivered here from the admin's agent_native_settings.
+    settings_passthrough: list | None = None
 
 
 def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnapshots:
@@ -279,10 +281,12 @@ def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnaps
         if not isinstance(entry, dict):
             return ManagedFileSnapshots(None, None)
         ug_picker = entry.get("ug_picker")
+        passthrough = entry.get("settings_passthrough")
         return ManagedFileSnapshots(
             _parse(_snapshot_text(entry, "backup_file")),
             _parse(_snapshot_text(entry, "last_applied_file")),
             ug_picker if isinstance(ug_picker, dict) else None,
+            passthrough if isinstance(passthrough, list) else None,
         )
     except RuntimeError:
         return ManagedFileSnapshots(None, None)
@@ -306,6 +310,27 @@ def record_ug_picker(tool: str, picker: dict) -> None:
         entry["ug_picker"] = picker
     else:
         entry.pop("ug_picker", None)
+    _write_manifest(manifest)
+
+
+def record_settings_passthrough(tool: str, leaves: list) -> None:
+    """Record the agent_native_settings leaves ug just confirmed in ``tool``'s managed file.
+
+    File-keyed like :func:`record_ug_picker`: the managed file is machine-wide, so a launch for any
+    workspace must see what ug last delivered there to withdraw what that workspace doesn't set."""
+    if is_dry_run():
+        return
+    try:
+        manifest = _load_manifest()
+    except RuntimeError:
+        return
+    entry = _manifest_files(manifest).get(tool)
+    if not isinstance(entry, dict) or entry.get("settings_passthrough", []) == leaves:
+        return
+    if leaves:
+        entry["settings_passthrough"] = leaves
+    else:
+        entry.pop("settings_passthrough", None)
     _write_manifest(manifest)
 
 
