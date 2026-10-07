@@ -3,6 +3,8 @@ name: orchestrate
 description: Coordinate substantive development with native subagents while Unity Gateway smart routing is enabled. Follow the routing-state check before using this workflow. Skip easy tasks and explicit no-subagent requests.
 model: inherit
 argument-hint: "[task, configure, or unconfigure]"
+metadata:
+  version: "1.0.0"
 ---
 
 # Model orchestrator
