@@ -12,7 +12,7 @@ from tests.integration.utils.provider_catalog import (
     parse_anthropic_provider_page,
     parse_codex_provider_catalog,
 )
-from tests.integration.utils.terminal import AgentTerminal
+from tests.integration.utils.terminal import AgentTerminal, TerminalProcess
 
 from .base import BaseCujTest
 from .catalog_discovery_expectations import (
@@ -26,7 +26,9 @@ from .catalog_discovery_expectations import (
     MODEL_SCHEMA,
     OTHER_MODEL_SCHEMA,
 )
-from .helpers.constants import CLAUDE, CODEX
+from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, MANAGED_PATHS
+from .helpers.evidence import SessionEvidence, message_text
+from .helpers.terminal import Terminal
 
 pytestmark = [pytest.mark.managed, pytest.mark.catalog_discovery, pytest.mark.workspace_isolated]
 
@@ -89,6 +91,64 @@ def _assert_claude_headless_model(result, expected):
     assert usage[expected]["outputTokens"] > 0, usage
 
 
+def _request_contains_task(request, agent, task):
+    field = "messages" if agent == CLAUDE else "input"
+    entries = request.payload.get(field)
+    if not isinstance(entries, (list, str)):
+        return False
+    if isinstance(entries, str):
+        return task.prompt in entries
+    return any(
+        task.prompt in message_text(entry.get("content", entry.get("text", "")))
+        for entry in entries
+        if isinstance(entry, dict)
+    )
+
+
+def _assert_inference_evidence(recorder, checkpoint, agent, task, expected):
+    expected_wire_model = claude.discovery_model_id(expected) if agent == CLAUDE else expected
+    requests = recorder.requests_after(checkpoint)
+    inference_requests = [
+        request
+        for request in requests
+        if request.method == "POST" and request.path == INFERENCE_PATHS[agent]
+    ]
+    assert inference_requests, {
+        "agent": agent,
+        "path": INFERENCE_PATHS[agent],
+        "requests": [(request.method, request.path) for request in requests],
+    }
+    task_requests = [
+        request for request in inference_requests if _request_contains_task(request, agent, task)
+    ]
+    assert task_requests, "No inference request contained the submitted task prompt"
+    for request in task_requests:
+        assert request.payload["model"] == expected_wire_model, request.payload
+        response = recorder.response_for(request, timeout=240)
+        assert response.status_code == 200, response.status_code
+        assert response.body, "Inference response was empty"
+
+
+@pytest.fixture(autouse=True)
+def _revert_catalog_test_state(cuj):
+    yield
+    session, _, _ = cuj
+    state_dir = session.home / ".ucode"
+    if any(
+        (state_dir / name).is_file() for name in ("state.json", "managed-backups/manifest.json")
+    ):
+        with TerminalProcess(
+            session,
+            "ug",
+            [str(session.binary), "revert"],
+            "catalog-discovery-cleanup-revert",
+        ) as terminal:
+            terminal.finish()
+    assert not any(path.exists() for path in MANAGED_PATHS), (
+        "Catalog CUJ teardown left machine-wide agent settings"
+    )
+
+
 class TestCatalogDiscovery(BaseCujTest):
     WORKSPACE_URL = "https://dbc-bbdd5508-648e.cloud.databricks.com"
 
@@ -100,8 +160,8 @@ class TestCatalogDiscovery(BaseCujTest):
         Expected: only Sonnet/Haiku/Kimi appear; Gemini and decoys are absent.
         Dismissing the picker without a selection preserves Sonnet for the completed task.
         """
-        session, workspace, _recorder = cuj
-        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
+        session, workspace, recorder = cuj
+        recorder.configure_session(session, ["configure", "--skip-upgrade"])
 
         parent_catalog = _catalog_display_names(workspace, CLAUDE, MODEL_SCHEMA)
         decoy_catalog = _catalog_display_names(workspace, CLAUDE, OTHER_MODEL_SCHEMA)
@@ -111,12 +171,10 @@ class TestCatalogDiscovery(BaseCujTest):
         assert set(decoy_catalog) == {claude.discovery_model_id(CLAUDE_DECOY)}, decoy_catalog
 
         task = _claude_file_task(session)
-        with AgentTerminal(
-            session,
-            CLAUDE,
-            [str(session.binary), CLAUDE],
-            "catalog-discovery-claude-picker",
-        ) as tui:
+        evidence = SessionEvidence(session.home, CLAUDE)
+        checkpoint = recorder.checkpoint()
+        recorder.prepare_launch()
+        with Terminal(session, "catalog-discovery-claude-picker", [CLAUDE]) as tui:
             tui.boot()
             picker_screen = tui.open_model_picker(
                 model_visible=lambda screen: all(
@@ -130,9 +188,10 @@ class TestCatalogDiscovery(BaseCujTest):
                 assert excluded.rsplit(".", 1)[-1] not in picker_screen, picker_screen
             assert f"{CLAUDE_DEFAULT} · api usage billing" in tui.visible.casefold(), tui.visible
             tui.submit(task.prompt)
-            tui.wait_for_task(task, timeout=240)
+            tui.task(evidence, task)
             tui.exit_normally()
         task.assert_completed(session, CLAUDE)
+        _assert_inference_evidence(recorder, checkpoint, CLAUDE, task, CLAUDE_DEFAULT)
         session.assert_not_routed()
 
     @pytest.mark.codex
@@ -143,8 +202,8 @@ class TestCatalogDiscovery(BaseCujTest):
         Expected: model/list and the picker expose only GPT Luna/Kimi, not Gemini or decoys.
         Dismissing the picker preserves GPT Luna for the completed task's selected model.
         """
-        session, workspace, _recorder = cuj
-        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
+        session, workspace, recorder = cuj
+        recorder.configure_session(session, ["configure", "--skip-upgrade"])
 
         parent_catalog = _catalog_display_names(workspace, CODEX, MODEL_SCHEMA)
         decoy_catalog = _catalog_display_names(workspace, CODEX, OTHER_MODEL_SCHEMA)
@@ -157,9 +216,10 @@ class TestCatalogDiscovery(BaseCujTest):
         display_names = parent_catalog
 
         task = FileTask(session)
-        with AgentTerminal(
-            session, CODEX, [str(session.binary), CODEX], "catalog-discovery-codex-picker"
-        ) as tui:
+        evidence = SessionEvidence(session.home, CODEX)
+        checkpoint = recorder.checkpoint()
+        recorder.prepare_launch()
+        with Terminal(session, "catalog-discovery-codex-picker", [CODEX]) as tui:
             tui.boot()
             picker_screen = tui.open_codex_model_picker(
                 model_visible=lambda screen: all(
@@ -172,9 +232,10 @@ class TestCatalogDiscovery(BaseCujTest):
                 assert excluded not in picker_screen, picker_screen
                 assert excluded.rsplit(".", 1)[-1] not in picker_screen, picker_screen
             tui.submit(task.prompt)
-            tui.wait_for_task(task, timeout=240)
+            tui.task(evidence, task)
             tui.exit_normally()
         assert_completed_task_model(session, CODEX, task.value, CODEX_DEFAULT)
+        _assert_inference_evidence(recorder, checkpoint, CODEX, task, CODEX_DEFAULT)
         session.assert_not_routed()
 
     @pytest.mark.claude
@@ -184,18 +245,22 @@ class TestCatalogDiscovery(BaseCujTest):
 
         Expected: Claude completes the task on Sonnet without an agent or model override.
         """
-        session, workspace, _recorder = cuj
-        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
+        session, _, recorder = cuj
+        recorder.configure_session(session, ["configure", "--skip-upgrade"])
         task = _claude_file_task(session)
+        evidence = SessionEvidence(session.home, CLAUDE)
+        checkpoint = recorder.checkpoint()
+        recorder.prepare_launch()
         with AgentTerminal(
             session, CLAUDE, [str(session.binary)], "catalog-discovery-bare-ug-default"
         ) as tui:
             tui.boot()
             assert f"{CLAUDE_DEFAULT} · api usage billing" in tui.visible.casefold(), tui.visible
             tui.submit(task.prompt)
-            tui.wait_for_task(task, timeout=240)
+            Terminal.task(tui, evidence, task)
             tui.exit_normally()
         task.assert_completed(session, CLAUDE)
+        _assert_inference_evidence(recorder, checkpoint, CLAUDE, task, CLAUDE_DEFAULT)
         session.assert_not_routed()
 
     @pytest.mark.claude
@@ -205,21 +270,20 @@ class TestCatalogDiscovery(BaseCujTest):
 
         Expected: Claude completes the task on the configured Sonnet default without overrides.
         """
-        session, workspace, _recorder = cuj
-        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
+        session, _, recorder = cuj
+        recorder.configure_session(session, ["configure", "--skip-upgrade"])
         task = _claude_file_task(session)
-        with AgentTerminal(
-            session,
-            CLAUDE,
-            [str(session.binary), CLAUDE],
-            "catalog-discovery-claude-tui-default",
-        ) as tui:
+        evidence = SessionEvidence(session.home, CLAUDE)
+        checkpoint = recorder.checkpoint()
+        recorder.prepare_launch()
+        with Terminal(session, "catalog-discovery-claude-tui-default", [CLAUDE]) as tui:
             tui.boot()
             assert f"{CLAUDE_DEFAULT} · api usage billing" in tui.visible.casefold(), tui.visible
             tui.submit(task.prompt)
-            tui.wait_for_task(task, timeout=240)
+            tui.task(evidence, task)
             tui.exit_normally()
         task.assert_completed(session, CLAUDE)
+        _assert_inference_evidence(recorder, checkpoint, CLAUDE, task, CLAUDE_DEFAULT)
         session.assert_not_routed()
 
     @pytest.mark.codex
@@ -229,17 +293,19 @@ class TestCatalogDiscovery(BaseCujTest):
 
         Expected: Codex completes the task with GPT Luna selected, without a model override.
         """
-        session, workspace, _recorder = cuj
-        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
+        session, _, recorder = cuj
+        recorder.configure_session(session, ["configure", "--skip-upgrade"])
         task = FileTask(session)
-        with AgentTerminal(
-            session, CODEX, [str(session.binary), CODEX], "catalog-discovery-codex-tui-default"
-        ) as tui:
+        evidence = SessionEvidence(session.home, CODEX)
+        checkpoint = recorder.checkpoint()
+        recorder.prepare_launch()
+        with Terminal(session, "catalog-discovery-codex-tui-default", [CODEX]) as tui:
             tui.boot()
             tui.submit(task.prompt)
-            tui.wait_for_task(task, timeout=240)
+            tui.task(evidence, task)
             tui.exit_normally()
         assert_completed_task_model(session, CODEX, task.value, CODEX_DEFAULT)
+        _assert_inference_evidence(recorder, checkpoint, CODEX, task, CODEX_DEFAULT)
         session.assert_not_routed()
 
     @pytest.mark.claude
@@ -248,9 +314,11 @@ class TestCatalogDiscovery(BaseCujTest):
 
         Expected: the print task completes with a Sonnet response.
         """
-        session, workspace, _recorder = cuj
-        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
+        session, _, recorder = cuj
+        recorder.configure_session(session, ["configure", "--skip-upgrade"])
         task = _claude_file_task(session)
+        checkpoint = recorder.checkpoint()
+        recorder.prepare_launch()
         result = session.run(
             CLAUDE,
             "-p",
@@ -263,6 +331,7 @@ class TestCatalogDiscovery(BaseCujTest):
         )
         task.assert_headless_answer(CLAUDE, result)
         _assert_claude_headless_model(result, CLAUDE_DEFAULT)
+        _assert_inference_evidence(recorder, checkpoint, CLAUDE, task, CLAUDE_DEFAULT)
         session.assert_not_routed()
 
     @pytest.mark.codex
@@ -271,14 +340,17 @@ class TestCatalogDiscovery(BaseCujTest):
 
         Expected: the exec task completes with GPT Luna selected.
         """
-        session, workspace, _recorder = cuj
-        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
+        session, _, recorder = cuj
+        recorder.configure_session(session, ["configure", "--skip-upgrade"])
         task = FileTask(session)
+        checkpoint = recorder.checkpoint()
+        recorder.prepare_launch()
         result = session.run(
             CODEX, "--", "exec", "--skip-git-repo-check", "--json", task.prompt, timeout=240
         )
         task.assert_headless_answer(CODEX, result)
         assert_completed_task_model(session, CODEX, task.value, CODEX_DEFAULT)
+        _assert_inference_evidence(recorder, checkpoint, CODEX, task, CODEX_DEFAULT)
         session.assert_not_routed()
 
     @pytest.mark.claude
@@ -288,9 +360,11 @@ class TestCatalogDiscovery(BaseCujTest):
 
         Expected: each Haiku/Kimi task completes with the explicitly requested model.
         """
-        session, workspace, _recorder = cuj
-        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
+        session, _, recorder = cuj
+        recorder.configure_session(session, ["configure", "--skip-upgrade"])
         task = _claude_file_task(session)
+        checkpoint = recorder.checkpoint()
+        recorder.prepare_launch()
         result = session.run(
             CLAUDE,
             "--",
@@ -306,6 +380,7 @@ class TestCatalogDiscovery(BaseCujTest):
         )
         task.assert_headless_answer(CLAUDE, result)
         _assert_claude_headless_model(result, claude.discovery_model_id(model))
+        _assert_inference_evidence(recorder, checkpoint, CLAUDE, task, model)
         session.assert_not_routed()
 
     @pytest.mark.codex
@@ -315,9 +390,11 @@ class TestCatalogDiscovery(BaseCujTest):
 
         Expected: the Kimi task completes with the explicitly requested model selected.
         """
-        session, workspace, _recorder = cuj
-        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
+        session, _, recorder = cuj
+        recorder.configure_session(session, ["configure", "--skip-upgrade"])
         task = FileTask(session)
+        checkpoint = recorder.checkpoint()
+        recorder.prepare_launch()
         result = session.run(
             CODEX,
             "--",
@@ -331,4 +408,5 @@ class TestCatalogDiscovery(BaseCujTest):
         )
         task.assert_headless_answer(CODEX, result)
         assert_completed_task_model(session, CODEX, task.value, model)
+        _assert_inference_evidence(recorder, checkpoint, CODEX, task, model)
         session.assert_not_routed()

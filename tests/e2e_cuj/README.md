@@ -22,17 +22,18 @@ Ten independently configured cases cover picker discovery, default launches, and
 Picker cases dismiss the menu without changing selection, then complete a task on the default.
 Separate cases cover bare `ug`, `ug claude`, and `ug codex` TUI first tasks and Claude print/Codex
 exec defaults. Each additional compatible model gets its own headless task case.
-Success depends on native behavior, not generated settings, managed-config JSON, or catalog caches.
-Defaults omit model overrides; expected answers are withheld from prompts. Claude headless results
-require the requested service/alias in `modelUsage` with nonzero output tokens; TUI cases check the
-selected default in the native banner and a completed assistant answer. Claude transcript model IDs
-name the backing model, not the service. Codex evidence joins the completed answer to its
-client-selected turn model. None proves the gateway's backing destination. Only live passes
+Success requires a completed native task and successful recorded gateway inference for the
+expected service/alias, not generated settings or catalog caches. Defaults omit model overrides;
+expected answers are withheld from prompts. Claude headless results also require nonzero output
+tokens in `modelUsage`; Codex joins the completed answer to its client-selected turn model.
+Claude transcript model IDs name the backing model, not the service. TUI tasks reject unexpected
+permission prompts. These checks do not prove the gateway's backing destination. Only live passes
 establish coverage.
 
 The test class selects the CUJ3 workspace, `https://dbc-bbdd5508-648e.cloud.databricks.com`.
 The shared `cuj` fixture supplies its authenticated SDK client and isolated local session;
-workspace configuration remains read-only. Set `UG_CUJ_SP_CLIENT_ID` and
+workspace configuration remains read-only. Each case cleans up with public `ug revert` before
+the next case configures, including after failures. Set `UG_CUJ_SP_CLIENT_ID` and
 `UG_CUJ_SP_CLIENT_SECRET` before a live run.
 
 CI discovers these tests through the shared `dedicated-cuj` job, which installs both
