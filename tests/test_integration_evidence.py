@@ -86,38 +86,46 @@ def test_transient_retries_and_running_tasks_are_not_terminal_errors(screen):
 
 
 @pytest.mark.parametrize(
-    "command_suffix,tool_name,selected,accepted",
+    "command_suffix,title,selected,accepted",
     [
-        ("", "Bash", "1. Yes", True),
-        ("; echo unrelated", "Bash", "1. Yes", False),
-        ("\necho unrelated", "Bash", "1. Yes", False),
-        ("", "Read", "1. Yes", False),
-        ("", "Bash", "2. Yes, and switch to auto mode", False),
+        ("", "Bash command", "1. Yes", True),
+        ("; echo unrelated", "Bash command", "1. Yes", False),
+        ("\necho unrelated", "Bash command", "1. Yes", False),
+        ("", "Read file", "1. Yes", False),
+        ("", "Bash command", "2. Yes, and switch to auto mode", False),
+        ("", "Bash command", "3. No", False),
     ],
 )
-def test_orchestrator_permission_requires_exact_pending_command(
-    command_suffix, tool_name, selected, accepted
+@pytest.mark.parametrize("tip", ["", " Tip: auto mode handles these prompts for you\n"])
+def test_orchestrator_permission_requires_exact_visible_command(
+    command_suffix, title, selected, accepted, tip
 ):
     command = '"$UCODE_SMART_ROUTER_PYTHON" -m ucode.smart_routing.orchestrator --check'
-    screen = f"Bash command\n  {command}\nDo you want to proceed?\n❯ {selected}\n"
-    records = [
-        {
-            "type": "assistant",
-            "message": {
-                "content": [
-                    {"type": "tool_use", "name": "Bash", "input": {"command": command}},
-                    {
-                        "type": "tool_use",
-                        "name": tool_name,
-                        "input": {"command": command + command_suffix},
-                    },
-                ]
-            },
-        }
-    ]
+    displayed = command + command_suffix
+    if "\n" in displayed:
+        displayed = "\n".join("│ " + line for line in displayed.splitlines())
+    screen = (
+        "Earlier tool output\n" + "─" * 80 + "\n"
+        f" {title}\n{tip}\n"
+        f"   {displayed}\n   Check smart routing gate status\n\n"
+        f" Contains simple_expansion\n\n Do you want to proceed?\n ❯ {selected}\n\n"
+        " Esc to cancel · Tab to amend\n"
+    )
 
-    assert evidence.is_orchestrator_check_permission(screen, records) is accepted
-    assert not evidence.is_orchestrator_check_permission(screen, [])
+    assert evidence.is_orchestrator_check_permission(screen) is accepted
+
+
+@pytest.mark.parametrize("command_location", ["scrollback", "description"])
+def test_orchestrator_command_outside_dialog_command_does_not_grant_permission(command_location):
+    command = '"$UCODE_SMART_ROUTER_PYTHON" -m ucode.smart_routing.orchestrator --check'
+    screen = (
+        f"{command if command_location == 'scrollback' else ''}\n" + "─" * 80 + "\n"
+        " Bash command\n\n   echo unrelated\n"
+        f"   {command if command_location == 'description' else 'An unrelated command'}\n\n"
+        " Do you want to proceed?\n ❯ 1. Yes\n\n Esc to cancel · Tab to amend\n"
+    )
+
+    assert not evidence.is_orchestrator_check_permission(screen)
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])

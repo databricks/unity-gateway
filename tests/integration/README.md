@@ -303,9 +303,9 @@ delegation and legacy-hook execution remain
 unverified by this suite.
 
 The Claude on/off/on journey handles the visible permission prompt for the exact
-read-only orchestrator check. It compares the prompt with the native pending
-command, waiting within the existing deadline for the transcript to catch up,
-before selecting the one-time Yes option. It still requires the routed
+read-only orchestrator check. It verifies the command in the current dialog and
+waits for the dialog to settle before selecting the one-time Yes option. Pending
+calls need not appear in the native transcript until approval. It still requires the routed
 banner, completed child, and correlated routing decision.
 
 The portable `../test_claude_windows_smart_routing.py` checks the Windows

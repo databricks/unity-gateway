@@ -153,9 +153,9 @@ The toggle integration journeys require both bundled skills, verify the saved
 session controls and native tool-result confirmation after each toggle, and
 explicitly request their children, including while routing is off. Claude's journey
 answers the visible permission prompt for the exact read-only orchestrator check,
-waiting for the native pending command to be flushed before confirming it.
-Evidence tests reject added shell
-commands and other permission selections. Live automatic
+using the dialog's command because pending calls may not yet be in the transcript.
+Evidence tests reject added shell commands, commands in scrollback or descriptions,
+and other permission selections. Live automatic
 delegation and legacy-hook execution are not covered by these tests.
 `test_integration_evidence.py` checks native tool-result extraction for both agents,
 including collapsed-output records, and excludes user echoes and assistant claims.

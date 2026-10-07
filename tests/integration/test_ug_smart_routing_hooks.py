@@ -98,18 +98,14 @@ def _run_calculation(tui, session, agent: str, expression: str, expected: str, *
             if "Do you want to proceed?" in screen:
                 if permission_in_progress:
                     return False
-                roots = [
-                    records
-                    for path, records in agent_sessions(session, agent).items()
-                    if not is_child_session(agent, path, records)
-                ]
-                # Claude can render the dialog before flushing its tool call to disk.
-                if not (
-                    agent == "claude"
-                    and len(roots) == 1
-                    and is_orchestrator_check_permission(screen, roots[0])
-                ):
+                if agent != "claude" or not is_orchestrator_check_permission(screen):
                     return False
+                # Claude briefly ignores input when a permission dialog opens.
+                tui.wait_for(
+                    is_orchestrator_check_permission,
+                    "the read-only orchestrator permission dialog to settle",
+                    timeout=5,
+                )
                 tui.send("\r", "allow the read-only orchestrator routing-state check")
                 permission_in_progress = True
                 return False
