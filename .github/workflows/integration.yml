@@ -193,7 +193,7 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: live and smoke and ${{ matrix.agent }}
-      ARTIFACT_NAME: integration-smoke-${{ matrix.agent }}-${{ runner.os }}
+      ARTIFACT_NAME: integration-smoke-${{ matrix.agent }}-${{ matrix.os }}
     steps: &live-steps
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -366,7 +366,7 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       TEST_MARKER: live and ${{ matrix.agent }}
-      ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ runner.os }}
+      ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.os }}
     steps: *live-steps
 
   # Non-blocking: continue-on-error and absent from the cujs `needs`, so a flaky OpenCode
@@ -391,7 +391,7 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: opencode
       TEST_MARKER: live and opencode
-      ARTIFACT_NAME: integration-full-opencode-${{ runner.os }}
+      ARTIFACT_NAME: integration-full-opencode-${{ matrix.os }}
     steps: *live-steps
 
   managed:
@@ -411,7 +411,7 @@ jobs:
     env:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
-      ARTIFACT_NAME: integration-managed-${{ matrix.agent }}-${{ runner.os }}
+      ARTIFACT_NAME: integration-managed-${{ matrix.agent }}-${{ matrix.os }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
