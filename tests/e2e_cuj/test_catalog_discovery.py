@@ -97,12 +97,18 @@ def _request_contains_task(request, agent, task):
     if not isinstance(entries, (list, str)):
         return False
     if isinstance(entries, str):
-        return task.prompt in entries
-    return any(
-        task.prompt in message_text(entry.get("content", entry.get("text", "")))
-        for entry in entries
-        if isinstance(entry, dict)
-    )
+        return entries == task.prompt
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("role") != "user":
+            continue
+        content = entry.get("content", "")
+        if isinstance(content, str) and content == task.prompt:
+            return True
+        if isinstance(content, list) and any(
+            message_text([part]) == task.prompt for part in content if isinstance(part, dict)
+        ):
+            return True
+    return False
 
 
 def _assert_inference_evidence(recorder, checkpoint, agent, task, expected):
@@ -125,7 +131,11 @@ def _assert_inference_evidence(recorder, checkpoint, agent, task, expected):
     for request in task_requests:
         assert request.payload["model"] == expected_wire_model, request.payload
         response = recorder.response_for(request, timeout=240)
-        assert response.status_code == 200, response.status_code
+        assert response.status_code == 200, {
+            "status": response.status_code,
+            "model": request.payload["model"],
+            "output_config": request.payload.get("output_config"),
+        }
         assert response.body, "Inference response was empty"
 
 
