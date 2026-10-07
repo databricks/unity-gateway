@@ -329,7 +329,8 @@ prerequisite; the live check must pass on each run.
 
 Current main enables discovery automatically; it has no `UG_ENABLE_MODEL_DISCOVERY`
 switch or configure-time `--model-location`. Cases 7/9 cover configured/fresh
-Claude default discovery, including its real gateway cache and picker. Claude's
+Claude default discovery, including the explicit `system.ai` parent-schema header
+in generated settings, its real gateway cache, and its picker. Claude's
 recognized `anthropic-aigw-<8-hex-digits>-` aliases are unwrapped for `system.ai`
 membership and discovered-family checks; malformed aliases, non-system models,
 and duplicate raw IDs still fail. Cases 8/10 require ug's discovered `system.ai`
@@ -340,7 +341,8 @@ overrides. Cases 11/13 also require explicit Claude provider/model-location laun
 built-in picker rows when no managed config exists. They also check that the remaining
 Default row names the model in the scoped fixture catalog, selected through the launch-only
 `ANTHROPIC_DEFAULT_MODEL` environment variable. Unit tests cover the existing Opus, Sonnet,
-then Haiku preference for catalogs with multiple families. Plain Claude launches retain native defaults.
+then Haiku preference for catalogs with multiple families. Plain unmanaged Claude launches
+use the same scoped catalog path with the `system.ai` parent schema.
 Obsolete disable-flag scenarios and duplicate managed variants are
 removed, not skipped; managed discovery and rejection remain covered by Cases
 1–6. Repository scenario numbers run consecutively from 01 to 14, with
