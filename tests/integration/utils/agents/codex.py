@@ -1,14 +1,12 @@
 """Codex-specific integration evidence and model discovery helpers."""
 
 from ..model_discovery import codex_model_in_picker as model_in_picker
-from ..provider_catalog import fetch_codex_parent_catalog as fetch_parent_catalog
 from . import _evidence_id
 
 __all__ = [
     "EVIDENCE_KIND",
     "assistant_answers",
     "completed_task_models",
-    "fetch_parent_catalog",
     "model_in_picker",
 ]
 

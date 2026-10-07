@@ -2,7 +2,6 @@
 
 from ..model_discovery import claude_discovery_model_id as discovery_model_id
 from ..model_discovery import claude_model_in_picker as model_in_picker
-from ..provider_catalog import fetch_anthropic_parent_catalog as fetch_parent_catalog
 from . import _evidence_id
 
 __all__ = [
@@ -10,7 +9,6 @@ __all__ = [
     "assistant_answers",
     "completed_task_models",
     "discovery_model_id",
-    "fetch_parent_catalog",
     "model_in_picker",
 ]
 
