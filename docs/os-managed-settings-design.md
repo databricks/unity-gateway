@@ -84,20 +84,20 @@ partial, and conflicting files.
 
 ## Admin Settings Passthrough
 
-A coding agent config can carry harness-native `agent_native_settings` per agent (Claude Code and Codex). ucode
-doesn't interpret them. It writes each leaf into that agent's managed file as-is after the gateway
-overlay, so an admin can set any key the harness supports (for example Claude's
-`allowManagedMcpServersOnly`) without a ucode release. The rules:
+A coding agent config can carry harness-native `agent_native_settings` for Claude Code. ucode
+doesn't interpret them. It writes each leaf into Claude Code's managed file as-is after the gateway
+overlay, so a key the server accepts (it starts with Claude's MCP controls, such as
+`allowManagedMcpServersOnly` and `allowedMcpServers`) needs no ucode release. Codex isn't supported
+yet: its MCP allowlist lives in `requirements.toml`, which ucode doesn't write. The rules:
 
 - A leaf that overlaps a path ucode writes itself (gateway URL, auth helper, model picker, managed
-  MCP servers, Codex provider, and so on) is skipped with a warning, so the admin's settings can't
+  MCP servers, and so on) is skipped with a warning, so the admin's settings can't
   break the gateway wiring. The warning prints once and again only when the skipped set changes.
 - Lists the file shares with IT, Claude's `permissions.deny` and each `hooks.<event>`, are merged
   rather than replaced. ucode records the items it delivered, so when the admin drops one only that
   item is withdrawn; entries IT authored, before or after ucode's first write, stay.
 - Claude's `allowManagedHooksOnly` and `disableAllHooks` are delivered as configured, with a warning
   that they also block the per-launch hooks smart routing installs.
-- Codex leaves set to `null` are skipped because TOML has no null value.
 - Delivered leaves become ucode-owned paths, so `ucode revert` removes them. When the admin later
   drops a non-list leaf, ucode withdraws it using the same three-way rule: only when the live value
   is still the one ucode wrote, and the pre-ucode value is restored if there was one.

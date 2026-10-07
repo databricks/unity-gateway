@@ -882,41 +882,24 @@ def _overlaps(path: list[str], other: list[str]) -> bool:
     return path[:shorter] == other[:shorter]
 
 
-def _integral_floats_as_ints(value: object) -> object:
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    if isinstance(value, list):
-        return [_integral_floats_as_ints(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _integral_floats_as_ints(item) for key, item in value.items()}
-    return value
-
-
 def plan_settings_passthrough(
     settings: dict | None,
     *,
     reserved_paths: list[list[str]],
-    toml: bool = False,
 ) -> SettingsPassthrough:
     """Split an admin's harness-native ``settings`` into leaves to deliver and leaves to skip.
 
     The managed config carries these verbatim rather than as ucode fields, so a new harness setting
     needs no ucode change. A leaf overlapping ``reserved_paths`` is skipped: ucode's own gateway
     wiring must keep working.
-
-    ``toml`` adapts the JSON values for a TOML file: nulls are skipped because TOML has none, and
-    whole-number floats become integers. The config's ``google.protobuf.Struct`` stores every number
-    as a double, and a TOML float would fail to load into an integer setting.
     """
     leaves: list[tuple[list[str], object]] = []
     ignored: list[str] = []
     for path, value in _leaf_paths(settings or {}, []):
-        if any(_overlaps(path, reserved) for reserved in reserved_paths) or (
-            toml and value is None
-        ):
+        if any(_overlaps(path, reserved) for reserved in reserved_paths):
             ignored.append(".".join(path))
         else:
-            leaves.append((path, _integral_floats_as_ints(value) if toml else value))
+            leaves.append((path, value))
     return SettingsPassthrough(leaves, ignored)
 
 

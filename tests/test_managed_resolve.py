@@ -113,16 +113,16 @@ class TestHttpHeaders:
 
 
 class TestSettingsPassthrough:
-    def test_state_override_carries_settings_for_claude_and_codex(self):
-        for tool in ("claude", "codex"):
-            managed = {"enabled_agents": {tool: {"agent_native_settings": {"a": {"b": 1}}}}}
-            assert managed_state_overrides(managed, tool)[f"{tool}_settings_passthrough"] == {
-                "a": {"b": 1}
-            }
+    def test_state_override_carries_settings_for_claude(self):
+        managed = {"enabled_agents": {"claude": {"agent_native_settings": {"a": {"b": 1}}}}}
+        assert managed_state_overrides(managed, "claude")["claude_settings_passthrough"] == {
+            "a": {"b": 1}
+        }
 
-    def test_agents_without_a_managed_file_get_no_override(self):
-        managed = {"enabled_agents": {"gemini": {"agent_native_settings": {"a": 1}}}}
-        assert "gemini_settings_passthrough" not in managed_state_overrides(managed, "gemini")
+    @pytest.mark.parametrize("tool", ["codex", "gemini"])
+    def test_other_agents_get_no_override(self, tool):
+        managed = {"enabled_agents": {tool: {"agent_native_settings": {"a": 1}}}}
+        assert f"{tool}_settings_passthrough" not in managed_state_overrides(managed, tool)
 
     def test_resolve_state_keeps_settings_out_of_persisted_state(self):
         managed = {"enabled_agents": {"claude": {"agent_native_settings": {"a": 1}}}}

@@ -58,20 +58,16 @@ from ucode.databricks import (
 from ucode.launcher import exec_or_spawn
 from ucode.managed_files import (
     ManagedFileWriteUnavailable,
-    apply_settings_passthrough,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
-    managed_file_snapshots,
     managed_file_status,
     managed_files_supported,
     managed_writes_allowed,
     mark_managed_file_verified,
-    plan_settings_passthrough,
     read_managed_file,
     reconcile_managed_file,
     revert_managed_file,
-    warn_skipped_settings_passthrough,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import v2 as smart_routing_v2
@@ -126,13 +122,6 @@ MANAGED_KEYS: list[list[str]] = [
     ["model_providers", CODEX_MODEL_PROVIDER_NAME],
     ["model_providers", CODEX_MODEL_PROVIDER_NAME, "http_headers"],
 ]
-
-# The managed config's harness-native settings (resolved from the manifest); the leaves last delivered
-# from them, so a setting the admin drops is withdrawn; and the leaves last skipped, so the warning
-# about them prints once rather than on every launch.
-SETTINGS_PASSTHROUGH_STATE_KEY = "codex_settings_passthrough"
-SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY = "codex_settings_passthrough_leaves"
-SETTINGS_PASSTHROUGH_IGNORED_STATE_KEY = "codex_settings_passthrough_ignored"
 
 LEGACY_MANAGED_KEYS: list[list[str]] = [
     ["profile"],
@@ -522,29 +511,7 @@ def write_tool_config(
         enabled=False,
     )
     write_toml_file(CODEX_CONFIG_PATH, doc)
-    passthrough = plan_settings_passthrough(
-        state.get(SETTINGS_PASSTHROUGH_STATE_KEY),
-        reserved_paths=[*MANAGED_KEYS, ["model_catalog_json"], [MANAGED_MCP_CONFIG_KEY]],
-        toml=True,
-    )
-    warn_skipped_settings_passthrough(
-        state, SETTINGS_PASSTHROUGH_IGNORED_STATE_KEY, passthrough, "Codex", print_warning_err
-    )
-    snapshots = managed_file_snapshots("codex", _parse_managed_config)
-    _reconcile_managed_config(
-        state,
-        lambda base: apply_settings_passthrough(
-            compose(base, include_catalog=False),
-            passthrough,
-            previous_leaves=state.get(SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY) or [],
-            snapshots=snapshots,
-        ),
-        [*MANAGED_KEYS, *passthrough.paths],
-    )
-    if passthrough.leaves:
-        state[SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY] = passthrough.record()
-    else:
-        state.pop(SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY, None)
+    _reconcile_managed_config(state, lambda base: compose(base, include_catalog=False))
     state = mark_tool_managed(state, "codex", MANAGED_KEYS)
     save_state(state)
     return state
@@ -615,9 +582,7 @@ def revert_managed_config() -> str:
     )
 
 
-def _reconcile_managed_config(
-    state: dict, compose: Callable[[dict], dict], owned_paths: list[list[str]]
-) -> None:
+def _reconcile_managed_config(state: dict, compose: Callable[[dict], dict]) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
     path = codex_managed_config_path()
     if path is None:
@@ -642,7 +607,7 @@ def _reconcile_managed_config(
     managed_before = copy.deepcopy(existing)
     desired_doc = compose(existing)
     if not managed_writes_allowed():
-        conflicts = managed_file_conflicts(managed_before, desired_doc, owned_paths)
+        conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
         if conflicts:
             raise RuntimeError(
                 "Codex configuration cannot be applied non-interactively because OS-managed "
@@ -658,11 +623,11 @@ def _reconcile_managed_config(
             tomlkit.dumps(desired_doc),
             tool="codex",
             display="Codex",
-            owned_paths=owned_paths,
+            owned_paths=MANAGED_KEYS,
             parser=_parse_managed_config,
         )
     except ManagedFileWriteUnavailable:
-        conflicts = managed_file_conflicts(managed_before, desired_doc, owned_paths)
+        conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
         if conflicts:
             raise
         print_warning_err(

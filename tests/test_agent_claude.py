@@ -1475,6 +1475,51 @@ class TestWriteToolConfigManagedSettings:
         assert managed["cleanupPeriodDays"] == 30
         assert claude.SETTINGS_PASSTHROUGH_LEAVES_STATE_KEY not in state
 
+    def test_revert_removes_settings_passthrough_and_restores_baseline(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        baseline = {"cleanupPeriodDays": 30, "permissions": {"deny": ["Bash(rm:*)"]}}
+        managed_path.write_text(json.dumps(baseline), encoding="utf-8")
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_models": [],
+                claude.SETTINGS_PASSTHROUGH_STATE_KEY: {
+                    "allowManagedMcpServersOnly": True,
+                    "allowedMcpServers": [{"serverName": "web_search"}],
+                    "cleanupPeriodDays": 7,
+                    "permissions": {"deny": ["mcp__gdrive"]},
+                },
+            },
+            "databricks-claude-sonnet-4",
+        )
+        assert json.loads(managed_path.read_text())["allowManagedMcpServersOnly"] is True
+
+        claude.revert_managed_settings()
+
+        assert json.loads(managed_path.read_text()) == baseline
+
+    def test_revert_keeps_settings_passthrough_value_edited_since(self, tmp_path, monkeypatch):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        managed_path.write_text(json.dumps({"cleanupPeriodDays": 30}), encoding="utf-8")
+        claude.write_tool_config(
+            {
+                "workspace": WS,
+                "codex_models": [],
+                claude.SETTINGS_PASSTHROUGH_STATE_KEY: {"allowManagedMcpServersOnly": True},
+            },
+            "databricks-claude-sonnet-4",
+        )
+        edited = json.loads(managed_path.read_text())
+        edited["allowManagedMcpServersOnly"] = False
+        managed_path.write_text(json.dumps(edited), encoding="utf-8")
+
+        claude.revert_managed_settings()
+
+        reverted = json.loads(managed_path.read_text())
+        assert reverted["allowManagedMcpServersOnly"] is False
+        assert reverted["cleanupPeriodDays"] == 30
+        assert "apiKeyHelper" not in reverted
+
     def test_foreign_picker_matching_last_write_invokes_no_sudo(self, tmp_path, monkeypatch):
         # Isaac re-adds its picker to the managed file. ug's merge preserved it into last-applied,
         # and the manifest lists the picker keys, but ug never recorded writing it: removing it

@@ -87,6 +87,5 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config |
 | `model_catalog_json` | Create/replace | Create/replace | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list |
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone |
-| Admin `agent_native_settings` | Ignore | Create/replace | Managed file only; each leaf of the config's per-agent `agent_native_settings`, as-is. The server doesn't accept Codex settings yet; `ug` still handles them generically, skipping leaves overlapping a field above, and nulls, with a warning. A leaf the admin drops is withdrawn if unchanged since `ug` wrote it |
 
 </details>

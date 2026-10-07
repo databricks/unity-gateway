@@ -37,8 +37,9 @@ _CLAUDE_FAMILY_SLOTS = {
 # Agents whose writers support the per-agent managed OTLP tracing flag.
 OTEL_TRACING_TOOLS = ("claude", "codex")
 
-# Agents with an OS-managed settings file that can receive the config's harness-native `agent_native_settings`.
-SETTINGS_PASSTHROUGH_TOOLS = ("claude", "codex")
+# Agents that receive the config's harness-native `agent_native_settings`. Claude only, matching the
+# server: Codex's MCP lockdown lives in requirements.toml, which ug doesn't write yet.
+SETTINGS_PASSTHROUGH_TOOLS = ("claude",)
 
 
 def _as_dict(value: object) -> dict[str, object]:

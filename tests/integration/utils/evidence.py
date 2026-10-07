@@ -72,17 +72,10 @@ def is_child_session(agent: str, path: str, records: list[dict]) -> bool:
     )
 
 
-def _without_markdown_emphasis(text: str) -> str:
-    # Transcripts keep the model's raw Markdown, so "now **off** for" never contains the plain
-    # phrase the TUI renders; drop bold/italic/code markers before matching.
-    return re.sub(r"[*`]", "", text)
-
-
 def assistant_answer_contains(session, agent: str, value: str, *, child: bool = False) -> bool:
-    """Whether a native parent or child assistant answer contains ``value``, ignoring Markdown
-    emphasis around it."""
+    """Whether a native parent or child assistant answer contains ``value``."""
     return any(
-        value in answer or value in _without_markdown_emphasis(answer)
+        value in answer
         for path, records in agent_sessions(session, agent).items()
         if is_child_session(agent, path, records) == child
         for answer in assistant_answers(agent, records)

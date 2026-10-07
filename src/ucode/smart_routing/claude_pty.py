@@ -203,19 +203,13 @@ def serve_first_prompt_socket(
 
     def serve() -> None:
         claimed = False
-        # bind() creates the socket file before listen() runs, so a hook that found it in that gap
-        # was refused and fell back to an unrouted prompt. Listen under a short temporary name and
-        # rename into place so the path only ever appears ready.
-        pending = path.with_name(f"{path.name}.t")
         try:
             path.unlink(missing_ok=True)
-            pending.unlink(missing_ok=True)
             server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            server.bind(str(pending))
-            os.chmod(pending, 0o600)
+            server.bind(str(path))
+            os.chmod(path, 0o600)
             server.listen(4)
             server.settimeout(0.5)
-            os.replace(pending, path)
         except OSError as exc:
             log(f"[ERR] first-prompt socket bind failed: {exc!r}")
             return
