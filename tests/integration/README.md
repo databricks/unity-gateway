@@ -7,7 +7,9 @@ Its Claude/Codex evidence helpers keep scenario-specific assertions separate fro
 Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
 is read-only and checked for changes at teardown; concurrent readers need no reservation.
 CUJ2 adds three separately collected cases for exact MPS/MCP configuration, Codex inference,
-and Claude inference.
+and Claude inference. Its published configuration must include
+`skills.names = ["ug_e2e.skills.fixture-summary"]`; these cases do not assert skill download,
+discovery, or invocation.
 
 The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
 agent-compatible pickers, schema exclusions, configured defaults, and real inference.
