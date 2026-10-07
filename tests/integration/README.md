@@ -1,5 +1,18 @@
 # Integration tests
 
+The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
+and runs directly with pytest. It does not use this suite's runner or config fixtures.
+It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
+Its Claude/Codex evidence helpers keep scenario-specific assertions separate from shared mechanics.
+Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
+is read-only and checked for changes at teardown; concurrent readers need no reservation.
+CUJ2 adds three separately collected cases for exact MPS/MCP configuration, Codex inference,
+and Claude inference.
+
+The [catalog discovery journey](../e2e_cuj/README.md) uses the CUJ3 workspace to check
+agent-compatible pickers, schema exclusions, configured defaults, and real inference.
+CI collects it through the shared `dedicated-cuj` job.
+
 This suite runs the **installed product** through subprocesses, against the same
 `UCODE_TEST_WORKSPACE` used by the existing e2e tests. It does not import `ucode`,
 patch application functions, substitute agent executables, run a fake gateway,
@@ -9,9 +22,45 @@ The existing unit tests keep their fixtures. Integration has an independent
 pytest configuration and uses `--confcutdir` so those fixtures cannot leak in.
 It is not collected by the default `uv run pytest` command.
 
+`TestChildStdoutLaunch` in `../test_cli.py` covers clean Claude print-mode and
+Codex exec/app-server stdout, early launch errors, and forwarding through ug's `--`.
+Token membership before the agent's `--` intentionally also matches option values and prompt
+tokens; component tests verify this only moves UG diagnostics, preserving agent arguments/stdout.
+`TestBootstrapStdout` in `../test_agents_init.py` exercises real subprocess streams
+with substituted installer/upgrader commands, including failures and native handoff.
+These component checks do not establish live installer, Isaac, or inference coverage.
+The live Claude/Codex headless prompt-argument and stdin journeys require raw stdout to parse
+as JSON/JSONL, without discarding non-JSON lines before checking the completed file task.
+
 The `smart_defaults` wire schema, legacy `spend_tiers` cache reads, and recommendation
 request gating are covered by unit/component tests listed in `../README.md`. This suite
 does not yet assert live `recommendModel` request counts for configs with and without tiers.
+
+## Dedicated-workspace CUJ5
+
+[`../e2e_cuj/test_ug_budget_defaults.py`](../e2e_cuj/test_ug_budget_defaults.py) runs
+three budget cases in the shared `E2E CUJs` job against the fixed 1% tier. The above-tier
+cases use `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET`; the below-tier case uses
+`UG_BUDGET_CUJ_SP_CLIENT_ID` / `UG_BUDGET_CUJ_SP_CLIENT_SECRET`.
+
+Run from a clean POSIX runner with both credential pairs set:
+
+```bash
+UG_CUJ_SP_CLIENT_ID=... UG_CUJ_SP_CLIENT_SECRET=... \
+UG_BUDGET_CUJ_SP_CLIENT_ID=... UG_BUDGET_CUJ_SP_CLIENT_SECRET=... \
+uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
+  pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj -v
+```
+
+All three cases submit no inference tasks. The above-tier bare-launch case checks
+`ug usage`, the Luna recommendation, and Codex startup; it does not assert that Codex
+applies Luna. The below-tier case verifies Claude/Sonnet selection and checks the
+spend percentage when the backend supplies budget figures.
+
+The explicit `ug claude` case verifies that startup displays the backend's Codex/Luna
+recommendation while its generated `ANTHROPIC_MODEL` setting and native header select
+Sonnet, then exits. It does not verify Claude's inference model. All three cases leave
+workspace and budget configuration unchanged.
 
 Shared subprocess command resolution is covered by `../test_subprocess_cross_os.py` and
 enforced by Ruff. These component checks do not establish native Windows coverage
@@ -53,6 +102,12 @@ process. The CLI still requires an available default model before launch, even
 when an explicit model is supplied. The only live OpenCode journey is the headless
 prompt case in `test_ug_opencode_headless.py`; there is no dedicated live OpenCode
 model-selection journey.
+
+## Shared agent helpers
+
+`utils/agents/claude.py` and `utils/agents/codex.py` own the existing native answer
+parsing, session paths, and child-session detection. `utils/evidence.py` dispatches
+through them without changing existing journey commands or completion assertions.
 
 ## Run a specific combination
 
@@ -321,10 +376,11 @@ and managed skill cleanup. The two Claude default-model cases read published MPS
 Catalog sources directly from `eng-ml-inference-batch-inference-us-west-2` and
 `eng-ml-inference-ap-northeast-2`, respectively, then verify both generated settings files retain
 all admin-authored family defaults. Their replacement pickers contain those mapped defaults plus
-the independently fetched catalog for MPS. Labeled default rows appear first, followed by every
-catalog model, including models also used as defaults; catalog labels are retained. Direct renderer
-tests cover default/catalog composition, while focused CLI regressions cover partial family
-mappings, explicit model selection, and preservation of static model lists. Neither case injects
+the independently fetched MPS or UC schema catalog. MPS family shortcut rows remain separate
+from catalog rows for the same target; UC model IDs are deduplicated and catalog labels are retained.
+Direct renderer tests cover default/catalog composition, while focused CLI regressions verify UC
+catalog discovery with overall defaults, family defaults, or both, along with explicit model
+selection and preservation of static model lists. Neither case injects
 a config. Each obtains a token for its
 target workspace using OAuth client credentials. The two target service-principal client IDs are
 constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-2 and
@@ -618,14 +674,12 @@ visible `skip-user-journey-test` label, causing the gate to rerun. Editing or de
 comment removes the label and reruns the gate; manually adding the label does not bypass it.
 
 For a manual run, use **Actions → Integration → Run workflow**, select the branch,
-and choose `full` (default), `smoke`, `tui`, or `installation`. `live` remains an
-alias for `full`. Manual subsets are explicit: `smoke` runs just the six smoke
-cases; `tui` adds `and tui` to each agent lane's marker and runs all 12 live TUI cases. Installation
-checks always run. Set the ug/agent versions. From the CLI:
+and set the ug/agent versions. Manual runs execute the complete integration suite.
+From the CLI:
 
 ```bash
 gh workflow run integration.yml -R databricks/unity-gateway --ref YOUR_BRANCH \
-  -f suite=full -f ug_version=checkout \
+  -f ug_version=checkout \
   -f claude_version=2.1.268 -f codex_version=0.154.0
 gh run list -R databricks/unity-gateway --workflow integration.yml
 gh run watch RUN_ID -R databricks/unity-gateway --exit-status

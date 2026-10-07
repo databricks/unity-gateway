@@ -66,6 +66,7 @@ from ucode.managed_files import (
     mark_managed_file_verified,
     read_managed_file,
     reconcile_managed_file,
+    record_ug_picker,
     revert_managed_file,
 )
 from ucode.mcp_oauth import (
@@ -209,6 +210,8 @@ CLAUDE_DEFAULT_MODEL_ENV_KEYS = {
     "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 }
+CLAUDE_CUSTOM_MODEL_FAMILIES = ("opus", "sonnet", "haiku")
+CLAUDE_CUSTOM_MODEL_SELECTOR = "opus"
 # Launch-scoped feature flags that ucode may write into Claude settings. These
 # must be removed again when the corresponding launch flag is absent.
 CLAUDE_CONDITIONAL_ENV_KEYS = ("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",)
@@ -273,6 +276,28 @@ def _parse_managed_settings(text: str) -> dict:
     if not isinstance(settings, dict):
         raise RuntimeError("the top-level JSON value must be an object")
     return settings
+
+
+def managed_user_agent() -> str | None:
+    """The User-Agent value in Claude Code's OS-managed custom headers, if one is there."""
+    path = _managed_settings_path()
+    try:
+        text = read_managed_file(path) if path else None
+        settings = _parse_managed_settings(text) if text else {}
+    except (RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
+        return None
+    env = settings.get("env")
+    headers = env.get(ANTHROPIC_CUSTOM_HEADERS_ENV_KEY) if isinstance(env, dict) else None
+    if not isinstance(headers, str):
+        return None
+    values = (_user_agent_header_value(line) for line in headers.split("\n"))
+    return next((value for value in values if value is not None), None)
+
+
+def _user_agent_header_value(line: str) -> str | None:
+    """The value of a ``User-Agent`` line in ANTHROPIC_CUSTOM_HEADERS (any name casing), else None."""
+    name, separator, value = line.partition(":")
+    return value.strip() if separator and name.strip().casefold() == "user-agent" else None
 
 
 def _dump_managed_settings(settings: dict) -> str:
@@ -1435,23 +1460,19 @@ def write_tool_config(
             if managed_settings_snapshots is None:
                 for key in CLAUDE_MANAGED_PICKER_KEYS:
                     merged.pop(key, None)
-            elif managed_settings_snapshots.last_applied_by_ug is not None:
-                # Only picker keys ucode wrote to this file are its to revert. A matching
-                # last-applied snapshot can't prove that: ucode re-saves pickers it only preserved.
-                owned_paths = managed_settings_snapshots.owned_paths or []
-                owned_picker_keys = [
-                    key for key in CLAUDE_MANAGED_PICKER_KEYS if [key] in owned_paths
-                ]
-                last_applied = managed_settings_snapshots.last_applied_by_ug
-                live_picker = [merged.get(key) for key in CLAUDE_MANAGED_PICKER_KEYS]
-                ucode_picker = [last_applied.get(key) for key in CLAUDE_MANAGED_PICKER_KEYS]
-                if owned_picker_keys and live_picker == ucode_picker:
+            else:
+                # Revert only the picker ug recorded writing, and only while it is untouched as a
+                # unit; last-applied snapshots also hold foreign pickers ug merely preserved.
+                ug_picker = managed_settings_snapshots.ug_picker or {}
+                if ug_picker and all(merged.get(key) == ug_picker[key] for key in ug_picker):
                     baseline = managed_settings_snapshots.original_before_ug or {}
-                    for key in owned_picker_keys:
+                    for key in ug_picker:
                         if key in baseline:
                             merged[key] = baseline[key]
                         else:
                             merged.pop(key, None)
+                elif not ug_picker:
+                    _warn_unrecorded_allow_list(merged, managed_settings_snapshots)
         sync_smart_routing_hooks(merged, state, enabled=False)
         return merged
 
@@ -1476,6 +1497,7 @@ def write_tool_config(
         ),
         managed_file_keys,
         relayed,
+        [key for key in CLAUDE_MANAGED_PICKER_KEYS if key in overlay],
     )
 
     custom_oauth = state.get("custom_oauth")
@@ -1602,11 +1624,27 @@ def _managed_settings_conflicts(
     return conflicts
 
 
+def _warn_unrecorded_allow_list(merged: dict, snapshots: ManagedFileSnapshots) -> None:
+    """Flag an enforced model allow-list ug may have written before it recorded its pickers.
+
+    Without a record ug can't tell it from an administrator's, so it is never removed; say how to
+    clear it instead of leaving the old model restriction in place silently."""
+    last_applied = snapshots.last_applied_by_ug or {}
+    keys = [k for k in ("availableModels", "enforceAvailableModels") if merged.get(k) is not None]
+    if keys and all(merged[k] == last_applied.get(k) for k in keys):
+        print_warning(
+            f"Claude Code managed settings at {_managed_settings_path()} still set "
+            f"{', '.join(keys)}, possibly from an earlier ug version. If you didn't expect a model "
+            "allow-list, run `ug revert` or ask your administrator to remove it."
+        )
+
+
 def _reconcile_managed_settings(
     state: dict,
     compose: Callable[[dict], dict],
     owned_paths: list[list[str]],
     relayed: bool,
+    picker_keys: list[str],
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -1687,6 +1725,7 @@ def _reconcile_managed_settings(
         mark_managed_file_verified(state, "claude", path, scope="local-compatible")
         return
     mark_managed_file_verified(state, "claude", path)
+    record_ug_picker("claude", {key: desired_settings[key] for key in picker_keys})
 
 
 def _preserve_permission_denies(existing: dict, desired: dict) -> None:
@@ -1827,6 +1866,15 @@ def _launch_model_args(tool_args: list[str], launch_model: str | None) -> list[s
     return ["--model", launch_model]
 
 
+def _launch_custom_model_settings(model: str) -> dict:
+    """Pin a Databricks model through launch-scoped Claude family aliases."""
+    return {
+        "env": {
+            CLAUDE_DEFAULT_MODEL_ENV_KEYS[family]: model for family in CLAUDE_CUSTOM_MODEL_FAMILIES
+        },
+    }
+
+
 def _resolve_picker_model_id(model: str, settings_env: dict) -> str:
     """Resolve configured aliases and context suffixes for comparisons only."""
     model = re.sub(r"\[(?:1m|200k)\]$", "", model)
@@ -1836,6 +1884,24 @@ def _resolve_picker_model_id(model: str, settings_env: dict) -> str:
         if isinstance(family_model, str) and family_model:
             model = family_model
     return re.sub(r"\[(?:1m|200k)\]$", "", model)
+
+
+def _is_managed_launch_model(state: dict, model: str) -> bool:
+    """Return whether *model* is present in Claude's managed model catalog."""
+    picker_models = state.get("_claude_launch_picker_models")
+    if not isinstance(picker_models, list) or not picker_models:
+        picker_models = state.get("claude_static_models")
+    if not isinstance(picker_models, list) or not picker_models:
+        return False
+
+    settings_env = read_json_safe(CLAUDE_SETTINGS_PATH).get("env")
+    settings_env = settings_env if isinstance(settings_env, dict) else {}
+    resolved_model = _resolve_picker_model_id(model, settings_env)
+    return any(
+        isinstance(picker_model, str)
+        and _resolve_picker_model_id(picker_model, settings_env) == resolved_model
+        for picker_model in picker_models
+    )
 
 
 def _resolve_launch_binary(binary: str) -> str:
@@ -2063,7 +2129,18 @@ def launch(
         os.environ["OAUTH_TOKEN"] = get_databricks_token(workspace, state.get("profile"))
     settings_override = None
     launch_args = list(tool_args)
-    if options.user_pinned_model:
+    launch_custom_model = state.get("_claude_launch_custom_model")
+    if isinstance(launch_custom_model, str) and launch_custom_model:
+        if _is_managed_launch_model(state, launch_custom_model):
+            launch_args = [
+                *_launch_model_args(tool_args, launch_custom_model),
+                *tool_args,
+            ]
+        else:
+            # Claude rejects raw model ids outside its catalog.
+            os.environ["ANTHROPIC_MODEL"] = CLAUDE_CUSTOM_MODEL_SELECTOR
+            settings_override = _launch_custom_model_settings(launch_custom_model)
+    elif options.user_pinned_model:
         os.environ["ANTHROPIC_MODEL"] = options.user_pinned_model
         settings_override = {"env": {"ANTHROPIC_MODEL": options.user_pinned_model}}
         launch_args = [

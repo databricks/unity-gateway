@@ -12,6 +12,8 @@ from typing import NoReturn
 _ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 _CODEX_MODELS_PATH = "/ai-gateway/codex/v1/models"
 _PROVIDER_HEADER = "Databricks-Model-Provider-Service"
+_PARENT_SCHEMA_HEADER = "Databricks-Model-Service-Parent-Schema"
+MODEL_SERVICE_PARENT_SCHEMA_HEADER = _PARENT_SCHEMA_HEADER
 _ANTHROPIC_VERSION = "2023-06-01"
 _ANTHROPIC_PAGE_SIZE = 1000
 _ANTHROPIC_MAX_PAGES = 20
@@ -166,12 +168,25 @@ def fetch_anthropic_provider_catalog(
     workspace: str, token: str, provider_service: str
 ) -> AnthropicProviderCatalog:
     """Fetch and validate the complete Anthropic provider catalog with bounded pagination."""
-    base_url = _validate_request_inputs(workspace, token, provider_service)
+    return _fetch_anthropic_catalog(workspace, token, provider_service, _PROVIDER_HEADER)
+
+
+def fetch_anthropic_parent_catalog(
+    workspace: str, token: str, parent_schema: str
+) -> AnthropicProviderCatalog:
+    """Fetch the Anthropic-compatible models advertised for a Unity Catalog parent schema."""
+    return _fetch_anthropic_catalog(workspace, token, parent_schema, _PARENT_SCHEMA_HEADER)
+
+
+def _fetch_anthropic_catalog(
+    workspace: str, token: str, source: str, source_header: str
+) -> AnthropicProviderCatalog:
+    base_url = _validate_request_inputs(workspace, token, source)
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
         "Anthropic-Version": _ANTHROPIC_VERSION,
-        _PROVIDER_HEADER: provider_service,
+        source_header: source,
     }
 
     model_ids: list[str] = []
@@ -227,7 +242,7 @@ def fetch_codex_parent_catalog(
         {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
-            "Databricks-Model-Service-Parent-Schema": parent_schema,
+            _PARENT_SCHEMA_HEADER: parent_schema,
         },
     )
     return CodexProviderCatalog(parse_codex_provider_catalog(payload))
