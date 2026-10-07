@@ -5,11 +5,13 @@ type On = Parameters<Register>[0]
 // The savings concern of ug's smart-routing UI mod (composed by register.ts).
 // It only collects: per turn request (main agent and subagents) it sums token
 // usage by (agent, baseline, served, before_user_switch), where served is the model
-// that answered and baseline is what the request would have used without routing:
-// the main model in effect for a subagent, the model that answered for main
-// (routing never changes the main model mid-session). First-prompt routing switches
-// the main model once, before the first request, so a later change is the user's;
-// requests before it are flagged, and priced from start_model under that routing.
+// the request named (the model service billed; the id the API reports back is a
+// gateway deployment's, which drifts) and baseline is what the request would have
+// used without routing: the main model in effect for a subagent, served itself for
+// main (routing never changes the main model mid-session). First-prompt routing
+// switches the main model once, before the first request, so a later change is
+// the user's; requests before it are flagged, and priced from start_model under
+// that routing.
 // Claude Code's side queries (title, compaction, helpers) are not turn steps, so
 // they never count. A hooks module has no Node APIs and the price table lives in
 // Python, so after each turn it writes the sums next to UCODE_SESSION_ENV_FILE,
@@ -250,7 +252,7 @@ export const registerSavings = (on: On): void => {
 
   // Fires for every request to a model, subagents included (e.agentId is set).
   // yield* forwards the streamed response untouched; only the finished result's
-  // usage (which names the model that answered) is read.
+  // usage is read.
   on('turn.step', async function* ($, e, next) {
     const request = e as any
     const agent = str(request.agentId)
@@ -268,8 +270,8 @@ export const registerSavings = (on: On): void => {
     const result = yield* next(e)
     try {
       const usage = (result as any)?.usage
-      const served = str(usage?.model) ?? str(request.model)
-      // Main's own baseline is what answered it: routing leaves the main model alone.
+      const served = str(request.model) ?? str(usage?.model)
+      // Main is its own baseline: routing leaves the main model alone.
       const base = agent === null ? served : baseline
       if (enabled && usage && served && base) {
         accumulate(agent ?? 'main', base, served, beforeUserSwitch, usage)

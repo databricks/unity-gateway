@@ -77,6 +77,8 @@ def test_savings_concern_keeps_the_baseline_and_start_model_rules():
     # Subagents price against the main model's request id; main is its own baseline.
     assert "lastMainModel = str(request.model) ?? lastMainModel" in source
     assert "const base = agent === null ? served : baseline" in source
+    # Served is priced by the model service the request named, not the drifting id reported back.
+    assert "const served = str(request.model) ?? str(usage?.model)" in source
     # The start model is only ever set once, so a later session.start cannot overwrite it.
     assert "startModel ??=" in source
     assert "startModel = " not in source.replace("startModel ??=", "")

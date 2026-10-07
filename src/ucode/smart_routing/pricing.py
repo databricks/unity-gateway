@@ -35,6 +35,9 @@ _ANTHROPIC_AIGW_PREFIX_RE = re.compile(r"^anthropic-aigw-[0-9a-f]{8}-")
 # `anthropic.claude-haiku-4-5-20251001-v1:0` for a request to `system.ai.claude-haiku-4-5`.
 _PROVIDER_PREFIX_RE = re.compile(r"^(?:(?:us|eu|apac|au|jp|global)\.)?anthropic\.")
 _PROVIDER_SUFFIX_RE = re.compile(r"(?:-20\d{6})?(?:-v\d+(?::\d+)?)?$")
+# Other served models are reported by a deployment id that drifts from the model service name:
+# `glm-5.3-flash` for `system.ai.glm-5-3-flash`, `glm-5-3-colo-on-sp-v1` for `system.ai.glm-5-3`.
+_DEPLOYMENT_SUFFIX_RE = re.compile(r"-colo-on-[a-z0-9]+$")
 
 
 def model_key(model: str) -> str:
@@ -42,8 +45,9 @@ def model_key(model: str) -> str:
 
     Mirrors ``routing.unwrap_anthropic_gateway_model`` + ``routing.normalize_model`` without
     importing ``routing``, whose ``urllib.request`` import alone costs ~0.2s of statusline startup.
-    Also drops a ``[1m]`` context-window selector (a window, not a price) and the provider prefix
-    and date/version suffix of a served id, so it keys the same as the requested model.
+    Also drops a ``[1m]`` context-window selector (a window, not a price), and the provider prefix,
+    date/version suffix and deployment spelling of a served id, so it keys the same as the
+    requested model.
     """
     name = _CONTEXT_SUFFIX_RE.sub("", (model or "").strip().lower())
     name = _ANTHROPIC_AIGW_PREFIX_RE.sub("", name).rsplit("/", 1)[-1]
@@ -52,7 +56,9 @@ def model_key(model: str) -> str:
             name = name[len(prefix) :]
             break
     name = _PROVIDER_PREFIX_RE.sub("", name).split("@", 1)[0]
-    return _PROVIDER_SUFFIX_RE.sub("", name)
+    name = _DEPLOYMENT_SUFFIX_RE.sub("", _PROVIDER_SUFFIX_RE.sub("", name))
+    # Model service names spell versions with dashes.
+    return name.replace(".", "-")
 
 
 @dataclass(frozen=True)

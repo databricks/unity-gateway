@@ -61,6 +61,17 @@ class TestModelKey:
     def test_unwraps_non_claude_gateway_models(self):
         assert pricing.model_key("anthropic-aigw-73ea02b2-system.ai.glm-5-2") == "glm-5-2"
 
+    @pytest.mark.parametrize(
+        ("served", "requested"),
+        [
+            ("glm-5.3-flash", "system.ai.glm-5-3-flash"),
+            ("glm-5-3-colo-on-sp-v1", "system.ai.glm-5-3"),
+            ("kimi-k3-colo-on-sp-v1", "system.ai.kimi-k3"),
+        ],
+    )
+    def test_matches_a_served_deployment_id_to_the_requested_model(self, served, requested):
+        assert pricing.model_key(served) == pricing.model_key(requested)
+
     def test_keeps_distinct_models_distinct(self):
         assert pricing.model_key("system.ai.claude-sonnet-5") != pricing.model_key(
             "system.ai.claude-opus-4-8"
