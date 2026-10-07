@@ -10,19 +10,16 @@ import sys
 import time
 import urllib.request
 from collections.abc import Callable, MutableMapping
-from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
 from ucode import config_io
 from ucode.codex_config import (
-    codex_cli_config_args,
     codex_config_args,
     codex_working_directory,
     custom_catalog_models,
     custom_catalog_path,
-    read_effective_codex_config,
 )
 from ucode.config_io import (
     APP_DIR,
@@ -609,23 +606,13 @@ def _cached_routing_models(state: dict) -> list[str]:
     return routing_models(state)
 
 
-def _v2_hooks(state: dict, available_models: list[str], config: dict) -> dict:
-    configured_hooks = config.get("hooks")
-    events = ("PreToolUse", "UserPromptSubmit", "SessionStart")
-    # Only override events UG changes. Codex retains ownership of every other event.
+def _v2_hooks(state: dict, available_models: list[str]) -> dict:
+    # Codex combines hook sources itself; copying user hooks here would register them twice.
     doc = {
         "hooks": {
-            event: deepcopy(configured_hooks[event])
-            for event in events
-            if isinstance(configured_hooks, dict) and event in configured_hooks
+            "PreToolUse": merge_pre_tool_use_hooks([], state, available_models=available_models),
         }
     }
-    existing = doc["hooks"].get("PreToolUse")
-    doc["hooks"]["PreToolUse"] = merge_pre_tool_use_hooks(
-        existing if isinstance(existing, list) else [],
-        state,
-        available_models=available_models,
-    )
     orchestrator.sync_hooks(doc, agent="codex")
     return doc["hooks"]
 
@@ -668,15 +655,11 @@ def launch_codex(
     catalog_path = custom_catalog_path()
     if catalog_path is not None:
         overlay["model_catalog_json"] = str(catalog_path)
-    cwd = codex_working_directory(tool_args)
-    config = read_effective_codex_config(
-        binary,
-        cwd=cwd,
-        config_args=[*codex_config_args(overlay), *codex_cli_config_args(tool_args)],
-    )
-    overlay["hooks"] = _v2_hooks(state, available_models, config)
+    overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["features.hooks"] = True
-    legacy_plugin_config = orchestrator.legacy_codex_plugin_config(cwd=cwd)
+    legacy_plugin_config = orchestrator.legacy_codex_plugin_config(
+        cwd=codex_working_directory(tool_args)
+    )
     overlay.update(legacy_plugin_config)
     _prepare_smart_router_session("codex")
     # Codex constructs tool subprocess environments through its shell policy.
@@ -687,7 +670,7 @@ def launch_codex(
             overlay[f"shell_environment_policy.set.{key}"] = os.environ[key]
     config_args = codex_config_args(overlay)
     if not first_prompt_routing_enabled():
-        # Subagent-only routing needs no persistent app-server or interposer:
+        # Subagent-only routing needs neither the app-server nor the interposer:
         # the hooks ride in the CLI config, so launch the TUI directly.
         exec_or_spawn([binary, *config_args, *tool_args])
     app_port = _free_port()

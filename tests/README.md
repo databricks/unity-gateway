@@ -144,9 +144,11 @@ and the Claude/Codex launcher tests check native per-launch overrides that disab
 legacy marketplace registrations with routing on or off, including Codex's
 app-server and remote TUI. They check config discovery, unrelated-plugin and hook
 preservation, and unchanged saved settings, including nested project registrations
-and `--cd`. `test_codex_config.py` exercises the native configuration protocol,
-timeout cleanup, and optional hook fields; launch tests preserve its resolved
-handlers and leave unrelated hook events to Codex. These are component assertions.
+and `--cd`. `test_codex_config.py` covers launch-directory resolution and argument
+serialization. Codex launch tests check that UG supplies only its own hooks,
+preserves caller arguments and saved configuration, and starts no helper process
+for subagent-only routing. Native hook merging and project trust belong to Codex;
+these component assertions do not exercise its hook loader.
 The toggle integration journeys require both bundled skills, verify the saved
 session controls and native tool-result confirmation after each toggle, and
 explicitly request their children, including while routing is off. Live automatic

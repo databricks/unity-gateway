@@ -215,7 +215,7 @@ def test_hooks_preserve_user_handlers_and_replace_only_ug_handlers(monkeypatch):
     assert doc["hooks"]["SessionStart"][1]["matcher"] == "compact"
 
 
-def test_codex_launch_merges_prompt_and_compaction_hooks(tmp_path, monkeypatch):
+def test_codex_launch_adds_only_its_prompt_and_compaction_hooks(tmp_path, monkeypatch):
     config = tmp_path / "config.toml"
     config.write_text(
         '[[hooks.UserPromptSubmit]]\n[[hooks.UserPromptSubmit.hooks]]\ncommand = "user-prompt"\n'
@@ -224,12 +224,11 @@ def test_codex_launch_merges_prompt_and_compaction_hooks(tmp_path, monkeypatch):
     )
     before = config.read_bytes()
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    hooks = v2._v2_hooks(
-        {"workspace": "https://example.com"}, ["gpt-6-sol"], v2.config_io.read_toml_safe(config)
-    )
-    assert hooks["UserPromptSubmit"][0]["hooks"][0]["command"] == "user-prompt"
-    assert hooks["SessionStart"][0]["hooks"][0]["command"] == "user-compact"
-    assert orchestrator.HOOK_MODULE in hooks["UserPromptSubmit"][1]["hooks"][0]["command"]
+    hooks = v2._v2_hooks({"workspace": "https://example.com"}, ["gpt-6-sol"])
+    for event in ("UserPromptSubmit", "SessionStart"):
+        (group,) = hooks[event]
+        (hook,) = group["hooks"]
+        assert orchestrator.HOOK_MODULE in hook["command"]
     assert config.read_bytes() == before
 
 

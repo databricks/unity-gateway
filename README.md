@@ -265,9 +265,9 @@ are unchanged.
 UG automatically suppresses installed standalone `model-orchestrator` plugins,
 including Isaac-synced Codex registrations, for each Claude or Codex launch.
 This also applies when smart routing is off, so the old hooks cannot activate
-orchestration independently. Codex project registrations are included. Routed Codex
-launches use its native configuration resolver to preserve trusted project hooks;
-untrusted project hooks stay disabled. Saved plugin settings and unrelated plugins
+orchestration independently. Codex project registrations are included. UG supplies
+only its own hooks; Codex combines them with existing hooks and applies project
+trust. Saved plugin settings and unrelated plugins
 and hooks remain intact. Smart routing selects subagent models; separate role-model
 preferences are ignored and their files are left untouched. See the bundled
 [orchestrator documentation](skills/orchestrate/README.md) for cutover details.

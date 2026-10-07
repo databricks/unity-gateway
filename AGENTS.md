@@ -88,7 +88,7 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config |
 | `model_catalog_json` | Create/replace | Create/replace | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list |
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone |
-| Smart-routing and orchestrator hooks | Merge | Merge | Launch-only hooks preserve native effective handlers, including trusted project hooks; only `PreToolUse`, `UserPromptSubmit`, and `SessionStart` are overridden; `features.hooks` is enabled for a smart-routed launch |
+| Smart-routing and orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, `UserPromptSubmit`, and `SessionStart` handlers; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |
 | `plugins."model-orchestrator@…".enabled` | Merge | Merge | Launch-only `false` overrides for legacy registrations, including Isaac-synced and project plugins, even when smart routing is off; saved settings and other plugins left alone |
 
 </details>

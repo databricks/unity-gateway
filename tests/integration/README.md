@@ -295,9 +295,10 @@ session toggles. Separate preference editing, locking, and recovery are not part
 of the workflow. `../test_orchestrator_legacy_plugins.py` and
 launcher component tests check per-launch suppression of installed legacy plugins,
 including non-routed launches, nested project config and `--cd`, and preservation
-of saved settings and unrelated plugins/hooks. Native config protocol and timeout
-handling have component coverage in `../test_codex_config.py`; native project trust
-and hook execution are not exercised by this integration suite. Live automatic
+of saved settings and unrelated plugins/hooks. Codex launcher component tests
+check that UG supplies only its own hooks, preserves caller arguments, and starts
+no helper process for subagent-only routing. Codex's native hook merging, project
+trust, and execution of pre-existing hooks are not exercised by this integration suite. Live automatic
 delegation and legacy-hook execution remain
 unverified by this suite.
 
