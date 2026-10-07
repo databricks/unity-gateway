@@ -229,14 +229,14 @@ test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven 
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
-test_ug_claude_managed_model_discovery.py # fetched/reused Claude MPS policy cases
-test_ug_codex_managed_model_discovery.py  # fetched/reused Codex MPS policy cases
+test_ug_claude_managed_model_discovery.py # Claude MPS policy cases (claude_mps.json)
+test_ug_codex_managed_model_discovery.py  # Codex MPS policy cases (codex_mps.json)
 test_ug_claude_model_discovery.py       # unmanaged scenarios 7, 9, 11, 13
 test_ug_codex_model_discovery.py        # unmanaged scenarios 8, 10, 12, 14
-test_ug_configure_managed.py            # managed workspace: static model list/catalog pointer, no agent selector
-test_ug_configure_managed_models.py     # injected model sources, smart-routing banner, Codex fallback metadata
-test_ug_configure_managed_mcp.py        # injected managed MCP list
-test_ug_configure_managed_skills.py     # injected managed skills: download, coexist, reconcile away
+test_ug_configure_managed.py            # stubbed static model list/catalog pointer, no agent selector, cache TTL
+test_ug_configure_managed_models.py     # stubbed model sources, smart-routing banner, Codex fallback metadata
+test_ug_configure_managed_mcp.py        # stubbed managed MCP list
+test_ug_configure_managed_skills.py     # stubbed managed skills: download, coexist, reconcile away
 test_ug_configure_managed_lifecycle.py  # none -> A -> B -> MPS -> none: reconcile, clear on MPS/no-config
 test_installation.py                   # fresh installed package
 utils/                                # process/terminal/evidence helpers and Docker files
@@ -308,8 +308,8 @@ fails the selected CUJ, rather than skipping it.
 
 The tracing journeys are part of their respective Full agent lanes and use the existing
 e2e workspace and bearer. Because that workspace deliberately has no published managed
-configuration, each journey injects only a tracing-enabled CodingAgentConfig input through
-the suite's managed-config stub seam; the agents, inference, OTLP export, and table
+configuration, each journey injects only a tracing-enabled CodingAgentConfig input (the
+`claude_tracing.json` / `codex_tracing.json` fixtures) through the suite's managed-config stub; the agents, inference, OTLP export, and table
 verification remain real. Each adds the prompt's UUID as a trace-safe
 `ug_integration_marker` attribute, resolves the destination table from the workspace tracing
 configuration, waits 30 seconds, and queries that table through an existing SQL warehouse.
@@ -363,30 +363,24 @@ they only configure, list models, and open/close the picker. Other live CUJs per
 real model tasks.
 
 There are **62 live cases** (including 12 marked TUI journeys) and **7 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case. A separate **6 managed-workspace cases** (one per agent, an idempotent
-re-configure, a cache-TTL journey, and two Claude defaults cases; marker `managed`) run against
-workspaces that publish CodingAgentConfigs; see "Managed-workspace journeys" below. One **`workspace_switch` case**
-uses two real workspaces and checks skills MCP cleanup and a completed Claude task.
-A further **25 `managed_fixture`
-cases** use `UCODE_MANAGED_CONFIG_STUB`. Twelve explicit configured/fresh Claude and Codex
-discovery and source-override journeys fetch the published config once per agent, replace that
-agent's static source with its dedicated MPS, and reuse the result. Thirteen other collected cases
-cover focused model, MCP, skills, and lifecycle shapes, including per-agent model reconciliation
-and managed skill cleanup. The two Claude default-model cases read published MPS and Unity
-Catalog sources directly from `eng-ml-inference-batch-inference-us-west-2` and
-`eng-ml-inference-ap-northeast-2`, respectively, then verify both generated settings files retain
-all admin-authored family defaults. Their replacement pickers contain those mapped defaults plus
+checks** with Claude and Codex; selecting OpenCode adds one live headless case. One
+**`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
+Claude task. A further **33 `managed_fixture` cases** (two of them also `live`) run on the
+managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
+injected through `UCODE_MANAGED_CONFIG_STUB`; there are no cases that read a published config.
+Twelve explicit configured/fresh Claude and Codex discovery and source-override journeys use the
+`claude_mps.json` / `codex_mps.json` fixtures, which set each agent's source to its dedicated MPS.
+The other cases cover focused model, MCP, skills, cache-TTL, and lifecycle shapes, including
+per-agent model reconciliation and managed skill cleanup. Of the two Claude default-model cases,
+the MPS case stubs a `main.default.ci_e2e_anthropic_mps` source and the `system.ai` parent-schema
+case stubs a Unity Catalog source; both verify the generated settings
+files retain all admin-authored family defaults. Their replacement pickers contain those mapped defaults plus
 the independently fetched MPS or UC schema catalog. MPS family shortcut rows remain separate
 from catalog rows for the same target; UC model IDs are deduplicated and catalog labels are retained.
 Direct renderer tests cover default/catalog composition, while focused CLI regressions verify UC
 catalog discovery with overall defaults, family defaults, or both, along with explicit model
-selection and preservation of static model lists. Neither case injects
-a config. Each obtains a token for its
-target workspace using OAuth client credentials. The two target service-principal client IDs are
-constants in the runner; CI only needs `UG_MPS_DEFAULTS_CLIENT_SECRET` for west-2 and
-`UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET` for northeast-2. As with the base workspace, the runner
-mints short-lived tokens and passes bearers to pytest; each test selects its target bearer for
-`ug configure` and Claude. The client secrets do not enter the pytest process.
+selection and preservation of static model lists. Both cases run on the managed workspace's own
+bearer; no second workspace or extra secret is involved.
 The 14 retained numbered scenarios comprise 24 explicit journeys: 12 managed and 12 unmanaged
 executions; the complete integration suite collects 101 executions. See the named coverage and gaps matrix in
 [../README.md](../README.md).
@@ -564,21 +558,23 @@ cannot still be running when that gate passes. Full coverage on PRs needs no lab
 
 ### Managed-workspace journeys
 
-`test_ug_configure_managed.py` (marker `managed`, not `live`) runs in its own per-agent
-**Managed config** jobs against a second workspace that publishes an admin CodingAgentConfig,
-whereas unmanaged live cases require a workspace without one. `ug configure` applies the admin config
-with no agent selector, and each agent's generated config exposes exactly the admin's static
-`model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog). The managed
-Codex case also checks stderr guidance to restart the daemon after publication,
-that the shared app config points at the stable catalog, and that a fresh
-bare Codex app-server returns the expected visible model before the existing TUI prompt/input
-assertion. It does not claim GUI rendering or inference coverage.
+The managed lanes run `managed_fixture` journeys (and `workspace_switch`) on the single managed
+workspace (`E2E_ADMIN_WORKSPACE`), in per-agent **Managed config** jobs. Every managed config comes
+from a JSON file in `tests/fixtures/managed_config/` in the GET shape of one CodingAgentConfig; a
+fixture whose content is JSON `null` stands for a workspace with no managed config. Tests select a
+fixture with `use_managed_config_fixture(session, name)`, which points `UCODE_MANAGED_CONFIG_STUB`
+at the file.
+`ug configure --file` (#866) will replace the environment stub; because the inputs are already
+checked-in files, that switch is mechanical.
 
-Two `managed` cases in `test_ug_configure_managed_models.py` target separate published configs:
-west-2 must publish a Claude MPS source with Anthropic family defaults, and northeast-2 must
-publish a Claude `system.ai` parent-schema source with Unity Catalog family defaults. `ug configure`
-fetches the config; the tests assert the generated private and OS-managed Claude settings after
-launch. Their exact required defaults and source headers are reflected in the tests.
+`test_ug_configure_managed.py` uses `managed_workspace_default.json`. `ug configure` applies the
+config with no agent selector, and each agent's generated config exposes exactly its static
+`model_services` (Claude's `availableModels`/`modelPicker`, Codex's model catalog). The stub takes
+the same cache path as a live read (`published` outcome, `retrieved_at` stamp, TTL), so the
+cache-TTL journey holds unchanged. The Codex case also checks stderr guidance to restart the
+daemon after publication, that the shared app config points at the stable catalog, and that a
+fresh bare Codex app-server returns the expected visible model before the existing TUI
+prompt/input assertion. It does not claim GUI rendering or inference coverage.
 
 `test_unmanaged_claude_preserves_preexisting_family_defaults` is a live lifecycle journey against
 one real workspace. A read-only check first proves that the workspace publishes no
@@ -586,16 +582,15 @@ CodingAgentConfig. The test then seeds `/etc/claude-code/managed-settings.json`,
 `ug configure`, and requires every pre-existing family default to survive exactly. It checks
 settings reconciliation and makes no model-inference claim.
 
-Treat that published CodingAgentConfig as shared CI fixture state. The managed lanes assert its
-exact model ids and its both-agent enablement, so editing the managed workspace's config (models,
-enabled agents, or defaults) breaks these lanes until the constants in `test_ug_configure_managed.py`
-are updated to match. Do not change it casually.
+The expected model ids in `test_ug_configure_managed.py` mirror `managed_workspace_default.json`;
+update both together. The fixtures reference real securables on the managed workspace (MPS
+`main.default.ci_e2e_anthropic_mps` / `ci_e2e_openai_mps`, MCP service `system.ai.github`, skill
+`main.default.forkable-meals`), which must keep existing.
 
 The `managed_fixture` journeys use `UCODE_MANAGED_CONFIG_STUB` to short-circuit only the
-managed-config HTTP read for config shapes that workspace does not publish. The Claude discovery
-module fetches the workspace's published config once, replaces Claude's static model source with
-`main.default.ci_e2e_anthropic_mps`, drops incompatible static defaults, and reuses that fixture
-across all configured/fresh scenarios. The Codex module does the same with
+managed-config HTTP read. The Claude discovery module uses `claude_mps.json`, whose Claude model
+source is `main.default.ci_e2e_anthropic_mps` with no static defaults, across all configured/fresh
+scenarios. The Codex module does the same with `codex_mps.json` and
 `main.default.ci_e2e_openai_mps`. Separate read-only, provider-scoped model-list requests
 establish expected IDs independently of the generated agent files. With no authored defaults,
 Claude's native cache and replacement picker must match those IDs, preserve catalog display names,
@@ -626,23 +621,16 @@ these same-repository secrets rather than storing a long-lived bearer:
 - `E2E_ADMIN_SP_CLIENT_ID` / `E2E_ADMIN_SP_CLIENT_SECRET`: the service principal's OAuth client
   credentials. The job passes them to the runner as the standard `DATABRICKS_CLIENT_ID` /
   `DATABRICKS_CLIENT_SECRET`, and `run_integration.py` mints the workspace token.
-- `UG_MPS_DEFAULTS_CLIENT_SECRET`: OAuth client secret for the west-2 Claude defaults workspace.
-  Its client ID (`1c359c0f-58bc-42ac-a74f-079ccb173676`) is in the runner code.
-- `UG_PARENT_SCHEMA_DEFAULTS_CLIENT_SECRET`: OAuth client secret for the northeast-2 Claude
-  defaults workspace. Its client ID (`95e267dc-4393-4360-9d45-4b9b13b2d370`) is in the runner code.
-  CI passes these two repository secrets only to the managed Claude lane.
 
 Run it locally the same way, pointing at the managed workspace:
 
 ```bash
 export UCODE_TEST_WORKSPACE=https://<managed-workspace>
 export DATABRICKS_CLIENT_ID=<sp-app-id> DATABRICKS_CLIENT_SECRET=<sp-oauth-secret>
-python scripts/run_integration.py --claude-version <v> --codex-version <v> -- -m managed
+python scripts/run_integration.py --claude-version <v> --codex-version <v> -- -m managed_fixture
 ```
 
-To run only the two Claude defaults cases locally, set the base managed workspace and its
-`DATABRICKS_CLIENT_ID` / `DATABRICKS_CLIENT_SECRET` as above, set both target-specific client
-secrets, and select the tests by name:
+To run only the two Claude defaults cases locally, select them by name with the same environment:
 
 ```bash
 python3.12 scripts/run_integration.py \
