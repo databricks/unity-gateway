@@ -139,7 +139,6 @@ from ucode.smart_routing import v2 as smart_routing_v2
 from ucode.smart_routing.claude_hooks import FIRST_PROMPT_SOCKET_ENV, ROUTE_FIRST_PROMPT_EVENT
 from ucode.smart_routing.session_env import (
     effective_environment,
-    fresh_launch,
     session_env_path,
     set_session_environment,
 )
@@ -2938,11 +2937,8 @@ def _launch_tool(
             provider=provider,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
-        with (
-            _smart_routing_v2_flag(
-                True if managed_smart_routing_enabled and smart_routing_enabled else None
-            ),
-            fresh_launch(),
+        with _smart_routing_v2_flag(
+            True if managed_smart_routing_enabled and smart_routing_enabled else None
         ):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:

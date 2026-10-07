@@ -140,7 +140,7 @@ including while routing is off.
 including collapsed-output records, and excludes user echoes and assistant claims.
 
 Dedicated regression coverage is missing for root-only orchestrator activation,
-compaction, retained skills in ineligible sessions, nested-session eligibility,
+compaction, retained skills in ineligible sessions,
 role-contract preservation, and isolation from legacy preference files. Codex's
 native hook merging and project trust, automatic delegation, and execution of
 pre-existing hooks remain outside the integration suite.

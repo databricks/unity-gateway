@@ -6,8 +6,7 @@ import json
 import os
 import sys
 import tempfile
-from collections.abc import Iterator, Mapping, MutableMapping
-from contextlib import contextmanager
+from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
 from ucode.config_io import atomic_write_json
@@ -16,21 +15,6 @@ from ucode.constants import SMART_ROUTING_ENV_KEYS
 SESSION_ENV_VAR = "UCODE_SESSION_ENV_FILE"
 SESSION_PYTHON_ENV_VAR = "UCODE_SMART_ROUTER_PYTHON"
 _ALLOWED_KEYS = frozenset(SMART_ROUTING_ENV_KEYS)
-
-
-@contextmanager
-def fresh_launch() -> Iterator[None]:
-    """Prevent a nested, non-routed launch from inheriting its parent's eligibility."""
-    keys = (SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR)
-    previous = {key: os.environ.pop(key, None) for key in keys}
-    try:
-        yield
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
 
 
 def start_session(env: MutableMapping[str, str] | None = None) -> Path:

@@ -290,8 +290,8 @@ Collapsed terminal output is allowed; the answer need not repeat the CLI's exact
 Each following child still verifies whether a routing decision occurred.
 Their off-phase child is an explicit user-requested delegation;
 these journeys do not establish automatic orchestration behavior. Root-only
-activation, compaction, retained skills in ineligible sessions, nested-session
-eligibility, role-contract preservation, and isolation from legacy preference files
+activation, compaction, retained skills in ineligible sessions,
+role-contract preservation, and isolation from legacy preference files
 lack dedicated regression coverage. Codex's native hook merging, project trust,
 and execution of pre-existing hooks are not exercised by this integration suite.
 
