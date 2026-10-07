@@ -3678,6 +3678,12 @@ class TestModelServicesCache:
     def _counting_page(calls: dict):
         def page(url, token):
             calls["n"] = calls.get("n", 0) + 1
+            if db_mod.get_custom_headers():
+                return {
+                    "model_services": [
+                        {"name": "model-services/system.ai.claude-opus-6"},
+                    ]
+                }, None
             return {
                 "model_services": [
                     {"name": "model-services/system.ai.claude-opus-5"},
@@ -3722,12 +3728,15 @@ class TestModelServicesCache:
         db_mod.clear_model_services_cache()
         monkeypatch.setattr(db_mod, "_get_model_services_page", self._counting_page(calls))
 
-        db_mod.list_model_services(WS, "tok")
+        ordinary, _ = db_mod.list_model_services(WS, "tok")
         monkeypatch.setattr(db_mod, "get_custom_headers", lambda: {"X-Route": "scoped"})
-        db_mod.list_model_services(WS, "tok")
+        scoped, _ = db_mod.list_model_services(WS, "tok")
+        assert scoped == ["system.ai.claude-opus-6"]
         monkeypatch.setattr(db_mod, "get_custom_headers", lambda: {})
-        db_mod.list_model_services(WS, "tok")
+        cached, _ = db_mod.list_model_services(WS, "tok")
 
+        assert ordinary == ["system.ai.claude-opus-4-8", "system.ai.claude-opus-5"]
+        assert cached == ordinary
         assert calls["n"] == 2
 
     def test_each_workspace_is_cached_separately(self, monkeypatch):
@@ -3766,6 +3775,25 @@ class TestModelProviderServicesCache:
     def _counting_listing(calls: dict):
         def get_json(url, token, timeout=10):
             calls["n"] = calls.get("n", 0) + 1
+            if db_mod.get_custom_headers():
+                return {
+                    "model_provider_services": [
+                        {
+                            "name": "model-provider-services/scoped.route.ant",
+                            "config": {
+                                "provider_type": "ANTHROPIC",
+                                "targets": [{"model": "claude-opus-6"}],
+                            },
+                        },
+                        {
+                            "name": "model-provider-services/scoped.route.oai",
+                            "config": {
+                                "provider_type": "OPENAI",
+                                "targets": [{"model": "gpt-6"}],
+                            },
+                        },
+                    ]
+                }, None
             return {
                 "model_provider_services": [
                     {
@@ -3808,12 +3836,18 @@ class TestModelProviderServicesCache:
         db_mod.clear_model_services_cache()
         monkeypatch.setattr(db_mod, "_http_get_json", self._counting_listing(calls))
 
-        db_mod.list_model_provider_services(WS, "tok")
+        ordinary, _ = db_mod.list_model_provider_services(WS, "tok")
         monkeypatch.setattr(db_mod, "get_custom_headers", lambda: {"X-Route": "scoped"})
-        db_mod.list_model_provider_services(WS, "tok")
+        scoped, _ = db_mod.list_model_provider_services(WS, "tok")
+        assert [service["name"] for service in scoped] == [
+            "scoped.route.ant",
+            "scoped.route.oai",
+        ]
         monkeypatch.setattr(db_mod, "get_custom_headers", lambda: {})
-        db_mod.list_model_provider_services(WS, "tok")
+        cached, _ = db_mod.list_model_provider_services(WS, "tok")
 
+        assert [service["name"] for service in ordinary] == ["main.j.ant", "main.j.oai"]
+        assert cached == ordinary
         assert calls["n"] == 2
 
     def test_each_workspace_is_cached_separately(self, monkeypatch):
