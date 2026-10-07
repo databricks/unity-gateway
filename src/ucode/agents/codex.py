@@ -22,6 +22,7 @@ from ucode.codex_config import (
     codex_config_precedence_paths,
     codex_managed_config_path,
     custom_catalog_models,
+    windows_sandbox_config_args,
 )
 from ucode.config_io import (
     APP_DIR,
@@ -1223,7 +1224,7 @@ def launch(
                     profile_doc["model"] = slugs[0]
     _run_codex(
         state,
-        [binary, *codex_config_args(profile_doc)],
+        [binary, *codex_config_args(profile_doc), *windows_sandbox_config_args()],
         tool_args,
         otel_tracing=otel_tracing,
         workspace=workspace,

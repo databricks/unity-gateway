@@ -19,6 +19,7 @@ from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
     custom_catalog_path,
+    windows_sandbox_config_args,
 )
 from ucode.config_io import (
     APP_DIR,
@@ -669,7 +670,7 @@ def launch_codex(
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
-    config_args = codex_config_args(overlay)
+    config_args = [*codex_config_args(overlay), *windows_sandbox_config_args()]
     if not first_prompt_routing_enabled():
         # Subagent-only routing needs neither the app-server nor the interposer:
         # the hooks ride in the CLI config, so launch the TUI directly.

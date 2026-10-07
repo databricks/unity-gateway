@@ -86,5 +86,6 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config |
 | `model_catalog_json` | Create/replace | Create/replace | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list |
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone |
+| `windows.sandbox` | Create/replace | Create/replace | Never written to a file; passed as a `--config` launch override (`"unelevated"`) on Windows only, and skipped when any Codex config layer already sets it (e.g. an `elevated` opt-in) |
 
 </details>

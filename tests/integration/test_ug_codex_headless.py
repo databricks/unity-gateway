@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from utils.constants import CODEX_PLATFORM_ARGS, CODEX_TEST_MODEL
+from utils.constants import CODEX_TEST_MODEL
 from utils.evidence import FileTask
 
 pytestmark = [pytest.mark.live, pytest.mark.codex]
@@ -32,7 +32,6 @@ def test_ug_codex_headless_prompt_argument(live_session, workspace):
     result = session.run(
         "codex",
         "--",
-        *CODEX_PLATFORM_ARGS,
         "exec",
         "--skip-git-repo-check",
         "--json",
@@ -69,7 +68,6 @@ def test_ug_codex_headless_prompt_stdin(live_session, workspace):
     result = session.run(
         "codex",
         "--",
-        *CODEX_PLATFORM_ARGS,
         "exec",
         "--skip-git-repo-check",
         "--json",
@@ -107,7 +105,6 @@ def test_ug_codex_headless_prompt_after_separator(live_session, workspace):
     result = session.run(
         "codex",
         "--",
-        *CODEX_PLATFORM_ARGS,
         "exec",
         "--skip-git-repo-check",
         "--json",
@@ -148,7 +145,6 @@ def test_ug_codex_headless_explicit_model_bypasses_routing(live_session, workspa
     result = session.run(
         "codex",
         "--",
-        *CODEX_PLATFORM_ARGS,
         "exec",
         "--skip-git-repo-check",
         "--json",
