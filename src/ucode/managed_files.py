@@ -168,9 +168,14 @@ def managed_file_scope(state: dict, tool: str) -> str:
     return scope if isinstance(scope, str) else "managed"
 
 
+def _sudo_may_prompt() -> bool:
+    """A terminal is attached, so sudo can prompt and the persistent worker is usable."""
+    return sys.stdin.isatty()
+
+
 def managed_writes_allowed(*, repair_existing: bool = False) -> bool:
-    """Allow interactive writes or existing-file repair attempts; sudo authorizes the write."""
-    return sys.stdin.isatty() or repair_existing
+    """Writes need either an interactive terminal or an existing file to repair in place."""
+    return _sudo_may_prompt() or repair_existing
 
 
 @contextmanager
@@ -497,7 +502,7 @@ def reconcile_managed_file(
 
     created = current_text is None
     _ensure_backup(tool, path, current_text)
-    if managed_writes_allowed():
+    if _sudo_may_prompt():
         _print_managed_write_permission(display)
     if read_managed_file(path) != current_text:
         raise RuntimeError(
@@ -1013,7 +1018,7 @@ def _sudo_replace(path: Path, desired_text: str) -> None:
     _validate_sudo_replace_target(path)
     if not managed_writes_allowed(repair_existing=path.is_file()):
         raise RuntimeError("Refusing to create managed settings non-interactively.")
-    non_interactive = not managed_writes_allowed()
+    non_interactive = not _sudo_may_prompt()
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=path.suffix or ".tmp", delete=False, encoding="utf-8"
     ) as tmp:
@@ -1109,4 +1114,4 @@ def _sudo_failure_message(path: Path, display: str, exc: subprocess.CalledProces
 
 def _sudo_command(*args: str) -> list[str]:
     """Never prompt for privileged commands when no terminal is available."""
-    return [_SUDO, *([] if managed_writes_allowed() else ["-n"]), *args]
+    return [_SUDO, *([] if _sudo_may_prompt() else ["-n"]), *args]
