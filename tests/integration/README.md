@@ -297,7 +297,8 @@ lane. Each real harness reviews three source modules without a request to use su
 then performs native `/compact` and reviews three different modules. Each review needs
 new completed native child work and a root report containing the exact review IDs from
 all source headers; the IDs are never included in the prompt. The test also requires
-the full workflow in native hook context before the first review and after compaction.
+the full workflow in fresh native hook context for both reviews. Codex runs its compact
+hook before the next model request, so the second review checks that delivery.
 It checks orchestration and continuation, not the accuracy of review findings.
 Run these two journeys with `-- -m managed_fixture -k test_orchestrator_`.
 
