@@ -107,6 +107,33 @@ def catalog_slugs(
     return slugs
 
 
+WINDOWS_SANDBOX_OVERRIDE = 'windows.sandbox="unelevated"'
+
+
+def windows_sandbox_config_args() -> list[str]:
+    """Enable Codex's Windows sandbox, without which `codex exec` rejects every shell command.
+
+    A `windows.sandbox` the user set in any Codex config layer (e.g. `elevated`) wins."""
+    if os.name != "nt" or _windows_sandbox_configured():
+        return []
+    return ["--config", WINDOWS_SANDBOX_OVERRIDE]
+
+
+def _windows_sandbox_configured() -> bool:
+    try:
+        paths = codex_config_precedence_paths(
+            codex_managed_config_path(),
+            DEFAULT_CODEX_CONFIG_PATH,
+        )
+    except OSError:
+        return False
+    for path in paths:
+        windows = read_toml_safe(path).get("windows")
+        if isinstance(windows, Mapping) and "sandbox" in windows:
+            return True
+    return False
+
+
 def _toml_item(value: object) -> Item:
     if isinstance(value, Mapping):
         inline = tomlkit.inline_table()

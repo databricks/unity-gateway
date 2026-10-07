@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
-from ucode import managed_files
+from ucode import codex_config, managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
@@ -992,6 +993,36 @@ class TestCodexLaunch:
 
         assert os.environ["OAUTH_TOKEN"] == "fresh-token"
         assert launches[0][-1] == "--search"
+
+    def test_adds_windows_sandbox_override_on_nt(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setattr(codex_config, "codex_managed_config_path", lambda: None)
+        monkeypatch.setattr(codex_config, "os", SimpleNamespace(name="nt", environ=os.environ))
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        assert launches[0][-2:] == ["--config", 'windows.sandbox="unelevated"']
+
+    @pytest.mark.parametrize("sandbox", ["elevated", "unelevated"])
+    def test_windows_sandbox_override_defers_to_user_config(self, tmp_path, monkeypatch, sandbox):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setattr(codex_config, "codex_managed_config_path", lambda: None)
+        (tmp_path / "config.toml").write_text(f'[windows]\nsandbox = "{sandbox}"\n')
+        monkeypatch.setattr(codex_config, "os", SimpleNamespace(name="nt", environ=os.environ))
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        assert not any(arg.startswith("windows.sandbox=") for arg in launches[0])
+
+    def test_no_windows_sandbox_override_on_posix(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        assert not any(arg.startswith("windows.sandbox=") for arg in launches[0])
 
     @pytest.mark.parametrize("custom_catalog", [None, "/user/isaac-app-model-catalog.json"])
     def test_native_update_detaches_catalog_without_discovery(

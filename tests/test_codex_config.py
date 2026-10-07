@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
+from types import SimpleNamespace
+
+import pytest
 import tomlkit
 
+from ucode import codex_config
 from ucode.agents import codex
-from ucode.codex_config import codex_config_args
+from ucode.codex_config import codex_config_args, windows_sandbox_config_args
 
 WS = "https://example.databricks.com"
 
@@ -60,3 +65,41 @@ args = ["codex-token"]
         assert 'http_headers = {User-Agent = "ucode"}' in provider_override
         assert 'auth = {command = "ucode", args = ["codex-token"]}' in provider_override
         assert 'tui={model_availability_nux = {"gpt-5.6-sol" = 1}}' in args
+
+
+class TestWindowsSandboxConfigArgs:
+    """ug enables Codex's restricted-token Windows sandbox unless the user configured one."""
+
+    @staticmethod
+    def _patch_platform(monkeypatch, tmp_path, platform_name):
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setattr(codex_config, "codex_managed_config_path", lambda: None)
+        monkeypatch.setattr(
+            codex_config, "os", SimpleNamespace(name=platform_name, environ=os.environ)
+        )
+
+    def test_added_on_windows_when_unset(self, monkeypatch, tmp_path):
+        self._patch_platform(monkeypatch, tmp_path, "nt")
+
+        assert windows_sandbox_config_args() == [
+            "--config",
+            'windows.sandbox="unelevated"',
+        ]
+
+    @pytest.mark.parametrize("sandbox", ["elevated", "unelevated"])
+    def test_omitted_when_user_config_sets_sandbox(self, monkeypatch, tmp_path, sandbox):
+        self._patch_platform(monkeypatch, tmp_path, "nt")
+        (tmp_path / "config.toml").write_text(f'[windows]\nsandbox = "{sandbox}"\n')
+
+        assert windows_sandbox_config_args() == []
+
+    def test_omitted_when_profile_config_sets_sandbox(self, monkeypatch, tmp_path):
+        self._patch_platform(monkeypatch, tmp_path, "nt")
+        (tmp_path / "ucode.config.toml").write_text('[windows]\nsandbox = "elevated"\n')
+
+        assert windows_sandbox_config_args() == []
+
+    def test_never_added_on_posix(self, monkeypatch, tmp_path):
+        self._patch_platform(monkeypatch, tmp_path, "posix")
+
+        assert windows_sandbox_config_args() == []

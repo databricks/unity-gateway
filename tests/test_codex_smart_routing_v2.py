@@ -190,6 +190,9 @@ class TestLaunchCodex:
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
         monkeypatch.setattr(v2, "os", SimpleNamespace(name=platform_name, environ=os.environ))
+        monkeypatch.setattr(
+            codex_config, "os", SimpleNamespace(name=platform_name, environ=os.environ)
+        )
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
 
@@ -275,7 +278,13 @@ class TestLaunchCodex:
             "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
             + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"]),
         ]
-        assert processes[0].argv[14:] == [
+        tail = processes[0].argv[14:]
+        if platform_name == "nt":
+            # ug enables Codex's restricted-token sandbox on Windows when the
+            # user has not configured windows.sandbox themselves.
+            assert tail[:2] == ["--config", 'windows.sandbox="unelevated"']
+            tail = tail[2:]
+        assert tail == [
             "--listen",
             "ws://127.0.0.1:41001",
         ]
