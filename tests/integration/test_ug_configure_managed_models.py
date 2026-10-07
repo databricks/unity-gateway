@@ -227,7 +227,8 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, tm
     assert "Select coding agents to configure:" not in result.stdout, result.stdout
     assert "Codex is missing metadata for managed GPT model" in result.stdout, result.stdout
     assert CODEX_WITHOUT_BUNDLED_METADATA in result.stdout, result.stdout
-    assert "`ug codex update`" in result.stdout, result.stdout
+    # Rich wraps the warning at the terminal width, so match across line breaks.
+    assert "`ug codex update`" in " ".join(result.stdout.split()), result.stdout
 
     catalog = json.loads((session.home / ".ucode" / "codex-model-catalog.json").read_text())
     models = catalog.get("models", [])
