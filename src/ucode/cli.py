@@ -45,6 +45,7 @@ from ucode.agents import (
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
+from ucode.codex_config import catalog_slugs
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import SMART_ROUTING_ENV_KEYS
 from ucode.custom_oauth import (
@@ -54,6 +55,8 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
+    CodexCatalogSource,
+    _fetch_codex_model_catalog,
     apply_pat_environment,
     build_shared_base_urls,
     discover_claude_models,
@@ -99,6 +102,7 @@ from ucode.managed_resolve import (
     managed_launch_model,
     managed_provider_family_models,
     managed_provider_service,
+    managed_static_models,
     managed_supplies_models,
     managed_unity_catalog_location,
     managed_unservable_models,
@@ -1086,38 +1090,106 @@ def _status_default_model(tool: str, state: dict, models: list[str]) -> str | No
     return models[0] if models and tool in ("gemini", "opencode", "copilot", "pi") else None
 
 
-def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
+def _status_scoped_model_sources(managed: dict | None, tools: set[str]) -> dict[str, str]:
+    if managed is None:
+        return {}
+    sources: dict[str, str] = {}
+    for tool in ("claude", "codex"):
+        if tool not in tools or managed_provider_service(managed, tool):
+            continue
+        if managed_static_models(managed, tool):
+            continue
+        location = managed_unity_catalog_location(managed, tool)
+        if location:
+            sources[tool] = location
+    return sources
+
+
+def _status_scoped_fallback_state(state: dict, sources: dict[str, str]) -> dict:
+    if not sources:
+        return state
+    fallback = dict(state)
+    fallback["_status_scoped_models"] = {tool: [] for tool in sources}
+    return fallback
+
+
+def _live_status_model_state(
+    state: dict, tools: set[str], managed: dict | None = None
+) -> tuple[dict, str]:
     """Return a fresh, read-only model inventory and its freshness label."""
+    scoped_sources = _status_scoped_model_sources(managed, tools)
     workspace = state.get("workspace")
     if not workspace or not tools:
-        return state, "cached"
+        return _status_scoped_fallback_state(state, scoped_sources), "cached"
     profile = state.get("profile")
     if not profile and not external_bearer_configured():
         print_warning("Live model discovery needs the CLI profile saved by ug configure.")
-        return state, "cached"
+        return _status_scoped_fallback_state(state, scoped_sources), "cached"
 
+    claude_models: dict[str, str] = {}
+    codex_models: list[str] = []
+    gemini_models: list[str] = []
+    oss_models: list[str] = []
+    shared_reason: str | None = None
+    reasons: dict[str, str | None] = {}
+    scoped_models: dict[str, list[str]] = {}
+    scoped_reasons: dict[str, str] = {}
+    global_tools = tools - set(scoped_sources)
     try:
         if state.get("use_pat"):
             apply_pat_environment(state)
         with spinner("Refreshing live workspace models..."):
             token = get_databricks_token(workspace, profile)
-            claude_models, codex_models, gemini_models, oss_models, shared_reason = (
-                discover_model_services(workspace, token)
-            )
-            reasons: dict[str, str | None] = {}
-            if not claude_models:
-                claude_models, reasons["claude"] = discover_claude_models(workspace, token)
-            if not codex_models:
-                codex_models, reasons["codex"] = discover_codex_models(workspace, token)
-            if not gemini_models:
-                gemini_models, reasons["gemini"] = discover_gemini_models(workspace, token)
+            if global_tools:
+                claude_models, codex_models, gemini_models, oss_models, shared_reason = (
+                    discover_model_services(workspace, token)
+                )
+                if not claude_models:
+                    claude_models, reasons["claude"] = discover_claude_models(workspace, token)
+                if not codex_models:
+                    codex_models, reasons["codex"] = discover_codex_models(workspace, token)
+                if not gemini_models:
+                    gemini_models, reasons["gemini"] = discover_gemini_models(workspace, token)
+            for tool, parent_schema in scoped_sources.items():
+                try:
+                    if tool == "claude":
+                        catalog = list_anthropic_model_catalog(
+                            workspace, token, parent_schema=parent_schema
+                        )
+                        if catalog.error_msg or not catalog.model_ids:
+                            raise RuntimeError(
+                                catalog.error_msg or "AI Gateway returned no Anthropic model ids"
+                            )
+                        scoped_models[tool] = catalog.model_ids
+                    else:
+                        catalog = _fetch_codex_model_catalog(
+                            workspace,
+                            token,
+                            source=CodexCatalogSource.PARENT_SCHEMA,
+                            identifier=parent_schema,
+                        )
+                        models = catalog_slugs(catalog)
+                        if not models:
+                            raise RuntimeError(
+                                f"Parent schema {parent_schema} returned no Codex model ids."
+                            )
+                        scoped_models[tool] = models
+                except RuntimeError as exc:
+                    scoped_models[tool] = []
+                    scoped_reasons[tool] = str(exc)
     except RuntimeError as exc:
         print_warning(f"Live model discovery failed ({exc}); showing cached models.")
-        return state, "cached"
+        return _status_scoped_fallback_state(state, scoped_sources), "cached"
+
+    for tool, reason in scoped_reasons.items():
+        print_warning(
+            f"Live {TOOL_SPECS[tool]['display']} model discovery failed for Unity Catalog "
+            f"location {scoped_sources[tool]} ({reason}); showing no scoped models."
+        )
 
     live = dict(state)
-    live["claude_models"] = claude_models
-    live["codex_models"] = codex_models
+    live["claude_models"] = scoped_models.get("claude", claude_models)
+    live["codex_models"] = scoped_models.get("codex", codex_models)
     live["gemini_models"] = gemini_models
     live["oss_models"] = oss_models
     opencode_models: dict[str, list[str]] = {}
@@ -1128,6 +1200,9 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
     if oss_models:
         opencode_models["oss"] = oss_models
     live["opencode_models"] = opencode_models
+    reasons.update(scoped_reasons)
+    if scoped_models:
+        live["_status_scoped_models"] = scoped_models
     live["_status_model_reasons"] = {
         family: reason or shared_reason for family, reason in reasons.items()
     }
@@ -1199,13 +1274,16 @@ def status() -> int:
         provider_rows.append(("Policy", str(policy.get("display_name") or "coding-agents-default")))
     _print_status_panel("Provider", provider_rows)
 
-    model_state, model_freshness = _live_status_model_state(state, configured_tools)
+    model_state, model_freshness = _live_status_model_state(
+        state, configured_tools, managed=managed
+    )
     print_heading("Coding Agents")
     skill_counts_by_agent = configured_skill_counts_by_agent(state, TOOL_SPECS)
     for tool, spec in TOOL_SPECS.items():
         if tool not in configured_tools:
             continue
         effective_state = resolve_state(managed, model_state, tool) if managed else model_state
+        scoped_models = model_state.get("_status_scoped_models")
         agent_managed = tool in ((managed or {}).get("enabled_agents") or {})
         provider_service = get_provider_service(effective_state, tool)
         rows = [
@@ -1218,12 +1296,16 @@ def status() -> int:
                 provider_service or "Databricks AI Gateway",
             ),
         ]
-        models = (
-            []
-            if provider_service and not effective_state.get(f"{tool}_static_models")
-            else _status_models(tool, effective_state)
-        )
-        model_source = "managed" if agent_managed and models else model_freshness
+        if isinstance(scoped_models, dict) and tool in scoped_models:
+            models = _model_values(scoped_models[tool])
+            model_source = model_freshness
+        else:
+            models = (
+                []
+                if provider_service and not effective_state.get(f"{tool}_static_models")
+                else _status_models(tool, effective_state)
+            )
+            model_source = "managed" if agent_managed and models else model_freshness
         if models:
             rows.append((f"Models ({len(models)}, {model_source})", ", ".join(models)))
         elif provider_service:
