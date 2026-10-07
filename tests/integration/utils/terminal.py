@@ -250,9 +250,18 @@ class AgentTerminal(TerminalProcess):
                 ),
                 (
                     "trust-directory",
-                    self.session.cwd.name in text
-                    and "trust" in text.lower()
-                    and bool(re.search(r"1[.)]\s+Yes, (?:continue|proceed)", text)),
+                    self.agent == "codex"
+                    and bool(
+                        re.search(
+                            rf"(?m)^\s*>\s+You are in "
+                            rf"{re.escape(str(self.session.cwd.parent))}/[^/\r\n]*$",
+                            text,
+                        )
+                    )
+                    and "Do you trust the contents of this directory?" in text
+                    and bool(re.search(r"(?m)^\s*[›❯>]\s*1[.)]\s+Yes, continue\s*$", text))
+                    and bool(re.search(r"(?m)^\s*2[.)]\s+No, quit\s*$", text))
+                    and "Press enter to continue" in text,
                     "\r",
                 ),
             ]
