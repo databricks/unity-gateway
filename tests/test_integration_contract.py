@@ -62,6 +62,7 @@ def test_dedicated_cuj_ci_discovers_the_whole_folder():
     assert "docs.google.com/document/d/1WKd1fdWD0Y4tAV1H9Si-SGx2UZFL7iZ2S3HtBjidmS0" in job
     assert "pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj" in job
     assert "find tests/e2e_cuj -name 'test_*.py'" in job
+    assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
     assert "test_cuj_" not in job
     assert 'result["result"] != "success"' in gate
 

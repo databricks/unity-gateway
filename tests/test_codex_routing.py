@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import urllib.error
 
-from ucode.smart_routing import codex_routing
+import pytest
+
+from ucode.request_headers import CUSTOM_HEADERS_ENV, custom_header_scope
+from ucode.smart_routing import codex_routing, routing
 from ucode.smart_routing.codex_hooks import routing_models
 
 WS = "https://example.databricks.com"
@@ -80,6 +83,37 @@ def test_routes_with_models_from_stored_state(monkeypatch):
         "task": {"prompt": task},
         "route_selector": {"router_name": codex_routing.routing.ROUTER_NAME},
     }
+
+
+@pytest.mark.parametrize("source", ["direct", "inherited", "other_workspace"])
+def test_route_request_includes_launch_scoped_custom_headers(monkeypatch, source):
+    captured = {}
+    headers = {"X-Development-Route": "route://development/test"}
+    active = source != "other_workspace"
+
+    def fake_open(request, timeout, *, scoped_headers=False):
+        assert scoped_headers == active
+        captured.update({name.casefold(): value for name, value in request.header_items()})
+        return _Response({"route_selection": [{"route_option": {"model": "gpt-5-6-sol"}}]})
+
+    monkeypatch.setattr(routing.request_headers, "urlopen", fake_open)
+    monkeypatch.setenv(
+        CUSTOM_HEADERS_ENV,
+        json.dumps({"workspace": WS if active else "https://other.example", "headers": headers}),
+    )
+    with custom_header_scope(headers if source == "direct" else {}):
+        decision, error = codex_routing.request_routing_decision(
+            WS,
+            "token",
+            "route this task",
+            ["system.ai.gpt-5-6-sol"],
+        )
+
+    assert error is None
+    assert decision is not None
+    assert captured.get("x-development-route") == ("route://development/test" if active else None)
+    assert captured["authorization"] == "Bearer token"
+    assert captured["content-type"] == "application/json"
 
 
 def test_router_name_can_be_overridden_with_environment_variable(monkeypatch):

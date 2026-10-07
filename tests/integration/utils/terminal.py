@@ -257,9 +257,22 @@ class AgentTerminal(TerminalProcess):
                 ),
                 (
                     "trust-directory",
-                    self.session.cwd.name in text
-                    and "trust" in text.lower()
-                    and bool(re.search(r"1[.)]\s+Yes, (?:continue|proceed)", text)),
+                    self.agent == "codex"
+                    and bool(
+                        re.search(
+                            rf"(?m)^\s*>\s+You are in "
+                            rf"{re.escape(str(self.session.cwd.parent))}/[^/\r\n]*$",
+                            text,
+                        )
+                    )
+                    and (
+                        "Do you trust the contents of this directory?" in text
+                        or "directory allows project-local config, hooks, and exec policies to load."
+                        in text
+                    )
+                    and bool(re.search(r"(?m)^\s*[›❯>]\s*1[.)]\s+Yes, continue\s*$", text))
+                    and bool(re.search(r"(?m)^\s*2[.)]\s+No, quit\s*$", text))
+                    and "Press enter to continue" in text,
                     "\r",
                 ),
             ]
@@ -272,6 +285,7 @@ class AgentTerminal(TerminalProcess):
                         handled.add(label)
                     break
             if matched:
+                ready_since = None
                 continue
             assert "Select login method:" not in text, (
                 "Configured ug launched Claude's account-login flow instead of its gateway session:\n"
@@ -285,6 +299,7 @@ class AgentTerminal(TerminalProcess):
             if (
                 title in text
                 and "loading" not in text.lower()
+                and not re.search(r"(?m)^\s*>\s+You are in\b", text)
                 and re.search(r"(?m)^\s*[❯›>]\s*(?!\d+[.)])", text)
             ):
                 ready_since = ready_since or time.monotonic()
@@ -321,6 +336,31 @@ class AgentTerminal(TerminalProcess):
         self.wait_for(
             lambda text: "Select model" not in text,
             "the prompt after closing the model picker",
+        )
+        return screen
+
+    def open_codex_model_picker(self, *, model_visible):
+        """Capture Codex's native numbered /model menu, then dismiss it with Escape."""
+        assert self.agent == "codex", self.agent
+        self.submit("/model")
+        self.wait_for(
+            lambda text: (
+                "select model" in text.lower()
+                and re.search(r"(?m)^[ \t]*(?:[❯›>][ \t]*)?\d+[.)][ \t]+\S", text)
+            ),
+            "Codex's numbered model picker",
+            timeout=60,
+        )
+        self.wait_for(model_visible, "all scoped models in Codex's picker", timeout=60)
+        screen = self.visible
+        self.actions.append({"reason": "codex-model-picker-visible", "screen": screen})
+        self.send("\x1b", "close Codex's model picker without changing its default")
+        self.wait_for(
+            lambda text: (
+                "select model" not in text.lower()
+                and re.search(r"(?m)^\s*[❯›>]\s*(?!\d+[.)])", text)
+            ),
+            "the Codex prompt after closing the model picker",
         )
         return screen
 

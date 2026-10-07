@@ -4,11 +4,10 @@
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from enum import StrEnum
 from importlib import metadata
 from typing import Annotated, Any
@@ -127,6 +126,14 @@ from ucode.mcp import (
     revert_mcp_configs,
 )
 from ucode.os_compatibility import subprocess_cross_os
+from ucode.request_headers import (
+    custom_header_environment,
+    custom_header_scope,
+    get_custom_headers,
+)
+from ucode.request_headers import (
+    parse_custom_headers as _parse_custom_headers,
+)
 from ucode.skills_download import (
     configure_location_skills_download_command,
     configure_selected_skills_download_command,
@@ -500,6 +507,7 @@ def configure_shared_state(
     Only the local profile resolution and the shared state assembly still run;
     the saved model lists are preserved.
     """
+    request_headers = request_headers or get_custom_headers()
     workspace = normalize_workspace_url(workspace)
     prior_state = load_state()
     previous_workspace = prior_state.get("workspace")
@@ -680,6 +688,18 @@ def configure_shared_state(
         if oss_models:
             opencode_models["oss"] = oss_models
 
+    if request_headers:
+        state[LAUNCH_DISCOVERY_OVERLAY_KEY] = {
+            key: state.get(key)
+            for key in (
+                "claude_models",
+                "codex_models",
+                "gemini_models",
+                "oss_models",
+                "opencode_models",
+                "web_search_model",
+            )
+        }
     if skip_model_discovery:
         # Don't clobber any previously-discovered Databricks model lists; provider
         # mode just doesn't refresh or use them. Persist the web-search model so
@@ -688,8 +708,6 @@ def configure_shared_state(
             state["web_search_model"] = web_search_model
     else:
         if want_claude:
-            if request_headers:
-                state[LAUNCH_DISCOVERY_OVERLAY_KEY] = {"claude_models": state.get("claude_models")}
             state["claude_models"] = claude_models
         if want_gemini:
             state["gemini_models"] = gemini_models
@@ -2563,55 +2581,6 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     return tool == "claude" and tool_args[0].startswith("-")
 
 
-_HTTP_HEADER_NAME_PATTERN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
-_PROTECTED_CUSTOM_HEADER_NAMES = frozenset(
-    {
-        "authorization",
-        "connection",
-        "content-length",
-        "cookie",
-        "databricks-model-provider-service",
-        "databricks-model-service-parent-schema",
-        "databricks-smart-router-recipe",
-        "host",
-        "keep-alive",
-        "proxy-authenticate",
-        "proxy-authorization",
-        "te",
-        "trailer",
-        "transfer-encoding",
-        "upgrade",
-        "user-agent",
-        "x-api-key",
-        "x-databricks-ai-gateway-token",
-        "x-databricks-use-coding-agent-mode",
-    }
-)
-
-
-def _parse_custom_headers(values: list[str] | None) -> dict[str, str]:
-    """Parse repeatable ``--header 'Name: value'`` options."""
-    parsed: dict[str, tuple[str, str]] = {}
-    for item in values or []:
-        name, separator, value = item.partition(":")
-        name = name.strip()
-        if not separator or _HTTP_HEADER_NAME_PATTERN.fullmatch(name) is None:
-            raise RuntimeError("--header must use the format `Name: value` with a valid name.")
-        value = value.strip()
-        if any(
-            ord(character) < 32 or ord(character) == 127 or character in "\u0085\u2028\u2029"
-            for character in value
-        ):
-            raise RuntimeError(
-                "--header values cannot contain control characters or line separators."
-            )
-        normalized_name = name.casefold()
-        if normalized_name in _PROTECTED_CUSTOM_HEADER_NAMES:
-            raise RuntimeError(f"--header cannot override protected header '{name}'.")
-        parsed[normalized_name] = (name, value)
-    return dict(parsed.values())
-
-
 def _launch_options(
     tool: str,
     tool_args: list[str],
@@ -2664,11 +2633,15 @@ def _launch_tool(
     custom_oauth: CustomOAuthConfig | None = None,
     headers: list[str] | None = None,
 ) -> None:
+    header_scope = ExitStack()
     try:
         tool = normalize_tool(tool_name)
         if not custom_oauth_cli_enabled(custom_oauth):
             os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
-        custom_headers = _parse_custom_headers(headers)
+        custom_headers = _parse_custom_headers(
+            [f"{name}: {value}" for name, value in get_custom_headers().items()] + (headers or [])
+        )
+        header_scope.enter_context(custom_header_scope(custom_headers))
         # Before any status print: a stdio-protocol subcommand owns stdout, so
         # every ug line from here on must go to stderr instead.
         if _child_owns_stdout(tool, ctx.args):
@@ -3032,8 +3005,11 @@ def _launch_tool(
             custom_headers=custom_headers,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
-        with _smart_routing_v2_flag(
-            True if managed_smart_routing_enabled and smart_routing_enabled else None
+        with (
+            _smart_routing_v2_flag(
+                True if managed_smart_routing_enabled and smart_routing_enabled else None
+            ),
+            custom_header_environment(state["workspace"], custom_headers),
         ):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
@@ -3042,6 +3018,8 @@ def _launch_tool(
     except KeyboardInterrupt:
         print_err("Interrupted.")
         raise typer.Exit(130) from None
+    finally:
+        header_scope.close()
 
 
 # Launch-only escape hatch for managed/headless launchers (e.g. omnigent) that
@@ -3079,7 +3057,7 @@ CustomHeaderOption = Annotated[
     list[str] | None,
     typer.Option(
         "--header",
-        help="Add an HTTP header to AI Gateway requests as `Name: value`; repeatable. "
+        help="Add an HTTP header to workspace requests as `Name: value`; repeatable. "
         "Pass before any `--` separator. Credentials and transport headers are not allowed.",
     ),
 ]
@@ -3132,8 +3110,14 @@ def default(
     ] = False,
     skip_preflight: SkipPreflightOption = False,
     workspace: WorkspaceOption = None,
+    header: CustomHeaderOption = None,
 ) -> None:
     """Configure and launch coding agents through Databricks AI Gateway."""
+    try:
+        ctx.with_resource(custom_header_scope(_parse_custom_headers(header)))
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
     if ctx.invoked_subcommand is not None:
         return
     set_dry_run(dry_run)

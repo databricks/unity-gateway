@@ -43,11 +43,15 @@ Agent configuration tests also verify `ug` auth/MCP helper commands, including
 quoted executable paths and replacement of legacy `ucode` routing/web-search helpers.
 
 Custom request headers have component coverage in `test_cli.py`, `test_databricks.py`,
-`test_agent_codex.py`, `test_codex_smart_routing_v2.py`, `test_agent_claude.py`,
-`test_claude_smart_routing_v2.py`, and `test_state.py`: parsing, gateway discovery isolation,
-launch-only Codex values/catalogs, Claude cleanup and partial-write recovery, and administrator
-header collisions before discovery. `test_launcher.py` checks waiting for child exit.
-Live custom-header journeys are not covered.
+`test_agent_codex.py`, and `test_codex_smart_routing_v2.py`: parsing, launch-only values and
+catalogs, gateway discovery, and administrator-header collisions before discovery.
+Global-option tests cover `usage`/`recommendModel`, local-option precedence, and cleanup on
+success or failure; request/config tests cover redirect handling and cache isolation.
+`test_launcher.py` checks waiting for the child before cleaning up temporary catalogs.
+`test_agent_claude.py` covers launch-only settings, preservation of required headers and model
+overrides, and rejection when OS-managed header settings take precedence. Persistent-header
+journal/recovery tests were removed with that obsolete behavior. Live custom-header journeys
+are not covered.
 
 `TestChildStdoutLaunch` in `test_cli.py` checks Claude `-p`/`--print` and Codex `exec`
 (plain and `--json`) and `app-server` status/error output on stderr, argument forwarding with
@@ -145,6 +149,10 @@ establish live Windows hook execution or interactive routing.
 Pi's token-command tests in `test_agent_pi.py` exercise Windows executable paths
 through POSIX parsing, including spaces, apostrophes, profile names, and PAT mode.
 They do not launch Pi or Git Bash on Windows.
+
+Shared native transcript parsing is checked by `test_integration_agent_helpers.py` and
+`test_integration_evidence.py`. These component checks protect existing journey evidence;
+they do not establish live agent coverage.
 
 ## CUJ coverage matrix
 

@@ -399,10 +399,12 @@ def resolve_gemini_provider_model(
 
 
 def validate_custom_headers(tool: str, state: dict, headers: dict[str, str]) -> None:
-    if tool == "codex" and headers:
-        codex.validate_custom_headers(state, headers)
-    elif tool == "claude" and headers:
-        claude.validate_custom_headers(state, headers)
+    if not headers:
+        return
+    validator = getattr(_MODULES[tool], "validate_custom_headers", None)
+    if validator is None:
+        raise RuntimeError(f"--header is not supported for {TOOL_SPECS[tool]['display']} launches.")
+    validator(state, headers)
 
 
 def configure_tool(
