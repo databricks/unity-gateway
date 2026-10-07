@@ -661,16 +661,13 @@ def launch_codex(
         overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["features.hooks"] = True
-    _prepare_smart_router_session("codex")
+    session_env_path = _prepare_smart_router_session("codex")
     # Codex constructs tool subprocess environments through its shell policy.
-    # The hooks and Smart Router toggle need the same launch baseline, even
-    # when the user's policy filters inherited environment variables.
-    for key in (SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, *SMART_ROUTING_ENV_KEYS):
-        if key in os.environ:
-            overlay[f"shell_environment_policy.set.{key}"] = os.environ[key]
-    overlay[f"shell_environment_policy.set.{ENABLE_ORCHESTRATION_ENV_VAR}"] = (
-        "1" if orchestrator.feature_enabled() else "0"
-    )
+    # Pass both the session marker and its launching interpreter through that policy.
+    overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)
+    overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
+        SESSION_PYTHON_ENV_VAR
+    ]
     config_args = codex_config_args(overlay)
     if not first_prompt_routing_enabled():
         # Subagent-only routing needs neither the app-server nor the interposer:
