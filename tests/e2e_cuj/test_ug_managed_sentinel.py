@@ -39,6 +39,9 @@ CLAUDE_REQUEST_PATH = "/ai-gateway/anthropic/v1/messages"
 CODEX_REQUEST_PATH = "/ai-gateway/codex/v1/responses"
 TRACE_WAIT_SECONDS = 360
 TRACE_POLL_SECONDS = 10
+NATIVE_MODEL_ALIASES = {
+    "system.ai.anthropic.claude-haiku-4-5-20251001-v1:0": CLAUDE_MODELS[2],
+}
 
 
 def _claude_models_visible(text: str) -> bool:
@@ -100,7 +103,9 @@ def _assert_native_model(evidence: SessionEvidence, task: FileTask, expected: st
     turn = evidence.completed(task)
     assert turn is not None, f"No completed native turn matched {task.prompt!r}"
     expected_model = canonical_model(expected)
-    actual_models = {canonical_model(model) for model in turn.models}
+    actual_models = {
+        NATIVE_MODEL_ALIASES.get(model, model) for model in map(canonical_model, turn.models)
+    }
     assert actual_models == {expected_model}, (turn, expected_model)
 
 
@@ -600,7 +605,7 @@ class TestCujManagedCodex(BaseCujTest):
 
         profile = tomllib.loads((session.home / ".codex" / "ucode.config.toml").read_text())
         assert profile["model_providers"]["Databricks"]["base_url"] == (
-            f"{workspace.url}/ai-gateway/codex/v1"
+            f"{recorder.url}/ai-gateway/codex/v1"
         ), profile
         run_id = claude_headers["x-ug-e2e-run"]
         session.env.pop("OTEL_RESOURCE_ATTRIBUTES", None)
