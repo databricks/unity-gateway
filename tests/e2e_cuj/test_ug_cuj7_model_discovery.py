@@ -195,11 +195,11 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         """Scenario: launch fresh Claude over existing OS-managed family defaults.
 
         Expected: ug preserves every family default, and the selected Sonnet family
-        completes a file task through the preconfigured Haiku service, not a discovered default.
+        completes a file task through the preconfigured Sonnet service, not a discovered default.
         """
         session = live_session
         task = FileTask(session)
-        model = "ug_e2e.models.claude_haiku"
+        model = "ug_e2e.models.claude_sonnet"
         defaults = {
             f"ANTHROPIC_DEFAULT_{family}_MODEL": model
             for family in ("FABLE", "OPUS", "SONNET", "HAIKU")

@@ -247,7 +247,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | Fresh Claude/Codex `--provider` journeys | From fresh state, launch each real agent CLI with `--workspace` and an existing provider | Claude's provider header and Codex's app-server model catalog match the selected services; both CLIs exit successfully without routing or inference |
 | `test_ug_claude_headless_fresh_model_location` | From fresh state, launch Claude in the CUJ7 workspace with `--workspace`, `--model-location ug_e2e.models`, and `ug_e2e.models.claude_haiku` | Haiku reads an unpredictable file value through the selected model location and returns it in a structured completed answer; exit zero; no routing |
 | `test_ug_codex_headless_fresh_model_location` | From fresh state, launch Codex in the CUJ7 workspace with `--workspace`, `--model-location ug_e2e.models`, and `ug_e2e.models.gpt_luna` | Luna reads an unpredictable file value through the selected model location and returns it in a structured completed answer; exit zero; no routing |
-| `test_ug_claude_preserves_preexisting_managed_family_defaults` | Launch fresh Claude with pre-existing OS-managed family defaults and select the Sonnet family | Every default survives unchanged; the selected family completes a file task through the preconfigured Haiku service |
+| `test_ug_claude_preserves_preexisting_managed_family_defaults` | Launch fresh Claude with pre-existing OS-managed family defaults and select the Sonnet family | Every default survives unchanged; the selected family completes a file task through the preconfigured Sonnet service |
 | `test_ug_claude_exports_trace_to_configured_table`, `test_ug_codex_exports_trace_to_configured_table` | Configure tracing, complete a headless task carrying a unique trace marker, then wait for ingestion | The configured trace table contains an agent span with the same trace-safe marker and requested model |
 | `test_ug_claude_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` before and after ug's separator with smart routing enabled, without workspace policy | Real file task completes; JSON `modelUsage` reports the requested model with output tokens; no routing wrapper |
 | `test_ug_codex_headless_explicit_model_bypasses_routing` | Pass `--model VALUE` / `--model=VALUE` / `-m VALUE` with smart routing enabled | Real file task completes; no routing wrapper |
@@ -352,8 +352,9 @@ Codex app-server discovery, fresh Claude/Codex model-location file tasks, and Cl
 managed-family-default preservation on launch. Each case reverts its local setup. The class
 pins `WORKSPACE_URL` to `https://dbc-14e376e8-6541.cloud.databricks.com` rather than using
 a workspace secret. The workspace must publish no `CodingAgentConfig`, expose discoverable
-`system.ai` models, and retain the existing models `ug_e2e.models.claude_haiku` and
-`ug_e2e.models.gpt_luna`; the shared service principal needs read/use privileges on both.
+`system.ai` models, and retain the existing models `ug_e2e.models.claude_haiku`,
+`ug_e2e.models.claude_sonnet`, and `ug_e2e.models.gpt_luna`; the shared service principal
+needs read/use privileges on all three.
 CI starts integration alongside unit tests and the existing e2e shards. Integration
 does not wait for agent e2e or get skipped when an agent shard fails. These suites
 share workspace capacity; overlapping their requests can still encounter rate limits.

@@ -608,8 +608,9 @@ tasks, and Claude managed-family-default preservation on launch. The class pins 
 `https://dbc-14e376e8-6541.cloud.databricks.com`; the required `dedicated-cuj` job uses
 the shared `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` credentials, not a workspace
 secret. The workspace must publish no `CodingAgentConfig`, expose discoverable `system.ai`
-models, and retain the existing models `ug_e2e.models.claude_haiku` and
-`ug_e2e.models.gpt_luna`; the shared service principal needs read/use privileges on both.
+models, and retain the existing models `ug_e2e.models.claude_haiku`,
+`ug_e2e.models.claude_sonnet`, and `ug_e2e.models.gpt_luna`; the shared service principal
+needs read/use privileges on all three.
 All five cases reuse the CUJ
 session/terminal helpers and check that the workspace remains unmanaged; they never
 change remote configuration. Every case runs terminal `ug revert` during teardown.
