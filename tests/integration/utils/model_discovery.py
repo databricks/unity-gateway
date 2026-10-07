@@ -10,6 +10,9 @@ _CLAUDE_NATIVE_PICKER_LABELS = {
     "claude-opus-5": ("Opus", "Opus 5"),
     "claude-sonnet-5": ("Sonnet", "Sonnet 5"),
 }
+_CLAUDE_DEFAULT_PICKER_ROW = re.compile(
+    r"^Default(?: \(recommended\))?[ \t]+Use the default model\b"
+)
 _SYSTEM_AI_PREFIX = "system.ai."
 
 
@@ -103,6 +106,8 @@ def assert_picker_inventory(screen: str, agent: str, display_names: dict[str, st
     assert rows, f"No numbered {agent} picker rows:\n{screen}"
     observed: list[str] = []
     for label in rows:
+        if agent == "claude" and _CLAUDE_DEFAULT_PICKER_ROW.match(label):
+            continue
         matched = {
             model
             for model, display_name in display_names.items()

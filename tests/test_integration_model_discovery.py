@@ -17,6 +17,11 @@ PICKER_MODELS = {
     "codex": frozenset({"catalog.models.gpt_luna", "catalog.models.kimi"}),
 }
 
+CLAUDE_DEFAULT_CONTROL_ROW = (
+    "Default (recommended)  Use the default model "
+    "(currently Opus 5.5 (1M context)) · $4/$20 per Mtok"
+)
+
 
 @pytest.mark.parametrize("cursor", ["", "❯ ", "› ", "> "])
 @pytest.mark.parametrize("label", ["system.ai.claude-sonnet-5", "Sonnet Custom"])
@@ -210,3 +215,59 @@ def test_picker_inventory_rejects_duplicate_and_missing_rows(agent):
         assert_picker_inventory(f"{rows}\n  {len(models) + 1}. {models[0]}", agent, labels)
     with pytest.raises(AssertionError):
         assert_picker_inventory(f"  1. {models[0]}", agent, labels)
+
+
+@pytest.mark.parametrize(
+    "control_row",
+    [
+        CLAUDE_DEFAULT_CONTROL_ROW,
+        "Default Use the default model (currently Sonnet 5 (200k context)) · $3/$15 per Mtok",
+        "Default (recommended)    Use the default model (currently Haiku 4.5 (200k context)) · $1/$5 per Mtok",
+    ],
+)
+def test_picker_inventory_ignores_claude_default_control_row(control_row):
+    models = sorted(PICKER_MODELS["claude"])
+    labels = dict.fromkeys(models, None)
+    rows = "\n".join(f"  {position}. {model}" for position, model in enumerate(models, start=1))
+    screen = f"{rows}\n  {len(models) + 1}. {control_row}"
+    assert_picker_inventory(screen, "claude", labels)
+
+
+def test_picker_inventory_requires_missing_claude_models_with_default_control_row():
+    models = sorted(PICKER_MODELS["claude"])
+    labels = dict.fromkeys(models, None)
+    rows = "\n".join(
+        f"  {position}. {model}" for position, model in enumerate(models[:-1], start=1)
+    )
+    screen = f"{rows}\n  {len(models)}. {CLAUDE_DEFAULT_CONTROL_ROW}"
+    with pytest.raises(AssertionError):
+        assert_picker_inventory(screen, "claude", labels)
+
+
+@pytest.mark.parametrize("default_label", ["Default", "Default (recommended)"])
+def test_picker_inventory_rejects_generic_claude_default_label(default_label):
+    models = sorted(PICKER_MODELS["claude"])
+    labels = dict.fromkeys(models, None)
+    rows = "\n".join(f"  {position}. {model}" for position, model in enumerate(models, start=1))
+    screen = f"{rows}\n  {len(models) + 1}. {default_label}"
+    with pytest.raises(AssertionError):
+        assert_picker_inventory(screen, "claude", labels)
+
+
+@pytest.mark.parametrize("extra_label", ["Opus (1M context)  Opus 5.5", "Gemini 3 Flash"])
+def test_picker_inventory_rejects_extra_claude_native_rows(extra_label):
+    models = sorted(PICKER_MODELS["claude"])
+    labels = dict.fromkeys(models, None)
+    rows = "\n".join(f"  {position}. {model}" for position, model in enumerate(models, start=1))
+    screen = f"{rows}\n  {len(models) + 1}. {extra_label}"
+    with pytest.raises(AssertionError):
+        assert_picker_inventory(screen, "claude", labels)
+
+
+def test_picker_inventory_does_not_ignore_claude_default_control_row_for_codex():
+    models = sorted(PICKER_MODELS["codex"])
+    labels = dict.fromkeys(models, None)
+    rows = "\n".join(f"  {position}. {model}" for position, model in enumerate(models, start=1))
+    screen = f"{rows}\n  {len(models) + 1}. {CLAUDE_DEFAULT_CONTROL_ROW}"
+    with pytest.raises(AssertionError):
+        assert_picker_inventory(screen, "codex", labels)

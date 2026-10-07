@@ -14,6 +14,8 @@ and tracing are disabled. Tests neither provision nor validate fixture definitio
 | `gemini_flash` | Excluded | Excluded |
 
 Independent gateway catalogs, Codex's native model/list, and exact TUI picker inventories must agree.
+Claude's built-in Default action is not a catalog entry; banners use catalog display names,
+while gateway inference checks require the exact service/alias.
 Compatible `ug_e2e.other_models.claude_decoy` and `codex_decoy` must be discoverable in their
 own schema but absent from the scoped picker. Claude discovery aliases must be enabled;
 Kimi uses `anthropic-aigw-<8-character SHA-256 prefix>-<service FQN>`.

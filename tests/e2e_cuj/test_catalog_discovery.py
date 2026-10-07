@@ -169,6 +169,7 @@ class TestCatalogDiscovery(BaseCujTest):
             claude.discovery_model_id(model) for model in CLAUDE_MODELS
         }, parent_catalog
         assert set(decoy_catalog) == {claude.discovery_model_id(CLAUDE_DECOY)}, decoy_catalog
+        default_display_name = parent_catalog[claude.discovery_model_id(CLAUDE_DEFAULT)]
 
         task = _claude_file_task(session)
         evidence = SessionEvidence(session.home, CLAUDE)
@@ -186,7 +187,7 @@ class TestCatalogDiscovery(BaseCujTest):
             for excluded in (GEMINI_MODEL, CLAUDE_DECOY, CODEX_DECOY):
                 assert excluded not in picker_screen, picker_screen
                 assert excluded.rsplit(".", 1)[-1] not in picker_screen, picker_screen
-            assert f"{CLAUDE_DEFAULT} · api usage billing" in tui.visible.casefold(), tui.visible
+            assert f"{default_display_name} · API Usage Billing" in tui.visible, tui.visible
             tui.submit(task.prompt)
             tui.task(evidence, task)
             tui.exit_normally()
@@ -245,8 +246,11 @@ class TestCatalogDiscovery(BaseCujTest):
 
         Expected: Claude completes the task on Sonnet without an agent or model override.
         """
-        session, _, recorder = cuj
+        session, workspace, recorder = cuj
         recorder.configure_session(session, ["configure", "--skip-upgrade"])
+        default_display_name = _catalog_display_names(workspace, CLAUDE, MODEL_SCHEMA)[
+            claude.discovery_model_id(CLAUDE_DEFAULT)
+        ]
         task = _claude_file_task(session)
         evidence = SessionEvidence(session.home, CLAUDE)
         checkpoint = recorder.checkpoint()
@@ -255,7 +259,7 @@ class TestCatalogDiscovery(BaseCujTest):
             session, CLAUDE, [str(session.binary)], "catalog-discovery-bare-ug-default"
         ) as tui:
             tui.boot()
-            assert f"{CLAUDE_DEFAULT} · api usage billing" in tui.visible.casefold(), tui.visible
+            assert f"{default_display_name} · API Usage Billing" in tui.visible, tui.visible
             tui.submit(task.prompt)
             Terminal.task(tui, evidence, task)
             tui.exit_normally()
@@ -270,15 +274,18 @@ class TestCatalogDiscovery(BaseCujTest):
 
         Expected: Claude completes the task on the configured Sonnet default without overrides.
         """
-        session, _, recorder = cuj
+        session, workspace, recorder = cuj
         recorder.configure_session(session, ["configure", "--skip-upgrade"])
+        default_display_name = _catalog_display_names(workspace, CLAUDE, MODEL_SCHEMA)[
+            claude.discovery_model_id(CLAUDE_DEFAULT)
+        ]
         task = _claude_file_task(session)
         evidence = SessionEvidence(session.home, CLAUDE)
         checkpoint = recorder.checkpoint()
         recorder.prepare_launch()
         with Terminal(session, "catalog-discovery-claude-tui-default", [CLAUDE]) as tui:
             tui.boot()
-            assert f"{CLAUDE_DEFAULT} · api usage billing" in tui.visible.casefold(), tui.visible
+            assert f"{default_display_name} · API Usage Billing" in tui.visible, tui.visible
             tui.submit(task.prompt)
             tui.task(evidence, task)
             tui.exit_normally()
