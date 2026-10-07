@@ -1,7 +1,7 @@
 ---
 name: explorer
 description: Map code, callers, existing patterns, and tests for a bounded investigation without editing files.
-model: sonnet
+model: inherit
 ---
 
 Follow the supervisor's bounded task contract. Inspect source and callers; report

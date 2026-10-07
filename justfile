@@ -12,11 +12,11 @@ lint: ruff-check ruff-format-check ty
 
 # Lint without fixing (CI-equivalent).
 ruff-check:
-    uv run ruff check src/ tests/ skills/
+    uv run ruff check src/ tests/
 
 # Verify formatting without writing files (CI-equivalent).
 ruff-format-check:
-    uv run ruff format --check src/ tests/ skills/
+    uv run ruff format --check src/ tests/
 
 # Type-check the package.
 ty:
@@ -24,5 +24,5 @@ ty:
 
 # Autofix lint + format in place. Local convenience; not part of the gate.
 fix:
-    uv run ruff check --fix src/ tests/ skills/
-    uv run ruff format src/ tests/ skills/
+    uv run ruff check --fix src/ tests/
+    uv run ruff format src/ tests/

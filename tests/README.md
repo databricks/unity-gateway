@@ -133,11 +133,13 @@ PowerShell execution.
 
 `test_orchestrator.py` covers shared routing state, off/on transitions, suppression
 of retained skills outside eligible sessions, root prompts and compaction,
-user-hook preservation, and bundled Claude roles. `test_orchestrator_config.py`
-ports the plugin's preference, ownership, locking, and interrupted-write recovery
-coverage and checks UG catalog precedence. Real subprocess tests verify that preference
-reads, writes, and removal wait for an existing writer, preserve files while waiting,
-and complete after the lock is released. `test_orchestrator_legacy_plugins.py`
+user-hook preservation, and bundled Claude roles. Subprocess checks verify that
+`--check` rejects ineligible sessions and leaves legacy preference files untouched,
+even when they are malformed. The installed skill's check command follows live
+toggles using the launching interpreter in `test_smart_router.py`. Routing checks
+cover Claude/Codex role contracts without model preferences. Separate preference
+editing, locking, and recovery are no longer part of the workflow.
+`test_orchestrator_legacy_plugins.py`
 and the Claude/Codex launcher tests check native per-launch overrides that disable
 legacy marketplace registrations with routing on or off, including Codex's
 app-server and remote TUI. They check config discovery, unrelated-plugin and hook

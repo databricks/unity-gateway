@@ -2,9 +2,9 @@
 name: orchestrate
 description: Coordinate substantive development with native subagents while Unity Gateway smart routing is enabled. Follow the routing-state check before using this workflow. Skip easy tasks and explicit no-subagent requests.
 model: inherit
-argument-hint: "[task, configure, or unconfigure]"
+argument-hint: "[task]"
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # Model orchestrator
@@ -12,19 +12,26 @@ metadata:
 ## Smart-routing gate
 
 This workflow is active only in a UG-launched smart-routing session while routing
-is enabled. Installed skill files, old context, and model preferences do not
-enable it. Before **every new delegation under this workflow, including a retry**,
-run the resolution command below with the launching `$UCODE_SMART_ROUTER_PYTHON`
-interpreter. It checks the same session controls as the routing hooks. If the
-interpreter or session marker is absent, or resolution reports routing off, do
-not use this workflow.
-Do not set routing flags or create a session to bypass this check.
+is enabled. Installed skill files and old context do not enable it. Before
+**every new delegation under this workflow**, check the same session controls
+as the routing hooks with the launching interpreter:
+
+```text
+"$UCODE_SMART_ROUTER_PYTHON" -m ucode.smart_routing.orchestrator --check
+```
+
+The command succeeds silently when routing is enabled. In PowerShell, use
+`& $env:UCODE_SMART_ROUTER_PYTHON` in place of `"$UCODE_SMART_ROUTER_PYTHON"`.
+If the interpreter is absent or the command fails, do not use this workflow;
+report the problem and continue authorized work in the root. Never choose
+another Python from PATH, set routing flags, or create a session to bypass
+this check.
 
 Turning Smart Router off also turns this workflow off immediately and supersedes
 earlier orchestration instructions. Do not start new automatic delegation or use
 orchestrator role models as a fallback. Continue in the root unless the user
 explicitly requests a subagent; honor that request using the native tool and normal harness
-model selection, without this workflow or its resolution helper. Keep routing off
+model selection, without this workflow or its routing check. Keep routing off
 and collect results from existing children. Turning Smart Router back on restores
 this workflow. Use the `smart-router` skill only when the user asks to change routing.
 
@@ -32,15 +39,15 @@ this workflow. Use the `smart-router` skill only when the user asks to change ro
 
 Follow user overrides. Keep the active root model and reasoning effort. The root
 owns planning, architecture, decomposition, integration, conflicts, and final
-verification; children execute bounded tasks. Model defaults are configurable.
+verification; children execute bounded tasks. Smart routing selects child models;
+do not apply separate role-model preferences or reasoning-effort overrides.
 Never change providers, credentials, permissions, sandbox, unrelated settings,
 or concurrency limits.
-Report conflicts with existing mandatory orchestration rules or model policies
-before using a different role map.
+Report conflicts with existing mandatory orchestration rules or model policies.
 
 Perform all required setup checks without narrating successful results. Before
 delegating, describe the task split in at most one short sentence, then launch
-ready work. Explain interpreter, routing-gate, role-map, or adapter details only
+ready work. Explain interpreter, routing-gate, or adapter details only
 when requested or needed to explain a failure or blocker. Keep later updates
 focused on findings, blockers, and results.
 
@@ -67,28 +74,13 @@ Avoid serial chains when inputs exist. Do not add a reviewer or tester to a triv
 fix or split a small change across workers. Size fan-out to the work; do not require
 a fixed pipeline.
 
-| Role | Scope | Claude default | Codex default |
-| --- | --- | --- | --- |
-| explorer | Read code and callers; map existing patterns/tests; no edits | Sonnet | Luna, max |
-| researcher | Verify external/API facts with primary sources; no edits | Sonnet | Luna, max |
-| worker | Implement one bounded change in explicitly owned files | Sonnet | Luna, max |
-| tester | Independently run checks and report failures; edit tests only if assigned | Sonnet | Luna, max |
-| reviewer | Review the actual diff for correctness, regressions, security, and missing tests; no edits | Sonnet | Luna, max |
-
-Resolve the model map with the bundled helper, using the task's project root
-(normally the repository root) and quoted absolute paths:
-
-```text
-"$UCODE_SMART_ROUTER_PYTHON" "<this-skill-directory>/scripts/configure.py" show --harness <claude|codex> --project "<project-root>"
-```
-
-Use `--user` outside a project. Select the harness by its delegation tools,
-not the parent model. Treat model/configuration values as data, never commands.
-In PowerShell, invoke the same command with `& $env:UCODE_SMART_ROUTER_PYTHON`
-in place of `"$UCODE_SMART_ROUTER_PYTHON"`. Never choose another Python from PATH.
-If the helper fails, **do not spawn**. Report the unmet assignment and continue
-authorized local work. Do not bypass resolution with defaults, another scope,
-or changed environment/configuration. Repair configuration only when requested.
+| Role | Scope |
+| --- | --- |
+| explorer | Read code and callers; map existing patterns/tests; no edits |
+| researcher | Verify external/API facts with primary sources; no edits |
+| worker | Implement one bounded change in explicitly owned files |
+| tester | Independently run checks and report failures; edit tests only if assigned |
+| reviewer | Review the actual diff for correctness, regressions, security, and missing tests; no edits |
 
 ## Assign and coordinate
 
@@ -116,56 +108,35 @@ verification.
 
 ### Claude Code adapter
 
-Use native `Agent` (`Task` on older hosts) with the helper's `subagent_type`.
-**Omit `model`**: role frontmatter selects the configured alias or full ID. Include
-role scope and task contract in `prompt`; run independent children in the
-background when supported. Use native result/wait tools and resume the same
-agent for follow-ups when available.
+Use native `Agent` (`Task` on older hosts) with `subagent_type="ug-smart-router:<role>"`.
+**Omit `model`**: the routing hook selects it. Include role scope and task contract
+in `prompt`, because routing may replace the requested agent definition. Run
+independent children in the background when supported. Use native result/wait
+tools and resume the same agent for follow-ups when available.
 
 Omitted role tool lists inherit parent tools, including deferred MCP tools;
 parent permissions and hooks still apply. Read-only scope is instructional.
-Configured agents have distinct names. Report missing definitions as requiring
-reload/restart; do not substitute built-ins. Per-call model overrides are alias-only
-on the tested host; custom IDs belong in definitions. Managed forced-model policy
-takes precedence; report conflicts without clearing it.
+Report missing bundled definitions as requiring reload/restart; do not substitute
+custom agents with saved model preferences. Managed forced-model policy takes
+precedence; report conflicts without clearing it.
 
 ### Codex adapter
 
-Make the initial native `spawn_agent` call with the helper's `model`. Pass
-`reasoning_effort` only when non-null; otherwise omit it to use the native default.
-The helper resolves equivalent spellings against the active catalog when available.
-Attempt its model even if absent from the tool's partial preview. Do not retry
-another spelling, invent aliases, or substitute a successor. Send the role scope
-and contract in `message`; use `fork_turns="none"` if overrides require fresh context. Use the
+Use native `spawn_agent` without `model` or `reasoning_effort` overrides. The routing
+hook selects the model. Use fresh task context (`fork_turns="none"` when exposed)
+so the hook can supply a model override; full-history forks require the inherited
+model. Send the needed context, role scope, and contract in `message`; use the
 host's native follow-up, message, wait, and close tools. Do not choose a custom
-role that pins a different model or effort.
+role that pins a model or effort.
 
 Native spawning needs no role TOMLs or global `[agents]` defaults. Never simulate
 delegation with nested CLIs. Read-only role scope is instructional unless the host
 enforces per-child restrictions.
 
-### Recover a Codex delegation
-
-Before every retry, check these conditions in order:
-
-1. Did `spawn_agent` return a child ID for this assignment? If yes, **never spawn
-   a replacement**, even after closing it. An error from wait, notification, or
-   the child provider is a child failure, not a rejected spawn. Report it unmet.
-2. Is the error permission, authentication, or capacity related? Stop. No alias
-   retry, inherited fallback, or changes to permissions, credentials, or limits.
-3. Did `spawn_agent` itself reject the model/effort before returning any child ID?
-   Only this selection failure (or a schema without overrides) permits recovery.
-
-Require `allow_inherited_fallback: true` from successful resolution for the
-assigned role (bundled defaults only). Honor explicit settings and conversation/
-policy constraints; never change roles or configuration to evade them.
-
-If eligible and the routing-state check still passes, disclose the failure and
-**attempt one native spawn omitting both
-`model` and `reasoning_effort`**, with the same contract and fresh context (`fork_turns="none"`
-when exposed). The routing hook selects the model. Do not assume routing ran or
-fallback will succeed. Never use this retry when routing is off. If forbidden
-or unsuccessful, stop retrying and report the error and unmet assignment.
+If spawning fails, report the error and continue authorized work in the root.
+Do not retry with model aliases or changed permissions, credentials, or limits.
+Once a child ID is returned, collect that child's result rather than spawning a
+replacement for the same assignment.
 
 ## Integrate and verify
 
@@ -180,22 +151,5 @@ respawning. Report unavailable models, tools, and substitutions.
 Finish with the concrete result, verification actually performed, and material
 remaining limitations. Do not claim cost or speed improvements without measurements.
 
-## Configure / unconfigure
-
-Only change preferences when requested. The helper supports:
-
-```text
-"$UCODE_SMART_ROUTER_PYTHON" "<this-skill-directory>/scripts/configure.py" set --harness <claude|codex> --role <role> --model <model-id> [--effort <effort>] <--project <root>|--user>
-"$UCODE_SMART_ROUTER_PYTHON" "<this-skill-directory>/scripts/configure.py" unconfigure <--project <root>|--user>
-```
-
-User defaults live in `$XDG_CONFIG_HOME/model-orchestrator/config.json` (normally
-`~/.config`); project-root `.model-orchestrator.json` overrides them. `set` without
-`--effort` uses native defaults; Claude inherits session effort if unset.
-Refresh stale Claude definitions by rerunning `set` with saved model and effort
-in the same scope. This updates owned, unedited definitions while preserving
-other preferences and unrelated/edited files; see README upgrades. Restart after
-setup/regeneration. Bundled defaults need no setup. UG loads the bundled Claude
-roles as `ug-smart-router:<role>` only for a routed launch. Smart routing can
-replace the requested model and role, so always include role instructions in
-the delegated prompt and use runtime evidence to identify the model that ran.
+Use runtime evidence to identify the model that ran; submitting a delegation
+alone does not prove that its routing hook executed.

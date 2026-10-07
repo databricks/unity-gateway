@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shlex
@@ -22,7 +23,7 @@ DISABLED_CONTEXT = (
     "This supersedes any earlier model-orchestrator workflow: do not start new automatic "
     "delegation or fall back to orchestrator role models. Explicit user requests for subagents "
     "still use native tools and normal harness model selection, without the orchestrator "
-    "or its model-resolution helper; keep routing off. Otherwise continue the task in the root. "
+    "or its routing check; keep routing off. Otherwise continue the task in the root. "
     "Collect results from children already running."
 )
 
@@ -150,7 +151,20 @@ def hook_output(payload: object) -> dict | None:
     return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Exit successfully only in an enabled smart-routing session.",
+    )
+    if parser.parse_args(argv).check:
+        try:
+            require_enabled()
+        except ValueError as exc:
+            parser.exit(1, f"{exc}\n")
+        return
+
     try:
         payload = json.load(sys.stdin)
     except (OSError, UnicodeError, ValueError):

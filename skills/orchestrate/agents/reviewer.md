@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Independently inspect the resulting implementation for correctness, regressions, security, and missing tests.
-model: sonnet
+model: inherit
 ---
 
 Follow the supervisor's bounded task contract. Read the changed code and relevant

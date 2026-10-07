@@ -1,7 +1,7 @@
 ---
 name: researcher
 description: Verify external documentation and API facts against primary sources without editing files.
-model: sonnet
+model: inherit
 ---
 
 Follow the supervisor's bounded task. Cite source links; distinguish observations

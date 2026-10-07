@@ -13,7 +13,7 @@ import pytest
 from typer.testing import CliRunner
 
 from ucode import cli, skills
-from ucode.smart_routing import orchestrator, routing, session_env, v2
+from ucode.smart_routing import codex_routing, orchestrator, routing, session_env, v2
 
 
 @pytest.fixture
@@ -64,6 +64,53 @@ def test_retained_skill_cannot_enable_orchestration(routed_session, monkeypatch,
     assert not orchestrator.enabled()
     with pytest.raises(ValueError, match="do not start new automatic delegation"):
         orchestrator.require_enabled()
+    result = subprocess.run(
+        [sys.executable, "-m", orchestrator.HOOK_MODULE, "--check"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == orchestrator.DISABLED_CONTEXT + "\n"
+
+
+def test_check_does_not_read_or_modify_legacy_preferences(routed_session, tmp_path):
+    legacy_files = {
+        ".model-orchestrator.json": b"{invalid project preferences",
+        ".model-orchestrator.json.transaction.json": b"{unfinished update",
+        ".config/model-orchestrator/config.json": b"{invalid user preferences",
+        ".config/model-orchestrator/config.json.lock": b"existing lock file",
+        ".claude/agents/model-orchestrator-custom-project-reviewer.md": b"user-edited agent",
+        ".codex/config.toml": b"[invalid catalog config",
+    }
+    for relative, content in legacy_files.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    result = subprocess.run(
+        [sys.executable, "-m", orchestrator.HOOK_MODULE, "--check"],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "HOME": str(tmp_path),
+            "USERPROFILE": str(tmp_path),
+            "XDG_CONFIG_HOME": str(tmp_path / ".config"),
+            "CLAUDE_CONFIG_DIR": str(tmp_path / ".claude"),
+            "CODEX_HOME": str(tmp_path / ".codex"),
+        },
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == result.stderr == ""
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
 @pytest.mark.parametrize(
@@ -126,7 +173,7 @@ def test_only_root_prompt_and_compaction_load_workflow(routed_session, payload, 
 @pytest.mark.parametrize("payload", ["", "{", "null", "[]", '"text"', "{}"])
 def test_hook_entry_point_ignores_invalid_payload(monkeypatch, capsys, payload):
     monkeypatch.setattr(sys, "stdin", io.StringIO(payload))
-    orchestrator.main()
+    orchestrator.main([])
     assert capsys.readouterr().out == ""
 
 
@@ -231,3 +278,24 @@ def test_role_contract_survives_claude_model_routing(monkeypatch):
     assert updated["prompt"] == contract
     assert updated["subagent_type"].startswith("ug-smart-router:ucode-route-")
     assert "model" not in updated
+
+
+def test_codex_routes_role_without_model_preferences(monkeypatch):
+    # Keep the routing path real; replace only the external selection request.
+    monkeypatch.setattr(
+        codex_routing,
+        "request_routing_decision",
+        lambda *_args, **_kwargs: (
+            routing.RoutingDecision(model="system.ai.gpt-5-6-sol", raw_model="gpt-5-6-sol"),
+            None,
+        ),
+    )
+    contract = "Act as the reviewer. Inspect this diff without editing. Report concrete bugs."
+    task = {"task_name": "reviewer", "message": contract, "fork_turns": "none"}
+    result = codex_routing.route_pre_tool_use(
+        {"tool_name": "collaboration.spawn_agent", "tool_input": task},
+        workspace="https://example.com",
+        token="token",
+        available_models=["system.ai.gpt-5-6-sol"],
+    )
+    assert result["hookSpecificOutput"]["updatedInput"] == {**task, "model": "gpt-5.6-sol"}
