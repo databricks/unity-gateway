@@ -1144,6 +1144,25 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
     # write each instead of a `claude mcp`/`codex mcp`/`gemini mcp` subprocess (or per-server file
     # write) per server. Interactive `ug mcp` commands keep the per-server path (they change few
     # servers and their output narrates each).
+    # Earlier ug releases registered OpenCode MCPs in an isolated XDG config. State may say
+    # they are already registered even though the shared CLI/Desktop file has no entry.
+    # Force those missing entries through the regular diff so repeat configure repairs them.
+    if "opencode" in fallback_clients:
+        shared_mcps = opencode._read_shared_config().get("mcp")
+        shared_names = set(shared_mcps) if isinstance(shared_mcps, dict) else set()
+        missing = {
+            _server_name(server)
+            for server in working_fallback
+            if "opencode" in _mcp_server_clients(server)
+            and _server_name(server) not in shared_names
+        }
+        if missing:
+            previous_fallback = [
+                {**server, "_missing_shared_opencode": True}
+                if _server_name(server) in missing
+                else server
+                for server in previous_fallback
+            ]
     apply_mcp_server_changes(
         previous_fallback,
         working_fallback,

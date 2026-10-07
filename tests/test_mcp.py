@@ -3226,6 +3226,35 @@ class TestResolveManagedMcpServers:
 
 
 class TestReconcileManagedMcpServers:
+    @pytest.mark.parametrize("entry_present", [False, True])
+    def test_existing_managed_opencode_mcp_is_repaired_in_shared_config(
+        self, monkeypatch, entry_present
+    ):
+        server = {"name": "system-ai-github", "url": "u", "clients": ["opencode"]}
+        state = {"workspace": WS, "profile": None, "managed_mcp_servers": [server]}
+        applied: dict = {}
+        self._wire(
+            monkeypatch,
+            state=state,
+            configured=["opencode"],
+            resolved=[{"name": server["name"], "url": server["url"]}],
+            applied=applied,
+            saved={},
+            setup_calls=[],
+        )
+        monkeypatch.setattr(
+            mcp.opencode,
+            "_read_shared_config",
+            lambda: {"mcp": {server["name"]: {}} if entry_present else {}},
+        )
+
+        mcp.reconcile_managed_mcp_servers(
+            {"mcp_servers": {"names": ["system.ai.github"]}}, {"opencode"}
+        )
+
+        assert applied["working"] == [server]
+        assert (applied["prev"] != applied["working"]) is (not entry_present)
+
     def _wire(self, monkeypatch, *, state, configured, resolved, applied, saved, setup_calls):
         monkeypatch.setattr(mcp, "load_state", lambda: state)
         monkeypatch.setattr(mcp, "save_state", lambda s: saved.update(s))
@@ -3383,6 +3412,7 @@ class TestReconcileManagedMcpServers:
         )
         monkeypatch.setattr(mcp.codex, "managed_mcp_uses_managed_file", lambda: codex_eligible)
         monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "token")
+        monkeypatch.setattr(mcp, "oauth_client_available", lambda *a, **k: True)
         monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lambda *a, **k: True)
 
         def claude_reconcile(state, servers):

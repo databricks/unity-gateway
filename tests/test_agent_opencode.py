@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
 from unittest.mock import patch
 
@@ -32,10 +33,10 @@ class TestOpencodeSpec:
     def test_display(self):
         assert opencode.SPEC["display"] == "OpenCode"
 
-    def test_config_path_is_under_ucode_xdg_home(self):
-        assert opencode.SPEC["config_path"] == (
-            opencode.OPENCODE_XDG_CONFIG_HOME / "opencode" / "opencode.json"
-        )
+    def test_config_path_is_shared_with_plain_cli_and_desktop(self):
+        from pathlib import Path
+
+        assert opencode.SPEC["config_path"] == Path.home() / ".config/opencode/opencode.json"
 
     def test_requires_version_with_custom_provider_fetch(self, monkeypatch):
         monkeypatch.setattr(opencode, "agent_version", lambda _binary: "1.0.219")
@@ -50,6 +51,44 @@ class TestOpencodeSpec:
         monkeypatch.setattr(opencode, "agent_version", lambda _binary: "1.0.220")
 
         assert opencode.minimum_version_error() is None
+
+
+def test_migrate_only_tracked_user_mcps_and_preserve_shared_entries(monkeypatch, tmp_path):
+    old = tmp_path / "isolated" / "opencode.json"
+    old.parent.mkdir()
+    old.write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "developer": {"command": ["ug", "mcp-proxy", "old"]},
+                    "untracked": {"command": ["old"]},
+                    "shared": {"command": ["old"]},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(opencode, "LEGACY_OPENCODE_CONFIG_PATH", old)
+    existing = {"mcp": {"shared": {"command": ["new"]}}, "theme": "user"}
+
+    opencode._migrate_user_mcp_entries(
+        existing,
+        {
+            "mcp_servers": [
+                {"name": "developer", "clients": ["opencode"]},
+                {"name": "shared", "clients": ["opencode"]},
+                {"name": "untracked", "clients": ["codex"]},
+            ]
+        },
+    )
+
+    assert existing == {
+        "mcp": {
+            "developer": {"command": ["ug", "mcp-proxy", "old"]},
+            "shared": {"command": ["new"]},
+        },
+        "theme": "user",
+    }
 
 
 class TestAuthPlugin:
@@ -355,10 +394,10 @@ class TestBuildRuntimeEnv:
 
         assert env["OAUTH_TOKEN"] == "tok"
 
-    def test_sets_ucode_xdg_config_home(self):
+    def test_does_not_force_isolated_config_home(self):
         env = opencode.build_runtime_env("tok")
 
-        assert env["XDG_CONFIG_HOME"] == str(opencode.OPENCODE_XDG_CONFIG_HOME)
+        assert env.get("XDG_CONFIG_HOME") == os.environ.get("XDG_CONFIG_HOME")
 
 
 class TestOpencodeDefaultModel:
@@ -491,7 +530,7 @@ class TestOpencodeLaunchModel:
                 opencode.launch(state, tool_args, options=LaunchOptions(user_pinned_model=model))
 
         assert exc_info.value.code == 7
-        assert json.loads(config_file.read_text())["model"] == selector
+        assert json.loads(config_file.read_text())["model"] == "databricks-anthropic/claude-sonnet"
         assert popen.call_args.args[0] == ["opencode", *expected_args]
         assert tool_args == original_args
         assert state["opencode_models"] == original_state["opencode_models"]

@@ -3788,6 +3788,41 @@ class TestConfigureAgentsSelection:
         assert resolved["opencode_models"] == {"oss": [model]}
         assert resolved["opencode_default_model"] == model
 
+    def test_single_managed_codex_syncs_plain_cli_and_desktop_without_flag(self, monkeypatch):
+        model = "platform_ai_gateway_dbricks.models.openai-gpt-5-6-luna"
+        state = {**MINIMAL_STATE, "available_tools": []}
+        managed = normalize_managed_config(
+            {
+                "enabled_agents": [
+                    {
+                        "agent": "CODING_AGENT_CODEX",
+                        "config": {
+                            "models": {"model_services": [model]},
+                            "default_models": {"default_model": model},
+                        },
+                    }
+                ]
+            }
+        )
+        monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+        monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda *a, **k: (managed, False))
+        monkeypatch.setattr(cli_mod, "configure_single_tool", lambda _tool, s, **k: s)
+        monkeypatch.setattr(cli_mod, "backup_desktop_config", lambda *a: None)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *a: [])
+        monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+        synced = []
+        monkeypatch.setattr(
+            cli_mod, "sync_desktop_config", lambda tool, s: synced.append((tool, s))
+        )
+
+        assert (
+            cli_mod.configure_workspace_command(tool="codex", workspaces=[("https://w.com", None)])
+            == 0
+        )
+        assert len(synced) == 1
+        assert synced[0][0] == "codex"
+        assert synced[0][1]["codex_default_model"] == model
+
     def test_single_opencode_desktop_sync_receives_managed_state(self, monkeypatch):
         model = "platform_ai_gateway_dbricks.models.azure-deepseek-v4-1-flash"
         state = {**MINIMAL_STATE, "opencode_models": {"oss": ["system.ai.deepseek-v4-1-flash"]}}

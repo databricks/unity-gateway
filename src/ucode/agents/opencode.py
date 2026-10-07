@@ -6,14 +6,13 @@ import json
 import os
 import re
 import signal
+from pathlib import Path
 
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
     apply_json_mcp_diff,
-    backup_existing_file,
     deep_merge_dict,
-    read_json_safe,
     write_json_file,
     write_text_file,
 )
@@ -29,10 +28,10 @@ from ucode.telemetry import agent_version, ug_version
 
 from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
 
-OPENCODE_XDG_CONFIG_HOME = APP_DIR / "opencode-xdg"
-OPENCODE_CONFIG_DIR = OPENCODE_XDG_CONFIG_HOME / "opencode"
+LEGACY_OPENCODE_CONFIG_PATH = APP_DIR / "opencode-xdg" / "opencode" / "opencode.json"
+OPENCODE_CONFIG_DIR = Path.home() / ".config" / "opencode"
 OPENCODE_CONFIG_PATH = OPENCODE_CONFIG_DIR / "opencode.json"
-OPENCODE_BACKUP_PATH = APP_DIR / "opencode-config.backup.json"
+OPENCODE_BACKUP_PATH = APP_DIR / "opencode-desktop.backup.json"
 OPENCODE_AUTH_PLUGIN_PATH = OPENCODE_CONFIG_DIR / "plugin" / "ucode-auth.js"
 OPENCODE_NPM_PACKAGE = "opencode-ai"
 MINIMUM_OPENCODE_VERSION = (1, 0, 220)
@@ -167,9 +166,12 @@ def render_auth_plugin(state: dict) -> str:
 
 
 def write_auth_plugin(state: dict) -> None:
-    """Install the auto-discovered hook in ucode's isolated OpenCode config."""
+    """Install the auto-discovered hook in OpenCode's shared config."""
     # Derive the path so tests that redirect OPENCODE_CONFIG_PATH stay isolated.
     path = OPENCODE_CONFIG_PATH.parent / "plugin" / OPENCODE_AUTH_PLUGIN_PATH.name
+    from ucode.desktop_config import backup_shared_path
+
+    backup_shared_path(path, OPENCODE_BACKUP_PATH.with_name("opencode-desktop-plugin.backup.js"))
     write_text_file(path, render_auth_plugin(state))
 
 
@@ -313,12 +315,55 @@ def render_overlay(
     return overlay, keys
 
 
+def _read_shared_config() -> dict:
+    """Never overwrite an existing user config that cannot be parsed."""
+    if not OPENCODE_CONFIG_PATH.exists():
+        return {}
+    try:
+        value = json.loads(OPENCODE_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Cannot update OpenCode settings at {OPENCODE_CONFIG_PATH}: {exc}"
+        ) from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(f"OpenCode settings at {OPENCODE_CONFIG_PATH} must be a JSON object.")
+    return value
+
+
+def _migrate_user_mcp_entries(existing: dict, state: dict) -> None:
+    """Carry developer registrations from the old isolated file on first shared write."""
+    names = {
+        server.get("name")
+        for server in state.get("mcp_servers") or []
+        if isinstance(server, dict) and "opencode" in (server.get("clients") or [])
+    }
+    if not names or not LEGACY_OPENCODE_CONFIG_PATH.exists():
+        return
+    try:
+        legacy = json.loads(LEGACY_OPENCODE_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return
+    old_servers = legacy.get("mcp") if isinstance(legacy, dict) else None
+    if not isinstance(old_servers, dict):
+        return
+    shared_servers = existing.get("mcp")
+    if not isinstance(shared_servers, dict):
+        shared_servers = {}
+    for name in names:
+        if isinstance(name, str) and name in old_servers:
+            shared_servers.setdefault(name, old_servers[name])
+    if shared_servers:
+        existing["mcp"] = shared_servers
+
+
 def write_tool_config(
     state: dict,
     model: str,
     token: str | None = None,
 ) -> tuple[dict, str]:
-    backup_existing_file(OPENCODE_CONFIG_PATH, OPENCODE_BACKUP_PATH)
+    from ucode.desktop_config import backup_shared_path
+
+    backup_shared_path(OPENCODE_CONFIG_PATH, OPENCODE_BACKUP_PATH)
     if token is None:
         token = get_databricks_token(state["workspace"], state.get("profile"))
     opencode_base_urls = state.get("base_urls", {}).get("opencode") or build_opencode_base_urls(
@@ -330,7 +375,8 @@ def write_tool_config(
         opencode_base_urls,
         state.get("opencode_models") or {},
     )
-    existing = read_json_safe(OPENCODE_CONFIG_PATH)
+    existing = _read_shared_config()
+    _migrate_user_mcp_entries(existing, state)
     write_auth_plugin(state)
     providers = existing.get("provider")
     if isinstance(providers, dict):
@@ -360,8 +406,10 @@ def build_mcp_server_entry(argv: list[str]) -> dict:
 
 
 def write_mcp_server_config(name: str, argv: list[str]) -> bool:
-    backup_existing_file(OPENCODE_CONFIG_PATH, OPENCODE_BACKUP_PATH)
-    existing = read_json_safe(OPENCODE_CONFIG_PATH)
+    from ucode.desktop_config import backup_shared_path
+
+    backup_shared_path(OPENCODE_CONFIG_PATH, OPENCODE_BACKUP_PATH)
+    existing = _read_shared_config()
     mcp_servers = existing.get("mcp")
     if not isinstance(mcp_servers, dict):
         mcp_servers = {}
@@ -373,7 +421,7 @@ def write_mcp_server_config(name: str, argv: list[str]) -> bool:
 
 
 def remove_mcp_server_config(name: str) -> bool:
-    existing = read_json_safe(OPENCODE_CONFIG_PATH)
+    existing = _read_shared_config()
     mcp_servers = existing.get("mcp")
     if not isinstance(mcp_servers, dict) or name not in mcp_servers:
         return False
@@ -385,9 +433,11 @@ def remove_mcp_server_config(name: str) -> bool:
 
 def write_user_mcp_servers(add: dict[str, dict], remove: set[str]) -> set[str]:
     """Apply ``add``/``remove`` to OpenCode's `mcp` table in a single read-modify-write. Returns the names actually removed."""
-    return apply_json_mcp_diff(
-        OPENCODE_CONFIG_PATH, "mcp", add, remove, backup_path=OPENCODE_BACKUP_PATH
-    )
+    from ucode.desktop_config import backup_shared_path
+
+    backup_shared_path(OPENCODE_CONFIG_PATH, OPENCODE_BACKUP_PATH)
+    _read_shared_config()  # Reject malformed user settings before the diff writer reads them.
+    return apply_json_mcp_diff(OPENCODE_CONFIG_PATH, "mcp", add, remove)
 
 
 def default_model(state: dict) -> str | None:
@@ -415,7 +465,6 @@ def _configure_launch(state: dict, model: str | None = None) -> str:
 def build_runtime_env(token: str, state: dict | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env["OAUTH_TOKEN"] = token
-    env["XDG_CONFIG_HOME"] = str(OPENCODE_XDG_CONFIG_HOME)
     return env
 
 
@@ -424,7 +473,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     model = explicit_model_arg_value(tool_args) or options.user_pinned_model
     if model is not None:
         model = resolve_explicit_model(model, state)
-    token = _configure_launch(state, model)
+    token = _configure_launch(state)
     env = build_runtime_env(token, state)
 
     if model is not None and not has_explicit_model_arg(tool_args):

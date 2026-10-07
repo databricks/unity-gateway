@@ -873,11 +873,19 @@ def _configure_workspace_command(
         if desktop and (managed is None or tool not in ("codex", "opencode")):
             raise RuntimeError("--direct requires managed Codex or OpenCode configuration.")
         resolved = state
-        if desktop and not is_dry_run():
+        sync_shared = (
+            managed is not None
+            and (tool == "codex" or (tool == "opencode" and desktop))
+            and bool(resolved.get(f"{tool}_default_model"))
+            and not is_dry_run()
+        )
+        if sync_shared:
             backup_desktop_config(tool)
         state = configure_single_tool(tool, state, parent_schema=parent_schema)
-        if desktop and not is_dry_run():
+        if sync_shared:
             sync_desktop_config(tool, resolved)
+        if managed is not None and not is_dry_run():
+            _configure_managed_mcp_servers(managed)
         install_databricks_ai_tools_for_agents(
             [tool], state, force_refresh=tool not in ("claude", "codex")
         )
@@ -929,7 +937,11 @@ def _configure_workspace_command(
             ):
                 if not install_tool_binary(tool_name, strict=False):
                     continue
-                if desktop and not is_dry_run() and tool_name in ("codex", "opencode"):
+                if (
+                    not is_dry_run()
+                    and (tool_name == "codex" or (tool_name == "opencode" and desktop))
+                    and resolved.get(f"{tool_name}_default_model")
+                ):
                     backup_desktop_config(tool_name)
                 configured = configure_selected_tools(
                     resolved,
@@ -949,7 +961,11 @@ def _configure_workspace_command(
                 last = configured.get("last_configured_tools")
                 if last is None or tool_name in last:
                     configured_tools.append(tool_name)
-                    if desktop and not is_dry_run() and tool_name in ("codex", "opencode"):
+                    if (
+                        not is_dry_run()
+                        and (tool_name == "codex" or (tool_name == "opencode" and desktop))
+                        and resolved.get(f"{tool_name}_default_model")
+                    ):
                         sync_desktop_config(tool_name, resolved)
         if not configured_tools:
             raise RuntimeError(
@@ -1293,6 +1309,8 @@ def revert() -> int:
         tool: restore_file(
             spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool))
         )
+        if tool != "opencode"
+        else False
         for tool, spec in TOOL_SPECS.items()
     }
     pi_settings_restored = restore_file(
@@ -3435,7 +3453,7 @@ def configure(
         typer.Option(
             "--direct",
             "--desktop",
-            help="Also configure directly launched Codex/OpenCode, including their desktop apps.",
+            help="Compatibility alias; managed Codex/OpenCode now configure CLI and Desktop together.",
         ),
     ] = False,
     agents: Annotated[

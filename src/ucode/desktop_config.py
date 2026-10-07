@@ -1,4 +1,4 @@
-"""Opt-in configuration for independently launched Codex and OpenCode desktop apps."""
+"""Shared configuration for independently launched Codex and OpenCode apps."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from ucode.config_io import (
 from ucode.databricks import build_opencode_base_urls, get_databricks_token
 
 CODEX_DESKTOP_BACKUP_PATH = APP_DIR / "codex-desktop.backup.toml"
-OPENCODE_DESKTOP_CONFIG_PATH = Path.home() / ".config" / "opencode" / "opencode.json"
+OPENCODE_DESKTOP_CONFIG_PATH = opencode.OPENCODE_CONFIG_PATH
 OPENCODE_DESKTOP_BACKUP_PATH = APP_DIR / "opencode-desktop.backup.json"
 OPENCODE_PLUGIN_BACKUP_PATH = APP_DIR / "opencode-desktop-plugin.backup.js"
 
@@ -29,7 +29,7 @@ def _desktop_plugin_path() -> Path:
     return OPENCODE_DESKTOP_CONFIG_PATH.parent / "plugin" / opencode.OPENCODE_AUTH_PLUGIN_PATH.name
 
 
-def _backup_path(path: Path, backup: Path) -> None:
+def backup_shared_path(path: Path, backup: Path) -> None:
     """Remember an absent file too, so revert can remove one we created."""
     if is_dry_run() or backup.exists() or backup.with_suffix(backup.suffix + ".created").exists():
         return
@@ -63,17 +63,17 @@ def revert_desktop_config() -> dict[str, bool]:
 def backup_desktop_config(tool: str) -> None:
     """Save the user's desktop settings before ug changes any shared file."""
     if tool == "codex":
-        _backup_path(codex._legacy_config_path(), CODEX_DESKTOP_BACKUP_PATH)
+        backup_shared_path(codex._legacy_config_path(), CODEX_DESKTOP_BACKUP_PATH)
     elif tool == "opencode":
-        _backup_path(OPENCODE_DESKTOP_CONFIG_PATH, OPENCODE_DESKTOP_BACKUP_PATH)
-        _backup_path(_desktop_plugin_path(), OPENCODE_PLUGIN_BACKUP_PATH)
+        backup_shared_path(OPENCODE_DESKTOP_CONFIG_PATH, OPENCODE_DESKTOP_BACKUP_PATH)
+        backup_shared_path(_desktop_plugin_path(), OPENCODE_PLUGIN_BACKUP_PATH)
 
 
 def sync_codex_desktop(state: dict) -> None:
     """Apply the managed Codex provider and default to the shared app config."""
     model = state.get("codex_default_model")
     if not isinstance(model, str) or not model:
-        raise RuntimeError("Codex Desktop needs a managed default model.")
+        raise RuntimeError("Codex needs a managed default model for the shared config.")
     path = codex._legacy_config_path()
     overlay = codex.render_overlay(
         state["workspace"],
@@ -95,7 +95,7 @@ def sync_opencode_desktop(state: dict) -> None:
     model = state.get("opencode_default_model")
     models = state.get("opencode_models") or {}
     if not isinstance(model, str) or not model or not isinstance(models, dict):
-        raise RuntimeError("OpenCode Desktop needs a managed default model and provider models.")
+        raise RuntimeError("OpenCode needs a managed default model and provider models.")
     token = get_databricks_token(state["workspace"], state.get("profile"))
     base_urls = state.get("base_urls", {}).get("opencode") or build_opencode_base_urls(
         state["workspace"]
