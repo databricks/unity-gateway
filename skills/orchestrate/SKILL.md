@@ -1,13 +1,13 @@
 ---
 name: orchestrate
-description: Coordinate substantive development with native subagents when ENABLE_ORCHESTRATION=1 and Unity Gateway smart routing is enabled. Follow UG's activation context. Skip easy tasks and explicit no-subagent requests.
+description: Smart Router Orchestrator coordinates substantive development with native subagents when ENABLE_ORCHESTRATION=1 and Unity Gateway smart routing is enabled. Follow UG's activation context. Skip easy tasks and explicit no-subagent requests.
 model: inherit
 argument-hint: "[task]"
 metadata:
   version: "1.1.0"
 ---
 
-# Model orchestrator
+# Smart Router Orchestrator
 
 ## Activation
 

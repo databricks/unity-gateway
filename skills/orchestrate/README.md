@@ -1,7 +1,7 @@
-# UG model orchestrator
+# Smart Router Orchestrator
 
-UG bundles the `orchestrate` workflow and five Claude role definitions from
-`model-orchestrator` 0.4.10. Smart-routed Claude and Codex launches install and
+UG bundles the `orchestrate` workflow and five Claude role definitions.
+Smart-routed Claude and Codex launches install and
 activate this skill alongside `smart-router` only with `ENABLE_ORCHESTRATION=1`.
 The feature is off by default; routing alone installs only `smart-router`.
 

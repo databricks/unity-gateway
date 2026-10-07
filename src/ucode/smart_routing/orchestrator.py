@@ -1,4 +1,4 @@
-"""Activate the bundled orchestrator in opted-in smart-routing sessions."""
+"""Activate Smart Router Orchestrator in opted-in smart-routing sessions."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from ucode.smart_routing.session_env import effective_environment, session_env_p
 
 HOOK_MODULE = "ucode.smart_routing.orchestrator"
 DISABLED_CONTEXT = (
-    "UG automatic orchestration is off for this session. This supersedes earlier "
+    "Smart Router Orchestrator is off for this session. This supersedes earlier "
     "orchestrator instructions. Continue in the root unless the user explicitly requests "
     "subagents; use native tools and the current Smart Router setting for those requests. "
     "Collect results from children already running."
@@ -92,7 +92,7 @@ def hook_output(payload: object) -> dict | None:
         except (OSError, UnicodeError):
             return None
         context = (
-            "UG automatic orchestration is on for this session. Apply the workflow below.\n"
+            "Smart Router Orchestrator is on for this session. Apply the workflow below.\n"
             f"Skill directory: {directory}\n\n{workflow}"
         )
     return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}

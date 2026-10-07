@@ -246,11 +246,12 @@ is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.
 The generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
 
-### Automatic orchestration
+### Smart Router Orchestrator
 
 Smart-routed Claude and Codex sessions install `smart-router`. Set
-`ENABLE_ORCHESTRATION=1` at launch to also install and activate the bundled
-`orchestrate` skill; orchestration is off by default. For example:
+`ENABLE_ORCHESTRATION=1` at launch to also install and activate Smart Router
+Orchestrator through the bundled `orchestrate` skill; orchestration is off by
+default. For example:
 
 ```bash
 ENABLE_ORCHESTRATION=1 ENABLE_SMART_ROUTING_SUBAGENT_ONLY=1 ug claude
@@ -276,7 +277,7 @@ routing still checks the controls for each subagent.
 UG supplies its own hooks; Codex combines them with existing hooks and applies
 project trust. Smart routing selects subagent models; separate role-model
 preferences are ignored and their files are left untouched. See the bundled
-[orchestrator documentation](skills/orchestrate/README.md) for details.
+[Smart Router Orchestrator documentation](skills/orchestrate/README.md) for details.
 
 ## Managed Files
 
