@@ -19,7 +19,6 @@ from utils.evidence import (
     assert_subagent_routed,
     assistant_answers,
     is_child_session,
-    is_orchestrator_check_permission,
     read_jsonl,
     tool_outputs,
 )
@@ -91,29 +90,8 @@ def _run_calculation(tui, session, agent: str, expression: str, expected: str, *
     tui.submit(task.prompt)
 
     if routed:
-        permission_in_progress = False
-
-        def routed_banner_visible(screen):
-            nonlocal permission_in_progress
-            if "Do you want to proceed?" in screen:
-                if permission_in_progress:
-                    return False
-                if agent != "claude" or not is_orchestrator_check_permission(screen):
-                    return False
-                # Claude briefly ignores input when a permission dialog opens.
-                tui.wait_for(
-                    is_orchestrator_check_permission,
-                    "the read-only orchestrator permission dialog to settle",
-                    timeout=5,
-                )
-                tui.send("\r", "allow the read-only orchestrator routing-state check")
-                permission_in_progress = True
-                return False
-            permission_in_progress = False
-            return _routing_banner_for_task(screen, task.marker)
-
         tui.wait_for(
-            routed_banner_visible,
+            lambda screen: _routing_banner_for_task(screen, task.marker),
             f"the Smart Router subagent banner for {task.marker}",
             timeout=120,
         )
@@ -322,8 +300,7 @@ def test_smart_router_skill_toggles_claude_subagent_routing(
     routing controls, even with collapsed terminal output; all three uniquely tagged
     calculations complete in native child sessions; only the first and third show the
     subagent-routing banner and produce live gateway decisions correlated with those children.
-    A visible permission prompt for the exact read-only orchestrator check is accepted;
-    other commands are rejected. No first-prompt routing wrapper starts.
+    No first-prompt routing wrapper starts.
     """
     session = live_session
     session.env["TMPDIR"] = str(tmp_path)

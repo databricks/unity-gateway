@@ -663,7 +663,7 @@ def launch_codex(
     overlay["features.hooks"] = True
     _prepare_smart_router_session("codex")
     # Codex constructs tool subprocess environments through its shell policy.
-    # The skill's gate needs the same launch baseline as the routing hook, even
+    # The hooks and Smart Router toggle need the same launch baseline, even
     # when the user's policy filters inherited environment variables.
     for key in (SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, *SMART_ROUTING_ENV_KEYS):
         if key in os.environ:

@@ -19,11 +19,9 @@ from ucode.smart_routing.session_env import effective_environment, session_env_p
 
 HOOK_MODULE = "ucode.smart_routing.orchestrator"
 DISABLED_CONTEXT = (
-    "UG automatic orchestration is off for this session. "
-    "This supersedes any earlier model-orchestrator workflow: do not start new automatic "
-    "delegation or fall back to orchestrator role models. Explicit user requests for subagents "
-    "still use native tools and the current Smart Router setting, without the orchestrator "
-    "or its routing check. Otherwise continue the task in the root. "
+    "UG automatic orchestration is off for this session. This supersedes earlier "
+    "orchestrator instructions. Continue in the root unless the user explicitly requests "
+    "subagents; use native tools and the current Smart Router setting for those requests. "
     "Collect results from children already running."
 )
 
@@ -48,11 +46,6 @@ def enabled(env: Mapping[str, str] | None = None) -> bool:
     except (RuntimeError, OSError):
         return False
     return smart_routing_enabled(effective_environment(source))
-
-
-def require_enabled() -> None:
-    if not enabled():
-        raise ValueError(DISABLED_CONTEXT)
 
 
 def skill_directory() -> Path:
@@ -99,27 +92,14 @@ def hook_output(payload: object) -> dict | None:
         except (OSError, UnicodeError):
             return None
         context = (
-            "Apply the UG model-orchestrator workflow to this task. "
-            "Orchestration is opted in and follows Smart Router's session controls.\n"
+            "UG automatic orchestration is on for this session. Apply the workflow below.\n"
             f"Skill directory: {directory}\n\n{workflow}"
         )
     return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="Exit successfully only in an opted-in, enabled smart-routing session.",
-    )
-    if parser.parse_args(argv).check:
-        try:
-            require_enabled()
-        except ValueError as exc:
-            parser.exit(1, f"{exc}\n")
-        return
-
+def main() -> None:
+    argparse.ArgumentParser(description=__doc__).parse_args()
     try:
         payload = json.load(sys.stdin)
     except (OSError, UnicodeError, ValueError):

@@ -88,26 +88,6 @@ def is_child_session(agent: str, path: str, records: list[dict]) -> bool:
     return _AGENT_HELPERS.get(agent, codex).is_child_session(path, records)
 
 
-def is_orchestrator_check_permission(screen: str) -> bool:
-    """Recognize one-time approval for the exact read-only orchestrator check."""
-    command = '"$UCODE_SMART_ROUTER_PYTHON" -m ucode.smart_routing.orchestrator --check'
-    # Pending calls need not reach the transcript until approval. Inspect the
-    # current dialog's first command line; multiline commands have a │ gutter.
-    dialog = re.split(r"(?m)^[ \t]*─{3,}[ \t]*$", screen)[-1]
-    return bool(
-        re.match(
-            r"\s*Bash command[ \t]*\n"
-            r"(?:[ \t]*Tip:[^\n]*\n)?"
-            r"[ \t]*\n"
-            rf"[ \t]*{re.escape(command)}[ \t]*\n",
-            dialog,
-        )
-        and re.search(r"(?m)^[ \t]*Do you want to proceed\?[ \t]*$", dialog)
-        and re.search(r"(?m)^[ \t]*[›❯>][ \t]*1\.[ \t]*Yes[ \t]*$", dialog)
-        and re.search(r"(?m)^[ \t]*Esc to cancel\b", dialog)
-    )
-
-
 def completed_task_models(session, agent: str, answer_value: str) -> set[str]:
     """Read parent task model evidence, not proof of the gateway's destination."""
     assert agent in _AGENT_HELPERS, f"Unsupported evidence agent: {agent}"

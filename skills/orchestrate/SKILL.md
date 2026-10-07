@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Coordinate substantive development with native subagents when ENABLE_ORCHESTRATION=1 and Unity Gateway smart routing is enabled. Follow the routing-state check before using this workflow. Skip easy tasks and explicit no-subagent requests.
+description: Coordinate substantive development with native subagents when ENABLE_ORCHESTRATION=1 and Unity Gateway smart routing is enabled. Follow UG's activation context. Skip easy tasks and explicit no-subagent requests.
 model: inherit
 argument-hint: "[task]"
 metadata:
@@ -9,31 +9,20 @@ metadata:
 
 # Model orchestrator
 
-## Smart-routing gate
+## Activation
 
-This workflow is active only in a UG-launched smart-routing session with
-`ENABLE_ORCHESTRATION=1` and routing enabled. Installed skill files and old
-context do not enable it. Before **every new delegation under this workflow**,
-check the same session controls
-as the routing hooks with the launching interpreter:
+UG's prompt and compaction hooks activate this workflow only in an eligible
+smart-routing session launched with `ENABLE_ORCHESTRATION=1` while routing is on.
+Follow the latest UG activation context and successful Smart Router toggles;
+installed skill files and old context do not enable it. Use that context without
+running a separate pre-delegation check. Do not set flags or create a session to
+activate this workflow.
 
-```text
-"$UCODE_SMART_ROUTER_PYTHON" -m ucode.smart_routing.orchestrator --check
-```
-
-The command succeeds silently when both orchestration and routing are enabled.
-In PowerShell, use `& $env:UCODE_SMART_ROUTER_PYTHON` in place of
-`"$UCODE_SMART_ROUTER_PYTHON"`.
-If the interpreter is absent or the command fails, do not use this workflow;
-report the problem and continue authorized work in the root. Never choose
-another Python from PATH, set orchestration or routing flags, or create a session
-to bypass this check.
-
-Turning Smart Router off also turns this workflow off immediately and supersedes
+Turning Smart Router off through its skill stops this workflow and supersedes
 earlier orchestration instructions. Do not start new automatic delegation or use
 orchestrator role models as a fallback. Continue in the root unless the user
 explicitly requests a subagent; honor that request using the native tool and normal harness
-model selection, without this workflow or its routing check. Keep routing off
+model selection, without this workflow. Keep routing off
 and collect results from existing children. Turning Smart Router back on restores
 this workflow only if the session was launched with `ENABLE_ORCHESTRATION=1`.
 Use the `smart-router` skill only when the user asks to change routing.
@@ -48,9 +37,8 @@ Never change providers, credentials, permissions, sandbox, unrelated settings,
 or concurrency limits.
 Report conflicts with existing mandatory orchestration rules or model policies.
 
-Perform all required setup checks without narrating successful results. Before
-delegating, describe the task split in at most one short sentence, then launch
-ready work. Explain interpreter, routing-gate, or adapter details only
+Before delegating, describe the task split in at most one short sentence, then
+launch ready work. Explain adapter details only
 when requested or needed to explain a failure or blocker. Keep later updates
 focused on findings, blockers, and results.
 

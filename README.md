@@ -262,12 +262,16 @@ integrates, and verifies results. Easy tasks and explicit requests not to delega
 stay in the root.
 
 Once opted in, orchestration follows the existing smart-routing launch eligibility
-and session controls. Turning Smart Router off stops new automatic delegation;
+and session controls. Turning Smart Router off through its skill stops new automatic delegation;
 turning it on restores orchestration only in opted-in sessions. Explicit user
 requests for subagents still use normal harness behavior while routing is off.
 Stored skill files do not activate orchestration when the feature flag is unset or
 `ENABLE_ORCHESTRATION=0`, or in non-routed sessions. Existing Isaac pilot gating
 and UG launch exclusions still apply.
+
+Hooks refresh orchestration state before each prompt and after compaction. A
+state change made outside the conversation is observed at the next hook; model
+routing still checks the controls for each subagent.
 
 UG supplies its own hooks; Codex combines them with existing hooks and applies
 project trust. Smart routing selects subagent models; separate role-model

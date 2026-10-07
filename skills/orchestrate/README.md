@@ -5,14 +5,16 @@ UG bundles the `orchestrate` workflow and five Claude role definitions from
 activate this skill alongside `smart-router` only with `ENABLE_ORCHESTRATION=1`.
 The feature is off by default; routing alone installs only `smart-router`.
 
-The workflow is injected before root prompts and after compaction. Its activation
-and pre-delegation checks require the feature flag and a UG smart-routing session,
-and read the same session controls as the routing hooks. Turning Smart Router off
-stops new automatic delegation and supersedes the previous workflow. Turning it on restores
-orchestration only in opted-in sessions. An installed skill or saved model
-preference cannot enable it.
+The workflow is injected before root prompts and after compaction. The hook checks
+the feature flag, UG session, and current routing controls. The skill uses that
+activation context without running a separate check before delegation.
+Turning Smart Router off through its skill stops new automatic delegation and
+supersedes the previous workflow. Turning it on restores orchestration only in
+opted-in sessions. A change made outside the conversation is observed at the next
+prompt or compaction; model routing still checks the controls for each subagent.
+An installed skill or saved model preference cannot enable orchestration.
 Explicit user requests for subagents still use native harness behavior while routing
-is off, without the orchestrator's workflow or routing check.
+is off, without the orchestrator's workflow.
 User instructions take precedence, and easy tasks remain in the root.
 
 Claude loads the bundled roles as `ug-smart-router:<role>` in its temporary
@@ -22,20 +24,13 @@ Role instructions belong in each task prompt because routing may replace the
 requested Claude role or Codex model. Hook approval in the native `/hooks` UI
 is still required where the harness prompts for it.
 
-## Routing check
+## Model selection
 
 Separate role-model preferences are not used by the UG workflow. Existing
 `.model-orchestrator.json` project preferences,
 `$XDG_CONFIG_HOME/model-orchestrator/config.json` user preferences, and generated
 custom Claude agents are left untouched. The bundled workflow uses the router's
 model selection and requires no preference setup, locking, or recovery.
-
-The [skill](SKILL.md) checks eligibility with
-`"$UCODE_SMART_ROUTER_PYTHON" -m ucode.smart_routing.orchestrator --check` before
-delegating. This command reads session controls without reading or writing
-preference files, succeeds silently when both orchestration and routing are enabled,
-and exits nonzero otherwise. Retained skill files stay inactive when the feature
-flag is unset or `0`.
 
 ## Attribution
 

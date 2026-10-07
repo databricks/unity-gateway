@@ -27,7 +27,7 @@ or first prompt. In sessions launched with `ENABLE_ORCHESTRATION=1`, it also con
 orchestration. When turned off, earlier orchestrate instructions
 are superseded: do not start new automatic delegation or fall back to orchestrator role models.
 Continue in the root unless the user explicitly requests a subagent. Honor that request using
-native tools and normal harness model selection, without the orchestrator or its resolution
-helper; keep routing off. Existing children can finish. When turned on, apply the orchestrate
+native tools and normal harness model selection, without the orchestrator; keep routing off.
+Existing children can finish. When turned on, apply the orchestrate
 skill to further work only if the session was launched with `ENABLE_ORCHESTRATION=1`.
 Do not change the orchestration feature flag. Return the command's result.

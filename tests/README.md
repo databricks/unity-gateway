@@ -135,11 +135,7 @@ The toggle integration journeys run with `ENABLE_ORCHESTRATION` unset and with
 `ENABLE_ORCHESTRATION=1`. They require only `smart-router` by default and both
 bundled skills when opted in, verify the saved session controls and native
 tool-result confirmation after each toggle, and explicitly request their children,
-including while routing is off. Claude's journey
-answers the visible permission prompt for the exact read-only orchestrator check,
-using the dialog's command because pending calls may not yet be in the transcript.
-Evidence tests reject added shell commands, commands in scrollback or descriptions,
-and other permission selections.
+including while routing is off.
 `test_integration_evidence.py` checks native tool-result extraction for both agents,
 including collapsed-output records, and excludes user echoes and assistant claims.
 
