@@ -55,13 +55,8 @@ NPM_TOKEN_ENV = "UG_INTEGRATION_NPM_TOKEN"
 INSTALLER_CREDENTIAL_ENV = (*UV_INDEX_CREDENTIAL_ENV, NPM_TOKEN_ENV)
 PTY_MODULES = {"pexpect", "pyte"}
 PTY_HELPERS = {"utils.terminal", "utils.mcp"}
-# Claude exports no spans on Windows, where ug writes no machine-wide Claude settings, and
-# Codex's Windows sandbox can't see the project files these journeys read (fixed separately).
-WINDOWS_UNSUPPORTED_MODULES = {
-    "test_ug_claude_tracing.py",
-    "test_ug_codex_headless.py",
-    "test_ug_codex_tracing.py",
-}
+# Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
+WINDOWS_UNSUPPORTED_MODULES = {"test_ug_claude_tracing.py"}
 HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
     "codex": "test_ug_codex_headless.py::test_ug_codex_headless_prompt_argument",
