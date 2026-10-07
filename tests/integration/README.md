@@ -226,6 +226,7 @@ test_ug_claude_commands.py              # command help forwarding
 test_ug_codex_commands.py               # command help and parser error forwarding
 test_ug_codex_app_server.py             # actual client/server initialize exchange
 test_ug_smart_routing_hooks.py           # live hook contract plus skill-driven subagent toggles
+test_ug_orchestrator.py                 # automatic delegation and native compaction continuation
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
@@ -289,11 +290,21 @@ assistant answer after each skill invocation.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
 Their off-phase child is an explicit user-requested delegation;
-these journeys do not establish automatic orchestration behavior. Root-only
-activation, compaction, retained skills in ineligible sessions,
-role-contract preservation, and isolation from legacy preference files
-lack dedicated regression coverage. Codex's native hook merging, project trust,
-and execution of pre-existing hooks are not exercised by this integration suite.
+these toggle journeys do not establish automatic orchestration behavior.
+
+`test_ug_orchestrator.py` covers automatic delegation separately in the managed-fixture
+lane. Each real harness reviews three source modules without a request to use subagents,
+then performs native `/compact` and reviews three different modules. Each review needs
+new completed native child work and a root report containing the exact review IDs from
+all source headers; the IDs are never included in the prompt. The test also requires
+the full workflow in native hook context before the first review and after compaction.
+It checks orchestration and continuation, not the accuracy of review findings.
+Run these two journeys with `-- -m managed_fixture -k test_orchestrator_`.
+
+Retained skills in ineligible sessions, role-contract preservation, and isolation
+from legacy preference files still lack dedicated regression coverage. Codex's native
+hook merging, project trust, and execution of pre-existing hooks are not exercised by
+this integration suite.
 
 The portable `../test_claude_windows_smart_routing.py` checks the Windows
 subagent-only fallback without Unix imports. Native Windows TUI and hook execution

@@ -139,11 +139,15 @@ including while routing is off.
 `test_integration_evidence.py` checks native tool-result extraction for both agents,
 including collapsed-output records, and excludes user echoes and assistant claims.
 
-Dedicated regression coverage is missing for root-only orchestrator activation,
-compaction, retained skills in ineligible sessions,
-role-contract preservation, and isolation from legacy preference files. Codex's
-native hook merging and project trust, automatic delegation, and execution of
-pre-existing hooks remain outside the integration suite.
+`test_ug_orchestrator.py` requests a review of three source modules without mentioning
+subagents. It requires a completed native child response and a root report containing
+traceability values read from all three files. Each harness then performs native
+`/compact`, receives the full workflow again, and completes a second review with new
+child work. The journeys check orchestration and continuation, not review accuracy.
+Retained skills in ineligible sessions, role-contract preservation, and isolation
+from legacy preference files still lack dedicated regression coverage. Codex's
+native hook merging and project trust, and execution of pre-existing hooks remain
+outside the integration suite.
 
 The portable Windows routing test checks native executable forwarding, generated
 hooks/plugins, caller arguments, and cleanup without Unix imports. It does not
@@ -195,6 +199,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_codex_app_server_client_initializes` | Connect a stdio client, direct/`--` separator, routing off/on | Actual JSON-RPC initialize response; no non-JSON stdout; no routing |
 | `test_smart_routing_claude_route_subagent_hook`, `test_smart_routing_codex_route_subagent_hook` | Pipe a real PreToolUse spawn payload to the installed route-subagent hook with subagent-only routing enabled | Allow decision against the live router; requested model replaced by a routed agent definition (Claude) or bundled catalog slug (Codex) from the offered models; one audited decision matching the session and task |
 | `test_smart_router_skill_toggles_claude_subagent_routing`, `test_smart_router_skill_toggles_codex_subagent_routing` | Configure, launch a real subagent-only TUI with orchestration unset or opted in, then spawn tagged children while invoking the installed Smart Router skill to switch routing on -> off -> on in the same session | Only `smart-router` is installed by default; opt-in also installs `orchestrate`; all three native children complete; only routing-enabled phases show the subagent banner and produce a live routing decision correlated with the child; no first-prompt routing wrapper; normal exit |
+| `test_orchestrator_claude_delegates_and_recovers_after_compaction`, `test_orchestrator_codex_delegates_and_recovers_after_compaction` | Opt into orchestration, request a multi-file review without asking for subagents, compact natively, and request a different review | Both reviews have new completed child work and a root answer with the files' withheld review IDs; the full workflow is delivered before the first review and after native compaction |
 | `test_ug_configure_claude_repeat_and_revert`, `test_ug_configure_codex_repeat_and_revert` | Configure twice over user settings; complete a task; revert twice | Settings preserved; no bearer in ug state; generated config removed; status unconfigured |
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | Old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |
 | `test_ug_configure_claude_rejects_invalid_credentials`, `test_ug_configure_codex_rejects_invalid_credentials` | Configure with a rejected bearer against the real workspace | Authentication failure; no successful saved setup |
