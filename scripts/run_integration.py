@@ -7,6 +7,7 @@ or the developer's installed agents. Only the live workspace is shared with e2e.
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import contextlib
 import datetime as dt
@@ -52,6 +53,8 @@ UV_INDEX_CREDENTIAL_ENV = (
 )
 NPM_TOKEN_ENV = "UG_INTEGRATION_NPM_TOKEN"
 INSTALLER_CREDENTIAL_ENV = (*UV_INDEX_CREDENTIAL_ENV, NPM_TOKEN_ENV)
+PTY_MODULES = {"pexpect", "pyte"}
+PTY_HELPERS = {"utils.terminal", "utils.mcp"}
 HEADLESS_TEST_NODES = {
     "claude": "test_ug_claude_headless.py::test_ug_claude_headless_prompt_argument",
     "codex": "test_ug_codex_headless.py::test_ug_codex_headless_prompt_argument",
@@ -174,7 +177,23 @@ def integration_test_targets(
         return targets
     if platform_name == "nt" and installation_only:
         return [str(suite / "test_installation.py")]
+    if platform_name == "nt":
+        return [str(module) for module in sorted(suite.glob("test_*.py")) if not uses_pty(module)]
     return [str(suite)]
+
+
+def uses_pty(module: Path) -> bool:
+    """Whether a suite module drives agents through the POSIX-only PTY helpers."""
+    for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.ImportFrom):
+            names = [node.module or ""]
+        elif isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        else:
+            continue
+        if any(name.split(".")[0] in PTY_MODULES or name in PTY_HELPERS for name in names):
+            return True
+    return False
 
 
 def process_group_options() -> dict:
