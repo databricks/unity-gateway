@@ -1077,7 +1077,7 @@ def _generated_search_entry(entry: object) -> bool:
     return (
         entry["type"] == "stdio"
         and isinstance(command, str)
-        and Path(command).name in ("ug", "ucode", "ug.exe", "ucode.exe")
+        and Path(command).name.lower() in ("ug", "ucode", "ug.exe", "ucode.exe")
         and entry["args"] in (["mcp", "web-search"], ["mcp", "web-search", MANAGED_ENTRY_FLAG])
         and isinstance(env, dict)
         and all(isinstance(value, str) for value in env.values())

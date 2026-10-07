@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import StrEnum
@@ -3904,7 +3905,11 @@ def _verify_upgraded_commands() -> None:
 
 
 def main() -> None:
-    app()
+    # Windows console-script launchers report `ug.EXE`; show the invoked name without the suffix.
+    prog = os.path.basename(sys.argv[0]) if sys.argv else ""
+    if prog.lower().endswith(".exe"):
+        prog = prog[:-4]
+    app(prog_name=prog or None)
 
 
 if __name__ == "__main__":
