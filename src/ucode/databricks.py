@@ -1686,6 +1686,13 @@ _MODEL_SERVICE_PARENT_SCHEMA = "schemas/system.ai"
 # support a new family.
 _OSS_MODEL_FAMILIES = ("kimi-", "glm-", "deepseek-")
 
+
+def _is_image_only_model(model_id: str) -> bool:
+    # `*-image` endpoints generate images and reject function calling /
+    # thinking config, so no coding agent can launch against them.
+    return model_id.endswith("-image")
+
+
 # Claude model families ucode buckets, newest tier first. Each maps to a
 # Claude Code family alias (ANTHROPIC_DEFAULT_<FAMILY>_MODEL). Add an entry to
 # support a new family in both discovery paths (`claude-<family>-*` via the
@@ -1999,7 +2006,10 @@ def discover_model_services(
             claude_models[family] = candidates[0]
 
     codex_models = sorted([m for m in ids if "gpt-" in m], key=model_version_sort_key)
-    gemini_models = sorted([m for m in ids if "gemini-" in m], key=model_version_sort_key)
+    gemini_models = sorted(
+        [m for m in ids if "gemini-" in m and not _is_image_only_model(m)],
+        key=model_version_sort_key,
+    )
 
     oss_models = [m for m in ids if any(family in m for family in _OSS_MODEL_FAMILIES)]
 
@@ -3184,9 +3194,12 @@ def _fetch_endpoints_with_api_type(workspace: str, token: str, api_type: str) ->
 def discover_gemini_models(workspace: str, token: str) -> tuple[list[str], str | None]:
     # Order newest model version first so `default_model()` (which picks the
     # first entry) launches e.g. gemini-3.5-flash rather than gemini-2.5-flash.
-    return discover_endpoints_with_api_type(
+    models, reason = discover_endpoints_with_api_type(
         workspace, token, "gemini/v1/generateContent", sort_key=model_version_sort_key
     )
+    # Image endpoints expose the same generateContent API type, so the listing
+    # itself can't tell them apart; the `-image` suffix is the only signal.
+    return [m for m in models if not _is_image_only_model(m)], reason
 
 
 def discover_codex_models(workspace: str, token: str) -> tuple[list[str], str | None]:

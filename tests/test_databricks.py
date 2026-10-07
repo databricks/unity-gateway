@@ -559,6 +559,25 @@ class TestDiscoverModelServices:
             "system.ai.kimi-k2-7-code",
         ]
 
+    def test_drops_image_only_gemini_models(self, monkeypatch):
+        # Image-generation endpoints can't serve coding agents (no function
+        # calling), so they must not land in the gemini bucket.
+        payload = {
+            "model_services": [
+                _model_service("system.ai.gemini-3-5-flash"),
+                _model_service("system.ai.gemini-3-pro-image"),
+                _model_service("system.ai.gemini-3-1-flash-lite-image"),
+            ]
+        }
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda url, token, timeout=10: (payload, None)
+        )
+
+        _, _, gemini, _, reason = db_mod.discover_model_services(WS, "token")
+
+        assert reason is None
+        assert gemini == ["system.ai.gemini-3-5-flash"]
+
     def test_oss_allowlist_drops_unsupported_families(self, monkeypatch):
         # Only explicitly supported chat families are retained.
         payload = {
@@ -1741,6 +1760,23 @@ class TestDiscoverGeminiModels:
 
         assert reason is None
         assert models[0] == "databricks-gemini-3-5-flash"
+
+    def test_drops_image_only_endpoints(self, monkeypatch):
+        # Image endpoints expose the same `gemini/v1/generateContent` API type,
+        # so the listing can't exclude them — the `-image` suffix has to.
+        payload = _foundation_models_payload(
+            [
+                "databricks-gemini-3-5-flash",
+                "databricks-gemini-3-pro-image",
+                "databricks-gemini-3-1-flash-lite-image",
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda url, token: (payload, None))
+
+        models, reason = db_mod.discover_gemini_models(WS, "token")
+
+        assert reason is None
+        assert models == ["databricks-gemini-3-5-flash"]
 
     def test_codex_discovery_orders_newest_version_first(self, monkeypatch):
         # Codex orders newest model version first (like gemini), so the picker's top choice and
