@@ -63,12 +63,14 @@ _SUDO_REPLACE_TARGETS = {
         {
             Path("/etc/claude-code/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
+            Path("/etc/codex/ucode-model-catalog.json"),
         }
     ),
     OS.MACOS: frozenset(
         {
             Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
+            Path("/etc/codex/ucode-model-catalog.json"),
         }
     ),
 }
@@ -183,6 +185,9 @@ def managed_write_batch(displays: list[str]) -> Iterator[None]:
     """Group setup messaging for agents configured in one command."""
     global _managed_write_batch, _managed_write_notice_shown
 
+    if _managed_write_batch:
+        yield
+        return
     previous_batch = _managed_write_batch
     previous_notice = _managed_write_notice_shown
     _managed_write_batch = tuple(dict.fromkeys(displays))
