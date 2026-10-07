@@ -613,6 +613,9 @@ models, and retain the existing models `ug_e2e.models.claude_haiku` and
 All five cases reuse the CUJ
 session/terminal helpers and check that the workspace remains unmanaged; they never
 change remote configuration. Every case runs terminal `ug revert` during teardown.
+Claude task attribution checks the requested UC service and successful response through
+the shared forwarding recorder, alongside the completed native turn; native model IDs
+identify the backing provider model, not necessarily the UC service.
 The preservation case seeds an OS-managed settings input only after the clean-runner
 preflight, asserts its defaults and completed-task model, then reverts and removes that input.
 

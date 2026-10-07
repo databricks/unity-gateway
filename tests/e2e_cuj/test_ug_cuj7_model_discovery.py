@@ -17,12 +17,28 @@ from tests.integration.utils.model_discovery import (
 from tests.integration.utils.terminal import TerminalProcess
 
 from .base import BaseCujTest
-from .helpers.constants import CLAUDE, CODEX, MANAGED_PATHS
+from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, MANAGED_PATHS
 from .helpers.evidence import SessionEvidence, canonical_model
 from .helpers.session import UserSession
 from .helpers.terminal import Terminal
+from .helpers.tui_request_recorder import TuiRequestRecorder
 
 pytestmark = [pytest.mark.live, pytest.mark.cuj7, pytest.mark.workspace_isolated]
+
+
+def _assert_claude_service_task(recorder, task, turn, model):
+    assert turn, "No completed native turn matched the file task"
+    requests = [
+        request
+        for request in recorder.requests_after(0)
+        if request.method == "POST"
+        and request.path == INFERENCE_PATHS[CLAUDE]
+        and task.prompt in json.dumps(request.payload)
+    ]
+    assert requests, "No Claude inference request matched the file task"
+    for request in requests:
+        assert canonical_model(request.payload["model"]) == canonical_model(model), request.payload
+        assert recorder.response_for(request).status_code == 200, request.sequence
 
 
 class TestUnmanagedModelDiscovery(BaseCujTest):
@@ -83,6 +99,11 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
                 "CUJ7 teardown left machine-wide agent settings"
             )
 
+    @pytest.fixture
+    def request_recorder(self, live_session):
+        with TuiRequestRecorder(self.workspace.config.host) as recorder:
+            yield recorder
+
     @pytest.mark.claude
     @pytest.mark.tui
     def test_case_07_configured_claude_discovers_system_models(self, live_session):
@@ -135,7 +156,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         assert_codex_default_models(session, models)
 
     @pytest.mark.claude
-    def test_ug_claude_headless_fresh_model_location(self, live_session):
+    def test_ug_claude_headless_fresh_model_location(self, live_session, request_recorder):
         """Scenario: launch fresh Claude with --model-location ug_e2e.models.
 
         Expected: Haiku completes a file task without prior configuration or routing.
@@ -148,7 +169,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         result = session.run(
             CLAUDE,
             "--workspace",
-            self.workspace.config.host,
+            request_recorder.url,
             "--model-location",
             "ug_e2e.models",
             "--",
@@ -164,11 +185,13 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         )
         task.assert_headless_answer(CLAUDE, result)
         turn = evidence.completed(task)
-        assert turn and set(map(canonical_model, turn.models)) == {canonical_model(model)}, turn
+        _assert_claude_service_task(request_recorder, task, turn, model)
         session.assert_not_routed()
 
     @pytest.mark.claude
-    def test_ug_claude_preserves_preexisting_managed_family_defaults(self, live_session):
+    def test_ug_claude_preserves_preexisting_managed_family_defaults(
+        self, live_session, request_recorder
+    ):
         """Scenario: launch fresh Claude over existing OS-managed family defaults.
 
         Expected: ug preserves every family default, and the selected Sonnet family
@@ -191,7 +214,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             result = session.run(
                 CLAUDE,
                 "--workspace",
-                self.workspace.config.host,
+                request_recorder.url,
                 "--",
                 "--model",
                 "sonnet",
@@ -205,7 +228,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             )
             task.assert_headless_answer(CLAUDE, result)
             turn = evidence.completed(task)
-            assert turn and set(map(canonical_model, turn.models)) == {canonical_model(model)}, turn
+            _assert_claude_service_task(request_recorder, task, turn, model)
             settings = json.loads(session.run(managed_path, binary="cat", timeout=30).stdout)
             assert {key: settings.get("env", {}).get(key) for key in defaults} == defaults
             session.assert_not_routed()
