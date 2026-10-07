@@ -602,17 +602,19 @@ Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workf
 uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
 cannot receive those secrets.
 
-CUJ7's four cases live in `tests/e2e_cuj/test_ug_cuj7_model_discovery.py`: configured
-Claude picker and Codex app-server discovery, plus fresh Claude/Codex model-location file
-tasks. The class pins `WORKSPACE_URL` to
+CUJ7's five cases live in `tests/e2e_cuj/test_ug_cuj7_model_discovery.py`: configured
+Claude picker and Codex app-server discovery, fresh Claude/Codex model-location file
+tasks, and Claude managed-family-default preservation on launch. The class pins `WORKSPACE_URL` to
 `https://dbc-14e376e8-6541.cloud.databricks.com`; the required `dedicated-cuj` job uses
 the shared `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` credentials, not a workspace
 secret. The workspace must publish no `CodingAgentConfig`, expose discoverable `system.ai`
 models, and retain the existing models `ug_e2e.models.claude_haiku` and
 `ug_e2e.models.gpt_luna`; the shared service principal needs read/use privileges on both.
-All four cases reuse the CUJ
+All five cases reuse the CUJ
 session/terminal helpers and check that the workspace remains unmanaged; they never
-change remote configuration.
+change remote configuration. Every case runs terminal `ug revert` during teardown.
+The preservation case seeds an OS-managed settings input only after the clean-runner
+preflight, asserts its defaults and completed-task model, then reverts and removes that input.
 
 The workspace check requires the secret to match
 `https://eng-ml-inference-team-us-east-1.cloud.databricks.com` (a trailing slash

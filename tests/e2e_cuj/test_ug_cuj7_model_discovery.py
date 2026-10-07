@@ -1,5 +1,6 @@
 """CUJ7: model discovery and scoped inference in a dedicated unmanaged workspace."""
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -13,10 +14,11 @@ from tests.integration.utils.model_discovery import (
     assert_claude_system_models_in_picker,
     assert_codex_default_models,
 )
+from tests.integration.utils.terminal import TerminalProcess
 
 from .base import BaseCujTest
 from .helpers.constants import CLAUDE, CODEX, MANAGED_PATHS
-from .helpers.evidence import SessionEvidence
+from .helpers.evidence import SessionEvidence, canonical_model
 from .helpers.session import UserSession
 from .helpers.terminal import Terminal
 
@@ -59,12 +61,27 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         assert authorization.startswith("Bearer ") and authorization.removeprefix("Bearer "), (
             "Service-principal authentication did not return a bearer token"
         )
-        return UserSession(
+        session = UserSession(
             tmp_path,
             Path(binary),
             tmp_path / "artifacts",
             authorization.removeprefix("Bearer "),
         )
+        try:
+            yield session
+        finally:
+            state_dir = session.home / ".ucode"
+            if any(
+                (state_dir / name).is_file()
+                for name in ("state.json", "managed-backups/manifest.json")
+            ):
+                with TerminalProcess(
+                    session, "ug", [str(session.binary), "revert"], "cleanup-revert"
+                ) as terminal:
+                    terminal.finish()
+            assert not any(path.exists() for path in MANAGED_PATHS), (
+                "CUJ7 teardown left machine-wide agent settings"
+            )
 
     @pytest.mark.claude
     @pytest.mark.tui
@@ -147,8 +164,59 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         )
         task.assert_headless_answer(CLAUDE, result)
         turn = evidence.completed(task)
-        assert turn and set(turn.models) == {model}, turn
+        assert turn and set(map(canonical_model, turn.models)) == {canonical_model(model)}, turn
         session.assert_not_routed()
+
+    @pytest.mark.claude
+    def test_ug_claude_preserves_preexisting_managed_family_defaults(self, live_session):
+        """Scenario: launch fresh Claude over existing OS-managed family defaults.
+
+        Expected: ug preserves every family default, and the selected Sonnet family
+        completes a file task through the preconfigured Haiku service, not a discovered default.
+        """
+        session = live_session
+        task = FileTask(session)
+        model = "ug_e2e.models.claude_haiku"
+        defaults = {
+            f"ANTHROPIC_DEFAULT_{family}_MODEL": model
+            for family in ("FABLE", "OPUS", "SONNET", "HAIKU")
+        }
+        managed_path = "/etc/claude-code/managed-settings.json"
+        evidence = SessionEvidence(session.home, CLAUDE)
+        session.run("install", "-d", "-m", "0755", "/etc/claude-code", binary="sudo")
+        try:
+            session.run(
+                "tee", managed_path, binary="sudo", input_text=json.dumps({"env": defaults})
+            )
+            result = session.run(
+                CLAUDE,
+                "--workspace",
+                self.workspace.config.host,
+                "--",
+                "--model",
+                "sonnet",
+                "-p",
+                task.prompt,
+                "--output-format",
+                "json",
+                "--allowedTools",
+                "Read",
+                timeout=240,
+            )
+            task.assert_headless_answer(CLAUDE, result)
+            turn = evidence.completed(task)
+            assert turn and set(map(canonical_model, turn.models)) == {canonical_model(model)}, turn
+            settings = json.loads(session.run(managed_path, binary="cat", timeout=30).stdout)
+            assert {key: settings.get("env", {}).get(key) for key in defaults} == defaults
+            session.assert_not_routed()
+        finally:
+            try:
+                with TerminalProcess(
+                    session, "ug", [str(session.binary), "revert"], "family-defaults-revert"
+                ) as terminal:
+                    terminal.finish()
+            finally:
+                session.run("rm", "-f", managed_path, binary="sudo")
 
     @pytest.mark.codex
     def test_ug_codex_headless_fresh_model_location(self, live_session):
@@ -178,5 +246,5 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         )
         task.assert_headless_answer(CODEX, result)
         turn = evidence.completed(task)
-        assert turn and set(turn.models) == {model}, turn
+        assert turn and set(map(canonical_model, turn.models)) == {canonical_model(model)}, turn
         session.assert_not_routed()
