@@ -265,6 +265,7 @@ class AgentTerminal(TerminalProcess):
                         handled.add(label)
                     break
             if matched:
+                ready_since = None
                 continue
             assert "Select login method:" not in text, (
                 "Configured ug launched Claude's account-login flow instead of its gateway session:\n"
@@ -278,6 +279,7 @@ class AgentTerminal(TerminalProcess):
             if (
                 title in text
                 and "loading" not in text.lower()
+                and not re.search(r"(?m)^\s*>\s+You are in\b", text)
                 and re.search(r"(?m)^\s*[❯›>]\s*(?!\d+[.)])", text)
             ):
                 ready_since = ready_since or time.monotonic()
