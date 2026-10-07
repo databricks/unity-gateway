@@ -246,6 +246,21 @@ is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.
 The generated shell hooks expect Git Bash; PowerShell-only setups are not covered.
 
+## Codex Native v2 Routing
+
+Smart-routed Codex launches use a session-local loopback transport so the existing
+subagent hook receives the complete readable assignment. On the provider wire,
+ug aliases the native collaboration namespace and requests ordinary string
+arguments; responses and replay are mapped back to Codex's native v2 protocol.
+No additional tool or model turn is introduced, and native v2 spawning remains
+in charge of child creation, hierarchy, and execution.
+
+The transport uses the configured workspace identity, preserves routing headers,
+and closes with the session. It does not modify Codex or persist a provider URL.
+Malformed or encrypted collaboration payloads fail closed; resumed sessions with
+old encrypted collaboration history must start a fresh session. Non-v2 requests
+remain unchanged. This path uses Responses HTTP/SSE, not provider WebSockets.
+
 ## Managed Files
 
 `ug` backs up files before overwriting them. `ug revert` restores backups.

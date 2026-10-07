@@ -11,6 +11,7 @@ import threading
 import time
 
 import httpx
+import pytest
 
 from ucode import gateway_proxy
 
@@ -379,6 +380,9 @@ class _FakeResp:
     def iter_raw(self, _n=None):
         yield self._body
 
+    def iter_bytes(self):
+        yield self._body
+
     def __enter__(self):
         return self
 
@@ -390,11 +394,15 @@ class _FakeClient:
     def __init__(self, responses):
         self._responses = list(responses)
         self.sent_tokens: list[str | None] = []
+        self.sent_authorizations: list[str | None] = []
         self.sent_headers: list[dict] = []
+        self.sent_urls: list[str] = []
 
     def stream(self, _method, _url, headers, content):
         self.sent_tokens.append(headers.get(gateway_proxy.AI_GATEWAY_TOKEN_HEADER))
+        self.sent_authorizations.append(headers.get(gateway_proxy.AUTHORIZATION_HEADER))
         self.sent_headers.append(headers)
+        self.sent_urls.append(_url)
         return self._responses.pop(0)
 
 
@@ -441,6 +449,64 @@ def _handle_handler(client, cache, wfile) -> gateway_proxy._ProxyHandler:
     h.requestline = "POST /v1/messages HTTP/1.1"
     h._headers_buffer = []
     return h
+
+
+def _codex_v2_request_body(*, namespace: str = "collaboration") -> bytes:
+    return json.dumps(
+        {
+            "model": "gpt-5.6-sol",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": namespace,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "spawn_agent",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"message": {"type": "string", "encrypted": True}},
+                            },
+                        }
+                    ],
+                }
+            ],
+            "input": [],
+        }
+    ).encode()
+
+
+def _codex_v2_handler(
+    client, cache, wfile, *, body=b"", path="/v1/responses", headers=None, adapter_active=False
+):
+    h = object.__new__(gateway_proxy._CodexV2ProxyHandler)
+    h.client = client
+    h.cache = cache
+    hdrs = dict(headers or {})
+    if body:
+        hdrs["Content-Length"] = str(len(body))
+    h.headers = hdrs
+    h.rfile = io.BytesIO(body)
+    h.path = path
+    h.command = "POST"
+    h._codex_v2_adapter_active = adapter_active
+    h.wfile = wfile
+    h.request_version = "HTTP/1.1"
+    h.requestline = f"POST {path} HTTP/1.1"
+    h._headers_buffer = []
+    return h
+
+
+class _ChunkedResponse(_FakeResp):
+    def __init__(self, status: int, chunks: list[bytes], headers: dict[str, str]):
+        super().__init__(status, b"", headers)
+        self._chunks = chunks
+
+    def iter_bytes(self):
+        yield from self._chunks
+
+    def iter_raw(self, _n=None):
+        raise AssertionError("Codex v2 relay must use decoded iter_bytes")
 
 
 class _Collect(io.RawIOBase):
@@ -501,6 +567,283 @@ class TestRetryOn401:
         assert b"401" in bytes(out.data)  # the response is still relayed
 
 
+class TestCodexV2Proxy:
+    def test_rewrites_native_request_body_on_v2_path(self):
+        body = _codex_v2_request_body()
+
+        class _RecordingClient(_FakeClient):
+            def __init__(self):
+                super().__init__([_FakeResp(200, b"{}", {"Content-Type": "application/json"})])
+                self.sent_bodies: list[bytes] = []
+
+            def stream(self, method, url, headers, content):
+                self.sent_bodies.append(content)
+                return super().stream(method, url, headers, content)
+
+        client = _RecordingClient()
+        _codex_v2_handler(
+            client,
+            _FakeCache(),
+            _Collect(),
+            body=body,
+            headers={
+                "Authorization": "Bearer stale-client",
+                gateway_proxy.AI_GATEWAY_TOKEN_HEADER: "Bearer stale-swap",
+                "Databricks-Model-Provider-Service": "main.provider",
+            },
+        )._handle()
+        forwarded = json.loads(client.sent_bodies[0])
+        assert forwarded["tools"][0]["name"] == "ucode_collaboration"
+        assert (
+            "encrypted"
+            not in forwarded["tools"][0]["tools"][0]["parameters"]["properties"]["message"]
+        )
+        assert client.sent_authorizations == ["Bearer tok1"]
+        assert client.sent_tokens == [None]
+        assert client.sent_headers[0]["Databricks-Model-Provider-Service"] == "main.provider"
+
+    def test_non_v2_path_forwards_body_verbatim(self):
+        body = b'{"not":"adapted"}'
+
+        class _RecordingClient(_FakeClient):
+            def __init__(self):
+                super().__init__([_FakeResp(200, b"{}", {"Content-Type": "application/json"})])
+                self.sent_bodies: list[bytes] = []
+
+            def stream(self, method, url, headers, content):
+                self.sent_bodies.append(content)
+                return super().stream(method, url, headers, content)
+
+        client = _RecordingClient()
+        _codex_v2_handler(client, _FakeCache(), _Collect(), body=body, path="/v1/models")._handle()
+        assert client.sent_bodies == [body]
+
+    def test_compact_v2_path_uses_the_same_request_adapter(self):
+        body = _codex_v2_request_body()
+
+        class _RecordingClient(_FakeClient):
+            def __init__(self):
+                super().__init__([_FakeResp(200, b"{}", {"Content-Type": "application/json"})])
+                self.sent_bodies: list[bytes] = []
+
+            def stream(self, method, url, headers, content):
+                self.sent_bodies.append(content)
+                return super().stream(method, url, headers, content)
+
+        client = _RecordingClient()
+        _codex_v2_handler(
+            client,
+            _FakeCache(),
+            _Collect(),
+            body=body,
+            path="/v1/responses/compact",
+        )._handle()
+        assert json.loads(client.sent_bodies[0])["tools"][0]["name"] == "ucode_collaboration"
+
+    def test_non_json_response_is_byte_transparent(self):
+        body = b"upstream gateway error\n"
+        resp = _FakeResp(
+            502,
+            body,
+            {"Content-Type": "text/plain", "Content-Encoding": "gzip"},
+        )
+        out = _Collect()
+        _codex_v2_handler(_FakeClient([]), _FakeCache(), out)._relay_response(resp)
+        blob = bytes(out.data)
+        assert b"502" in blob
+        assert blob.split(b"\r\n\r\n", 1)[1] == body
+        assert b"Content-Encoding: gzip" in blob
+
+    def test_codex_v2_upstream_http_error_is_relayed(self):
+        client = _FakeClient(
+            [
+                _FakeResp(
+                    503,
+                    b"service unavailable",
+                    {"Content-Type": "text/plain", "Content-Encoding": "gzip"},
+                )
+            ]
+        )
+        out = _Collect()
+        _codex_v2_handler(client, _FakeCache(), out, body=_codex_v2_request_body())._handle()
+        blob = bytes(out.data)
+        assert b"503" in blob
+        assert b"service unavailable" in blob
+        assert b"Content-Encoding: gzip" in blob
+
+    def test_codex_v2_401_retries_with_refreshed_authorization(self):
+        client = _FakeClient(
+            [
+                _FakeResp(401, b"unauthorized", {"Content-Type": "text/plain"}),
+                _FakeResp(200, b"ok", {"Content-Type": "text/plain"}),
+            ]
+        )
+        cache = _FakeCache()
+        out = _Collect()
+        _codex_v2_handler(client, cache, out, body=_codex_v2_request_body())._handle()
+        assert cache.refreshed == 1
+        assert client.sent_authorizations == ["Bearer tok1", "Bearer tok2"]
+        assert b"ok" in bytes(out.data)
+
+    def test_multiline_sse_comments_and_heartbeats_pass_through(self):
+        chunks = [
+            b": heartbeat\r\n\r",
+            b"\ncomment: keep\r\nevent: message\r\nid: 7\r\ndata: first\r\n",
+            b"data: second\r\n\r\n",
+        ]
+        resp = _ChunkedResponse(200, chunks, {"Content-Type": "text/event-stream"})
+        out = _Collect()
+        _codex_v2_handler(_FakeClient([]), _FakeCache(), out, adapter_active=True)._relay_response(
+            resp
+        )
+        assert bytes(out.data).split(b"\r\n\r\n", 1)[1] == b"".join(chunks)
+
+    def test_request_protocol_error_is_400_without_upstream_call(self):
+        body = _codex_v2_request_body(namespace="ucode_collaboration")
+        client = _FakeClient([])
+        out = _Collect()
+        _codex_v2_handler(client, _FakeCache(), out, body=body)._handle()
+        assert b"400" in bytes(out.data)
+        assert b"reserved namespace" not in bytes(out.data)
+        assert client.sent_headers == []
+
+    def test_streams_chunk_split_sse_and_rewrites_only_alias_items(self):
+        added = {
+            "type": "response.output_item.added",
+            "item": {
+                "id": "item-1",
+                "type": "function_call",
+                "name": "spawn_agent",
+                "namespace": "ucode_collaboration",
+                "arguments": "",
+            },
+        }
+        delta = {
+            "type": "response.function_call_arguments.delta",
+            "item_id": "item-1",
+            "delta": '{"message":"child"',
+        }
+        done = {
+            "type": "response.output_item.done",
+            "item": {
+                "id": "item-1",
+                "type": "function_call",
+                "name": "spawn_agent",
+                "namespace": "ucode_collaboration",
+                "arguments": '{"message":"child"}',
+            },
+        }
+        wait_added = {
+            "type": "response.output_item.added",
+            "item": {
+                "id": "item-2",
+                "type": "function_call",
+                "name": "wait_agent",
+                "namespace": "ucode_collaboration",
+                "arguments": "",
+            },
+        }
+        chunks = [
+            b": heartbeat\r\n\r\n",
+            b"event: response.output_item.added\r\nid: evt-1\r\ndata: "
+            + json.dumps(added).encode()
+            + b"\r\n\r\n",
+            b"event: response.function_call_arguments.delta\n\ndata: "
+            + json.dumps(delta).encode()
+            + b"\n\n",
+            b"event: response.output_item.done\n\ndata: " + json.dumps(done).encode() + b"\n\n",
+            b"event: response.output_item.added\n\ndata: "
+            + json.dumps(wait_added).encode()
+            + b"\n\n",
+            b"data: [DONE]\n\n",
+        ]
+        # Split inside the SSE delimiter and JSON payload to prove framing is
+        # independent of httpx's network chunk boundaries.
+        wire = b"".join(chunks)
+        split = [wire[:17], wire[17:89], wire[89:137], wire[137:]]
+        resp = _ChunkedResponse(
+            200,
+            split,
+            {
+                "Content-Type": "text/event-stream",
+                "Content-Encoding": "gzip",
+                "Content-Length": "999",
+            },
+        )
+        out = _Collect()
+        handler = _codex_v2_handler(_FakeClient([]), _FakeCache(), out, adapter_active=True)
+        handler._relay_response(resp)
+        blob = bytes(out.data)
+        body = blob.split(b"\r\n\r\n", 1)[1]
+        assert b": heartbeat\r\n\r\n" in body
+        assert b"id: evt-1\r\n" in body
+        assert b'"namespace":"collaboration"' in body
+        assert b'"encrypted_function_args":[]' in body
+        assert b'"namespace":"ucode_collaboration"' not in body
+        assert b'"name":"wait_agent","namespace":"collaboration"' in body
+        assert b'data: {"type": "response.function_call_arguments.delta"' in body
+        assert b"Content-Encoding" not in blob
+        assert b"Content-Length" not in blob
+
+    def test_rewrites_nonstream_json_response(self):
+        response = {
+            "type": "response.completed",
+            "response": {
+                "output": [
+                    {
+                        "id": "item-1",
+                        "type": "function_call",
+                        "name": "spawn_agent",
+                        "namespace": "ucode_collaboration",
+                        "arguments": '{"message":"child"}',
+                    }
+                ]
+            },
+        }
+        resp = _FakeResp(
+            200,
+            json.dumps(response).encode(),
+            {"Content-Type": "application/json", "Content-Encoding": "gzip"},
+        )
+        out = _Collect()
+        _codex_v2_handler(_FakeClient([]), _FakeCache(), out, adapter_active=True)._relay_response(
+            resp
+        )
+        body = bytes(out.data).split(b"\r\n\r\n", 1)[1]
+        parsed = json.loads(body)
+        item = parsed["response"]["output"][0]
+        assert item["namespace"] == "collaboration"
+        assert item["encrypted_function_args"] == []
+        assert b"Content-Encoding" not in bytes(out.data)
+
+    def test_response_protocol_error_truncates_and_sanitizes_diagnostic(self, monkeypatch, capsys):
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
+        event = {
+            "type": "response.output_item.done",
+            "item": {
+                "id": "item-1",
+                "type": "function_call",
+                "name": "spawn_agent",
+                "namespace": "ucode_collaboration",
+                "encrypted_function_args": ["secret-ciphertext"],
+                "arguments": '{"message":"secret-ciphertext"}',
+            },
+        }
+        resp = _ChunkedResponse(
+            200,
+            [b"event: response.output_item.done\ndata: " + json.dumps(event).encode() + b"\n\n"],
+            {"Content-Type": "text/event-stream"},
+        )
+        out = _Collect()
+        _codex_v2_handler(_FakeClient([]), _FakeCache(), out, adapter_active=True)._relay_response(
+            resp
+        )
+        diagnostic = capsys.readouterr().err
+        assert "response_protocol_error" in diagnostic
+        assert "secret-ciphertext" not in diagnostic
+        assert b"secret-ciphertext" not in bytes(out.data)
+
+
 class TestStartProxyPortFallback:
     def test_loopback_server_keeps_reuse_only_on_posix(self):
         assert gateway_proxy._LoopbackHTTPServer.allow_reuse_address is (
@@ -545,6 +888,74 @@ class TestStartProxyPortFallback:
                 client.close()
         finally:
             occupied.close()
+
+    def test_closes_resources_when_both_port_binds_fail(self, monkeypatch):
+        calls = []
+
+        class _StubCache:
+            def run_refresher(self):
+                return None
+
+            def stop(self):
+                calls.append("stop")
+
+        class _StubClient:
+            def close(self):
+                calls.append("client.close")
+
+        class _FailingServer:
+            def __init__(self, address, _handler):
+                calls.append(address)
+                raise OSError("bind failed")
+
+        monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: _StubCache())
+        monkeypatch.setattr(gateway_proxy.httpx, "Client", lambda **_k: _StubClient())
+        monkeypatch.setattr(gateway_proxy, "_LoopbackHTTPServer", _FailingServer)
+
+        with pytest.raises(OSError, match="bind failed"):
+            gateway_proxy.start_relay_proxy("https://gateway.example", lambda _force: "tok", 41414)
+
+        assert calls == [("127.0.0.1", 41414), ("127.0.0.1", 0), "stop", "client.close"]
+
+    def test_closes_resources_when_refresher_thread_cannot_start(self, monkeypatch):
+        calls = []
+
+        class _StubCache:
+            def run_refresher(self):
+                return None
+
+            def stop(self):
+                calls.append("stop")
+
+        class _StubClient:
+            def close(self):
+                calls.append("client.close")
+
+        class _StubServer:
+            server_address = ("127.0.0.1", 41414)
+
+            def __init__(self, _address, _handler):
+                pass
+
+            def server_close(self):
+                calls.append("server.close")
+
+        class _FailingThread:
+            def __init__(self, **_kwargs):
+                pass
+
+            def start(self):
+                raise RuntimeError("thread failed")
+
+        monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: _StubCache())
+        monkeypatch.setattr(gateway_proxy.httpx, "Client", lambda **_k: _StubClient())
+        monkeypatch.setattr(gateway_proxy, "_LoopbackHTTPServer", _StubServer)
+        monkeypatch.setattr(gateway_proxy.threading, "Thread", _FailingThread)
+
+        with pytest.raises(RuntimeError, match="thread failed"):
+            gateway_proxy.start_relay_proxy("https://gateway.example", lambda _force: "tok", 41414)
+
+        assert calls == ["stop", "server.close", "client.close"]
 
 
 def _relayed_oss_handler(client, cache, wfile, *, headers, body) -> gateway_proxy._ProxyHandler:

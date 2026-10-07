@@ -94,7 +94,12 @@ API field. These are unit/component checks; live request-count coverage is not i
 `test_codex_smart_routing_v2.py` checks that the remote Codex TUI receives the
 gateway provider on Windows while Unix launch arguments stay unchanged and routing
 hooks stay with the app-server. This is component coverage, not a live Windows
-sign-in or TUI test.
+sign-in or TUI test. It also checks the session-local Codex transport URL,
+same-identity token refresh, and cleanup on normal exit and failed launch.
+`test_codex_v2_transport.py` covers native namespace translation, plaintext
+markers, replay, and rejection of opaque or malformed assignments. Transport
+streaming and byte-transparent non-v2 requests are covered in
+`test_gateway_proxy.py`; these component tests do not establish live routing.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
