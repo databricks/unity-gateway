@@ -467,12 +467,10 @@ def render_overlay(
         header_lines.append(f"{SMART_ROUTER_RECIPE_HEADER}: {configured_router_name()}")
     # Relayed: the X-Databricks-AI-Gateway-Token swap header is added per request
     # by the refresh proxy, not here — a static value would go stale mid-session.
-    rendered_custom_headers = "\n".join(
-        _apply_managed_header_lines(header_lines, managed_http_headers)
-    )
+    custom_headers = "\n".join(_apply_managed_header_lines(header_lines, managed_http_headers))
     env: dict[str, str] = {
         "ANTHROPIC_BASE_URL": base_url,
-        "ANTHROPIC_CUSTOM_HEADERS": rendered_custom_headers,
+        "ANTHROPIC_CUSTOM_HEADERS": custom_headers,
         "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "900000",
         # 1h prompt caching needs the extended-cache-ttl beta header, which
         # Claude Code only sends when experimental betas are enabled — so we must
@@ -1513,9 +1511,7 @@ def write_tool_config(
             # No managed config: preserve the developer's own pre-existing headers, replacing only
             # the header names ug manages.
             merged["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY] = _merge_anthropic_custom_headers(
-                existing_custom_headers,
-                overlay_custom_headers,
-                CLAUDE_MANAGED_CUSTOM_HEADER_NAMES,
+                existing_custom_headers, overlay_custom_headers
             )
         # Drop any apiKeyHelper a prior non-relayed launch left in the file; relayed
         # must not carry one (it would outrank the subscription OAuth).
