@@ -85,6 +85,18 @@ def test_transient_retries_and_running_tasks_are_not_terminal_errors(screen):
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_answer_match_ignores_markdown_emphasis_but_not_wording(tmp_path, agent):
+    # The model bolds the state ("**off**"); the TUI renders it plain but the transcript keeps it.
+    _write_answer(
+        tmp_path, agent, child=False, value="Smart Router is now **off** for this session."
+    )
+    session = _Session(tmp_path)
+
+    assert assistant_answer_contains(session, agent, "off for this session")
+    assert not assistant_answer_contains(session, agent, "on for this session")
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_tagged_calculation_requires_the_native_child_answer(tmp_path, agent):
     session = _Session(tmp_path)
     task = SubagentCalculation("1+1", "2")
