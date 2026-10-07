@@ -1,0 +1,41 @@
+name: User Journey Waiver Comment
+
+# Keep the visible override label synchronized with an exact waiver command.
+# The workflow itself and sync script always come from the trusted default branch.
+on:
+  issue_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: user-journey-waiver-comment-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  sync-waiver:
+    name: Sync user-journey waiver
+    if: ${{ github.event.issue.pull_request }}
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the trusted waiver sync from the default branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: .github/scripts/user-journey-required/check.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Synchronize the authorized waiver comment and label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          USER_JOURNEY_WAIVER_ADMINS: rohita5l lilly-luo
+        run: python3 .github/scripts/user-journey-required/check.py --sync-waiver

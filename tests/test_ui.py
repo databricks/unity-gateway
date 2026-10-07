@@ -9,6 +9,11 @@ from unittest.mock import patch
 
 import pytest
 import questionary
+from prompt_toolkit.application import create_app_session
+from prompt_toolkit.formatted_text import to_formatted_text
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
+from questionary.prompts.common import InquirerControl
 from rich.console import Console
 
 from ucode import ui as ui_mod
@@ -22,11 +27,84 @@ from ucode.ui import (
     prompt_for_percentage,
     prompt_for_selection,
     prompt_for_text,
+    prompt_for_tools,
     prompt_for_workspace,
     prompt_yes_no_default,
     render_box_table,
     status_badge,
 )
+
+
+class TestPrintSuccess:
+    @pytest.mark.parametrize(
+        ("encoding", "expected_marker"),
+        [("utf-8", "✔"), ("cp1252", "+"), ("ascii", "+")],
+    )
+    def test_uses_a_marker_supported_by_the_output_encoding(
+        self, monkeypatch, encoding, expected_marker
+    ):
+        output = io.BytesIO()
+        stream = io.TextIOWrapper(output, encoding=encoding, errors="strict")
+        monkeypatch.setattr(
+            ui_mod,
+            "console",
+            Console(file=stream, force_terminal=False, width=200),
+        )
+
+        ui_mod.print_success("[bold]Connected[/bold]")
+        stream.flush()
+
+        assert output.getvalue().decode(encoding) == f"{expected_marker} Connected\n"
+
+
+class TestPromptForTools:
+    @pytest.mark.parametrize(
+        ("keys", "preselected", "expected"),
+        [
+            ("\r", None, []),
+            ("\x1b[B \r", None, ["codex"]),
+            ("\x1b[B  \r", None, []),
+            (" \x1b[B \r", None, ["claude", "codex"]),
+            ("\r", ["codex"], ["codex"]),
+            ("\r", [], []),
+            ("\x03", None, []),
+        ],
+    )
+    def test_keyboard_selection(self, keys, preselected, expected):
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            pipe.send_text(keys)
+            assert (
+                prompt_for_tools(
+                    [("claude", "Claude Code"), ("codex", "Codex"), ("gemini", "Gemini CLI")],
+                    preselected=preselected,
+                )
+                == expected
+            )
+
+    def test_selected_and_unselected_markers_are_distinct_and_colored(self, monkeypatch):
+        def inspect_prompt(question):
+            control = next(
+                window.content
+                for window in question.application.layout.find_all_windows()
+                if isinstance(window.content, InquirerControl)
+            )
+            tokens = to_formatted_text(control.text)
+            rendered = "".join(text for _, text in tokens)
+            assert "[✓] Codex" in rendered
+            assert "[ ] Gemini CLI" in rendered
+            assert "●" not in rendered and "○" not in rendered
+            assert ("fg:ansigreen bold", "[✓] ") in tokens
+            assert ("fg:ansired bold", "[ ] ") in tokens
+            return ["codex"]
+
+        monkeypatch.setattr(questionary.Question, "ask", inspect_prompt)
+        with create_app_session(output=DummyOutput()):
+            assert prompt_for_tools(
+                [("codex", "Codex"), ("gemini", "Gemini CLI")], preselected=["codex"]
+            ) == ["codex"]
 
 
 class TestPromptYesNoDefault:

@@ -7,20 +7,27 @@ values are compatible with ucode's local settings.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
+import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager, suppress
 from copy import deepcopy
+from dataclasses import dataclass
 from enum import Enum
+from importlib import resources
 from pathlib import Path
 from typing import Any, cast
 
 from ucode.config_io import APP_DIR, is_dry_run
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.ui import console, print_note, print_success, print_warning
 
 # Absolute path so a stripped PATH (desktop/GUI launchers) still finds it.
@@ -31,6 +38,8 @@ MANAGED_FINGERPRINT_VERSION = 1
 _MISSING = object()
 _managed_write_batch: tuple[str, ...] = ()
 _managed_write_notice_shown = False
+_managed_write_session_depth = 0
+_managed_write_worker: _SudoReplaceWorker | None = None
 
 ManagedParser = Callable[[str], dict]
 ManagedDumper = Callable[[dict], str]
@@ -47,6 +56,22 @@ class OS(Enum):
     MACOS = "macos"
     WINDOWS = "windows"
     OTHER = "other"
+
+
+_SUDO_REPLACE_TARGETS = {
+    OS.LINUX: frozenset(
+        {
+            Path("/etc/claude-code/managed-settings.json"),
+            Path("/etc/codex/managed_config.toml"),
+        }
+    ),
+    OS.MACOS: frozenset(
+        {
+            Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
+            Path("/etc/codex/managed_config.toml"),
+        }
+    ),
+}
 
 
 def current_os() -> OS:
@@ -131,6 +156,18 @@ def mark_managed_file_verified(
     state["managed_file_fingerprints"] = records
 
 
+def managed_file_scope(state: dict, tool: str) -> str:
+    """Return the scope recorded for ``tool``'s last managed-file verification, else ``"managed"``.
+
+    Lets a second writer to the same file (the MCP reconcile, which runs after the model reconcile)
+    refresh the fingerprint without discarding the first writer's ``relay-compatible`` or
+    ``local-compatible`` scope."""
+    records = state.get("managed_file_fingerprints")
+    record = records.get(tool) if isinstance(records, dict) else None
+    scope = record.get("scope") if isinstance(record, dict) else None
+    return scope if isinstance(scope, str) else "managed"
+
+
 def managed_writes_allowed() -> bool:
     """Managed writes are interactive setup work; scripts and CI use local settings."""
     return sys.stdin.isatty()
@@ -154,9 +191,49 @@ def managed_write_batch(displays: list[str]) -> Iterator[None]:
         _managed_write_notice_shown = previous_notice
 
 
+@contextmanager
+def managed_write_session() -> Iterator[None]:
+    """Share one lazy sudo worker across managed-file replacements in a command.
+
+    Unchanged reconciliations never start the worker. Nested sessions share the outer worker and
+    only the outermost exit closes it.
+    """
+    global _managed_write_session_depth, _managed_write_worker
+
+    _managed_write_session_depth += 1
+    try:
+        yield
+    finally:
+        _managed_write_session_depth -= 1
+        if _managed_write_session_depth == 0:
+            worker = _managed_write_worker
+            _managed_write_worker = None
+            if worker is not None:
+                unwinding = sys.exc_info()[0] is not None
+                try:
+                    worker.close()
+                except Exception as exc:  # noqa: BLE001 -- preserve the original setup failure
+                    if not unwinding:
+                        raise RuntimeError(
+                            "Could not close the privileged settings session."
+                        ) from exc
+                    print_warning("The privileged settings session did not close cleanly.")
+
+
 def _print_managed_write_permission(display: str) -> None:
     global _managed_write_notice_shown
 
+    if _managed_write_session_depth:
+        # The worker is lazy: this message immediately precedes its first sudo invocation. Once it
+        # exists, later Claude/Codex and MCP reconciliations reuse the same authenticated process
+        # and must not tell the developer to enter their password again. A reused worker still
+        # counts as a write in the current batch, so its success summary is printed.
+        if _managed_write_worker is not None and _managed_write_worker.usable:
+            _managed_write_notice_shown = True
+            return
+        print_note("Enter password once to configure machine-wide coding agent settings.")
+        _managed_write_notice_shown = True
+        return
     if not _managed_write_batch:
         print_note(f"Enter password to configure settings for {display}.")
         return
@@ -168,11 +245,77 @@ def _print_managed_write_permission(display: str) -> None:
     _managed_write_notice_shown = True
 
 
+@dataclass
+class ManagedFileSnapshots:
+    """The pre-ucode baseline and ucode's last write for a managed file, for a three-way merge."""
+
+    original_before_ug: dict | None
+    last_applied_by_ug: dict | None
+    # Picker values ug itself last wrote to this file; only these may later be reverted.
+    ug_picker: dict | None = None
+
+
+def managed_file_snapshots(tool: str, parser: ManagedParser) -> ManagedFileSnapshots:
+    """Return the parsed baseline and last-applied snapshots of ``tool``'s managed file.
+
+    ``original_before_ug`` is the pre-ucode baseline; ``last_applied_by_ug`` is what ucode last
+    wrote. A caller reverting a value ucode owns compares the live value against
+    ``last_applied_by_ug`` (unchanged since ucode wrote it) and restores ``original_before_ug`` (the
+    value before ucode, if any) as a three-way merge, so it removes only what ucode itself introduced
+    and never an administrator's own or edited entry. Either field is None when its snapshot is absent
+    or cannot be read/parsed, so callers fall back to keeping the live value.
+    """
+
+    def _parse(text: str | None) -> dict | None:
+        if text is None:
+            return None
+        try:
+            return parser(text)
+        except Exception:  # noqa: BLE001 - an unparseable snapshot just means "unknown".
+            return None
+
+    try:
+        entry = _manifest_files(_load_manifest()).get(tool)
+        if not isinstance(entry, dict):
+            return ManagedFileSnapshots(None, None)
+        ug_picker = entry.get("ug_picker")
+        return ManagedFileSnapshots(
+            _parse(_snapshot_text(entry, "backup_file")),
+            _parse(_snapshot_text(entry, "last_applied_file")),
+            ug_picker if isinstance(ug_picker, dict) else None,
+        )
+    except RuntimeError:
+        return ManagedFileSnapshots(None, None)
+
+
+def record_ug_picker(tool: str, picker: dict) -> None:
+    """Record the picker values ug just confirmed in ``tool``'s managed file; empty clears it.
+
+    Kept in the file-keyed manifest because the managed file is machine-wide, not per workspace. An
+    unreadable manifest or a file ug never wrote leaves no record, so nothing is later reverted."""
+    if is_dry_run():
+        return
+    try:
+        manifest = _load_manifest()
+    except RuntimeError:
+        return
+    entry = _manifest_files(manifest).get(tool)
+    if not isinstance(entry, dict) or entry.get("ug_picker", {}) == picker:
+        return
+    if picker:
+        entry["ug_picker"] = picker
+    else:
+        entry.pop("ug_picker", None)
+    _write_manifest(manifest)
+
+
 def managed_file_conflicts(
     existing: dict, desired: dict, owned_paths: list[list[str]]
 ) -> list[str]:
     """Return managed leaves that would override ucode's local settings."""
     conflicts: list[str] = []
+    existing = cast(dict, mask_user_agent_versions(existing))
+    desired = cast(dict, mask_user_agent_versions(desired))
     for path in owned_paths:
         existing_value = _path_value(existing, path)
         if existing_value is _MISSING:
@@ -180,6 +323,85 @@ def managed_file_conflicts(
         if existing_value != _path_value(desired, path):
             conflicts.append(".".join(path))
     return conflicts
+
+
+def _unwrap(value: object) -> object:
+    """Return a plain-Python view of a value, unwrapping tomlkit items so it compares by content."""
+    unwrap = getattr(value, "unwrap", None)
+    if callable(unwrap):
+        try:
+            return unwrap()
+        except Exception:  # noqa: BLE001
+            return value
+    return value
+
+
+# Header-safe version text only, so a token copied out of a managed file can't break a header.
+_VERSION = r"[0-9A-Za-z.+_-]+"
+
+
+def ug_agent_token(user_agent: str, agent: str) -> str | None:
+    """The ``<agent>/<v>`` token of ug's exact ``ucode/<v> <agent>/<v>`` User-Agent, else None."""
+    match = re.fullmatch(rf"ucode/{_VERSION} ({re.escape(agent)}/{_VERSION})", user_agent)
+    return match.group(1) if match else None
+
+
+_UG_USER_AGENT = re.compile(rf"ucode/{_VERSION} ([a-z][a-z0-9-]*)/{_VERSION}")
+
+
+def mask_user_agent_versions(value: object, key: object = None) -> object:
+    """Copy of a parsed managed document with the versions in ug's ``ucode/<v> <agent>/<v>``
+    User-Agent masked. They change on every ug or agent upgrade, which alone must not rewrite (and
+    prompt for sudo to replace) the root-owned file. Only User-Agent headers are masked: a
+    ``User-Agent`` key, or a ``User-Agent:`` line in a header string; every other value compares
+    exactly."""
+    value = _unwrap(value)
+    if isinstance(value, Mapping):
+        return {name: mask_user_agent_versions(item, name) for name, item in value.items()}
+    if isinstance(value, list):
+        return [mask_user_agent_versions(item) for item in value]
+    if not isinstance(value, str):
+        return value
+    if _is_user_agent(key):
+        return _mask_ug_user_agent(value)
+    lines = []
+    for line in value.split("\n"):
+        name, separator, header_value = line.partition(":")
+        if separator and _is_user_agent(name.strip()):
+            line = f"{name}{separator} {_mask_ug_user_agent(header_value.strip())}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _is_user_agent(name: object) -> bool:
+    return isinstance(name, str) and name.casefold() == "user-agent"
+
+
+def _mask_ug_user_agent(user_agent: str) -> str:
+    match = _UG_USER_AGENT.fullmatch(user_agent.strip())
+    return f"ucode/* {match.group(1)}/*" if match else user_agent
+
+
+def is_semantically_equal(current: object, desired: object) -> bool:
+    """Whether two parsed configs are equal ignoring map order, keeping array order, with strict scalar types."""
+    current, desired = _unwrap(current), _unwrap(desired)
+    if isinstance(current, bool) or isinstance(desired, bool):
+        return isinstance(current, bool) and isinstance(desired, bool) and current == desired
+    if isinstance(current, dict) and isinstance(desired, dict):
+        if set(current.keys()) != set(desired.keys()):
+            return False
+        return all(is_semantically_equal(current[key], desired[key]) for key in current)
+    if isinstance(current, (list, tuple)) and isinstance(desired, (list, tuple)):
+        if len(current) != len(desired):
+            return False
+        return all(is_semantically_equal(a, b) for a, b in zip(current, desired, strict=True))
+    if isinstance(current, float) and isinstance(desired, float):
+        return (math.isnan(current) and math.isnan(desired)) or current == desired
+    if isinstance(current, int) and isinstance(desired, int):
+        return current == desired
+    if isinstance(current, str) and isinstance(desired, str):
+        return current == desired
+    return type(current) is type(desired) and current == desired
 
 
 def managed_file_status(
@@ -233,11 +455,13 @@ def reconcile_managed_file(
     tool: str,
     display: str,
     owned_paths: list[list[str]],
+    parser: ManagedParser,
 ) -> str:
     """Back up, atomically write, and verify one OS-managed settings file.
 
     The first pre-ucode contents are retained until ``ucode revert``. Subsequent writes update only
-    the last-applied snapshot used for drift-safe three-way restoration.
+    the last-applied snapshot used for drift-safe three-way restoration. A difference only in ug's
+    User-Agent versions counts as unchanged (see ``mask_user_agent_versions``).
     """
     if not managed_files_supported():
         print_warning(
@@ -257,6 +481,16 @@ def reconcile_managed_file(
     current_text = read_managed_file(path)
     if current_text == desired_text:
         return "unchanged"
+    if current_text is not None:
+        try:
+            semantically_unchanged = is_semantically_equal(
+                mask_user_agent_versions(parser(current_text)),
+                mask_user_agent_versions(parser(desired_text)),
+            )
+        except RuntimeError:
+            semantically_unchanged = False
+        if semantically_unchanged:
+            return "unchanged"
     if is_dry_run():
         console.print(f"\n[bold]\\[dry run] {path} (via sudo)[/bold]\n{desired_text}")
         return "written"
@@ -343,7 +577,9 @@ def revert_managed_file(
         owned_paths = entry.get("owned_paths")
         paths = owned_paths if isinstance(owned_paths, list) else []
         reverted = _three_way_revert(current_doc, original_doc, last_doc, paths)
-        desired_text = dumper(reverted)
+        desired_text = (
+            current_text if is_semantically_equal(reverted, current_doc) else dumper(reverted)
+        )
 
     if desired_text != current_text:
         if not managed_writes_allowed():
@@ -606,10 +842,164 @@ def _three_way_revert(current: dict, original: dict, last: dict, paths: list) ->
     return reverted
 
 
+# Read once into memory and passed to `sh -c`: root never executes a file from the (user-writable)
+# install directory, so the script can't be swapped between validation and use.
+_SUDO_REPLACE_SCRIPT = (
+    resources.files("ucode").joinpath("managed_replace.sh").read_text(encoding="utf-8")
+)
+
+
+def _sudo_replace_command(mode: str, *args: str) -> list[str]:
+    return _sudo_command(
+        "/bin/sh",
+        "-c",
+        _SUDO_REPLACE_SCRIPT,
+        "ucode-managed-replace",
+        mode,
+        current_os().value,
+        *args,
+    )
+
+
+def _encode_worker_arg(value: str) -> str:
+    return base64.b64encode(os.fsencode(value)).decode("ascii")
+
+
+def _validate_sudo_replace_target(path: Path) -> None:
+    if path not in _SUDO_REPLACE_TARGETS.get(current_os(), frozenset()):
+        raise RuntimeError(f"Refusing unexpected managed-settings target: {path}")
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")
+
+
+class _SudoReplaceWorker:
+    """One privileged shell serving atomic replacements for a managed-write session."""
+
+    def __init__(self) -> None:
+        self.command = _sudo_replace_command("session")
+        self.process = subprocess_cross_os.popen(
+            self.command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        stdin = self.process.stdin
+        stdout = self.process.stdout
+        if stdin is None or stdout is None:
+            self.process.kill()
+            raise RuntimeError("Could not open the privileged managed-settings session.")
+        self.stdin = stdin
+        self.stdout = stdout
+        self._next_request_id = 1
+        self._broken = False
+
+    @property
+    def usable(self) -> bool:
+        """Whether this worker can still serve requests (authenticated and running)."""
+        return not self._broken and self.process.poll() is None
+
+    def replace(self, path: Path, source_path: str) -> None:
+        request_id = str(self._next_request_id)
+        self._next_request_id += 1
+        fields = (
+            "REPLACE",
+            request_id,
+            _encode_worker_arg(source_path),
+            _encode_worker_arg(str(path)),
+        )
+        try:
+            self.stdin.write(" ".join(fields) + "\n")
+            self.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            self._broken = True
+            raise self._process_error("privileged worker stopped before the update") from exc
+
+        response = self.stdout.readline()
+        parts = response.rstrip("\n").split(" ", 3)
+        if parts == ["OK", request_id]:
+            return
+        if len(parts) == 4 and parts[:2] == ["ERROR", request_id]:
+            try:
+                returncode = int(parts[2])
+                stderr = base64.b64decode(parts[3], validate=True).decode("utf-8", errors="replace")
+            except (binascii.Error, ValueError, UnicodeError):
+                returncode = 1
+                stderr = "Invalid error response from privileged managed-settings worker"
+            raise subprocess.CalledProcessError(
+                returncode, self.command, stderr=stderr or "managed-settings replacement failed"
+            )
+        if not response:
+            self._broken = True
+            raise self._process_error("privileged worker exited during the update")
+        raise subprocess.CalledProcessError(
+            1, self.command, stderr=f"Invalid privileged-worker response: {response!r}"
+        )
+
+    def _process_error(self, message: str) -> subprocess.CalledProcessError:
+        returncode = self.process.poll()
+        if returncode is None:
+            returncode = 1
+        stderr = ""
+        if self.process.stderr is not None and self.process.poll() is not None:
+            stderr = self.process.stderr.read()
+        return subprocess.CalledProcessError(
+            returncode, self.command, stderr=stderr.strip() or message
+        )
+
+    def close(self) -> None:
+        try:
+            if self.process.poll() is None:
+                try:
+                    self.stdin.write("QUIT\n")
+                    self.stdin.flush()
+                    self.stdin.close()
+                except (BrokenPipeError, OSError):
+                    self._broken = True
+            try:
+                returncode = self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired as exc:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=5)
+                raise RuntimeError(
+                    "The privileged settings session timed out during shutdown."
+                ) from exc
+            if returncode != 0 and not self._broken:
+                raise self._process_error("privileged worker failed while closing")
+        finally:
+            # A dead worker can make a buffered pipe close raise BrokenPipeError. Still close
+            # every stream without hiding the worker's exit status or the shutdown timeout.
+            for stream in (self.stdin, self.stdout, self.process.stderr):
+                if stream is not None:
+                    with suppress(OSError):
+                        stream.close()
+
+
+def _session_worker() -> _SudoReplaceWorker:
+    global _managed_write_worker
+
+    worker = _managed_write_worker
+    if worker is not None and not worker.usable:
+        # Failed authentication or an exited shell must not poison later writes: callers treat a
+        # failed managed write as recoverable, so the next one starts (and prompts for) a new worker.
+        _managed_write_worker = None
+        with suppress(Exception):
+            worker.close()
+        worker = None
+    if worker is None:
+        worker = _managed_write_worker = _SudoReplaceWorker()
+    return worker
+
+
 def _sudo_remove(path: Path) -> None:
     original_flags = _clear_immutable(path)
     try:
-        subprocess.run(
+        subprocess_cross_os.run(
             _sudo_command("rm", "-f", str(path)), capture_output=True, text=True, check=True
         )
     finally:
@@ -618,78 +1008,31 @@ def _sudo_remove(path: Path) -> None:
 
 
 def _sudo_replace(path: Path, desired_text: str) -> None:
-    """Atomically replace ``path`` via sudo while preserving metadata and file flags."""
+    """Atomically replace ``path`` while preserving metadata and file flags."""
     if not managed_writes_allowed():
         raise RuntimeError("Refusing to invoke sudo for managed settings non-interactively.")
-    try:
-        parent_existed = path.parent.exists()
-    except OSError:
-        parent_existed = True
-    subprocess.run(_sudo_command("mkdir", "-p", str(path.parent)), check=True)
-    if not parent_existed:
-        subprocess.run(_sudo_command("chown", "0:0", str(path.parent)), check=True)
-        subprocess.run(_sudo_command("chmod", "755", str(path.parent)), check=True)
+    _validate_sudo_replace_target(path)
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=path.suffix or ".tmp", delete=False, encoding="utf-8"
     ) as tmp:
         tmp.write(desired_text)
         tmp_path = tmp.name
-    staging_path: str | None = None
-    original_flags: tuple[str, ...] = ()
     try:
-        result = subprocess.run(
-            _sudo_command("mktemp", str(path.parent / f".{path.name}.ucode.XXXXXX")),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        staging_path = result.stdout.strip()
-        if not staging_path or Path(staging_path).parent != path.parent:
-            raise RuntimeError(f"sudo mktemp returned an invalid staging path for {path}.")
-
-        path_exists = path.exists()
-        if path_exists:
-            original_flags = _clear_immutable(path)
-            preserve_args = ["-p"] if current_os() is OS.MACOS else ["--preserve=all"]
-            subprocess.run(
-                _sudo_command("cp", *preserve_args, str(path), staging_path),
+        if _managed_write_session_depth:
+            _session_worker().replace(path, tmp_path)
+        else:
+            subprocess_cross_os.run(
+                _sudo_replace_command(
+                    "once",
+                    tmp_path,
+                    str(path),
+                ),
                 capture_output=True,
                 text=True,
                 check=True,
             )
-            _clear_immutable(Path(staging_path))
-
-        subprocess.run(
-            _sudo_command("cp", tmp_path, staging_path),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        if not path_exists:
-            subprocess.run(_sudo_command("chown", "0:0", staging_path), check=True)
-            subprocess.run(_sudo_command("chmod", "644", staging_path), check=True)
-
-        subprocess.run(
-            _sudo_command("mv", "-f", staging_path, str(path)),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        staging_path = None
-        if original_flags:
-            _restore_immutable(path, original_flags)
-            original_flags = ()
     finally:
-        if original_flags and path.exists():
-            _restore_immutable(path, original_flags)
         os.unlink(tmp_path)
-        if staging_path:
-            subprocess.run(
-                _sudo_command("rm", "-f", staging_path),
-                capture_output=True,
-                text=True,
-                check=False,
-            )
 
 
 def _clear_immutable(path: Path) -> tuple[str, ...]:
@@ -700,7 +1043,7 @@ def _clear_immutable(path: Path) -> tuple[str, ...]:
     except OSError:
         return ()
     if current_os() is OS.MACOS:
-        result = subprocess.run(
+        result = subprocess_cross_os.run(
             ["/usr/bin/stat", "-f", "%Sf", str(path)], capture_output=True, text=True, check=False
         )
         if result.returncode != 0:
@@ -708,14 +1051,14 @@ def _clear_immutable(path: Path) -> tuple[str, ...]:
         supported = {"schg", "uchg", "sappnd", "uappnd"}
         flags = tuple(flag for flag in result.stdout.strip().split(",") if flag in supported)
         if flags:
-            subprocess.run(
+            subprocess_cross_os.run(
                 _sudo_command("chflags", ",".join(f"no{flag}" for flag in flags), str(path)),
                 capture_output=True,
                 text=True,
                 check=True,
             )
         return flags
-    result = subprocess.run(
+    result = subprocess_cross_os.run(
         _sudo_command("lsattr", "-d", str(path)), capture_output=True, text=True, check=False
     )
     if result.returncode != 0 or not result.stdout.strip():
@@ -723,7 +1066,7 @@ def _clear_immutable(path: Path) -> tuple[str, ...]:
     attributes = result.stdout.split()[0]
     flags = tuple(flag for flag in ("i", "a") if flag in attributes)
     if flags:
-        subprocess.run(
+        subprocess_cross_os.run(
             _sudo_command("chattr", f"-{''.join(flags)}", str(path)),
             capture_output=True,
             text=True,
@@ -740,7 +1083,7 @@ def _restore_immutable(path: Path, flags: tuple[str, ...]) -> None:
         command = _sudo_command("chflags", ",".join(flags), str(path))
     else:
         command = _sudo_command("chattr", f"+{''.join(flags)}", str(path))
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    result = subprocess_cross_os.run(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         print_warning(f"Could not restore the immutable flag on {path}.")
 

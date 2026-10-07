@@ -11,22 +11,18 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from ucode.agents import (
     TOOL_SPECS,
-    ensure_tracing_mlflow_cli,
     tool_binary_installed,
-    tool_update_available,
-    tool_uses_native_updater,
     tool_version_error,
-    tracing_mlflow_ok,
     update_tool_binary,
 )
 from ucode.databricks import (
     MIN_DATABRICKS_CLI_VERSION,
+    databricks_cli_installed,
     databricks_cli_version,
     has_valid_databricks_auth,
     install_databricks_cli,
@@ -34,8 +30,7 @@ from ucode.databricks import (
     upgrade_databricks_cli,
 )
 from ucode.state import load_state
-from ucode.telemetry import ucode_version
-from ucode.tracing import tracing_config
+from ucode.telemetry import ug_version
 from ucode.ui import (
     console,
     heading,
@@ -52,10 +47,9 @@ from ucode.ui import (
 # warns when its own token and one of these are both set, so we surface them.
 _CLAUDE_TOKEN_ENV_VARS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")
 
-UCODE_GIT_URL = "git+https://github.com/databricks/unity-gateway"
 
 # status -> (glyph, status_badge kind). "info" is a healthy line that still
-# carries an optional suggestion (e.g. the ucode self-upgrade).
+# carries an optional suggestion (e.g. installing a missing dependency).
 _BADGES = {
     "ok": ("✓", "ok"),
     "warn": ("!", "warn"),
@@ -114,11 +108,11 @@ def _install_databricks() -> bool:
         install_databricks_cli()
     except RuntimeError:
         return False
-    return shutil.which("databricks") is not None
+    return databricks_cli_installed()
 
 
 def _check_databricks_cli() -> Check:
-    if not shutil.which("databricks"):
+    if not databricks_cli_installed():
         return Check(
             "Databricks CLI",
             "error",
@@ -152,7 +146,7 @@ def _check_workspace() -> Check:
 
 
 def _check_agent_clis() -> list[Check]:
-    """One check per configured coding agent: installed and up to date?"""
+    """One check per configured coding agent: installed and compatible?"""
     tools = load_state().get("available_tools") or []
     checks: list[Check] = []
     for tool in tools:
@@ -170,39 +164,21 @@ def _check_agent_clis() -> list[Check]:
                 )
             )
             continue
-        if tool_uses_native_updater(tool):
-            blocker = tool_version_error(tool)
-            if blocker:
-                checks.append(
-                    Check(
-                        display,
-                        "warn",
-                        blocker,
-                        Suggestion(
-                            f"Upgrade {display} if available?",
-                            lambda t=tool: update_tool_binary(t),
-                        ),
-                    )
-                )
-            else:
-                checks.append(Check(display, "ok", "installed; upgrades managed by agent CLI"))
-            continue
-        with spinner(f"Checking {display} for updates..."):
-            update = tool_update_available(tool)
-        if update:
-            current, latest = update
+        blocker = tool_version_error(tool)
+        if blocker:
             checks.append(
                 Check(
                     display,
                     "warn",
-                    f"{current} installed; {latest} available",
+                    blocker,
                     Suggestion(
-                        f"Update {display} to {latest}?", lambda t=tool: update_tool_binary(t)
+                        f"Upgrade {display} to meet the required version?",
+                        lambda t=tool: update_tool_binary(t),
                     ),
                 )
             )
         else:
-            checks.append(Check(display, "ok", "installed and up to date"))
+            checks.append(Check(display, "ok", "installed; no required update"))
     return checks
 
 
@@ -258,47 +234,10 @@ def _check_anthropic_env_collision() -> Check | None:
     )
 
 
-def _check_tracing_mlflow() -> Check | None:
-    """When tracing is enabled, check the `mlflow` CLI it needs is installed.
-
-    Only relevant if the user turned on tracing (`ucode configure tracing`);
-    otherwise there's nothing to check. A missing/out-of-range mlflow is offered
-    as an install. Returns None when tracing is disabled.
-    """
-    if tracing_config(load_state()) is None:
-        return None
-    if tracing_mlflow_ok():
-        return Check("Tracing (mlflow CLI)", "ok", "installed and in the supported range")
-    return Check(
-        "Tracing (mlflow CLI)",
-        "warn",
-        "tracing is enabled but the required `mlflow` CLI is missing or out of range",
-        Suggestion("Install the mlflow CLI for tracing?", ensure_tracing_mlflow_cli),
-    )
-
-
-def _upgrade_ucode() -> bool:
-    if not shutil.which("uv"):
-        print_warning("`uv` is not on PATH; cannot upgrade ucode.")
-        return False
-    try:
-        subprocess.run(["uv", "tool", "install", "--reinstall", UCODE_GIT_URL], check=True)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return False
-    return True
-
-
-def _check_ucode() -> Check:
-    """ucode installs from GitHub (no release tags), so there's no version to
-    diff against. Report the installed build and offer a reinstall-to-latest as
-    an optional maintenance action rather than claiming it's out of date."""
-    version = ucode_version()
-    suggestion = (
-        Suggestion("Reinstall ucode from GitHub to pick up the latest changes?", _upgrade_ucode)
-        if shutil.which("uv")
-        else None
-    )
-    return Check("ucode", "info", f"v{version} (installed from GitHub)", suggestion)
+def _check_ug() -> Check:
+    """Report the installed build. Explicit updates are available via `ug upgrade`."""
+    version = ug_version()
+    return Check("ug", "info", f"v{version} (installed from GitHub)")
 
 
 # ── orchestration ──────────────────────────────────────────────────────────
@@ -306,18 +245,18 @@ def _check_ucode() -> Check:
 
 def _gather_checks() -> list[Check]:
     checks: list[Check] = [_check_uv(), _check_npm(), _check_databricks_cli(), _check_workspace()]
-    # These return None when they don't apply (no workspace, no env collision,
-    # tracing disabled), so drop the Nones before display.
-    optional = [_check_databricks_auth(), _check_anthropic_env_collision(), _check_tracing_mlflow()]
+    # These return None when they don't apply (no workspace, no env collision),
+    # so drop the Nones before display.
+    optional = [_check_databricks_auth(), _check_anthropic_env_collision()]
     checks.extend(c for c in optional if c is not None)
     checks.extend(_check_agent_clis())
-    checks.append(_check_ucode())
+    checks.append(_check_ug())
     return checks
 
 
 def doctor() -> int:
     """Run every check, print its status, and prompt to apply any offered fix."""
-    console.print(heading("ucode doctor"))
+    console.print(heading("ug doctor"))
     console.print()
 
     checks = _gather_checks()

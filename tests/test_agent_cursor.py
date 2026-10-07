@@ -68,6 +68,38 @@ class TestWriteMcpServerConfig:
         )
 
 
+AIGW_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
+
+
+class TestHttpMcpServerEntry:
+    def test_builds_url_plus_auth_entry_with_pinned_client(self):
+        entry = cursor.build_http_mcp_server_entry(AIGW_URL, "cursor-desktop")
+        # A direct OAuth HTTP server: url + auth.CLIENT_ID, no stdio command and no
+        # static bearer — Cursor drives the OAuth itself. Scopes come from the MCP
+        # protected-resource metadata, so none are hard-coded here.
+        assert entry == {"url": AIGW_URL, "auth": {"CLIENT_ID": "cursor-desktop"}}
+        assert "command" not in entry
+        assert "headers" not in entry
+
+    def test_write_merges_and_reports_replacement(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "mcp.json"
+        monkeypatch.setattr(cursor, "CURSOR_MCP_CONFIG_PATH", config_file)
+        config_file.write_text(
+            json.dumps({"mcpServers": {"proxy": {"command": "keep"}}}),
+            encoding="utf-8",
+        )
+
+        removed = cursor.write_http_mcp_server_config("github", AIGW_URL, "cursor-desktop")
+
+        written = json.loads(config_file.read_text())
+        assert removed is False
+        assert written["mcpServers"]["proxy"] == {"command": "keep"}
+        assert written["mcpServers"]["github"] == {
+            "url": AIGW_URL,
+            "auth": {"CLIENT_ID": "cursor-desktop"},
+        }
+
+
 class TestRemoveMcpServerConfig:
     def test_removes_without_clobbering_others(self, tmp_path, monkeypatch):
         config_file = tmp_path / "mcp.json"
@@ -108,3 +140,19 @@ class TestLaunch:
         cursor.launch({"workspace": WS}, ["--resume"])
 
         assert execs == [["cursor-agent", "--resume"]]
+
+
+class TestWriteUserMcpServers:
+    def test_batched_add_remove_preserves_user_entries(self, tmp_path, monkeypatch):
+        path = tmp_path / "mcp.json"
+        path.write_text(json.dumps({"mcpServers": {"mine": {"command": "z"}, "gone": {}}}))
+        monkeypatch.setattr(cursor, "CURSOR_MCP_CONFIG_PATH", path)
+
+        cursor.write_user_mcp_servers(
+            {"svc": cursor.build_mcp_server_entry(["ug", "mcp-proxy", "u"])}, {"gone"}
+        )
+
+        servers = json.loads(path.read_text())["mcpServers"]
+        assert servers["mine"] == {"command": "z"}  # user's own kept
+        assert "gone" not in servers
+        assert servers["svc"] == {"command": "ug", "args": ["mcp-proxy", "u"]}

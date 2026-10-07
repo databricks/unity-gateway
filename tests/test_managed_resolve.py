@@ -10,13 +10,17 @@ import ucode.agents.claude as claude
 import ucode.agents.opencode as opencode
 import ucode.config_io as config_io
 import ucode.state as state_mod
+from ucode.managed_config import normalize_managed_config
 from ucode.managed_resolve import (
     managed_default_model,
     managed_enabled_tools,
     managed_launch_model,
+    managed_otel_tracing_enabled,
     managed_provider_service,
     managed_state_overrides,
+    managed_static_models,
     managed_supplies_models,
+    managed_unity_catalog_location,
     managed_unservable_models,
     recommended_agent,
     resolve_state,
@@ -33,7 +37,7 @@ MANAGED = {
         "claude": {
             "model_config": {
                 "default_model": "system.ai.claude-opus-5",
-                "models": {
+                "default_models_by_model_family": {
                     "default_opus_model": "system.ai.claude-opus-5",
                     "default_sonnet_model": "system.ai.claude-sonnet-4-6",
                     "default_haiku_model": "system.ai.claude-haiku-4-5",
@@ -60,6 +64,54 @@ def _state(**overrides) -> dict:
     return state
 
 
+class TestOtelTracing:
+    def test_accessor_reads_only_per_agent_flag(self):
+        managed = {"enabled_agents": {"claude": {"otel_tracing_enabled": True}}}
+        assert managed_otel_tracing_enabled(managed, "claude") is True
+        assert managed_otel_tracing_enabled({"otel_tracing_enabled": True}, "claude") is False
+
+    def test_state_overrides_enable_supported_agents(self):
+        for tool in ("claude", "codex"):
+            managed = {"enabled_agents": {tool: {"otel_tracing_enabled": True}}}
+            assert managed_state_overrides(managed, tool)[f"{tool}_otel_tracing"] is True
+
+    def test_state_overrides_ignore_unsupported_agents(self):
+        managed = {"enabled_agents": {"gemini": {"otel_tracing_enabled": True}}}
+        assert "gemini_otel_tracing" not in managed_state_overrides(managed, "gemini")
+
+    def test_disabled_tracing_adds_no_override(self):
+        managed = {"enabled_agents": {"claude": {"otel_tracing_enabled": False}}}
+        assert "claude_otel_tracing" not in managed_state_overrides(managed, "claude")
+
+    def test_resolve_state_layers_tracing_flag(self):
+        managed = {"enabled_agents": {"codex": {"otel_tracing_enabled": True}}}
+        assert resolve_state(managed, _state(), "codex")["codex_otel_tracing"] is True
+
+
+class TestHttpHeaders:
+    def test_state_override_carries_manifest_headers(self):
+        for tool in ("claude", "codex"):
+            managed = {
+                "enabled_agents": {tool: {"http_headers": {"x-databricks-workspace": "eng-ml"}}}
+            }
+            assert managed_state_overrides(managed, tool)[f"{tool}_http_headers"] == {
+                "x-databricks-workspace": "eng-ml"
+            }
+
+    def test_no_headers_adds_no_override(self):
+        assert "claude_http_headers" not in managed_state_overrides(MANAGED, "claude")
+
+    def test_non_string_values_are_dropped(self):
+        managed = {"enabled_agents": {"claude": {"http_headers": {"ok": "v", "bad": 1}}}}
+        assert managed_state_overrides(managed, "claude")["claude_http_headers"] == {"ok": "v"}
+
+    def test_resolve_state_layers_headers(self):
+        managed = {"enabled_agents": {"claude": {"http_headers": {"x-team": "aig"}}}}
+        assert resolve_state(managed, _state(), "claude")["claude_http_headers"] == {
+            "x-team": "aig"
+        }
+
+
 class TestClaudeModels:
     def test_proto_slots_map_to_families(self):
         # The manifest keeps proto spelling (`default_opus_model`); render_overlay reads `opus`.
@@ -84,7 +136,11 @@ class TestClaudeModels:
         # sanction. Nothing is written for it, so the agent uses its own default.
         managed = {
             "enabled_agents": {
-                "claude": {"model_config": {"models": {"default_opus_model": "managed-opus"}}}
+                "claude": {
+                    "model_config": {
+                        "default_models_by_model_family": {"default_opus_model": "managed-opus"}
+                    }
+                }
             }
         }
         state = _state(claude_models={"opus": "local-opus", "fable": "local-fable"})
@@ -98,7 +154,7 @@ class TestClaudeModels:
                 "claude": {
                     "model_config": {
                         "default_model": "managed-default",
-                        "models": {"default_opus_model": "managed-opus"},
+                        "default_models_by_model_family": {"default_opus_model": "managed-opus"},
                     }
                 }
             }
@@ -110,6 +166,32 @@ class TestClaudeModels:
         # No override means resolve_state never touches the key, so the developer's own models stand.
         state = _state(claude_models={"sonnet": "local-sonnet"})
         assert resolve_state({}, state, "claude")["claude_models"] == {"sonnet": "local-sonnet"}
+
+    def test_family_defaults_propagate_through_the_real_normalize_path(self):
+        managed = normalize_managed_config(
+            {
+                "spec_version": 1,
+                "default_agent": "CODING_AGENT_CLAUDE_CODE",
+                "enabled_agents": [
+                    {
+                        "agent": "CODING_AGENT_CLAUDE_CODE",
+                        "config": {
+                            "models": {"model_services": ["system.ai.claude-opus-4-8"]},
+                            "default_models": {
+                                "default_opus_model": "system.ai.claude-opus-4-8",
+                                "default_sonnet_model": "system.ai.claude-sonnet-4-6",
+                                "default_haiku_model": "system.ai.claude-haiku-4-5",
+                            },
+                        },
+                    }
+                ],
+            }
+        )
+        assert resolve_state(managed, _state(), "claude")["claude_models"] == {
+            "opus": "system.ai.claude-opus-4-8",
+            "sonnet": "system.ai.claude-sonnet-4-6",
+            "haiku": "system.ai.claude-haiku-4-5",
+        }
 
 
 class TestListModels:
@@ -148,6 +230,26 @@ class TestManagedProviderService:
 
     def test_none_for_agent_not_in_manifest(self):
         assert managed_provider_service(MANAGED, "gemini") is None
+
+
+class TestManagedUnityCatalogLocation:
+    def test_returns_the_normalized_agent_location(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"unity_catalog_location": " main.default "}}
+            }
+        }
+        assert managed_unity_catalog_location(managed, "claude") == "main.default"
+
+    def test_ignores_other_agents_and_blank_locations(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"unity_catalog_location": "   "}},
+                "codex": {"model_config": {"unity_catalog_location": "main.codex"}},
+            }
+        }
+        assert managed_unity_catalog_location(managed, "claude") is None
+        assert managed_unity_catalog_location(managed, "gemini") is None
 
 
 class TestResolveState:
@@ -598,3 +700,103 @@ class TestManagedLaunchModel:
 
     def test_none_when_neither_names_a_model(self):
         assert managed_launch_model({}, None, "pi") is None
+
+
+class TestManagedStaticModels:
+    """Static model curation: admin's explicit allow-list for Claude's picker."""
+
+    def test_returns_model_services_list_for_claude(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "model_services": [
+                            "system.ai.claude-opus-4-8",
+                            "system.ai.claude-sonnet-4-6",
+                        ]
+                    }
+                }
+            }
+        }
+        assert managed_static_models(managed, "claude") == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-sonnet-4-6",
+        ]
+
+    def test_none_when_unset(self):
+        managed = {"enabled_agents": {"claude": {"model_config": {}}}}
+        assert managed_static_models(managed, "claude") is None
+
+    def test_none_for_empty_list(self):
+        managed = {"enabled_agents": {"claude": {"model_config": {"model_services": []}}}}
+        assert managed_static_models(managed, "claude") is None
+
+    def test_drops_empty_and_non_string_entries(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "model_services": [
+                            "system.ai.claude-opus-4-8",
+                            "",
+                            None,
+                            "system.ai.claude-sonnet-4-6",
+                            123,
+                        ]
+                    }
+                }
+            }
+        }
+        assert managed_static_models(managed, "claude") == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-sonnet-4-6",
+        ]
+
+    def test_included_in_state_overrides_for_claude(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "model_services": [
+                            "system.ai.claude-opus-4-8",
+                            "system.ai.claude-sonnet-4-6",
+                        ]
+                    }
+                }
+            }
+        }
+        overrides = managed_state_overrides(managed, "claude")
+        assert overrides["claude_static_models"] == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-sonnet-4-6",
+        ]
+
+    def test_static_models_layered_into_resolved_state(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "model_services": [
+                            "system.ai.claude-opus-4-8",
+                            "system.ai.claude-sonnet-4-6",
+                        ]
+                    }
+                }
+            }
+        }
+        state = {"workspace": WORKSPACE}
+        resolved = resolve_state(managed, state, "claude")
+        assert resolved["claude_static_models"] == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-sonnet-4-6",
+        ]
+
+    def test_static_models_overlay_tracked_when_absent_locally(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"model_services": ["system.ai.claude-opus-4-8"]}}
+            }
+        }
+        state = {"workspace": WORKSPACE}
+        resolved = resolve_state(managed, state, "claude")
+        assert resolved[MANAGED_OVERLAY_KEY]["claude_static_models"] is None

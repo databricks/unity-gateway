@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from unittest.mock import patch
 
+import pytest
+
 from ucode.agents import opencode
+from ucode.agents.args import LaunchOptions
 
 WS = "https://example.databricks.com"
 
@@ -33,24 +37,6 @@ class TestOpencodeSpec:
             opencode.OPENCODE_XDG_CONFIG_HOME / "opencode" / "opencode.json"
         )
 
-    def test_update_check_uses_latest_stable_v1(self, monkeypatch):
-        monkeypatch.setattr(
-            opencode,
-            "available_npm_package_update",
-            lambda _package: ("1.18.15", "1.18.16"),
-        )
-
-        assert opencode.is_update_available() == ("1.18.15", "1.18.16")
-
-    def test_update_check_ignores_npm_beta(self, monkeypatch):
-        monkeypatch.setattr(
-            opencode,
-            "available_npm_package_update",
-            lambda _package: ("1.18.16", "0.0.0-beta-202605152242"),
-        )
-
-        assert opencode.is_update_available() is None
-
     def test_requires_version_with_custom_provider_fetch(self, monkeypatch):
         monkeypatch.setattr(opencode, "agent_version", lambda _binary: "1.0.219")
 
@@ -68,23 +54,12 @@ class TestOpencodeSpec:
 
 class TestAuthPlugin:
     def test_calls_cross_platform_auth_token_helper_only_when_refreshing(self, monkeypatch):
-        monkeypatch.setattr(
-            opencode,
-            "build_auth_token_argv",
-            lambda workspace, profile, use_pat=False: [
-                "/opt/ucode",
-                "auth-token",
-                "--host",
-                workspace,
-                "--profile",
-                profile,
-            ],
-        )
+        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/opt/{command}")
 
         plugin = opencode.render_auth_plugin({"workspace": WS, "profile": "my profile"})
 
         assert (
-            'const AUTH_COMMAND = ["/opt/ucode", "auth-token", "--host", '
+            'const AUTH_COMMAND = ["/opt/ug", "auth-token", "--host", '
             f'"{WS}", "--profile", "my profile", "--force-refresh"]'
         ) in plugin
         assert "run(AUTH_COMMAND[0], AUTH_COMMAND.slice(1)" in plugin
@@ -213,7 +188,7 @@ class TestRenderOverlay:
     def test_user_agent_header_anthropic(self, monkeypatch):
         # UA must live at the per-model level — OpenCode clobbers
         # provider-level `headers["User-Agent"]` in session/llm.ts.
-        monkeypatch.setattr(opencode, "ucode_version", lambda: "0.1.0")
+        monkeypatch.setattr(opencode, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(opencode, "agent_version", lambda binary: "0.74.0")
         models = {"anthropic": ["claude-sonnet"]}
         overlay, _ = opencode.render_overlay("claude-sonnet", "tok", _base_urls(), models)
@@ -223,7 +198,7 @@ class TestRenderOverlay:
         assert model_headers["User-Agent"] == "ucode/0.1.0 opencode/0.74.0"
 
     def test_user_agent_header_gemini(self, monkeypatch):
-        monkeypatch.setattr(opencode, "ucode_version", lambda: "0.1.0")
+        monkeypatch.setattr(opencode, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(opencode, "agent_version", lambda binary: "0.74.0")
         models = {"gemini": ["gemini-2"]}
         overlay, _ = opencode.render_overlay("gemini-2", "tok", _base_urls(), models)
@@ -431,6 +406,114 @@ class TestOpencodeValidateCmd:
         assert len(cmd) > 2
 
 
+class TestOpencodeLaunchModel:
+    def test_resolves_configured_bare_and_native_selectors(self):
+        state = {
+            "opencode_models": {
+                "anthropic": ["claude-sonnet"],
+                "gemini": ["gemini-2"],
+                "oss": ["system.ai.kimi-k2-7-code"],
+            }
+        }
+
+        assert opencode.resolve_explicit_model("gemini-2", state) == "databricks-google/gemini-2"
+        assert (
+            opencode.resolve_explicit_model("openrouter/anthropic/claude-sonnet", state)
+            == "openrouter/anthropic/claude-sonnet"
+        )
+
+    def test_rejects_unknown_and_mismatched_managed_selectors(self):
+        state = {"opencode_models": {"anthropic": ["claude-sonnet"]}}
+
+        with pytest.raises(RuntimeError, match="not configured"):
+            opencode.resolve_explicit_model("missing-model", state)
+        with pytest.raises(RuntimeError, match="managed provider"):
+            opencode.resolve_explicit_model("databricks-google/claude-sonnet", state)
+
+    @pytest.mark.parametrize(
+        ("model", "tool_args", "selector", "expected_args"),
+        [
+            (
+                None,
+                ["run", "prompt"],
+                "databricks-anthropic/claude-sonnet",
+                ["run", "prompt"],
+            ),
+            (
+                "databricks-google/gemini-2",
+                ["run", "--", "--model", "literal"],
+                "databricks-google/gemini-2",
+                ["run", "--model", "databricks-google/gemini-2", "--", "--model", "literal"],
+            ),
+            (
+                "gemini-2",
+                ["run", "prompt"],
+                "databricks-google/gemini-2",
+                ["run", "prompt", "--model", "databricks-google/gemini-2"],
+            ),
+            (
+                "claude-sonnet",
+                ["run", "--model", "databricks-google/gemini-2"],
+                "databricks-google/gemini-2",
+                ["run", "--model", "databricks-google/gemini-2"],
+            ),
+            (
+                "openrouter/anthropic/claude-sonnet",
+                ["run", "--model", "openrouter/anthropic/claude-sonnet"],
+                "openrouter/anthropic/claude-sonnet",
+                ["run", "--model", "openrouter/anthropic/claude-sonnet"],
+            ),
+        ],
+    )
+    def test_launch_preserves_selection_and_saved_defaults(
+        self, tmp_path, monkeypatch, model, tool_args, selector, expected_args
+    ):
+        config_file = tmp_path / "opencode.json"
+        monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", config_file)
+        monkeypatch.setattr(opencode, "OPENCODE_BACKUP_PATH", tmp_path / "opencode-backup.json")
+        state = {
+            "workspace": WS,
+            "base_urls": {"opencode": _base_urls()},
+            "opencode_models": {"anthropic": ["claude-sonnet"], "gemini": ["gemini-2"]},
+            "opencode_default_model": "claude-sonnet",
+            "managed_configs": {},
+        }
+        original_state = deepcopy(state)
+        original_args = list(tool_args)
+        with (
+            patch("ucode.agents.opencode.get_databricks_token", return_value="tok"),
+            patch("ucode.agents.opencode.agent_version", return_value="1.0.220"),
+            patch("ucode.agents.opencode.save_state"),
+            patch("ucode.agents.opencode.subprocess_cross_os.popen") as popen,
+        ):
+            popen.return_value.wait.return_value = 7
+            with pytest.raises(SystemExit) as exc_info:
+                opencode.launch(state, tool_args, options=LaunchOptions(user_pinned_model=model))
+
+        assert exc_info.value.code == 7
+        assert json.loads(config_file.read_text())["model"] == selector
+        assert popen.call_args.args[0] == ["opencode", *expected_args]
+        assert tool_args == original_args
+        assert state["opencode_models"] == original_state["opencode_models"]
+        assert state["opencode_default_model"] == original_state["opencode_default_model"]
+
+    def test_rejects_invalid_model_before_configure_and_process(self):
+        state = {"opencode_models": {"anthropic": ["claude-sonnet"]}}
+        with (
+            patch("ucode.agents.opencode._configure_launch") as configure,
+            patch("ucode.agents.opencode.subprocess_cross_os.popen") as popen,
+            pytest.raises(RuntimeError, match="not configured"),
+        ):
+            opencode.launch(
+                state,
+                ["run", "--model", "missing-model"],
+                options=LaunchOptions(),
+            )
+
+        configure.assert_not_called()
+        popen.assert_not_called()
+
+
 class TestWriteToolConfigStaleProviderCleanup:
     def test_stale_providers_removed_before_merge(self, tmp_path, monkeypatch):
         import ucode.agents.opencode as oc_mod
@@ -500,3 +583,23 @@ class TestWriteToolConfigStaleProviderCleanup:
 
         written = json.loads(config_file.read_text())
         assert written["model"] == "databricks-anthropic/claude-sonnet"
+
+
+class TestWriteUserMcpServers:
+    def test_batched_add_remove_preserves_other_keys(self, tmp_path, monkeypatch):
+        path = tmp_path / "opencode.json"
+        path.write_text(
+            json.dumps({"provider": {"p": 1}, "mcp": {"mine": {"type": "local"}, "gone": {}}})
+        )
+        monkeypatch.setattr(opencode, "OPENCODE_CONFIG_PATH", path)
+        monkeypatch.setattr(opencode, "OPENCODE_BACKUP_PATH", tmp_path / "backup.json")
+
+        opencode.write_user_mcp_servers(
+            {"svc": opencode.build_mcp_server_entry(["ug", "mcp-proxy", "u"])}, {"gone"}
+        )
+
+        doc = json.loads(path.read_text())
+        assert doc["provider"] == {"p": 1}
+        assert "gone" not in doc["mcp"]
+        assert doc["mcp"]["mine"] == {"type": "local"}
+        assert doc["mcp"]["svc"]["command"] == ["ug", "mcp-proxy", "u"]

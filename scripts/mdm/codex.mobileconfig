@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Codex CLI OS-managed settings for JAMF/MDM (macOS).
+
+  This is a TEMPLATE. Codex reads enterprise-managed configuration from the
+  `com.openai.codex` managed-preferences domain, as base64-encoded TOML:
+    - config_toml_base64        legacy managed defaults (== /etc/codex/managed_config.toml)
+    - requirements_toml_base64  enforced requirements (== /etc/codex/requirements.toml)
+  No physical TOML file is needed on the Mac when deploying via MDM. See:
+  https://developers.openai.com/codex/enterprise/managed-configuration
+
+  Before deploying:
+   1. Produce the managed_config.toml content. The most reliable way is to read
+      the file `ug` itself writes on a reference machine (run the bootstrap once
+      as admin, then `cat /etc/codex/managed_config.toml`), which already has the
+      correct AI Gateway base URL and model-catalog pointer. A starter is in
+      scripts/mdm/codex-managed_config.toml.template.
+   2. base64-encode it (no line wraps) and paste into config_toml_base64:
+        base64 -i managed_config.toml | tr -d '\r\n'
+   3. Optionally add requirements_toml_base64 for enforced restrictions.
+   4. Regenerate the two PayloadUUID values (uuidgen) and set PayloadOrganization.
+
+  NOTE: ideally `ug` would emit this base64 payload directly (see the "ug MDM
+  gaps" note) rather than admins hand-encoding it.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+  <key>PayloadIdentifier</key>
+  <string>com.example.mdm.codex</string>
+  <key>PayloadUUID</key>
+  <string>REPLACE-WITH-UUIDGEN-1</string>
+  <key>PayloadDisplayName</key>
+  <string>Codex Managed Configuration (Databricks AI Gateway)</string>
+  <key>PayloadOrganization</key>
+  <string>Example Organization</string>
+  <key>PayloadScope</key>
+  <string>System</string>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadType</key>
+      <string>com.openai.codex</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>PayloadIdentifier</key>
+      <string>com.example.mdm.codex.preferences</string>
+      <key>PayloadUUID</key>
+      <string>REPLACE-WITH-UUIDGEN-2</string>
+      <key>PayloadDisplayName</key>
+      <string>Codex Preferences</string>
+      <!-- base64 of managed_config.toml (see header + template). -->
+      <key>config_toml_base64</key>
+      <string>REPLACE_WITH_BASE64_OF_managed_config.toml</string>
+    </dict>
+  </array>
+</dict>
+</plist>

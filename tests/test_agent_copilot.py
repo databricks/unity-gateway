@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
@@ -28,21 +29,7 @@ class TestCopilotSpec:
 
 
 class TestRenderEnvOverlay:
-    """Claude models get Copilot's native `anthropic` provider (so Copilot's own
-    cache_control logic runs); everything else (codex/gpt-5) stays on `openai`
-    against the MLflow gateway.
-
-    Verified live against a real workspace: Databricks' AI Gateway 401s on the
-    `x-api-key` auth Copilot's `anthropic` provider sends by default
-    (COPILOT_PROVIDER_API_KEY) — it wants `Authorization: Bearer`
-    (COPILOT_PROVIDER_BEARER_TOKEN, used for both provider types here). And an
-    unrecognized COPILOT_MODEL (a Databricks catalog id) makes Copilot fall
-    back to defaults that include sending `temperature`, which current-gen
-    Claude models 400 on — hence the separate COPILOT_PROVIDER_MODEL_ID
-    (canonical name) / COPILOT_PROVIDER_WIRE_MODEL (actual wire id) split.
-
-    All of that only works on Copilot >= 1.0.81-6 (see TestSupportsAnthropicProvider),
-    so every test here mocks a new-enough installed version."""
+    """Claude uses native Messages; GPT retains the MLflow gateway and wire API."""
 
     @pytest.fixture(autouse=True)
     def _new_enough_copilot(self, monkeypatch):
@@ -96,13 +83,31 @@ class TestRenderEnvOverlay:
         assert copilot.render_env_overlay(WS, "claude-sonnet-4-6", "tok")["OAUTH_TOKEN"] == "tok"
         assert copilot.render_env_overlay(WS, "gpt-5", "tok")["OAUTH_TOKEN"] == "tok"
 
+    @pytest.mark.parametrize(
+        ("selected_model", "override_model", "expected_api"),
+        [
+            ("gpt-6.1-sol", None, "responses"),
+            ("system.ai.gpt-6-astra", "gpt-5", "completions"),
+            ("system.ai.gpt-5-6-sol", "databricks-gpt-6-1-sol", "responses"),
+            ("system.ai.gpt-6-astra", "", "responses"),
+            ("gpt-5", "", "completions"),
+        ],
+    )
+    def test_selects_wire_api_from_override_and_keeps_selected_model(
+        self, selected_model, override_model, expected_api
+    ):
+        env = copilot.render_env_overlay(WS, selected_model, "tok", override_model=override_model)
+
+        assert env["COPILOT_PROVIDER_WIRE_API"] == expected_api
+        assert env["COPILOT_MODEL"] == selected_model
+
+    def test_claude_omits_openai_wire_api(self):
+        env = copilot.render_env_overlay(WS, "system.ai.claude-sonnet-5", "tok")
+        assert "COPILOT_PROVIDER_WIRE_API" not in env
+
 
 class TestOldCopilotFallsBackToOpenai:
-    """Below 1.0.81-6, Copilot always sends `temperature` on the anthropic
-    path regardless of model id, and current-gen Claude models 400 on it —
-    verified live (1.0.79, 1.0.80, 1.0.81-0 all fail; 1.0.81-6 onward works).
-    So an old Copilot must keep getting the openai path even for Claude
-    models: uncached, but that's the pre-fix status quo, not a regression."""
+    """Older Copilot releases retain their existing OpenAI-compatible route."""
 
     def test_old_version_keeps_claude_on_openai(self, monkeypatch):
         monkeypatch.setattr(copilot, "agent_version", lambda binary: "1.0.80")
@@ -161,6 +166,7 @@ class TestParseCopilotVersion:
     def test_a_final_release_sorts_after_its_prereleases(self):
         final = copilot._parse_copilot_version("1.0.81")
         prerelease = copilot._parse_copilot_version("1.0.81-14")
+        assert final is not None and prerelease is not None
         assert final > prerelease
 
     def test_returns_none_for_unparseable_input(self):
@@ -226,11 +232,15 @@ class TestBuildRuntimeEnv:
         monkeypatch.setenv("COPILOT_MODEL", "stale-model")
         monkeypatch.setenv("COPILOT_PROVIDER_MODEL_ID", "stale-id")
         monkeypatch.setenv("COPILOT_PROVIDER_WIRE_MODEL", "stale-wire-model")
+        monkeypatch.setenv("COPILOT_PROVIDER_WIRE_API", "responses")
+        monkeypatch.setenv("COPILOT_PROVIDER_MODEL_LIMITS_ID", "stale-limits")
 
         env = copilot.build_runtime_env(WS, "system.ai.claude-sonnet-5", "tok")
 
         assert "COPILOT_PROVIDER_API_KEY" not in env
         assert "COPILOT_MODEL" not in env
+        assert "COPILOT_PROVIDER_WIRE_API" not in env
+        assert "COPILOT_PROVIDER_MODEL_LIMITS_ID" not in env
         assert env["COPILOT_PROVIDER_MODEL_ID"] == "claude-sonnet-5"
         assert env["COPILOT_PROVIDER_WIRE_MODEL"] == "system.ai.claude-sonnet-5"
 
@@ -238,8 +248,21 @@ class TestBuildRuntimeEnv:
         env = copilot.build_runtime_env(WS, "m", "tok")
         assert env["OAUTH_TOKEN"] == "tok"
 
+    def test_inherited_wire_model_overrides_route_without_being_cleared(self, monkeypatch):
+        monkeypatch.setenv("COPILOT_PROVIDER_WIRE_MODEL", "gpt-5")
+        monkeypatch.setenv("COPILOT_PROVIDER_WIRE_API", "responses")
+        monkeypatch.setenv("COPILOT_PROVIDER_MODEL_ID", "user-model-id")
+        monkeypatch.setenv("COPILOT_PROVIDER_MODEL_LIMITS_ID", "user-model-limits")
 
-class TestWriteToolConfig:
+        env = copilot.build_runtime_env(WS, "system.ai.gpt-6-astra", "tok")
+
+        assert env["COPILOT_PROVIDER_WIRE_MODEL"] == "gpt-5"
+        assert env["COPILOT_PROVIDER_WIRE_API"] == "completions"
+        assert env["COPILOT_PROVIDER_MODEL_ID"] == "user-model-id"
+        assert env["COPILOT_PROVIDER_MODEL_LIMITS_ID"] == "user-model-limits"
+
+
+class TestWriteToolConfigSwitching:
     def test_switching_families_clears_the_stale_model_selection_keys(self, tmp_path, monkeypatch):
         import ucode.agents.copilot as cp_mod
         import ucode.config_io as config_io_mod
@@ -257,12 +280,14 @@ class TestWriteToolConfig:
         assert written["COPILOT_PROVIDER_MODEL_ID"] == "claude-sonnet-5"
         assert written["COPILOT_PROVIDER_WIRE_MODEL"] == "system.ai.claude-sonnet-5"
         assert "COPILOT_MODEL" not in written
+        assert "COPILOT_PROVIDER_WIRE_API" not in written
 
         cp_mod.write_tool_config(state, "gpt-5", token="tok-b")
         written = config_io_mod.parse_dotenv(env_path)
         assert written["COPILOT_MODEL"] == "gpt-5"
         assert "COPILOT_PROVIDER_MODEL_ID" not in written
         assert "COPILOT_PROVIDER_WIRE_MODEL" not in written
+        assert written["COPILOT_PROVIDER_WIRE_API"] == "completions"
 
 
 class TestMcpServerConfig:
@@ -390,14 +415,168 @@ class TestDefaultModel:
         assert copilot.default_model(state) is None
 
 
+class TestModelUsesResponsesApi:
+    def test_numeric_gpt_majors_and_gateway_aliases_use_responses(self):
+        for model in (
+            "gpt-6",
+            "gpt-6.1-sol",
+            "system.ai.gpt-6-astra",
+            "databricks-gpt-6-1-sol",
+            "gpt-7",
+            "gpt-10",
+        ):
+            assert copilot.model_uses_responses_api(model), model
+
+    def test_older_non_gpt_and_unsupported_alias_shapes_use_completions(self):
+        for model in (
+            "gpt-5",
+            "gpt-5.10-sol",
+            "claude-sonnet-4-6",
+            "my-gpt-6-model",
+            "gpt6",
+            "gpt.6",
+            "gpt-60x",
+        ):
+            assert not copilot.model_uses_responses_api(model), model
+
+
+def isolate_copilot_config_paths(monkeypatch, tmp_path):
+    import ucode.config_io as config_io
+    import ucode.state as state_mod
+
+    app_dir = tmp_path / ".ucode"
+    env_path = tmp_path / ".copilot" / "ucode.env"
+    monkeypatch.setattr(config_io, "APP_DIR", app_dir)
+    monkeypatch.setattr(state_mod, "APP_DIR", app_dir)
+    monkeypatch.setattr(state_mod, "STATE_PATH", app_dir / "state.json")
+    monkeypatch.setattr(copilot, "COPILOT_ENV_PATH", env_path)
+    monkeypatch.setattr(copilot, "COPILOT_BACKUP_PATH", app_dir / "copilot-ucode-env.backup")
+    monkeypatch.setattr(copilot, "COPILOT_MCP_CONFIG_PATH", tmp_path / "missing-mcp.json")
+    return env_path
+
+
+class TestWriteToolConfig:
+    def test_manages_wire_api_and_preserves_wire_model_and_user_values(self, tmp_path, monkeypatch):
+        env_path = isolate_copilot_config_paths(monkeypatch, tmp_path)
+        env_path.parent.mkdir(parents=True)
+        env_path.write_text(
+            "COPILOT_PROVIDER_WIRE_MODEL=system.ai.gpt-6-1-sol\n"
+            "COPILOT_PROVIDER_WIRE_API=completions\n"
+            "COPILOT_PROVIDER_MODEL_ID=user-model-id\n"
+            "COPILOT_PROVIDER_MODEL_LIMITS_ID=user-model-limits\n"
+            "USER_SETTING=keep\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("COPILOT_PROVIDER_WIRE_MODEL", "gpt-5")
+
+        state, token = copilot.write_tool_config(
+            {"workspace": WS}, "system.ai.gpt-5-6-sol", token="tok"
+        )
+
+        written = copilot.parse_dotenv(env_path)
+        assert token == "tok"
+        assert written["COPILOT_MODEL"] == "system.ai.gpt-5-6-sol"
+        assert written["COPILOT_PROVIDER_WIRE_API"] == "responses"
+        assert written["COPILOT_PROVIDER_WIRE_MODEL"] == "system.ai.gpt-6-1-sol"
+        assert written["COPILOT_PROVIDER_MODEL_ID"] == "user-model-id"
+        assert written["COPILOT_PROVIDER_MODEL_LIMITS_ID"] == "user-model-limits"
+        assert written["USER_SETTING"] == "keep"
+        assert "COPILOT_PROVIDER_WIRE_API" in state["managed_configs"]["copilot"]["keys"]
+        assert "COPILOT_PROVIDER_WIRE_MODEL" not in state["managed_configs"]["copilot"]["keys"]
+
+
+class TestLaunch:
+    @pytest.mark.parametrize(
+        ("tool_args", "pinned_model", "default", "expected_model", "expected_api"),
+        [
+            (["--model", "gpt-6.1-sol"], "gpt-5", "gpt-5", "gpt-6.1-sol", "responses"),
+            ([], "system.ai.gpt-5-6-sol", "gpt-6", "system.ai.gpt-5-6-sol", "completions"),
+            ([], None, "system.ai.gpt-10", "system.ai.gpt-10", "responses"),
+        ],
+    )
+    def test_launch_model_precedence_preserves_argv(
+        self, tool_args, pinned_model, default, expected_model, expected_api, tmp_path, monkeypatch
+    ):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.delenv("COPILOT_PROVIDER_WIRE_MODEL", raising=False)
+        monkeypatch.setattr(copilot, "get_databricks_token", lambda *args, **kwargs: "tok")
+        monkeypatch.setattr(copilot, "TOKEN_REFRESH_INTERVAL_SECONDS", 3600)
+        calls = []
+
+        class Process:
+            def wait(self):
+                return 0
+
+        def popen(argv, *, env):
+            calls.append((argv, env))
+            return Process()
+
+        monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
+        state = {"workspace": WS, "copilot_default_model": default}
+
+        with pytest.raises(SystemExit) as exit_info:
+            copilot.launch(
+                state,
+                tool_args,
+                options=copilot.LaunchOptions(user_pinned_model=pinned_model),
+            )
+
+        assert exit_info.value.code == 0
+        argv, env = calls[0]
+        assert argv == ["copilot", *tool_args]
+        assert env["COPILOT_MODEL"] == expected_model
+        assert env["COPILOT_PROVIDER_WIRE_API"] == expected_api
+        assert state["copilot_default_model"] == default
+
+    def test_token_refresh_keeps_launch_model(self, tmp_path, monkeypatch):
+        env_path = isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.delenv("COPILOT_PROVIDER_WIRE_MODEL", raising=False)
+        monkeypatch.setattr(copilot, "TOKEN_REFRESH_INTERVAL_SECONDS", 0.01)
+        token_calls = []
+        refreshed = threading.Event()
+
+        def get_token(*args, force_refresh=False, **kwargs):
+            token_calls.append(force_refresh)
+            if force_refresh:
+                refreshed.set()
+            return "tok"
+
+        monkeypatch.setattr(copilot, "get_databricks_token", get_token)
+
+        class Process:
+            def wait(self):
+                assert refreshed.wait(timeout=2)
+                return 0
+
+        monkeypatch.setattr(
+            copilot.subprocess_cross_os,
+            "popen",
+            lambda *args, **kwargs: Process(),
+        )
+
+        with pytest.raises(SystemExit) as exit_info:
+            copilot.launch(
+                {"workspace": WS, "copilot_default_model": "gpt-5"},
+                [],
+                options=copilot.LaunchOptions(user_pinned_model="gpt-6-astra"),
+            )
+
+        written = copilot.parse_dotenv(env_path)
+        assert exit_info.value.code == 0
+        assert token_calls[0] is False
+        assert token_calls[1:]
+        assert all(token_calls[1:])
+        assert written["COPILOT_MODEL"] == "gpt-6-astra"
+        assert written["COPILOT_PROVIDER_WIRE_API"] == "responses"
+
+
 class TestManagedKeys:
     def test_includes_required_vars(self):
         for key in (
             "COPILOT_PROVIDER_TYPE",
             "COPILOT_PROVIDER_BASE_URL",
+            "COPILOT_PROVIDER_WIRE_API",
             "COPILOT_MODEL",
-            "COPILOT_PROVIDER_MODEL_ID",
-            "COPILOT_PROVIDER_WIRE_MODEL",
             "COPILOT_PROVIDER_BEARER_TOKEN",
             "COPILOT_OFFLINE",
             "OAUTH_TOKEN",
@@ -441,3 +620,23 @@ class TestManagedModels:
             "copilot_models": ["system.ai.gpt-5"],
         }
         assert copilot.default_model(state) == "admin-chosen-default"
+
+
+class TestWriteUserMcpServers:
+    def test_batched_add_remove_preserves_other_keys(self, tmp_path, monkeypatch):
+        path = tmp_path / "ucode-mcp-config.json"
+        path.write_text(
+            json.dumps({"other": 1, "mcpServers": {"mine": {"type": "local"}, "gone": {}}})
+        )
+        monkeypatch.setattr(copilot, "COPILOT_MCP_CONFIG_PATH", path)
+        monkeypatch.setattr(copilot, "COPILOT_MCP_BACKUP_PATH", tmp_path / "backup.json")
+
+        copilot.write_user_mcp_servers(
+            {"svc": copilot.build_mcp_server_entry(["ug", "mcp-proxy", "u"])}, {"gone"}
+        )
+
+        doc = json.loads(path.read_text())
+        assert doc["other"] == 1
+        assert "gone" not in doc["mcpServers"]
+        assert doc["mcpServers"]["mine"] == {"type": "local"}
+        assert doc["mcpServers"]["svc"]["command"] == "ug"

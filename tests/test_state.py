@@ -12,12 +12,14 @@ from ucode.state import (
     STATE_VERSION,
     build_agent_state,
     clear_state,
+    get_applied_managed_update_time,
     get_provider_service,
     hydrate_state,
     load_full_state,
     load_state,
     mark_tool_managed,
     save_state,
+    set_applied_managed_update_time,
     set_provider_service,
 )
 
@@ -184,6 +186,28 @@ class TestProviderService:
         assert get_provider_service(state, "codex") == "main.a.openai"
 
 
+class TestAppliedManagedUpdateTime:
+    def test_get_returns_none_when_unset(self):
+        assert get_applied_managed_update_time({}) is None
+        assert get_applied_managed_update_time({"applied_managed_update_time": ""}) is None
+
+    def test_set_and_get_roundtrip(self):
+        state = set_applied_managed_update_time({}, "2026-09-11T16:09:31.820Z")
+        assert get_applied_managed_update_time(state) == "2026-09-11T16:09:31.820Z"
+
+    def test_set_none_clears_the_key(self):
+        state = set_applied_managed_update_time({}, "2026-09-11T16:09:31.820Z")
+        state = set_applied_managed_update_time(state, None)
+        assert get_applied_managed_update_time(state) is None
+        assert "applied_managed_update_time" not in state
+
+    def test_survives_save_load_roundtrip(self):
+        state = {"workspace": FAKE_WS, "profile": None}
+        state = set_applied_managed_update_time(state, "2026-09-11T16:09:31.820Z")
+        save_state(state)
+        assert get_applied_managed_update_time(load_state()) == "2026-09-11T16:09:31.820Z"
+
+
 # ---------------------------------------------------------------------------
 # hydrate_state
 # ---------------------------------------------------------------------------
@@ -266,6 +290,7 @@ class TestBuildAgentState:
         for agent in ("claude", "codex", "pi"):
             assert "--use-pat" in result[agent]["auth_command"]
             assert "--profile DEFAULT" in result[agent]["auth_command"]
+        assert result["codex"]["auth"]["timeout_ms"] == 5000
 
     def test_custom_oauth_applies_to_claude_and_codex(self):
         result = build_agent_state(
@@ -282,6 +307,7 @@ class TestBuildAgentState:
 
         assert "--client-id custom-client" in result["claude"]["auth_command"]
         assert result["codex"]["auth"]["args"][-1] == "offline_access,model-serving"
+        assert result["codex"]["auth"]["timeout_ms"] == 180_000
 
 
 # ---------------------------------------------------------------------------

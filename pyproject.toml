@@ -3,7 +3,7 @@ requires = ["hatchling", "uv-dynamic-versioning>=0.7.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ucode"
+name = "unity-gateway"
 # Version is derived from git tags at build time (see [tool.uv-dynamic-versioning]).
 # On a tag it is the plain tag (e.g. `0.1.0`); between tags it carries the commit
 # count and short hash (e.g. `0.1.0+14.g93986a8`) so a reported version maps back
@@ -18,7 +18,7 @@ dependencies = [
   # transitively by mcp itself); `ucode.mcp_proxy` selects whichever the
   # installed SDK uses at runtime, so no direct httpx2 dependency is declared.
   "httpx>=0.27.1",
-  # `ucode mcp-proxy` bridges a client's stdio MCP transport to a Databricks
+  # `ug mcp-proxy` bridges a client's stdio MCP transport to a Databricks
   # streamable-HTTP MCP endpoint, injecting a freshly-minted OAuth bearer per
   # request, via the SDK's stdio server + streamable-HTTP client. Works against
   # both mcp 1.x (httpx) and mcp 2.x (httpx2) — see mcp_proxy for the shared path.
@@ -30,18 +30,16 @@ dependencies = [
   "websockets>=13",
 ]
 
-[project.optional-dependencies]
-# Only the Claude Code tracing path needs the Python MLflow runtime; OpenCode
-# and Codex trace via JS plugins. Kept out of the core deps so a plain `ucode`
-# install stays lean. Enable with `uv tool install "ucode[tracing]"`.
-tracing = ["mlflow[databricks]>=3.4"]
-
 [project.scripts]
 ug = "ucode.cli:main"
 ucode = "ucode.cli:main"
 
 [tool.hatch.build.targets.wheel]
+# Keep the Python module and existing ~/.ucode configuration paths compatible.
 packages = ["src/ucode"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"skills" = "skills"
 
 [tool.hatch.version]
 source = "uv-dynamic-versioning"
@@ -60,8 +58,12 @@ fallback-version = "0.0.0"
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
-    "ruff>=0.15.12",
-    "ty",
+    "pexpect>=4.9.0",
+    "pyte>=0.8.2",
+    # Pinned so local and CI lint with the identical formatter/type-checker;
+    # ruff/ty output shifts between releases, so bump these deliberately.
+    "ruff==0.16.5",
+    "ty==0.0.75",
 ]
 
 [tool.pytest.ini_options]
@@ -79,10 +81,23 @@ select = [
     "UP",  # pyupgrade
     "B",   # flake8-bugbear
     "C4",  # flake8-comprehensions
+    "TID251",  # route process creation through cross-platform subprocess helpers
 ]
 ignore = [
     "E501",  # line too long — formatter handles this
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["B011"]  # assert False in tests is fine
+"tests/**" = ["B011", "TID251"]  # tests may exercise subprocess directly
+"src/ucode/os_compatibility/file_lock_cross_os.py" = ["TID251"]
+"src/ucode/os_compatibility/subprocess_cross_os.py" = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"fcntl.flock".msg = "Use ucode.os_compatibility.file_lock_cross_os for cross-platform file locking."
+"fcntl.lockf".msg = "Use ucode.os_compatibility.file_lock_cross_os for cross-platform file locking."
+"msvcrt.locking".msg = "Use ucode.os_compatibility.file_lock_cross_os for cross-platform file locking."
+"subprocess.run".msg = "Use ucode.os_compatibility.subprocess_cross_os.run for cross-platform commands and text encoding."
+"subprocess.Popen".msg = "Use ucode.os_compatibility.subprocess_cross_os.popen for cross-platform commands and text encoding."
+"subprocess.call".msg = "Use ucode.os_compatibility.subprocess_cross_os.run to resolve Windows commands automatically."
+"subprocess.check_call".msg = "Use ucode.os_compatibility.subprocess_cross_os.run with check=True."
+"subprocess.check_output".msg = "Use ucode.os_compatibility.subprocess_cross_os.run with check=True and stdout=subprocess.PIPE."
