@@ -63,6 +63,7 @@ def _root_records(session, agent):
 
 def _review(tui, session, agent, task):
     before_children = completed_child_answers(session, agent)
+    before_records = len(_root_records(session, agent))
     tui.submit(task.prompt)
 
     def finished(screen):
@@ -81,8 +82,8 @@ def _review(tui, session, agent, task):
     assert any(answer.strip() for answers in new_answers.values() for answer in answers), (
         "The root completed the review without a completed native child review"
     )
-    assert orchestrator_contexts(agent, _root_records(session, agent)), (
-        "The native root transcript did not receive the orchestrator workflow"
+    assert orchestrator_contexts(agent, _root_records(session, agent)[before_records:]), (
+        "The native root transcript did not receive a fresh orchestrator workflow"
     )
 
 
@@ -109,10 +110,12 @@ def _compact(tui, session, agent):
                 )
                 for row in records
             )
-            contexts = records
+            # Codex runs the compact hook before the next model request.
+            # The follow-up review requires its newly delivered workflow.
+            return compacted
         return compacted and bool(orchestrator_contexts(agent, contexts))
 
-    tui.wait_for(reloaded, "native compaction and a reloaded orchestrator workflow", timeout=180)
+    tui.wait_for(reloaded, "native compaction", timeout=180)
     session.record("compaction-records.json", _root_records(session, agent)[before:])
 
 

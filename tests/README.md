@@ -142,8 +142,9 @@ including collapsed-output records, and excludes user echoes and assistant claim
 `test_ug_orchestrator.py` requests a review of three source modules without mentioning
 subagents. It requires a completed native child response and a root report containing
 traceability values read from all three files. Each harness then performs native
-`/compact`, receives the full workflow again, and completes a second review with new
-child work. The journeys check orchestration and continuation, not review accuracy.
+`/compact`, receives the full workflow again for the next review, and completes it with
+new child work. Codex delivers its compact hook before the next model request.
+The journeys check orchestration and continuation, not review accuracy.
 Retained skills in ineligible sessions, role-contract preservation, and isolation
 from legacy preference files still lack dedicated regression coverage. Codex's
 native hook merging and project trust, and execution of pre-existing hooks remain
