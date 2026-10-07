@@ -13,9 +13,10 @@ from tests.integration.utils.evidence import (
     is_child_session,
 )
 from tests.integration.utils.mcp import open_claude_mcp_inventory, open_codex_mcp_inventory
+from tests.integration.utils.terminal import TerminalProcess
 
 from .base import BaseCujTest
-from .helpers.constants import CLAUDE, CODEX
+from .helpers.constants import CLAUDE, CODEX, MANAGED_PATHS
 from .helpers.terminal import Terminal
 
 pytestmark = [pytest.mark.managed, pytest.mark.mcp_registration, pytest.mark.workspace_isolated]
@@ -74,6 +75,26 @@ def _wait_for_mcp_task(tui, task):
         completed,
         "a completed assistant answer with both verified MCP receipts",
         timeout=240,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _revert_mcp_test_state(cuj):
+    yield
+    session, _, _ = cuj
+    state_dir = session.home / ".ucode"
+    if any(
+        (state_dir / name).is_file() for name in ("state.json", "managed-backups/manifest.json")
+    ):
+        with TerminalProcess(
+            session,
+            "ug",
+            [str(session.binary), "revert"],
+            "mcp-registration-cleanup-revert",
+        ) as terminal:
+            terminal.finish()
+    assert not any(path.exists() for path in MANAGED_PATHS), (
+        "MCP registration CUJ teardown left machine-wide agent settings"
     )
 
 
