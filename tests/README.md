@@ -138,6 +138,7 @@ tool-result confirmation after each toggle, and explicitly request their childre
 including while routing is off.
 `test_integration_evidence.py` checks native tool-result extraction for both agents,
 including collapsed-output records, and excludes user echoes and assistant claims.
+Terminal error checks distinguish client failures from error names quoted in reviews.
 
 `test_ug_orchestrator.py` requests a review of three source modules without mentioning
 subagents. It requires a completed native child response and a root report containing

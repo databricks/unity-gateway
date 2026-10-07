@@ -11,12 +11,13 @@ _AGENT_HELPERS = {"claude": claude, "codex": codex}
 
 
 def assert_no_terminal_api_error(screen: str) -> None:
-    """Fail on definitive client errors, not an in-progress transient retry."""
+    """Recognize client error lines without mistaking review prose for an API failure."""
     error = re.search(
-        r"unexpected status (?:400|401|403|404|405|409|422)\b|PERMISSION_DENIED"
-        r"|exceeded retry limit",
+        r"^[ \t]*(?:[■⎿][ \t]*)?"
+        r"(?:(?:unexpected status|API Error:)[ \t]*(?:400|401|403|404|405|409|422)\b"
+        r"|exceeded retry limit\b)",
         screen,
-        re.IGNORECASE,
+        re.IGNORECASE | re.MULTILINE,
     )
     assert error is None, "Agent returned a terminal API error:\n" + screen
 

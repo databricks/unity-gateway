@@ -68,6 +68,8 @@ def _write_answer(home, agent, *, child, value):
         "■ exceeded retry limit, last status: 429 Too Many Requests",
         "■ unexpected status 403 Forbidden: PERMISSION_DENIED",
         "■ unexpected status 401 Unauthorized",
+        '  ⎿ API Error: 403 {"error_code": "PERMISSION_DENIED"}',
+        'Review complete.\n\n  ⎿ API Error: 403\n{"error_code": "PERMISSION_DENIED"}',
     ],
 )
 def test_terminal_api_failure_reports_the_actual_error(screen):
@@ -85,6 +87,18 @@ def test_terminal_api_failure_reports_the_actual_error(screen):
     ],
 )
 def test_transient_retries_and_running_tasks_are_not_terminal_errors(screen):
+    assert_no_terminal_api_error(screen)
+
+
+@pytest.mark.parametrize(
+    "screen",
+    [
+        "  3. PERMISSION_DENIED silently swallowed when there's no cached fallback.\n❯",
+        "The code raises 'unexpected status 403' when access is denied.",
+        "The handler returns 'exceeded retry limit' after repeated errors.",
+    ],
+)
+def test_error_mentions_in_review_text_are_not_terminal_errors(screen):
     assert_no_terminal_api_error(screen)
 
 

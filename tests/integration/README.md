@@ -767,7 +767,8 @@ onboarding state or relax the prompt/task assertions. Test homes are deleted aft
 each case; redacted diagnostics remain. For manual interaction, configure a fresh
 home with the same installed binaries and recorded public CLI arguments.
 Definitive API errors and the client's exhausted retry limit fail the TUI wait
-immediately with the actual screen. A transient 429/503 while the client is still
+immediately with the actual screen. Only displayed client error lines count;
+error names quoted in review prose do not. A transient 429/503 while the client is still
 retrying is not treated as terminal; the suite adds no task retries of its own.
 
 ## Colima / Docker

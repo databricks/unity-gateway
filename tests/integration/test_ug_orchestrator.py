@@ -4,7 +4,6 @@ import uuid
 from pathlib import Path
 
 import pytest
-from utils.constants import CLAUDE_SMART_ROUTING_MODELS, CODEX_SMART_ROUTING_MODELS
 from utils.evidence import (
     agent_sessions,
     assert_no_terminal_api_error,
@@ -13,12 +12,7 @@ from utils.evidence import (
     is_child_session,
     orchestrator_contexts,
 )
-from utils.managed import (
-    build_claude_agent_config,
-    build_codex_agent_config,
-    build_coding_agent_config,
-    set_managed_config_stub,
-)
+from utils.managed import use_managed_config_fixture
 from utils.terminal import AgentTerminal
 
 
@@ -135,14 +129,10 @@ def test_orchestrator_claude_delegates_and_recovers_after_compaction(
     session.env.update(
         ENABLE_SMART_ROUTING_V2="1",
         ENABLE_SMART_ROUTING_SUBAGENT_ONLY="1",
-        ENABLE_ORCHESTRATION="1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR="1",
         TMPDIR=str(tmp_path),
     )
-    config = build_coding_agent_config(
-        "CODING_AGENT_CLAUDE_CODE",
-        build_claude_agent_config(CLAUDE_SMART_ROUTING_MODELS, smart_routing=True),
-    )
-    set_managed_config_stub(session, tmp_path, config)
+    use_managed_config_fixture(session, "claude_smart_routing")
     session.run(
         "configure", "--workspace", workspace, "--skip-upgrade", "--disable-databricks-ai-tools"
     )
@@ -180,14 +170,10 @@ def test_orchestrator_codex_delegates_and_recovers_after_compaction(
     session.env.update(
         ENABLE_SMART_ROUTING_V2="1",
         ENABLE_SMART_ROUTING_SUBAGENT_ONLY="1",
-        ENABLE_ORCHESTRATION="1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR="1",
         TMPDIR=str(tmp_path),
     )
-    config = build_coding_agent_config(
-        "CODING_AGENT_CODEX",
-        build_codex_agent_config(models=CODEX_SMART_ROUTING_MODELS, smart_routing=True),
-    )
-    set_managed_config_stub(session, tmp_path, config)
+    use_managed_config_fixture(session, "codex_smart_routing")
     session.run(
         "configure", "--workspace", workspace, "--skip-upgrade", "--disable-databricks-ai-tools"
     )
